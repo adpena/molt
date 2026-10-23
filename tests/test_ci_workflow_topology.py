@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 import glob
 import json
+import os
 import re
+import shlex
 import tomllib
+from typing import NamedTuple
+import warnings
 
 import pytest
 import yaml
@@ -58,63 +64,1705 @@ def _default_python_version() -> str:
     return version
 
 
-# An interpreter (python, python3, python3.12, or a $PYTHON-like variable),
-# any flags, then `-m molt` or `-m molt.<module>`.
-_MOLT_MODULE_RUN = re.compile(
-    r"(?P<interpreter>\bpython[0-9.]*|\"?\$\{?[A-Za-z_]*PYTHON[A-Za-z_]*\}?\"?)"
-    r"(?:\s+-[A-Za-z]+)*\s+-m\s+molt(?:\.[\w.]+)?\b"
+# A step's `run` script is read as bash reads it: a lexer for words, quoting,
+# comments, substitutions, parameter expansions, heredocs and operators; a
+# parser for lists, pipelines, compound commands and function definitions; and
+# a reading that follows the environment, the working directory and the
+# project sync through them. Two rules keep the reading on the safe side where
+# it does not model bash (the HF-456 row lists those constructs):
+#
+# 1. Unknown state is conservative. A construct this reading does not model
+#    that can change the environment or the working directory marks the shell
+#    unknown, and a later molt run there counts as provided only through `uv
+#    run` with the project. A value the reading cannot know (`read NAME`, a
+#    branch, loop or `&&` that may or may not set it) is unknown, and an
+#    unknown value names no `src` and may be true.
+# 2. A backstop. Each `-m molt` text of a command or script, and each
+#    substitution or heredoc body whose text runs molt, that no reading
+#    accounted for is reported as unprovided, so no reading gap passes.
+_WORKSPACE_EXPRESSION = re.compile(r"\$\{\{\s*github\.workspace\s*\}\}")
+_GITHUB_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+# `-m molt`, `-mmolt`, `-Bm molt` and `--module molt`, quoted or not.
+_MOLT_MODULE_TEXT = re.compile(
+    r"(?<![\w-])-(?:[A-Za-z]*m\s*|-module[\s=]\s*)['\"]?molt\b"
 )
-_SYNCED_RUN = re.compile(r"\buv\s+run\b")
-_SRC_PYTHONPATH = re.compile(r"\bPYTHONPATH=\S*src\b")
+_SUBSTITUTION = "MOLT-SUBSTITUTION"
+_ARITHMETIC = "MOLT-ARITHMETIC"
+_ANSI_C_STRING = "MOLT-ANSI-C-STRING"
+# A value this reading cannot know; a value with an unknown part is unknown.
+_UNKNOWN = "MOLT-UNKNOWN"
+_OPERATORS = (
+    "&>>", ";;&", "<<<", "<<-", "&&", "||", ";;", ";&", "|&", ">>", "<<",
+    ">&", "<&", "<>", ">|", "&>", ";", "&", "|", "(", ")", "<", ">",
+)  # fmt: skip
+_REDIRECTIONS = frozenset(
+    {"<", ">", ">>", "<<", "<<-", "<<<", "<&", ">&", "<>", ">|", "&>", "&>>"}
+)
+_COMMAND_SEPARATORS = frozenset({"\n", ";", ";;", "&", "&&", "|", "||", "|&"})
+# Reserved words after which a command starts.
+_COMMAND_PREFIX_WORDS = frozenset(
+    {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "time"}
+)
+# Reserved words that close a compound command.
+_CLOSING_WORDS = frozenset({"then", "elif", "else", "fi", "do", "done", "esac", "}"})
+_ASSIGNMENT = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?P<append>\+?)=(?P<value>.*)", re.S
+)
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
+_VARIABLE_REFERENCE = re.compile(r"\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?")
+_ASSIGNING_EXPANSION = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*):?=")
+# A name an arithmetic expression assigns: `x = 1`, `x += 1`, `x++`, `--x`.
+_ARITHMETIC_ASSIGNMENT = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))"
+    r"|(?:\+\+|--)\s*(?P<prefixed>[A-Za-z_][A-Za-z0-9_]*)"
+)
+_PYTHON_EXECUTABLE = re.compile(r"python[0-9.]*")
+_SHELLS = frozenset({"sh", "bash", "dash", "zsh"})
+# CPython's command line: these options take an argument, attached or next.
+_PYTHON_OPTIONS_WITH_ARGUMENT = frozenset("WX")
+# -I implies -E; both make the interpreter ignore PYTHONPATH.
+_PYTHON_IGNORES_PYTHONPATH = frozenset("IE")
+# Commands that run the rest of their words as a command: how many of their
+# own operands precede it, and which of their options take a value.
+_COMMAND_WRAPPERS = {
+    "time": (0, frozenset({"-f", "-o"})),
+    "nice": (0, frozenset({"-n"})),
+    "nohup": (0, frozenset()),
+    "timeout": (1, frozenset({"-s", "-k", "--signal", "--kill-after"})),
+    "exec": (0, frozenset({"-a"})),
+}
+_DECLARATIONS = frozenset(
+    {"export", "unset", "declare", "typeset", "local", "readonly"}
+)
+# Builtins that assign the variables they name: `read`, `mapfile` and
+# `readarray` their operands, `printf -v`, `wait -p`, `getopts` and `let`.
+_ASSIGNING_BUILTINS = frozenset(
+    {"read", "mapfile", "readarray", "printf", "wait", "getopts", "let"}
+)
+# Builtins and keywords that change no variable and not the directory.
+_INERT_COMMANDS = frozenset(
+    {
+        ":", "[", "[[", _ARITHMETIC, "bg", "bind", "caller", "compgen",
+        "complete", "compopt", "dirs", "disown", "echo", "exit", "false", "fg",
+        "hash", "help", "history", "jobs", "kill", "logout", "pwd", "return",
+        "shift", "suspend", "test", "times", "true", "type", "ulimit", "umask",
+        "unalias",
+    }
+)  # fmt: skip
+# Bash builtins this reading neither models nor knows to be inert.
+_UNMODELED_BUILTINS = frozenset({"enable", "fc"})
+# Spellings of the repository's `src` in a PYTHONPATH entry: relative ones
+# hold only while the script has not changed directory.
+_WORKSPACE_SRC = frozenset({"$GITHUB_WORKSPACE/src", "${GITHUB_WORKSPACE}/src"})
+_RELATIVE_SRC = frozenset({"src", "./src", "$PWD/src", "${PWD}/src"})
+_WORKSPACE = frozenset({"$GITHUB_WORKSPACE", "${GITHUB_WORKSPACE}"})
+_TRUE = frozenset({"1", "true", "yes", "on"})
+# `uv run` options that take a value (`uv run --help`, uv 0.13.5).
+_UV_RUN_VALUE_OPTIONS = frozenset(
+    {
+        "--extra", "--no-extra", "--group", "--no-group", "--only-group",
+        "--no-editable-package", "--env-file", "-w", "--with", "--with-editable",
+        "--with-requirements", "--package", "--python-platform", "--index",
+        "--default-index", "-i", "--index-url", "--extra-index-url", "-f",
+        "--find-links", "--index-strategy", "--keyring-provider", "-P",
+        "--upgrade-package", "--upgrade-group", "--resolution", "--prerelease",
+        "--prerelease-package", "--fork-strategy", "--exclude-newer",
+        "--exclude-newer-package", "--no-sources-package", "--reinstall-package",
+        "--link-mode", "-C", "--config-setting", "--config-settings-package",
+        "--no-build-isolation-package", "--no-build-package",
+        "--no-binary-package", "--cache-dir", "--refresh-package", "-p",
+        "--python", "--color", "--allow-insecure-host", "--directory",
+        "--project", "--config-file",
+    }
+)  # fmt: skip
+# `uv run` options that leave the project out of the environment.
+_UV_RUN_WITHOUT_PROJECT = frozenset({"--no-project", "--only-dev", "--only-group"})
+# `uv run` options and variables that choose where uv finds the project.
+_UV_RUN_LOCATIONS = {"--directory": "UV_WORKING_DIR", "--project": "UV_PROJECT"}
 
 
-def _molt_module_runs(run: str) -> list[str]:
-    """Each logical shell line that runs a molt module, continuations joined."""
-    logical = re.sub(r"\\\n\s*", " ", run)
-    return [line for line in logical.splitlines() if _MOLT_MODULE_RUN.search(line)]
+@dataclass(frozen=True)
+class _Token:
+    """A word or an operator of a script. ``text`` is the word after quote
+    removal, with each command, arithmetic or process substitution, ANSI-C
+    string and array value a placeholder and each parameter expansion as
+    written. ``runs_molt`` counts the substitutions, strings and heredoc
+    bodies in it whose text runs molt; ``assigns`` names the variables its
+    expansions assign (`${X:=...}`, arithmetic)."""
+
+    text: str
+    operator: bool = False
+    quoted: bool = False
+    runs_molt: int = 0
+    assigns: tuple[str, ...] = ()
 
 
-def _molt_import_is_provided(line: str, env: dict[str, object]) -> bool:
-    """`uv run` syncs the project; otherwise `src` must be on PYTHONPATH."""
-    prefix = line[: _MOLT_MODULE_RUN.search(line).start()]  # type: ignore[union-attr]
-    return bool(
-        _SYNCED_RUN.search(prefix)
-        or _SRC_PYTHONPATH.search(prefix)
-        or "/src" in str(env.get("PYTHONPATH", ""))
+@dataclass(frozen=True)
+class _Expansion:
+    """An expansion or quoted string: where it ends and what it reads as."""
+
+    end: int
+    text: str
+    runs_molt: int = 0
+    assigns: tuple[str, ...] = ()
+
+
+def _molt_occurrences(tokens: list[_Token]) -> int:
+    """How many molt runs the backstop counts in ``tokens``."""
+    text = " ".join(token.text for token in tokens)
+    return len(_MOLT_MODULE_TEXT.findall(text)) + sum(t.runs_molt for t in tokens)
+
+
+def _runs_molt(text: str) -> int:
+    return int(_MOLT_MODULE_TEXT.search(text) is not None)
+
+
+def _arithmetic_assignments(text: str) -> tuple[str, ...]:
+    return tuple(
+        match["name"] or match["prefixed"]
+        for match in _ARITHMETIC_ASSIGNMENT.finditer(text)
     )
 
 
-def _step_runs_with_env(
-    payload: dict[str, object],
-) -> list[tuple[str, str, dict[str, object]]]:
-    """(step name, run text, effective env) of each workflow or composite step."""
+def _quote_end(text: str, index: int) -> int:
+    """The index after the `'` closing the one at ``index``."""
+    end = text.find("'", index + 1)
+    return len(text) if end < 0 else end + 1
+
+
+def _escaped_end(text: str, index: int, closer: str) -> int:
+    """The index after the unescaped ``closer`` that ends the string whose
+    body starts at ``index`` (a `$'...'` string or a backquote)."""
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == closer:
+            return index + 1
+        else:
+            index += 1
+    return len(text)
+
+
+def _double_quoted(text: str, index: int) -> _Expansion:
+    """The double-quoted string at ``index``, read as bash expands it."""
+    parts: list[str] = []
+    runs_molt = 0
+    assigns: list[str] = []
+    position = index + 1
+    while position < len(text):
+        char = text[position]
+        if char == '"':
+            return _Expansion(position + 1, "".join(parts), runs_molt, tuple(assigns))
+        if char == "\\":
+            following = text[position + 1 : position + 2]
+            if following == "\n":
+                position += 2
+            elif following and following in '$`"\\':
+                parts.append(following)
+                position += 2
+            else:
+                parts.append(char)
+                position += 1
+            continue
+        expansion = _expansion(text, position)
+        if expansion is None:
+            parts.append(char)
+            position += 1
+            continue
+        parts.append(expansion.text)
+        runs_molt += expansion.runs_molt
+        assigns.extend(expansion.assigns)
+        position = expansion.end
+    return _Expansion(len(text), "".join(parts), runs_molt, tuple(assigns))
+
+
+def _parameter_end(text: str, index: int) -> int:
+    """The index after the `}` closing the `${` at ``index``."""
+    position = index + 2
+    while position < len(text):
+        char = text[position]
+        if char == "}":
+            return position + 1
+        if char == "\\":
+            position += 2
+        elif char == "'":
+            position = _quote_end(text, position)
+        elif char == '"':
+            position = _double_quoted(text, position).end
+        elif (expansion := _expansion(text, position)) is not None:
+            position = expansion.end
+        else:
+            position += 1
+    return len(text)
+
+
+def _arithmetic_end(text: str, index: int) -> tuple[int, bool]:
+    """The index after the `)` matching the `(` at ``index``, and whether the
+    `((` there closes as `))`: an arithmetic expression, as bash tries first."""
+    depth, position, inner = 0, index, -1
+    while position < len(text):
+        char = text[position]
+        if char == "\\":
+            position += 2
+            continue
+        if char == "'":
+            position = _quote_end(text, position)
+            continue
+        if char == '"':
+            position = _double_quoted(text, position).end
+            continue
+        if (expansion := _expansion(text, position)) is not None:
+            position = expansion.end
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 1:
+                inner = position
+            elif depth == 0:
+                return position + 1, inner == position - 1
+        position += 1
+    return len(text), False
+
+
+def _paired_end(text: str, index: int) -> int:
+    """The index after the `)` matching the `(` at ``index`` (an array value)."""
+    depth, position = 0, index
+    while position < len(text):
+        char = text[position]
+        if char == "\\":
+            position += 2
+            continue
+        if char == "'":
+            position = _quote_end(text, position)
+            continue
+        if char == '"':
+            position = _double_quoted(text, position).end
+            continue
+        if (expansion := _expansion(text, position)) is not None:
+            position = expansion.end
+            continue
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        position += 1
+        if depth == 0:
+            return position
+    return len(text)
+
+
+def _expansion(text: str, index: int) -> _Expansion | None:
+    """The command, arithmetic or parameter expansion starting at ``index``."""
+    if text.startswith("$((", index):
+        end, arithmetic = _arithmetic_end(text, index + 1)
+        if arithmetic:
+            body = text[index + 3 : end - 2]
+            return _Expansion(
+                end, _ARITHMETIC, _runs_molt(body), _arithmetic_assignments(body)
+            )
+    if text.startswith("$(", index):
+        lexer = _Lexer(text, index + 2, closing=True)
+        runs_molt = int(_molt_occurrences(lexer.run()) > 0)
+        return _Expansion(lexer.index, _SUBSTITUTION, runs_molt)
+    if text.startswith("`", index):
+        end = _escaped_end(text, index + 1, "`")
+        body = re.sub(r"\\([\\`$])", r"\1", text[index + 1 : end - 1])
+        runs_molt = int(_molt_occurrences(_Lexer(body).run()) > 0)
+        return _Expansion(end, _SUBSTITUTION, runs_molt)
+    if text.startswith("${", index):
+        end = _parameter_end(text, index)
+        assigned = _ASSIGNING_EXPANSION.match(text, index)
+        return _Expansion(
+            end, text[index:end], 0, (assigned["name"],) if assigned else ()
+        )
+    return None
+
+
+class _Lexer:
+    """Splits a script into tokens as bash's lexer does. With ``closing`` it
+    reads the body of a `$(...)` and stops after the `)` that closes it, which
+    a `case` pattern's `)`, a quoted one or one in a comment does not."""
+
+    def __init__(self, text: str, index: int = 0, *, closing: bool = False) -> None:
+        self.text = text
+        self.index = index
+        self.closing = closing
+        self.tokens: list[_Token] = []
+        # Heredocs whose bodies start after the next newline: their
+        # delimiter, whether `<<-` strips tabs, and the delimiter's token.
+        self.heredocs: list[tuple[str, bool, int]] = []
+        self.command_start = True
+        self.depth = 0
+        # For each open `case`: "subject", "pattern" or "body".
+        self.cases: list[str] = []
+        self.conditional = False  # inside `[[ ... ]]`
+
+    def run(self) -> list[_Token]:
+        text = self.text
+        while self.index < len(text):
+            char = text[self.index]
+            if char in " \t\r":
+                self.index += 1
+            elif text.startswith("\\\n", self.index):
+                self.index += 2
+            elif char == "\n":
+                self.index += 1
+                if not self.conditional:
+                    self.emit(_Token("\n", operator=True))
+                self.read_heredocs()
+            elif char == "#":
+                end = text.find("\n", self.index)
+                self.index = len(text) if end < 0 else end
+            elif (
+                char == ")"
+                and self.closing
+                and self.depth == 0
+                and not self.conditional
+                and self.cases[-1:] != ["pattern"]
+            ):
+                self.index += 1
+                return self.tokens
+            elif char in "<>" and text.startswith("(", self.index + 1):
+                self.word()
+            elif text.startswith("((", self.index) and (
+                self.command_start or self.follows("for")
+            ):
+                end, arithmetic = _arithmetic_end(text, self.index)
+                if arithmetic:
+                    body = text[self.index + 2 : end - 2]
+                    self.emit(
+                        _Token(
+                            _ARITHMETIC,
+                            runs_molt=_runs_molt(body),
+                            assigns=_arithmetic_assignments(body),
+                        )
+                    )
+                    self.index = end
+                else:
+                    self.operator()
+            elif char in ";&|()<>":
+                self.operator()
+            else:
+                self.word()
+        return self.tokens
+
+    def follows(self, word: str) -> bool:
+        return bool(self.tokens) and self.tokens[-1] == _Token(word)
+
+    def emit(self, token: _Token) -> None:
+        """Append ``token`` and track where commands start, `case` patterns,
+        `[[ ... ]]` and the parentheses a `$(...)` body has open."""
+        self.tokens.append(token)
+        text, word = token.text, not token.operator and not token.quoted
+        state = self.cases[-1] if self.cases else ""
+        if self.conditional:
+            self.conditional = not (word and text == "]]")
+            self.command_start = False
+        elif state == "subject":
+            if word and text == "in":
+                self.cases[-1] = "pattern"
+        elif state == "pattern":
+            if word and text == "esac":
+                self.cases.pop()
+                self.command_start = False
+            elif token.operator and text == ")":
+                self.cases[-1] = "body"
+                self.command_start = True
+        elif token.operator:
+            if state == "body" and text in {";;", ";&", ";;&"}:
+                self.cases[-1] = "pattern"
+            else:
+                self.depth += {"(": 1, ")": -1}.get(text, 0)
+            self.command_start = text not in _REDIRECTIONS
+        elif self.command_start and word and text == "case":
+            self.cases.append("subject")
+            self.command_start = False
+        elif self.command_start and word and text == "esac" and state == "body":
+            self.cases.pop()
+            self.command_start = False
+        elif self.command_start and word and text == "[[":
+            self.conditional = True
+        else:
+            self.command_start = (
+                self.command_start and word and (text in _COMMAND_PREFIX_WORDS)
+            )
+
+    def operator(self) -> None:
+        op = next(op for op in _OPERATORS if self.text.startswith(op, self.index))
+        self.index += len(op)
+        # Inside `[[ ... ]]`, `<`, `&&`, `(` and the like are operands.
+        self.emit(_Token(op, operator=not self.conditional))
+        if op in {"<<", "<<-"} and not self.conditional:
+            while self.text.startswith((" ", "\t"), self.index):
+                self.index += 1
+            if self.text[self.index : self.index + 1] in {"", *" \t\r\n;&|()<>"}:
+                return  # no delimiter: bash refuses the script
+            delimiter = self.word()
+            if delimiter is not None:
+                strip_tabs = op == "<<-"
+                self.heredocs.append((delimiter.text, strip_tabs, len(self.tokens) - 1))
+
+    def read_heredocs(self) -> None:
+        """Skip the bodies of the heredocs the line just ended opened; a body
+        whose text runs molt marks its delimiter."""
+        for delimiter, strip_tabs, position in self.heredocs:
+            body: list[str] = []
+            while self.index < len(self.text):
+                end = self.text.find("\n", self.index)
+                end = len(self.text) if end < 0 else end
+                line = self.text[self.index : end]
+                self.index = end + 1
+                if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                    break
+                body.append(line)
+            if _runs_molt("\n".join(body)):
+                token = self.tokens[position]
+                self.tokens[position] = replace(token, runs_molt=token.runs_molt + 1)
+        self.heredocs.clear()
+
+    def word(self) -> _Token | None:
+        """Read the word at the index; None for a redirection's descriptor
+        (`2>`, `{fd}>`), which names no word."""
+        text, start = self.text, self.index
+        index = start
+        parts: list[str] = []
+        quoted = False
+        runs_molt = 0
+        assigns: list[str] = []
+        while index < len(text):
+            char = text[index]
+            if char in "<>" and text.startswith("(", index + 1) and index == start:
+                # A process substitution, read as a command substitution.
+                lexer = _Lexer(text, index + 2, closing=True)
+                runs_molt += int(_molt_occurrences(lexer.run()) > 0)
+                parts.append(_SUBSTITUTION)
+                index = lexer.index
+                continue
+            if (
+                char == "("
+                and not quoted
+                and _ARRAY_ASSIGNMENT.fullmatch("".join(parts))
+            ):
+                end = _paired_end(text, index)
+                parts.append(_UNKNOWN)
+                runs_molt += _runs_molt(text[index:end])
+                index = end
+                continue
+            if char in " \t\r\n;&|()<>":
+                break
+            expansion = None
+            if char == "\\":
+                if not text.startswith("\n", index + 1):
+                    parts.append(text[index + 1 : index + 2])
+                    quoted = True
+                index += 2
+            elif char == "'":
+                close = text.find("'", index + 1)
+                close = len(text) if close < 0 else close
+                parts.append(text[index + 1 : close])
+                quoted = True
+                index = close + 1
+            elif text.startswith("$'", index):
+                end = _escaped_end(text, index + 2, "'")
+                parts.append(_ANSI_C_STRING)
+                quoted = True
+                runs_molt += _runs_molt(text[index:end])
+                index = end
+            elif text.startswith('$"', index):
+                index += 1
+            elif char == '"':
+                quoted = True
+                expansion = _double_quoted(text, index)
+            else:
+                expansion = _expansion(text, index)
+                if expansion is None:
+                    parts.append(char)
+                    index += 1
+            if expansion is not None:
+                parts.append(expansion.text)
+                runs_molt += expansion.runs_molt
+                assigns.extend(expansion.assigns)
+                index = expansion.end
+        self.index = index
+        word = "".join(parts)
+        if (
+            not quoted
+            and text[index : index + 1] in {"<", ">"}
+            and not text.startswith("(", index + 1)
+            and (word.isdigit() or re.fullmatch(r"\{[A-Za-z_][A-Za-z0-9_]*\}", word))
+        ):
+            return None
+        token = _Token(word, quoted=quoted, runs_molt=runs_molt, assigns=tuple(assigns))
+        self.emit(token)
+        return token
+
+
+def _tokens(run: str) -> list[_Token]:
+    """The tokens of ``run``, GitHub's expressions first replaced as GitHub
+    does before the shell starts: the workspace one by $GITHUB_WORKSPACE."""
+    text = _GITHUB_EXPRESSION.sub(
+        "GITHUB_EXPRESSION", _WORKSPACE_EXPRESSION.sub("$GITHUB_WORKSPACE", run)
+    )
+    return _Lexer(text).run()
+
+
+def _shell_words(run: str) -> list[str]:
+    return [token.text for token in _tokens(run)]
+
+
+# The shell grammar's nodes: a simple command, a compound command (`{ }`,
+# `( )`, if, while, until, for, select, case, coproc), a function definition,
+# a pipeline, an `&&`/`||` list and a list of those, each in the foreground or
+# the background.
+@dataclass
+class _Simple:
+    tokens: list[_Token]
+
+
+@dataclass
+class _Compound:
+    kind: str
+    parts: list[_List]
+    # Its own words: a loop's name and values, a case's subject and
+    # patterns, and its redirections.
+    tokens: list[_Token] = field(default_factory=list)
+    names: list[str] = field(default_factory=list)  # what a for loop assigns
+    fallthrough: bool = False  # a case branch ends with `;&` or `;;&`
+
+
+@dataclass
+class _Function:
+    name: str
+    body: _Simple | _Compound | _Function
+    tokens: list[_Token]  # the body's
+
+
+@dataclass
+class _Pipeline:
+    commands: list[_Simple | _Compound | _Function]
+
+
+@dataclass
+class _AndOr:
+    pipelines: list[_Pipeline]
+
+
+@dataclass
+class _List:
+    items: list[tuple[_AndOr, bool]]  # each with whether it runs in the background
+
+
+class _Parser:
+    """Parses tokens by the shell grammar. A syntax error, or a construct it
+    does not parse, counts in ``errors``; parsing goes on past it."""
+
+    def __init__(self, tokens: list[_Token]) -> None:
+        self.tokens = tokens
+        self.index = 0
+        self.errors = 0
+
+    def peek(self, offset: int = 0) -> _Token | None:
+        position = self.index + offset
+        return self.tokens[position] if position < len(self.tokens) else None
+
+    def at_word(self, *texts: str, offset: int = 0) -> bool:
+        token = self.peek(offset)
+        return (
+            token is not None
+            and not token.operator
+            and not token.quoted
+            and token.text in texts
+        )
+
+    def at_operator(self, *texts: str, offset: int = 0) -> bool:
+        token = self.peek(offset)
+        return token is not None and token.operator and token.text in texts
+
+    def take(self) -> _Token:
+        self.index += 1
+        return self.tokens[self.index - 1]
+
+    def expect(self, word: str) -> None:
+        if self.at_word(word):
+            self.index += 1
+        else:
+            self.errors += 1
+
+    def newlines(self) -> None:
+        while self.at_operator("\n"):
+            self.index += 1
+
+    def program(self) -> _List:
+        items: list[tuple[_AndOr, bool]] = []
+        while self.peek() is not None:
+            items.extend(self.list_(frozenset()).items)
+            if self.peek() is not None:  # a closer nothing opened
+                self.errors += 1
+                self.index += 1
+        return _List(items)
+
+    def list_(self, closers: frozenset[str]) -> _List:
+        items: list[tuple[_AndOr, bool]] = []
+        self.newlines()
+        while (token := self.peek()) is not None and not (
+            token.text in closers and (token.operator or not token.quoted)
+        ):
+            start = self.index
+            and_or = self.and_or()
+            background = self.at_operator("&")
+            if background or self.at_operator(";", "\n"):
+                self.index += 1
+            items.append((and_or, background))
+            self.newlines()
+            if self.index == start:  # nothing parsed: step over the token
+                self.errors += 1
+                self.index += 1
+        return _List(items)
+
+    def and_or(self) -> _AndOr:
+        pipelines = [self.pipeline()]
+        while self.at_operator("&&", "||"):
+            self.index += 1
+            self.newlines()
+            pipelines.append(self.pipeline())
+        return _AndOr(pipelines)
+
+    def pipeline(self) -> _Pipeline:
+        while self.at_word("!", "time"):
+            self.index += (
+                2 if self.at_word("time") and self.at_word("-p", offset=1) else 1
+            )
+        commands = [self.command()]
+        while self.at_operator("|", "|&"):
+            self.index += 1
+            self.newlines()
+            commands.append(self.command())
+        return _Pipeline(commands)
+
+    def command(self) -> _Simple | _Compound | _Function:
+        if self.at_operator("("):
+            self.index += 1
+            body = self.list_(frozenset({")"}))
+            if self.at_operator(")"):
+                self.index += 1
+            else:
+                self.errors += 1
+            return self.redirected(_Compound("subshell", [body]))
+        if self.at_word("{"):
+            self.index += 1
+            body = self.list_(frozenset({"}"}))
+            self.expect("}")
+            return self.redirected(_Compound("brace", [body]))
+        if self.at_word("if"):
+            return self.if_()
+        if self.at_word("while", "until"):
+            kind = self.take().text
+            condition = self.list_(frozenset({"do"}))
+            self.expect("do")
+            body = self.list_(frozenset({"done"}))
+            self.expect("done")
+            return self.redirected(_Compound(kind, [condition, body]))
+        if self.at_word("for", "select"):
+            return self.for_()
+        if self.at_word("case"):
+            return self.case()
+        if self.at_word("coproc"):
+            self.index += 1
+            if self.at_word("{", "(", offset=1) or self.at_operator("(", offset=1):
+                self.index += 1  # the coprocess's name
+            command = self.command()
+            return _Compound(
+                "coproc", [_List([(_AndOr([_Pipeline([command])]), False)])]
+            )
+        token = self.peek()
+        named = token is not None and not token.operator and not token.quoted
+        if self.at_word("function") and self.peek(1) is not None:
+            self.index += 1
+            return self.function()
+        if (
+            named
+            and self.at_operator("(", offset=1)
+            and self.at_operator(")", offset=2)
+        ):
+            return self.function()
+        if named and token is not None and token.text in _CLOSING_WORDS:
+            self.errors += 1
+            self.index += 1
+            return _Simple([])
+        return self.simple()
+
+    def simple(self) -> _Simple:
+        tokens: list[_Token] = []
+        while (token := self.peek()) is not None:
+            if token.operator and token.text not in _REDIRECTIONS:
+                break
+            tokens.append(self.take())
+            target = self.peek()
+            if token.operator and target is not None and not target.operator:
+                tokens.append(self.take())
+        return _Simple(tokens)
+
+    def redirected(self, node: _Compound) -> _Compound:
+        while (
+            (token := self.peek()) is not None
+            and token.operator
+            and (token.text in _REDIRECTIONS)
+        ):
+            node.tokens.append(self.take())
+            target = self.peek()
+            if target is not None and not target.operator:
+                node.tokens.append(self.take())
+        return node
+
+    def if_(self) -> _Compound:
+        """`if` as [condition, body, condition, body, ..., else-body]."""
+        self.index += 1
+        parts = [self.list_(frozenset({"then"}))]
+        self.expect("then")
+        parts.append(self.list_(frozenset({"elif", "else", "fi"})))
+        while self.at_word("elif"):
+            self.index += 1
+            parts.append(self.list_(frozenset({"then"})))
+            self.expect("then")
+            parts.append(self.list_(frozenset({"elif", "else", "fi"})))
+        if self.at_word("else"):
+            self.index += 1
+            parts.append(self.list_(frozenset({"fi"})))
+        self.expect("fi")
+        return self.redirected(_Compound("if", parts))
+
+    def for_(self) -> _Compound:
+        node = _Compound(self.take().text, [])
+        if (token := self.peek()) is not None and not token.operator:
+            node.tokens.append(self.take())
+            if token.text != _ARITHMETIC:
+                node.names.append(token.text)
+        self.newlines()
+        if self.at_word("in"):
+            self.index += 1
+            while (token := self.peek()) is not None and not token.operator:
+                node.tokens.append(self.take())
+        if self.at_operator(";", "\n"):
+            self.index += 1
+        self.newlines()
+        closer = "done" if self.at_word("do") else "}"
+        self.expect("do" if closer == "done" else "{")
+        node.parts.append(self.list_(frozenset({closer})))
+        self.expect(closer)
+        return self.redirected(node)
+
+    def case(self) -> _Compound:
+        node = _Compound("case", [])
+        self.index += 1
+        if (token := self.peek()) is not None and not token.operator:
+            node.tokens.append(self.take())
+        self.newlines()
+        self.expect("in")
+        self.newlines()
+        while self.peek() is not None and not self.at_word("esac"):
+            if self.at_operator("("):
+                self.index += 1
+            while (token := self.peek()) is not None and (
+                not token.operator or token.text == "|"
+            ):
+                node.tokens.append(self.take())
+            if not self.at_operator(")"):
+                self.errors += 1
+                break
+            self.index += 1
+            node.parts.append(self.list_(frozenset({";;", ";&", ";;&", "esac"})))
+            node.fallthrough |= self.at_operator(";&", ";;&")
+            if self.at_operator(";;", ";&", ";;&"):
+                self.index += 1
+            self.newlines()
+        self.expect("esac")
+        return self.redirected(node)
+
+    def function(self) -> _Function:
+        name = self.take().text
+        if self.at_operator("(") and self.at_operator(")", offset=1):
+            self.index += 2
+        self.newlines()
+        start = self.index
+        body = self.command()
+        return _Function(name, body, self.tokens[start : self.index])
+
+
+def _python_module(words: list[str]) -> tuple[str | None, bool]:
+    """The module `-m` names after an interpreter's options ("" when its
+    operand is missing, as under `xargs`), and whether an option makes the
+    interpreter ignore PYTHONPATH."""
+    ignores_pythonpath = False
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == "--" or not word.startswith("-") or word == "-":
+            return None, ignores_pythonpath
+        if word.startswith("--"):
+            index += 2 if word == "--check-hash-based-pycs" else 1
+            continue
+        for position, option in enumerate(word[1:], start=1):
+            rest = word[position + 1 :]
+            if option == "m":
+                module = rest or (words[index + 1] if index + 1 < len(words) else "")
+                return module, ignores_pythonpath
+            if option == "c":
+                return None, ignores_pythonpath
+            if option in _PYTHON_OPTIONS_WITH_ARGUMENT:
+                index += 0 if rest else 1
+                break
+            ignores_pythonpath |= option in _PYTHON_IGNORES_PYTHONPATH
+        index += 1
+    return None, ignores_pythonpath
+
+
+def _is_molt(module: str | None) -> bool:
+    return module is not None and (module == "molt" or module.startswith("molt."))
+
+
+def _is_expansion(word: str) -> bool:
+    """Whether a word holds a value this reading does not resolve."""
+    return any(mark in word for mark in ("$", "`", "MOLT-", "GITHUB_EXPRESSION"))
+
+
+def _may_be_molt(module: str | None) -> bool:
+    """Whether a module operand this reading cannot read may name molt."""
+    return module is not None and (module == "" or _is_expansion(module))
+
+
+def _with_expressions(value: object) -> str:
+    """A value from YAML env, its GitHub expressions read as a script's are."""
+    return _GITHUB_EXPRESSION.sub(
+        "GITHUB_EXPRESSION",
+        _WORKSPACE_EXPRESSION.sub("$GITHUB_WORKSPACE", str(value or "")),
+    )
+
+
+def _names_src(pythonpath: object, *, relative_ok: bool) -> bool:
+    """Whether a PYTHONPATH value has an entry naming the repository's `src`.
+
+    A value from YAML env still holds GitHub's expressions; they read as the
+    script's do.
+    """
+    value = _with_expressions(pythonpath)
+    return any(
+        entry in _WORKSPACE_SRC or (relative_ok and entry in _RELATIVE_SRC)
+        for entry in (part.rstrip("/") for part in value.split(":"))
+    )
+
+
+def _flag(value: object) -> bool:
+    """Whether a uv boolean variable may be set: true, or a value this
+    reading cannot know."""
+    text = _with_expressions(value)
+    return value is not None and (_is_expansion(text) or text.lower() in _TRUE)
+
+
+def _names_workspace(value: object, *, moved: bool) -> bool:
+    text = _with_expressions(value).rstrip("/")
+    return text in _WORKSPACE or (not moved and text in {"", ".", "$PWD", "${PWD}"})
+
+
+@dataclass
+class _ShellState:
+    """What one shell holds: exported and plain variables, whether it may have
+    left the workspace directory, why its state is unknown ("" when it is
+    known), the names local to the function being read (None outside one),
+    and whether the project is synced."""
+
+    exported: dict[str, object]
+    variables: dict[str, object]
+    moved: bool
+    unknown: str = ""
+    locals_: set[str] | None = None
+    synced: bool = False
+
+    def copy(self) -> _ShellState:
+        return _ShellState(
+            dict(self.exported),
+            dict(self.variables),
+            self.moved,
+            self.unknown,
+            None if self.locals_ is None else set(self.locals_),
+            self.synced,
+        )
+
+    def become(self, other: _ShellState) -> None:
+        self.exported, self.variables = other.exported, other.variables
+        self.moved, self.unknown = other.moved, other.unknown
+        self.locals_, self.synced = other.locals_, other.synced
+
+    def entry(self, name: str) -> tuple[bool, object] | None:
+        if name in self.exported:
+            return True, self.exported[name]
+        if name in self.variables:
+            return False, self.variables[name]
+        return None
+
+
+def _join(states: list[_ShellState]) -> _ShellState:
+    """What holds after one of ``states``, not knowing which: a variable they
+    disagree on is unknown, and exported when any of them exports it."""
+    joined = states[0].copy()
+    names = {name for state in states for name in (*state.exported, *state.variables)}
+    for name in names:
+        entries = [state.entry(name) for state in states]
+        if all(entry == entries[0] for entry in entries):
+            continue
+        joined.exported.pop(name, None)
+        joined.variables.pop(name, None)
+        if any(entry is not None and entry[0] for entry in entries):
+            joined.exported[name] = _UNKNOWN
+        else:
+            joined.variables[name] = _UNKNOWN
+    joined.moved = any(state.moved for state in states)
+    joined.unknown = next((state.unknown for state in states if state.unknown), "")
+    joined.synced = all(state.synced for state in states)
+    if joined.locals_ is not None:
+        joined.locals_ |= {n for state in states for n in state.locals_ or ()}
+    return joined
+
+
+def _mark_unknown(state: _ShellState, reason: str) -> None:
+    if not state.unknown:
+        state.unknown = reason
+
+
+def _assign_unknown(state: _ShellState, names: Iterable[str]) -> None:
+    for name in names:
+        target = state.exported if name in state.exported else state.variables
+        target[name] = _UNKNOWN
+
+
+def _assigned(held: object, assignment: re.Match[str]) -> object:
+    """The value `NAME=VALUE` or `NAME+=VALUE` leaves, ``held`` before it.
+    A value with an unknown part is unknown as a whole."""
+    value = assignment["value"]
+    if assignment["append"] and held is not None:
+        value = f"{held}{value}"
+    return _UNKNOWN if _UNKNOWN in value else value
+
+
+def _assign(state: _ShellState, word: str) -> None:
+    """A plain assignment in the shell. A variable that may or may not be
+    exported (unknown) stays unknown: the value may not reach the env."""
+    assignment = _ASSIGNMENT.fullmatch(word)
+    assert assignment is not None
+    name = assignment["name"]
+    if name in state.exported:
+        held = state.exported[name]
+        state.exported[name] = (
+            _UNKNOWN if held == _UNKNOWN else _assigned(held, assignment)
+        )
+    else:
+        state.variables[name] = _assigned(state.variables.get(name), assignment)
+
+
+@dataclass
+class _Reading:
+    """Where a reading records molt runs, whether it reads a function body
+    (whose runs happen where it is called), and for each enclosing loop the
+    states `break` and `continue` leave it with."""
+
+    found: list[tuple[str, bool]]
+    deferred: bool = False
+    loops: list[tuple[list[_ShellState], list[_ShellState]]] = field(
+        default_factory=list
+    )
+
+
+def _molt_module_runs(
+    run: str,
+    env: dict[str, object],
+    *,
+    project_synced: bool,
+    moved: bool = False,
+) -> list[tuple[str, bool]]:
+    """Each command that runs molt as a module, and whether molt can be
+    imported there: `uv run` with the project (with `--no-sync`, only after a
+    sync earlier in the job or script) or a PYTHONPATH entry naming the
+    repository's `src` that the interpreter honors. The step, job and workflow
+    env come first; the script is read by the grammar and the two rules
+    above, so a run this reading cannot attribute is reported, never
+    passed."""
+    reading = _Reading([])
+    state = _ShellState(dict(env), {}, moved, synced=project_synced)
+    _read_script(run, state, reading)
+    return reading.found
+
+
+def _account(tokens: list[_Token], before: int, reading: _Reading) -> None:
+    """The backstop: report each molt run counted in ``tokens`` that the
+    reading of them (which recorded from ``before`` on) did not record."""
+    missing = _molt_occurrences(tokens) - (len(reading.found) - before)
+    command = " ".join(token.text for token in tokens if token.text != "\n")
+    reading.found.extend([(f"{command} (unread molt run)", False)] * missing)
+
+
+def _read_script(run: str, state: _ShellState, reading: _Reading) -> None:
+    """Read ``run`` in ``state``'s shell."""
+    tokens = _tokens(run)
+    parser = _Parser(tokens)
+    tree = parser.program()
+    before = len(reading.found)
+    if parser.errors:
+        _mark_unknown(state, "a construct this reading does not parse")
+    _read_list(tree, state, reading)
+    _account(tokens, before, reading)
+
+
+def _read_list(node: _List, state: _ShellState, reading: _Reading) -> None:
+    for and_or, background in node.items:
+        # A background command runs in a subshell, maybe still running later.
+        _read_and_or(and_or, state.copy() if background else state, reading)
+
+
+def _read_and_or(node: _AndOr, state: _ShellState, reading: _Reading) -> None:
+    _read_pipeline(node.pipelines[0], state, reading)
+    for pipeline in node.pipelines[1:]:
+        skipped = state.copy()  # `&&` and `||` may skip the pipeline
+        _read_pipeline(pipeline, state, reading)
+        state.become(_join([state, skipped]))
+
+
+def _read_pipeline(node: _Pipeline, state: _ShellState, reading: _Reading) -> None:
+    if len(node.commands) == 1:
+        _read_node(node.commands[0], state, reading)
+        return
+    for command in node.commands:  # each element runs in a subshell
+        element = state.copy()
+        _read_node(command, element, reading)
+        state.synced |= element.synced
+
+
+def _read_node(
+    node: _Simple | _Compound | _Function, state: _ShellState, reading: _Reading
+) -> None:
+    if isinstance(node, _Simple):
+        before = len(reading.found)
+        _read_command(node.tokens, state, reading)
+        _account(node.tokens, before, reading)
+    elif isinstance(node, _Function):
+        # The body runs where the function is called: its runs are read
+        # deferred, and a body that can change the shell makes it unknown.
+        body = state.copy()
+        body.locals_ = set()
+        _read_node(node.body, body, _Reading(reading.found, deferred=True))
+        if _body_changes_shell(node, state):
+            _mark_unknown(state, f"function {node.name}, whose body changes the shell")
+    else:
+        _read_compound(node, state, reading)
+
+
+def _body_changes_shell(node: _Function, state: _ShellState) -> bool:
+    """Whether a function body, wherever it is called, can change a variable,
+    an export, the directory or what this reading knows. It is read from two
+    probes in which each name its words hold has a value no assignment
+    repeats, exported in one and not in the other, so any write shows."""
+    names = {
+        name
+        for token in node.tokens
+        for name in (*_NAME.findall(token.text), *token.assigns)
+    }
+    for exported in (True, False):
+        probe = state.copy()
+        probe.locals_ = set()
+        for name in names:
+            probe.exported.pop(name, None)
+            probe.variables.pop(name, None)
+            (probe.exported if exported else probe.variables)[name] = f"MOLT-{name}"
+        before = probe.copy()
+        _read_node(node.body, probe, _Reading([], deferred=True))
+        written = {
+            *probe.exported,
+            *probe.variables,
+            *before.exported,
+            *before.variables,
+        }
+        if (
+            probe.moved != before.moved
+            or probe.unknown != before.unknown
+            or any(
+                probe.entry(name) != before.entry(name)
+                for name in written - (probe.locals_ or set())
+            )
+        ):
+            return True
+    return False
+
+
+def _read_compound(node: _Compound, state: _ShellState, reading: _Reading) -> None:
+    _assign_unknown(state, [name for token in node.tokens for name in token.assigns])
+    if node.kind == "brace":
+        _read_list(node.parts[0], state, reading)
+    elif node.kind in {"subshell", "coproc"}:
+        inner = state.copy()
+        _read_list(node.parts[0], inner, reading)
+        state.synced |= node.kind == "subshell" and inner.synced
+    elif node.kind == "if":
+        _read_if(node.parts, state, reading)
+    elif node.kind == "case":
+        if node.fallthrough:
+            _mark_unknown(state, "a case branch that falls through")
+        branches = [state.copy() for _ in node.parts]
+        for part, branch in zip(node.parts, branches):
+            _read_list(part, branch, reading)
+        state.become(_join([state, *branches]))
+    else:
+        _read_loop(node, state, reading)
+    _account(node.tokens, len(reading.found), reading)
+
+
+def _read_if(parts: list[_List], state: _ShellState, reading: _Reading) -> None:
+    """Each branch from the state its condition leaves; then their join."""
+    has_else = len(parts) % 2 == 1
+    outcomes: list[_ShellState] = []
+    _read_list(parts[0], state, reading)  # the first condition always runs
+    pending = state.copy()  # every condition so far false
+    for index in range(1, len(parts) - has_else, 2):
+        if index > 1:
+            _read_list(parts[index - 1], pending, reading)
+        branch = pending.copy()
+        _read_list(parts[index], branch, reading)
+        outcomes.append(branch)
+    if has_else:
+        _read_list(parts[-1], pending, reading)
+    state.become(_join([*outcomes, pending]))
+
+
+def _read_loop(node: _Compound, state: _ShellState, reading: _Reading) -> None:
+    """A loop's body runs any number of times: read it from the join of the
+    states every pass can start with (a fixed point; values only turn
+    unknown, so it settles), recording its runs once, from that state."""
+
+    def one_pass(
+        start: _ShellState, recording: _Reading
+    ) -> tuple[list[_ShellState], list[_ShellState]]:
+        _assign_unknown(start, node.names)
+        breaks: list[_ShellState] = []
+        continues: list[_ShellState] = []
+        inner = _Reading(
+            recording.found, recording.deferred, [*recording.loops, (breaks, continues)]
+        )
+        for part in node.parts:
+            _read_list(part, start, inner)
+        return breaks, continues
+
+    head = state.copy()
+    while True:
+        trial = head.copy()
+        _breaks, continues = one_pass(
+            trial, _Reading([], reading.deferred, reading.loops)
+        )
+        joined = _join([head, trial, *continues])
+        if joined == head:
+            break
+        head = joined
+    final = head.copy()
+    breaks, _continues = one_pass(final, reading)
+    state.become(_join([head, final, *breaks]))
+
+
+def _declare(argv: list[str], state: _ShellState) -> None:
+    """Apply `export`, `unset`, `declare`, `typeset`, `local` or `readonly`."""
+    command = argv[0]
+    options = "".join(word[1:] for word in argv[1:] if word[:1] == "-" and word != "--")
+    removed = "".join(word[1:] for word in argv[1:] if word[:1] == "+")
+    operands = [word for word in argv[1:] if word[:1] not in {"-", "+"}]
+    if command == "unset":
+        if "f" in options and "v" not in options:
+            return  # functions, not variables
+        if any(not _NAME.fullmatch(name) for name in operands):
+            _mark_unknown(state, f"`{shlex.join(argv)}`, which names an expansion")
+            return
+        for name in operands:
+            state.exported.pop(name, None)
+            state.variables.pop(name, None)
+        return
+    if "n" in options and command != "export":
+        _mark_unknown(state, f"`{command} -n`, a name reference")
+        return
+    if command == "local" and state.locals_ is None:
+        _mark_unknown(state, "`local` outside a function")
+        return
+    if "f" in options or "F" in options:
+        return  # functions, not variables
+    if any(
+        not _NAME.fullmatch(word.split("=", 1)[0].removesuffix("+"))
+        for word in operands
+    ):
+        _mark_unknown(state, f"`{shlex.join(argv)}`, which names an expansion")
+        return
+    if operands and (command == "readonly" or "r" in options):
+        # bash refuses each later write to the name, keeping its value.
+        _mark_unknown(state, f"`{shlex.join(argv)}`, which refuses later writes")
+    exporting = "x" in options or (command == "export" and "n" not in options)
+    unexporting = "x" in removed or (command == "export" and "n" in options)
+    # Integer, case-changing and array attributes rewrite the value.
+    rewrites = any(flag in options for flag in "iluacA")
+    scoped = state.locals_ is not None and (
+        command == "local" or (command in {"declare", "typeset"} and "g" not in options)
+    )
+    for word in operands:
+        assignment = _ASSIGNMENT.fullmatch(word)
+        name = assignment["name"] if assignment else word
+        if scoped and state.locals_ is not None:
+            state.locals_.add(name)
+        held = state.exported.get(name, state.variables.get(name))
+        value = None if assignment is None else _assigned(held, assignment)
+        if rewrites and (value is not None or held is not None):
+            value = _UNKNOWN
+        if unexporting:
+            state.exported.pop(name, None)
+            state.variables[name] = held if value is None else value
+        elif exporting:
+            state.variables.pop(name, None)
+            state.exported[name] = held if value is None else value
+        elif value is not None:
+            target = state.exported if name in state.exported else state.variables
+            target[name] = value
+
+
+def _sets_allexport(words: list[str]) -> bool:
+    """Whether `set` turns on allexport (`-a`) or keyword (`-k`), which make
+    assignments export."""
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == "--" or word[:1] not in {"-", "+"} or len(word) < 2:
+            return False
+        if word[0] == "-" and ("a" in word[1:] or "k" in word[1:]):
+            return True
+        if "o" in word[1:]:
+            index += 1
+            if word[0] == "-" and words[index : index + 1] in (
+                ["allexport"],
+                ["keyword"],
+            ):
+                return True
+        index += 1
+    return False
+
+
+# Traps that run in an ordinary run of a script: on each command, on each
+# return, on a failed command and on a child's exit. Others run only at exit
+# or on a signal from outside.
+_ORDINARY_TRAPS = frozenset({"DEBUG", "RETURN", "ERR", "CHLD", "CLD"})
+
+
+def _trap_runs_code(words: list[str]) -> bool:
+    """Whether `trap` sets code that runs in an ordinary run of the script."""
+    operands = [word for word in words if word != "--"]
+    if not operands or operands[0] in {"-l", "-p", "-P", "-", ""}:
+        return False
+    return any(
+        signal.upper().removeprefix("SIG") in _ORDINARY_TRAPS
+        or (signal.isdigit() and signal != "0")
+        for signal in operands[1:]
+    )
+
+
+def _unmodeled(argv: list[str]) -> bool:
+    """Whether a builtin command changes the shell in a way this reading does
+    not model: `source`, an alias, allexport or keyword, lastpipe, a trap
+    that runs code, `enable` or `fc`."""
+    name, words = argv[0], argv[1:]
+    return (
+        name in {"source", "."}
+        or name in _UNMODELED_BUILTINS
+        or (name == "alias" and any("=" in word for word in words))
+        or (name == "set" and _sets_allexport(words))
+        or (name == "shopt" and "-s" in words and "lastpipe" in words)
+        or (name == "trap" and _trap_runs_code(words))
+    )
+
+
+def _assigned_names(argv: list[str]) -> list[str] | None:
+    """The variables an assigning builtin may set; None when an expansion
+    names one."""
+    command, words = argv[0], argv[1:]
+    if command == "let":
+        if any(_is_expansion(word) for word in words):
+            return None
+        return [name for word in words for name in _arithmetic_assignments(word)]
+    if command in {"printf", "wait"}:
+        flag = "-v" if command == "printf" else "-p"
+        words = [
+            following if word == flag else word[2:]
+            for word, following in zip(words, [*words[1:], ""])
+            if word.startswith(flag)
+        ]
+    if any(_is_expansion(word) for word in words):
+        return None
+    return [word for word in words if _NAME.fullmatch(word)]
+
+
+def _record(
+    reading: _Reading, state: _ShellState, argv: list[str], provided: bool
+) -> None:
+    command = shlex.join(argv)
+    if not provided and (reading.deferred or state.unknown):
+        command += f" (after {state.unknown or 'a function body'})"
+    reading.found.append((command, provided))
+
+
+def _read_command(tokens: list[_Token], state: _ShellState, reading: _Reading) -> None:
+    """Read one simple command in ``state``'s shell."""
+    for token in tokens:  # expansions that assign do so as the words expand
+        _assign_unknown(state, token.assigns)
+    argv: list[str] = []
+    redirects: list[tuple[str, str]] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index].operator:  # the parser put each target after its operator
+            target = tokens[index + 1 : index + 2]
+            redirects.append((tokens[index].text, target[0].text if target else ""))
+            index += 1 + len(target)
+        else:
+            argv.append(tokens[index].text)
+            index += 1
+    if not argv:
+        return
+    if all(_ASSIGNMENT.fullmatch(word) for word in argv):
+        for word in argv:
+            _assign(state, word)
+        return
+    local = dict(state.exported)
+    moved = state.moved
+    while argv:
+        if assignment := _ASSIGNMENT.fullmatch(argv[0]):
+            # A prefix `+=` appends to the shell's value, exported or not.
+            name = assignment["name"]
+            held = local[name] if name in local else state.variables.get(name)
+            local[name] = _assigned(held, assignment)
+            argv = argv[1:]
+        elif argv[0] == "env":
+            argv = argv[1:]
+            while argv and argv[0].startswith("-"):
+                option = argv.pop(0)
+                if option == "--":
+                    break
+                if option in {"-i", "-", "--ignore-environment"}:
+                    local.clear()
+                elif option in {"-u", "--unset"} and argv:
+                    local.pop(argv.pop(0), None)
+                elif option.startswith(("-u", "--unset=")):
+                    local.pop(option.split("=", 1)[-1].removeprefix("-u"), None)
+                elif option in {"-C", "--chdir"} and argv:
+                    argv.pop(0)
+                    moved = True
+                elif option.startswith(("-C", "--chdir=")):
+                    moved = True
+                elif option not in {"-0", "--null", "-v", "--debug"}:
+                    # `-S` splits a string into words; other options are
+                    # unknown to this reading.
+                    _mark_unknown(state, f"`env {option}`")
+                    if option in {"-S", "--split-string"} and argv:
+                        argv = [*_shell_words(argv[0]), *argv[1:]]
+                    elif option.startswith(("-S", "--split-string=")):
+                        split = (
+                            option.split("=", 1)[-1] if "=" in option else option[2:]
+                        )
+                        argv = [*_shell_words(split), *argv]
+        elif argv[0] in _COMMAND_WRAPPERS:
+            operands, valued = _COMMAND_WRAPPERS[argv[0]]
+            argv = argv[1:]
+            while argv and argv[0].startswith("-"):
+                argv = argv[2:] if argv[0] in valued else argv[1:]
+            argv = argv[operands:]
+        elif argv[0] in {"command", "builtin"}:
+            prefix, argv = argv[0], argv[1:]
+            options = []
+            while argv and argv[0].startswith("-") and argv[0] != "-":
+                options.append(argv.pop(0))
+            if prefix == "command" and any("v" in o or "V" in o for o in options):
+                return  # a query: it runs nothing
+            # It runs a builtin or a command bypassing functions: what it runs
+            # is read on, and the shell is unknown after it.
+            _mark_unknown(state, f"`{prefix}`")
+        else:
+            break
+    if not argv:
+        return
+    name = argv[0]
+    if name in {"cd", "pushd", "popd"}:
+        operands = [
+            word for word in argv[1:] if not word.startswith("-") or word == "-"
+        ]
+        if name == "cd" and operands[:1] == ["."]:
+            return
+        state.moved = (
+            name != "cd" or len(operands) != 1 or operands[0] not in _WORKSPACE
+        )
+        return
+    if name in _DECLARATIONS:
+        _declare(argv, state)
+        return
+    if name == "eval":  # its string runs in this shell: its changes stay
+        _read_script(" ".join(argv[1:]), state, reading)
+        return
+    if name in {"break", "continue"} and reading.loops:
+        count = int(argv[1]) if argv[1:2] and argv[1].isdigit() else 1
+        breaks, continues = reading.loops[-min(max(count, 1), len(reading.loops))]
+        (breaks if name == "break" else continues).append(state.copy())
+        return
+    if _unmodeled(argv):
+        _mark_unknown(state, f"`{shlex.join(argv)}`")
+        return
+    if name in _ASSIGNING_BUILTINS:
+        names = _assigned_names(argv)
+        if names is None:
+            _mark_unknown(
+                state, f"`{shlex.join(argv)}`, which assigns a name an expansion holds"
+            )
+        else:
+            _assign_unknown(state, names)
+        return
+    if name in _INERT_COMMANDS or name in {
+        "set", "shopt", "trap", "alias", "break", "continue"
+    }:  # fmt: skip
+        return
+    uv_provided = False
+    if argv[:2] == ["uv", "sync"]:
+        state.synced = True
+        return
+    if argv[:2] == ["uv", "run"]:
+        rest = argv[2:]
+        uv_provided = not _flag(local.get("UV_NO_PROJECT"))
+        no_sync = _flag(local.get("UV_NO_SYNC"))
+        locations = {
+            option: local.get(variable)
+            for option, variable in _UV_RUN_LOCATIONS.items()
+        }
+        module = None
+        while rest and rest[0].startswith("-"):
+            option, _, attached = rest.pop(0).partition("=")
+            if option in {"-m", "--module"}:
+                module = attached or (rest[0] if rest else "")
+                break
+            uv_provided &= option not in _UV_RUN_WITHOUT_PROJECT
+            no_sync |= option == "--no-sync"
+            if option in _UV_RUN_VALUE_OPTIONS and not attached and rest:
+                attached = rest.pop(0)
+            if option in locations:
+                locations[option] = attached
+        # uv finds the project from the directory it runs in, unless told.
+        uv_provided &= all(
+            _names_workspace(value, moved=moved)
+            for value in locations.values()
+            if value is not None
+        ) and (not moved or any(value is not None for value in locations.values()))
+        uv_provided &= state.synced or not no_sync
+        if module is not None:
+            if _is_molt(module) or _may_be_molt(module):
+                _record(reading, state, argv, uv_provided and _is_molt(module))
+            return
+        argv = rest
+        if not argv:
+            return
+    program = argv[0].rsplit("/", 1)[-1]
+    if program in _SHELLS:
+        script = _shell_script(argv[1:], redirects)
+        if script is not None:  # a child shell: it inherits only the env
+            child = _ShellState(
+                dict(local), {}, moved, state.unknown, synced=state.synced
+            )
+            _read_script(script, child, _Reading(reading.found, reading.deferred))
+            state.synced |= child.synced
+        return
+    if program == "py":  # the Windows launcher, as `py -3.12`
+        argv = argv[1:]
+        if argv and re.fullmatch(r"-[0-9.]+(-[0-9]+)?", argv[0]):
+            argv = argv[1:]
+    elif _PYTHON_EXECUTABLE.fullmatch(program):
+        argv = argv[1:]
+    elif _is_expansion(argv[0]):
+        if _python_module(argv[1:])[0] is None:
+            # It may name a builtin or a function, which can change the shell,
+            # and a value that runs molt (from the step's env, say).
+            reference = _VARIABLE_REFERENCE.fullmatch(argv[0])
+            name = reference["name"] if reference else ""
+            if _runs_molt(str(local.get(name, state.variables.get(name, "")))):
+                _record(reading, state, argv, False)
+            _mark_unknown(state, f"`{argv[0]}`, a command named by an expansion")
+            return
+        argv = argv[1:]
+    else:
+        # A command this reading does not know (uv's other commands run no
+        # shell code). Before an interpreter it may be a wrapper that changes
+        # what the interpreter runs with, or runs it in this shell.
+        for index, word in enumerate(argv[1:], start=1):
+            program = word.rsplit("/", 1)[-1]
+            if argv[0] != "uv" and (
+                program in _SHELLS
+                or program == "py"
+                or _PYTHON_EXECUTABLE.fullmatch(program)
+            ):
+                _mark_unknown(state, f"`{argv[0]}` before an interpreter")
+                if _may_be_molt(_python_module(argv[index + 1 :])[0]):
+                    _record(reading, state, argv, False)
+                break
+        return
+    module, ignores_pythonpath = _python_module(argv)
+    if _is_molt(module):
+        _record(
+            reading,
+            state,
+            argv,
+            uv_provided
+            or (
+                not reading.deferred
+                and not state.unknown
+                and not ignores_pythonpath
+                and _names_src(local.get("PYTHONPATH"), relative_ok=not moved)
+            ),
+        )
+    elif _may_be_molt(module):
+        _record(reading, state, argv, False)
+
+
+# Shell options that take the next word as their value.
+_SHELL_VALUE_OPTIONS = frozenset({"-o", "+o", "-O", "+O", "--rcfile", "--init-file"})
+
+
+def _shell_script(words: list[str], redirects: list[tuple[str, str]]) -> str | None:
+    """The script a shell command runs from a string: its `-c` operand, or a
+    `<<<` string; None when it runs a file or reads stdin."""
+    command_string = False
+    operands: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word in _SHELL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if word == "--":
+            operands = words[index + 1 :]
+            break
+        if word.startswith("--"):
+            index += 1
+            continue
+        if word[:1] in {"-", "+"} and len(word) > 1:
+            command_string |= "c" in word[1:]
+            index += 1
+            continue
+        operands = words[index:]
+        break
+    if command_string:
+        return operands[0] if operands else ""
+    strings = [target for operator, target in redirects if operator == "<<<"]
+    return strings[0] if strings else None
+
+
+def _github_env_writes(run: str) -> dict[str, str]:
+    """`NAME=VALUE` lines a step appends to $GITHUB_ENV, which later steps of
+    the job receive as env."""
+    written: dict[str, str] = {}
+    command: list[str] = []
+    for token in [*_tokens(run), _Token("\n", operator=True)]:
+        if not (token.operator and token.text in _COMMAND_SEPARATORS):
+            command.append(token.text)
+            continue
+        if (
+            command[:1] == ["echo"]
+            and len(command) == 4
+            and command[2] == ">>"
+            and command[3] in {"$GITHUB_ENV", "${GITHUB_ENV}"}
+            and (assignment := _ASSIGNMENT.fullmatch(command[1]))
+        ):
+            written[assignment["name"]] = assignment["value"]
+        command = []
+    return written
+
+
+# A composite action's step that runs only when the action's `sync` input is
+# true (its `if` requires it) runs after the action's sync step.
+_SYNC_INPUT_CONDITION = re.compile(
+    r"(?:inputs|steps\.inputs\.outputs)\.sync\s*==\s*'true'"
+)
+
+
+def _requires_sync_input(condition: str) -> bool:
+    """Whether a step's `if` requires the action's sync input: one of its
+    top-level `&&` conjuncts, with no `||` or negation anywhere."""
+    text = condition.strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    if "||" in text or "!" in text.replace("!=", ""):
+        return False
+    return any(
+        _SYNC_INPUT_CONDITION.fullmatch(part.strip().strip("()").strip())
+        for part in text.split("&&")
+    )
+
+
+_WORKSPACE_DIRECTORIES = frozenset(
+    {"", ".", "$GITHUB_WORKSPACE", "${{ github.workspace }}"}
+)
+
+
+@dataclass(frozen=True)
+class _StepRun:
+    name: str
+    run: str
+    env: dict[str, object]
+    project_synced: bool
+    moved: bool
+
+
+def _step_runs_with_env(payload: dict[str, object]) -> list[_StepRun]:
+    """Each workflow or composite step's run script, with the env GitHub gives
+    it (workflow, job, step, and what earlier steps appended to $GITHUB_ENV),
+    whether the project was synced before it (setup-project with `sync: true`
+    or a `uv sync` in a job; the action's sync input in a composite action's
+    `if`), and whether `working-directory` moves it off the workspace."""
     top = dict(payload.get("env") or {})
-    found: list[tuple[str, str, dict[str, object]]] = []
+    found: list[_StepRun] = []
     jobs = payload.get("jobs") or {}
     groups = [
-        ({**top, **dict(job.get("env") or {})}, job.get("steps") or [])
+        ({**top, **dict(job.get("env") or {})}, job.get("steps") or [], False)
         for job in jobs.values()
     ]
     runs = payload.get("runs")
     if isinstance(runs, dict):
-        groups.append((top, runs.get("steps") or []))
-    for env, steps in groups:
+        groups.append((top, runs.get("steps") or [], True))
+    for env, steps, composite in groups:
+        synced = False
+        appended: dict[str, object] = {}
         for step in steps:
             run = step.get("run")
             if isinstance(run, str):
+                condition = str(step.get("if") or "")
+                directory = str(step.get("working-directory") or "").rstrip("/")
                 found.append(
-                    (str(step.get("name")), run, {**env, **dict(step.get("env") or {})})
+                    _StepRun(
+                        str(step.get("name")),
+                        run,
+                        {**env, **appended, **dict(step.get("env") or {})},
+                        synced or (composite and _requires_sync_input(condition)),
+                        directory not in _WORKSPACE_DIRECTORIES,
+                    )
                 )
+                words = _shell_words(run)
+                synced |= any(
+                    words[index : index + 2] == ["uv", "sync"]
+                    for index in range(len(words))
+                )
+                appended.update(_github_env_writes(run))
+            elif step.get("uses") == "./.github/actions/setup-project":
+                synced |= str((step.get("with") or {}).get("sync")).lower() == "true"
     return found
 
 
 def test_every_step_that_runs_a_molt_module_can_import_molt() -> None:
     """A bare `python3 -m molt.<module>` finds molt only through PYTHONPATH.
 
-    Setup syncs no project environment, and molt lives in `src`, so such a
-    step needs `uv run` (which syncs), an inline `PYTHONPATH=src`, or a
-    step, job or workflow `PYTHONPATH` naming `src` (HF-456 review A-N1:
-    formal.yml's Quint install lost it when it moved to the pinned npm).
+    molt lives in `src`, and setup-project syncs the project only when its
+    `sync` input is true, so such a step needs `uv run` (which syncs; with
+    `--no-sync`, after a sync earlier in the job), an inline `PYTHONPATH`
+    naming `src`, or a step, job or workflow `PYTHONPATH` naming `src`
+    (HF-456 review A-N1: formal.yml's Quint install lost it when it moved
+    to the pinned npm).
     """
     files = [
         *sorted((REPO_ROOT / ".github/workflows").glob("*.yml")),
@@ -124,40 +1772,588 @@ def test_every_step_that_runs_a_molt_module_can_import_molt() -> None:
     checked = 0
     for path in files:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for name, run, env in _step_runs_with_env(payload):
-            for line in _molt_module_runs(run):
+        for step in _step_runs_with_env(payload):
+            for command, provided in _molt_module_runs(
+                step.run,
+                step.env,
+                project_synced=step.project_synced,
+                moved=step.moved,
+            ):
                 checked += 1
-                if not _molt_import_is_provided(line, env):
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}: {name}")
+                if not provided:
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}: {step.name}: {command}"
+                    )
     assert checked
     assert offenders == []
 
 
+class _Case(NamedTuple):
+    """A run script and the reading's verdict for the one molt run in it:
+    whether molt can be imported there, or None when no command runs molt as
+    a module. ``bash`` is the oldest bash major the oracle runs it under, or
+    None when the oracle cannot (the tree lacks a tool it needs, or molt runs
+    where the oracle cannot see it). ``conservative`` marks a case the
+    reading reports though bash imports molt; the oracle checks that too."""
+
+    run: str
+    provided: bool | None
+    bash: int | None = 3
+    conservative: bool = False
+
+
+_MOLT_RUN_CASES = [
+    _Case("python3 -m molt.tool_releases run npm", False),
+    _Case("python3 -B -u -m molt.tool_releases provision uv", False),
+    _Case("python3.12 -m molt build app.py", False, None),
+    _Case('"$PYTHON" -m molt.checkout_provisioning ensure', False),
+    _Case("${PYTHON} -m molt", False),
+    _Case("python3 \\\n  -m molt.tool_releases run npm", False),
+    _Case("cd . && PYTHONPATH=src python3 -m molt.llvm_toolchain", True),
+    _Case(
+        "uv run --no-sync python3 -m molt.tool_releases provision sccache", True, None
+    ),
+    _Case("uv run python3 -m molt.checkout_provisioning ensure", True, None),
+    _Case("uv run -m molt.x", True, None),
+    _Case("uv run --python python3.12 python -m molt.x", True, None),
+    # HF-456 follow-up review L-1: spellings the earlier matcher misread.
+    _Case("uv run --no-sync --no-project python3 -m molt.x", False, None),
+    _Case("echo PYTHONPATH=src; python3 -m molt.x", False),
+    _Case("uv run ruff check . && python3 -m molt.x", False, None),
+    _Case("PYTHONPATH=src python3 -I -m molt.x", False),
+    _Case("PYTHONPATH=src python3 -E -m molt.x", False),
+    _Case("PYTHONPATH=/opt/notsrc python3 -m molt.x", False),
+    _Case("PYTHONPATH=src python3 -X importtime -m molt.x", True),
+    _Case("PYTHONPATH=src python3 -W error -m molt.x", True),
+    _Case("PYTHONPATH=src python3 -mmolt.x", True),
+    _Case("PYTHONPATH=src py -3.12 -m molt.x", True, None),
+    _Case("PYTHONPATH=src $VENV_PY -m molt.x", True),
+    _Case("# python3 -m molt.x", None),
+    _Case("export PYTHONPATH=src\npython3 -m molt.x", True),
+    _Case("export PYTHONPATH=src\nunset PYTHONPATH\npython3 -m molt.x", False),
+    _Case("env PYTHONPATH=src python3 -m molt.x", True),
+    _Case("env -i PATH=$PATH python3 -m molt.x", False),
+    _Case("timeout 60 env PYTHONPATH=src python3 -m molt.x", True, None),
+    _Case("PYTHONPATH='${{ github.workspace }}/src' python3 -m molt.x", True, None),
+    _Case("python3 --check-hash-based-pycs always -m molt.x", False),
+    # Follow-up review v2: comments, strings a shell runs, heredocs, scopes.
+    _Case("export FOO=1 # note\npython3 -m molt.x", False),
+    _Case("export PYTHONPATH=src\nunset PYTHONPATH # gone\npython3 -m molt.x", False),
+    _Case("echo hi # comment\nPYTHONPATH=src python3 -m molt.x", True),
+    _Case("echo a#b; PYTHONPATH=src python3 -m molt.x", True),
+    _Case("bash -c 'python3 -m molt.x'", False),
+    _Case("bash -ec 'PYTHONPATH=src python3 -m molt.x'", True),
+    _Case('eval "python3 -m molt.x"', False),
+    _Case("bash <<< 'python3 -m molt.x'", False),
+    _Case(
+        "cat > /dev/null <<EOF\nexport PYTHONPATH=src\nEOF\npython3 -m molt.x", False
+    ),
+    # A heredoc fed to a shell is not read: the backstop reports its body.
+    _Case("bash <<'EOF'\nPYTHONPATH=src python3 -m molt.x\nEOF", False, 3, True),
+    _Case("( export PYTHONPATH=src ); python3 -m molt.x", False),
+    _Case("(export PYTHONPATH=src); python3 -m molt.x", False),
+    _Case("( export PYTHONPATH=src && python3 -m molt.x )", True),
+    _Case("mkdir -p sub && cd sub && PYTHONPATH=src python3 -m molt.x", False),
+    _Case("PYTHONPATH=vendor/src python3 -m molt.x", False),
+    _Case("PYTHONPATH=$PWD/src python3 -m molt.x", True),
+    _Case("PYTHONPATH=$GITHUB_WORKSPACE/src python3 -m molt.x", True),
+    _Case("export PYTHONPATH=src\nPYTHONPATH=/opt\npython3 -m molt.x", False),
+    _Case("PYTHONPATH=src\nexport PYTHONPATH\npython3 -m molt.x", True),
+    _Case("PYTHONPATH=src\npython3 -m molt.x", False),
+    _Case("export PYTHONPATH=src\nexport -n PYTHONPATH\npython3 -m molt.x", False),
+    _Case("UV_NO_PROJECT=1 uv run python3 -m molt.x", False, None),
+    _Case("uv run --only-dev python3 -m molt.x", False, None),
+    _Case("if PYTHONPATH=src python3 -m molt.x; then :; fi", True),
+    _Case("{ PYTHONPATH=src python3 -m molt.x; }", True),
+    _Case("exec env PYTHONPATH=src python3 -m molt.x", True),
+    _Case("nice -n 5 env PYTHONPATH=src python3 -m molt.x", True),
+    # Follow-up review v3: options with values, quoting, eval, scopes.
+    _Case("bash -o pipefail -c 'python3 -m molt.x'", False),
+    _Case("bash -O extglob -c 'PYTHONPATH=src python3 -m molt.x'", True),
+    _Case(
+        "cat > /dev/null <<\\EOF\nexport PYTHONPATH=src\nEOF\npython3 -m molt.x", False
+    ),
+    _Case("echo $'a\\'b'\npython3 -m molt.x", False),
+    _Case('echo "$(echo "a # b")"; python3 -m molt.x', False),
+    _Case("( case x in x) export PYTHONPATH=src ;; esac ); python3 -m molt.x", False),
+    # A case branch may not run: what it sets is unknown after the case.
+    _Case(
+        "case x in x) export PYTHONPATH=src ;; esac\npython3 -m molt.x", False, 3, True
+    ),
+    _Case('export PYTHONPATH=src\neval "unset PYTHONPATH"\npython3 -m molt.x', False),
+    _Case('eval "cd /tmp"\nPYTHONPATH=src python3 -m molt.x', False),
+    _Case(
+        "mkdir -p sub; pushd sub >/dev/null; PYTHONPATH=src python3 -m molt.x", False
+    ),
+    _Case("export PYTHONPATH=src\ndeclare +x PYTHONPATH\npython3 -m molt.x", False),
+    _Case("declare -x PYTHONPATH=src\npython3 -m molt.x", True),
+    _Case("export PYTHONPATH=src | cat\npython3 -m molt.x", False),
+    _Case("export PYTHONPATH=src &\nwait\npython3 -m molt.x", False),
+    # A substitution that runs molt is reported; its output is not seen.
+    _Case("x=$(PYTHONPATH=src python3 -m molt.x)", False, None),
+    _Case("sudo python3 -m molt.x", False, None),
+    _Case("python3 -m moltlib.thing", None),
+    _Case("python3 tools/proof_plan.py --check", None, None),
+    # Review round 5, B-1: a heredoc delimiter is any shell word.
+    _Case(
+        "cat >/dev/null <<'END-X'\nexport PYTHONPATH=src\nEND-X\npython3 -m molt.x",
+        False,
+    ),
+    _Case(
+        'cat >/dev/null <<"END.X"\nexport PYTHONPATH=src\nEND.X\npython3 -m molt.x',
+        False,
+    ),
+    _Case(
+        "cat >/dev/null <<1EOF\nexport PYTHONPATH=src\n1EOF\npython3 -m molt.x", False
+    ),
+    _Case("cat >/dev/null << -X\nexport PYTHONPATH=src\n-X\npython3 -m molt.x", False),
+    _Case('cat >/dev/null <<E"O"F\nfoo\nEOF\nPYTHONPATH=src python3 -m molt.x', True),
+    _Case("cat <<EOF | bash\npython3 -m molt.x\nEOF", False),
+    # B-2: comments, case patterns and ${...} inside substitutions and
+    # scopes, and quoted operators.
+    _Case("( x=$(echo hi # )\n); export PYTHONPATH=src ); python3 -m molt.x", False),
+    _Case(
+        "( x=$(case a in a) echo y;; esac); export PYTHONPATH=src ); python3 -m molt.x",
+        False,
+        5,
+    ),
+    _Case("x=$(case a in a) echo y;; esac); PYTHONPATH=src python3 -m molt.x", True, 5),
+    _Case("( x=${y:-)}; export PYTHONPATH=src ); python3 -m molt.x", False),
+    _Case("x=${y:-)}; PYTHONPATH=src python3 -m molt.x", True),
+    _Case('echo ")"; PYTHONPATH=src python3 -m molt.x', True),
+    _Case("x=$(echo hi # )\n); PYTHONPATH=src python3 -m molt.x", True),
+    _Case("cat >/dev/null <<'END-X'\n)\nEND-X\nPYTHONPATH=src python3 -m molt.x", True),
+    _Case('x="${y:-)}"; ( export PYTHONPATH=src ); python3 -m molt.x', False),
+    _Case('( echo ")"; export PYTHONPATH=src ); python3 -m molt.x', False),
+    _Case("( x=$')'; export PYTHONPATH=src ); python3 -m molt.x", False),
+    _Case(
+        "x=$(cat <<EOF\n)\nEOF\n); export PYTHONPATH=src; python3 -m molt.x", True, 5
+    ),
+    _Case("cd . 2>/dev/null && PYTHONPATH=src python3 -m molt.x", True),
+    _Case("[[ -n x && -n y ]] && PYTHONPATH=src python3 -m molt.x", True),
+    _Case(
+        "diff <(echo a) <(echo a) >/dev/null && PYTHONPATH=src python3 -m molt.x", True
+    ),
+    # B-3: `+=` appends, plain, as a prefix and in a declaration.
+    _Case("export PYTHONPATH=src; PYTHONPATH+=x; python3 -m molt.x", False),
+    _Case("export PYTHONPATH=/opt; PYTHONPATH+=:src; python3 -m molt.x", True),
+    _Case("export PYTHONPATH=src; export PYTHONPATH+=x; python3 -m molt.x", False),
+    _Case("PYTHONPATH=src; PYTHONPATH+=x python3 -m molt.x", False),
+    _Case(
+        "declare -x PYTHONPATH=/opt; declare PYTHONPATH+=:src; python3 -m molt.x", True
+    ),
+    # B-4: `local` outside a function and a name reference are unknown.
+    _Case("local -x PYTHONPATH=src; python3 -m molt.x", False),
+    _Case(
+        "export PYTHONPATH=src; local PYTHONPATH=/opt; python3 -m molt.x",
+        False,
+        3,
+        True,
+    ),
+    _Case(
+        "export PYTHONPATH=src; declare -n r=PYTHONPATH; unset r; python3 -m molt.x",
+        False,
+        5,
+    ),
+    _Case(
+        "export PYTHONPATH=/opt; declare -n r=PYTHONPATH; r=src; python3 -m molt.x",
+        False,
+        5,
+        True,
+    ),
+    # B-5: prefixes that hide a run are read through, or the run is reported.
+    _Case("command bash -c 'python3 -m molt.x'", False),
+    _Case("builtin eval 'python3 -m molt.x'", False),
+    _Case("env -S 'PYTHONPATH=src python3 -m molt.x'", False, 3, True),
+    _Case("echo molt.x | xargs python3 -m", False),
+    _Case("command -v python3 >/dev/null && PYTHONPATH=src python3 -m molt.x", True),
+    # Rule 1: what this reading does not model makes the shell unknown.
+    _Case(
+        "export PYTHONPATH=src; echo 'unset PYTHONPATH' > u.sh; . ./u.sh; python3 -m molt.x",
+        False,
+    ),
+    _Case("set -a; PYTHONPATH=src; python3 -m molt.x", False, 3, True),
+    _Case("set -o allexport\nPYTHONPATH=src\npython3 -m molt.x", False, 3, True),
+    _Case(
+        "shopt -s lastpipe; echo src | read PYTHONPATH; export PYTHONPATH; python3 -m molt.x",
+        False,
+        5,
+        True,
+    ),
+    _Case("alias python3='env PYTHONPATH=src python3'\npython3 -m molt.x", False),
+    _Case(
+        "f() { unset PYTHONPATH; }; export PYTHONPATH=src; f; python3 -m molt.x", False
+    ),
+    _Case("f() { cd /tmp; }; PYTHONPATH=src python3 -m molt.x", False, 3, True),
+    _Case("f() { python3 -m molt.x; }; export PYTHONPATH=src; f", False, 3, True),
+    _Case(
+        "export PYTHONPATH=src; f() { python3 -m molt.x; }; unset PYTHONPATH; f", False
+    ),
+    _Case(
+        'run() { "$@"; }; export PYTHONPATH=src; run unset PYTHONPATH; python3 -m molt.x',
+        False,
+    ),
+    _Case("c=unset; export PYTHONPATH=src; $c PYTHONPATH; python3 -m molt.x", False),
+    _Case(
+        "trap 'unset PYTHONPATH' DEBUG; export PYTHONPATH=src; python3 -m molt.x", False
+    ),
+    _Case("trap 'rm -f gone' EXIT; PYTHONPATH=src python3 -m molt.x", True),
+    _Case(
+        "case a in a) export PYTHONPATH=/opt;& b) export PYTHONPATH=src;; esac; python3 -m molt.x",
+        False,
+        5,
+        True,
+    ),
+    # Values this reading cannot know name no `src`.
+    _Case(
+        "export PYTHONPATH=src; read PYTHONPATH </dev/null; python3 -m molt.x", False
+    ),
+    _Case(
+        "export PYTHONPATH=src; for PYTHONPATH in a; do :; done; python3 -m molt.x",
+        False,
+    ),
+    _Case(": ${PYTHONPATH:=src}; export PYTHONPATH; python3 -m molt.x", False, 3, True),
+    _Case("export PYTHONPATH=src; (( PYTHONPATH = 3 )); python3 -m molt.x", False),
+    _Case("export PYTHONPATH=src; x=$((PYTHONPATH = 3)); python3 -m molt.x", False),
+    _Case("export PYTHONPATH=src; printf -v PYTHONPATH %s x; python3 -m molt.x", False),
+    _Case("export PYTHONPATH=src; PYTHONPATH=(x); python3 -m molt.x", False),
+    _Case("export PYTHONPATH=src:; PYTHONPATH+=(x); python3 -m molt.x", False),
+    _Case("declare -x -u PYTHONPATH=src; python3 -m molt.x", False),
+    _Case("export PYTHONPATH=src; unset -f PYTHONPATH; python3 -m molt.x", True),
+    _Case("cd; PYTHONPATH=src python3 -m molt.x", False),
+    _Case("readonly PYTHONPATH=/opt; export PYTHONPATH=src; python3 -m molt.x", False),
+    _Case('cd /tmp; cd "$GITHUB_WORKSPACE"; PYTHONPATH=src python3 -m molt.x', True),
+    # Branches, loops, `&&` and `||` may skip what they set: a join.
+    _Case("if false; then export PYTHONPATH=src; fi; python3 -m molt.x", False),
+    _Case("false && export PYTHONPATH=src; python3 -m molt.x", False),
+    _Case(
+        "export PYTHONPATH=src; true || unset PYTHONPATH; python3 -m molt.x",
+        False,
+        3,
+        True,
+    ),
+    _Case(
+        "if false; then export PYTHONPATH=src; else export PYTHONPATH=src; fi\n"
+        "python3 -m molt.x",
+        True,
+    ),
+    _Case(
+        "export PYTHONPATH=src; for i in 1 2; do python3 -m molt.x; unset PYTHONPATH; done",
+        False,
+    ),
+    _Case(
+        "export PYTHONPATH=src; while :; do unset PYTHONPATH; break; done; python3 -m molt.x",
+        False,
+    ),
+    _Case("export PYTHONPATH=src; while :; do break; done; python3 -m molt.x", True),
+    _Case("{ export PYTHONPATH=src; } | cat; python3 -m molt.x", False),
+    _Case(
+        "echo x | while read l; do export PYTHONPATH=src; done; python3 -m molt.x",
+        False,
+    ),
+    _Case("if true; then export PYTHONPATH=src; fi | cat; python3 -m molt.x", False),
+    _Case(
+        "export PYTHONPATH=src; i=0; until [ $i = 2 ]; do python3 -m molt.x; "
+        "unset PYTHONPATH; i=$((i+1)); done",
+        False,
+    ),
+    _Case(
+        "f() { eval \"$1\"; }; export PYTHONPATH=src; f 'unset PYTHONPATH'; "
+        "python3 -m molt.x",
+        False,
+    ),
+    _Case(
+        "f() { g() { unset PYTHONPATH; }; }; export PYTHONPATH=src; f; g; "
+        "python3 -m molt.x",
+        False,
+    ),
+    _Case("coproc { export PYTHONPATH=src; }; wait; python3 -m molt.x", False, 5),
+    # Rule 2: molt text no reading attributes is reported.
+    _Case('echo "python3 -m molt.x"', False),
+    _Case("bash -c $'python3 -m molt.x'", False),
+    _Case("trap 'python3 -m molt.x' EXIT", False),
+    _Case('MODULE=molt.x; PYTHONPATH=src python3 -m "$MODULE"', False, 3, True),
+    _Case("uv run --project /tmp python -m molt.x", False, None),
+    _Case("cd sub && uv run python -m molt.x", False, None),
+    _Case(
+        'cd /tmp && uv run --directory "$GITHUB_WORKSPACE" python -m molt.x', True, None
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _MOLT_RUN_CASES, ids=[c.run for c in _MOLT_RUN_CASES])
+def test_molt_module_run_recognizes_each_spelling(case: _Case) -> None:
+    """The topology rule's reading of a step (HF-456 reviews)."""
+    runs = _molt_module_runs(case.run, {}, project_synced=True)
+    expected = [] if case.provided is None else [case.provided]
+    assert [found for _command, found in runs] == expected, runs
+
+
+def test_the_backstop_reports_each_command_it_cannot_attribute() -> None:
+    """Rule 2 counts per command: a run reported for one command (here a
+    module xargs supplies) does not cover molt text in another."""
+    runs = _molt_module_runs(
+        'echo molt.x | xargs python3 -m; echo "python3 -m molt.y"',
+        {},
+        project_synced=True,
+    )
+    assert [provided for _command, provided in runs] == [False, False]
+    assert "molt.y" in runs[1][0]
+
+
 @pytest.mark.parametrize(
-    ("run", "provided"),
+    ("run", "env", "provided"),
     [
-        ("python3 -m molt.tool_releases run npm", False),
-        ("python3 -B -u -m molt.tool_releases provision uv", False),
-        ("python3.12 -m molt build app.py", False),
-        ('"$PYTHON" -m molt.checkout_provisioning ensure', False),
-        ("${PYTHON} -m molt", False),
-        ("python3 \\\n  -m molt.tool_releases run npm", False),
-        ("cd x && PYTHONPATH=src python -m molt.llvm_toolchain", True),
-        ("uv run --no-sync python3 -m molt.tool_releases provision sccache", True),
-        ("uv run python3 -m molt.checkout_provisioning ensure", True),
-        ("python3 -m moltlib.thing", None),
-        ("python3 tools/proof_plan.py --check", None),
+        ("python3 -m molt.x", {"PYTHONPATH": "${{ github.workspace }}/src"}, True),
+        ("python3 -m molt.x", {"PYTHONPATH": "/w/srcs"}, False),
+        ("python3 -m molt.x", {"PYTHONPATH": "/opt/elsewhere/src"}, False),
+        ("python3 -m molt.x", {"PYTHONPATH": "src"}, True),
+        ("python3 -I -m molt.x", {"PYTHONPATH": "${{ github.workspace }}/src"}, False),
+        (
+            "PYTHONPATH=/opt/lib python3 -m molt.x",
+            {"PYTHONPATH": "${{ github.workspace }}/src"},
+            False,
+        ),
+        (
+            "unset PYTHONPATH\npython3 -m molt.x",
+            {"PYTHONPATH": "${{ github.workspace }}/src"},
+            False,
+        ),
+        (
+            "env -u PYTHONPATH python3 -m molt.x",
+            {"PYTHONPATH": "${{ github.workspace }}/src"},
+            False,
+        ),
+        # A command a variable names runs what the step's env holds.
+        ('"$MOLT_COMMAND"', {"MOLT_COMMAND": "python3 -m molt.x"}, False),
+        (
+            "export PYTHONPATH=src; $SETUP; python3 -m molt.x",
+            {"SETUP": "source env.sh"},
+            False,
+        ),
     ],
 )
-def test_molt_module_run_recognizes_each_spelling(run: str, provided) -> None:
-    """The topology rule's matcher (HF-456 v3 review A3-2)."""
-    lines = _molt_module_runs(run)
-    if provided is None:
-        assert lines == []
-        return
-    assert len(lines) == 1
-    assert _molt_import_is_provided(lines[0], {}) is provided
-    assert _molt_import_is_provided(lines[0], {"PYTHONPATH": "/w/src"})
+def test_a_step_job_or_workflow_pythonpath_provides_molt(
+    run: str, env: dict[str, object], provided: bool
+) -> None:
+    """The env GitHub gives a step, unless the script overrides or ignores it."""
+    assert [
+        found for _command, found in _molt_module_runs(run, env, project_synced=True)
+    ] == [provided]
+
+
+def test_uv_run_without_sync_needs_an_earlier_sync() -> None:
+    """`uv run --no-sync` uses the environment as it is: molt is there only
+    after setup-project's sync or a `uv sync` (follow-up review L-1)."""
+    run = "uv run --no-sync python3 -m molt.x"
+    assert _molt_module_runs(run, {}, project_synced=False)[0][1] is False
+    assert _molt_module_runs(run, {}, project_synced=True)[0][1] is True
+    assert _molt_module_runs(f"uv sync --frozen\n{run}", {}, project_synced=False)[0][1]
+    steps = _step_runs_with_env(
+        {
+            "jobs": {
+                "job": {
+                    "steps": [
+                        {"name": "before", "run": run},
+                        {
+                            "uses": "./.github/actions/setup-project",
+                            "with": {"sync": "true"},
+                        },
+                        {"name": "after", "run": run},
+                    ]
+                }
+            }
+        }
+    )
+    assert [(step.name, step.project_synced) for step in steps] == [
+        ("before", False),
+        ("after", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("condition", "required"),
+    [
+        ("steps.inputs.outputs.sync == 'true'", True),
+        ("${{ inputs.sync == 'true' && runner.os != 'Windows' }}", True),
+        ("inputs.sync == 'true' || runner.os == 'Linux'", False),
+        ("!(inputs.sync == 'true')", False),
+        ("runner.os != 'Windows'", False),
+    ],
+)
+def test_a_composite_step_counts_as_synced_only_when_its_if_requires_it(
+    condition: str, required: bool
+) -> None:
+    """Follow-up review v3: a mention of the sync input is not a requirement."""
+    assert _requires_sync_input(condition) is required
+
+
+def test_github_env_and_working_directory_reach_later_steps() -> None:
+    """$GITHUB_ENV appends become later steps' env; a `working-directory`
+    off the workspace makes a relative `src` name another directory."""
+    run = "python3 -m molt.x"
+    steps = _step_runs_with_env(
+        {
+            "jobs": {
+                "job": {
+                    "steps": [
+                        {"name": "before", "run": run},
+                        {
+                            "name": "export",
+                            "run": 'echo "PYTHONPATH=${{ github.workspace }}/src" >> "$GITHUB_ENV"',
+                        },
+                        {"name": "after", "run": run},
+                        {
+                            "name": "moved",
+                            "run": "PYTHONPATH=src python3 -m molt.x",
+                            "working-directory": "sub",
+                        },
+                    ]
+                }
+            }
+        }
+    )
+    found = {
+        step.name: [
+            provided
+            for _command, provided in _molt_module_runs(
+                step.run,
+                step.env,
+                project_synced=step.project_synced,
+                moved=step.moved,
+            )
+        ]
+        for step in steps
+    }
+    assert found == {"before": [False], "export": [], "after": [True], "moved": [False]}
+
+
+@dataclass(frozen=True)
+class _ShellOracle:
+    """The bash that runs the cases, and the tree it runs them in."""
+
+    bash: str
+    version: str
+    major: int
+    root: Path
+    environment: dict[str, str]
+
+
+@pytest.fixture(scope="module")
+def shell_oracle(tmp_path_factory: pytest.TempPathFactory) -> _ShellOracle:
+    """A tree whose `src/molt` prints a marker, and the newest bash the host
+    has: the first bash 5 or later on PATH or in Homebrew's prefixes, else
+    the first bash found. GitHub's runners run bash 5."""
+    import sys
+
+    from molt.process_environment import ProcessEnvironment
+    from tests.process_guard_common import run_guarded_test_process
+
+    root = tmp_path_factory.mktemp("shell-oracle")
+    package = root / "src" / "molt"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    marker = "print('molt-imported')\n"
+    for module in ("__main__", "x", "tool_releases", "checkout_provisioning",
+                   "llvm_toolchain"):  # fmt: skip
+        (package / f"{module}.py").write_text(marker, encoding="utf-8")
+    (root / "home").mkdir()
+    # Every interpreter the scripts reach is the base CPython through a shim
+    # outside any virtual environment, with no user site: the only molt it
+    # can import is this tree's src/molt, never the checkout's own.
+    shims = root / "bin"
+    shims.mkdir()
+    base = Path(os.path.realpath(sys.executable))
+    for name in ("python3", "python"):
+        (shims / name).symlink_to(base)
+    environment = {
+        "PATH": f"{shims}:/usr/bin:/bin",
+        "HOME": str(root / "home"),
+        "GITHUB_WORKSPACE": str(root),
+        "PYTHON": str(shims / "python3"),
+        "VENV_PY": str(shims / "python3"),
+        "PYTHONNOUSERSITE": "1",
+    }
+    probe = run_guarded_test_process(
+        [
+            str(shims / "python3"),
+            "-c",
+            "import importlib.util as u; print(u.find_spec('molt'))",
+        ],
+        cwd=shims,
+        env=ProcessEnvironment(environment),
+        timeout=60,
+    )
+    assert probe.stdout.strip() == "None", probe.stdout + probe.stderr
+    candidates = [
+        *(
+            Path(entry) / "bash"
+            for entry in os.environ.get("PATH", "").split(os.pathsep)
+            if entry
+        ),
+        Path("/opt/homebrew/bin/bash"),
+        Path("/usr/local/bin/bash"),
+        Path("/bin/bash"),
+    ]
+    found: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        real = os.path.realpath(candidate)
+        if real in seen or not os.access(candidate, os.X_OK) or not candidate.is_file():
+            continue
+        seen.add(real)
+        result = run_guarded_test_process(
+            [str(candidate), "-c", 'echo "${BASH_VERSINFO[0]} $BASH_VERSION"'],
+            env=ProcessEnvironment(environment),
+            timeout=60,
+        )
+        major, _, version = result.stdout.strip().partition(" ")
+        if major.isdigit():
+            found.append((int(major), version, str(candidate)))
+    assert found, "no bash on PATH or in /opt/homebrew/bin, /usr/local/bin, /bin"
+    major, version, bash = next((entry for entry in found if entry[0] >= 5), found[0])
+    warnings.warn(f"the shell oracle runs {bash} {version}", stacklevel=1)
+    return _ShellOracle(bash, version, major, root, environment)
+
+
+_ORACLE_CASES = [case for case in _MOLT_RUN_CASES if case.bash is not None]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the oracle runs POSIX shell scripts")
+@pytest.mark.parametrize("case", _ORACLE_CASES, ids=[c.run for c in _ORACLE_CASES])
+def test_molt_module_runs_match_real_execution(
+    case: _Case, shell_oracle: _ShellOracle
+) -> None:
+    """An independent oracle: bash runs the case in a tree whose `src/molt`
+    prints a marker, so molt was importable exactly when every run printed
+    it and none failed to find molt. The reading's verdict must match, or,
+    for a conservative case, bash must import molt where the reading
+    reports."""
+    from molt.process_environment import ProcessEnvironment
+    from tests.process_guard_common import run_guarded_test_process
+
+    assert case.bash is not None
+    if shell_oracle.major < case.bash:
+        pytest.skip(
+            f"needs bash {case.bash} or later; the oracle runs "
+            f"{shell_oracle.bash} {shell_oracle.version}"
+        )
+    result = run_guarded_test_process(
+        [shell_oracle.bash, "-c", case.run],
+        cwd=shell_oracle.root,
+        env=ProcessEnvironment(shell_oracle.environment),
+        timeout=60,
+    )
+    imported = (
+        "molt-imported" in result.stdout and "No module named" not in result.stderr
+    )
+    expected = True if case.conservative else bool(case.provided)
+    assert imported is expected, (
+        f"{shell_oracle.bash} {shell_oracle.version}",
+        case.run,
+        result.stdout,
+        result.stderr,
+    )
 
 
 def test_setup_project_callers_use_declared_inputs() -> None:

@@ -64,6 +64,21 @@
       ],
       "request_reuse_only": false
     },
+    "cache": {
+      "request_scoped": false,
+      "semantic_target": "none",
+      "native_worker": false,
+      "projection": "raw",
+      "diagnostic_bypass": false,
+      "keys": [
+        "MOLT_CACHE",
+        "MOLT_BACKEND_TIR_CACHE_MEMORY_MB",
+        "MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES",
+        "MOLT_BACKEND_TIR_CACHE_DISK_MB",
+        "MOLT_BACKEND_DAEMON_CACHE_MB"
+      ],
+      "request_reuse_only": false
+    },
     "wasm": {
       "request_scoped": true,
       "semantic_target": "wasm",

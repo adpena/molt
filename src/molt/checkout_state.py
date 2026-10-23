@@ -18,7 +18,7 @@ shorter idle limit (`is_session_target`).
 from __future__ import annotations
 
 from collections.abc import Generator, Iterable, Mapping
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, suppress
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -332,12 +332,20 @@ def _state_lock_plan(
 
 
 def _publish_checkout_use(
-    coordinate: _ManagedStateRoot, owner: CheckoutOwner | None
+    coordinate: _ManagedStateRoot, owner: CheckoutOwner | None, *, create: bool
 ) -> None:
     root = coordinate.root
     if coordinate.kind == "uv-environment" and not (root / "pyvenv.cfg").is_file():
         return  # uv owns creation of its environment before our control files.
     if owner is not None:
+        if create and coordinate.kind == "build-control":
+            # Created here, under this use's lock, so the owner is bound
+            # before the writer writes into the root: an owner record is
+            # written only into an existing root, and selections ran before
+            # consumers created theirs (HF-469: 6,609 of 7,475 roots had no
+            # owner on 2026-10-22).
+            with suppress(OSError):
+                root.mkdir(parents=True, exist_ok=True)
         _record_checkout_owner(root, owner=owner.path, kind=owner.kind)
     _record_checkout_state_use(root)
 
@@ -347,11 +355,17 @@ def checkout_state_use(
     roots: Iterable[tuple[Path, CheckoutOwner | None]],
     *,
     publish: bool = True,
+    create: bool = False,
 ) -> Generator[tuple[_FileLockHandle, ...], None, None]:
     """Hold shared use for this operation, including root materialization.
 
     The caller owns the lifetime. Resolving an environment alone does not hold
     a lease; command/build/exec owners retain these ordinary OS lock handles.
+
+    A selection that writes passes ``create``: each of its build-control roots
+    is created under the use's lock, then its owner is bound. Without it a use
+    binds and stamps only a root that exists, so a command's roots
+    (`checkout_state_command_roots`) never create one (HF-469).
     """
     selections, locks = _state_lock_plan(roots)
     if not locks:
@@ -380,7 +394,7 @@ def checkout_state_use(
                         f"checkout state coordinate changed: {coordinate.root}"
                     )
                 if publish:
-                    _publish_checkout_use(coordinate, owner)
+                    _publish_checkout_use(coordinate, owner, create=create)
 
         publish_use()
         try:
@@ -917,15 +931,31 @@ def record_checkout_target_use(target: Path, *, checkout: Path) -> None:
                 pass
 
 
+def bound_project_build_state_root(
+    project_root: Path, environment: Mapping[str, str]
+) -> Path:
+    """The project's build-control root, created with its owner bound, for a
+    writer that does not select it through a build (HF-469)."""
+    from molt.build_state_layout import project_build_state_root
+    from molt.dx import project_cargo_target_dir
+
+    root = project_build_state_root(project_root, environment)
+    record_build_control_use(
+        root, cargo_target=project_cargo_target_dir(project_root, environment)
+    )
+    return root
+
+
 def record_build_control_use(control: Path, *, cargo_target: Path) -> None:
-    """Mark build-control root ``control`` of ``cargo_target`` used, and bind it.
+    """Create build-control root ``control`` of ``cargo_target``, bind it and
+    mark it used, for a writer that selects it.
 
     Only a root in the shared build-control container is checkout state; an
     explicit ``MOLT_BUILD_STATE_DIR`` or a target-local ``.molt_state`` is not.
     """
     if control.parent.name == "build-control" and _ADDRESS.fullmatch(control.name):
         with checkout_state_use(
-            ((control, CheckoutOwner(cargo_target, "build-control")),)
+            ((control, CheckoutOwner(cargo_target, "build-control")),), create=True
         ):
             pass
 

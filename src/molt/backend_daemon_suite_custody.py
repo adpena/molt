@@ -867,28 +867,9 @@ def _guardian_import_path(inherited: str | None) -> str:
     return os.pathsep.join(dict.fromkeys([*roots, *entries]))
 
 
-def _without_command_scratch(environ: Mapping[str, str]) -> dict[str, str]:
-    """Remove dependencies whose requesting guard may retire before the suite."""
-    result = dict(environ)
-    scratch = result.pop("MOLT_GUARD_SCRATCH_ROOT", None)
-    result.pop("MOLT_MEMORY_GUARD_TOKEN", None)
-    result.pop("MOLT_MEMORY_GUARD_MARKER", None)
-    if scratch:
-        root = Path(scratch).resolve()
-        for key in ("PYTEST_DEBUG_TEMPROOT", "TMPDIR", "TMP", "TEMP"):
-            raw = result.get(key)
-            if raw:
-                try:
-                    Path(raw).resolve().relative_to(root)
-                except ValueError:
-                    continue
-                result.pop(key, None)
-    return result
-
-
 def persistent_daemon_env(environ: Mapping[str, str]) -> dict[str, str]:
     """Bind daemon temporary files to its suite, outside request environment."""
-    result = _without_command_scratch(environ)
+    result = temporary_artifacts.environment_outliving_guard(environ)
     raw = result.get(LEASE_ENV)
     if raw:
         path = Path(raw)
@@ -924,7 +905,11 @@ class SuiteDaemonLease:
         )
         if interpreter_sha256 is None:
             raise RuntimeError("suite daemon guardian interpreter digest unavailable")
-        from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+        from molt.checkout_state import (
+            bound_project_build_state_root,
+            checkout_state_command_roots,
+            checkout_state_use,
+        )
 
         state_use = contextlib.ExitStack()
         state_use.enter_context(
@@ -937,8 +922,11 @@ class SuiteDaemonLease:
         transferred = False
         try:
             token = uuid.uuid4().hex
-            daemon_root = daemon.backend_daemon_root_from_env(
-                environ, project_root=project_root
+            # The lease writes into the project's build control whether or not
+            # CARGO_TARGET_DIR names it among the command's roots, so it binds
+            # that root as a writer; its held owner lock then keeps the root.
+            daemon_root = (
+                bound_project_build_state_root(project_root, environ) / "backend_daemon"
             )
             directory = (daemon_root / "suite-leases" / token).resolve()
             directory.mkdir(parents=True)
@@ -966,7 +954,7 @@ class SuiteDaemonLease:
             try:
                 path = directory / "lease.json"
                 scratch = _allocate_scratch(directory)
-                env = _without_command_scratch(environ)
+                env = temporary_artifacts.environment_outliving_guard(environ)
                 # The guardian owns this new lease, never an outer suite's lease.
                 env.pop(LEASE_ENV, None)
                 env["PYTHONPATH"] = _guardian_import_path(env.get("PYTHONPATH"))

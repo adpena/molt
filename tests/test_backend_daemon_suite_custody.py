@@ -561,7 +561,46 @@ def test_guardian_loads_owner_custody_from_a_guest_project_root(tmp_path):
     assert active.guardian.poll() == 0, (active.path.parent / "guardian.log").read_text(
         encoding="utf-8", errors="replace"
     )
-    assert suite.read_lease(active.path)["state"] == "closed"
+    closed = suite.read_lease(active.path)
+    assert closed is not None and closed["state"] == "closed"
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX backend daemon and pass_fds custody"
+)
+def test_suite_lease_binds_the_build_control_it_writes_without_cargo_target_dir(
+    tmp_path,
+):
+    """HF-469: the lease writes under the project's build control, but a
+    command's roots name that root only through CARGO_TARGET_DIR. Without the
+    variable the lease made a root holding only `backend_daemon`, with no
+    owner and no last-use stamp. The lease now binds the root as a writer."""
+    from molt.build_state_layout import project_build_state_root
+    from molt.checkout_state import LAST_USE_STAMP, CheckoutOwner, read_checkout_owner
+    from molt.dx import project_cargo_target_dir
+
+    root = Path(__file__).resolve().parents[1]
+    environment = {
+        **os.environ,
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS": "1",
+        "PYTHONPATH": str(root / "src") + os.pathsep + str(root),
+    }
+    for key in ("CARGO_TARGET_DIR", "MOLT_BUILD_STATE_DIR"):
+        environment.pop(key, None)
+    control = project_build_state_root(root, environment)
+    assert not control.exists()
+    active = suite.SuiteDaemonLease.start(project_root=root, environ=environment)
+    assert active is not None
+    try:
+        assert active.path.is_relative_to(control / "backend_daemon")
+        assert read_checkout_owner(control) == CheckoutOwner(
+            project_cargo_target_dir(root, environment).resolve(), "build-control"
+        )
+        assert (control / LAST_USE_STAMP).is_file()
+    finally:
+        active.close()
+    assert active.guardian.poll() == 0
 
 
 @pytest.mark.skipif(
@@ -2113,8 +2152,8 @@ def test_suite_failed_wait_retains_existing_owner_through_gc(tmp_path, monkeypat
     original_wait = active.guardian.wait
     args = active.guardian.args
 
-    def refuse(timeout=None):
-        raise subprocess.TimeoutExpired(args, timeout)
+    def refuse(timeout: float | None = None):
+        raise subprocess.TimeoutExpired(args, 0.0 if timeout is None else timeout)
 
     monkeypatch.setattr(active.guardian, "wait", refuse)
     reference = weakref.ref(active)

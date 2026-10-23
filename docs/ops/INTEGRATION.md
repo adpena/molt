@@ -38,7 +38,7 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
 ```
 
 0. **controller** — a live `integrate` fetches, then runs the driver of main's
-   tip, never the candidate's. It extracts `tools/`, `src/molt`,
+   tip, never the candidate's. It extracts `tools/`, `src/molt`, `config/`,
    `pyproject.toml`, `uv.lock` and `.python-version` from that commit into
    `<git-common-dir>/molt/controllers/<key>` (the key is the digest of those
    trees, so a landing that changes none of them reuses the extraction), runs
@@ -224,11 +224,43 @@ integration speedup.
 | `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
-| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. `--base`, `--root`. |
-| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. `--abandon` first writes a verified bundle. `--ignore`. |
+| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
+| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
 | `lane list` | Each lane's tip, base, commits ahead and behind, landed, dirty and provisioned state. `--json`, `--no-fetch`. |
 
 ### Lanes (`lane start | retire | list`)
+
+`lane start` and `lane retire` run main's pinned controller, as `land` does:
+they fetch, then hand the command to the driver at the fetched main
+(`molt_dev_controller.runs_from_pinned_controller`). Main's code provisions
+every lane, including one started at `--base <ref>`, and judges every
+retirement, landed or abandoned. A driver from another commit reads their
+manifests with another schema (HF-468): on 2026-10-22 `lane start` run from a
+lane at tool-release schema 3 failed to provision a new lane at schema 2, and
+`lane retire` run from an older main judged a landed lane's Edgebox tree
+stale. Where main's code cannot read a lane's state, retirement refuses
+before it bundles or removes anything (`validate_lane_handoff`), so no signal
+is lost. `--candidate-controller` runs the calling checkout's own driver. A
+start and a retirement of one slug never run together: each holds the
+slug's lock (`<git-common-dir>/molt/lane-start/<slug>.lock`), a start from
+its checks through provisioning and a retirement for its whole run, and the
+second refuses at once. The landing runner's own retirement of a landed lane
+waits up to 60 s for the lock (`LANDED_RETIREMENT_LOCK_WAIT_S`), so a
+start's checks or an operator's `lane retire` do not turn the landing into
+`landed_retirement_failed`. A start that stops before its lane's record (a failed
+`git worktree add`, a failed record, an interrupt) undoes what it created:
+the worktree while Git finds it clean, then the branch once no worktree holds
+it and while it still points at its base. A path that exists but is no
+registered worktree was made by another process after the checks, so it is
+kept while the branch this start made goes. When Git refuses a removal, it
+keeps what Git refused and names the commands that finish by hand. The lock
+covers only `lane start` and `lane retire`: a hand `git worktree add -b
+lane/<slug>` at the lane's path in the same instant can still meet a start's
+undo. The record names the controller that started
+the lane. The record's environment wires the sccache the running driver pins
+(main's), while provisioning reads the lane's own pins; the two differ only
+for a `--base` lane whose sccache pin differs, and either sccache serves its
+builds.
 
 The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
 "Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` and its
@@ -244,8 +276,12 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   (`molt.checkout_provisioning`): the uv environment `<lane>/.venv`, the Acorn
   tree, and the managed Git hooks. An inherited `UV_PROJECT_ENVIRONMENT`
   names the caller's environment, so provisioning drops it. It refuses an
-  existing branch, an existing path and an active record. A provisioning
-  failure keeps the lane and prints the command that finishes it.
+  existing branch, an existing path and an active record. For a branch with
+  no record (a start that stopped, or a branch made by hand) or a closed
+  record, it names the Git commands that remove the branch and the
+  worktree that holds it; `lane retire` of a branch with no record names
+  the same commands. A provisioning failure keeps the lane and prints
+  the command that finishes it.
 - **`lane retire <slug>`** fetches, then accepts the lane only when it is
   landed. *Landed* is one predicate, `molt_dev_change_ids.landing_representation`:
   every ordinary commit of `origin/main..lane/<slug>` is on `origin/main`
@@ -294,8 +330,14 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   probe without a memory guard: on 2026-10-20, 10 lanes took 5.8 s instead
   of 26.8 s.
 
-Cost: `lane start` pays one fetch, one `git worktree add` and the
-provisioners. `landing_representation` pays one `git log` when the tip is on
+Cost: through the pinned controller, `lane start` pays the handoff (one
+fetch, a controller extraction only when main's controller tree changed, one
+no-op `uv sync`, one exec), then its own fetch, one `git worktree add` and the
+provisioners. Each fetch of an unchanged GitHub origin took 0.26-0.34 s on
+2026-10-22. The second fetch stays: a command can wait for a lock between the
+handoff and its own fetch, so only its own fetch is current. `lane retire`
+took 3.2 s through the controller against 2.3 s with the candidate's driver
+(review of HF-468, 2026-10-22). `landing_representation` pays one `git log` when the tip is on
 main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 
 ### Checkout provisioning

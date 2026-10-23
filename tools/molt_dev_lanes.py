@@ -27,6 +27,9 @@ Every verdict comes from Git plumbing exit codes and object ids (hazard 5).
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
+
 import argparse
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +48,7 @@ from molt.checkout_state import is_checkout_state_lock_file
 from molt.custody_layout import BUNDLES_DIRNAME, family_worktrees_root
 from molt.path_custody import host_path_is_within
 from molt.portable_paths import portable_path_component
+from molt.file_locks import FileLockTimeout, _acquire_file_lock, _release_file_lock
 from molt.process_environment import ProcessEnvironment
 from tools.molt_dev_common import (
     _COMMANDS,
@@ -58,7 +62,7 @@ from tools.molt_dev_common import (
     _say,
     _step,
 )
-from tools import drift_harvest, molt_dev_retire
+from tools import drift_harvest, molt_dev_controller, molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
 from tools.release.git_source_snapshot import immutable_git_environment
 
@@ -68,6 +72,12 @@ TASK_PREFIX = "lane-"
 # filesystem, and one Git ref component.
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?")
 _WORKTREE_ADD_TIMEOUT_S = 600.0
+# The landing runner retires a landed lane in its own process. A start's
+# checks hold the slug's lock for tens of milliseconds and an operator's
+# `lane retire` for seconds, so the runner waits up to this long for the lock
+# instead of recording landed_retirement_failed at the first contention
+# (HF-468 review v6).
+LANDED_RETIREMENT_LOCK_WAIT_S = 60.0
 
 
 def _driver() -> ModuleType:
@@ -197,6 +207,17 @@ def _managed_record(main: Path, slug: str) -> dict[str, Any]:
     ):
         raise DriverError(f"managed lane custody is invalid at {path}")
     return record
+
+
+def _hand_removal(git: Any, branch: str) -> str:
+    """The Git commands that remove ``branch`` by hand, naming the worktree
+    that holds it, for a branch no active lane record manages."""
+    holder = _lane_worktree(_worktrees(git), branch)
+    return (
+        "inspect it, then "
+        + (f"`git worktree remove {holder}` and " if holder is not None else "")
+        + f"`git branch -D {branch}`"
+    )
 
 
 # The Cache Directory Tagging Specification (https://bford.info/cachedir/):
@@ -516,10 +537,106 @@ def work_in_progress_refusal(repo: Path, *, now: float) -> str | None:
     return "\n".join(lines)
 
 
+@contextmanager
+def _lane_slug_lock(repo: Path, slug: str, *, wait_s: float = 0.0) -> Generator[None]:
+    """Hold ``slug``'s lock, or refuse: a start or retirement of it is running.
+
+    `lane start` holds it from its checks through provisioning and `lane
+    retire` for its whole run, so neither meets the other's half-made or
+    half-removed lane (HF-468 reviews v4 and v5). A command refuses at once;
+    the landing runner's retirement waits up to ``wait_s``.
+    """
+    common = _driver()._git_common_directory(repo)
+    if common is None:
+        raise DriverError(f"cannot resolve the Git common directory of {repo}")
+    path = common / "molt" / "lane-start" / f"{slug}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    refusal = (
+        f"another `lane start {slug}` or `lane retire {slug}` is running in "
+        "this repository"
+        + (f" (waited {wait_s:g} s)" if wait_s > 0 else "")
+        + "; wait for it, or choose another slug"
+    )
+    try:
+        handle = _acquire_file_lock(path, timeout_s=wait_s, timeout_message=refusal)
+    except FileLockTimeout as exc:
+        raise DriverError(str(exc)) from exc
+    try:
+        yield
+    finally:
+        _release_file_lock(handle)
+
+
+def _undo_lane_start(
+    git: Any,
+    repo: Path,
+    worktree: Path,
+    branch: str,
+    base: str,
+    env: Mapping[str, str],
+) -> str:
+    """Undo what a lane start that stopped before its record created.
+
+    A lane without its record is one `lane retire` refuses. Nothing here
+    forces: the worktree goes only while Git finds it clean, and the branch
+    only once no worktree holds it and only while it still points at
+    ``base``. It stops at the first refusal and says what it kept and how to
+    finish by hand.
+    """
+
+    def git_in_repo(*argv: str):
+        return _run_fast_captured_command(
+            ["git", "-C", str(repo), *argv],
+            env=ProcessEnvironment(env),
+            timeout=_WORKTREE_ADD_TIMEOUT_S,
+        )
+
+    resolved = worktree.resolve()
+    registered = any(
+        Path(record["path"]).resolve() == resolved for record in _worktrees(git)
+    )
+    removed: list[str] = []
+    kept: list[str] = []
+    if registered:
+        proc = git_in_repo("worktree", "remove", str(worktree))
+        if proc.returncode != 0:
+            return (
+                f"kept {worktree} and {branch}: git worktree remove refused "
+                f"({proc.stderr.strip()}); inspect the worktree, then "
+                f"`git worktree remove --force {worktree}` and "
+                f"`git branch -D {branch}`"
+            )
+        removed.append(str(worktree))
+    elif worktree.exists():
+        # Not registered, so `git worktree add` did not make it; this start's
+        # checks refused an existing path, so another process made it.
+        kept.append(
+            f"{worktree}: it is no registered worktree, so this start did not make it"
+        )
+    holder = _lane_worktree(_worktrees(git), branch)
+    if holder is not None:
+        kept.append(f"{branch}: {holder} holds it")
+    elif _ref_sha(git, f"refs/heads/{branch}") is not None:
+        proc = git_in_repo("update-ref", "-d", f"refs/heads/{branch}", base)
+        if proc.returncode != 0:
+            kept.append(
+                f"{branch}: it no longer points at {base[:12]} "
+                f"({proc.stderr.strip()}); keep what it holds "
+                f"(`git log {base[:12]}..{branch}`), then `git branch -D {branch}`"
+            )
+        else:
+            removed.append(branch)
+    done = f"removed {' and '.join(removed)}" if removed else "removed nothing"
+    return done + "".join(f"; kept {item}" for item in kept)
+
+
 def cmd_lane_start(args: argparse.Namespace) -> int:
     from tools import agent_coordination
 
     driver = _driver()
+    # A pinned claim must name the controller this process runs from; the
+    # record keeps which driver started the lane.
+    controller = molt_dev_controller.integration_controller(args)
     slug = lane_slug(args.slug)
     branch = lane_branch(slug)
     repo = Path(args.repo).resolve()
@@ -527,85 +644,116 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
     main = _main_checkout(_worktrees(git))
     root = Path(args.root).expanduser().resolve() if args.root else _default_root(main)
     worktree = root / slug
-    if _ref_sha(git, f"refs/heads/{branch}") is not None:
-        raise DriverError(
-            f"{branch} already exists; retire it (lane retire {slug}) or choose "
-            "another slug"
-        )
-    if worktree.exists() or worktree.is_symlink():
-        raise DriverError(f"{worktree} already exists; choose another slug or --root")
-    if _record_status(main, slug) in agent_coordination.ACTIVE_STATUSES:
-        raise DriverError(
-            f"{_record_path(main, slug)} is an active record without its branch; "
-            "close it before reusing the slug"
-        )
-    refusal = work_in_progress_refusal(repo, now=time.time())
-    if refusal is not None:
-        raise DriverError(refusal)
+    # The slug's lock, from the checks through provisioning: a second start or
+    # a retirement of the slug refuses, so no start's undo meets another
+    # start's worktree or branch, and no retirement removes a lane that is
+    # still provisioning (reviews v4 and v5).
+    with _lane_slug_lock(repo, slug):
+        if _ref_sha(git, f"refs/heads/{branch}") is not None:
+            status = _record_status(main, slug)
+            if status in agent_coordination.ACTIVE_STATUSES:
+                raise DriverError(
+                    f"{branch} already exists; retire it (lane retire {slug}) or "
+                    "choose another slug"
+                )
+            found = (
+                "no lane record (a start that stopped, or a branch made by "
+                "hand), so `lane retire` cannot take it"
+                if status is None
+                else f"a closed lane record ({_record_path(main, slug)}: "
+                f"{status or 'no status'})"
+            )
+            raise DriverError(
+                f"{branch} exists with {found}; {_hand_removal(git, branch)}, or "
+                "choose another slug"
+            )
+        if worktree.exists() or worktree.is_symlink():
+            raise DriverError(
+                f"{worktree} already exists; choose another slug or --root"
+            )
+        if _record_status(main, slug) in agent_coordination.ACTIVE_STATUSES:
+            raise DriverError(
+                f"{_record_path(main, slug)} is an active record without its branch; "
+                "close it before reusing the slug"
+            )
+        refusal = work_in_progress_refusal(repo, now=time.time())
+        if refusal is not None:
+            raise DriverError(refusal)
 
-    _step(f"fetch {args.remote}/{args.branch}")
-    git.fetch(args.remote, args.branch)
-    base_ref = args.base or f"{args.remote}/{args.branch}"
-    base = git.rev_parse(f"{base_ref}^{{commit}}")
+        _step(f"fetch {args.remote}/{args.branch}")
+        git.fetch(args.remote, args.branch)
+        base_ref = args.base or f"{args.remote}/{args.branch}"
+        base = git.rev_parse(f"{base_ref}^{{commit}}")
 
-    _step(f"create {branch} at {git.short(base)} in {worktree}")
-    root.mkdir(parents=True, exist_ok=True)
-    env = immutable_git_environment(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    proc = _run_fast_captured_command(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "worktree",
-            "add",
-            "--no-track",
-            "-b",
-            branch,
-            str(worktree),
-            base,
-        ],
-        env=ProcessEnvironment(env),
-        timeout=_WORKTREE_ADD_TIMEOUT_S,
-    )
-    if proc.returncode != 0:
-        raise DriverError(
-            f"git worktree add failed (exit {proc.returncode}): {proc.stderr.strip()}"
-        )
-    _ok(f"created {worktree}")
+        _step(f"create {branch} at {git.short(base)} in {worktree}")
+        root.mkdir(parents=True, exist_ok=True)
+        env = immutable_git_environment(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        try:
+            proc = _run_fast_captured_command(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "worktree",
+                    "add",
+                    "--no-track",
+                    "-b",
+                    branch,
+                    str(worktree),
+                    base,
+                ],
+                env=ProcessEnvironment(env),
+                timeout=_WORKTREE_ADD_TIMEOUT_S,
+            )
+            if proc.returncode != 0:
+                raise DriverError(
+                    f"git worktree add failed (exit {proc.returncode}): "
+                    f"{proc.stderr.strip()}"
+                )
+            _ok(f"created {worktree}")
+            record = agent_coordination.create_task(
+                registry_root=main,
+                source_root=worktree,
+                task=lane_task(slug),
+                lane=branch,
+                extra={
+                    "lane": {
+                        "slug": slug,
+                        "branch": branch,
+                        "base_ref": base_ref,
+                        "base_commit": base,
+                        "worktree": str(worktree),
+                        "controller": controller,
+                    }
+                },
+            )
+        except BaseException as exc:
+            # `git worktree add` can fail after it made the branch (a hook, the
+            # deadline, an interrupt), and the record can fail after the add;
+            # either way undo what this command created before it reports.
+            undone = _undo_lane_start(git, repo, worktree, branch, base, env)
+            if isinstance(exc, Exception):
+                raise DriverError(f"cannot start {branch}: {exc}; {undone}") from exc
+            _fail(f"interrupted; {undone}")
+            raise
+        _ok(f"recorded {_record_path(main, slug)} ({record['status']})")
 
-    record = agent_coordination.create_task(
-        registry_root=main,
-        source_root=worktree,
-        task=lane_task(slug),
-        lane=branch,
-        extra={
-            "lane": {
-                "slug": slug,
-                "branch": branch,
-                "base_ref": base_ref,
-                "base_commit": base,
-                "worktree": str(worktree),
-            }
-        },
-    )
-    _ok(f"recorded {_record_path(main, slug)} ({record['status']})")
-
-    _step(f"provision {worktree}")
-    try:
-        done = provision_lane(worktree)
-    except checkout_provisioning.ProvisioningError as exc:
-        _fail(str(exc))
-        _say(
-            f"    the lane exists; finish provisioning with: cd {worktree} && "
-            "uv run python -m molt.checkout_provisioning ensure"
-        )
-        return EXIT_FAIL
-    for item in done:
-        action = "provisioned" if item.provisioned else "current"
-        _ok(f"{item.name}: {action} ({item.seconds:.2f} s)")
-    print(worktree, flush=True)
-    return EXIT_OK
+        _step(f"provision {worktree}")
+        try:
+            done = provision_lane(worktree)
+        except checkout_provisioning.ProvisioningError as exc:
+            _fail(str(exc))
+            _say(
+                f"    the lane exists; finish provisioning with: cd {worktree} && "
+                "uv run python -m molt.checkout_provisioning ensure"
+            )
+            return EXIT_FAIL
+        for item in done:
+            action = "provisioned" if item.provisioned else "current"
+            _ok(f"{item.name}: {action} ({item.seconds:.2f} s)")
+        print(worktree, flush=True)
+        return EXIT_OK
 
 
 # --------------------------------------------------------------------------
@@ -709,6 +857,23 @@ def cmd_lane_retire(
     *,
     expected_tip: str | None = None,
     expected_worktree: Path | None = None,
+    lock_wait_s: float = 0.0,
+) -> int:
+    # A pinned claim must name the controller this process runs from.
+    molt_dev_controller.integration_controller(args)
+    with _lane_slug_lock(
+        Path(args.repo).resolve(), lane_slug(args.slug), wait_s=lock_wait_s
+    ):
+        return _retire_lane(
+            args, expected_tip=expected_tip, expected_worktree=expected_worktree
+        )
+
+
+def _retire_lane(
+    args: argparse.Namespace,
+    *,
+    expected_tip: str | None,
+    expected_worktree: Path | None,
 ) -> int:
     from tools import agent_coordination
 
@@ -724,6 +889,12 @@ def cmd_lane_retire(
     ignore_globs = tuple(driver.DEFAULT_IGNORE_GLOBS) + tuple(args.ignore or ())
 
     tip = _ref_sha(git, ref)
+    if tip is not None and not _record_path(main, slug).exists():
+        raise DriverError(
+            f"{branch} has no lane record (a start that stopped, or a branch made "
+            "by hand), and `lane retire` removes only a lane it manages; "
+            + _hand_removal(git, branch)
+        )
     record = _managed_record(main, slug)
     recorded_worktree = Path(record["lane"].get("worktree", "")).resolve()
     if (
@@ -1037,6 +1208,16 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _add_controller_arguments(parser: argparse.ArgumentParser) -> None:
+    """Lane start and retire run main's driver (molt_dev_controller)."""
+    parser.add_argument(
+        "--candidate-controller",
+        action="store_true",
+        help="run this checkout's own driver instead of main's pinned controller",
+    )
+    molt_dev_controller.add_pinned_controller_arguments(parser)
+
+
 def add_lane_arguments(
     lane: argparse.ArgumentParser,
     *,
@@ -1060,6 +1241,7 @@ def add_lane_arguments(
     )
     add_repo_arg(start)
     add_remote_branch(start)
+    _add_controller_arguments(start)
     start.set_defaults(func=cmd_lane_start)
 
     retire = commands.add_parser(
@@ -1074,6 +1256,7 @@ def add_lane_arguments(
     retire.add_argument("--ignore", action="append", help="extra ignore glob")
     add_repo_arg(retire)
     add_remote_branch(retire)
+    _add_controller_arguments(retire)
     retire.set_defaults(func=cmd_lane_retire)
 
     listing = commands.add_parser("list", help="each lane's state")

@@ -477,6 +477,31 @@ def guard_scratch(environ: Mapping[str, str]) -> Path:
     return target
 
 
+def environment_outliving_guard(environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment for a process that outlives the guard that started it.
+
+    A persistent daemon (a backend suite daemon, Lima's hostagent) must not
+    name what its starting guard retires when its command returns: the
+    guard's token and marker, its scratch root, and every temporary-directory
+    variable that points into that scratch. The other variables stay.
+    """
+    result = dict(environ)
+    scratch = result.pop(SCRATCH_ENV, None)
+    result.pop("MOLT_MEMORY_GUARD_TOKEN", None)
+    result.pop("MOLT_MEMORY_GUARD_MARKER", None)
+    if scratch:
+        root = Path(scratch).resolve()
+        for key in ("PYTEST_DEBUG_TEMPROOT", "TMPDIR", "TMP", "TEMP"):
+            raw = result.get(key)
+            if raw:
+                try:
+                    Path(raw).resolve().relative_to(root)
+                except ValueError:
+                    continue
+                result.pop(key, None)
+    return result
+
+
 def tree_bytes(target: Path) -> int:
     """Sum regular-file bytes below one directory; never follow a link.
 

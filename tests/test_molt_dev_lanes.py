@@ -56,6 +56,40 @@ installed.write_text("hook\\n", encoding="utf-8")
 """
 
 
+def _fixture_checkout_input(name, checkout, environ=None, *, guard_source_root=None):
+    """The fixture's checkout inputs: provisioners that log each run. A child
+    process of a test installs it as the fixture does."""
+    checkout = Path(checkout).resolve()
+    environment = ProcessEnvironment(os.environ if environ is None else environ)
+    if name == "git-hooks":
+        return cp.OwnedInstallation(
+            name=name,
+            guard_source_root=guard_source_root,
+            checkout=checkout,
+            owner="tools/install_git_hooks.py",
+            environment=environment,
+        )
+    python = Path(sys.executable)
+    # As uv does, an inherited UV_PROJECT_ENVIRONMENT names the tree.
+    named = environment.get("UV_PROJECT_ENVIRONMENT")
+    tree = (
+        Path(named) if name == "uv-environment" and named else checkout / f"{name}-tree"
+    )
+    return cp.LockedTree(
+        name=name,
+        guard_source_root=guard_source_root,
+        checkout=checkout,
+        lock_files=("fixture.lock",),
+        tree=tree,
+        sentinel="ready",
+        tool=python.stem,
+        arguments=("provision.py", name),
+        environment=environment.updated(
+            {"PATH": str(python.parent) + os.pathsep + environment.get("PATH", "")}
+        ),
+    )
+
+
 @pytest.fixture
 def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """origin.git, <root>/molt-src and an empty <root>/worktrees."""
@@ -84,40 +118,7 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _git(main, "config", "user.email", "dev@molt.test")
     _git(main, "config", "user.name", "Molt Dev")
 
-    def fixture_input(name, checkout, environ=None, *, guard_source_root=None):
-        checkout = Path(checkout).resolve()
-        environment = ProcessEnvironment(os.environ if environ is None else environ)
-        if name == "git-hooks":
-            return cp.OwnedInstallation(
-                name=name,
-                guard_source_root=guard_source_root,
-                checkout=checkout,
-                owner="tools/install_git_hooks.py",
-                environment=environment,
-            )
-        python = Path(sys.executable)
-        # As uv does, an inherited UV_PROJECT_ENVIRONMENT names the tree.
-        named = environment.get("UV_PROJECT_ENVIRONMENT")
-        tree = (
-            Path(named)
-            if name == "uv-environment" and named
-            else checkout / f"{name}-tree"
-        )
-        return cp.LockedTree(
-            name=name,
-            guard_source_root=guard_source_root,
-            checkout=checkout,
-            lock_files=("fixture.lock",),
-            tree=tree,
-            sentinel="ready",
-            tool=python.stem,
-            arguments=("provision.py", name),
-            environment=environment.updated(
-                {"PATH": str(python.parent) + os.pathsep + environment.get("PATH", "")}
-            ),
-        )
-
-    monkeypatch.setattr(cp, "checkout_input", fixture_input)
+    monkeypatch.setattr(cp, "checkout_input", _fixture_checkout_input)
     # Checkout state lives under a private artifact root, never the host's.
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -136,6 +137,8 @@ def _args(root: Path, **values) -> argparse.Namespace:
         "ignore": None,
         "json": False,
         "no_fetch": False,
+        "candidate_controller": False,
+        "pinned_controller": None,
     }
     base.update(values)
     return argparse.Namespace(**base)
@@ -215,6 +218,435 @@ def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> N
 
     with pytest.raises(DriverError, match="already exists"):
         lanes.cmd_lane_start(_args(family, slug="feature"))
+
+
+def test_a_lane_start_that_cannot_record_leaves_no_worktree_or_branch(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lane without its record is one `lane retire` refuses (review v2, B-1).
+
+    The command removes the worktree and branch it created, and the slug is
+    free for the next start.
+    """
+    from tools import agent_coordination
+
+    main = family / "molt-src"
+    create_task = agent_coordination.create_task
+
+    def refuse(**kwargs):
+        raise RuntimeError("tool releases unreadable")
+
+    monkeypatch.setattr(agent_coordination, "create_task", refuse)
+    with pytest.raises(
+        DriverError,
+        match=r"cannot start lane/orphan: tool releases unreadable; removed "
+        r".*orphan and lane/orphan$",
+    ):
+        lanes.cmd_lane_start(_args(family, slug="orphan"))
+    assert not (family / "worktrees" / "orphan").exists()
+    assert _ref(main, "refs/heads/lane/orphan") is None
+    assert not any(path.name == "orphan" for path in _registered(main))
+
+    monkeypatch.setattr(agent_coordination, "create_task", create_task)
+    worktree = _start(family, "orphan")
+    record = json.loads(
+        (main / "logs/agents/lane-orphan/coordination.json").read_text("utf-8")
+    )
+    assert record["lane"]["controller"] == "candidate"
+    assert worktree.is_dir()
+
+
+def test_an_undo_that_git_refuses_keeps_the_branch_and_says_so(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worktree Git will not remove keeps its branch (review v3, A-1).
+
+    Deleting the branch under a kept worktree left a worktree whose HEAD named
+    no branch and a slug no command could free.
+    """
+    from tools import agent_coordination
+
+    main = family / "molt-src"
+
+    def write_then_refuse(**kwargs):
+        (kwargs["source_root"] / "notes.txt").write_text("mine\n", encoding="utf-8")
+        raise RuntimeError("record refused")
+
+    monkeypatch.setattr(agent_coordination, "create_task", write_then_refuse)
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_start(_args(family, slug="dirty"))
+    message = str(raised.value)
+    worktree = family / "worktrees" / "dirty"
+    assert "kept" in message and "git worktree remove refused" in message
+    assert f"git worktree remove --force {worktree}" in message
+    assert "git branch -D lane/dirty" in message
+    assert (worktree / "notes.txt").read_text(encoding="utf-8") == "mine\n"
+    assert _ref(main, "refs/heads/lane/dirty") is not None
+    assert _git(worktree, "symbolic-ref", "HEAD").stdout.strip() == (
+        "refs/heads/lane/dirty"
+    )
+
+
+def test_a_worktree_add_that_fails_after_branching_is_undone(
+    family: Path,
+) -> None:
+    """`git worktree add` keeps the worktree and branch when its post-checkout
+    hook fails; the start removes both (review v3, A-2)."""
+    main = family / "molt-src"
+    hooks = family / "hooks"
+    hooks.mkdir()
+    hook = hooks / "post-checkout"
+    hook.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    hook.chmod(0o755)
+    _git(main, "config", "core.hooksPath", str(hooks))
+    with pytest.raises(
+        DriverError,
+        match=r"cannot start lane/hooked: git worktree add failed .*; removed "
+        r".*hooked and lane/hooked$",
+    ):
+        lanes.cmd_lane_start(_args(family, slug="hooked"))
+    assert not (family / "worktrees" / "hooked").exists()
+    assert _ref(main, "refs/heads/lane/hooked") is None
+    _git(main, "config", "--unset", "core.hooksPath")
+    assert _start(family, "hooked").is_dir()
+
+
+def test_a_second_start_of_a_slug_refuses_while_the_first_runs(
+    family: Path,
+) -> None:
+    """Two starts of one slug once raced: the loser's undo removed the
+    winner's worktree and branch (review v4). One start per slug runs at a
+    time; the second refuses and creates nothing."""
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    main = family / "molt-src"
+    common = Path(_git(main, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = main / common
+    lock = common / "molt" / "lane-start" / "twin.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    handle = _try_acquire_file_lock(lock)
+    assert handle is not None
+    try:
+        with pytest.raises(
+            DriverError,
+            match="another `lane start twin` or `lane retire twin` is running",
+        ):
+            lanes.cmd_lane_start(_args(family, slug="twin"))
+        assert _ref(main, "refs/heads/lane/twin") is None
+        assert not (family / "worktrees" / "twin").exists()
+    finally:
+        _release_file_lock(handle)
+    assert _start(family, "twin").is_dir()
+
+
+# A lane command in its own process, so its slug lock is the OS lock: in one
+# process a second holder stops at the in-process mutex (review v5, A-1). It
+# installs the fixture's checkout inputs and skips provisioning. With
+# ``hold``, it writes ``ready`` when it reaches that module function and waits
+# for ``go`` before it calls it.
+_LANE_CHILD = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, {root!r})
+from molt import checkout_provisioning as cp
+from tests.test_molt_dev_lanes import _args, _fixture_checkout_input
+from tools import molt_dev_lanes as lanes
+from tools.molt_dev_common import DriverError
+cp.checkout_input = _fixture_checkout_input
+lanes.provision_lane = lambda worktree: []
+if {hold!r}:
+    real = getattr(lanes, {hold!r})
+    def held(*args, **kwargs):
+        Path({ready!r}).write_text("ready")
+        deadline = time.monotonic() + 60
+        while not Path({go!r}).exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return real(*args, **kwargs)
+    setattr(lanes, {hold!r}, held)
+command = lanes.cmd_lane_start if {command!r} == "start" else lanes.cmd_lane_retire
+try:
+    print("RESULT ok", command(_args(Path({family!r}), slug={slug!r})), flush=True)
+except DriverError as exc:
+    print("RESULT refused", str(exc).replace(chr(10), " "), flush=True)
+"""
+
+
+def _lane_child(
+    family: Path,
+    signals: tuple[Path, Path],
+    *,
+    command: str,
+    slug: str,
+    hold: str | None = None,
+):
+    import subprocess
+
+    from tests.process_guard_common import start_owned_test_process
+
+    ready, go = signals
+    root = str(Path(__file__).resolve().parents[1])
+    code = _LANE_CHILD.format(
+        root=root, hold=hold, ready=str(ready), go=str(go),
+        family=str(family), slug=slug, command=command,
+    )  # fmt: skip
+    return start_owned_test_process(
+        [sys.executable, "-B", "-c", code],
+        cwd=root,
+        env=dict(os.environ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _await_hold(process, ready: Path, what: str) -> None:
+    import time
+
+    deadline = time.monotonic() + 60
+    while not ready.exists():
+        assert process.poll() is None, process.communicate()
+        assert time.monotonic() < deadline, f"the child never reached {what}"
+        time.sleep(0.02)
+
+
+def test_two_processes_starting_one_slug_never_undo_each_other(
+    family: Path, tmp_path: Path
+) -> None:
+    """The review v4 race with two real processes and the OS lock: the first
+    holds its checks open, the second refuses at once, and the first's
+    worktree, branch and record survive (review v5, A-1)."""
+    from tests.process_guard_common import close_owned_test_process
+
+    main = family / "molt-src"
+    signals = (tmp_path / "ready", tmp_path / "go")
+    first = _lane_child(
+        family, signals, command="start", slug="twin", hold="work_in_progress_refusal"
+    )
+    try:
+        _await_hold(first, signals[0], "its checks")
+        second = _lane_child(family, signals, command="start", slug="twin")
+        try:
+            second_out, second_err = second.communicate(timeout=60)
+        finally:
+            close_owned_test_process(second)
+        signals[1].write_text("go", encoding="utf-8")
+        first_out, first_err = first.communicate(timeout=60)
+    finally:
+        signals[1].write_text("go", encoding="utf-8")
+        close_owned_test_process(first)
+    assert "another `lane start twin`" in second_out, second_out + second_err
+    assert "RESULT ok 0" in first_out, first_out + first_err
+    worktree = family / "worktrees" / "twin"
+    assert any(path.resolve() == worktree.resolve() for path in _registered(main))
+    assert _ref(main, "refs/heads/lane/twin") == _ref(main, "refs/remotes/origin/main")
+
+
+def test_a_retirement_refuses_while_another_process_provisions_the_lane(
+    family: Path, tmp_path: Path
+) -> None:
+    """A start holds the slug's lock through provisioning, so a retirement
+    refuses at once instead of removing the lane under its provisioners. The
+    start runs in its own process and waits inside provisioning; with the lock
+    released before provisioning (review v5's A-5 code), the retirement
+    removed the lane (review v6, A6-1)."""
+    from tests.process_guard_common import close_owned_test_process
+
+    main = family / "molt-src"
+    signals = (tmp_path / "ready", tmp_path / "go")
+    start = _lane_child(
+        family, signals, command="start", slug="busy", hold="provision_lane"
+    )
+    try:
+        _await_hold(start, signals[0], "provisioning")
+        with pytest.raises(
+            DriverError,
+            match="another `lane start busy` or `lane retire busy` is running",
+        ):
+            lanes.cmd_lane_retire(_args(family, slug="busy"))
+        signals[1].write_text("go", encoding="utf-8")
+        out, err = start.communicate(timeout=60)
+    finally:
+        signals[1].write_text("go", encoding="utf-8")
+        close_owned_test_process(start)
+    assert "RESULT ok 0" in out, out + err
+    worktree = family / "worktrees" / "busy"
+    assert worktree.resolve() in _registered(main)
+    assert _ref(main, "refs/heads/lane/busy") == _ref(main, "refs/remotes/origin/main")
+    assert _record(family, "busy")["status"] == "running"
+
+
+def test_two_processes_retiring_one_slug_never_meet(
+    family: Path, tmp_path: Path
+) -> None:
+    """`lane retire` holds the slug's lock for its whole run: while one
+    retirement waits inside its run in another process, a second refuses at
+    once, and the first then retires the lane. With the lock released as soon
+    as it was taken, both removed the one lane (review v6, A6-1)."""
+    from tests.process_guard_common import close_owned_test_process
+
+    main = family / "molt-src"
+    worktree = _start(family, "dup")
+    signals = (tmp_path / "ready", tmp_path / "go")
+    first = _lane_child(
+        family, signals, command="retire", slug="dup", hold="_retire_lane"
+    )
+    try:
+        _await_hold(first, signals[0], "its retirement")
+        with pytest.raises(
+            DriverError,
+            match="another `lane start dup` or `lane retire dup` is running",
+        ):
+            lanes.cmd_lane_retire(_args(family, slug="dup"))
+        assert worktree.is_dir()
+        signals[1].write_text("go", encoding="utf-8")
+        out, err = first.communicate(timeout=120)
+    finally:
+        signals[1].write_text("go", encoding="utf-8")
+        close_owned_test_process(first)
+    assert "RESULT ok 0" in out, out + err
+    assert not worktree.exists()
+    assert _ref(main, "refs/heads/lane/dup") is None
+    assert _record(family, "dup")["status"] == "landed"
+
+
+def test_a_retirement_waits_for_no_start_and_a_start_for_no_retirement(
+    family: Path,
+) -> None:
+    """`lane retire` holds the slug's lock too: it refuses while a start of
+    the slug runs, including its provisioning (review v5, A-5)."""
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    main = family / "molt-src"
+    _start(family, "held")
+    common = Path(_git(main, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = main / common
+    handle = _try_acquire_file_lock(common / "molt" / "lane-start" / "held.lock")
+    assert handle is not None
+    try:
+        with pytest.raises(DriverError, match="`lane retire held` is running"):
+            lanes.cmd_lane_retire(_args(family, slug="held"))
+        assert (family / "worktrees" / "held").is_dir()
+    finally:
+        _release_file_lock(handle)
+
+
+def test_a_branch_without_a_record_names_its_hand_removal(family: Path) -> None:
+    """A branch a stopped start or a hand left has no record, so `lane retire`
+    cannot take it; `lane start` and `lane retire` name the hand commands and
+    the worktree that holds the branch (review v5, A-4; review v6, A6-2)."""
+    main = family / "molt-src"
+    holder = family / "worktrees" / "orphaned"
+    _git(
+        main, "worktree", "add", "-q", "-b", "lane/orphaned", str(holder), "origin/main"
+    )
+    for command in (lanes.cmd_lane_start, lanes.cmd_lane_retire):
+        with pytest.raises(DriverError) as raised:
+            command(_args(family, slug="orphaned"))
+        message = str(raised.value)
+        assert "no lane record" in message, message
+        assert "and `git branch -D lane/orphaned`" in message, message
+        assert any(
+            f"`git worktree remove {path}`" in message
+            for path in (holder, holder.resolve())
+        ), message
+    assert holder.resolve() in _registered(main)
+
+
+def test_the_hand_removal_hint_reaches_only_a_branch_retire_cannot_take(
+    family: Path,
+) -> None:
+    """The hint lived in the shared record reader, so `land` of a hand-made
+    lane branch with unlanded work advised deleting that work, and `lane
+    retire` of a slug with no branch named a branch that does not exist; a
+    branch with a closed record was called one with no record (review v6,
+    A6-2)."""
+    main = family / "molt-src"
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_retire(_args(family, slug="nosuch"))
+    assert "git branch -D" not in str(raised.value), raised.value
+
+    hand = family / "worktrees" / "hand"
+    _git(main, "worktree", "add", "-q", "-b", "lane/hand", str(hand), "origin/main")
+    _git(hand, "config", "user.email", "dev@molt.test")
+    _git(hand, "config", "user.name", "Molt Dev")
+    tip = _commit_file(hand, "hand.txt", "hand\n", "hand work")
+    land = molt_dev.build_parser().parse_args(
+        ["land", "--repo", str(hand), "--candidate-controller"]
+    )
+    with pytest.raises(DriverError, match="managed lane custody unavailable") as raised:
+        land.func(land)
+    assert "git branch -D" not in str(raised.value), raised.value
+    assert _ref(main, "refs/heads/lane/hand") == tip
+
+    _start(family, "closed")
+    assert lanes.cmd_lane_retire(_args(family, slug="closed")) == molt_dev.EXIT_OK
+    _git(main, "branch", "lane/closed", "origin/main")
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_start(_args(family, slug="closed"))
+    message = str(raised.value)
+    assert "a closed lane record" in message and "landed" in message, message
+    assert "no lane record" not in message, message
+    assert "`git branch -D lane/closed`" in message, message
+
+
+def test_an_undo_names_how_to_finish_what_it_keeps(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A branch that moved before the record failed is kept with the commands
+    that finish by hand; a path another process made is kept while the
+    branch this start made goes (review v4)."""
+    from tools import agent_coordination
+
+    main = family / "molt-src"
+
+    def commit_then_refuse(**kwargs):
+        worktree = kwargs["source_root"]
+        _git(worktree, "config", "user.email", "dev@molt.test")
+        _git(worktree, "config", "user.name", "Molt Dev")
+        _commit_file(worktree, "work.txt", "kept\n", "work")
+        raise RuntimeError("record refused")
+
+    monkeypatch.setattr(agent_coordination, "create_task", commit_then_refuse)
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_start(_args(family, slug="moved"))
+    message = str(raised.value)
+    assert "removed " in message and "kept lane/moved" in message
+    assert "git log " in message and "git branch -D lane/moved" in message
+    assert not (family / "worktrees" / "moved").exists()
+    assert _ref(main, "refs/heads/lane/moved") is not None
+
+    stranger = family / "worktrees" / "raced"
+
+    def make_the_path(*args, **kwargs):
+        stranger.mkdir(parents=True)
+        (stranger / "theirs.txt").write_text("theirs\n", encoding="utf-8")
+        return None
+
+    monkeypatch.setattr(lanes, "work_in_progress_refusal", make_the_path)
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_start(_args(family, slug="raced"))
+    message = str(raised.value)
+    assert f"kept {stranger}" in message, message
+    assert (stranger / "theirs.txt").read_text(encoding="utf-8") == "theirs\n"
+    assert _ref(main, "refs/heads/lane/raced") is None, message
+
+
+def test_lane_commands_refuse_a_pinned_claim_for_another_controller(
+    family: Path,
+) -> None:
+    """A forged `--pinned-controller` runs nothing (review v3, A-3)."""
+    main = family / "molt-src"
+    claim = "0" * 32
+    with pytest.raises(DriverError, match="has no record"):
+        lanes.cmd_lane_start(_args(family, slug="forged", pinned_controller=claim))
+    assert _ref(main, "refs/heads/lane/forged") is None
+    assert not (family / "worktrees" / "forged").exists()
+    _start(family, "kept")
+    with pytest.raises(DriverError, match="has no record"):
+        lanes.cmd_lane_retire(_args(family, slug="kept", pinned_controller=claim))
+    assert (family / "worktrees" / "kept").is_dir()
 
 
 def test_lane_start_refuses_bad_slugs_and_unlaid_roots(
@@ -520,13 +952,71 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     )
     assert args.func(args) == molt_dev.EXIT_OK
 
-    assert queue.read_result(paths, request.id)["status"] == "landed"
+    landed = queue.read_result(paths, request.id)
+    assert landed is not None and landed["status"] == "landed"
     # The sandbox's declared inputs were built before its gates ran.
     assert (paths.sandbox / "uv-environment-tree" / "ready").is_file()
     assert (paths.sandbox / "browser-acorn-tree" / "ready").is_file()
     assert not (paths.sandbox / "edgebox-typescript-tree").exists()
     _git(main, "fetch", "-q", "origin")
     assert "queued.txt" in _git(main, "ls-tree", "--name-only", "origin/main").stdout
+    assert not worktree.exists()
+    assert _ref(main, "refs/heads/lane/queued") is None
+    assert _record(family, "queued")["status"] == "landed"
+
+
+def test_the_landing_runner_waits_out_a_brief_hold_of_the_slug_lock(
+    family: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runner retires a landed lane in its own process. When another
+    process held the slug's lock at that moment (here a start's checks of the
+    slug), the runner recorded landed_retirement_failed and kept the lane; it
+    now waits up to LANDED_RETIREMENT_LOCK_WAIT_S for the lock (review v6,
+    A6-3)."""
+    import threading
+
+    from tests.process_guard_common import close_owned_test_process
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    _commit_file(main, "tools/proof_plan.toml", 'always = ["true"]\n', "policy")
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    worktree = _start(family, "queued")
+    tip = _commit_file(worktree, "queued.txt", "queued\n", "queued work")
+    paths = queue.queue_paths(main)
+    request = queue.enqueue(paths, head=tip, worktree=worktree, branch="lane/queued")
+    signals = (tmp_path / "ready", tmp_path / "go")
+    retire = lanes.cmd_lane_retire
+    starts: list[str] = []
+
+    def retire_while_a_start_checks(*args, **kwargs):
+        start = _lane_child(
+            family, signals, command="start", slug="queued", hold="_ref_sha"
+        )
+        try:
+            _await_hold(start, signals[0], "its checks")
+            release = threading.Timer(0.5, signals[1].write_text, ("go",))
+            release.start()
+            try:
+                return retire(*args, **kwargs)
+            finally:
+                release.join()
+        finally:
+            signals[1].write_text("go", encoding="utf-8")
+            out, err = start.communicate(timeout=60)
+            close_owned_test_process(start)
+            starts.append(out + err)
+
+    monkeypatch.setattr(lanes, "cmd_lane_retire", retire_while_a_start_checks)
+    args = molt_dev.build_parser().parse_args(
+        ["queue", "run", "--repo", str(main), "--candidate-controller"]
+    )
+    assert args.func(args) == molt_dev.EXIT_OK
+
+    assert len(starts) == 1
+    assert "RESULT refused lane/queued already exists" in starts[0], starts[0]
+    result = queue.read_result(paths, request.id)
+    assert result is not None and result["status"] == "landed", result
     assert not worktree.exists()
     assert _ref(main, "refs/heads/lane/queued") is None
     assert _record(family, "queued")["status"] == "landed"
@@ -550,7 +1040,9 @@ def _bytecode(worktree: Path, source: str) -> Path:
     cache = (
         path.parent / "__pycache__" / f"{path.stem}.{sys.implementation.cache_tag}.pyc"
     )
-    return Path(py_compile.compile(str(path), cfile=str(cache), doraise=True))
+    compiled = py_compile.compile(str(path), cfile=str(cache), doraise=True)
+    assert compiled is not None
+    return Path(compiled)
 
 
 @pytest.mark.parametrize("bytecode_ignore", ["__pycache__/", "*.pyc"])
@@ -618,7 +1110,8 @@ def test_queue_retires_a_lane_whose_ignored_output_its_writers_regenerate(
         ["queue", "run", "--repo", str(main), "--candidate-controller"]
     )
     assert args.func(args) == molt_dev.EXIT_OK
-    assert queue.read_result(paths, request.id)["status"] == "landed"
+    landed = queue.read_result(paths, request.id)
+    assert landed is not None and landed["status"] == "landed"
     assert not worktree.exists()
     assert _ref(main, "refs/heads/lane/built") is None
 
@@ -771,6 +1264,7 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
     # Already published requests must still pass retirement, without another gate run.
     assert args.func(args) == molt_dev.EXIT_OK
     result = queue.read_result(paths, request.id)
+    assert result is not None
     assert result["schema"] == "molt.landing-result.v2"
     assert result["status"] == "landed_retirement_failed"
     assert result["landed"] == tip
