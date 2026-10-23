@@ -253,14 +253,19 @@ for a `--base` lane whose sccache pin differs, and either sccache serves its
 builds.
 
 The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
-"Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` and its
-worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
+"Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` checked
+out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
+`_` or `-`.
 
-- **`lane start <slug>`** fetches `origin/main` (or `--base <ref>`), then runs
-  `git worktree add --no-track -b lane/<slug>`. The worktree goes to
-  `<root>/worktrees/<slug>` beside the main checkout `<root>/molt-src`
-  (`molt.custody_layout.family_worktrees_root`); another layout must pass
-  `--root`. It writes the record `logs/agents/lane-<slug>/coordination.json`
+- **`lane start <slug>`** fetches `origin/main` (or `--base <ref>`), then
+  takes the first clean, detached slot `<root>/worktrees/slot-NN` beside the
+  main checkout `<root>/molt-src` and runs `git switch --no-track -c
+  lane/<slug>` in it, or adds the next slot with `git worktree add`
+  (`molt.custody_layout`: twelve slots, the live worktree limit; another
+  layout must pass `--root`). A slot outlives its lanes, so its path-keyed
+  Cargo target, sccache keys and checkout inputs stay warm for the next lane
+  (HF-491). A detached slot with changes, or a slot path that is no
+  registered worktree, is skipped untouched. It writes the record `logs/agents/lane-<slug>/coordination.json`
   in the main checkout through `tools/agent_coordination.py`, with the lane
   worktree as its source checkout. Then it provisions every checkout input
   (`molt.checkout_provisioning`): the uv environment `<lane>/.venv`, the Acorn
@@ -282,7 +287,10 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   landed too. `--abandon` accepts an unlanded lane after it writes
   `origin/main..lane/<slug>` to `<root>/drift-bundles/lane-<slug>-<tip>.bundle`
   (where `tools/drift_harvest.py` keeps bundles), verifies it and prints its
-  path. Retirement binds the canonical managed record to its checkout and branch,
+  path. A slot lane's retirement then detaches the clean slot at
+  `origin/main` and keeps its checkout state; a lane recorded before slots
+  existed has its own worktree, which retirement removes with its checkout
+  state. Retirement binds the canonical managed record to its checkout and branch,
   refuses locked or dirty worktrees (tracked changes or untracked files, outside
   an explicitly supplied ignore set), and names each path. Automatic retirement
   additionally requires the enrolled tip and path, so later work is retained.

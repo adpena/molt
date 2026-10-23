@@ -226,11 +226,18 @@ The driver creates, provisions and retires each lane.
 - **Prior art.** Zuul's Nodepool and GitHub's ephemeral runners create a
   fresh node for each job and delete it after. Bazel runs each action in a
   sandbox it owns.
-- **Design.** `molt_dev.py lane start <slug>` creates the worktree and the
-  `lane/<slug>` branch from main, writes the coordination record, and
+- **Design.** `molt_dev.py lane start <slug>` creates the `lane/<slug>`
+  branch from main in a slot worktree, writes the coordination record, and
   provisions it. `lane retire <slug>` accepts a landed lane, or an abandoned
-  one after it writes a Git bundle. It removes the worktree, the branches and
-  the checkout state (HF-313), and closes the record. `lane list` shows each
+  one after it writes a Git bundle. It deletes the branches, detaches the
+  clean slot at main and closes the record; the slot keeps its checkout state
+  for the next lane (HF-491). A long-lived monorepo checkout and Bazel's
+  per-workspace output base keep build state the same way: the build keys it
+  by checkout path (Cargo fingerprints and sccache keys hold absolute paths),
+  so a fresh path per lane rebuilt everything cold. `tools/drift_harvest.py`
+  counts a free slot as neither live nor prunable. A lane recorded before
+  slots existed keeps the old retirement: its worktree and checkout state
+  (HF-313) are removed. `lane list` shows each
   lane's state. The queue automatically retires each managed lane it lands,
   including requests already represented on main. Enrollment transfers a clean,
   exact tip/path under its existing coordination record; the owner stops editing.
