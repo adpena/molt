@@ -1107,6 +1107,7 @@ unsafe fn cached_pair_clear(_py: &PyToken<'_>, slot_ptr: *mut *mut u8) {
 
 /// Canonical class edges identify both the public type and the specialized
 /// physical tail, including after exhaustion has released the target.
+#[inline(always)]
 unsafe fn hash_iterator_kind(py: &PyToken<'_>, ptr: *mut u8) -> Option<(bool, u32)> {
     unsafe {
         let class = object_class_bits(ptr);
@@ -1551,10 +1552,15 @@ fn invalid_iterator_state(py: &PyToken<'_>) -> IterationResult {
 /// native step is never `Missing`; items and exhaustion payloads each own one
 /// reference, and `Err` means an exception is pending. No step builds a
 /// `(value, done)` pair: that ABI is a projection (`molt_iter_next`).
+#[inline(always)]
 fn native_step(py: &PyToken<'_>, iter_bits: u64) -> Option<IterationResult> {
     let ptr = maybe_ptr_from_bits(iter_bits)?;
     unsafe {
         Some(match object_type_id(ptr) {
+            // A hash iterator targets only a dict, set or dict view, so a
+            // sequence target skips the class-edge test that selects a hash
+            // iterator's projection.
+            TYPE_ID_ITER if iterates_sequence_target(ptr) => sequence_iterator_next(py, ptr),
             TYPE_ID_ITER => match hash_iterator_kind(py, ptr) {
                 Some((reverse, projection)) => hash_iterator_next(py, ptr, reverse, projection),
                 None => sequence_iterator_next(py, ptr),
@@ -1580,6 +1586,28 @@ fn native_step(py: &PyToken<'_>, iter_bits: u64) -> Option<IterationResult> {
                 class_native_next_step(py, next, iter_bits)
             }
         })
+    }
+}
+
+/// The common sequence targets of a TYPE_ID_ITER, none a hash iterator's.
+#[inline]
+unsafe fn iterates_sequence_target(ptr: *mut u8) -> bool {
+    unsafe {
+        obj_from_bits(iter_target_bits(ptr))
+            .as_ptr()
+            .is_some_and(|target| {
+                matches!(
+                    object_type_id(target),
+                    TYPE_ID_LIST
+                        | TYPE_ID_TUPLE
+                        | TYPE_ID_RANGE
+                        | TYPE_ID_LIST_INT
+                        | TYPE_ID_LIST_BOOL
+                        | TYPE_ID_STRING
+                        | TYPE_ID_BYTES
+                        | TYPE_ID_BYTEARRAY
+                )
+            })
     }
 }
 
@@ -1644,6 +1672,7 @@ fn step_from_pair(py: &PyToken<'_>, pair: u64) -> IterationResult {
     })
 }
 
+#[inline(always)]
 unsafe fn hash_iterator_next(
     py: &PyToken<'_>,
     ptr: *mut u8,
@@ -1656,7 +1685,8 @@ unsafe fn hash_iterator_next(
             Ok(None) => exhausted(),
             Ok(Some(row)) => {
                 let value = row.value(projection);
-                if exception_pending(py) {
+                // Only the items projection allocates, so only it can fail.
+                if projection == TYPE_ID_DICT_ITEMS_VIEW && exception_pending(py) {
                     dec_ref_bits(py, value);
                     Err(())
                 } else {
@@ -2050,12 +2080,8 @@ unsafe fn reversed_target_next(
                 if idx == 0 {
                     return Ok(None);
                 }
-                let mut value = 0;
-                if crate::object::seq_access::read_item_owned(target_ptr, idx - 1, &mut value) == 0
-                {
-                    return Ok(None);
-                }
-                Ok(Some((idx - 1, value)))
+                Ok(crate::object::seq_access::pin_item(py, target_ptr, idx - 1)
+                    .map(|item| (idx - 1, item.into_bits())))
             }
             TYPE_ID_LIST_INT => {
                 let elems = crate::object::layout::list_int_vec_ref(target_ptr);
@@ -2155,6 +2181,7 @@ unsafe fn sequence_iterator_finish(py: &PyToken<'_>, ptr: *mut u8) -> IterationR
     exhausted()
 }
 
+#[inline]
 unsafe fn sequence_iterator_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
     unsafe {
         let target_bits = iter_target_bits(ptr);
@@ -2168,15 +2195,16 @@ unsafe fn sequence_iterator_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationRes
             // backing reference survives the step.
             TYPE_ID_LIST => {
                 let len = crate::object::seq_access::len(target_ptr);
-                let mut value = 0;
-                if idx == ITER_EXHAUSTED
-                    || idx >= len
-                    || crate::object::seq_access::read_item_owned(target_ptr, idx, &mut value) == 0
-                {
+                let item = if idx == ITER_EXHAUSTED || idx >= len {
+                    None
+                } else {
+                    crate::object::seq_access::pin_item(py, target_ptr, idx)
+                };
+                let Some(item) = item else {
                     return sequence_iterator_finish(py, ptr);
-                }
+                };
                 iter_set_index(ptr, idx + 1);
-                Ok(SpecialIterationStep::Item(value))
+                Ok(SpecialIterationStep::Item(item.into_bits()))
             }
             TYPE_ID_TUPLE => {
                 let len = crate::object::seq_access::len(target_ptr);
@@ -2463,6 +2491,13 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
 /// the Python `__next__` protocol. Items and exhaustion payloads transfer
 /// ownership; `Missing` means the receiver is not an iterator.
 pub(crate) fn iteration_step(py: &PyToken<'_>, iter_bits: u64) -> IterationResult {
+    advance(py, iter_bits)
+}
+
+/// The body of `iteration_step`, inlined into the compiled loop's entry so
+/// its native dispatch runs without a call or a returned-enum round trip.
+#[inline(always)]
+fn advance(py: &PyToken<'_>, iter_bits: u64) -> IterationResult {
     native_step(py, iter_bits).unwrap_or_else(|| {
         crate::object::iterable::special_iteration_step(py, iter_bits, SpecialIterationKind::Next)
     })
@@ -2504,9 +2539,10 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
 
 /// One `molt_iter_next_unboxed` step: `(done, value)`, where `value` is the
 /// next owned value when `done` is `false`-bits and `None` otherwise.
+#[inline(always)]
 fn iter_next_unboxed_step(py: &PyToken<'_>, iter_bits: u64) -> (u64, u64) {
     let no_value = MoltObject::none().bits();
-    match iteration_step(py, iter_bits) {
+    match advance(py, iter_bits) {
         Ok(SpecialIterationStep::Item(value)) => (MoltObject::from_bool(false).bits(), value),
         Ok(SpecialIterationStep::Exhausted(payload)) => {
             dec_ref_bits(py, payload);
