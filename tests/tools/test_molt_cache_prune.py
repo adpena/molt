@@ -377,11 +377,13 @@ os.environ['MOLT_MAX_CONCURRENT_BUILDS'] = '1'
 from molt.default_paths import shared_cache_lock_path, shared_stdlib_publish_lock_path
 
 def barrier(entry, lock):
-    # The OS lock is held before the child announces readiness. Timeouts bound
-    # both directions; elapsed time is never the evidence of readiness.
+    # The OS lock is held before the child announces readiness. The release
+    # wait has no deadline: the parent's test body takes as long as the host
+    # allows, and a dead parent closes the socket, so recv returns b''.
     with socket.create_connection(('127.0.0.1', int(port)), timeout=20) as channel:
         channel.sendall((json.dumps({'entry': str(entry) if entry else None,
                                     'lock': str(lock)}) + '\n').encode())
+        channel.settimeout(None)
         assert channel.recv(1) == b'R'
 
 if mode == 'slot':
@@ -407,12 +409,40 @@ print('RELEASED')
 """
 
 
+_OWNER_START_DEADLINE_S = 300.0
+
+
+def _accept_owner(
+    server: socket.socket, process: subprocess.Popen[str]
+) -> socket.socket:
+    """Wait for the owner's connection while the owner is alive.
+
+    Its start imports the CLI, which a loaded host can delay for tens of
+    seconds; liveness, not a short deadline, decides. An owner that exits
+    first fails the test with its output.
+    """
+    server.settimeout(0.5)
+    deadline = time.monotonic() + _OWNER_START_DEADLINE_S
+    while True:
+        try:
+            channel, _address = server.accept()
+            return channel
+        except TimeoutError:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                raise AssertionError(
+                    f"cache owner exited {process.returncode} before readiness: "
+                    f"{stdout}{stderr}"
+                ) from None
+            if time.monotonic() > deadline:
+                raise
+
+
 @contextmanager
 def _active_cache_owner(mode: str, cache: Path, project: Path):
     with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
-        server.settimeout(30)
         process = start_owned_test_process(
             [
                 sys.executable,
@@ -430,7 +460,7 @@ def _active_cache_owner(mode: str, cache: Path, project: Path):
         )
         channel = None
         try:
-            channel, _address = server.accept()
+            channel = _accept_owner(server, process)
             channel.settimeout(30)
             with channel.makefile("rb") as stream:
                 ready = json.loads(stream.readline())
