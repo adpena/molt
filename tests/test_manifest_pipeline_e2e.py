@@ -579,7 +579,8 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
                 f"native-stdlib-reuse-build case={index} elapsed_seconds={elapsed:.3f} "
                 f"diagnostics_seconds={diagnostics['total_sec']} slots={len(layouts[-1])} "
                 f"application_key={application_keys[-1]} stdlib_key={archive_keys[-1]} "
-                f"{reuse_lines[0]} stdout={executed.stdout!r}",
+                f"{reuse_lines[0]} stdout={executed.stdout!r} "
+                f"phase_sec={json.dumps(diagnostics['phase_sec'], sort_keys=True)}",
                 flush=True,
             )
 

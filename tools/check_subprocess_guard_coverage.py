@@ -228,17 +228,17 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "native query-negative control terminates only its own known sleeping child before bounded wait",
     ),
     AllowedRawSubprocessUse(
-        "tests/cli/test_source_record_store.py",
-        "_close_fork_observer",
+        "tests/process_guard_common.py",
+        "close_owned_multiprocessing_child",
         "process.terminate",
-        "bounded SQLite/fork metadata oracle must inherit the parent's exact "
-        "handle and lock; cleanup targets only its created child after a finite pipe wait",
+        "direct multiprocessing observers own their exact child handle; "
+        "shared bounded cleanup targets only that caller-created child",
     ),
     AllowedRawSubprocessUse(
-        "tests/cli/test_source_record_store.py",
-        "_close_fork_observer",
+        "tests/process_guard_common.py",
+        "close_owned_multiprocessing_child",
         "process.kill",
-        "escalates only that same unreaped fork observer after a bounded terminate/join",
+        "escalates only that same unreaped multiprocessing observer after a bounded terminate/join",
     ),
     AllowedRawSubprocessUse(
         "tests/test_molt_queue_cli.py",

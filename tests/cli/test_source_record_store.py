@@ -14,7 +14,10 @@ from pathlib import Path
 import pytest
 
 from molt.cli import source_record_store as records
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import (
+    close_owned_multiprocessing_child,
+    install_module_view,
+)
 
 _HOUR = 3600 * 1_000_000_000
 _DAY = 24 * _HOUR
@@ -1202,18 +1205,6 @@ def _exercise_inherited_owner(store, maintenance, pipe):
     pipe.close()
 
 
-def _close_fork_observer(child):
-    """Reap only the native child created by a bounded fork metadata oracle."""
-    if child.is_alive():
-        child.terminate()
-    child.join(10)
-    if child.is_alive():
-        child.kill()
-        child.join(10)
-    assert not child.is_alive(), "owned fork observer did not stop"
-    child.close()
-
-
 @pytest.mark.skipif(
     "fork" not in multiprocessing.get_all_start_methods(), reason="requires fork"
 )
@@ -1236,7 +1227,7 @@ def test_inherited_owner_refuses_before_a_parent_lock_and_fresh_owner_works(tmp_
                 assert child.exitcode == 0
             finally:
                 receive.close()
-                _close_fork_observer(child)
+                close_owned_multiprocessing_child(child)
         assert maintenance.inventory().entries == 1
     assert (
         store.get("import-scan", "k", generation="g", max_bytes=16).payload == b"body"
@@ -1340,7 +1331,7 @@ def test_fork_finalization_keeps_a_directly_constructed_handle_inert(
         assert child.exitcode == 0
     finally:
         receive.close()
-        _close_fork_observer(child)
+        close_owned_multiprocessing_child(child)
     holder.clear()
     assert connection_ref() is None
 
@@ -1582,7 +1573,7 @@ def test_gc_cannot_reenter_file_lock_mutexes(tmp_path, mutex_name, owner_kind):
         assert child.exitcode == 0
     finally:
         parent.close()
-        _close_fork_observer(child)
+        close_owned_multiprocessing_child(child)
 
 
 @pytest.mark.parametrize("ending", ["close", "drop"])

@@ -14,7 +14,10 @@ from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from multiprocessing.process import BaseProcess
 
 from tools import harness_memory_guard
 from molt.temporary_artifacts import new_guarded_directory
@@ -698,3 +701,19 @@ def close_owned_test_process(process: subprocess.Popen[Any]) -> None:
     if process.poll() is None:
         harness_memory_guard.force_close_process_group(process)
     process.wait()
+
+
+def close_owned_multiprocessing_child(child: BaseProcess) -> None:
+    """Reap only the caller's directly created multiprocessing observer.
+
+    BaseProcess checks its creator PID before is_alive/join. The child remains
+    unreaped until this owner joins it; cleanup never signals a process group.
+    """
+    if child.is_alive():
+        child.terminate()
+    child.join(10)
+    if child.is_alive():
+        child.kill()
+        child.join(10)
+    assert not child.is_alive(), "owned multiprocessing observer did not stop"
+    child.close()
