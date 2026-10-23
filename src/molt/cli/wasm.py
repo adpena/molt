@@ -1235,6 +1235,7 @@ export default {
     let lifetime = null;
     const errors = [];
     let procExit = null;
+    let exitStatus = 0;
     try {
       const bundleBytes = await assetBytes("bundle.tar");
       if (bundleBytes) {
@@ -1280,6 +1281,10 @@ export default {
           throw new Error("missing application startup export");
         }
         appInstance.exports.molt_main();
+        // The runtime reports an exception the entry left pending (CPython's
+        // PyErr_Print, through sys.excepthook into stderr) and returns the
+        // program's exit status, as the native main stub does.
+        exitStatus = Number(rtInstance.exports.molt_main_exit_status());
       });
     } catch (err) {
       if (err instanceof ProcExit) procExit = err;
@@ -1307,7 +1312,7 @@ export default {
       ? "text/html; charset=utf-8"
       : "text/plain; charset=utf-8";
     return new Response(output, {
-      status: procExit && procExit.code !== 0 ? 500 : 200,
+      status: (procExit && procExit.code !== 0) || exitStatus !== 0 ? 500 : 200,
       headers: { "content-type": contentType },
     });
   }

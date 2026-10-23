@@ -59,27 +59,13 @@ name = "molt_set_argv"
 returns = "void"
 params = ["i32", "argv"]
 
-# Called after the entry returns (the stub's `molt_finish`): if an exception
-# is pending, report it and release it; then leave through the runtime's exit.
+# Called after the entry returns (the stub's `molt_finish`): the runtime
+# reports an exception the entry left pending (CPython's PyErr_Print) and
+# returns the exit status; its exit then runs teardown and ends the process.
 [[finish]]
-name = "molt_exception_pending"
+name = "molt_main_exit_status"
 returns = "u64"
 params = []
-
-[[finish]]
-name = "molt_exception_last_pending"
-returns = "u64"
-params = []
-
-[[finish]]
-name = "molt_exception_report_uncaught"
-returns = "u64"
-params = ["u64"]
-
-[[finish]]
-name = "molt_dec_ref_obj"
-returns = "void"
-params = ["u64"]
 
 [[finish]]
 name = "molt_runtime_exit"

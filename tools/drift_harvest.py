@@ -52,7 +52,12 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from molt.custody_layout import BUNDLES_DIRNAME  # noqa: E402
+from molt.custody_layout import (  # noqa: E402
+    BUNDLES_DIRNAME,
+    LIVE_WORKTREE_LIMIT,
+    family_worktrees_root,
+    lane_slot_index,
+)
 from molt.dx import canonical_molt_root  # noqa: E402
 from tools import lane_maturity  # noqa: E402
 from tools.molt_dev_retire import prepare_checkout_retirement  # noqa: E402
@@ -61,9 +66,8 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
-# The SPRAWL threshold (M67): the gate fails above this many live worktrees,
-# and `lane start` refuses a lane that would pass it (owner, 2026-10-22: 12).
-MAX_LIVE_WORKTREES = 12
+# The SPRAWL threshold (`molt.custody_layout.LIVE_WORKTREE_LIMIT`).
+MAX_LIVE_WORKTREES = LIVE_WORKTREE_LIMIT
 
 
 # Worktrees that must never be pruned regardless of freshness.
@@ -182,14 +186,27 @@ def _worktree_exists(path: str) -> bool:
     return Path(path).is_dir()
 
 
+def _free_slot(wt: dict, root: Path) -> bool:
+    """A lane slot between lanes: detached, at a slot path (HF-491). It is a
+    warm cache, not work in progress, so it is neither live nor prunable."""
+    return "branch" not in wt and (
+        lane_slot_index(wt["path"], family_worktrees_root(root)) is not None
+    )
+
+
 def live_worktree_count(root: Path) -> int:
-    """Count what the SPRAWL gate counts: registered worktrees still on disk.
+    """Count what the SPRAWL gate counts: registered worktrees still on disk,
+    except free lane slots.
 
     This reads one ``git worktree list``; it skips the per-worktree status and
     patch-id probes that ``classify`` needs, so a session-start digest can
     afford it.
     """
-    return sum(1 for wt in _worktrees(root) if _worktree_exists(wt["path"]))
+    return sum(
+        1
+        for wt in _worktrees(root)
+        if _worktree_exists(wt["path"]) and not _free_slot(wt, root)
+    )
 
 
 def classify(fresh_hours: float, now: float, *, root: Path) -> list[dict]:
@@ -220,7 +237,9 @@ def classify(fresh_hours: float, now: float, *, root: Path) -> list[dict]:
         # so compute it lazily only for the SUPERSEDED-vs-SIGNAL decision. This keeps
         # the pre-push gate fast on a checkout of mostly-fresh worktrees without
         # changing any state assignment or prune/bundle behaviour.
-        if _protected(path, root):
+        if _free_slot(wt, root) and dirty == 0:
+            state, uniq = "SLOT", 0
+        elif _protected(path, root):
             state, uniq = "PROTECTED", 0
         elif wt.get("locked"):
             state, uniq = "LOCKED", 0
@@ -264,7 +283,7 @@ def gate(
     Fresh SIGNAL (recent WIP) never trips the gate — only aged, unlanded work.
     """
     violations: list[str] = []
-    live = [r for r in rows if r["state"] not in ("STALE",)]
+    live = [r for r in rows if r["state"] not in ("STALE", "SLOT")]
     if len(live) > max_worktrees:
         violations.append(
             f"SPRAWL: {len(live)} live worktrees > max {max_worktrees}. "

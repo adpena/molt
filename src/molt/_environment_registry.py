@@ -2643,12 +2643,12 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "",
+      "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_MAIN_EXCEPTION",
       "output_neutral": false,
-      "owner": "runtime/molt-jit/src/launch.rs",
-      "summary": "Any value other than empty or 0 makes a native program's launch print whether an exception is pending when its entry returns (molt main finish pending=0|1) on stderr; the JIT runner and the AOT main stub that src/molt/cli/native_main_stub.py renders read it once, after the program runs.",
+      "owner": "runtime/molt-runtime/src/builtins/exceptions/main_exit.rs",
+      "summary": "Set to exactly 1 to print whether an exception is pending when a program's entry returns (molt main finish pending=0|1) on stderr; the runtime's exit-status report reads it once, after the program runs, for native, JIT and WASM programs.",
       "values": []
     },
     {

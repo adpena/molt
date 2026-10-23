@@ -161,19 +161,9 @@ pub extern "C" fn molt_set_argv(argc: i32, argv: *const *const std::ffi::c_char)
     log(&format!("molt_set_argv {{}}", arguments.join(" ")));
 }}
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending() -> u64 {{
-    log("molt_exception_pending");
+pub extern "C" fn molt_main_exit_status() -> u64 {{
+    log("molt_main_exit_status");
     0
-}}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_last_pending() -> u64 {{
-    log("molt_exception_last_pending");
-    0
-}}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_report_uncaught(_exception: u64) -> u64 {{
-    log("molt_exception_report_uncaught");
-    1
 }}
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dec_ref_obj(_bits: u64) {{}}

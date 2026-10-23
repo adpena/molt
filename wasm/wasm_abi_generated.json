@@ -4976,6 +4976,7 @@
     "molt_iter_next": "molt_iter_next",
     "molt_list_append": "molt_list_append",
     "molt_list_from_array": "molt_list_from_array",
+    "molt_main_exit_status": "molt_main_exit_status",
     "molt_mapping_getitem": "molt_mapping_getitem",
     "molt_mapping_keys": "molt_mapping_keys",
     "molt_mapping_length": "molt_mapping_length",
