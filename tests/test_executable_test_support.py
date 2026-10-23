@@ -115,10 +115,12 @@ def test_first_native_fixture_execution_owns_cold_budget_without_retry(
         assert launches == [("build", 90), ("cold", 90), ("cold", 30)]
     else:
         which = test_dx_run_context.shutil.which
-        monkeypatch.setattr(
+        process_guard_common.install_module_view(
+            monkeypatch,
+            "shutil",
             test_dx_run_context.shutil,
-            "which",
-            lambda name: "/fixture/cargo" if name == "cargo" else which(name),
+            test_dx_run_context,
+            which=lambda name: "/fixture/cargo" if name == "cargo" else which(name),
         )
         test_dx_run_context.test_workspace_targets_execute_own_cargo_sources(tmp_path)
         assert launches == [

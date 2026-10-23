@@ -1799,12 +1799,10 @@ def test_abandoned_operation_drops_renewals_without_entering_save(
     tmp_path, monkeypatch, boundary, cleanup_replaces_exit
 ):
     import gc
-    import sys
     from contextlib import contextmanager
     from molt.cli import cache_fingerprints as fingerprints
 
     monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
-    unraisable = []
     if cleanup_replaces_exit:
 
         @contextmanager
@@ -1817,7 +1815,6 @@ def test_abandoned_operation_drops_renewals_without_entering_save(
         monkeypatch.setattr(
             fingerprints, "local_python_import_graph_transaction", replacing_cleanup
         )
-        monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
     clock = [100 * _DAY]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
     scope = (
@@ -1836,12 +1833,17 @@ def test_abandoned_operation_drops_renewals_without_entering_save(
     original = store.save_renewals
     monkeypatch.setattr(store, "save_renewals", lambda: saves.append("unexpected save"))
     with store._lock:
+        if cleanup_replaces_exit:
+            # close() injects the same GeneratorExit as GC, while exposing the
+            # replaced error directly without changing process-wide hooks.
+            # The other parameter exercises implicit finalization.
+            with pytest.raises(
+                RuntimeError, match="graph cleanup replaced abandonment"
+            ):
+                context.gen.close()
         del context
         gc.collect()
     assert saves == []
-    assert [str(event.exc_value) for event in unraisable] == (
-        ["graph cleanup replaced abandonment"] if cleanup_replaces_exit else []
-    )
     assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
     assert store._connect().execute("SELECT used_ns FROM recency").fetchall() == [
         (100 * _DAY,)
