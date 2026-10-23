@@ -619,8 +619,9 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "lifecycle (`limactl stop` ends it); the guard closes every descendant "
         "when its command returns and so killed both hostagents (HF-471). Own "
         "session, a deadline on limactl alone through wait_owned, output to "
-        "anonymous files, no descendant custody; apply then requires Lima to "
-        "list the VM as running",
+        "anonymous files, an environment without the guard's token, marker and "
+        "scratch, no descendant custody; apply refuses under an enclosing "
+        "memory guard and then requires Lima to list the VM as running",
     ),
     AllowedRawSubprocessUse(
         "tests/test_agent_contract_budget.py",
