@@ -169,7 +169,7 @@ unsafe fn asyncio_pending_with_wait(
                 // real task-owned deadline, using the same host-progress
                 // interval as process and socket waits, rather than sleep(0).
                 #[cfg(target_arch = "wasm32")]
-                let delay = crate::async_rt::io_poller::HOST_PROGRESS_POLL_SLICE.as_secs_f64();
+                let delay = crate::async_rt::host_progress::HOST_PROGRESS_POLL_SLICE.as_secs_f64();
                 #[cfg(not(target_arch = "wasm32"))]
                 let delay = 0.0;
                 molt_async_sleep(

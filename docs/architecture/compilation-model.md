@@ -251,18 +251,16 @@ ld -o app user.o -lmolt_core [-lmolt_math] [-lmolt_net] ...
 Only stdlib crates that the user imports are linked. The linker's
 `--gc-sections` / `-dead_strip` removes unused functions.
 
-## categories.toml Mapping
+## Intrinsic availability
 
-```toml
-[core]           → molt-runtime-core (always linked)
-[builtin]        → molt-runtime-core (always linked)
-[internal]       → molt-runtime-core (always linked)
-[stdlib.math]    → molt-runtime-math (linked if `import math`)
-[stdlib.json]    → molt-runtime-serial (linked if `import json`)
-[stdlib.socket]  → molt-runtime-net (linked if `import socket`)
-[stdlib.asyncio] → molt-runtime-asyncio (linked if `import asyncio`)
-# etc.
-```
+Each intrinsic's `# cfg:` line in
+`runtime/molt-runtime/src/intrinsics/manifest.pyi` names the Cargo feature (and
+any target restriction) whose runtime build defines it, for example
+`# cfg: feature = "stdlib_math"` for the `math` intrinsics that live in
+`molt-runtime-math`. A program that reaches an intrinsic needs its feature;
+`--stdlib-profile auto` selects the smallest tier that provides every reached
+feature. `intrinsics/categories.toml` only groups resolver arms by module. See
+`docs/design/foundation/feature_reachability_tree_shaking.md`, section 4.
 
 ## Implementation Phases
 

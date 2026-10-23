@@ -26,7 +26,7 @@ use std::time::Duration;
 use super::sockets::port_from_bits;
 #[cfg(all(molt_has_net_io, not(unix)))]
 use super::sockets::socket_register_peer_pair;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use super::sockets::socket_timeout;
 #[cfg(target_arch = "wasm32")]
 use super::sockets::{decode_sockaddr, errno_from_rc, wasm_socket_meta_insert};

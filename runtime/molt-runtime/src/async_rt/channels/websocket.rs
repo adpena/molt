@@ -5,21 +5,21 @@ use std::net::TcpStream;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use super::super::poll::ws_wait_poll_fn_addr;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use super::super::sockets::require_net_capability;
 use super::super::sockets::{SendData, send_data_from_bits};
 use super::stream::bytes_channel;
 #[cfg(molt_has_net_io)]
 use crate::GilReleaseGuard;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use crate::audit::AuditArgs;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use crate::string_obj_to_owned;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use crate::{
     IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, dec_ref_bits, header_from_obj_ptr, inc_ref_bits,
     monotonic_now_secs, obj_from_bits, resolve_obj_ptr, runtime_state, to_f64, to_i64,
@@ -211,7 +211,7 @@ type WsConnectHook = extern "C" fn(*const u8, usize) -> *mut u8;
 #[cfg(molt_has_net_io)]
 static WS_CONNECT_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 fn ws_ref_inc(ws_ptr: *mut MoltWebSocket) {
     if ws_ptr.is_null() {
         return;
@@ -265,7 +265,7 @@ fn classify_host_send_result(rc: i32) -> HostSendOutcome {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -> i64 {
     if ctx.is_null() {
         return pending_bits_i64();
@@ -286,7 +286,7 @@ extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 extern "C" fn ws_recv_host_hook(ctx: *mut u8) -> i64 {
     if ctx.is_null() {
         return MoltObject::none().bits() as i64;
@@ -332,7 +332,7 @@ extern "C" fn ws_recv_host_hook(ctx: *mut u8) -> i64 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 extern "C" fn ws_close_host_hook(ctx: *mut u8) {
     if ctx.is_null() {
         return;
@@ -344,7 +344,7 @@ extern "C" fn ws_close_host_hook(ctx: *mut u8) {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 fn ws_host_handle(ws: &MoltWebSocket) -> Option<i64> {
     if ws.hook_ctx.is_null() {
         return None;
@@ -635,7 +635,7 @@ pub(crate) fn ws_wait_release_detached_resource(_py: &PyToken<'_>, ws_bits: u64)
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) fn ws_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     if future_ptr.is_null() {
         return MoltObject::none().bits();
@@ -648,7 +648,7 @@ pub(crate) fn ws_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     unsafe { payload_ptr.replace(MoltObject::none().bits()) }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) fn ws_wait_release_detached_resource(_py: &PyToken<'_>, ws_bits: u64) {
     let ws_ptr = ptr_from_bits(ws_bits);
     if !ws_ptr.is_null() {
@@ -715,7 +715,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
     })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_client_connect_new(
     _host_bits: u64,
@@ -776,7 +776,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
     })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
     _fd_bits: u64,
@@ -864,7 +864,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
     })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -915,7 +915,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
     })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_tls_server_from_fd_new(
     _fd_bits: u64,
@@ -984,7 +984,7 @@ pub unsafe extern "C" fn molt_ws_connect(
     })
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1021,7 +1021,7 @@ mod tests {
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
     match code {
         1 => raise_exception::<_>(_py, "ValueError", "websocket url payload is invalid"),
@@ -1040,7 +1040,7 @@ fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
@@ -1140,7 +1140,7 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
     })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1304,7 +1304,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
     })
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `obj_bits` is a valid WebSocket object pointer.

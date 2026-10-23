@@ -131,7 +131,7 @@ pub(crate) use stream::{
     stream_new_with_byte_budget, stream_release_queued_bytes,
 };
 pub use websocket::*;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) use websocket::{ws_wait_detach_resource, ws_wait_release_detached_resource};
 
 #[cfg(test)]

@@ -747,7 +747,7 @@ one stdlib tier (`--stdlib-profile auto` picks the smallest tier that covers the
 program). Its required export ABI is the generated import registry narrowed by
 that build's recorded Cargo features and its target
 (`RuntimeWasmGeneration.shared_runtime_import_names`, using
-`runtime_enabled_cargo_features` and the generated link-affecting feature gates).
+`runtime_enabled_cargo_features` and each import's generated declared feature).
 The linker fails closed when the deploy runtime misses any import of that ABI,
 or when the app imports a symbol the runtime does not export. It never demands
 the whole registry: tier-gated families (`molt_decimal_*`, `molt_tk_*`, which

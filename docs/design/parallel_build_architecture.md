@@ -23,7 +23,7 @@ The live codebase and executable Cargo metadata remain authoritative.
   `ipaddress` owned by `molt-runtime-ipaddress` are
   completed leaf-ownership examples: their in-facade fallback modules are
   deleted, their generated resolver arms delegate into leaf-owned intrinsic
-  sub-registries, their symbol prefixes are link-affecting feature gates, and
+  sub-registries, their manifest `# cfg:` declarations name their features, and
   feature-on/feature-off checks prove the facade no longer carries duplicate
   authorities for those domains.
 - The lower stack is now split: `runtime/molt-ir/` owns canonical IR/TIR data,

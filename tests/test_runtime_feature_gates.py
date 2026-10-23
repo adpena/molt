@@ -1,18 +1,13 @@
-"""Anti-drift guards for generated runtime feature-gate classification.
+"""Guards for the generated runtime intrinsic availability table.
 
-``src/molt/_runtime_feature_gates.py`` is generated from categories.toml,
-Cargo.toml, and cfg-gated runtime modules. The refusal must fire only
-for *link-affecting* features — those whose Cargo gate, when disabled, removes
-intrinsic *symbol definitions* from the archive — and never for resolver-only
-features (empty `[]` Cargo groups) whose ``#[unsafe(no_mangle)]`` definitions are
-compiled unconditionally.
+``src/molt/_runtime_feature_gates.py`` projects each intrinsic's ``# cfg:``
+declaration in ``runtime/molt-runtime/src/intrinsics/manifest.pyi``. The
+generated resolvers prove at compile time that each definition's cfg equals its
+declaration, so every declared feature removes its symbols from a runtime built
+without it, and reachability selects or refuses that feature (HF-487).
 
-This guard re-derives the link-affecting set mechanically from the actual runtime
-crate sources and asserts it equals ``LINK_AFFECTING_FEATURES``. If someone adds
-a `#[cfg(feature="stdlib_new")]`-gated `mod` or a `dep:`-backed feature without
-updating the classification, this fails loudly at test time — long before a
-profile build hits an undefined-symbol linker error (or, worse, a wrongful
-refusal of a working build).
+These tests cover the projection's semantics and the source rule the compile
+check cannot see: no runtime export may stand in for a disabled feature.
 """
 
 from __future__ import annotations
@@ -24,11 +19,9 @@ from pathlib import Path
 import pytest
 
 from molt._runtime_feature_gates import (
-    LINK_AFFECTING_FEATURES,
-    RUNTIME_BUILTIN_SYMBOLS,
-    RUNTIME_FEATURE_GATES,
-    feature_gate_for_symbol,
-    link_affecting_features_unsupported_on_target,
+    RUNTIME_FEATURES,
+    feature_for_symbol,
+    features_unsupported_on_target,
     runtime_symbol_available_on_target,
 )
 
@@ -36,92 +29,27 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_CRATE = ROOT / "runtime" / "molt-runtime"
 
 
-def _cfg_gated_mod_features(rust_source: str) -> set[str]:
-    """Features that gate a `mod` declaration (the module is cfg-compiled out)."""
-    pattern = re.compile(
-        r'#\[cfg\(feature\s*=\s*"([^"]+)"\)\]\s*\n'
-        r"\s*(?:pub\s+|pub\(crate\)\s+)?mod\b"
-    )
-    return set(pattern.findall(rust_source))
-
-
-def _feature_expands_to_dep(name: str, features: dict, seen: set[str]) -> bool:
-    """True iff *name* transitively pulls an optional crate / dependency.
-
-    A `dep:` item, or any `crate/feature` / `crate?/feature` activation, marks
-    the feature as dep-backed (the optional crate's symbols are dropped when the
-    feature is off). Recurse through feature aliases defined in the same table.
-    """
-    if name in seen:
-        return False
-    seen.add(name)
-    for item in features.get(name, []):
-        if item.startswith("dep:"):
-            return True
-        if "/" in item:
-            return True
-        if item in features and _feature_expands_to_dep(item, features, seen):
-            return True
-    return False
-
-
-def _mechanically_derived_link_affecting() -> set[str]:
+def test_declared_features_are_runtime_cargo_features() -> None:
     cargo = tomllib.loads((RUNTIME_CRATE / "Cargo.toml").read_text(encoding="utf-8"))
-    features = cargo.get("features", {})
-
-    mod_features = _cfg_gated_mod_features(
-        (RUNTIME_CRATE / "src" / "builtins" / "mod.rs").read_text(encoding="utf-8")
-    ) | _cfg_gated_mod_features(
-        (RUNTIME_CRATE / "src" / "lib.rs").read_text(encoding="utf-8")
-    )
-
-    dep_features = {
-        feature
-        for feature in features
-        if _feature_expands_to_dep(feature, features, set())
-    }
-
-    gate_features = {feature for _prefix, feature in RUNTIME_FEATURE_GATES}
-    return (mod_features | dep_features) & gate_features
+    assert RUNTIME_FEATURES <= set(cargo["features"])
 
 
-def test_link_affecting_features_match_runtime_crate_ground_truth() -> None:
-    derived = _mechanically_derived_link_affecting()
-    assert LINK_AFFECTING_FEATURES == derived, (
-        "LINK_AFFECTING_FEATURES drifted from the runtime crate. "
-        f"missing (now link-affecting in the crate): {sorted(derived - LINK_AFFECTING_FEATURES)}; "
-        f"stale (no longer link-affecting): {sorted(LINK_AFFECTING_FEATURES - derived)}. "
-        "Update Cargo.toml/cfg-gated modules, then regenerate intrinsics."
-    )
-
-
-def test_link_affecting_is_subset_of_gate_table_features() -> None:
-    gate_features = {feature for _prefix, feature in RUNTIME_FEATURE_GATES}
-    assert LINK_AFFECTING_FEATURES <= gate_features
-
-
-def test_exact_builtin_authority_precedes_stdlib_prefix_gates() -> None:
-    categories = tomllib.loads(
-        (RUNTIME_CRATE / "src" / "intrinsics" / "categories.toml").read_text(
-            encoding="utf-8"
-        )
-    )
-    expected_builtins = {
-        symbol for symbols in categories["builtin"].values() for symbol in symbols
-    }
-
-    assert RUNTIME_BUILTIN_SYMBOLS == expected_builtins
-    for symbol in RUNTIME_BUILTIN_SYMBOLS:
-        assert feature_gate_for_symbol(symbol) is None
-
-    assert feature_gate_for_symbol("molt_hash_builtin") is None
+def test_symbol_features_are_exact_not_prefix_attributed() -> None:
+    # One spelling family, two facts: networking and pure helpers. The core
+    # compile() builtin needs no feature; the ast module does.
+    assert feature_for_symbol("molt_socket_new") == "stdlib_net"
+    assert feature_for_symbol("molt_socket_htons") is None
+    assert feature_for_symbol("molt_compile_builtin") is None
+    assert feature_for_symbol("molt_ast_parse") == "stdlib_ast"
+    assert feature_for_symbol("molt_signal_default_int_handler") is None
+    assert feature_for_symbol("molt_hash_builtin") is None
     for symbol in (
         "molt_hash_new",
         "molt_hash_update",
         "molt_hash_copy",
         "molt_hash_digest",
     ):
-        assert feature_gate_for_symbol(symbol) == "stdlib_crypto"
+        assert feature_for_symbol(symbol) == "stdlib_crypto"
 
 
 def test_sqlite_target_availability_is_generated_for_profiles_and_admission() -> None:
@@ -136,9 +64,35 @@ def test_sqlite_target_availability_is_generated_for_profiles_and_admission() ->
     assert not runtime_symbol_available_on_target(
         "molt_sqlite3_connect", target_triple="wasm32-unknown-unknown", target_os="none"
     )
-    assert link_affecting_features_unsupported_on_target("wasm32-wasip1") == frozenset(
-        {"sqlite"}
+    assert features_unsupported_on_target(
+        target_arch="wasm32", target_os="wasi"
+    ) == frozenset({"sqlite"})
+
+
+@pytest.mark.parametrize(
+    ("triple", "target_os", "available"),
+    [
+        ("aarch64-apple-darwin", "macos", True),
+        ("x86_64-unknown-linux-gnu", "linux", True),
+        ("wasm32-wasip1", "wasi", True),
+        ("wasm32-unknown-unknown", "none", True),
+        ("x86_64-pc-windows-msvc", "windows", False),
+    ],
+)
+def test_networking_has_no_windows_provider(
+    triple: str, target_os: str, available: bool
+) -> None:
+    for symbol in ("molt_socketpair", "molt_socket_new", "molt_ssl_wrap_socket"):
+        assert (
+            runtime_symbol_available_on_target(
+                symbol, target_triple=triple, target_os=target_os
+            )
+            is available
+        )
+    unsupported = features_unsupported_on_target(
+        target_arch=triple.split("-", 1)[0], target_os=target_os
     )
+    assert ("stdlib_net" in unsupported) is not available
 
 
 @pytest.mark.parametrize(
@@ -177,40 +131,144 @@ def test_windows_locale_provider_requires_actual_target_os(
         )
 
 
-def test_ast_feature_is_link_affecting() -> None:
-    # The seeded class: ast on micro must be refused, so stdlib_ast MUST be
-    # classified link-affecting.
-    assert "stdlib_ast" in LINK_AFFECTING_FEATURES
-
-
-def test_serial_feature_is_link_affecting() -> None:
-    assert "stdlib_serial" in LINK_AFFECTING_FEATURES
-
-
-def test_high_level_gpu_intrinsics_are_link_affecting() -> None:
-    from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
-
+def test_high_level_gpu_intrinsics_require_gpu_primitives() -> None:
     for symbol in (
         "molt_gpu_linear_contiguous",
         "molt_gpu_tensor__zeros",
         "molt_gpu_interop_decode_f16_bytes_to_f32",
         "molt_gpu_prim_create_tensor",
     ):
-        assert link_affecting_feature_gate_for_symbol(symbol) == "molt_gpu_primitives"
+        assert feature_for_symbol(symbol) == "molt_gpu_primitives"
 
 
-def test_empty_cargo_group_features_are_not_link_affecting() -> None:
-    # Empty `[]` Cargo groups gate only resolver arms; their symbols are always
-    # defined, so they must stay out of the link-affecting set.
-    for feature in (
-        "stdlib_logging",
-        "stdlib_concurrent",
-        "stdlib_dbm",
-        "stdlib_importlib_extra",
-        "stdlib_signal",
-        "stdlib_select",
-    ):
-        assert feature not in LINK_AFFECTING_FEATURES
+# --- No runtime export stands in for a disabled feature ---------------------
+
+# A cfg predicate that holds only when a feature, or the networking provider a
+# feature selects, is off. Target-only alternatives (`not(target_arch = ...)`)
+# are separate providers, not stand-ins.
+_FEATURE_FACT = re.compile(
+    r"feature\s*=|\bmolt_has_net_io\b|\bmolt_wasm_net\b|\bmolt_net\b"
+)
+
+
+def _negates_feature(cfg: str) -> bool:
+    """Whether some `not(...)` in *cfg* negates a feature-derived fact."""
+    start = cfg.find("not(")
+    while start != -1:
+        depth, index = 0, start + len("not")
+        for index in range(start + len("not"), len(cfg)):
+            depth += {"(": 1, ")": -1}.get(cfg[index], 0)
+            if depth == 0:
+                break
+        if _FEATURE_FACT.search(cfg[start:index]):
+            return True
+        start = cfg.find("not(", start + 1)
+    return False
+
+
+_ATTRIBUTE = re.compile(r"^\s*#\[(.*)\]\s*$")
+_MOD_DECL = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
+_EXPORT = re.compile(r"^\s*pub\s+(?:unsafe\s+)?extern\s+\"C\"\s+fn\s+(\w+)")
+_GENERATED_RESOLVERS = RUNTIME_CRATE / "src" / "intrinsics" / "generated_resolvers"
+
+
+def _cfgs(attributes: list[str]) -> list[str]:
+    return [attribute for attribute in attributes if attribute.startswith("cfg(")]
+
+
+def _feature_off_exports(
+    path: Path, inherited: list[str], found: list[str], root: Path, crate_src: Path
+) -> None:
+    """Record exports in *path* (and its modules) defined only when a feature is off.
+
+    A satellite crate's own source compiled inline (``#[path]`` into another
+    crate) while its crate feature is off is the same implementation linked
+    from a different crate, not a stand-in, so files outside *crate_src* are
+    walked for nested modules only.
+    """
+    shared_source = not path.resolve().is_relative_to(crate_src.resolve())
+    lines = path.read_text(encoding="utf-8").splitlines()
+    attributes: list[str] = []
+    for line in lines:
+        if match := _ATTRIBUTE.match(line):
+            attributes.append(match.group(1))
+            continue
+        if line.strip().startswith("//") or not line.strip():
+            continue
+        cfgs = inherited + _cfgs(attributes)
+        if (decl := _MOD_DECL.match(line)) is not None:
+            explicit = next(
+                (
+                    attribute[len('path = "') : -1]
+                    for attribute in attributes
+                    if attribute.startswith('path = "')
+                ),
+                None,
+            )
+            base = (
+                path.parent
+                if path.name in {"lib.rs", "mod.rs"}
+                else path.with_suffix("")
+            )
+            candidates = (
+                [path.parent / explicit]
+                if explicit is not None
+                else [base / f"{decl.group(1)}.rs", base / decl.group(1) / "mod.rs"]
+            )
+            for child in candidates:
+                if (
+                    child.is_file()
+                    and child.resolve().parent != _GENERATED_RESOLVERS.resolve()
+                ):
+                    _feature_off_exports(child, cfgs, found, root, crate_src)
+                    break
+        elif (
+            export := _EXPORT.match(line)
+        ) is not None and "unsafe(no_mangle)" in " ".join(attributes):
+            if not shared_source and any(_negates_feature(cfg) for cfg in cfgs):
+                found.append(f"{path.relative_to(root)}: {export.group(1)} {cfgs}")
+        attributes = []
+
+
+def test_no_runtime_export_stands_in_for_a_disabled_feature() -> None:
+    """A feature-off build lacks the feature's symbols; nothing replaces them.
+
+    The generated resolvers' absence probes prove declared intrinsics are
+    absent outside their cfg. This walks every runtime crate's module tree for
+    the remaining shape: an export compiled only when a feature (or the
+    networking provider it selects) is off, which would move a missing
+    feature from build time to run time.
+    """
+    found: list[str] = []
+    for lib in sorted((ROOT / "runtime").glob("*/src/lib.rs")):
+        _feature_off_exports(lib, [], found, ROOT, lib.parent)
+    assert found == []
+
+
+def test_feature_off_export_scan_detects_module_and_item_gates(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "lib.rs").write_text(
+        '#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]\nmod stubs;\nmod real;\n',
+        encoding="utf-8",
+    )
+    (src / "stubs.rs").write_text(
+        '#[unsafe(no_mangle)]\npub extern "C" fn molt_socket_new() -> u64 { 0 }\n',
+        encoding="utf-8",
+    )
+    (src / "real.rs").write_text(
+        '#[cfg(not(feature = "stdlib_ast"))]\n#[unsafe(no_mangle)]\n'
+        'pub extern "C" fn molt_compile_builtin() -> u64 { 0 }\n'
+        '#[cfg(not(target_arch = "wasm32"))]\n#[unsafe(no_mangle)]\n'
+        'pub extern "C" fn molt_native_only() -> u64 { 0 }\n',
+        encoding="utf-8",
+    )
+    found: list[str] = []
+    _feature_off_exports(src / "lib.rs", [], found, tmp_path, src)
+    assert [entry.split(":")[1].split()[0] for entry in found] == [
+        "molt_socket_new",
+        "molt_compile_builtin",
+    ]
 
 
 def _mod_builtins_cfg_prefix(lib_rs: str) -> str | None:

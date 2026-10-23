@@ -7,9 +7,10 @@ from typing import Collection, Iterable
 
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import (
-    link_affecting_feature_gate_for_symbol,
+    feature_for_symbol,
     runtime_symbol_available_on_target,
-    supported_target_oses_for_symbol,
+    symbol_availability_depends_on_target_os,
+    target_os_from_triple,
 )
 from molt.source_root import compiler_source_root
 from molt._wasm_abi_generated import (
@@ -19,6 +20,7 @@ from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
     WASM_IMPORT_REGISTRY,
+    WASM_IMPORT_RUNTIME_FEATURES,
     WASM_RUNTIME_HOST_EXPORTS,
     wasm_import_signature,
     wasm_runtime_export_name,
@@ -238,33 +240,47 @@ def wasm_runtime_import_names() -> tuple[str, ...]:
     return tuple(sorted(set(WASM_IMPORT_REGISTRY)))
 
 
+@lru_cache(maxsize=1)
+def _wasm_import_registry() -> frozenset[str]:
+    return frozenset(WASM_IMPORT_REGISTRY)
+
+
+def wasm_runtime_import_feature(name: str) -> str | None:
+    """The Cargo feature whose runtime build defines import *name*'s export.
+
+    A generated import carries its export's declared feature in the WASM ABI
+    projection; any other runtime-owned export is an intrinsic, whose feature
+    the intrinsic projection carries. Both project one declaration per symbol.
+    """
+    canonical = wasm_split_runtime_canonical_import_name(name)
+    if canonical in _wasm_import_registry():
+        return WASM_IMPORT_RUNTIME_FEATURES.get(canonical)
+    symbol = wasm_runtime_export_name_for_import(canonical)
+    return None if symbol is None else feature_for_symbol(symbol)
+
+
 def wasm_runtime_import_names_for_features(
     enabled_features: Collection[str], *, target_triple: str
 ) -> tuple[str, ...]:
     """The generated runtime imports one runtime build actually defines.
 
     The registry is the complete ABI. A runtime built with a smaller stdlib
-    tier, or for a target without a provider, omits a gated intrinsic exactly
-    when its generated link-affecting feature gate is disabled or the target is
-    excluded; every other generated import remains a hard obligation.
+    tier, or for a target without a provider, omits a gated export exactly
+    when its declared feature is disabled or the target is excluded; every
+    other generated import remains a hard obligation.
     """
     enabled = frozenset(enabled_features)
     selected: list[str] = []
     target_os: str | None = None
     for name in wasm_runtime_import_names():
         symbol = _runtime_export_name_or_fail(name)
-        if target_os is None and supported_target_oses_for_symbol(symbol):
-            if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
-                target_os = "wasi" if target_triple == "wasm32-wasip1" else "none"
-            else:
-                from molt.native_target import resolve_native_target_spec
-
-                target_os = resolve_native_target_spec(target_triple).os
+        if target_os is None and symbol_availability_depends_on_target_os(symbol):
+            target_os = target_os_from_triple(target_triple)
         if not runtime_symbol_available_on_target(
             symbol, target_triple=target_triple, target_os=target_os
         ):
             continue
-        feature = link_affecting_feature_gate_for_symbol(symbol)
+        feature = WASM_IMPORT_RUNTIME_FEATURES.get(name)
         if feature is not None and feature not in enabled:
             continue
         selected.append(name)

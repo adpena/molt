@@ -12,9 +12,9 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | hand_classified_matches | 0 |
 | critical_hand_classifications | 0 |
 | handset_classifications | 0 |
-| debt_markers_total | 438 |
-| python_stub_surfaces_total | 487 |
-| rust_stub_surfaces_total | 23 |
+| debt_markers_total | 436 |
+| python_stub_surfaces_total | 486 |
+| rust_stub_surfaces_total | 16 |
 | rust_backend_rejection_applicability_total | 0 |
 | rust_backend_lowering_gaps_total | 0 |
 | kitchen_sink_files | 1 |
@@ -34,21 +34,21 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| high | large_source_file | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 12278 lines (ceiling 4000) |
-| high | large_source_file | `src/molt/compiler_analysis/python_binding_flow.py` | 8133 lines (ceiling 2500) |
-| medium | large_source_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 6892 lines (ceiling 4000) |
-| medium | large_source_file | `runtime/molt-cpython-abi/src/api/typeobj.rs` | 6613 lines (ceiling 4000) |
+| high | large_source_file | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 12482 lines (ceiling 4000) |
+| high | large_source_file | `src/molt/compiler_analysis/python_binding_flow.py` | 8207 lines (ceiling 2500) |
+| medium | large_source_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 7020 lines (ceiling 4000) |
+| medium | large_source_file | `runtime/molt-cpython-abi/src/api/typeobj.rs` | 6655 lines (ceiling 4000) |
 | medium | large_source_file | `runtime/molt-cpython-abi/src/api/object.rs` | 6491 lines (ceiling 4000) |
-| medium | large_source_file | `tools/proof_queue_pkg/toolchain_capture.py` | 5514 lines (ceiling 2500) |
-| medium | large_source_file | `tools/structural_audit.py` | 3949 lines (ceiling 2500) |
+| medium | large_source_file | `tools/proof_queue_pkg/toolchain_capture.py` | 5544 lines (ceiling 2500) |
+| medium | large_source_file | `tools/proof_plan.py` | 4879 lines (ceiling 2500) |
+| medium | large_source_file | `tools/structural_audit.py` | 4124 lines (ceiling 2500) |
 | medium | python_stub_surface | `src/molt/stdlib/numbers.py:42` | 41 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/stdlib/asyncio/transports.py:21` | 23 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/stdlib/email/_policybase.py:240` | 5 Python stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/stdlib/ssl.py:121` | 5 Python stub/NotImplemented surface(s) |
 | medium | rust_stub_surface | `runtime/molt-runtime-path/src/pathlib.rs:353` | 5 Rust stub/NotImplemented surface(s) |
-| medium | rust_stub_surface | `runtime/molt-runtime/src/builtins/micro_stubs.rs:17` | 4 Rust stub/NotImplemented surface(s) |
 | medium | python_stub_surface | `src/molt/stdlib/_tkinter.py:158` | 3 Python stub/NotImplemented surface(s) |
-| medium | python_stub_surface | `src/molt/stdlib/asyncio/events.py:978` | 3 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/stdlib/asyncio/events.py:982` | 3 Python stub/NotImplemented surface(s) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -65,42 +65,44 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### large_source_file (30)
+### large_source_file (32)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| high | 12278 lines (ceiling 4000) | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| high | 8133 lines (ceiling 2500) | `src/molt/compiler_analysis/python_binding_flow.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| medium | 6892 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| medium | 6613 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/typeobj.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| high | 12482 lines (ceiling 4000) | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| high | 8207 lines (ceiling 2500) | `src/molt/compiler_analysis/python_binding_flow.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| medium | 7020 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| medium | 6655 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/typeobj.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | medium | 6491 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/object.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| medium | 5514 lines (ceiling 2500) | `tools/proof_queue_pkg/toolchain_capture.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| medium | 3949 lines (ceiling 2500) | `tools/structural_audit.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 5507 lines (ceiling 4000) | `runtime/molt-runtime/src/object/gc.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 5434 lines (ceiling 4000) | `runtime/molt-runtime/src/object/mod.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 4711 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 4151 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/errors.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 4151 lines (ceiling 4000) | `runtime/molt-runtime/src/call/function.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 3715 lines (ceiling 2500) | `tools/proof_plan.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| medium | 5544 lines (ceiling 2500) | `tools/proof_queue_pkg/toolchain_capture.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| medium | 4879 lines (ceiling 2500) | `tools/proof_plan.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| medium | 4124 lines (ceiling 2500) | `tools/structural_audit.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 5592 lines (ceiling 4000) | `runtime/molt-runtime/src/object/gc.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 5485 lines (ceiling 4000) | `runtime/molt-runtime/src/object/mod.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 4720 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/modules.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 4206 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/errors.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 4109 lines (ceiling 4000) | `runtime/molt-runtime/src/call/function.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 4013 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/abi_types.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 3541 lines (ceiling 2500) | `tools/memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 3263 lines (ceiling 2500) | `tools/check_environment_registry.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 3192 lines (ceiling 2500) | `src/molt/stdlib/unittest/mock.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 3142 lines (ceiling 2500) | `src/molt/llvm_toolchain.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 3139 lines (ceiling 2500) | `tools/memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 3033 lines (ceiling 2500) | `src/molt/cli/source_extension_producer.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 3027 lines (ceiling 2500) | `tools/check_environment_registry.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 3184 lines (ceiling 2500) | `src/molt/llvm_toolchain.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 3039 lines (ceiling 2500) | `src/molt/cli/source_extension_producer.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2951 lines (ceiling 2500) | `tools/wasm_abi_gen/manifest.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2938 lines (ceiling 2500) | `src/molt/cli/source_extensions.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2908 lines (ceiling 2500) | `tools/wasm_abi_gen/manifest.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2796 lines (ceiling 2500) | `tools/agent_coordination.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2769 lines (ceiling 2500) | `tools/bench.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2747 lines (ceiling 2500) | `src/molt/cli/external_native.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2871 lines (ceiling 2500) | `tools/agent_coordination.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2845 lines (ceiling 2500) | `src/molt/cli/external_native.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2828 lines (ceiling 2500) | `tools/bench.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2724 lines (ceiling 2500) | `tools/op_kinds/validate.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2679 lines (ceiling 2500) | `src/molt/process_model.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2668 lines (ceiling 2500) | `src/molt/gpu/tensor.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2661 lines (ceiling 2500) | `tools/memory_guard_core/process_custody.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2653 lines (ceiling 2500) | `tools/harness_memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2651 lines (ceiling 2500) | `src/molt/stdlib/argparse.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2565 lines (ceiling 2500) | `src/molt/compiler_analysis/python_imports.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2565 lines (ceiling 2500) | `tools/harness_memory_guard.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2564 lines (ceiling 2500) | `src/molt/compiler_analysis/python_imports.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2554 lines (ceiling 2500) | `tools/op_kinds/render_rust.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2516 lines (ceiling 2500) | `tools/gen_wasm_abi.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 
-### python_stub_surface (402)
+### python_stub_surface (401)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -109,7 +111,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | 5 Python stub/NotImplemented surface(s) | `src/molt/stdlib/email/_policybase.py:240` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | medium | 5 Python stub/NotImplemented surface(s) | `src/molt/stdlib/ssl.py:121` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/_tkinter.py:158` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
-| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/asyncio/events.py:978` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
+| medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/asyncio/events.py:982` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/concurrent/futures/__init__.py:410` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/multiprocessing/_core.py:1137` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | medium | 3 Python stub/NotImplemented surface(s) | `src/molt/stdlib/zipfile/__init__.py:117` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
@@ -144,18 +146,16 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 Python stub/NotImplemented surface(s) | `src/molt/stdlib/_pyrepl/_threading_handler.py:1` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | low | 1 Python stub/NotImplemented surface(s) | `src/molt/stdlib/_pyrepl/base_eventqueue.py:1` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | low | 1 Python stub/NotImplemented surface(s) | `src/molt/stdlib/_pyrepl/commands.py:1` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
-| … | _362 more_ | | run `--json` for full list |
+| … | _361 more_ | | run `--json` for full list |
 
-### rust_stub_surface (8)
+### rust_stub_surface (6)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | 5 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-path/src/pathlib.rs:353` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
-| medium | 4 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/micro_stubs.rs:17` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
-| medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/functions/compile_codeop.rs:1072` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
-| medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/io_path.rs:269` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/io_path.rs:267` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | medium | 3 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/builtins/subprocess_ext.rs:355` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
-| low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-http/src/functions_logging.rs:676` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
+| low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-http/src/functions_logging.rs:606` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | low | 2 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime/src/concurrency/isolates.rs:3049` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 | low | 1 Rust stub/NotImplemented surface(s) | `runtime/molt-runtime-path/src/os_ext.rs:1653` | replace emitted stubs or NotImplementedError paths with the shared runtime/compi |
 
@@ -165,7 +165,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | --- | --- | --- | --- |
 | low | 3 large top-level regions (979 excess lines) | `src/molt/stdlib/argparse.py` | extract the mixed top-level regions into cohesive modules; do not add more autho |
 
-### debt_marker (419)
+### debt_marker (417)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -181,10 +181,9 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/module_slot_promotion/promote.rs…` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-passes/src/tir/passes/vectorize/analysis.rs:213` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime-net/src/lib.rs:6` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-runtime-regex/src/regex/matcher.rs:380` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs:867` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `runtime/molt-runtime/src/builtins/io_path_utils.rs:872` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `runtime/molt-runtime/tests/test_builtins.rs:71` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| low | 1 debt/workaround markers | `src/molt/harness_layers.py:610` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| low | 1 debt/workaround markers | `src/molt/harness_layers.py:612` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_aix_support.py:7` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_android_support.py:7` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_apple_support.py:7` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
@@ -209,24 +208,25 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 debt/workaround markers | `src/molt/stdlib/_pyrepl/_minimal_curses.py:7` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_pyrepl/_module_completer.py:7` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
 | low | 1 debt/workaround markers | `src/molt/stdlib/_pyrepl/_threading_handler.py:7` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
-| … | _379 more_ | | run `--json` for full list |
+| low | 1 debt/workaround markers | `src/molt/stdlib/_pyrepl/base_eventqueue.py:7` | resolve in place (zero-workaround policy) or convert to a tracked task with a st |
+| … | _377 more_ | | run `--json` for full list |
 
 ### process_wide_test_patch (10)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | low | 2 process-wide stdlib patches | `tests/cli/test_installed_toolchain_rules.py:78` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 2 process-wide stdlib patches | `tests/tools/test_verified_subset.py:950` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 1 process-wide stdlib patches | `tests/cli/test_cli_import_collection.py:5314` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 1 process-wide stdlib patches | `tests/cli/test_cli_module_frontend_shared_cache.py:714` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 1 process-wide stdlib patches | `tests/cli/test_runtime_wasm_single_compile.py:572` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 2 process-wide stdlib patches | `tests/tools/test_verified_subset.py:1002` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 1 process-wide stdlib patches | `tests/cli/test_cli_build_diagnostics_authority.py:157` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 1 process-wide stdlib patches | `tests/cli/test_cli_import_collection.py:5369` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 1 process-wide stdlib patches | `tests/cli/test_runtime_wasm_single_compile.py:597` | install a module view over every module that reads the attribute (tests/process_ |
 | low | 1 process-wide stdlib patches | `tests/test_exact_json.py:308` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 1 process-wide stdlib patches | `tests/test_memory_guard_tool.py:7244` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 1 process-wide stdlib patches | `tests/test_tool_releases.py:363` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 1 process-wide stdlib patches | `tests/test_memory_guard_tool.py:8217` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 1 process-wide stdlib patches | `tests/test_tool_releases.py:424` | install a module view over every module that reads the attribute (tests/process_ |
 | low | 1 process-wide stdlib patches | `tests/test_wasm_optimization.py:246` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 1 process-wide stdlib patches | `tests/tools/test_named_lanes.py:398` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 1 process-wide stdlib patches | `tests/tools/test_named_lanes.py:466` | install a module view over every module that reads the attribute (tests/process_ |
 
-### compatibility_error_outcome (29)
+### compatibility_error_outcome (31)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -236,26 +236,28 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | info | proved CPython error outcome: MemoryviewSlice | `runtime/molt-runtime/src/builtins/compatibility_error.rs:1` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/builtins/compatibility_error.rs:1` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: RawIoBaseReadinto | `runtime/molt-runtime/src/builtins/io/raw_base.rs:233` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: PathGlobNonRelative | `runtime/molt-runtime/src/builtins/io_path.rs:1037` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: PathGlobNonRelative | `runtime/molt-runtime/src/builtins/io_path.rs:975` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: PathGlobNonRelative | `runtime/molt-runtime/src/builtins/io_path.rs:1030` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: PathGlobNonRelative | `runtime/molt-runtime/src/builtins/io_path.rs:973` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: MemoryviewFormatSyntax | `runtime/molt-runtime/src/object/memoryview.rs:221` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: MemoryviewFormatScalar | `runtime/molt-runtime/src/object/memoryview.rs:229` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/memoryview.rs:252` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewSlice | `runtime/molt-runtime/src/object/ops/subscript.rs:1466` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:1497` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewSlice | `runtime/molt-runtime/src/object/ops/subscript.rs:1558` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:1592` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewSlice | `runtime/molt-runtime/src/object/ops/subscript.rs:278` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:315` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:385` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: MemoryviewLookup | `runtime/molt-runtime/src/object/ops_memoryview.rs:639` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewSlice | `runtime/molt-runtime/src/object/ops/subscript.rs:1518` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:1549` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewSlice | `runtime/molt-runtime/src/object/ops/subscript.rs:1610` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:1644` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewSlice | `runtime/molt-runtime/src/object/ops/subscript.rs:279` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:316` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewSubView | `runtime/molt-runtime/src/object/ops/subscript.rs:386` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: MemoryviewLookup | `runtime/molt-runtime/src/object/ops_memoryview.rs:664` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: AbstractSignalHandler | `src/molt/stdlib/_compatibility_errors.py:1` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: CounterFromkeys | `src/molt/stdlib/_compatibility_errors.py:1` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: LoggingHandlerEmit | `src/molt/stdlib/_compatibility_errors.py:1` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: PathGlobNonRelative | `src/molt/stdlib/_compatibility_errors.py:1` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: RawIoBaseReadinto | `src/molt/stdlib/_compatibility_errors.py:1` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: WindowsSignalHandler | `src/molt/stdlib/_compatibility_errors.py:1` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: WindowsSignalHandler | `src/molt/stdlib/asyncio/events.py:1011` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: WindowsSignalHandler | `src/molt/stdlib/asyncio/events.py:1015` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: AbstractSignalHandler | `src/molt/stdlib/asyncio/events.py:307` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: AbstractSignalHandler | `src/molt/stdlib/asyncio/events.py:310` | retain the canonical runtime predicate and differential witness |
-| info | proved CPython error outcome: WindowsSignalHandler | `src/molt/stdlib/asyncio/events.py:976` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: WindowsSignalHandler | `src/molt/stdlib/asyncio/events.py:980` | retain the canonical runtime predicate and differential witness |
 | info | proved CPython error outcome: CounterFromkeys | `src/molt/stdlib/collections/__init__.py:599` | retain the canonical runtime predicate and differential witness |
+| info | proved CPython error outcome: LoggingHandlerEmit | `src/molt/stdlib/logging/__init__.py:454` | retain the canonical runtime predicate and differential witness |

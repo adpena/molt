@@ -797,7 +797,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
         if closed {
             return MoltObject::from_int(0).bits();
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(molt_wasm_net)]
         runtime_state(_py).io_poller().poll_host(_py);
         let Some(mut batch) = with_loop(_py, loop_handle, |state| {
             let now = Instant::now();

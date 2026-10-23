@@ -329,7 +329,12 @@ mod imp {
             timeout: Option<Duration>,
             _signal_owner: bool,
         ) -> io::Result<()> {
+            #[cfg(molt_net)]
             crate::runtime_state(py).io_poller().idle_wait(py, timeout);
+            #[cfg(not(molt_net))]
+            std::thread::sleep(crate::async_rt::host_progress::idle_wait_duration(
+                false, timeout,
+            ));
             Ok(())
         }
     }

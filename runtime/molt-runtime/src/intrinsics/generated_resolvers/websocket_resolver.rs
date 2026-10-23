@@ -3,17 +3,19 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ws_wait_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ws_wait_new",
             crate::molt_ws_wait_new as *const (),
         )),
-        "molt_ws_pair_obj" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_ws_pair_obj",
-            crate::molt_ws_pair_obj as *const (),
-        )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ws_connect_obj" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ws_connect_obj",
             crate::molt_ws_connect_obj as *const (),
+        )),
+        "molt_ws_pair_obj" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_ws_pair_obj",
+            crate::molt_ws_pair_obj as *const (),
         )),
         "molt_ws_send_obj" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ws_send_obj",
@@ -34,3 +36,12 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_ws_wait_new;
+    let _ = molt_ws_connect_obj;
+};

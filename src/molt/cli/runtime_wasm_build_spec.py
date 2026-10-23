@@ -17,7 +17,6 @@ from typing import (
     cast,
 )
 
-from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
@@ -27,7 +26,7 @@ from molt._wasm_runtime_exports import (
     wasm_cpython_abi_distribution_export_names,
     wasm_cpython_abi_requested_export_names,
     wasm_runtime_export_link_args,
-    wasm_runtime_export_name_for_import,
+    wasm_runtime_import_feature,
     wasm_runtime_shared_export_link_args,
 )
 from molt.cli.artifact_state import (
@@ -306,14 +305,11 @@ def _wasm_required_link_features(
     required_exports: set[str] | frozenset[str] | None,
     required_link_features: set[str] | frozenset[str],
 ) -> frozenset[str]:
-    """Close link features over every required export's generated feature gate."""
+    """Close link features over every required export's declared feature."""
     export_link_features = frozenset(
         feature
         for import_name in required_exports or ()
-        if (runtime_symbol := wasm_runtime_export_name_for_import(import_name))
-        is not None
-        if (feature := link_affecting_feature_gate_for_symbol(runtime_symbol))
-        is not None
+        if (feature := wasm_runtime_import_feature(import_name)) is not None
     )
     return frozenset(required_link_features) | export_link_features
 

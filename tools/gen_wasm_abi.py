@@ -121,7 +121,6 @@ def _runtime_callables_header(comment: str) -> str:
         f"{comment} runtime/molt-backend-wasm/src/wasm_abi_manifest.toml\n"
         f"{comment} runtime/molt-runtime/src/intrinsics/manifest.pyi\n"
         f"{comment} src/molt/builtin_callables.py\n"
-        f"{comment} runtime/molt-runtime/src/intrinsics/categories.toml\n"
         f"{comment} DO NOT EDIT BY HAND.\n\n"
     )
 
@@ -1385,6 +1384,15 @@ def _runtime_poll_imports(data: dict) -> list[tuple[int, str]]:
     )
 
 
+def _runtime_poll_import_cfgs(data: dict) -> dict[str, str]:
+    """The declared runtime cfg of each gated poll import, by import name."""
+    return {
+        entry["name"]: entry["runtime_cfg"]
+        for entry in data["import"]
+        if "poll_table_slot" in entry and isinstance(entry.get("runtime_cfg"), str)
+    }
+
+
 def render_runtime_callable_abi_rs(data: dict) -> str:
     lines = [
         _header("//"),
@@ -1673,7 +1681,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
             "callable_arity": entry["callable_arity"],
             "callable_dispatch": entry.get("callable_dispatch", "direct"),
             "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
-            "runtime_feature": import_entry.get("runtime_feature"),
+            "runtime_cfg": import_entry.get("runtime_cfg"),
             "symbol_path": entry["runtime_name"],
         }
         if entry["index"] != shared_entry["index"]:
@@ -1696,7 +1704,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
                 "import_name": import_name,
                 "callable_arity": entry["callable_arity"],
                 "callable_dispatch": entry.get("callable_dispatch", "direct"),
-                "runtime_feature": entry.get("runtime_feature"),
+                "runtime_cfg": entry.get("runtime_cfg"),
                 "symbol_path": f"crate::{runtime_name}",
             }
         )
@@ -1749,6 +1757,15 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                 f"builtin function {python_name!r} arity drift: frontend={arity} "
                 f"manifest={manifest_arity}"
             )
+        if import_entry.get("runtime_cfg") is not None:
+            # A builtin is reached by a global name lookup, which reachability
+            # does not map to a feature; only an always-defined builtin keeps
+            # a missing feature out of run time (HF-487).
+            raise ValueError(
+                f"builtin function {python_name!r} runtime {spec.runtime!r} is "
+                f"gated by `{import_entry['runtime_cfg']}`; Python builtins must "
+                "be defined in every runtime"
+            )
         entries.append(
             {
                 "index": len(entries),
@@ -1769,6 +1786,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                     if expr is not None
                 ],
                 "bind_kind": spec.bind_kind,
+                "runtime_cfg": import_entry.get("runtime_cfg"),
             }
         )
     return entries
@@ -1914,9 +1932,9 @@ def render_runtime_callables_rs(data: dict) -> str:
         ]
     )
     for entry in reserved_callables:
-        runtime_feature = entry.get("runtime_feature")
-        if isinstance(runtime_feature, str):
-            lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
+        runtime_cfg = entry.get("runtime_cfg")
+        if isinstance(runtime_cfg, str):
+            lines.append(f"    #[cfg({runtime_cfg})]\n")
         lines.extend(
             [
                 "    ReservedRuntimeCallableInfo {\n",
@@ -1994,9 +2012,9 @@ def render_runtime_callables_rs(data: dict) -> str:
         ]
     )
     for entry in reserved_callables:
-        runtime_feature = entry.get("runtime_feature")
-        if isinstance(runtime_feature, str):
-            lines.append(f'        #[cfg(feature = "{runtime_feature}")]\n')
+        runtime_cfg = entry.get("runtime_cfg")
+        if isinstance(runtime_cfg, str):
+            lines.append(f"        #[cfg({runtime_cfg})]\n")
         lines.append(
             f"        {entry['index']} => Some({entry['symbol_path']} as *const ()),\n"
         )
@@ -2010,7 +2028,10 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {\n",
         ]
     )
+    poll_cfgs = _runtime_poll_import_cfgs(data)
     for slot, import_name in poll_imports:
+        if import_name in poll_cfgs:
+            lines.append(f"        #[cfg({poll_cfgs[import_name]})]\n")
         lines.append(
             f"        {slot} => Some(crate::molt_{import_name} as *const ()),\n"
         )
@@ -2081,9 +2102,13 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    let target = match symbol {\n",
         ]
     )
-    for runtime_name in sorted(
-        {entry["runtime_name"] for entry in python_builtin_callables}
-    ):
+    runtime_cfgs = {
+        entry["runtime_name"]: entry.get("runtime_cfg")
+        for entry in python_builtin_callables
+    }
+    for runtime_name, runtime_cfg in sorted(runtime_cfgs.items()):
+        if isinstance(runtime_cfg, str):
+            lines.append(f"        #[cfg({runtime_cfg})]\n")
         lines.append(
             f'        "{runtime_name}" => crate::{runtime_name} as *const (),\n'
         )
@@ -2101,16 +2126,18 @@ def render_runtime_callables_rs(data: dict) -> str:
         ]
     )
     for entry in reserved_callables:
-        runtime_feature = entry.get("runtime_feature")
+        runtime_cfg = entry.get("runtime_cfg")
         symbol_path = entry["symbol_path"]
-        if isinstance(runtime_feature, str):
-            lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
+        if isinstance(runtime_cfg, str):
+            lines.append(f"    #[cfg({runtime_cfg})]\n")
         lines.append(
             f"    assert_runtime_symbol_key(fn_key!({symbol_path}), "
             f"RUNTIME_CALLABLE_KEY_BASE, {entry['index']}, "
             f"{symbol_path} as *const ());\n"
         )
     for slot, import_name in poll_imports:
+        if import_name in poll_cfgs:
+            lines.append(f"    #[cfg({poll_cfgs[import_name]})]\n")
         lines.append(
             f"    assert_runtime_symbol_key(fn_key!(crate::molt_{import_name}), "
             f"RUNTIME_POLL_CALLABLE_KEY_BASE, {slot}, "

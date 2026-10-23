@@ -1,19 +1,19 @@
 // Socket address conversion authority for native SockAddr and WASM wire buffers.
 // Owns host/service parsing, sockaddr materialization, and runtime tuple encoding.
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use super::*;
 #[cfg(molt_has_net_io)]
 use socket2::SockAddr;
 #[cfg(molt_has_net_io)]
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) use super::super::socket_pure::host_from_bits;
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) fn port_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<u16, String> {
     let obj = obj_from_bits(bits);
     if let Some(port) = to_i64(obj) {
@@ -32,7 +32,7 @@ pub(crate) fn port_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<u16, String
     Err(format!("port must be int or str, not {obj_type}"))
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) fn service_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<String>, String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
