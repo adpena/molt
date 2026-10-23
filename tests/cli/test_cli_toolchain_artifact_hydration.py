@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 from molt.cli.runtime_identity_schema import runtime_build_fingerprint
 
 from tests.runtime_build_identity_helper import (
@@ -46,7 +48,6 @@ from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
 )
 from molt.cli import artifact_state as cli_artifact_state
-from molt.cli import runtime_paths as cli_runtime_paths
 from molt.cli import runtime_fingerprints as cli_runtime_fingerprints
 from molt.wasi_sdk_identity import wasi_c_abi_projection
 
@@ -165,7 +166,7 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
+    profile_dir = cargo_profile_directory("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target_root, profile_dir
     )
@@ -255,7 +256,7 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
+    profile_dir = cargo_profile_directory("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target_root, profile_dir
     )
@@ -322,7 +323,7 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
+    profile_dir = cargo_profile_directory("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target_root, profile_dir
     )
@@ -386,7 +387,7 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli_runtime_paths._cargo_profile_dir("release-fast")
+    profile_dir = cargo_profile_directory("release-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_staticlib_path(
         target_root, profile_dir
     )
@@ -468,7 +469,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     source.parent.mkdir(parents=True)
     source.write_text("pub fn provider() {}\n", encoding="utf-8")
     target_root = root / "target"
-    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
+    profile_dir = cargo_profile_directory("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_cpython_abi_staticlib_path(
         target_root, profile_dir
     )

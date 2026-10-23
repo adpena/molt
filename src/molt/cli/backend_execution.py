@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 from molt.compilation_target import Target, TargetKind
 
 from molt.process_environment import NameRule, ProcessEnvironment
@@ -85,7 +87,6 @@ from molt.cli.runtime_native_codegen import (
 from molt.cli.backend_artifact_contract import BackendArtifactContract
 from molt.cli.runtime_paths import (
     _build_state_root,
-    _cargo_profile_dir,
     _cargo_target_root,
     _molt_session_id,
 )
@@ -115,7 +116,7 @@ def _backend_bin_path_cached(
     os_name: str,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> Path:
-    profile_dir = _cargo_profile_dir(cargo_profile)
+    profile_dir = cargo_profile_directory(cargo_profile)
     # Cargo's unqualified output is mutable publication input, including for
     # native. Every selected variant has its own admitted executable so a
     # different target's Cargo build cannot replace it.

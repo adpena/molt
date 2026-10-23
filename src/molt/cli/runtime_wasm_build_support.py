@@ -16,7 +16,10 @@ from typing import (
 )
 
 from molt.rust_toolchain import rust_flag_spans
-from molt.cargo_execution_policy import source_build_disabled_reason
+from molt.cargo_execution_policy import (
+    cargo_profile_directory,
+    source_build_disabled_reason,
+)
 from molt.cli import progress as _progress
 from molt.cli import wasm_link_inputs
 from molt.cli.artifact_state import (
@@ -62,7 +65,6 @@ from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import (
-    _cargo_profile_dir,
     _cargo_target_root,
 )
 from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
@@ -206,7 +208,7 @@ def _ensure_wasm_cpython_abi_staticlib(
     with build_python_scope(state):
         try:
             cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
-            profile_dir = _cargo_profile_dir(cargo_profile)
+            profile_dir = cargo_profile_directory(cargo_profile)
             target_root = _cargo_target_root(root)
             staticlib_path = _wasm_cpython_abi_staticlib_path(target_root, profile_dir)
             target_label = "wasm32-wasip1.cpython-abi"

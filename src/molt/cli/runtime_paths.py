@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 import functools
 import os
 from collections.abc import Mapping
@@ -78,11 +80,6 @@ def _runtime_lib_archive_names(target_triple: str | None = None) -> tuple[str, .
 
 def _molt_session_id() -> str | None:
     return os.environ.get("MOLT_SESSION_ID")
-
-
-@functools.lru_cache(maxsize=64)
-def _cargo_profile_dir(cargo_profile: str) -> str:
-    return "debug" if cargo_profile == "dev" else cargo_profile
 
 
 class _RecordingEnvironment(Mapping[str, str]):
@@ -200,7 +197,7 @@ def _runtime_lib_path_cached(
     target_triple: str | None,
     stdlib_profile: str | None,
 ) -> Path:
-    profile_dir = _cargo_profile_dir(cargo_profile)
+    profile_dir = cargo_profile_directory(cargo_profile)
     target_root = Path(cargo_target_str)
     archive_name = _runtime_lib_archive_name(stdlib_profile, target_triple)
     if target_triple:

@@ -6,6 +6,8 @@ Configuration bytes are parsed and fingerprinted from the same stable snapshot.
 
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_command_options
+
 import os
 import re
 import subprocess
@@ -1465,7 +1467,7 @@ class RuntimeCargoPlan:
 
     def configuration_arguments(self) -> tuple[str, ...]:
         result = []
-        overrides = cargo_argv._command_options(self.command)[1]
+        overrides = cargo_command_options(self.command)[1]
         pinned = cargo_argv._pinned_tool_configurations(
             self.tools,
             self.wrappers,
@@ -1921,7 +1923,7 @@ def capture_cargo_configuration_inputs(
         inputs.append(profile_input)
         profiles = dict(profile_input.document)
     profiles = _merge(profiles, configuration)
-    command_target, overrides = cargo_argv._command_options(cargo_command)
+    command_target, overrides = cargo_command_options(cargo_command)
     cli: dict[str, object] = {}
     for index, override in enumerate(overrides):
         candidate = Path(override)
