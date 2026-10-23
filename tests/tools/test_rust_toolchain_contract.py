@@ -63,7 +63,8 @@ def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
 
     tool._run(["cargo", "--version"])
 
-    assert captured["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
+    # sccache refuses an explicit nonzero value; the Cargo profile decides.
+    assert "CARGO_INCREMENTAL" not in captured["env"]  # type: ignore[operator]
     assert captured["env"]["RUSTUP_AUTO_INSTALL"] == "0"
 
 
