@@ -29,3 +29,17 @@ except UnicodeDecodeError as exc:
     print("encoding", exc.encoding)
     print("start-end", exc.start, exc.end)
     print("reason", exc.reason)
+
+# Omitted arguments take their defaults; an explicit None is refused by name.
+show("errors-none", lambda: str(b"abc", "utf-8", None))
+show("encoding-none", lambda: str(b"abc", None))
+show("bytes-errors-none", lambda: bytes("abc", "utf-8", None))
+show("bytearray-errors-none", lambda: bytearray("abc", "utf-8", None))
+show("bytes-encoding-none", lambda: bytes("abc", None))
+show("keyword-errors", lambda: str(b"\xff", errors="replace"))
+show("keyword-encoding", lambda: str(b"\xe9", encoding="latin-1"))
+# A failed buffer request becomes str()'s own TypeError.
+show("not-bytes-like-int", lambda: str(1, "utf-8"))
+released = memoryview(b"abc")
+released.release()
+show("released-view", lambda: str(released, "utf-8"))

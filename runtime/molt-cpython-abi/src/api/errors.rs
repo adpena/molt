@@ -1028,7 +1028,63 @@ impl NativeExceptionKeywords {
     }
 }
 
+/// Raise CPython's refusal of a keyword the exception constructor does not
+/// declare: `BaseException_init` names the type, while a constructor with
+/// keyword fields parses them and names the first unexpected key.
+unsafe fn refuse_exception_keyword(
+    subtype: *mut PyTypeObject,
+    layout: molt_lang_obj_model::ExceptionLayoutKind,
+    kwds: *mut PyObject,
+) {
+    let message = match layout.constructor_keyword_owner() {
+        None => {
+            let name = unsafe { CStr::from_ptr((*subtype).tp_name) }.to_string_lossy();
+            format!("{name}() takes no keyword arguments")
+        }
+        Some(owner) => {
+            let mut pos: Py_ssize_t = 0;
+            let mut key: *mut PyObject = ptr::null_mut();
+            let mut value: *mut PyObject = ptr::null_mut();
+            let mut unexpected = None;
+            while unsafe { crate::api::mapping::PyDict_Next(kwds, &mut pos, &mut key, &mut value) }
+                != 0
+            {
+                let text = unsafe { crate::api::strings::PyUnicode_AsUTF8(key) };
+                if text.is_null() {
+                    return;
+                }
+                let text = unsafe { CStr::from_ptr(text) }
+                    .to_string_lossy()
+                    .into_owned();
+                if layout.constructor_keyword_policy(&text).is_none() {
+                    unexpected = Some(text);
+                    break;
+                }
+            }
+            let Some(key) = unexpected else {
+                unsafe {
+                    PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                        c"exception keyword count disagrees with its mapping".as_ptr(),
+                    )
+                };
+                return;
+            };
+            format!("'{key}' is an invalid keyword argument for {owner}()")
+        }
+    };
+    // A Python keyword may hold NUL; escape it so the C message keeps every byte.
+    let message = CString::new(message.replace('\0', "\\x00")).expect("NUL bytes are escaped");
+    unsafe {
+        PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
+            message.as_ptr(),
+        )
+    };
+}
+
 unsafe fn native_exception_keywords(
+    subtype: *mut PyTypeObject,
     layout: molt_lang_obj_model::ExceptionLayoutKind,
     kwds: *mut PyObject,
 ) -> Option<NativeExceptionKeywords> {
@@ -1055,12 +1111,7 @@ unsafe fn native_exception_keywords(
         }
     }
     if recognized != size {
-        unsafe {
-            PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<PyObject>(),
-                c"invalid keyword argument for builtin exception".as_ptr(),
-            )
-        };
+        unsafe { refuse_exception_keyword(subtype, layout, kwds) };
         return None;
     }
     Some(values)
@@ -2021,7 +2072,7 @@ pub unsafe extern "C" fn molt_native_exception_init(
         // tp_new so errno subtype selection precedes allocation.
         return 0;
     }
-    let Some(keywords) = (unsafe { native_exception_keywords(layout, kwds) }) else {
+    let Some(keywords) = (unsafe { native_exception_keywords(subtype, layout, kwds) }) else {
         return -1;
     };
     let mut args = unsafe { owned_exception_args(args) };
@@ -2401,7 +2452,11 @@ pub unsafe extern "C" fn molt_native_exception_new(
             return ptr::null_mut();
         }
         if unsafe {
-            native_exception_keywords(molt_lang_obj_model::ExceptionLayoutKind::OSError, kwds)
+            native_exception_keywords(
+                subtype,
+                molt_lang_obj_model::ExceptionLayoutKind::OSError,
+                kwds,
+            )
         }
         .is_none()
         {

@@ -385,6 +385,8 @@ class AttributeAccessMixin(GeneratorMixinBase):
 
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None:
         if self._function_needs_frame_trace():
+            # STORE_GLOBAL is PyDict_SetItem on the frame's globals: DICT_SET
+            # writes the storage, never a dict subclass's __setitem__.
             globals_dict = self._emit_globals_dict()
             name_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
