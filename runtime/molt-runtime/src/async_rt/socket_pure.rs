@@ -185,12 +185,18 @@ fn socket_u32_from_int_only(_py: &PyToken<'_>, value_bits: u64) -> Option<u32> {
         );
         return None;
     }
-    if value > BigInt::from(u32::MAX) {
+    // CPython's socket_htonl converts with PyLong_AsUnsignedLong, then keeps
+    // the trailing 32 bits of a 64-bit `unsigned long` or refuses the rest.
+    if value > BigInt::from(u64::MAX) {
         raise_exception::<Option<u32>>(
             _py,
             "OverflowError",
             "Python int too large to convert to C unsigned long",
         );
+        return None;
+    }
+    if value > BigInt::from(u32::MAX) {
+        raise_exception::<Option<u32>>(_py, "OverflowError", "int larger than 32 bits");
         return None;
     }
     let Some(out) = value.to_u32() else {
