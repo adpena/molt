@@ -17,11 +17,10 @@
 //! - WASM (wasi/browser): host-delegated poll via `molt_socket_poll_host`
 //!
 //! WASM compatibility:
-//! - Timer/callback/ready-queue operations work on all targets (pure state machines).
-//! - I/O fd-based operations (add_reader, add_writer, remove_reader, remove_writer,
-//!   notify_reader_ready, notify_writer_ready) are gated with
-//!   `#[cfg(not(target_arch = "wasm32"))]` — WASM has no fd-based I/O multiplexing.
-//!   WASM stubs raise RuntimeError("operation not supported on WASM").
+//! - Timer, callback, ready-queue and fd callback registry operations are pure
+//!   state machines and work on every target. Readiness reaches the registry
+//!   from the asyncio fd watchers (`generators_async_io.rs`): their I/O wait
+//!   uses mio on native targets and `molt_socket_poll_host` on wasm32.
 //! - `std::time::Instant` is used for monotonic timers. On wasm32-wasi this is
 //!   backed by `clock_gettime(CLOCK_MONOTONIC)`. On wasm32-unknown-unknown it
 //!   panics at runtime (Molt targets wasm32-wasi for WASM builds).
@@ -638,10 +637,7 @@ pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: 
 }
 
 /// Register a file descriptor for read readiness notification.
-///
-/// Not available on WASM — file descriptor I/O multiplexing is unsupported.
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_add_reader(
     loop_handle: u64,
     fd_bits: u64,
@@ -671,23 +667,8 @@ pub extern "C" fn molt_event_loop_add_reader(
     })
 }
 
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_add_reader(
-    _loop_handle: u64,
-    _fd_bits: u64,
-    _callback_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "add_reader not supported on WASM")
-    })
-}
-
 /// Remove a file descriptor's read readiness callback.
-///
-/// Not available on WASM — file descriptor I/O multiplexing is unsupported.
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_remove_reader(loop_handle: u64, fd_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
@@ -703,19 +684,8 @@ pub extern "C" fn molt_event_loop_remove_reader(loop_handle: u64, fd_bits: u64) 
     })
 }
 
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_remove_reader(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "remove_reader not supported on WASM")
-    })
-}
-
 /// Register a file descriptor for write readiness notification.
-///
-/// Not available on WASM — file descriptor I/O multiplexing is unsupported.
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_add_writer(
     loop_handle: u64,
     fd_bits: u64,
@@ -745,23 +715,8 @@ pub extern "C" fn molt_event_loop_add_writer(
     })
 }
 
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_add_writer(
-    _loop_handle: u64,
-    _fd_bits: u64,
-    _callback_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "add_writer not supported on WASM")
-    })
-}
-
 /// Remove a file descriptor's write readiness callback.
-///
-/// Not available on WASM — file descriptor I/O multiplexing is unsupported.
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
@@ -777,14 +732,6 @@ pub extern "C" fn molt_event_loop_remove_writer(loop_handle: u64, fd_bits: u64) 
     })
 }
 
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_remove_writer(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "remove_writer not supported on WASM")
-    })
-}
-
 /// Execute one turn of the loop's sole callback queue. Tasks may enqueue Handles;
 /// due timers join those Handles before the batch is captured. Anything scheduled
 /// by a callback belongs to the next turn, regardless of the active loop driver.
@@ -797,7 +744,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
         if closed {
             return MoltObject::from_int(0).bits();
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(molt_wasm_net)]
         runtime_state(_py).io_poller().poll_host(_py);
         let Some(mut batch) = with_loop(_py, loop_handle, |state| {
             let now = Instant::now();
@@ -1114,10 +1061,7 @@ pub extern "C" fn molt_event_loop_get_task_factory(loop_handle: u64) -> u64 {
 /// Notify the event loop that a file descriptor is ready for reading.
 /// Called by the IoPoller when I/O readiness is detected.
 /// Moves the reader's callback to the ready queue for execution.
-///
-/// Not available on WASM — file descriptor I/O multiplexing is unsupported.
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_notify_reader_ready(loop_handle: u64, fd_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
@@ -1133,23 +1077,8 @@ pub extern "C" fn molt_event_loop_notify_reader_ready(loop_handle: u64, fd_bits:
     })
 }
 
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_notify_reader_ready(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            "notify_reader_ready not supported on WASM",
-        )
-    })
-}
-
 /// Notify the event loop that a file descriptor is ready for writing.
-///
-/// Not available on WASM — file descriptor I/O multiplexing is unsupported.
 #[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn molt_event_loop_notify_writer_ready(loop_handle: u64, fd_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
@@ -1162,18 +1091,6 @@ pub extern "C" fn molt_event_loop_notify_writer_ready(loop_handle: u64, fd_bits:
         .flatten();
         signal_claimed(parked);
         MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_notify_writer_ready(_loop_handle: u64, _fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            "notify_writer_ready not supported on WASM",
-        )
     })
 }
 

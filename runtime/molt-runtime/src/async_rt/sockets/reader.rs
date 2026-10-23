@@ -1,10 +1,10 @@
 // Buffered socket reader authority for socket.makefile() and asyncio stream readers.
 // Owns reader handle lifetime, refill, compaction, EOF, and line slicing semantics.
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use super::*;
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 struct MoltSocketReader {
     socket_bits: u64,
     buffer: Vec<u8>,
@@ -13,16 +13,16 @@ struct MoltSocketReader {
     eof: bool,
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 enum SocketReaderPull {
     Eof,
     Data,
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 const SOCKET_READER_COMPACT_PREFIX_MIN: usize = 4096;
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 unsafe fn socket_reader_pull(
     _py: &PyToken<'_>,
     reader: &mut MoltSocketReader,
@@ -68,25 +68,25 @@ unsafe fn socket_reader_pull(
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[inline]
 fn socket_reader_unread_len(reader: &MoltSocketReader) -> usize {
     reader.buffer.len().saturating_sub(reader.buffer_start)
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[inline]
 fn socket_reader_unread_is_empty(reader: &MoltSocketReader) -> bool {
     socket_reader_unread_len(reader) == 0
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[inline]
 fn socket_reader_unread_slice(reader: &MoltSocketReader) -> &[u8] {
     &reader.buffer[reader.buffer_start..]
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 fn socket_reader_maybe_compact(reader: &mut MoltSocketReader) {
     let consumed = reader.buffer_start;
     if consumed == 0 {
@@ -110,7 +110,7 @@ fn socket_reader_maybe_compact(reader: &mut MoltSocketReader) {
     reader.scan_cursor = reader.scan_cursor.saturating_sub(consumed);
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 fn socket_reader_find_newline_up_to(
     reader: &mut MoltSocketReader,
     max_bytes: Option<usize>,
@@ -142,7 +142,7 @@ fn socket_reader_find_newline_up_to(
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: usize) -> u64 {
     let n = count.min(socket_reader_unread_len(reader));
     let unread = socket_reader_unread_slice(reader);
@@ -157,7 +157,7 @@ fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: u
     MoltObject::from_ptr(ptr).bits()
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket handle from `molt_socket_new`/`molt_socket_clone`.
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
     })
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -196,7 +196,7 @@ pub unsafe extern "C" fn molt_socket_reader_drop(reader_bits: u64) -> u64 {
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -213,7 +213,7 @@ pub unsafe extern "C" fn molt_socket_reader_at_eof(reader_bits: u64) -> u64 {
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -278,7 +278,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) 
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
@@ -306,7 +306,7 @@ pub unsafe extern "C" fn molt_socket_reader_readline(reader_bits: u64) -> u64 {
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.

@@ -79,6 +79,64 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_validate_resource_name as *const (),
             ))
         }
+        "molt_importlib_resources_normalize_path" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_normalize_path",
+                crate::molt_importlib_resources_normalize_path as *const (),
+            ))
+        }
+        "molt_importlib_resources_only" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_resources_only",
+            crate::molt_importlib_resources_only as *const (),
+        )),
+        "molt_importlib_resources_contents_from_package" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_contents_from_package",
+                crate::molt_importlib_resources_contents_from_package as *const (),
+            ))
+        }
+        "molt_importlib_resources_is_resource_from_package" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_is_resource_from_package",
+                crate::molt_importlib_resources_is_resource_from_package as *const (),
+            ))
+        }
+        "molt_importlib_resources_resource_path_from_package" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_resource_path_from_package",
+                crate::molt_importlib_resources_resource_path_from_package as *const (),
+            ))
+        }
+        "molt_importlib_resources_read_text_from_package" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_read_text_from_package",
+                crate::molt_importlib_resources_read_text_from_package as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_resource_path_from_roots" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_resource_path_from_roots",
+                crate::molt_importlib_resources_reader_resource_path_from_roots as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_open_resource_bytes_from_roots" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_open_resource_bytes_from_roots",
+                crate::molt_importlib_resources_reader_open_resource_bytes_from_roots as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_is_resource_from_roots" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_is_resource_from_roots",
+                crate::molt_importlib_resources_reader_is_resource_from_roots as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_contents_from_roots" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_contents_from_roots",
+                crate::molt_importlib_resources_reader_contents_from_roots as *const (),
+            ))
+        }
         "molt_importlib_cache_from_source" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_cache_from_source",
             crate::molt_importlib_cache_from_source as *const (),
@@ -181,6 +239,192 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_ensure_default_meta_path as *const (),
             ))
         }
+        "molt_importlib_resources_path_payload" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_path_payload",
+                crate::molt_importlib_resources_path_payload as *const (),
+            ))
+        }
+        "molt_importlib_resources_package_info" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_package_info",
+                crate::molt_importlib_resources_package_info as *const (),
+            ))
+        }
+        "molt_importlib_resources_open_resource_bytes_from_package" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_open_resource_bytes_from_package",
+                crate::molt_importlib_resources_open_resource_bytes_from_package as *const (),
+            ))
+        }
+        "molt_importlib_resources_open_resource_bytes_from_package_parts" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_open_resource_bytes_from_package_parts",
+                crate::molt_importlib_resources_open_resource_bytes_from_package_parts as *const (),
+            ))
+        }
+        "molt_importlib_resources_read_text_from_package_parts" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_read_text_from_package_parts",
+                crate::molt_importlib_resources_read_text_from_package_parts as *const (),
+            ))
+        }
+        "molt_importlib_resources_contents_from_package_parts" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_contents_from_package_parts",
+                crate::molt_importlib_resources_contents_from_package_parts as *const (),
+            ))
+        }
+        "molt_importlib_resources_is_resource_from_package_parts" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_is_resource_from_package_parts",
+                crate::molt_importlib_resources_is_resource_from_package_parts as *const (),
+            ))
+        }
+        "molt_importlib_resources_resource_path_from_package_parts" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_resource_path_from_package_parts",
+                crate::molt_importlib_resources_resource_path_from_package_parts as *const (),
+            ))
+        }
+        "molt_importlib_resources_as_file_enter" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_as_file_enter",
+                crate::molt_importlib_resources_as_file_enter as *const (),
+            ))
+        }
+        "molt_importlib_resources_as_file_exit" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_as_file_exit",
+                crate::molt_importlib_resources_as_file_exit as *const (),
+            ))
+        }
+        "molt_importlib_resources_joinpath" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_resources_joinpath",
+            crate::molt_importlib_resources_joinpath as *const (),
+        )),
+        "molt_importlib_resources_open_mode_is_text" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_open_mode_is_text",
+                crate::molt_importlib_resources_open_mode_is_text as *const (),
+            ))
+        }
+        "molt_importlib_resources_package_leaf_name" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_package_leaf_name",
+                crate::molt_importlib_resources_package_leaf_name as *const (),
+            ))
+        }
+        "molt_importlib_resources_module_name" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_module_name",
+                crate::molt_importlib_resources_module_name as *const (),
+            ))
+        }
+        "molt_importlib_resources_loader_reader" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_loader_reader",
+                crate::molt_importlib_resources_loader_reader as *const (),
+            ))
+        }
+        "molt_importlib_resources_files_payload" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_files_payload",
+                crate::molt_importlib_resources_files_payload as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_files_traversable" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_files_traversable",
+                crate::molt_importlib_resources_reader_files_traversable as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_roots" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_roots",
+                crate::molt_importlib_resources_reader_roots as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_contents" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_contents",
+                crate::molt_importlib_resources_reader_contents as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_resource_path" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_resource_path",
+                crate::molt_importlib_resources_reader_resource_path as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_is_resource" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_is_resource",
+                crate::molt_importlib_resources_reader_is_resource as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_open_resource_bytes" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_open_resource_bytes",
+                crate::molt_importlib_resources_reader_open_resource_bytes as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_child_names" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_child_names",
+                crate::molt_importlib_resources_reader_child_names as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_exists" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_exists",
+                crate::molt_importlib_resources_reader_exists as *const (),
+            ))
+        }
+        "molt_importlib_resources_reader_is_dir" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_resources_reader_is_dir",
+                crate::molt_importlib_resources_reader_is_dir as *const (),
+            ))
+        }
+        "molt_importlib_metadata_dist_paths" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_metadata_dist_paths",
+            crate::molt_importlib_metadata_dist_paths as *const (),
+        )),
+        "molt_importlib_metadata_entry_points_filter_payload" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_metadata_entry_points_filter_payload",
+                crate::molt_importlib_metadata_entry_points_filter_payload as *const (),
+            ))
+        }
+        "molt_importlib_metadata_normalize_name" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_metadata_normalize_name",
+                crate::molt_importlib_metadata_normalize_name as *const (),
+            ))
+        }
+        "molt_importlib_metadata_payload" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_metadata_payload",
+            crate::molt_importlib_metadata_payload as *const (),
+        )),
+        "molt_importlib_metadata_distributions_payload" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_metadata_distributions_payload",
+                crate::molt_importlib_metadata_distributions_payload as *const (),
+            ))
+        }
+        "molt_importlib_metadata_record_payload" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_metadata_record_payload",
+                crate::molt_importlib_metadata_record_payload as *const (),
+            ))
+        }
+        "molt_importlib_metadata_packages_distributions_payload" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_metadata_packages_distributions_payload",
+                crate::molt_importlib_metadata_packages_distributions_payload as *const (),
+            ))
+        }
         "molt_importlib_module_from_spec" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_module_from_spec",
             crate::molt_importlib_module_from_spec as *const (),
@@ -201,293 +445,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_stabilize_module_state as *const (),
             ))
         }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_normalize_path" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_normalize_path",
-                crate::molt_importlib_resources_normalize_path as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_only" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_resources_only",
-            crate::molt_importlib_resources_only as *const (),
-        )),
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_contents_from_package" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_contents_from_package",
-                crate::molt_importlib_resources_contents_from_package as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_is_resource_from_package" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_is_resource_from_package",
-                crate::molt_importlib_resources_is_resource_from_package as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_resource_path_from_package" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_resource_path_from_package",
-                crate::molt_importlib_resources_resource_path_from_package as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_read_text_from_package" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_read_text_from_package",
-                crate::molt_importlib_resources_read_text_from_package as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_resource_path_from_roots" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_resource_path_from_roots",
-                crate::molt_importlib_resources_reader_resource_path_from_roots as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_open_resource_bytes_from_roots" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_open_resource_bytes_from_roots",
-                crate::molt_importlib_resources_reader_open_resource_bytes_from_roots as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_is_resource_from_roots" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_is_resource_from_roots",
-                crate::molt_importlib_resources_reader_is_resource_from_roots as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_contents_from_roots" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_contents_from_roots",
-                crate::molt_importlib_resources_reader_contents_from_roots as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_path_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_path_payload",
-                crate::molt_importlib_resources_path_payload as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_package_info" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_package_info",
-                crate::molt_importlib_resources_package_info as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_open_resource_bytes_from_package" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_open_resource_bytes_from_package",
-                crate::molt_importlib_resources_open_resource_bytes_from_package as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_open_resource_bytes_from_package_parts" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_open_resource_bytes_from_package_parts",
-                crate::molt_importlib_resources_open_resource_bytes_from_package_parts as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_read_text_from_package_parts" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_read_text_from_package_parts",
-                crate::molt_importlib_resources_read_text_from_package_parts as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_contents_from_package_parts" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_contents_from_package_parts",
-                crate::molt_importlib_resources_contents_from_package_parts as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_is_resource_from_package_parts" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_is_resource_from_package_parts",
-                crate::molt_importlib_resources_is_resource_from_package_parts as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_resource_path_from_package_parts" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_resource_path_from_package_parts",
-                crate::molt_importlib_resources_resource_path_from_package_parts as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_as_file_enter" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_as_file_enter",
-                crate::molt_importlib_resources_as_file_enter as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_as_file_exit" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_as_file_exit",
-                crate::molt_importlib_resources_as_file_exit as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_joinpath" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_resources_joinpath",
-            crate::molt_importlib_resources_joinpath as *const (),
-        )),
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_open_mode_is_text" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_open_mode_is_text",
-                crate::molt_importlib_resources_open_mode_is_text as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_package_leaf_name" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_package_leaf_name",
-                crate::molt_importlib_resources_package_leaf_name as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_module_name" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_module_name",
-                crate::molt_importlib_resources_module_name as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_loader_reader" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_loader_reader",
-                crate::molt_importlib_resources_loader_reader as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_files_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_files_payload",
-                crate::molt_importlib_resources_files_payload as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_files_traversable" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_files_traversable",
-                crate::molt_importlib_resources_reader_files_traversable as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_roots" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_roots",
-                crate::molt_importlib_resources_reader_roots as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_contents" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_contents",
-                crate::molt_importlib_resources_reader_contents as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_resource_path" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_resource_path",
-                crate::molt_importlib_resources_reader_resource_path as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_is_resource" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_is_resource",
-                crate::molt_importlib_resources_reader_is_resource as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_open_resource_bytes" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_open_resource_bytes",
-                crate::molt_importlib_resources_reader_open_resource_bytes as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_child_names" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_child_names",
-                crate::molt_importlib_resources_reader_child_names as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_exists" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_exists",
-                crate::molt_importlib_resources_reader_exists as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_resources_reader_is_dir" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_resources_reader_is_dir",
-                crate::molt_importlib_resources_reader_is_dir as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_dist_paths" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_metadata_dist_paths",
-            crate::molt_importlib_metadata_dist_paths as *const (),
-        )),
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_entry_points_filter_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_metadata_entry_points_filter_payload",
-                crate::molt_importlib_metadata_entry_points_filter_payload as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_normalize_name" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_metadata_normalize_name",
-                crate::molt_importlib_metadata_normalize_name as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_payload" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_metadata_payload",
-            crate::molt_importlib_metadata_payload as *const (),
-        )),
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_distributions_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_metadata_distributions_payload",
-                crate::molt_importlib_metadata_distributions_payload as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_record_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_metadata_record_payload",
-                crate::molt_importlib_metadata_record_payload as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_packages_distributions_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_metadata_packages_distributions_payload",
-                crate::molt_importlib_metadata_packages_distributions_payload as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
         "molt_importlib_metadata_types_payload" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_metadata_types_payload",

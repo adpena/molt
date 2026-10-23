@@ -3,32 +3,26 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_config_dict" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_config_dict",
             crate::molt_logging_config_dict as *const (),
         )),
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_config_valid_ident" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_config_valid_ident",
             crate::molt_logging_config_valid_ident as *const (),
         )),
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_config_file_config" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_config_file_config",
             crate::molt_logging_config_file_config as *const (),
         )),
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_config_listen" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_config_listen",
             crate::molt_logging_config_listen as *const (),
         )),
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_config_stop_listening" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_config_stop_listening",
             crate::molt_logging_config_stop_listening as *const (),
         )),
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_filter_check" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_filter_check",
             crate::molt_logging_filter_check as *const (),

@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: CPython-parity for socket byte-order helpers + `_socket` surface."""
 
 import socket

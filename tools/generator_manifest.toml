@@ -349,7 +349,7 @@ outputs = [
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]
-source = "src/molt/builtin_callables.py + runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + src/molt/rust_source_scan.py + tools/generator_io.py + runtime/molt-runtime/src/intrinsics/categories.toml + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py"
+source = "src/molt/builtin_callables.py + runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + src/molt/rust_source_scan.py + tools/generator_io.py + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py"
 upstream_generators = ["tools/gen_host_capabilities.py"]
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
@@ -405,7 +405,7 @@ outputs = [
 # runtime/molt-runtime*/src/intrinsics_generated*/ ; those carry the standard
 # @generated header and are covered by the header-marker orphan scan + this
 # generator's own --check freshness, so they need not all be enumerated here.
-source = "runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + tools/generator_io.py + runtime/molt-runtime/src/intrinsics/categories.toml + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py"
+source = "runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + tools/generator_io.py + runtime/molt-runtime/src/intrinsics/categories.toml + runtime/molt-runtime/Cargo.toml + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py"
 upstream_generators = ["tools/gen_host_capabilities.py"]
 check_mode = true
 check_command = "tools/gen_intrinsics.py --check"

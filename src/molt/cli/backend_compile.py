@@ -801,6 +801,7 @@ def _execute_backend_compile(
         wasm_data_base: int | None = None
         wasm_table_base: int | None = None
         wasm_split_runtime_app_table_base: int | None = None
+        wasm_runtime_poll_slots: int | None = None
         if is_wasm:
             wasm_link = backend_env.get("MOLT_WASM_RELOCATABLE") == "1"
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
@@ -828,6 +829,14 @@ def _execute_backend_compile(
                 )
             except ValueError:
                 wasm_split_runtime_app_table_base = None
+            raw_runtime_poll_slots = backend_env.get("MOLT_WASM_RUNTIME_POLL_SLOTS")
+            # The layout sets this from the bound runtime; a malformed value is
+            # a corrupted layout, so it fails here rather than defaulting.
+            wasm_runtime_poll_slots = (
+                int(raw_runtime_poll_slots)
+                if raw_runtime_poll_slots is not None
+                else None
+            )
         if daemon_ready and daemon_socket is not None:
             output_sync_state_path = _artifact_sync_state_path(
                 project_root, output_artifact
@@ -893,6 +902,7 @@ def _execute_backend_compile(
                 wasm_data_base=wasm_data_base,
                 wasm_table_base=wasm_table_base,
                 wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
+                wasm_runtime_poll_slots=wasm_runtime_poll_slots,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
                 config_digest=backend_daemon_config_digest,
@@ -963,6 +973,7 @@ def _execute_backend_compile(
                         wasm_data_base=wasm_data_base,
                         wasm_table_base=wasm_table_base,
                         wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
+                        wasm_runtime_poll_slots=wasm_runtime_poll_slots,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
                         config_digest=backend_daemon_config_digest,
@@ -1036,6 +1047,7 @@ def _execute_backend_compile(
                 wasm_data_base=wasm_data_base,
                 wasm_table_base=wasm_table_base,
                 wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
+                wasm_runtime_poll_slots=wasm_runtime_poll_slots,
             )
             cmd_with_output = cmd + ["--output", str(backend_output)]
             # Ensure the output directory exists — --rebuild may have

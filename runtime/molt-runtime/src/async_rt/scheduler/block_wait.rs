@@ -1,10 +1,12 @@
 use crate::PyToken;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(molt_has_net_io)]
 use crate::{obj_from_bits, ptr_from_bits, runtime_state, to_i64};
 use std::time::{Duration, Instant};
 
+#[cfg(molt_has_net_io)]
+use crate::IoPoller;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{IoPoller, ProcessTaskState, ThreadTaskState};
+use crate::{ProcessTaskState, ThreadTaskState};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
@@ -13,6 +15,7 @@ use super::{await_chain_terminal, process_task_state, thread_task_state};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum BlockOnWaitSpec {
+    #[cfg(molt_has_net_io)]
     Io {
         poller: Arc<IoPoller>,
         socket_ptr: *mut u8,
@@ -73,6 +76,7 @@ pub(crate) fn block_on_wait_spec(
             unsafe {
                 let _header = crate::header_from_obj_ptr(cursor);
                 let poll_fn = crate::object::object_poll_fn(cursor);
+                #[cfg(molt_has_net_io)]
                 if poll_fn == crate::io_wait_poll_fn_addr() {
                     let payload_bytes = crate::object::object_payload_size(cursor);
                     if payload_bytes < 2 * std::mem::size_of::<u64>() {

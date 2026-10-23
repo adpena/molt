@@ -102,7 +102,7 @@ fact-family** (one generated authority per invariant, drift uncompilable).
   carriers for its generated authorities; it registers its new authorities in that
   manifest when it lands, and falls back to a standalone `--check` until then (§4).
 - It does **not** restate the satellite dedup arc (doc 21e). It composes with 21e's
-  `LINK_AFFECTING_FEATURES` / tier-feature gating as the *crate-granularity* dual of this
+  declared-feature / tier-feature gating as the *crate-granularity* dual of this
   doc's *symbol-granularity* shaking (§5), and must not disturb 21e's parity guard (it
   reduces what links; it never changes satellite↔in-tree equivalence).
 - It does **not** re-open the function/crate decomposition (doc 21a/21b). It obeys the
@@ -247,11 +247,11 @@ applied to *reachability edges*, *roots*, and *backend keep policy*.
   only whole-program tier — and it currently emits **all** functions (`luau.rs:86-90`).
   §3 F4 makes Luau emit only `reachability.live`, making the fact correctness-critical
   there (no linker backstop) per doc 65 Rung 7.
-- **Satellite tier (21e).** Crate-granularity feature attribution comes from
-  `runtime/molt-runtime/src/intrinsics/categories.toml`; link-affecting status
-  comes from `runtime/molt-runtime/Cargo.toml` plus cfg-gated runtime modules;
-  `src/molt/_runtime_feature_gates.py` is generated consumer data. This is the
-  coarse dual of symbol shaking (§5).
+- **Satellite tier (21e).** Each intrinsic's `# cfg:` line in
+  `runtime/molt-runtime/src/intrinsics/manifest.pyi` declares the feature that
+  defines it, and generated resolver probes prove the definition matches (every
+  declared feature removes its symbols); `src/molt/_runtime_feature_gates.py` is
+  generated consumer data. This is the coarse dual of symbol shaking (§5).
 
 ### 2.3 The DCE/reachability passes (the intra-function complement, already sound)
 
@@ -635,7 +635,7 @@ IR-correctness pieces touch the safety-adjacent DFE so carry A-lane discipline
 ### Phase 5 (ongoing, composes with 21e) — per-attribute / per-method liveness + crate-granularity.
 - **Do:** extend reachability below the function granularity to *methods* and *fields* (a
   dead method on a live class; a never-read field — ties doc 65 Rung 4 ShapeFacts
-  `FieldSlot` and doc 09/13 dead-field) and compose with 21e's `LINK_AFFECTING_FEATURES` so
+  `FieldSlot` and doc 09/13 dead-field) and compose with 21e's declared features so
   a satellite crate links into a tier ONLY when the reachability fact shows a live symbol
   from it (the symbol-granularity fact *informs* the crate-granularity gate — doc 21e §1.3;
   §5 here). This is the "<2MB binary + per-attr liveness" terminus (doc 65 Rung 8 / doc 51
@@ -687,7 +687,7 @@ dropped-live-symbol differential failures (the correctness floor / the equivalen
   largest offender). The new fact lands as a focused `reachability_fact.rs` module, never in
   a god-file (doc 21b precise-visibility discipline).
 - **Doc 21e (satellite dedup).** This arc's *symbol*-granularity shake and 21e's
-  *crate*-granularity gate (categories.toml feature attribution plus generated
+  *crate*-granularity gate (manifest `# cfg:` feature declarations plus generated
   `_runtime_feature_gates.py` consumer data) are duals. Phase 5 closes the loop: the reachability fact tells the tier-feature gate
   whether a satellite crate has any live symbol, so a tier links a satellite ONLY when
   needed — making 21e's "link only what's used" *fact-driven* instead of feature-flag-

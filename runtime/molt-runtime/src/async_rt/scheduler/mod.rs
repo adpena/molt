@@ -18,11 +18,10 @@ use crate::{
     async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, class_name_for_error, code_filename_bits,
     code_name_bits, context_stack_unwind, dec_ref_bits, exception_handler_active,
     exception_pending, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
-    io_wait_poll_fn_addr, maybe_ptr_from_bits, molt_exception_last_pending, obj_from_bits,
-    object_class_bits, object_type_id, pending_bits_i64, process_poll_fn_addr,
-    promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception, resolve_task_ptr,
-    runtime_state, set_task_raise_active, task_last_exception_contains_valid, task_raise_active,
-    thread_poll_fn_addr, with_gil,
+    maybe_ptr_from_bits, molt_exception_last_pending, obj_from_bits, object_class_bits,
+    object_type_id, pending_bits_i64, process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits,
+    raise_exception, record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
+    task_last_exception_contains_valid, task_raise_active, thread_poll_fn_addr, with_gil,
 };
 
 use super::cancellation::{
@@ -461,7 +460,7 @@ impl MoltScheduler {
     pub(crate) fn drain_ready(&self) {
         self.advance_epoch();
         self.flush_deferred();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(molt_wasm_net)]
         {
             let gil = GilGuard::new();
             let py = gil.token();
@@ -1086,7 +1085,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                                     "sleep"
                                 } else if addr == promise_poll_fn_addr() {
                                     "promise"
-                                } else if addr == io_wait_poll_fn_addr() {
+                                } else if crate::async_rt::poll::is_io_wait_poll_fn(addr) {
                                     "io_wait"
                                 } else if addr == thread_poll_fn_addr() {
                                     "thread"
@@ -1194,6 +1193,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     let _release = GilReleaseGuard::suspend();
                     #[cfg(not(target_arch = "wasm32"))]
                     match spec {
+                        #[cfg(molt_has_net_io)]
                         BlockOnWaitSpec::Io {
                             poller,
                             socket_ptr,

@@ -951,7 +951,6 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "libc_compat::tests::synthetic_errno_",
         "wasm_abi::",
         "async_rt::channels::",
-        "async_rt::net_stubs::",
         "concurrency::gil::tests::",
         "intrinsics::registry::",
     } <= set(filters)
@@ -1011,7 +1010,8 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
     assert "test_builtins" in [
         cargo[index + 1] for index, arg in enumerate(cargo[:-1]) if arg == "--test"
     ]
-    assert "test_raw_compression_c_exports_are_linkable" in filters
+    # The feature-off runtime has no compression symbol to witness.
+    assert "test_raw_compression_c_exports_are_linkable" not in filters
 
 
 def test_extension_admission_proof_executes_required_public_resolver_witness() -> None:

@@ -158,6 +158,7 @@ pub(crate) fn contextlib_async_exitstack_enter_context_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn io_wait_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -170,6 +171,22 @@ pub(crate) fn io_wait_poll_fn_addr() -> u64 {
     }
 }
 
+/// Whether `poll_fn` polls an I/O wait future. Those futures exist only with a
+/// networking provider, so a runtime without one has none.
+#[inline]
+pub(crate) fn is_io_wait_poll_fn(poll_fn: u64) -> bool {
+    #[cfg(molt_net)]
+    {
+        poll_fn == io_wait_poll_fn_addr()
+    }
+    #[cfg(not(molt_net))]
+    {
+        let _ = poll_fn;
+        false
+    }
+}
+
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn ws_wait_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -206,6 +223,7 @@ pub(crate) fn process_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_fd_watcher_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -218,6 +236,7 @@ pub(crate) fn asyncio_fd_watcher_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_server_accept_loop_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -230,6 +249,7 @@ pub(crate) fn asyncio_server_accept_loop_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_socket_reader_read_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -242,6 +262,7 @@ pub(crate) fn asyncio_socket_reader_read_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_socket_reader_readline_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -254,6 +275,7 @@ pub(crate) fn asyncio_socket_reader_readline_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_reader_read_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -266,6 +288,7 @@ pub(crate) fn asyncio_stream_reader_read_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_reader_readline_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -278,6 +301,7 @@ pub(crate) fn asyncio_stream_reader_readline_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_send_all_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -290,6 +314,7 @@ pub(crate) fn asyncio_stream_send_all_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recv_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -302,6 +327,7 @@ pub(crate) fn asyncio_sock_recv_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_connect_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -314,6 +340,7 @@ pub(crate) fn asyncio_sock_connect_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_accept_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -326,6 +353,7 @@ pub(crate) fn asyncio_sock_accept_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recv_into_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -338,6 +366,7 @@ pub(crate) fn asyncio_sock_recv_into_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_sendall_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -350,6 +379,7 @@ pub(crate) fn asyncio_sock_sendall_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recvfrom_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -362,6 +392,7 @@ pub(crate) fn asyncio_sock_recvfrom_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recvfrom_into_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -374,6 +405,7 @@ pub(crate) fn asyncio_sock_recvfrom_into_poll_fn_addr() -> u64 {
     }
 }
 
+#[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_sendto_poll_fn_addr() -> u64 {
     #[cfg(target_arch = "wasm32")]
@@ -440,55 +472,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                 let argument = poll_argument(normalized_poll_fn_addr, task_ptr);
                 let res = crate::molt_call_indirect1(normalized_poll_fn_addr, argument);
                 if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_POLL_RETURN) {
-                    let known_kind = if poll_fn_addr == async_sleep_poll_fn_addr() {
-                        "async_sleep"
-                    } else if poll_fn_addr == promise_poll_fn_addr() {
-                        "promise"
-                    } else if poll_fn_addr == asyncio_fd_watcher_poll_fn_addr() {
-                        "asyncio_fd_watcher"
-                    } else if poll_fn_addr == asyncio_server_accept_loop_poll_fn_addr() {
-                        "asyncio_server_accept_loop"
-                    } else if poll_fn_addr == asyncio_socket_reader_read_poll_fn_addr() {
-                        "asyncio_socket_reader_read"
-                    } else if poll_fn_addr == asyncio_socket_reader_readline_poll_fn_addr() {
-                        "asyncio_socket_reader_readline"
-                    } else if poll_fn_addr == asyncio_stream_reader_read_poll_fn_addr() {
-                        "asyncio_stream_reader_read"
-                    } else if poll_fn_addr == asyncio_stream_reader_readline_poll_fn_addr() {
-                        "asyncio_stream_reader_readline"
-                    } else if poll_fn_addr == asyncio_stream_send_all_poll_fn_addr() {
-                        "asyncio_stream_send_all"
-                    } else if poll_fn_addr == asyncio_sock_recv_poll_fn_addr() {
-                        "asyncio_sock_recv"
-                    } else if poll_fn_addr == asyncio_sock_connect_poll_fn_addr() {
-                        "asyncio_sock_connect"
-                    } else if poll_fn_addr == asyncio_sock_accept_poll_fn_addr() {
-                        "asyncio_sock_accept"
-                    } else if poll_fn_addr == asyncio_sock_recv_into_poll_fn_addr() {
-                        "asyncio_sock_recv_into"
-                    } else if poll_fn_addr == asyncio_sock_sendall_poll_fn_addr() {
-                        "asyncio_sock_sendall"
-                    } else if poll_fn_addr == asyncio_sock_recvfrom_poll_fn_addr() {
-                        "asyncio_sock_recvfrom"
-                    } else if poll_fn_addr == asyncio_sock_recvfrom_into_poll_fn_addr() {
-                        "asyncio_sock_recvfrom_into"
-                    } else if poll_fn_addr == asyncio_sock_sendto_poll_fn_addr() {
-                        "asyncio_sock_sendto"
-                    } else if poll_fn_addr == io_wait_poll_fn_addr() {
-                        "io_wait"
-                    } else if poll_fn_addr == thread_poll_fn_addr() {
-                        "thread"
-                    } else if poll_fn_addr == process_poll_fn_addr() {
-                        "process"
-                    } else if poll_fn_addr == asyncgen_poll_fn_addr() {
-                        "asyncgen"
-                    } else if poll_fn_addr == anext_default_poll_fn_addr() {
-                        "anext_default"
-                    } else if poll_fn_addr == ws_wait_poll_fn_addr() {
-                        "ws_wait"
-                    } else {
-                        "other"
-                    };
+                    let known_kind = traced_poll_kind(poll_fn_addr);
                     let mut code_name = "<none>".to_string();
                     let mut code_file = "<none>".to_string();
                     let [_, _, code_bits] =
@@ -616,6 +600,80 @@ pub(crate) unsafe fn poll_future_with_task_stack(
         drop(task_scope);
         res
     }
+}
+
+/// The poll-function kind `MOLT_TRACE_POLL_RETURN` reports.
+#[cfg(target_arch = "wasm32")]
+fn traced_poll_kind(poll_fn_addr: u64) -> &'static str {
+    #[cfg(molt_net)]
+    if let Some(kind) = traced_net_poll_kind(poll_fn_addr) {
+        return kind;
+    }
+    [
+        (async_sleep_poll_fn_addr(), "async_sleep"),
+        (promise_poll_fn_addr(), "promise"),
+        (thread_poll_fn_addr(), "thread"),
+        (process_poll_fn_addr(), "process"),
+        (asyncgen_poll_fn_addr(), "asyncgen"),
+        (anext_default_poll_fn_addr(), "anext_default"),
+    ]
+    .into_iter()
+    .find(|(addr, _)| *addr == poll_fn_addr)
+    .map_or("other", |(_, kind)| kind)
+}
+
+/// Poll kinds of the futures that exist only with a networking provider.
+#[cfg(all(target_arch = "wasm32", molt_net))]
+fn traced_net_poll_kind(poll_fn_addr: u64) -> Option<&'static str> {
+    [
+        (asyncio_fd_watcher_poll_fn_addr(), "asyncio_fd_watcher"),
+        (
+            asyncio_server_accept_loop_poll_fn_addr(),
+            "asyncio_server_accept_loop",
+        ),
+        (
+            asyncio_socket_reader_read_poll_fn_addr(),
+            "asyncio_socket_reader_read",
+        ),
+        (
+            asyncio_socket_reader_readline_poll_fn_addr(),
+            "asyncio_socket_reader_readline",
+        ),
+        (
+            asyncio_stream_reader_read_poll_fn_addr(),
+            "asyncio_stream_reader_read",
+        ),
+        (
+            asyncio_stream_reader_readline_poll_fn_addr(),
+            "asyncio_stream_reader_readline",
+        ),
+        (
+            asyncio_stream_send_all_poll_fn_addr(),
+            "asyncio_stream_send_all",
+        ),
+        (asyncio_sock_recv_poll_fn_addr(), "asyncio_sock_recv"),
+        (asyncio_sock_connect_poll_fn_addr(), "asyncio_sock_connect"),
+        (asyncio_sock_accept_poll_fn_addr(), "asyncio_sock_accept"),
+        (
+            asyncio_sock_recv_into_poll_fn_addr(),
+            "asyncio_sock_recv_into",
+        ),
+        (asyncio_sock_sendall_poll_fn_addr(), "asyncio_sock_sendall"),
+        (
+            asyncio_sock_recvfrom_poll_fn_addr(),
+            "asyncio_sock_recvfrom",
+        ),
+        (
+            asyncio_sock_recvfrom_into_poll_fn_addr(),
+            "asyncio_sock_recvfrom_into",
+        ),
+        (asyncio_sock_sendto_poll_fn_addr(), "asyncio_sock_sendto"),
+        (io_wait_poll_fn_addr(), "io_wait"),
+        (ws_wait_poll_fn_addr(), "ws_wait"),
+    ]
+    .into_iter()
+    .find(|(addr, _)| *addr == poll_fn_addr)
+    .map(|(_, kind)| kind)
 }
 
 #[cfg(test)]

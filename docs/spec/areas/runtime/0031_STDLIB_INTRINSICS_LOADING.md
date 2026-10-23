@@ -63,18 +63,23 @@ link references in `test_builtins` and the selected Cargo artifacts in
 `wasm_cdylib_exports` exercise the actual symbols.
 
 With `stdlib_compression`, the extracted compression crate owns raw deflate,
-inflate and native LZMA exports. Without it, the existing raw micro diagnostics
-remain the owners; LZMA is absent. On WASM with compression enabled, the root
+inflate and native LZMA exports. Without it, none of them exists: no runtime
+export stands in for a disabled feature, and a program that reaches one selects
+or refuses the feature at build time (HF-487). On WASM with compression enabled, the root
 LZMA module supplies constants and explicit unavailable-operation diagnostics.
 That symbol presence does not claim a WASM LZMA implementation. Runtime export
 validation remains strict for the exact admitted feature and target set.
 
 ## Target availability and compiler facts
 
-`intrinsics/categories.toml` owns provider feature, architecture and OS
-availability. Generated resolvers, compiler admission and WASM exports consume
-that same policy. A target-exclusive provider has a real implementation only
-on its admitted targets; other targets do not carry a callable failure stub.
+Each intrinsic's `# cfg:` line in `intrinsics/manifest.pyi` owns its provider
+feature, architecture and OS availability; a non-intrinsic runtime export
+declares `cfg` on its WASM ABI import entry. Generated resolvers (with
+compile-time absence probes), compiler admission and WASM exports consume that
+same fact. `intrinsics/categories.toml` groups resolver arms and states no
+availability. A target-exclusive provider has a real implementation only on its
+admitted targets; other targets do not carry a callable failure stub
+(`docs/design/foundation/feature_reachability_tree_shaking.md`, section 4).
 Callable and boxed ABI facts use the complete normalized runtime declarations;
 the WASM provider list is a separate target projection of those declarations.
 Filtering WASM imports cannot delete native ABI facts.

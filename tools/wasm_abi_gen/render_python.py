@@ -45,6 +45,16 @@ def render_py(
     for entry in data["import"]:
         lines.append(f'    "{entry["name"]}",\n')
     lines.append(")\n\n")
+    lines.append(
+        "# The Cargo feature whose runtime build defines each gated import's\n"
+        "# runtime export, projected from its declared cfg (HF-487).\n"
+    )
+    lines.append("WASM_IMPORT_RUNTIME_FEATURES: dict[str, str] = {\n")
+    for entry in data["import"]:
+        feature = entry.get("runtime_feature")
+        if isinstance(feature, str):
+            lines.append(f'    "{entry["name"]}": "{feature}",\n')
+    lines.append("}\n\n")
     lines.append("WASM_BULK_MEMORY_OPS: tuple[tuple[str, str, int], ...] = (\n")
     for entry in data.get("wasm_bulk_memory_op", []):
         lines.append(

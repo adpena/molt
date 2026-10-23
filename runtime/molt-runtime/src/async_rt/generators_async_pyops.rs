@@ -6,6 +6,7 @@
 
 use super::*;
 
+#[cfg(molt_net)]
 pub(crate) unsafe fn asyncio_drop_slot_ref(_py: &PyToken<'_>, payload_ptr: *mut u64, idx: usize) {
     unsafe {
         crate::object::payload_refs::store_owned(
@@ -24,12 +25,14 @@ pub(crate) unsafe fn asyncio_clear_pending_exception(_py: &PyToken<'_>) {
     molt_exception_clear();
 }
 
+#[cfg(molt_net)]
 pub(crate) fn asyncio_exception_is_cancelled(py: &PyToken<'_>, exception: u64) -> bool {
     // The runtime class is also the identity published by asyncio.exceptions.
     // A same-named user exception must never be mistaken for cancellation.
     crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "CancelledError")
 }
 
+#[cfg(molt_net)]
 pub(crate) fn asyncio_exception_escapes_callback(py: &PyToken<'_>, exception: u64) -> bool {
     crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "SystemExit")
         || crate::builtins::exceptions::exception_matches_builtin_name(
@@ -75,6 +78,7 @@ pub(crate) unsafe fn asyncio_call_method1(
     }
 }
 
+#[cfg(molt_net)]
 pub(crate) unsafe fn asyncio_call_method2(
     _py: &PyToken<'_>,
     obj_bits: u64,
@@ -92,6 +96,7 @@ pub(crate) unsafe fn asyncio_call_method2(
     }
 }
 
+#[cfg(molt_net)]
 pub(crate) unsafe fn asyncio_call_method3(
     _py: &PyToken<'_>,
     obj_bits: u64,
@@ -110,6 +115,7 @@ pub(crate) unsafe fn asyncio_call_method3(
     }
 }
 
+#[cfg(molt_net)]
 pub(crate) unsafe fn asyncio_call_with_args(
     _py: &PyToken<'_>,
     callable_bits: u64,
@@ -168,6 +174,7 @@ pub(crate) unsafe fn asyncio_attr_lookup_allow_missing(
     }
 }
 
+#[cfg(molt_net)]
 pub(crate) unsafe fn asyncio_take_pending_exception_bits(_py: &PyToken<'_>) -> u64 {
     let exc_bits = molt_exception_last_pending();
     molt_exception_clear();
@@ -228,6 +235,8 @@ mod exception_dispatch_tests {
         result
     }
 
+    // The helpers under test serve only the networking futures.
+    #[cfg(molt_net)]
     #[test]
     fn async_exception_dispatch_uses_class_identity_and_callback_rules() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
@@ -263,12 +272,15 @@ mod exception_dispatch_tests {
         });
     }
 
+    #[cfg(molt_net)]
     extern "C" fn failing_descriptor(_instance: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
             raise_exception::<u64>(py, "AttributeError", "descriptor-origin")
         })
     }
 
+    // The helpers under test serve only the networking futures.
+    #[cfg(molt_net)]
     #[test]
     fn required_async_methods_preserve_descriptor_failure_at_every_arity() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
@@ -317,6 +329,8 @@ mod exception_dispatch_tests {
         });
     }
 
+    // The helpers under test serve only the networking futures.
+    #[cfg(molt_net)]
     #[test]
     fn required_async_methods_preserve_missing_attribute_payload_at_every_arity() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();

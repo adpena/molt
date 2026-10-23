@@ -119,3 +119,31 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_sqlite3_connect;
+    let _ = molt_sqlite3_close;
+    let _ = molt_sqlite3_commit;
+    let _ = molt_sqlite3_rollback;
+    let _ = molt_sqlite3_in_transaction;
+    let _ = molt_sqlite3_total_changes;
+    let _ = molt_sqlite3_cursor;
+    let _ = molt_sqlite3_cursor_close;
+    let _ = molt_sqlite3_cursor_drop;
+    let _ = molt_sqlite3_execute;
+    let _ = molt_sqlite3_executemany;
+    let _ = molt_sqlite3_executescript;
+    let _ = molt_sqlite3_fetchone;
+    let _ = molt_sqlite3_fetchall;
+    let _ = molt_sqlite3_fetchmany;
+    let _ = molt_sqlite3_lastrowid;
+    let _ = molt_sqlite3_rowcount;
+    let _ = molt_sqlite3_arraysize_set;
+    let _ = molt_sqlite3_description;
+    let _ = molt_sqlite3_library_version;
+    let _ = molt_sqlite3_complete_statement;
+};

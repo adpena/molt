@@ -26,3 +26,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_http"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_ctypes_require_ffi;
+    let _ = molt_ctypes_coerce_value;
+    let _ = molt_ctypes_default_value;
+    let _ = molt_ctypes_sizeof;
+};

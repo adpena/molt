@@ -42,6 +42,7 @@ fn wasm_job_carries_its_complete_layout() {
         "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true,
         "target_triple": "wasm32-wasip1", "wasm_link": true, "wasm_data_base": 1048576,
         "wasm_table_base": 4096, "wasm_split_runtime_app_table_base": 8192,
+        "wasm_runtime_poll_slots": 6,
     });
     let job = DaemonJobRequest::from_json_value(&value, "job").expect("wasm job");
     assert_eq!(
@@ -51,8 +52,16 @@ fn wasm_job_carries_its_complete_layout() {
             data_base: Some(1_048_576),
             table_base: Some(4096),
             split_runtime_app_table_base: Some(8192),
+            runtime_poll_slots: Some(molt_backend::WasmRuntimePollSlots::from_mask(6).unwrap()),
         })
     );
+    let foreign = serde_json::json!({
+        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true,
+        "wasm_runtime_poll_slots": 1u64 << 63,
+    });
+    let error = DaemonJobRequest::from_json_value(&foreign, "job")
+        .expect_err("a slot outside the generated poll table is refused");
+    assert!(error.contains("job.wasm_runtime_poll_slots"), "{error}");
 }
 
 #[cfg(not(feature = "wasm-backend"))]

@@ -253,7 +253,11 @@ imports only from observed app IR: op dependency facts, `builtin_func`
 materialization, direct runtime-call specs, literal intrinsic lookup, or
 native-extension sidecar custody. Poll-table callables are the current
 exception: their generated table slots make them table-layout roots until the
-poll table itself becomes reachability-sliced. If an ordinary callable is not
+poll table itself becomes reachability-sliced. A slot is a root only when the
+bound runtime defines its poll function: the codegen layout passes that set as
+`MOLT_WASM_RUNTIME_POLL_SLOTS`, and an absent slot holds the sentinel and adds
+no import (a runtime without `stdlib_net` defines no networking poll function).
+If an ordinary callable is not
 observed, it must be absent from the app import section, absent from any
 app-local resolver table, and unavailable as a fake fallback symbol.
 

@@ -300,12 +300,14 @@ pub(crate) fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits:
             let sleep_target = resolve_sleep_target(_py, awaited_ptr);
             if !sleep_target.is_null() {
                 let poll_fn = crate::object::object_poll_fn(sleep_target);
-                if poll_fn == io_wait_poll_fn_addr() {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(poller) = runtime_state(_py).io_poller.get() {
-                        poller.cancel_waiter(sleep_target);
-                    }
+                #[cfg(molt_has_net_io)]
+                if poll_fn == io_wait_poll_fn_addr()
+                    && let Some(poller) = runtime_state(_py).io_poller.get()
+                {
+                    poller.cancel_waiter(sleep_target);
                 }
+                #[cfg(not(molt_has_net_io))]
+                let _ = poll_fn;
             }
         }
     }
@@ -325,11 +327,11 @@ pub(crate) fn cancel_future_task(_py: &PyToken<'_>, task_ptr: *mut u8, msg_bits:
         {
             state.cancel_wait();
         }
-        if poll_fn == io_wait_poll_fn_addr() {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(poller) = runtime_state(_py).io_poller.get() {
-                poller.cancel_waiter(task_ptr);
-            }
+        #[cfg(molt_has_net_io)]
+        if poll_fn == io_wait_poll_fn_addr()
+            && let Some(poller) = runtime_state(_py).io_poller.get()
+        {
+            poller.cancel_waiter(task_ptr);
         }
     }
     let waiter_count = wake_await_waiters(_py, task_ptr);
@@ -389,9 +391,10 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         } else {
             task_ptr
         };
-        return crate::async_rt::io_poller::register_host_progress_retry(_py, owner);
+        return crate::async_rt::host_progress::register_host_progress_retry(_py, owner);
     }
-    if poll_fn != async_sleep_poll_fn_addr() && poll_fn != io_wait_poll_fn_addr() {
+    if poll_fn != async_sleep_poll_fn_addr() && !crate::async_rt::poll::is_io_wait_poll_fn(poll_fn)
+    {
         if async_trace_enabled() || sleep_trace_enabled() {
             eprintln!(
                 "molt async trace: sleep_register_impl_fail poll_fn=0x{:x}",
@@ -419,7 +422,7 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
         }
         obj_from_bits(unsafe { *payload_ptr.add(2) })
     };
-    if poll_fn == io_wait_poll_fn_addr() && deadline_obj.is_none() {
+    if crate::async_rt::poll::is_io_wait_poll_fn(poll_fn) && deadline_obj.is_none() {
         // I/O waits without a timeout rely on the poller to wake the task.
         return true;
     }

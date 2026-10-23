@@ -16,9 +16,9 @@ asserting, statically, that every required export has a real ``no_mangle`` owner
 
 The inverse bug class is equally structural: adding ``no_mangle`` to both a
 ``molt-runtime`` export wrapper and its extracted implementation crate creates
-duplicate native symbols during Rust tests. Ownership is per feature and target:
-a disabled-feature fallback or WASM-only diagnostic provider cannot supply the
-native feature-enabled symbol.
+duplicate native symbols during Rust tests. Ownership is per target: a
+WASM-only diagnostic provider cannot supply the native symbol, and no owner may
+stand in for a disabled feature (HF-487; a feature-off runtime lacks the symbol).
 A wrapper and extracted implementation must not both export in the same cell.
 
 The required-export set is sourced from the same authorities the runtime build
@@ -34,7 +34,6 @@ from pathlib import Path
 
 import pytest
 
-from molt._runtime_feature_gates import feature_gate_for_symbol
 from molt._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
@@ -137,9 +136,13 @@ def _lzma_target_owners() -> dict[Path, str]:
 def _owner_cells(
     symbol: str, definitions: list[ExportDefinition], targets: dict[Path, str]
 ) -> dict[str, list[ExportDefinition]]:
-    enabled = [
-        definition for definition in definitions if not definition.disabled_feature
+    stand_ins = [
+        definition for definition in definitions if definition.disabled_feature
     ]
+    # A runtime built without a feature defines none of its symbols; a
+    # feature-off owner would move the missing feature to run time.
+    assert not stand_ins, f"feature-off stand-in owner: {symbol}: {stand_ins}"
+    enabled = definitions
     # The required set is a WASM ABI authority. The explicitly target-split
     # LZMA modules additionally own the native C surface checked above; do not
     # infer a native C-export requirement for every Rust callable in the set.
@@ -156,16 +159,6 @@ def _owner_cells(
         ]
         for target in target_cells
     }
-    for definition in definitions:
-        feature = definition.disabled_feature
-        if feature is None:
-            continue
-        # The canonical symbol gate or a direct positive cfg must establish the
-        # counterpart. An arbitrary negative annotation is not an exemption.
-        assert feature_gate_for_symbol(symbol) == feature or any(
-            f'#[cfg(feature = "{feature}")]' in owner.attributes for owner in enabled
-        ), f"unmatched disabled-feature owner: {symbol}: {definition}"
-        cells.setdefault(f"{feature}-disabled/wasm32", []).append(definition)
     return cells
 
 
@@ -279,11 +272,6 @@ def export_owner_sources(
             "molt-runtime-compression/src/zlib.rs",
             '#[unsafe(no_mangle)]\npub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
         ),
-        "fallback": (
-            "molt-runtime/src/builtins/micro_stubs.rs",
-            '#[cfg(not(feature = "stdlib_compression"))]\n#[unsafe(no_mangle)]\n'
-            'pub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
-        ),
         "native-lzma": (
             "molt-runtime-compression/src/lzma.rs",
             '#[unsafe(no_mangle)]\npub extern "C" fn molt_lzma_format_auto() -> u64 { 0 }\n',
@@ -324,22 +312,19 @@ def test_export_owner_guard_does_not_borrow_incompatible_providers(
     with pytest.raises(AssertionError) as missing:
         test_required_wasm_runtime_exports_have_no_mangle()
     assert f"{symbol} [{cell}]" in str(missing.value)
-    assert "stdlib_compression-disabled" not in str(missing.value)
     if role == "native-lzma":
         assert "feature-enabled/wasm32" not in str(missing.value)
 
 
-def test_export_owner_guard_rejects_unmatched_negative_feature(
+def test_export_owner_guard_rejects_feature_off_stand_ins(
     export_owner_sources: dict[str, Path],
 ) -> None:
-    path = export_owner_sources["fallback"]
-    path.write_text(
-        path.read_text(encoding="utf-8").replace(
-            "stdlib_compression", "unmatched_feature"
-        ),
+    export_owner_sources["wasm-lzma"].with_name("stand_in.rs").write_text(
+        '#[cfg(not(feature = "stdlib_compression"))]\n#[unsafe(no_mangle)]\n'
+        'pub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
         encoding="utf-8",
     )
-    with pytest.raises(AssertionError, match="unmatched disabled-feature owner"):
+    with pytest.raises(AssertionError, match="feature-off stand-in owner"):
         test_required_wasm_runtime_exports_have_no_mangle()
 
 
@@ -361,7 +346,7 @@ def test_export_owner_guard_rejects_target_gate_drift(
 def test_export_owner_guard_rejects_real_wrapper_duplicate(
     export_owner_sources: dict[str, Path],
 ) -> None:
-    path = export_owner_sources["fallback"].with_name("wrapper.rs")
+    path = export_owner_sources["wasm-lzma"].with_name("wrapper.rs")
     path.write_text(
         '#[cfg(feature = "stdlib_compression")]\n#[unsafe(no_mangle)]\n'
         'pub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
@@ -370,7 +355,6 @@ def test_export_owner_guard_rejects_real_wrapper_duplicate(
     with pytest.raises(AssertionError, match="creating duplicate symbols") as duplicate:
         test_extracted_runtime_crates_do_not_duplicate_wrapper_exports()
     assert "molt_deflate_raw [feature-enabled/wasm32]" in str(duplicate.value)
-    assert "stdlib_compression-disabled" not in str(duplicate.value)
 
 
 def test_export_owner_guard_honors_wasm_conditional_symbol_name(
