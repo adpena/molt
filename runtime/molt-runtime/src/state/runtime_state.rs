@@ -1325,7 +1325,7 @@ impl RuntimeState {
 // The existing depth word carries one inherited role for its entire stack.
 // Depth zero is always untagged; global per-role bounds are smaller than this
 // word's count range, so successful admission cannot overflow its TLS count.
-const RUNTIME_EXECUTION_SERVICE_ROLE: usize = 1 << (usize::BITS - 1);
+pub(crate) const RUNTIME_EXECUTION_SERVICE_ROLE: usize = 1 << (usize::BITS - 1);
 
 /// Acquire lifecycle custody before an execution boundary can proceed toward
 /// GIL/thread-state attachment.
@@ -1335,8 +1335,8 @@ const RUNTIME_EXECUTION_SERVICE_ROLE: usize = 1 << (usize::BITS - 1);
 /// runtime: shutdown closes the high bit atomically and cannot free RuntimeState
 /// while any caller that observed Ready still owns a count unit.
 pub(crate) fn try_acquire_runtime_execution_lease(requires_runtime: bool) -> Option<bool> {
-    let service = RUNTIME_EXECUTION_LEASE_DEPTH
-        .with(|depth| depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0);
+    let service =
+        crate::state::execution_tls().lease_depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0;
     try_acquire_runtime_execution_lease_kind(requires_runtime, service)
 }
 
@@ -1378,7 +1378,8 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
     if !try_acquire_admission_units(&RUNTIME_EXECUTION_ADMISSION, unit, mask) {
         return None;
     }
-    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
+    {
+        let depth = &crate::state::execution_tls().lease_depth;
         let current = depth.get() & !RUNTIME_EXECUTION_SERVICE_ROLE;
         assert_ne!(
             current,
@@ -1393,7 +1394,7 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
                     0
                 },
         );
-    });
+    }
     #[cfg(test)]
     if let Some((entered, release)) = RUNTIME_EXECUTION_LEASE_POST_CAS_TEST_GATE
         .lock()
@@ -1411,13 +1412,14 @@ fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: boo
 }
 
 pub(crate) fn release_runtime_execution_lease() {
-    let service = RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
+    let service = {
+        let depth = &crate::state::execution_tls().lease_depth;
         let current = depth.get();
         let count = current & !RUNTIME_EXECUTION_SERVICE_ROLE;
         assert_ne!(count, 0, "current-thread runtime execution lease underflow");
         depth.set(if count == 1 { 0 } else { current - 1 });
         current & RUNTIME_EXECUTION_SERVICE_ROLE != 0
-    });
+    };
     if service {
         release_admission_units(
             &RUNTIME_EXECUTION_ADMISSION,
@@ -1429,17 +1431,8 @@ pub(crate) fn release_runtime_execution_lease() {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn current_thread_holds_runtime_service_execution_lease() -> bool {
-    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0)
-}
-
 pub(crate) fn current_thread_holds_runtime_execution_lease() -> bool {
-    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get() != 0)
-}
-
-pub(crate) fn touch_runtime_execution_lease_tls_lifetime() {
-    let _ = RUNTIME_EXECUTION_LEASE_DEPTH.try_with(|_| {});
+    crate::state::execution_tls().lease_depth.get() != 0
 }
 
 fn close_runtime_execution_admission() -> usize {
@@ -1462,8 +1455,7 @@ fn reopen_runtime_execution_admission() {
 /// and every other thread remain independent lifetime owners in both modes.
 fn close_process_retirement_admission(allow_current_execution: bool, operation: &str) -> bool {
     let counts = close_runtime_execution_admission();
-    if RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0)
-    {
+    if crate::state::execution_tls().lease_depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0 {
         eprintln!(
             "molt runtime {operation} refused: joined service callback cannot retire its own runtime"
         );
@@ -1473,7 +1465,7 @@ fn close_process_retirement_admission(allow_current_execution: bool, operation: 
     let active = counts & RUNTIME_ORDINARY_COUNT_MASK;
     let joined = (counts & RUNTIME_SERVICE_COUNT_MASK) >> RUNTIME_SERVICE_COUNT_SHIFT;
     let current = if allow_current_execution {
-        RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get())
+        crate::state::execution_tls().lease_depth.get()
     } else {
         0
     };
@@ -1538,10 +1530,6 @@ pub(crate) fn active_runtime_execution_lease_count() -> usize {
     let counts = RUNTIME_EXECUTION_ADMISSION.load(AtomicOrdering::Acquire);
     (counts & RUNTIME_ORDINARY_COUNT_MASK)
         + ((counts & RUNTIME_SERVICE_COUNT_MASK) >> RUNTIME_SERVICE_COUNT_SHIFT)
-}
-
-thread_local! {
-    static RUNTIME_EXECUTION_LEASE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1677,20 +1665,28 @@ pub(crate) fn owns_process_cpython_state(state: &RuntimeState) -> bool {
 }
 
 pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
+    runtime_state_for_gil_in(crate::state::execution_tls())
+}
+
+/// `runtime_state_for_gil` for a caller that has already read this thread's
+/// execution facts, such as a runtime entry's GIL guard.
+pub(crate) fn runtime_state_for_gil_in(
+    tls: &crate::state::ExecutionTls,
+) -> Option<&'static RuntimeState> {
     #[cfg(not(target_arch = "wasm32"))]
-    if current_thread_holds_runtime_service_execution_lease() {
+    if tls.lease_depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0 {
         // An admitted callback may finish after shutdown closes new work. Its
         // published join owner and origin borrow retain this exact allocation.
-        return runtime_state_tls();
+        return runtime_state_tls_in(tls);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(origin) = crate::concurrency::execution::retained_shutdown_worker_origin() {
+    if let Some(origin) = tls.retained_worker_origin.get() {
         // Only a worker whose native join owner retains this exact allocation
         // can establish this destruction-only capability during Finalizing.
         return Some(origin.state());
     }
     if let Some(ptr) = runtime_ready_ptr() {
-        return runtime_state_tls().or_else(|| Some(unsafe { &*ptr }));
+        return runtime_state_tls_in(tls).or_else(|| Some(unsafe { &*ptr }));
     }
 
     // The initializing owner may recursively enter runtime code before the
@@ -1716,17 +1712,18 @@ pub(crate) fn runtime_state(py: &PyToken<'_>) -> &'static RuntimeState {
     // switch to under a live token) and otherwise the published ready state.
     // A token reuses its earlier answer only while that is still the result;
     // lifecycle edges, where no ready state is published, resolve in full.
+    let tls = py.execution_tls();
     if let Some(state) = py.resolved_runtime_state()
         && let Some(ready) = runtime_ready_ptr()
         && std::ptr::eq(
-            runtime_state_tls().map_or(ready.cast_const(), std::ptr::from_ref),
+            runtime_state_tls_in(tls).map_or(ready.cast_const(), std::ptr::from_ref),
             state,
         )
     {
         return state;
     }
     touch_tls_guard();
-    let state = match runtime_state_for_gil() {
+    let state = match runtime_state_for_gil_in(tls) {
         Some(state) => state,
         None => {
             let _ = molt_runtime_init();
@@ -2240,36 +2237,30 @@ pub(crate) fn run_finalizing_atexit_test_hook() {
     }
 }
 
-thread_local! {
-    static TLS_RUNTIME_STATE: Cell<*mut RuntimeState> = const { Cell::new(std::ptr::null_mut()) };
+fn runtime_state_tls() -> Option<&'static RuntimeState> {
+    runtime_state_tls_in(crate::state::execution_tls())
 }
 
-fn runtime_state_tls() -> Option<&'static RuntimeState> {
-    // Use `try_with` instead of `with` to avoid panicking (and aborting)
-    // when this TLS variable has already been destroyed during process exit.
-    // During Rust's TLS destructor phase, `ThreadLocalGuard::drop` calls
-    // `runtime_state_for_gil()` which calls this function.  If
-    // `TLS_RUNTIME_STATE` is destroyed before `TLS_GUARD`, `.with()` would
-    // panic inside a Drop impl, causing an abort (exit code 134/139).
-    TLS_RUNTIME_STATE
-        .try_with(|slot| {
-            let ptr = slot.get();
-            if ptr.is_null() {
-                None
-            } else {
-                Some(unsafe { &*ptr })
-            }
-        })
-        .ok()
-        .flatten()
+/// The runtime state this thread attached to. The execution facts have no
+/// destructor, so this stays readable while thread-locals are destroyed.
+#[inline(always)]
+fn runtime_state_tls_in(tls: &crate::state::ExecutionTls) -> Option<&'static RuntimeState> {
+    let ptr = tls.runtime_state.get();
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
+    }
 }
 
 pub(crate) fn set_thread_runtime_state(ptr: *mut RuntimeState) {
-    let _ = TLS_RUNTIME_STATE.try_with(|slot| slot.set(ptr));
+    crate::state::execution_tls().runtime_state.set(ptr);
 }
 
 pub(crate) fn clear_thread_runtime_state() {
-    let _ = TLS_RUNTIME_STATE.try_with(|slot| slot.set(std::ptr::null_mut()));
+    crate::state::execution_tls()
+        .runtime_state
+        .set(std::ptr::null_mut());
 }
 
 /// Resets all one-shot flags that prevent runtime re-initialization.
