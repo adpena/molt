@@ -349,6 +349,12 @@ ownership, and reusable allocation-light scratch. Generations, atomic tuple/dict
 untracking, and one generated traverse/clear/dealloc ownership authority remain the
 next coherent collector class.
 
+Implementation note (2026-10-22, HF-475): the registry maps hash their address keys
+with one folded multiply, not keyed SipHash, and each track or untrack resolves the
+runtime state once. The 24-byte header still carries no GC links; the current
+registry contract and its measurements are in
+[`generational_gc_authority.md`](generational_gc_authority.md).
+
 1. FIRST, separately, fix the confirmed acyclic missing-implicit-drop bug class in the AOT drop-insertion pass (runtime/molt-passes/src/tir/passes/drop_insertion.rs) — the 513MB reassignment/scope-exit leak. This is a pure RC defect, NOT cycle collection, and is higher priority (it leaks the common case). It must land with a differential RSS regression. Do not conflate it with the cycle collector.
 
 2. The landed collector now owns the complete CPython 3.12 generational and public `gc.*` authority: side-registry partitioning, shared full-value traversal/clear authority, finalization, resurrection recheck, shutdown collection, batched weakref clearing, three generations plus permanent freeze generation, thresholds/statistics, introspection, callbacks, DEBUG flags, and canonical DEBUG_SAVEALL garbage retention. Formal/model coverage remains a continuing proof obligation, not an alternate runtime lane. Key parity simplification grounded in PEP 442: molt has no legacy `tp_del`, so normal collection leaves `gc.garbage` empty and every finalizer-bearing cycle is collectable.

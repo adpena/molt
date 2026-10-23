@@ -52,7 +52,11 @@ atomic words for bookkeeping and the same mutex-protected shards, but tracing
 fails before snapshot or mutation until the scheduler supplies a real
 stop-the-world epoch. A GIL-shaped compatibility lock is not a substitute.
 
-The registry stores opaque provenance-safe pointers behind 64 shards. Snapshot
+The registry stores opaque provenance-safe pointers behind 64 shards. Its keys
+are heap addresses, which the allocator chooses, so both maps hash them with one
+folded 64x64->128-bit multiply instead of keyed SipHash. The shard takes bits
+32..38 of that hash; each table takes its bucket from the low bits and its
+control tag from the top seven. Snapshot
 and promotion freeze all shards as one metadata transaction; graph traversal runs
 after releasing registry locks. wasm32 and i686 use the same u64 allocation
 ordinal and i64 trial-ref lanes, so pointer width cannot alter ordering or
@@ -238,6 +242,17 @@ allocator calls/bytes/peak live bytes, and the exact registry-access count over
 equivalent allocation telemetry. The safe shared mutex authority is therefore
 retained; the runtime profiler's contention-count and wait-nanosecond counters
 make any future material free-threaded cost visible.
+That probe was a debug test build at about 2.3 µs per object. HF-475 measured the
+registry again in release builds of real programs on macOS arm64 (2026-10-22).
+Keyed SipHash, the shard mutexes and a second runtime-state lookup per
+transition took about 8.6% of `itertools.tee` catch-up samples. The address
+hash and one runtime-state lookup per transition cut tracked allocation and
+deallocation workloads by 4-15% (fastest of 9 alternating runs). A GIL-only
+shard cell (`RefCell`, no lock) on top of that moved the same minimums by about
+1%: lock and unlock were 3.2% of tee samples, and the cell's own borrow and
+inlining took back most of it (tee catch-up 955.9 to 951.3 ns per item,
+generator `next` 543.4 to 536.1, `enumerate` 176.3 to 169.6, tuple allocation
+116.5 to 117.1). The safe mutex authority stays.
 The generational probe holds a long-lived population, creates a small young set,
 and attests both exact scanned-candidate counts and median/p95 latency for young
 versus full collection. Graph traversal for a young sweep covers its selected generation-0 cohort,
