@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: differential coverage for socket.setdefaulttimeout validation."""
 
 import socket
