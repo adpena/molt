@@ -3077,8 +3077,8 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
     variables = authority["variables"]
     assert variables["PATH"]["redacted"] is True
     assert "value" not in variables["PATH"]
-    assert variables["CARGO_INCREMENTAL"]["redacted"] is True
-    assert "value" not in variables["CARGO_INCREMENTAL"]
+    # Under sccache the Cargo profile decides incremental; nothing is injected.
+    assert "CARGO_INCREMENTAL" not in variables
     for name in (
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",

@@ -573,7 +573,6 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
         "PATH": "/usr/bin",
         "RUSTC_WRAPPER": "/usr/bin/sccache",
         "CARGO_TARGET_DIR": str(tmp_path / "test-cargo-target"),
-        "CARGO_INCREMENTAL": "0",
         "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
     }
     assert run_calls[1]["env"] == {

@@ -100,10 +100,9 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
     # sessions for warm incremental rebuilds), not a per-session cold dir.
     assert env["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
-    # Incremental is ON by default now (fast warm rebuilds against the persistent
-    # target dir); it is forced to "0" only where sccache is actually wired, which
-    # canonical_env does not do.
-    assert env["CARGO_INCREMENTAL"] == "1"
+    # The run context leaves incremental to the Cargo profile (dev and dev-fast
+    # build workspace crates incrementally); sccache caches registry crates.
+    assert "CARGO_INCREMENTAL" not in env
     assert env["MOLT_CACHE"] == str(tmp_path.resolve() / ".molt_cache")
     # Scratch never lands in the source tree, even for a repo-local root.
     scratch = custody_layout.out_of_tree_scratch_root(tmp_path)
