@@ -616,7 +616,7 @@ def test_admission_link_capture_checks_actual_buffers_before_publication(
         output = Path(link_cmd[link_cmd.index("-o") + 1])
         dependencies = Path(link_cmd[link_cmd.index("-MF") + 1])
         stub = tmp_path / "main_stub.c"
-        dependencies.write_text(f"output: {stub} {header}\n")
+        dependencies.write_text(f"output: {stub} {header}\n", encoding="utf-8")
         stages.extend((report, output, dependencies))
         output.write_bytes(b"new-private-output")
         with tarfile.open(report, "w", format=tarfile.GNU_FORMAT) as archive:
@@ -689,7 +689,9 @@ def test_admission_link_capture_checks_actual_buffers_before_publication(
             "driver_preparation",
         }
         preparation = json.loads(
-            prepared.link_input_artifacts["driver_preparation"][0].read_text()
+            prepared.link_input_artifacts["driver_preparation"][0].read_text(
+                encoding="utf-8"
+            )
         )
         assert (
             preparation["driver"]["sha256"]

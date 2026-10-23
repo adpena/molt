@@ -489,7 +489,7 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
     root.mkdir()
     project.mkdir()
     source = project / "release_consumer.py"
-    source.write_text("preparation")
+    source.write_text("preparation", encoding="utf-8")
     compiler = SimpleNamespace(
         binary=root / "backend",
         source_root=root / "source",
@@ -509,7 +509,10 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
                 driver_preparation=files / "program.molt-native-inputs.json",
                 driver_dependencies=files / "program.molt-native-inputs.d",
             )
-        preparations[target] = (json.loads(observation_path.read_text()), outputs)
+        preparations[target] = (
+            json.loads(observation_path.read_text(encoding="utf-8")),
+            outputs,
+        )
     monkeypatch.setattr(
         verify_consumer,
         "_preparation_link_inputs",
@@ -575,7 +578,8 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
                     },
                     "program": lane.as_record(),
                 }
-            )
+            ),
+            encoding="utf-8",
         )
 
     calls = []
@@ -662,7 +666,7 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
         if defect == "missing-cell":
             rows.pop()
         result = {"cells": rows}
-        (evidence / "compilation.json").write_text(json.dumps(result))
+        (evidence / "compilation.json").write_text(json.dumps(result), encoding="utf-8")
         return result
 
     monkeypatch.setattr(consumer_replay, "execute_compilation", execute)
@@ -776,7 +780,8 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
                     "cargo_profile": lane.compiler_profile,
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     compilation = {
         "compiler_source_root": "/installed/source",
@@ -791,7 +796,7 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         ],
     }
     path = root / "compilation.json"
-    path.write_text(json.dumps(compilation))
+    path.write_text(json.dumps(compilation), encoding="utf-8")
     reference = {
         "path": path.relative_to(tmp_path).as_posix(),
         **consumer_replay.execution_root.file_identity(path),

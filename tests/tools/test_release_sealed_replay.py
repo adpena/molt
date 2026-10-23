@@ -2101,7 +2101,8 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
     program.write_bytes(b"executable")
     command = ["/installed/molt", "build", "/app/source.py"]
     (source / "command.json").write_text(
-        json.dumps({"argv": command, "returncode": 0, "duration_sec": 0.25})
+        json.dumps({"argv": command, "returncode": 0, "duration_sec": 0.25}),
+        encoding="utf-8",
     )
     (source / "command.stdout").write_bytes(b"")
     (source / "command.stderr").write_bytes(b"")
@@ -2170,7 +2171,8 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
                 "compiler": origin.payload(),
                 "link": link,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     outputs = {
         primary: program,
@@ -2179,7 +2181,7 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
     }
     if target == "native":
         dependency = source / "program.molt-native-inputs.d"
-        dependency.write_text("output: /work/main_stub.c\n")
+        dependency.write_text("output: /work/main_stub.c\n", encoding="utf-8")
         preparation = source / "program.molt-native-inputs.json"
         preparation.write_text(
             json.dumps(
@@ -2199,7 +2201,8 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
                         }
                     ],
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         outputs.update(driver_dependencies=dependency, driver_preparation=preparation)
     receipt = {
@@ -2215,7 +2218,7 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
     }
     if defect == "escaped-output":
         receipt["outputs"][primary]["path"] = "/work/output/../elsewhere"
-    publication_receipt_path(program).write_text(json.dumps(receipt))
+    publication_receipt_path(program).write_text(json.dumps(receipt), encoding="utf-8")
     if defect == "output-substitution":
         program.write_bytes(b"substitute")
     elif defect == "omitted-report":
@@ -2453,13 +2456,13 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
             if defect == "policy"
             else "app/compilation-" + cell["id"] + ".json"
         )
-        value = json.loads(selected.read_text())
+        value = json.loads(selected.read_text(encoding="utf-8"))
         if defect == "policy":
             value["fixed_images"][0]["sha256"] = "0" * 64
         else:
             value["environment"]["MOLT_MEMORY_GUARD_TOKEN"] = "foreign-token"
         selected.chmod(0o644)
-        selected.write_text(json.dumps(value))
+        selected.write_text(json.dumps(value), encoding="utf-8")
     if defect is not None:
         with pytest.raises(ValueError):
             consumer_replay._validate_compilation_plan(
@@ -2606,7 +2609,9 @@ def test_retained_compilation_replays_export_before_accepting_summary(
     # A forged summary may recompute this outer inventory. Raw export readback
     # must still reject altered retained bytes and derived claims.
     compilation["files"] = execution_root.root_inventory(evidence)
-    (evidence / "compilation.json").write_text(json.dumps(compilation))
+    (evidence / "compilation.json").write_text(
+        json.dumps(compilation), encoding="utf-8"
+    )
     kwargs = dict(
         evidence=evidence,
         compilation=compilation,
@@ -2632,9 +2637,9 @@ def test_compilation_native_resources_come_from_captured_buffers(tmp_path, defec
     _compilation_export_fixture(tmp_path, "native")
     source = tmp_path / "export"
     report = source / "program.molt-link-inputs.tar"
-    observation = json.loads((source / "program.molt-link-inputs.json").read_text())[
-        "link"
-    ]
+    observation = json.loads(
+        (source / "program.molt-link-inputs.json").read_text(encoding="utf-8")
+    )["link"]
     root = tmp_path / "rootfs"
     root.mkdir()
     crt = "usr/lib/molt-capture-fixture-crt.o"
@@ -2699,7 +2704,10 @@ def test_native_preparation_stages_lexical_header_inputs_without_readmitting_cha
     driver.write_bytes(b"selected driver")
     dependencies = tmp_path / "driver.d"
     dependencies.write_text(
-        "program: " + ("" if defect == "omitted-source" else "main.c ") + "selected.h\n"
+        "program: "
+        + ("" if defect == "omitted-source" else "main.c ")
+        + "selected.h\n",
+        encoding="utf-8",
     )
     if defect == "omitted-source":
         with pytest.raises(ValueError, match="omitted its source"):
