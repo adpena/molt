@@ -1701,3 +1701,27 @@ def test_global_row_budget_replaces_generation_count_retirement(tmp_path, monkey
             "6",
             "7",
         }
+
+
+def test_malformed_source_retirement_preserves_evidence_and_continues_sweep(tmp_path):
+    from molt.cli import source_record_store as records
+
+    cache = tmp_path / "cache"
+    namespace, _ = records.source_record_namespace_paths(
+        cache, f"v{records._SCHEMA_VERSION - 1}"
+    )
+    namespace.mkdir(parents=True)
+    (namespace / "records.sqlite").write_bytes(b"idle older namespace")
+    prefix = hashlib.sha256(records.SOURCE_RECORD_RETIREMENT_SCOPE.encode()).hexdigest()
+    malformed = namespace.parent / f".molt-retired-v1-{prefix}-junk"
+    malformed.write_bytes(b"unqualified retirement evidence")
+    artifact = cache / f"{_cache_key('program')}.artifact-{_cache_key('contract')}.o"
+    artifact.write_bytes(b"unrelated evictable object")
+    result = _load_molt_cache_prune()._prune(
+        cache, max_bytes=0, max_age_days=None, dry_run=False
+    )
+    assert result["status"] == "completed" and result["entries_failed"] > 0
+    assert result["source_record_maintenance_failed"] is True
+    assert malformed.read_bytes() == b"unqualified retirement evidence"
+    assert (namespace / "records.sqlite").read_bytes() == b"idle older namespace"
+    assert not artifact.exists(), "one refused retirement cannot abandon unrelated work"
