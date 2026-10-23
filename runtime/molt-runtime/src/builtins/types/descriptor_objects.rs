@@ -298,6 +298,30 @@ pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u
     })
 }
 
+/// `GenericAlias.__instancecheck__` and `__subclasscheck__`: a parameterized
+/// generic is never class information, as CPython's `ga_instancecheck` and
+/// `ga_subclasscheck` refuse it. Tuple and union traversal reach these in
+/// member order, so an earlier match still succeeds.
+pub(crate) extern "C" fn generic_alias_instancecheck(_alias_bits: u64, _value_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        raise_exception::<_>(
+            py,
+            "TypeError",
+            "isinstance() argument 2 cannot be a parameterized generic",
+        )
+    })
+}
+
+pub(crate) extern "C" fn generic_alias_subclasscheck(_alias_bits: u64, _value_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        raise_exception::<_>(
+            py,
+            "TypeError",
+            "issubclass() argument 2 cannot be a parameterized generic",
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generic_alias_type_new(
     cls_bits: u64,

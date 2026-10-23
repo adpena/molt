@@ -16,6 +16,7 @@ from typing import (
 )
 
 from molt.frontend._types import (
+    ExactClassFact,
     MoltOp,
     MoltValue,
     ScratchCell,
@@ -650,11 +651,16 @@ class PatternMatchMixin(GeneratorMixinBase):
         if subject is None:
             raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unsupported match subject")
         subject_val = subject
-        if not self.is_async() and self.current_func_name != "molt_main":
-            assigned = self._collect_assigned_names([node])
-            for name in sorted(assigned):
-                if name not in self.scope_assigned or name in self.closure_locals:
-                    self._box_local(name)
+        # Cases are branches: a capture or body binding happens on some paths
+        # only, so it takes the same mutable home and depth as an `if` branch.
+        assigned = self._collect_assigned_names([node])
+        if not self.is_async():
+            if self.current_func_name == "molt_main":
+                self._prepare_mutable_control_flow_bindings(assigned)
+            else:
+                for name in sorted(assigned):
+                    if name not in self.scope_assigned or name in self.closure_locals:
+                        self._box_local(name)
 
         provenance_flow = self._begin_module_provenance_flow(
             record_exception_prefixes=True
@@ -664,7 +670,36 @@ class PatternMatchMixin(GeneratorMixinBase):
         done_cell = self._emit_match_cell(False)
         surviving_exact = self._snapshot_live_exact_bindings()
         surviving_exact_token = self.exact_class_token
+        # No case may run, so no case's discards survive the statement.
+        unbound_snapshot = set(self.unbound_check_names)
+        self.control_flow_depth += 1
+        try:
+            self._emit_match_cases(
+                node,
+                subject_val,
+                done_cell,
+                surviving_exact,
+                surviving_exact_token,
+                unbound_snapshot,
+            )
+        finally:
+            self.control_flow_depth -= 1
+        self.unbound_check_names = unbound_snapshot
+        self._finish_module_provenance_flow(provenance_flow)
+        self._evict_module_control_flow_bindings(assigned)
+        return None
+
+    def _emit_match_cases(
+        self,
+        node: ast.Match,
+        subject_val: MoltValue,
+        done_cell: MoltValue,
+        surviving_exact: dict[str, ExactClassFact],
+        surviving_exact_token: int,
+        unbound_snapshot: set[str],
+    ) -> None:
         for idx, case in enumerate(node.cases):
+            self.unbound_check_names = set(unbound_snapshot)
             self.exact_locals = dict(surviving_exact)
             self.exact_class_token = surviving_exact_token
             case_entry_exact = self._snapshot_live_exact_bindings()
@@ -734,5 +769,3 @@ class PatternMatchMixin(GeneratorMixinBase):
             surviving_exact_token = self.exact_class_token
         self.exact_locals = surviving_exact
         self.exact_class_token = surviving_exact_token
-        self._finish_module_provenance_flow(provenance_flow)
-        return None

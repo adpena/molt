@@ -804,6 +804,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_iter_builtin",
+        import: WasmRuntimeImport::IterBuiltin,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_iter_sentinel",
         import: WasmRuntimeImport::IterSentinel,
         arity: 2,
@@ -12655,6 +12660,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_enumerate_builtin" => Some(WasmRuntimeImport::EnumerateBuiltin),
         "molt_filter_builtin" => Some(WasmRuntimeImport::FilterBuiltin),
         "molt_iter_checked" => Some(WasmRuntimeImport::Iter),
+        "molt_iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
         "molt_iter_sentinel" => Some(WasmRuntimeImport::IterSentinel),
         "molt_len" => Some(WasmRuntimeImport::Len),
         "molt_len_dict" => Some(WasmRuntimeImport::LenDict),

@@ -331,8 +331,14 @@ pub extern "C" fn molt_aiter_builtin(obj_bits: u64) -> u64 {
     molt_aiter(obj_bits)
 }
 
-/// `iter(object)` — wraps `molt_iter_checked`.
+/// `iter(object[, sentinel])`. A sentinel selects the callable iterator, as
+/// CPython's `builtin_iter` does by argument count.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_iter_builtin(obj_bits: u64) -> u64 {
-    molt_iter_checked(obj_bits)
+pub extern "C" fn molt_iter_builtin(obj_bits: u64, sentinel_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if sentinel_bits == missing_bits(_py) {
+            return molt_iter_checked(obj_bits);
+        }
+        molt_iter_sentinel(obj_bits, sentinel_bits)
+    })
 }

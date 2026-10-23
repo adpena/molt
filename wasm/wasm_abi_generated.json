@@ -3865,6 +3865,7 @@
     "isinstance": "molt_isinstance",
     "issubclass": "molt_issubclass",
     "iter": "molt_iter_checked",
+    "iter_builtin": "molt_iter_builtin",
     "iter_next": "molt_iter_next",
     "iter_next_unboxed": "molt_iter_next_unboxed",
     "iter_sentinel": "molt_iter_sentinel",
