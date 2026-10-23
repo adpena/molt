@@ -269,6 +269,20 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         .map(|target| target.0)
 }
 
+/// Resolve the executable target of a task's poll identity. A named key
+/// resolves only through the generated table. An address key is its own
+/// target (`runtime_fn_key` publishes the address itself), so each resume
+/// takes no registry lock.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<*const ()> {
+    if runtime_callable_key_is_named(poll_fn) {
+        wasm_callables::runtime_callable_target_ptr(poll_fn)
+    } else {
+        crate::provenance::abi::function_ptr(poll_fn)
+    }
+}
+
 #[inline]
 unsafe fn init_runtime_callable_function_obj(
     ptr: *mut u8,
@@ -2778,6 +2792,16 @@ mod wasm_runtime_callable_tests {
             runtime_callable_target_ptr(named_type_init),
             Some(crate::molt_type_init as *const ())
         );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_dispatch_never_treats_a_named_key_as_an_address() {
+        let past_the_poll_interval = wasm_callables::RUNTIME_POLL_CALLABLE_KEY_BASE
+            + wasm_callables::WASM_POLL_SLOT_MAX_OFFSET
+            + 1;
+        assert!(runtime_callable_key_is_named(past_the_poll_interval));
+        assert_eq!(runtime_poll_call_target(past_the_poll_interval), None);
     }
 
     #[test]

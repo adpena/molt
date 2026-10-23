@@ -411,8 +411,6 @@ def test_variable_gc_edges_use_one_prereserved_detach_sink() -> None:
         1
     ].split("pub(crate) unsafe fn clear_cycle_edges", 1)[0]
     assert "detach_if_heap" in generator_clear
-    assert "generator_exception_stack_take" in generator_clear
-    assert "generator_context_stack_take" in generator_clear
     assert "GEN_CONTROL_SIZE..payload_size" in generator_clear
     delete_garbage = _rust_function(gc, "collect_generation")
     clear_node = _rust_function(gc, "clear_node")

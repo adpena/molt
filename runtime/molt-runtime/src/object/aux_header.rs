@@ -38,6 +38,10 @@ pub(crate) struct MoltAuxSidecar {
     /// hands its bindings to it (when an observer shares it) or detaches it
     /// before the task storage it reads goes away.
     frame_bindings: MoltAuxWord,
+    /// The exception-handler state the activation keeps while suspended
+    /// (`builtins::exceptions::activation`): zero, inline scalars, or an
+    /// owned boxed state whose references GC traversal and detachment reach.
+    frame_exceptions: MoltAuxWord,
     pub(crate) extended_size: usize,
 }
 
@@ -55,6 +59,7 @@ impl MoltAuxSidecar {
             frame_awaited: MoltAuxWord::new(0),
             frame_locals_phase: MoltAuxWord::new(0),
             frame_bindings: MoltAuxWord::new(0),
+            frame_exceptions: MoltAuxWord::new(0),
             extended_size,
         }
     }
@@ -184,6 +189,48 @@ pub(crate) unsafe fn object_take_frame_bindings_bits(ptr: *mut u8) -> u64 {
     unsafe { super::sidecar_from_snapshot(snapshot) }
         .frame_bindings
         .swap(0, Ordering::AcqRel)
+}
+
+/// The activation's saved exception-state word (see `frame_exceptions`).
+#[inline]
+pub(crate) fn object_frame_exceptions(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_exceptions
+        .load(Ordering::Acquire)
+}
+
+/// Take the activation's saved exception-state word, leaving zero.
+///
+/// # Safety
+/// The caller holds the activation's execution or terminal authority.
+#[inline]
+pub(crate) unsafe fn object_take_frame_exceptions(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_exceptions
+        .swap(0, Ordering::AcqRel)
+}
+
+/// Publish the activation's saved exception-state word.
+///
+/// # Safety
+/// The caller holds the activation's execution authority, the word is
+/// currently zero, and the activation has its constructor-selected sidecar.
+#[inline]
+pub(crate) unsafe fn object_set_frame_exceptions(ptr: *mut u8, word: u64) {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
+    let previous = unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_exceptions
+        .swap(word, Ordering::AcqRel);
+    debug_assert_eq!(previous, 0, "an activation's exception state has one owner");
 }
 
 /// Borrow the active continuation while holding the task's execution authority.
@@ -373,6 +420,15 @@ pub(crate) unsafe fn free_aux_sidecar(word: u64) {
             .expect("runtime-owned sidecar address must fit the active address space");
         let ptr = std::ptr::with_exposed_provenance_mut::<MoltAuxSidecar>(address);
         unsafe {
+            // Death detaches a boxed exception state (`task_detach_owned_edges`);
+            // only zero or inline scalars may remain.
+            debug_assert!(
+                {
+                    let saved = (*ptr).frame_exceptions.load(Ordering::Acquire);
+                    saved == 0 || saved & 1 != 0
+                },
+                "an activation died holding its saved exception state"
+            );
             ptr.drop_in_place();
             std::alloc::dealloc(ptr.cast::<u8>(), layout);
         }

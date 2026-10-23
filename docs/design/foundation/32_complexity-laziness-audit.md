@@ -88,6 +88,8 @@ Each poll acquires five separate `Mutex<HashMap<PtrSlot, Vec<u64>>>` (or similar
 
 **Owned arc:** Doc 28 Phase 2 (task-local state inlining). Point; do not duplicate.
 
+**Status (2026-10-23):** `task_exception_stacks`, `task_exception_handler_stacks`, `task_exception_depths` and the baseline map are gone; each task keeps that state in one sidecar word (HF-230). `task_last_exceptions` and `task_results` remain.
+
 ---
 
 ### Finding C-04: `run_once` drain-and-collect Vec allocation per event loop iteration

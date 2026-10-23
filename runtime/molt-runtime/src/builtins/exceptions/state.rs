@@ -33,8 +33,6 @@ thread_local! {
     pub(crate) static EXCEPTION_STACK_BASELINE: Cell<usize> = const { Cell::new(0) };
     pub(crate) static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     pub(crate) static ACTIVE_EXCEPTION_FALLBACK: RefCell<Vec<ExceptionContextFallback>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static GENERATOR_EXCEPTION_STACKS: RefCell<HashMap<usize, Vec<u64>>> =
-        RefCell::new(HashMap::new());
     pub(crate) static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };
     pub(crate) static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
