@@ -1327,7 +1327,6 @@ pub(crate) enum WasmRuntimeImport {
     AsyncioRequireChildWatcherSupport,
     AsyncioRunningLoopGet,
     AsyncioRunningLoopSet,
-    AsyncioEventLoopGet,
     AsyncioEventLoopGetCurrent,
     AsyncioEventLoopSet,
     AsyncioEventLoopPolicyGet,

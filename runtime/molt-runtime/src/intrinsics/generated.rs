@@ -2689,13 +2689,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_asyncio_event_loop_get",
-        symbol: "molt_asyncio_event_loop_get",
-        arity: 0,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
         name: "molt_asyncio_event_loop_get_current",
         symbol: "molt_asyncio_event_loop_get_current",
         arity: 0,

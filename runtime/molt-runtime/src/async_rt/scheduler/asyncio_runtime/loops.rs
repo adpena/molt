@@ -134,11 +134,6 @@ pub extern "C" fn molt_asyncio_running_loop_set(loop_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_loop_get() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_get_impl(_py) })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_event_loop_get_current() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { asyncio_event_loop_get_current_impl(_py) })
 }
