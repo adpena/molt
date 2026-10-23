@@ -1464,7 +1464,7 @@ _MODEL_NONCE = "c" * 32
 # is empty or "torn" (a prefix); readers take one path for both, so each
 # record carries one of them. An index stage is never read, only replaced.
 _MODEL_OWNERS = ("absent", "empty", "L", "I", "T", "R", "C", "D")
-_MODEL_TERMINALS = ("absent", "torn", "valid")
+_MODEL_TERMINALS = ("absent", "torn", "oversized", "valid")
 _MODEL_INDEXES = ("absent", "stage", "final", "final-empty")
 _MODEL_PAYLOADS = ("target", "target-partial", "payload", "payload-partial", "gone")
 
@@ -1526,6 +1526,11 @@ def _model_payload(directory: Path, *, partial: bool) -> None:
 
 
 def _model_bytes(value: object, form: str) -> bytes:
+    if form == "oversized":
+        # Decodable JSON past the receipt bound, as an unbounded closure once
+        # wrote (HF-479): its generation blocks alone, never every sweep.
+        assert isinstance(value, dict)
+        return scratch.encode_exact({**value, "pad": "x" * scratch._MAX_RECEIPT_BYTES})
     data = scratch.encode_exact(value)
     return {"empty": b"", "torn": data[: len(data) // 2]}.get(form, data)
 
