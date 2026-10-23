@@ -103,7 +103,7 @@ _COMMON = dict(
 
 
 @pytest.mark.parametrize("cache", ["valid", "missing", "corrupt"])
-def test_disabled_pair_build_still_admits_hydrated_generation(
+def test_disabled_pair_build_still_admits_cached_generation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache: str
 ) -> None:
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
@@ -138,30 +138,38 @@ def test_disabled_pair_build_still_admits_hydrated_generation(
         ),
     )
 
-    def hydrate(**_kwargs):
-        if cache == "missing":
-            return None
+    from molt.cli import runtime_wasm_cache as pair_cache
+
+    monkeypatch.setattr(
+        pair_cache, "_shared_runtime_wasm_cache_root", lambda: tmp_path / "cache"
+    )
+    if cache != "missing":
         source_shared, source_reloc = (
             tmp_path / "shared-source",
             tmp_path / "reloc-source",
         )
         source_shared.write_bytes(b"shared")
         source_reloc.write_bytes(b"reloc")
-        generation = publish_runtime_wasm_generation(
-            shared_path,
-            reloc_path,
-            shared_identity=shared,
-            reloc_identity=reloc,
-            source_shared=source_shared,
-            source_reloc=source_reloc,
-            cargo_environment=runtime_cargo_environment_inputs(),
+        assert (
+            pair_cache.publish_runtime_wasm_pair_to_shared_cache(
+                shared=source_shared,
+                reloc=source_reloc,
+                shared_identity=shared,
+                reloc_identity=reloc,
+                cargo_environment=runtime_cargo_environment_inputs(),
+            )
+            is None
         )
         if cache == "corrupt":
-            generation.shared.write_bytes(b"corrupt")
-        return generation
-
+            _, _, manifest = pair_cache._cached_pair_paths(shared)
+            payload = json.loads(manifest.read_text())
+            (manifest.parent / payload["receipts"]["shared"]["member"]).write_bytes(
+                b"corrupt"
+            )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "hydrate_runtime_wasm_pair_from_shared_cache", hydrate
+        pair_cache,
+        "publish_runtime_wasm_generation",
+        lambda **_k: pytest.fail("ordinary cache admission published a runtime"),
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build,
@@ -197,9 +205,7 @@ def test_disabled_pair_build_still_admits_hydrated_generation(
         assert outcome is runtime_wasm_pair_build._PairBuildOutcome.FAILED
         failure = state.runtime_wasm_build_failure
         assert failure is not None
-        assert failure.stage == (
-            "rebuild-policy" if cache == "missing" else "shared-cache-hydration"
-        )
+        assert failure.stage == "rebuild-policy"
 
 
 @pytest.fixture(autouse=True)

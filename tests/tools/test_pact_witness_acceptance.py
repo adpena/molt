@@ -792,3 +792,23 @@ def test_acceptance_parity_failure_cannot_publish(tmp_path, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         acceptance.main(["--target", "native"])
     assert not (tmp_path / "acceptance-receipt.json").exists()
+
+
+def test_build_diagnostics_report_runtime_cache_admission(tmp_path, capsys):
+    path = tmp_path / "diagnostics.json"
+    path.write_text(
+        json.dumps(
+            {
+                "runtime_wasm_cache": {
+                    "admit_hits": 2,
+                    "admit_attempts": 3,
+                    "publish_successes": 0,
+                    "publish_attempts": 0,
+                }
+            }
+        )
+    )
+    acceptance._summarize_build_diagnostics(path)
+    output = capsys.readouterr().out
+    assert "runtime_wasm_cache[admit=2/3 publish=0/0]" in output
+    assert "hydrate" not in output

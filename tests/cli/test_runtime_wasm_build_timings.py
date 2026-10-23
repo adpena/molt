@@ -102,16 +102,16 @@ def test_runtime_identity_phase_detail_attests_selected_workers(
     assert detail == "status=ok,files=17983,bytes=249161774,workers=6"
 
 
-def test_atomic_pair_cache_hydration_precedes_combined_build() -> None:
+def test_atomic_pair_cache_admission_precedes_combined_build() -> None:
     import inspect
 
     from molt.cli import runtime_wasm_pair_build
 
     source = inspect.getsource(runtime_wasm_pair_build._materialize_runtime_wasm_pair)
-    hydrate_offset = source.index("hydrate_runtime_wasm_pair_from_shared_cache(")
+    admit_offset = source.index("admit_runtime_wasm_pair_from_shared_cache(")
     combined_build_offset = source.index("_prepopulate_combined_runtime_wasm_target(")
 
-    assert hydrate_offset < combined_build_offset
+    assert admit_offset < combined_build_offset
 
 
 def test_exact_pair_build_records_pre_and_post_identity_phases() -> None:

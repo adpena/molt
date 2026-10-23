@@ -73,7 +73,7 @@ from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
 )
 from molt.cli.runtime_wasm_cache import (
-    hydrate_runtime_wasm_pair_from_shared_cache,
+    admit_runtime_wasm_pair_from_shared_cache,
     publish_runtime_wasm_pair_to_shared_cache,
 )
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
@@ -738,19 +738,17 @@ def _materialize_runtime_wasm_pair(
         return _PairBuildOutcome.FAILED
     assert ctx.pre_identity is not None
     assert ctx.shared_spec.cargo_plan is not None
-    hydrated = hydrate_runtime_wasm_pair_from_shared_cache(
-        dest_shared=ctx.runtime_wasm,
-        dest_reloc=ctx.runtime_reloc_wasm,
+    cached = admit_runtime_wasm_pair_from_shared_cache(
         shared_identity=ctx.pre_identity.shared,
         reloc_identity=ctx.pre_identity.reloc,
         environment=ctx.shared_spec.cargo_plan.environment,
     )
-    if hydrated is not None:
-        if ctx.accept_generation(observed_generation=hydrated):
+    if cached is not None:
+        if ctx.accept_generation(observed_generation=cached):
             return _PairBuildOutcome.ACCEPTED
         ctx.fail(
-            "shared-cache-hydration",
-            "Runtime WASM shared cache hydrated a pair that failed generation validation: "
+            "shared-cache-admission",
+            "Runtime WASM shared cache selected a pair that failed generation validation: "
             + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
         )
         return _PairBuildOutcome.FAILED

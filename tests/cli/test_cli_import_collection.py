@@ -21205,11 +21205,11 @@ def test_emit_build_diagnostics_includes_runtime_wasm_cache_summary(
         diagnostics={
             "total_sec": 1.0,
             "runtime_wasm_cache": {
-                "hydrate_attempts": 4,
-                "hydrate_hits": 1,
-                "hydrate_misses": 2,
-                "hydrate_failures": 1,
-                "hydrate_hit_rate": 0.25,
+                "admit_attempts": 4,
+                "admit_hits": 1,
+                "admit_misses": 2,
+                "admit_failures": 1,
+                "admit_hit_rate": 0.25,
                 "publish_attempts": 3,
                 "publish_successes": 2,
                 "publish_failures": 1,
@@ -21222,8 +21222,8 @@ def test_emit_build_diagnostics_includes_runtime_wasm_cache_summary(
     )
 
     stderr = capsys.readouterr().err
-    assert "- runtime_wasm_cache: hydrate_hits=1/4" in stderr
-    assert "hydrate_misses=2" in stderr
+    assert "- runtime_wasm_cache: admit_hits=1/4" in stderr
+    assert "admit_misses=2" in stderr
     assert "publish_successes=2/3" in stderr
     assert "publish_failures=1" in stderr
     assert (
