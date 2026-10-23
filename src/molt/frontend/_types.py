@@ -504,11 +504,17 @@ class ActiveException:
     handler_try_depth: int = 0
 
 
+# The generator control region's edge slots that compiled bodies read and
+# write (molt-runtime-constants owns the layout; its raw state and exception
+# depth words are runtime-only).
 GEN_SEND_OFFSET = 0
 GEN_THROW_OFFSET = 8
-GEN_CLOSED_OFFSET = 16
 GEN_YIELD_FROM_OFFSET = 32
 GEN_CONTROL_SIZE = 48
+# The resume label a generator body stores at its normal return: the poll
+# returns the value itself, and this label reports completion
+# (molt-codegen-abi GENERATOR_RESUME_RETURNED).
+GEN_RESUME_RETURNED = -(2**63)
 
 BUILTIN_TYPE_TAGS = {
     "int": 1,
@@ -997,7 +1003,7 @@ __all__ = [
     "ActiveException",
     "GEN_SEND_OFFSET",
     "GEN_THROW_OFFSET",
-    "GEN_CLOSED_OFFSET",
+    "GEN_RESUME_RETURNED",
     "GEN_YIELD_FROM_OFFSET",
     "GEN_CONTROL_SIZE",
     "BUILTIN_TYPE_TAGS",

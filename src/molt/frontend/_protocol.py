@@ -1176,6 +1176,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         delta_expr: ast.expr,
     ) -> None: ...
 
+    def _emit_generator_falloff(self) -> None: ...
+
     def _emit_generic_attribute_load(
         self,
         obj: MoltValue,

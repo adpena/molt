@@ -992,16 +992,45 @@ def test_compiled_code_slot_publishes_complete_function_metadata(source, target)
     ],
 )
 def test_stateful_completion_is_owned_by_the_runtime(source, target):
-    from molt.frontend._types import GEN_CLOSED_OFFSET
-
-    # Publishing this flag in generated code skips the runtime's single
-    # terminal transition, which clears or retires the activation's bindings.
-    generator, _ = compile_source(source, target)
-    assert any(
-        "stateful_frame_plan" in function for function in generator.funcs_map.values()
+    from molt.frontend._types import (
+        GEN_CONTROL_SIZE,
+        GEN_RESUME_RETURNED,
+        GEN_SEND_OFFSET,
+        GEN_THROW_OFFSET,
+        GEN_YIELD_FROM_OFFSET,
     )
-    for function in generator.funcs_map.values():
-        assert not any(
-            op.kind == "STORE_CLOSURE" and op.args[1] == GEN_CLOSED_OFFSET
-            for op in function["ops"]
-        )
+
+    # Generated code never writes the runtime's frame state: it touches only
+    # the control region's edge slots and reports completion through its
+    # resume label at each normal return, which the runtime turns into its one
+    # terminal transition (that clears or retires the activation's bindings).
+    generator, _ = compile_source(source, target)
+    plans = {
+        name: function["stateful_frame_plan"]
+        for name, function in generator.funcs_map.items()
+        if "stateful_frame_plan" in function
+    }
+    assert plans
+    edges = {GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET}
+    for name, function in generator.funcs_map.items():
+        ops = function["ops"]
+        for op in ops:
+            if op.kind in {"STORE_CLOSURE", "LOAD_CLOSURE"} and isinstance(
+                op.args[1], int
+            ):
+                offset = op.args[1]
+                assert offset in edges or offset >= GEN_CONTROL_SIZE, (name, op)
+        plan = plans.get(name)
+        reports = plan is not None and plan.include_gen_control
+        for position, op in enumerate(ops):
+            if op.kind != "ret":
+                continue
+            previous = [
+                candidate
+                for candidate in ops[:position]
+                if candidate.kind != "TRACE_EXIT"
+            ][-1]
+            completion = previous.kind == "STATE_SET" and previous.args == [
+                GEN_RESUME_RETURNED
+            ]
+            assert completion == reports, (name, position, previous)

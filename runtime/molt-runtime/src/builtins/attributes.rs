@@ -467,6 +467,11 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
                         MoltObject::from_bool(generator_running(obj_ptr)).bits(),
                     ));
                 }
+                "gi_suspended" => {
+                    return Ok(Some(
+                        MoltObject::from_bool(generator_suspended(obj_ptr)).bits(),
+                    ));
+                }
                 "gi_code" => {
                     let code_bits = crate::object::aux_header::object_frame_code_bits(obj_ptr);
                     if code_bits != 0 {
@@ -538,6 +543,14 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
                     };
                     let running = asyncgen_running(obj_ptr) || gen_running;
                     return Ok(Some(MoltObject::from_bool(running).bits()));
+                }
+                "ag_suspended" => {
+                    let suspended =
+                        maybe_ptr_from_bits(asyncgen_gen_bits(obj_ptr)).is_some_and(|gen_ptr| {
+                            object_type_id(gen_ptr) == TYPE_ID_GENERATOR
+                                && generator_suspended(gen_ptr)
+                        });
+                    return Ok(Some(MoltObject::from_bool(suspended).bits()));
                 }
                 "ag_await" => {
                     let await_bits = asyncgen_await_bits(_py, obj_ptr);

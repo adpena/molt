@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_4cd06d214d674e1b_gil_v4")]
+#[unsafe(export_name = "molt_generated_object_abi_cc3e3a1cd01ab8fb_gil_v5")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,7 +34,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_4cd06d214d674e1b_free_threaded_v4")]
+#[unsafe(export_name = "molt_generated_object_abi_cc3e3a1cd01ab8fb_free_threaded_v5")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // Read-only semantic identity. Callable construction uses fn_addr! below to
@@ -807,13 +807,13 @@ pub use crate::object::weakref::{
 };
 pub(crate) use crate::object::{
     Buffer2D, ClassEdgeOwnership, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
-    HEADER_FLAG_FUNC_REQUIRES_BINDER, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE,
-    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SPAWN_RETAIN,
-    HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
-    HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat,
-    MemoryViewFormatKind, MoltFileHandle, MoltFileState, ObjectAuxPreselection, PtrSlot,
-    alloc_object, alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr,
-    bytes_data, bytes_len, dataclass_desc_ptr, dataclass_fields_ptr, dec_ref_bits, file_handle_ptr,
+    HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_FUNC_REQUIRES_BINDER,
+    HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE,
+    HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
+    HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat, MemoryViewFormatKind,
+    MoltFileHandle, MoltFileState, ObjectAuxPreselection, PtrSlot, alloc_object,
+    alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr, bytes_data,
+    bytes_len, dataclass_desc_ptr, dataclass_fields_ptr, dec_ref_bits, file_handle_ptr,
     header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
     instance_set_dict_bits, maybe_ptr_from_bits, memoryview_base_bits, memoryview_data,
     memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
