@@ -131,10 +131,7 @@ mod tests {
                 assert_eq!(strings::PyUnicode_Check(text), 1);
                 assert_eq!(strings::PyUnicode_CheckExact(text), 1);
                 assert!(GLOBAL_BRIDGE.unicode_is_open(text));
-                let initial_bits = GLOBAL_BRIDGE
-                    .molt_handle_for_pyobj(text)
-                    .unwrap()
-                    .bits();
+                let initial_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(text).unwrap().bits();
                 let initial_ptr = crate::obj_from_bits(initial_bits).as_ptr().unwrap();
                 assert!(crate::object::layout::StringStorage::is_ascii(initial_ptr));
                 assert!(GLOBAL_BRIDGE.unicode_is_open(text));
