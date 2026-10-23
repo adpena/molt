@@ -1,6 +1,7 @@
 #[cfg(test)]
 use crate::alloc_string;
 use crate::builtins::frames::FrameInvocationGuard;
+use crate::builtins::functions::BuiltinBindingPolicy;
 use crate::call::function::{
     FunctionBindingField, call_function_obj_moved, function_bits_adopt_arguments,
 };
@@ -57,7 +58,6 @@ use crate::{
     ptr_from_bits, raise_exception, raise_not_callable, runtime_state, runtime_state_for_gil,
     string_obj_to_owned, type_name, type_of_bits,
 };
-use molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy;
 use std::collections::{HashMap, HashSet};
 use std::sync::{MutexGuard, OnceLock};
 

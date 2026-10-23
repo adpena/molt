@@ -5928,11 +5928,12 @@ def test_invalid_iter_shape_defers_to_argument_binding(source: str) -> None:
     from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 
     gen = SimpleTIRGenerator(module_name="main")
+    initial_ops = list(gen.current_ops)
     result = gen._try_emit_named_builtin_iter_call(
         ast.parse(source, mode="eval").body, "iter", False
     )
     assert result is CALL_NOT_HANDLED
-    assert not gen.current_ops
+    assert gen.current_ops == initial_ops
 
 
 @pytest.mark.parametrize(

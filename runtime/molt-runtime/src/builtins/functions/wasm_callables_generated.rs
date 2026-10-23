@@ -9,6 +9,29 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i64)]
+pub(crate) enum BuiltinBindingPolicy {
+    ClinicNamed = 1,
+    PositionalRange = 7,
+}
+
+impl BuiltinBindingPolicy {
+    pub fn from_abi(value: i64) -> Option<Self> {
+        match value {
+            1 => Some(Self::ClinicNamed),
+            7 => Some(Self::PositionalRange),
+            _ => None,
+        }
+    }
+    pub fn requires_custom_binding(self) -> bool {
+        match self {
+            Self::ClinicNamed => true,
+            Self::PositionalRange => false,
+        }
+    }
+}
+
 pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFFFF0000000000;
 pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = RUNTIME_CALLABLE_KEY_BASE + 0x100;
 
@@ -102,7 +125,7 @@ pub(crate) struct PythonBuiltinFunctionInfo {
     pub(crate) varkw: Option<&'static str>,
     pub(crate) defaults: &'static [GeneratedBuiltinDefaultValue],
     pub(crate) kw_defaults: &'static [(&'static str, GeneratedBuiltinDefaultValue)],
-    pub(crate) bind_kind: Option<molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy>,
+    pub(crate) bind_kind: Option<BuiltinBindingPolicy>,
 }
 
 #[rustfmt::skip]
@@ -879,7 +902,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing, GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::EmptyTuple, GeneratedBuiltinDefaultValue::Int(0)],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::ClinicNamed),
+            bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
             python_name: "abs",
@@ -939,7 +962,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "any",
@@ -1044,7 +1067,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "dir",
@@ -1059,7 +1082,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "divmod",
@@ -1074,7 +1097,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "enumerate",
@@ -1119,7 +1142,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Str("")],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "getattr",
@@ -1134,7 +1157,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "globals",
@@ -1164,7 +1187,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "hash",
@@ -1224,7 +1247,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "issubclass",
@@ -1239,7 +1262,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "iter",
@@ -1254,7 +1277,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "len",
@@ -1344,7 +1367,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "oct",
@@ -1374,7 +1397,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Str("r"), GeneratedBuiltinDefaultValue::Int(-1), GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::Bool(true), GeneratedBuiltinDefaultValue::None],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::ClinicNamed),
+            bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
             python_name: "ord",
@@ -1404,7 +1427,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::None],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::ClinicNamed),
+            bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
             python_name: "print",
@@ -1464,7 +1487,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::ClinicNamed),
+            bind_kind: Some(BuiltinBindingPolicy::ClinicNamed),
         },
         PythonBuiltinFunctionInfo {
             python_name: "setattr",
@@ -1479,7 +1502,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "sorted",
@@ -1524,7 +1547,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::PositionalRange),
+            bind_kind: Some(BuiltinBindingPolicy::PositionalRange),
         },
         PythonBuiltinFunctionInfo {
             python_name: "zip",

@@ -1607,44 +1607,7 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
 
 
 def render_python_builtin_callables_rs(data: dict) -> str:
-    from molt.builtin_callables import BuiltinBindingPolicy
-
     lines = [_runtime_callables_header("//")]
-    lines.extend(
-        [
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "#[repr(i64)]\n",
-            "pub enum BuiltinBindingPolicy {\n",
-        ]
-    )
-    for policy in BuiltinBindingPolicy:
-        variant = policy.name.title().replace("_", "")
-        lines.append(f"    {variant} = {int(policy)},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "impl BuiltinBindingPolicy {\n",
-            "    pub fn from_abi(value: i64) -> Option<Self> {\n",
-            "        match value {\n",
-        ]
-    )
-    for policy in BuiltinBindingPolicy:
-        variant = policy.name.title().replace("_", "")
-        lines.append(f"            {int(policy)} => Some(Self::{variant}),\n")
-    lines.extend(
-        [
-            "            _ => None,\n",
-            "        }\n",
-            "    }\n",
-            "    pub fn requires_custom_binding(self) -> bool {\n",
-            "        match self {\n",
-        ]
-    )
-    for policy in BuiltinBindingPolicy:
-        variant = policy.name.title().replace("_", "")
-        required = str(policy.requires_custom_binding).lower()
-        lines.append(f"            Self::{variant} => {required},\n")
-    lines.extend(["        }\n", "    }\n", "}\n\n"])
     # The runtime metadata and the compiler's late-bound lookup roots must be
     # projections of the same Python-name/ABI authority. These are possible
     # dependencies, never proof that a mutable global names a fixed callable.
@@ -1891,15 +1854,52 @@ def _rust_str_slice(values: list[str]) -> str:
 
 
 def render_runtime_callables_rs(data: dict) -> str:
+    from molt.builtin_callables import BuiltinBindingPolicy
+
     lines: list[str] = [_runtime_callables_header("//")]
+    lines.extend(["#![allow(dead_code)]\n\n", "use super::*;\n\n"])
+
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "#[repr(i64)]\n",
+            "pub(crate) enum BuiltinBindingPolicy {\n",
+        ]
+    )
+    for policy in BuiltinBindingPolicy:
+        variant = policy.name.title().replace("_", "")
+        lines.append(f"    {variant} = {int(policy)},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl BuiltinBindingPolicy {\n",
+            "    pub fn from_abi(value: i64) -> Option<Self> {\n",
+            "        match value {\n",
+        ]
+    )
+    for policy in BuiltinBindingPolicy:
+        variant = policy.name.title().replace("_", "")
+        lines.append(f"            {int(policy)} => Some(Self::{variant}),\n")
+    lines.extend(
+        [
+            "            _ => None,\n",
+            "        }\n",
+            "    }\n",
+            "    pub fn requires_custom_binding(self) -> bool {\n",
+            "        match self {\n",
+        ]
+    )
+    for policy in BuiltinBindingPolicy:
+        variant = policy.name.title().replace("_", "")
+        required = str(policy.requires_custom_binding).lower()
+        lines.append(f"            Self::{variant} => {required},\n")
+    lines.extend(["        }\n", "    }\n", "}\n\n"])
     non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
     poll_imports = _runtime_poll_imports(data)
     reserved_callables = _shared_runtime_callables(data)
     python_builtin_callables = _python_builtin_global_callables(data)
     lines.extend(
         [
-            "#![allow(dead_code)]\n\n",
-            "use super::*;\n\n",
             "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = ",
             f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE:016X};\n",
             "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 =\n",
@@ -1958,7 +1958,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    pub(crate) varkw: Option<&'static str>,\n",
             "    pub(crate) defaults: &'static [GeneratedBuiltinDefaultValue],\n",
             "    pub(crate) kw_defaults: &'static [(&'static str, GeneratedBuiltinDefaultValue)],\n",
-            "    pub(crate) bind_kind: Option<molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy>,\n",
+            "    pub(crate) bind_kind: Option<BuiltinBindingPolicy>,\n",
             "}\n\n",
             "#[rustfmt::skip]\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[\n",
@@ -2115,7 +2115,7 @@ def render_runtime_callables_rs(data: dict) -> str:
                 + (
                     "None"
                     if entry["bind_kind"] is None
-                    else "Some(molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy::"
+                    else "Some(BuiltinBindingPolicy::"
                     + entry["bind_kind"].name.title().replace("_", "")
                     + ")"
                 )

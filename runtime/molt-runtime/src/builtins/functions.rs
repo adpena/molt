@@ -61,7 +61,7 @@ pub use opcode_payload::*;
 pub use tokenize::*;
 
 pub(crate) use wasm_callables_generated::{
-    PYTHON_BUILTIN_FUNCTIONS, runtime_callable_symbol_is_non_callable,
+    BuiltinBindingPolicy, PYTHON_BUILTIN_FUNCTIONS, runtime_callable_symbol_is_non_callable,
 };
 #[cfg(test)]
 pub(crate) use wasm_callables_generated::{
