@@ -155,7 +155,7 @@ pub(crate) fn current_thread_has_runtime_execution_custody() -> bool {
 }
 
 pub(crate) fn current_thread_holds_shutdown_drain_custody() -> bool {
-    SHUTDOWN_DRAIN_EXECUTION_DEPTH.with(|depth| depth.get() != 0)
+    crate::state::execution_tls().shutdown_drain_depth.get() != 0
 }
 
 #[inline(always)]
@@ -217,10 +217,11 @@ impl ShutdownDrainExecutionCustody {
             !crate::state::runtime_state::current_thread_holds_runtime_execution_lease(),
             "shutdown drain custody must not overlap ordinary lifecycle admission"
         );
-        SHUTDOWN_DRAIN_EXECUTION_DEPTH.with(|depth| {
+        {
+            let depth = &crate::state::execution_tls().shutdown_drain_depth;
             assert_eq!(depth.get(), 0, "duplicate shutdown drain execution custody");
             depth.set(1);
-        });
+        }
         enter_c_extension_execution_context();
         Self {
             #[cfg(not(target_arch = "wasm32"))]
@@ -235,24 +236,16 @@ impl ShutdownDrainExecutionCustody {
         origin: crate::state::runtime_state::RuntimeWorkerOrigin,
     ) -> Self {
         let mut custody = Self::enter();
-        SHUTDOWN_DRAIN_WORKER_ORIGIN.with(|slot| {
-            assert!(
-                slot.replace(Some(origin)).is_none(),
-                "duplicate retained worker origin"
-            );
-        });
+        assert!(
+            crate::state::execution_tls()
+                .retained_worker_origin
+                .replace(Some(origin))
+                .is_none(),
+            "duplicate retained worker origin"
+        );
         custody.retained_origin = true;
         custody
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn retained_shutdown_worker_origin()
--> Option<crate::state::runtime_state::RuntimeWorkerOrigin> {
-    SHUTDOWN_DRAIN_WORKER_ORIGIN
-        .try_with(Cell::get)
-        .ok()
-        .flatten()
 }
 
 impl Drop for ShutdownDrainExecutionCustody {
@@ -269,14 +262,18 @@ impl Drop for ShutdownDrainExecutionCustody {
         let depth_result = catch_unwind(AssertUnwindSafe(|| {
             #[cfg(not(target_arch = "wasm32"))]
             if self.retained_origin {
-                SHUTDOWN_DRAIN_WORKER_ORIGIN.with(|slot| {
-                    assert!(slot.take().is_some(), "retained worker origin lost");
-                });
+                assert!(
+                    crate::state::execution_tls()
+                        .retained_worker_origin
+                        .take()
+                        .is_some(),
+                    "retained worker origin lost"
+                );
             }
-            SHUTDOWN_DRAIN_EXECUTION_DEPTH.with(|depth| {
-                let previous = depth.replace(0);
-                assert_eq!(previous, 1, "shutdown drain execution custody corrupted");
-            });
+            let previous = crate::state::execution_tls()
+                .shutdown_drain_depth
+                .replace(0);
+            assert_eq!(previous, 1, "shutdown drain execution custody corrupted");
         }));
         finish_panic_obligations([
             (ExecutionDropPanicKind::ShutdownCext, cext_result),
@@ -540,17 +537,33 @@ impl RuntimeExecutionGuard {
         Self::enter_with_policy(true, ExecutionCleanupPolicy::BoundaryCreated)
     }
 
+    /// Compiled code enters here on every runtime operation, already holding
+    /// a lease and the GIL: one thread-local read answers both, and the nested
+    /// guard is the whole cost. Everything else is the cold path, kept out of
+    /// line so its frame and saved registers stay off the hot one.
+    #[inline(always)]
     fn enter_with_policy(initialize_runtime: bool, cleanup_policy: ExecutionCleanupPolicy) -> Self {
-        if crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
-            || current_thread_holds_shutdown_drain_custody()
+        let tls = crate::state::execution_tls();
+        if (tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0)
+            && let Some(gil) = GilGuard::new_if_held_in(tls)
         {
-            if let Some(gil) = GilGuard::new_if_held() {
-                return Self {
-                    gil: Some(gil),
-                    custody: None,
-                    active_lifecycle_lease: false,
-                };
-            }
+            return Self {
+                gil: Some(gil),
+                custody: None,
+                active_lifecycle_lease: false,
+            };
+        }
+        Self::enter_cold(tls, initialize_runtime, cleanup_policy)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn enter_cold(
+        tls: &'static crate::state::ExecutionTls,
+        initialize_runtime: bool,
+        cleanup_policy: ExecutionCleanupPolicy,
+    ) -> Self {
+        if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
             // Admission/retained shutdown custody survives GIL suspension.
             // Reentry must not wait for Ready: the finalization owner may be
             // joining this very worker. Own only newly acquired GIL/attachment
@@ -697,12 +710,21 @@ impl RuntimeExecutionGuard {
 }
 
 impl Drop for RuntimeExecutionGuard {
+    #[inline(always)]
     fn drop(&mut self) {
         if let Some(custody) = self.custody.take() {
-            let gil = self.gil.as_ref().expect("execution custody lost GIL");
-            finish_execution(custody, &gil.token(), self.active_lifecycle_lease);
-            self.active_lifecycle_lease = false;
+            self.finish_cold(custody);
         }
+    }
+}
+
+impl RuntimeExecutionGuard {
+    #[cold]
+    #[inline(never)]
+    fn finish_cold(&mut self, custody: RuntimeExecutionCustody) {
+        let gil = self.gil.as_ref().expect("execution custody lost GIL");
+        finish_execution(custody, &gil.token(), self.active_lifecycle_lease);
+        self.active_lifecycle_lease = false;
     }
 }
 
@@ -782,9 +804,6 @@ struct PersistentRuntimeExecution {
 
 thread_local! {
     static PERSISTENT_RUNTIME_EXECUTION: Cell<Option<PersistentRuntimeExecution>> = const { Cell::new(None) };
-    static SHUTDOWN_DRAIN_EXECUTION_DEPTH: Cell<u8> = const { Cell::new(0) };
-    #[cfg(not(target_arch = "wasm32"))]
-    static SHUTDOWN_DRAIN_WORKER_ORIGIN: Cell<Option<crate::state::runtime_state::RuntimeWorkerOrigin>> = const { Cell::new(None) };
     static CEXT_EXECUTION_CONTEXT_DEPTH: Cell<u32> = const { Cell::new(0) };
     #[cfg(target_arch = "wasm32")]
     static WASM_RUNTIME_EXECUTION_DEPTH: Cell<usize> = const { Cell::new(0) };

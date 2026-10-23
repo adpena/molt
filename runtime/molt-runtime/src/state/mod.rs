@@ -33,8 +33,8 @@ pub(crate) use runtime_state::{
     set_thread_runtime_state,
 };
 pub(crate) use tls::{
-    CONTEXT_STACK, FRAME_STACK, GIL_DEPTH, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK,
-    TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS,
+    CONTEXT_STACK, ExecutionTls, FRAME_STACK, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK,
+    TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS, execution_tls,
 };
 pub(crate) use traceback::{
     traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,

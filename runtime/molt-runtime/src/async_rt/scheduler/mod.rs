@@ -11,8 +11,8 @@ use crossbeam_deque::{Injector, Worker};
 
 use crate::object::ops::string_obj_to_owned;
 use crate::{
-    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GIL_DEPTH, GilGuard, GilReleaseGuard,
-    HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
+    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GilGuard, GilReleaseGuard, HEADER_FLAG_BLOCK_ON,
+    HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
     HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, MoltHeader, MoltObject, PtrSlot,
     anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
     class_name_for_error, code_filename_bits, code_name_bits, context_stack_unwind, dec_ref_bits,
@@ -1079,7 +1079,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             )
         };
         if async_trace_enabled() {
-            let depth = GIL_DEPTH.with(|depth| depth.get());
+            let depth = crate::state::execution_tls().gil_depth.get();
             eprintln!("molt async trace: block_on_gil_depth={}", depth);
         }
 
