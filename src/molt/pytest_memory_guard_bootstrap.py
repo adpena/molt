@@ -751,7 +751,14 @@ def validate_pytest_guardable_env(
         raise SystemExit("\n".join(run.violations))
 
 
-def _guard_pid_from_env(environ: Mapping[str, str]) -> int | None:
+def enclosing_guard_pid(environ: Mapping[str, str]) -> int | None:
+    """The pid of the memory guard ``environ`` names, or None.
+
+    tools/memory_guard.py gives each guarded child ``MOLT_MEMORY_GUARD_ACTIVE=1``
+    and its own pid. This reads only the environment. Whether that guard
+    still runs is ``live_enclosing_guard_pid``; whether it is this checkout's
+    guard holding this process for test custody is ``outer_memory_guard_active``.
+    """
     if environ.get("MOLT_MEMORY_GUARD_ACTIVE") != "1":
         return None
     try:
@@ -761,6 +768,29 @@ def _guard_pid_from_env(environ: Mapping[str, str]) -> int | None:
     if guard_pid <= 0:
         return None
     return guard_pid
+
+
+def live_enclosing_guard_pid(environ: Mapping[str, str]) -> int | None:
+    """The pid of the memory guard ``environ`` names while it runs, or None.
+
+    Any checkout's guard counts, whether it runs as tools/memory_guard.py or
+    inside a tool's own process (harness_memory_guard calls ``run_guarded``
+    in-process): each closes every descendant when its command returns, so a
+    service this process starts would die with the guard's command. A dead
+    guard's leftover variables name no live process. A reused pid reads as a
+    guard, so a caller that refuses under a guard refuses more, never less.
+    ``outer_memory_guard_active`` asks the narrower test-custody question.
+    """
+    pid = enclosing_guard_pid(environ)
+    if pid is None:
+        return None
+    # Imported here: every interpreter start loads this module.
+    from molt.process_model import pid_alive
+
+    try:
+        return pid if pid_alive(pid) else None
+    except OSError:
+        return pid  # An unknown observation is not proven death.
 
 
 def _command_is_repo_memory_guard(command: str) -> bool:
@@ -838,8 +868,18 @@ def _proof_queue_outer_guard_active(environ: Mapping[str, str]) -> bool:
 
 
 def outer_memory_guard_active(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether this checkout's memory guard holds this process (test custody).
+
+    The guard ``environ`` names (``enclosing_guard_pid``) counts when its
+    active marker is valid and names this checkout's tools/memory_guard.py,
+    or when it is an ancestor of this process whose command runs
+    tools/memory_guard.py. A proof-queue pytest run counts too. A guard of
+    another checkout that runs inside a tool's process does not count: test
+    custody then starts its own guard. Whether any live guard encloses this
+    process is ``live_enclosing_guard_pid``.
+    """
     source = os.environ if environ is None else environ
-    guard_pid = _guard_pid_from_env(source)
+    guard_pid = enclosing_guard_pid(source)
     if guard_pid is None:
         return _proof_queue_outer_guard_active(source)
     marker_valid = _active_guard_marker_valid(source, guard_pid=guard_pid)
@@ -1235,15 +1275,25 @@ def pytest_load_initial_conftests(
 # package startup must not import it. A test phase must not import it either:
 # tests remove molt modules from sys.modules and replace file_locks helpers,
 # and the phase record must neither re-import the module nor follow them.
-_CURRENT_TEST_LOCK: tuple[Any, Any] | None = None
+_CURRENT_TEST_LOCK: tuple[Any, Any, type[BaseException]] | None = None
+# Publications skipped because a reader held the record past the deadline.
+_SKIPPED_CURRENT_TEST_PUBLICATIONS = 0
 
 
 def _bind_current_test_lock() -> None:
     global _CURRENT_TEST_LOCK
     if _CURRENT_TEST_LOCK is None:
-        from molt.file_locks import _HOST_HANDLE_LOCK, _exclusive_record_file
+        from molt.file_locks import (
+            _HOST_HANDLE_LOCK,
+            FileLockTimeout,
+            _exclusive_record_file,
+        )
 
-        _CURRENT_TEST_LOCK = (_exclusive_record_file, _HOST_HANDLE_LOCK)
+        _CURRENT_TEST_LOCK = (
+            _exclusive_record_file,
+            _HOST_HANDLE_LOCK,
+            FileLockTimeout,
+        )
 
 
 def pytest_configure(config: object) -> None:
@@ -1305,6 +1355,7 @@ def _write_pytest_current_test(
     phase: str,
     location: object | None = None,
 ) -> None:
+    global _SKIPPED_CURRENT_TEST_PUBLICATIONS
     root_path = install_pytest_current_test_file_env()
     path = _pytest_current_test_worker_record_path(root_path)
     payload: dict[str, object] = {
@@ -1321,6 +1372,8 @@ def _write_pytest_current_test(
     }
     if location is not None:
         payload["location"] = _bounded_text(location)
+    if _SKIPPED_CURRENT_TEST_PUBLICATIONS:
+        payload["skipped_publications"] = _SKIPPED_CURRENT_TEST_PUBLICATIONS
     data = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
     if (
         len(nodeid) > MAX_CURRENT_TEST_TEXT
@@ -1349,11 +1402,24 @@ def _write_pytest_current_test(
         raise RuntimeError(
             "current-test publication lock is unbound; pytest_configure binds it"
         )
-    exclusive_record_file, host_lock = _CURRENT_TEST_LOCK
+    exclusive_record_file, host_lock, lock_timeout = _CURRENT_TEST_LOCK
 
     # Current status is volatile, not a durable artifact generation. Lock its
     # existing inode instead of replacing a directory entry on every phase.
     # Observers use a nonblocking lock, so they never hold up a memory trip.
+    try:
+        _publish_current_test(exclusive_record_file, host_lock, path, data)
+    except lock_timeout:
+        # A sampler held the record past the deadline, as a descheduled reader
+        # can on a loaded host. The record is diagnostics: skip this phase and
+        # count it in the next record, never abort the test session (a gate run
+        # on 2026-10-22 died of this INTERNALERROR at load 17).
+        _SKIPPED_CURRENT_TEST_PUBLICATIONS += 1
+
+
+def _publish_current_test(
+    exclusive_record_file, host_lock, path: Path, data: bytes
+) -> None:
     with exclusive_record_file(
         path,
         host_lock,

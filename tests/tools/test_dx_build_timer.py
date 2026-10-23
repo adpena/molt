@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.process_guard_common import start_owned_test_process
 from tools import dx_build_timer
 from molt.cli.build_request import BuildRequest
 
@@ -108,6 +109,21 @@ def test_run_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
     ]
 
 
+def test_a_dead_guards_leftover_variables_do_not_enable_reuse() -> None:
+    # A real child that has exited and been reaped names a guard that runs no
+    # more; reuse would leave the build's descendants with no guard at all.
+    exited = start_owned_test_process([sys.executable, "-c", "pass"])
+    exited.wait()
+    env = {
+        "MOLT_MEMORY_GUARD_ACTIVE": "1",
+        "MOLT_MEMORY_GUARD_PID": str(exited.pid),
+        "MOLT_DX_BUILD_TIMER_REUSE_OUTER_GUARD": "1",
+    }
+    assert dx_build_timer._outer_memory_guard_reuse_enabled(env) is False
+    env["MOLT_MEMORY_GUARD_PID"] = str(os.getpid())
+    assert dx_build_timer._outer_memory_guard_reuse_enabled(env) is True
+
+
 def test_run_can_reuse_outer_memory_guard_for_molt_build_phases(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -123,7 +139,9 @@ def test_run_can_reuse_outer_memory_guard_for_molt_build_phases(
         unexpected_inner_guard,
     )
     env = os.environ.copy()
+    # A real guard names its own live pid; this process stands in for it.
     env["MOLT_MEMORY_GUARD_ACTIVE"] = "1"
+    env["MOLT_MEMORY_GUARD_PID"] = str(os.getpid())
     env["MOLT_DX_BUILD_TIMER_REUSE_OUTER_GUARD"] = "1"
 
     proc, elapsed = module._run_completed(
@@ -667,6 +685,7 @@ def test_main_molt_build_scenario_skips_daemon_prime_and_records_phases(
     guard_routes = []
     # Only mocked child boundaries below observe this synthetic guard policy.
     monkeypatch.setenv("MOLT_MEMORY_GUARD_ACTIVE", "1" if outer_guard else "0")
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_PID", str(os.getpid()))
     monkeypatch.setenv("MOLT_DX_BUILD_TIMER_REUSE_OUTER_GUARD", "1")
     monkeypatch.setenv("MOLT_PROOF_QUEUE", "0")
 
@@ -772,6 +791,7 @@ def test_main_molt_build_default_output_root_records_real_diagnostics_paths(
     out = tmp_path / "proof" / "row.json"
     calls: list[dict[str, object]] = []
     monkeypatch.setenv("MOLT_MEMORY_GUARD_ACTIVE", "1")
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_PID", str(os.getpid()))
     monkeypatch.setenv("MOLT_PROOF_QUEUE", "1" if proof_queue else "0")
     monkeypatch.setenv("MOLT_DX_BUILD_TIMER_REUSE_OUTER_GUARD", "0")
 

@@ -94,12 +94,18 @@ struct TestDaemon {
 
 impl TestDaemon {
     fn bind() -> Self {
-        // Short: a Unix socket path holds at most 104 bytes on macOS.
-        let dir = std::env::temp_dir().join(format!(
+        // A Unix socket path holds at most 104 bytes on macOS, and a guarded
+        // run's TMPDIR can be longer: like src/molt/backend_daemon_paths.py,
+        // fall back to /tmp when the path would not fit.
+        let leaf = format!(
             "mbd-idle-{}-{}",
             std::process::id(),
             NONCE.fetch_add(1, Ordering::Relaxed)
-        ));
+        );
+        let mut dir = std::env::temp_dir().join(&leaf);
+        if dir.join("daemon.sock").as_os_str().len() >= 104 {
+            dir = PathBuf::from("/tmp").join(&leaf);
+        }
         std::fs::create_dir_all(&dir).expect("create the test directory");
         let socket = dir.join("daemon.sock");
         let listener = UnixListener::bind(&socket).expect("bind the daemon socket");

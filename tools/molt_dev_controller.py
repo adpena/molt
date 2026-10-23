@@ -38,9 +38,19 @@ from tools.release.git_source_snapshot import immutable_git_environment
 from tools.venv_exec import venv_python
 
 SCHEMA = "molt.integration-controller.v1"
-# The driver's repository modules, and the project, lock and interpreter
-# version that define its environment.
-CONTROLLER_PATHS = ("tools", "src/molt", "pyproject.toml", "uv.lock", ".python-version")
+# The driver's repository modules, the data they read from the checkout they
+# run from (``config``: tool release pins and policy tables, 1.9 MB), and the
+# project, lock and interpreter version that define its environment. A lane
+# start provisions through molt.dx, which reads config/tool_releases.toml
+# from the controller (HF-468 review v2, B-1).
+CONTROLLER_PATHS = (
+    "tools",
+    "src/molt",
+    "config",
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+)
 DRIVER = ("tools", "molt_dev.py")
 RECORD_NAME = ".molt-controller.json"
 ENVIRONMENT_NAME = ".venv"
@@ -365,16 +375,23 @@ def run_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int
 
 
 def runs_from_pinned_controller(args: argparse.Namespace) -> bool:
-    """A landing, a queued landing, the queue runner and a withdrawal run
-    main's driver.
+    """A landing, a queued landing, the queue runner, a withdrawal, and a
+    lane's start and retirement run main's driver.
 
     ``land`` and ``queue withdraw`` write queue state and start the runner, so
-    a candidate's stale driver would decide both.
+    a candidate's stale driver would decide both. ``lane start`` provisions a
+    lane at main and ``lane retire`` judges whether a lane's ignored trees are
+    current; a driver at another commit reads their manifests with another
+    schema (HF-468: a lane's driver failed to provision a new lane, and an
+    old main's driver judged a landed lane's tree stale).
     """
     pinned = args.command in {"integrate", "land"} and not getattr(
         args, "dry_run", False
     )
     pinned = pinned or (
         args.command == "queue" and args.queue_command in {"run", "withdraw"}
+    )
+    pinned = pinned or (
+        args.command == "lane" and args.lane_command in {"start", "retire"}
     )
     return pinned and not (args.candidate_controller or args.pinned_controller)

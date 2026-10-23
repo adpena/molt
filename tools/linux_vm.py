@@ -14,9 +14,9 @@
     Sends a commit of this checkout into a guest's clone over Lima's SSH
     (``git push``) as ``refs/heads/host/<name>``, a namespace only the host
     writes. With ``--checkout`` it checks the exact commit out there,
-    detached, when the clone has no changes and no guest process works in
-    it. The definitions mount no host path, so this is how sources reach a
-    guest.
+    detached, when the clone has no changes and no guest process has its
+    working directory or an open file in it. The definitions mount no host
+    path, so this is how sources reach a guest.
 
 ``release``
     Frees the host files that a running VM's virtiofs mounts pin. It serves a
@@ -36,8 +36,8 @@
     that Lima lists as running counts as started. It keeps the first config
     it replaced as ``lima.yaml.molt-previous``, restores the replaced config
     if the VM does not run, and removes the forget sets of the mounts it
-    ended. It refuses without ``--confirm-restart`` and while the guest runs
-    work.
+    ended. It refuses without ``--confirm-restart``, while the guest runs
+    work, and under a Molt memory guard, which would close the hostagent.
 
 Lane retirement calls ``release_for_paths`` (``tools/molt_dev_retire.py``)
 just before it deletes a checkout. With no live Lima hostagent, or when every
@@ -59,6 +59,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,7 @@ bind_repository_imports(__file__)
 
 from molt.path_custody import host_path_is_within  # noqa: E402
 from molt.process_model import pid_alive  # noqa: E402
+from molt.pytest_memory_guard_bootstrap import live_enclosing_guard_pid  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 ROOT = _REPO_ROOT
@@ -96,7 +98,8 @@ EXIT_USAGE = 2
 VZ_COMMAND = "com.apple.Virtualization.VirtualMachine"
 # One lsof call lists every VM process's files with link counts. `+L` with no
 # number only adds the link-count field; it is not a selection, so `-c` is
-# the only selection (lsof ORs selections unless `-a` is given).
+# the only selection (lsof ORs selections unless `-a` is given). The device
+# (`D`) and inode (`i`) fields name the file each descriptor holds.
 LSOF_VZ_FILES = (
     "lsof",
     "-n",
@@ -106,7 +109,7 @@ LSOF_VZ_FILES = (
     "-c",
     "com.apple.Virtualization",
     "-F",
-    "pcftskn",
+    "pcftskniD",
 )
 DROP_GUEST_CACHES = "echo 2 > /proc/sys/vm/drop_caches"
 # Apple's virtiofs server closes the descriptors of forgotten inodes once this
@@ -115,13 +118,18 @@ DROP_GUEST_CACHES = "echo 2 > /proc/sys/vm/drop_caches"
 FORGET_BATCH = 64
 # Under each mount: the empty files a release looks up and forgets.
 FORGET_SET = ".molt-linux-vm-forget"
+# The exit status of a guest command whose `sudo -n` failed: the guest user
+# has no passwordless sudo (Lima's default gives it one).
+GUEST_SUDO_FAILED = 4
 # Prints the guest user's uid and name, the probe shell's pid, the user's
 # subordinate id ranges, every process's executable (as root: the user's
 # sshd and (sd-pam) are not dumpable, so only root can read theirs), then
-# every process with its cgroup. Without passwordless sudo it fails.
+# every process with its cgroup. Without passwordless sudo it exits
+# GUEST_SUDO_FAILED; a failed `ps` exits 1.
 IDLE_PROBE = (
     "id -u; id -un; echo $$; echo '--- subuid'; cat /etc/subuid 2>/dev/null; "
-    "echo '--- exe'; sudo -n ps -ww -eo pid=,exe= || exit 3; "
+    f"sudo -n true || exit {GUEST_SUDO_FAILED}; "
+    "echo '--- exe'; sudo -n ps -ww -eo pid=,exe= || exit 1; "
     "echo '--- ps'; ps -ww -eo pid=,ppid=,uid=,comm=,cgroup="
 )
 # A systemd-logind login session (`limactl shell` runs in one).
@@ -632,6 +640,8 @@ class Host(Protocol):
 
     def start_service(self, argv: Sequence[str], *, timeout: float) -> Completed: ...
 
+    def enclosing_guard(self) -> str | None: ...
+
 
 class LocalHost:
     """Runs host commands under Molt's guarded command executor.
@@ -692,14 +702,21 @@ class LocalHost:
         a service that inherits them cannot delay the return, as it could hold
         a pipe open. The deadline bounds the command alone; at the deadline
         only the command's own process is ended (``wait_owned``), never a
-        descendant. The caller verifies the service from its own state.
+        descendant. The service inherits no variable that names what a Molt
+        guard retires when its command returns (the guard's token, marker and
+        scratch: ``environment_outliving_guard``). The caller verifies the
+        service from its own state, and checks ``enclosing_guard`` first.
         """
+        # Imported here: the retirement hook imports this module and never
+        # starts a service.
+        from molt.temporary_artifacts import environment_outliving_guard
+
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             try:
                 process = subprocess.Popen(
                     list(argv),
                     cwd="/",
-                    env=self.environment,
+                    env=environment_outliving_guard(self.environment),
                     stdin=subprocess.DEVNULL,
                     stdout=out,
                     stderr=err,
@@ -720,6 +737,21 @@ class LocalHost:
                 out.read().decode("utf-8", errors="replace"),
                 err.read().decode("utf-8", errors="replace") + note,
             )
+
+    def enclosing_guard(self) -> str | None:
+        """The live Molt memory guard this process runs under, or None.
+
+        Such a guard closes every descendant when its command returns: it
+        follows parents, not sessions, so a service this process starts dies
+        with the command, as Lima's hostagents did under the inner guard
+        (HF-471). The guard authority answers from this host's environment:
+        the guard it names (``MOLT_MEMORY_GUARD_ACTIVE=1`` and its pid)
+        counts while that process lives, from any checkout, in its own
+        process or in a tool's (``live_enclosing_guard_pid``). A guard that
+        dropped those variables is not seen.
+        """
+        pid = live_enclosing_guard_pid(self.environment)
+        return None if pid is None else f"a Molt memory guard (pid {pid})"
 
 
 def lima_home(environment: Mapping[str, str]) -> Path:
@@ -957,7 +989,14 @@ def runs_its_definition(directory: Path, definitions: Definitions, home: Path) -
 
 @dataclass(frozen=True, slots=True)
 class Held:
-    """What one VM process holds open, from one lsof snapshot."""
+    """What one VM process holds open, from one lsof snapshot.
+
+    The counts are per file: descriptors with one device and inode count
+    once. The server holds one descriptor for a file the guest looked up and
+    two for a file a guest process has open (the lookup's and the open
+    file's), so a held file would otherwise count twice. ``deleted`` keeps
+    every descriptor: the release record compares descriptors.
+    """
 
     pid: int
     deleted_files: int
@@ -986,6 +1025,17 @@ class _OpenFile:
     size: int = 0
     links: int | None = None
     name: str = ""
+    device: str = ""
+    inode: str = ""
+
+    def file(self) -> tuple[str, str]:
+        """The file this descriptor holds: lsof's device and inode.
+
+        A descriptor lsof gives neither for counts as a file of its own.
+        """
+        if self.device and self.inode:
+            return (self.device, self.inode)
+        return ("descriptor", self.fd)
 
 
 @dataclass(slots=True)
@@ -1022,6 +1072,10 @@ def _lsof_processes(text: str) -> list[_Process]:
             current.links = int(value)
         elif tag == "n":
             current.name = value
+        elif tag == "D":
+            current.device = value
+        elif tag == "i":
+            current.inode = value
     return processes
 
 
@@ -1039,9 +1093,10 @@ def held_files(
     A VM process belongs to the instance whose disk image it holds open. A
     held deleted file is a regular file on a numbered descriptor with no links
     left: the share's pins. Mapped executables (``txt``) are the process's own.
-    A deleted file's path is often partial, so every one counts. ``paths``
-    adds the count of open files under them. A forget set's files are the
-    release's own and count only once deleted.
+    A deleted file's path is often partial, so files are told apart by device
+    and inode, never by name. ``paths`` adds the count of open files under
+    them. A forget set's files are the release's own and count only once
+    deleted.
     """
     if not instances:
         return {}
@@ -1087,22 +1142,27 @@ def held_files(
             for item in process.files
             if item.fd.isdigit() and item.kind == "REG" and item.links == 0
         ]
+        deleted_files = {item.file(): item.size for item in deleted}
         # The instance's own disk and logs lie under a mount of the home.
         own = str(_resolved(owner.directory)).rstrip("/") + "/"
-        opened = [
-            item.name
+        opened = {
+            item.file(): item.name
             for item in process.files
             if item.fd.isdigit()
             and item.links
             and not item.name.startswith(own)
             and not _under(item.name, forget_sets)
-        ]
+        }
         held[owner.name] = Held(
             pid=process.pid,
-            deleted_files=len(deleted),
-            deleted_bytes=sum(item.size for item in deleted),
-            open_under_mounts=sum(1 for name in opened if _under(name, mounts)),
-            open_under_paths=sum(1 for name in opened if _under(name, watched)),
+            deleted_files=len(deleted_files),
+            deleted_bytes=sum(deleted_files.values()),
+            open_under_mounts=sum(
+                1 for name in opened.values() if _under(name, mounts)
+            ),
+            open_under_paths=sum(
+                1 for name in opened.values() if _under(name, watched)
+            ),
             deleted=frozenset((item.fd, item.size, item.name) for item in deleted),
         )
     return held
@@ -1141,20 +1201,82 @@ def _forget_names() -> tuple[str, ...]:
     return tuple(f"{index:02d}" for index in range(FORGET_BATCH))
 
 
+def _open_forget_set(parent: int | None, location: Path) -> int:
+    """A descriptor of ``location``'s forget set, never through a link.
+
+    A guest with a writable mount can replace the set with a link to any
+    host directory; ``O_NOFOLLOW`` refuses one (``ELOOP``), so every later
+    step acts inside the real set. ``parent`` is ``location``'s descriptor,
+    or None to open it by path.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if parent is None:
+        return os.open(location / FORGET_SET, flags)
+    return os.open(FORGET_SET, flags, dir_fd=parent)
+
+
 def forget_set(location: Path) -> Path:
     """The ``FORGET_BATCH`` empty files under a mount; creates what is missing.
 
     A forget set lives as long as the mount: deleting it while a VM mounts
     the location would pin its files. ``apply`` removes the sets of the mounts
-    it ends (``retire_forget_sets``).
+    it ends (``retire_forget_sets``). A set that is a link fails (``OSError``),
+    and no file is created through a link.
     """
     directory = location / FORGET_SET
-    directory.mkdir(exist_ok=True)
-    present = set(os.listdir(directory))
-    for name in _forget_names():
-        if name not in present:
-            (directory / name).touch()
+    with contextlib.suppress(FileExistsError):
+        directory.mkdir()
+    descriptor = _open_forget_set(None, location)
+    try:
+        present = set(os.listdir(descriptor))
+        for name in _forget_names():
+            if name in present:
+                continue
+            with contextlib.suppress(FileExistsError):
+                os.close(
+                    os.open(
+                        name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o644,
+                        dir_fd=descriptor,
+                    )
+                )
+    finally:
+        os.close(descriptor)
     return directory
+
+
+def _remove_forget_set(location: Path) -> str | None:
+    """Remove ``location``'s forget set; the reason it stays, or None.
+
+    Every step acts through descriptors and follows no link. Only the set's
+    own files go: its numbered names that are empty regular files, as
+    ``forget_set`` made them. Anything else stays, and so does the set
+    directory that holds it. ``FileNotFoundError`` means no set.
+    """
+    parent = os.open(location, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            descriptor = _open_forget_set(parent, location)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            return f"not a directory this tool made ({exc.strerror})"
+        try:
+            own = set(_forget_names())
+            for name in os.listdir(descriptor):
+                info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if name in own and stat.S_ISREG(info.st_mode) and not info.st_size:
+                    os.unlink(name, dir_fd=descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.rmdir(FORGET_SET, dir_fd=parent)
+        except OSError as exc:
+            return exc.strerror or str(exc)
+        return None
+    finally:
+        os.close(parent)
 
 
 def retire_forget_sets(
@@ -1165,8 +1287,10 @@ def retire_forget_sets(
     Called after the VM that mounted them stopped, so no VM process holds
     their files. A set under a location another instance's config still
     mounts (or mounts a parent of) stays. Only the set's own files are
-    removed; a directory with anything else in it stays. Returns one line
-    per set it removed or kept.
+    removed (``_remove_forget_set``), and no link is followed: a guest with a
+    writable mount can make the set a link to another host directory. A set
+    directory with anything else in it stays. Returns one line per set it
+    removed or kept.
     """
     mounted = [
         location
@@ -1175,19 +1299,20 @@ def retire_forget_sets(
     ]
     notes = []
     for location in ended:
-        directory = _resolved(location) / FORGET_SET
-        if not directory.is_dir() or any(
-            host_path_is_within(directory, other) for other in mounted
-        ):
+        resolved = _resolved(location)
+        directory = resolved / FORGET_SET
+        if any(host_path_is_within(directory, other) for other in mounted):
             continue
         try:
-            for name in _forget_names():
-                (directory / name).unlink(missing_ok=True)
-            directory.rmdir()
+            kept = _remove_forget_set(resolved)
+        except FileNotFoundError:
+            continue
         except OSError as exc:
-            notes.append(f"  kept {directory}: {exc}")
-        else:
+            kept = str(exc)
+        if kept is None:
             notes.append(f"  removed {directory}: no VM mounts {location}")
+        else:
+            notes.append(f"  kept {directory}: {kept}")
     return notes
 
 
@@ -1331,27 +1456,33 @@ def release(
     )
 
 
+def hostagent_alive(directory: Path) -> bool:
+    """Whether the instance's Lima hostagent (its ``ha.pid``) lives; spawns nothing.
+
+    The hostagent writes ``ha.pid`` when it starts; a missing file or a dead
+    pid means no hostagent runs.
+    """
+    try:
+        pid = int((directory / "ha.pid").read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        return pid_alive(pid)
+    except OSError:
+        return True  # An unknown observation is not proven death.
+
+
 def live_hostagents(home: Path) -> tuple[Path, ...]:
     """Instance directories whose Lima hostagent is alive; spawns nothing."""
     try:
         candidates = sorted(home.iterdir())
     except OSError:
         return ()
-    live = []
-    for directory in candidates:
-        if directory.name.startswith(("_", ".")):
-            continue
-        try:
-            pid = int((directory / "ha.pid").read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            continue
-        try:
-            alive = pid_alive(pid)
-        except OSError:
-            alive = True  # An unknown observation is not proven death.
-        if alive:
-            live.append(directory)
-    return tuple(live)
+    return tuple(
+        directory
+        for directory in candidates
+        if not directory.name.startswith(("_", ".")) and hostagent_alive(directory)
+    )
 
 
 def release_for_paths(
@@ -1439,9 +1570,23 @@ def checkout_script(clone: str, commit: str) -> str:
     It refuses (exit ``CHECKOUT_REFUSED``, the reason on stdout) when the
     clone has changes, including untracked files, when a Git command holds
     its index lock, or when a guest process of any user has its working
-    directory in the clone (read as root from ``/proc/<pid>/cwd``). Only then
-    does it check out ``commit``, detached. Checks and checkout run in one
-    guest command, so nothing starts between them but what starts within it.
+    directory or an open file in the clone (read as root from
+    ``/proc/<pid>/cwd`` and ``/proc/<pid>/fd/*``). Only then does it check
+    out ``commit``, detached. Without passwordless sudo it exits
+    ``GUEST_SUDO_FAILED``.
+
+    Root expands the ``/proc`` globs too, and ``hidepid`` hides no process
+    from root. The listing must show the target of init's ``/proc/1/cwd``,
+    which only root can read, and the checking shell's own
+    ``/proc/$$/cwd``: a ``find`` that failed, or did not run as root, fails
+    the command (exit 1) instead of reading as "no process uses the clone".
+
+    It does not see a process that names the clone only by path and has no
+    file open there at that moment (a ``git -C`` or ``cargo
+    --manifest-path`` between two file accesses). Checks and checkout run in
+    one guest command, but another session can start a process in the clone
+    between them; Git's index lock still fails a concurrent Git command that
+    writes the index.
     """
     refused = CHECKOUT_REFUSED
     return f"""set -u
@@ -1456,17 +1601,37 @@ if [ -e "$git_dir/index.lock" ]; then
   echo "$git_dir/index.lock exists: a Git command runs in $clone"
   exit {refused}
 fi
-sudo -n true || exit 1
-users=$(sudo -n find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h %l\\n' 2>/dev/null |
-  while read -r proc cwd; do
-    case "$cwd/" in ("$clone"/*) printf ' %s' "${{proc#/proc/}}" ;; esac
-  done)
+sudo -n true || exit {GUEST_SUDO_FAILED}
+nl='
+'
+links=$(sudo -n sh -c 'exec find /proc/[0-9]*/cwd /proc/[0-9]*/fd -maxdepth 1 -printf "%p %l\\n" 2>/dev/null')
+for control in /proc/1/cwd "/proc/$$/cwd"; do
+  case "$nl$links" in
+    (*"$nl$control /"*) ;;
+    (*) echo "cannot read the guest's processes as root: the listing lacks $control" >&2
+        exit 1 ;;
+  esac
+done
+users=$(printf '%s\\n' "$links" |
+  while read -r entry target; do
+    case "$target/" in ("$clone"/*) entry=${{entry#/proc/}}; echo "${{entry%%/*}}" ;; esac
+  done | sort -un | tr '\\n' ' ')
 if [ -n "$users" ]; then
-  echo "processes work in $clone (pid$users)"
+  echo "processes use $clone (pid ${{users% }})"
   exit {refused}
 fi
 git -C "$clone" checkout --quiet --detach {shlex.quote(commit)}
 """
+
+
+def _no_guest_sudo(name: str, completed: Completed) -> str:
+    """Why a guest command that exited ``GUEST_SUDO_FAILED`` failed."""
+    said = _tail(completed.stderr)
+    return (
+        f"the check reads every guest process as root, and {name}'s guest user "
+        "has no passwordless sudo (`sudo -n` failed; Lima's default config "
+        "gives it one)" + (f"; sudo said: {said}" if said else "")
+    )
 
 
 def push(
@@ -1563,6 +1728,12 @@ def push(
         _say(
             f"REFUSED: checkout in {name}: {switched.stdout.strip()}; the commit "
             f"waits as {target}"
+        )
+        return EXIT_FAIL
+    if switched.returncode == GUEST_SUDO_FAILED:
+        _say(
+            f"FAILED: checkout in {name}: {_no_guest_sudo(name, switched)}; the "
+            f"commit waits as {target}"
         )
         return EXIT_FAIL
     if switched.returncode != 0:
@@ -1737,6 +1908,15 @@ def apply(
             "new VM can have"
         )
         return EXIT_FAIL
+    was_running = instance.running
+    guard = host.enclosing_guard() if was_running else None
+    if guard is not None:
+        _say(
+            f"REFUSED: apply restarts {name}, and this command runs under {guard}, "
+            "which closes Lima's hostagent when the command returns (HF-471); "
+            "run apply from a plain shell"
+        )
+        return EXIT_FAIL
     config_path = instance.directory / "lima.yaml"
     previous_path = instance.directory / PREVIOUS_CONFIG
     next_path = instance.directory / NEXT_CONFIG
@@ -1751,7 +1931,6 @@ def apply(
             f"REFUSED: limactl rejects the rendered config: {validated.stderr.strip()}"
         )
         return EXIT_FAIL
-    was_running = instance.running
     if was_running:
         probe = host.run(
             ["limactl", "shell", "--workdir", "/", name, "sh", "-c", IDLE_PROBE],
@@ -1759,7 +1938,12 @@ def apply(
         )
         if probe.returncode != 0:
             next_path.unlink()
-            _say(f"REFUSED: cannot list {name}'s processes: {probe.stderr.strip()}")
+            reason = (
+                _no_guest_sudo(name, probe)
+                if probe.returncode == GUEST_SUDO_FAILED
+                else probe.stderr.strip()
+            )
+            _say(f"REFUSED: cannot list {name}'s processes: {reason}")
             return EXIT_FAIL
         busy = busy_guest_processes(probe.stdout, definitions)
         if busy:
@@ -1779,25 +1963,24 @@ def apply(
     os.replace(next_path, config_path)
     _say(f"installed {config_path} (first replaced config: {PREVIOUS_CONFIG})")
     if was_running:
-        started, instances = start_vm(host, name)
-        if not _runs(started, instances, name):
-            failure = _start_failure(started, instances, name)
-            if _listed(instances, name).running:
+        start = start_vm(host, instance)
+        if start.failure is not None:
+            if start.running:
                 # Only a stop could restore the replaced config now.
-                _say(f"FAILED: {failure}; {name} runs the installed definition")
+                _say(f"FAILED: {start.failure}; {name} runs the installed definition")
                 return EXIT_FAIL
             restored = instance.directory / NEXT_CONFIG
             restored.write_bytes(replaced)
             os.replace(restored, config_path)
-            again, again_instances = start_vm(host, name)
+            again = start_vm(host, instance)
             state = (
                 "restarted it with the replaced config"
-                if _runs(again, again_instances, name)
-                else "it does not run with that config either: "
-                + _start_failure(again, again_instances, name)
+                if again.failure is None
+                else f"started it again with that config: {again.failure}"
             )
-            _say(f"FAILED: {failure}; restored the replaced config and {state}")
+            _say(f"FAILED: {start.failure}; restored the replaced config and {state}")
             return EXIT_FAIL
+        instances = start.instances
     else:
         instances = list_instances(host)
     after = _listed(instances, name)
@@ -1820,17 +2003,54 @@ def apply(
     return EXIT_OK
 
 
-def start_vm(host: Host, name: str) -> tuple[Completed, tuple[Instance, ...]]:
-    """``limactl start`` as a service launch, then every instance's state.
+@dataclass(frozen=True, slots=True)
+class Start:
+    """One ``limactl start`` and what Lima shows after it."""
+
+    completed: Completed
+    # Lima's listing after the start; empty when the listing failed.
+    instances: tuple[Instance, ...]
+    # Lima lists the VM as running; when the listing failed, its hostagent
+    # lives (``hostagent_alive``).
+    running: bool
+    # Why the VM does not count as started, or None when it does.
+    failure: str | None
+
+
+def start_vm(host: Host, instance: Instance) -> Start:
+    """``limactl start`` as a service launch, then Lima's state of the VM.
 
     Lima's hostagent must outlive the command, so it runs through
-    ``Host.start_service``. Lima's listing, not the command's exit status,
-    says whether the VM runs.
+    ``Host.start_service``. The VM counts as started only when the command
+    exits 0 and Lima's listing then shows it running. When that listing
+    fails, the VM does not count as started, and its hostagent's pid file
+    says whether it runs.
     """
+    name = instance.name
     started = host.start_service(
         ["limactl", "start", "--tty=false", name], timeout=LIFECYCLE_SECONDS
     )
-    return started, list_instances(host)
+    exited = f"limactl start {name} exited {started.returncode}"
+    if started.returncode != 0:
+        exited = f"{exited}: {_tail(started.stderr)}"
+    try:
+        instances = list_instances(host)
+        status = _listed(instances, name).status
+    except LimaError as exc:
+        return Start(
+            started,
+            (),
+            hostagent_alive(instance.directory),
+            f"{exited}; Lima's listing then failed: {exc}",
+        )
+    running = status == "Running"
+    if started.returncode != 0:
+        failure = exited
+    elif not running:
+        failure = f"{exited}, but Lima lists {name} as {status}"
+    else:
+        failure = None
+    return Start(started, instances, running, failure)
 
 
 def _listed(instances: Sequence[Instance], name: str) -> Instance:
@@ -1840,23 +2060,8 @@ def _listed(instances: Sequence[Instance], name: str) -> Instance:
     raise LimaError(f"limactl list no longer lists {name}")
 
 
-def _runs(started: Completed, instances: Sequence[Instance], name: str) -> bool:
-    return started.returncode == 0 and _listed(instances, name).running
-
-
 def _tail(text: str) -> str:
     return " | ".join(text.strip().splitlines()[-REPORT_LINES:])
-
-
-def _start_failure(started: Completed, instances: Sequence[Instance], name: str) -> str:
-    if started.returncode != 0:
-        return (
-            f"limactl start {name} exited {started.returncode}: {_tail(started.stderr)}"
-        )
-    return (
-        f"limactl start {name} exited 0, but Lima lists {name} as "
-        f"{_listed(instances, name).status}"
-    )
 
 
 # --------------------------------------------------------------------------

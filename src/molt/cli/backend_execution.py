@@ -23,6 +23,7 @@ from molt.default_paths import (
     shared_stdlib_archive_cache_root,
 )
 from molt.backend_environment import (
+    backend_process_environment,
     environment_keys,
     codegen_environment_inputs,
     daemon_process_environment_inputs,
@@ -335,7 +336,9 @@ def _backend_daemon_config_digest(
     target_triple: str | None = None,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> str:
-    source = env if env is not None else os.environ
+    # A build passes its backend environment; daemon housekeeping passes none.
+    # Both resolve the cache root the same way, so both name one daemon.
+    source = backend_process_environment(os.environ if env is None else env)
     try:
         installed = installed_compiler_admission(
             project_root, backend_features, cargo_profile
@@ -1467,7 +1470,9 @@ def _start_backend_daemon(
         pass
     daemon_pid: int | None = None
     daemon_proc: subprocess.Popen[bytes] | None = None
-    daemon_env = dict(os.environ if backend_env is None else backend_env)
+    daemon_env = backend_process_environment(
+        os.environ if backend_env is None else backend_env
+    )
     harness_memory_guard = _load_cli_harness_memory_guard(project_root)
     daemon_context = harness_memory_guard.HarnessExecutionContext.from_env(
         "MOLT_BUILD",

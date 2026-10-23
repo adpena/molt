@@ -1539,7 +1539,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_CACHE",
       "output_neutral": false,
       "owner": "src/molt/default_paths.py",
-      "summary": "Molt cache directory for build outputs, installed tool roots, and the backend TIR cache; a relative path resolves against the current directory, unset uses <MOLT_EXT_ROOT>/.molt_cache when that directory exists, else LOCALAPPDATA/Molt on Windows or XDG_CACHE_HOME/molt (default ~/.cache/molt), while molt-backend alone falls back to ./.molt_cache, and molt dx sets <artifact root>/.molt_cache.",
+      "summary": "Molt cache directory for build outputs, installed tool roots, and the backend TIR cache; a relative path resolves against the current directory, unset uses <MOLT_EXT_ROOT>/.molt_cache when that directory exists, else LOCALAPPDATA/Molt on Windows or XDG_CACHE_HOME/molt (default ~/.cache/molt), and molt dx sets <artifact root>/.molt_cache. molt passes the resolved absolute root to every backend process and binds it into the daemon identity; a backend started without it keeps no persistent TIR cache, and each TIR cache namespace tags itself with CACHEDIR.TAG (the root is never tagged: home/ under it is durable).",
       "values": []
     },
     {
@@ -4190,7 +4190,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_GUARD_SCRATCH_ROOT",
       "output_neutral": true,
       "owner": "src/molt/temporary_artifacts.py",
-      "summary": "tools/memory_guard.py sets it to one guarded child's leased scratch directory; backend environment preparation validates the existing allocation and the Rust native batch helper requires an absolute existing directory. Suite daemons strip this requester selector and use their lease-owned platform temp root instead; guard closure owns one-shot abrupt-exit cleanup.",
+      "summary": "tools/memory_guard.py sets it to one guarded child's leased scratch directory; backend environment preparation validates the existing allocation and the Rust native batch helper requires an absolute existing directory. Persistent daemons (suite daemons, Lima's hostagent) never inherit it, nor a temporary directory inside it (molt.temporary_artifacts.environment_outliving_guard); suite daemons use their lease-owned platform temp root instead; guard closure owns one-shot abrupt-exit cleanup.",
       "values": []
     },
     {
@@ -4537,7 +4537,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MEMORY_GUARD_ACTIVE",
       "output_neutral": true,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
-      "summary": "tools/memory_guard.py sets it to 1 in every guarded child's environment; the pytest guard bootstrap reads it with MOLT_MEMORY_GUARD_PID to detect an enclosing guard, tools/dx_build_timer.py reads any truthy value for the same purpose, and the proof queue treats it as queue custody.",
+      "summary": "tools/memory_guard.py sets it to 1 in every guarded child's environment; the pytest guard bootstrap reads it with MOLT_MEMORY_GUARD_PID to detect an enclosing guard, tools/dx_build_timer.py reads any truthy value for the same purpose, tools/linux_vm.py apply refuses to restart a running VM while live_enclosing_guard_pid names a live guard of any checkout (the guard would close Lima's hostagent), and the proof queue treats it as queue custody.",
       "values": []
     },
     {
@@ -4587,7 +4587,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MEMORY_GUARD_PID",
       "output_neutral": true,
       "owner": "src/molt/pytest_memory_guard_bootstrap.py",
-      "summary": "tools/memory_guard.py sets it to its own process id for every guarded child; the pytest guard bootstrap reads it when MOLT_MEMORY_GUARD_ACTIVE is 1 and ignores a non-positive or non-integer value.",
+      "summary": "tools/memory_guard.py sets it to its own process id for every guarded child; the pytest guard bootstrap reads it when MOLT_MEMORY_GUARD_ACTIVE is 1 and ignores a non-positive or non-integer value, through enclosing_guard_pid; live_enclosing_guard_pid adds a liveness check on the pid, and tools/linux_vm.py refuses to restart a VM while that guard lives.",
       "values": []
     },
     {

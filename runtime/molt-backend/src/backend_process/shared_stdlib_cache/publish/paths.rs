@@ -2,6 +2,8 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+
 pub(crate) fn stdlib_cache_count_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("count")
 }
@@ -100,10 +102,6 @@ pub(crate) fn resolved_archive_path(path: &Path) -> io::Result<PathBuf> {
     Ok(resolved)
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "MOLT_CACHE roots every Molt cache; it is process configuration"
-)]
 pub(crate) fn validate_required_stdlib_output(
     output: &Path,
     source: Option<&Path>,
@@ -132,7 +130,9 @@ pub(crate) fn validate_required_stdlib_output(
         .transpose()?
         .flatten()
         .or_else(|| {
-            std::env::var_os("MOLT_CACHE")
+            // MOLT_CACHE roots every Molt cache: process configuration (the
+            // `cache` catalog group), never request data.
+            backend_env::var_os(BackendEnv::MOLT_CACHE)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
         });

@@ -4,7 +4,7 @@ use parking_lot::{Mutex, MutexGuard};
 use std::cell::RefCell;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::GIL_DEPTH;
+use crate::state::{ExecutionTls, execution_tls};
 
 #[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
 compile_error!(
@@ -56,6 +56,19 @@ impl PyToken<'_> {
         self.state.get()
     }
 
+    /// This thread's execution facts, as the guard read them at entry.
+    #[inline(always)]
+    pub(crate) fn execution_tls(&self) -> &'static crate::state::ExecutionTls {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self._guard.tls
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::state::execution_tls()
+        }
+    }
+
     #[inline(always)]
     pub(crate) fn remember_runtime_state(
         &self,
@@ -68,7 +81,7 @@ impl PyToken<'_> {
 #[cfg(target_arch = "wasm32")]
 impl GilGuard {
     #[inline(always)]
-    pub(crate) fn new_if_held() -> Option<Self> {
+    pub(crate) fn new_if_held_in(_tls: &'static crate::state::ExecutionTls) -> Option<Self> {
         Some(Self::new())
     }
 
@@ -236,6 +249,8 @@ enum GilGuardLane {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct GilGuard {
     lane: GilGuardLane,
+    /// This thread's execution facts, read once at entry and reused on drop.
+    tls: &'static ExecutionTls,
     // GIL depth and raw TLS-destruction custody are thread-affine. Encoding that in
     // the type prevents a live guard (and its PyToken) from crossing threads.
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -243,47 +258,49 @@ pub(crate) struct GilGuard {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
+    /// The nested guard of a thread that already holds the GIL, read from
+    /// the execution facts its entry has already loaded.
     #[inline(always)]
-    pub(crate) fn new_if_held() -> Option<Self> {
-        match GIL_DEPTH.try_with(|depth| {
-            let current = depth.get();
-            if current == 0 {
-                false
-            } else {
-                depth.set(current.checked_add(1).expect("GIL nesting depth overflow"));
-                true
-            }
-        }) {
-            Ok(true) => Some(Self {
+    pub(crate) fn new_if_held_in(tls: &'static ExecutionTls) -> Option<Self> {
+        let current = tls.gil_depth.get();
+        if current != 0 {
+            tls.gil_depth
+                .set(current.checked_add(1).expect("GIL nesting depth overflow"));
+            return Some(Self {
                 lane: GilGuardLane::Main,
+                tls,
                 _not_send_sync: std::marker::PhantomData,
-            }),
-            Ok(false) | Err(_) if tls_destruction_gil_held() => Some(Self::tls_destruction_new()),
-            Ok(false) | Err(_) => None,
+            });
         }
+        Self::nested_in_tls_destruction()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn nested_in_tls_destruction() -> Option<Self> {
+        tls_destruction_gil_held().then(Self::tls_destruction_new)
     }
 
     pub(crate) fn new() -> Self {
-        if let Some(nested) = Self::new_if_held() {
+        let tls = execution_tls();
+        if let Some(nested) = Self::new_if_held_in(tls) {
             return nested;
         }
 
         let guard = molt_gil().lock();
-        if GIL_DEPTH.try_with(|depth| depth.set(1)).is_err() {
-            drop(guard);
-            return Self::tls_destruction_new();
-        }
+        tls.gil_depth.set(1);
         let stored = GIL_GUARD
             .try_with(|slot| {
                 *slot.borrow_mut() = Some(guard);
             })
             .is_ok();
         if !stored {
-            let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
+            tls.gil_depth.set(0);
             return Self::tls_destruction_new();
         }
         Self {
             lane: GilGuardLane::Main,
+            tls,
             _not_send_sync: std::marker::PhantomData,
         }
     }
@@ -321,6 +338,7 @@ impl GilGuard {
         };
         Self {
             lane,
+            tls: execution_tls(),
             _not_send_sync: std::marker::PhantomData,
         }
     }
@@ -336,6 +354,7 @@ impl GilGuard {
                     .expect("TLS-destruction GIL nesting depth overflow");
                 return Self {
                     lane: GilGuardLane::TlsDestruction,
+                    tls: execution_tls(),
                     _not_send_sync: std::marker::PhantomData,
                 };
             }
@@ -354,6 +373,7 @@ impl GilGuard {
         state.acquisition = Some(acquisition);
         Self {
             lane: GilGuardLane::TlsDestruction,
+            tls: execution_tls(),
             _not_send_sync: std::marker::PhantomData,
         }
     }
@@ -361,7 +381,25 @@ impl GilGuard {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for GilGuard {
+    #[inline(always)]
     fn drop(&mut self) {
+        // The nested guard of a runtime entry only gives back its depth unit.
+        if let GilGuardLane::Main = self.lane {
+            let current = self.tls.gil_depth.get();
+            if current > 1 {
+                self.tls.gil_depth.set(current - 1);
+                return;
+            }
+        }
+        self.drop_cold();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl GilGuard {
+    #[cold]
+    #[inline(never)]
+    fn drop_cold(&mut self) {
         match self.lane {
             GilGuardLane::Transferred => {}
             GilGuardLane::TlsDestruction => {
@@ -386,16 +424,10 @@ impl Drop for GilGuard {
                 drop(acquisition);
             }
             GilGuardLane::Main => {
-                let should_release = GIL_DEPTH
-                    .try_with(|depth| {
-                        let current = depth.get();
-                        assert!(current > 0, "live GIL guard lost its custody depth");
-                        let next = current - 1;
-                        depth.set(next);
-                        next == 0
-                    })
-                    .expect("main GIL custody reached Drop after TLS destruction");
-                if should_release {
+                let current = self.tls.gil_depth.get();
+                assert!(current > 0, "live GIL guard lost its custody depth");
+                self.tls.gil_depth.set(current - 1);
+                if current == 1 {
                     let guard = GIL_GUARD
                         .try_with(|slot| slot.borrow_mut().take())
                         .expect("GIL mutex custody TLS disappeared before final release")
@@ -417,13 +449,10 @@ pub(crate) struct GilReleaseGuard {
 #[cfg(not(target_arch = "wasm32"))]
 impl GilReleaseGuard {
     pub(crate) fn suspend() -> Self {
-        let depth = GIL_DEPTH
-            .try_with(|d| d.get())
-            .expect("cannot release the GIL after custody TLS destruction");
+        let tls = execution_tls();
+        let depth = tls.gil_depth.get();
         assert!(depth > 0, "cannot release a GIL this thread does not hold");
-        GIL_DEPTH
-            .try_with(|d| d.set(0))
-            .expect("GIL custody TLS disappeared during release");
+        tls.gil_depth.set(0);
         let released = GIL_GUARD
             .try_with(|slot| slot.borrow_mut().take())
             .expect("GIL mutex custody TLS disappeared during release")
@@ -483,9 +512,7 @@ impl Drop for GilReleaseGuard {
         }
         if self.had_runtime_guard {
             hold_runtime_gil(GilGuard::new());
-            GIL_DEPTH
-                .try_with(|d| d.set(self.depth))
-                .expect("GIL depth TLS disappeared during persistent restore");
+            execution_tls().gil_depth.set(self.depth);
             return;
         }
         let guard = molt_gil().lock();
@@ -496,26 +523,18 @@ impl Drop for GilReleaseGuard {
                 *slot = Some(guard);
             })
             .expect("GIL mutex custody TLS disappeared during restore");
-        GIL_DEPTH
-            .try_with(|d| d.set(self.depth))
-            .expect("GIL depth TLS disappeared during restore");
+        execution_tls().gil_depth.set(self.depth);
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn gil_held() -> bool {
-    match GIL_DEPTH.try_with(|depth| depth.get()) {
-        Ok(depth) => depth > 0 || tls_destruction_gil_held(),
-        Err(_) => tls_destruction_gil_held(),
-    }
+    execution_tls().gil_depth.get() > 0 || tls_destruction_gil_held()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn gil_owned_by_current_thread() -> bool {
-    match GIL_DEPTH.try_with(|depth| depth.get()) {
-        Ok(depth) => depth > 0 || tls_destruction_gil_held(),
-        Err(_) => tls_destruction_gil_held(),
-    }
+    execution_tls().gil_depth.get() > 0 || tls_destruction_gil_held()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -546,7 +565,6 @@ pub(crate) fn release_runtime_gil() {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn touch_gil_tls_lifetime() {
-    let _ = GIL_DEPTH.try_with(|_| {});
     let _ = GIL_GUARD.try_with(|_| {});
     let _ = RUNTIME_GIL_GUARD.try_with(|_| {});
 }
@@ -606,7 +624,7 @@ pub(crate) fn gil_assert() {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{GilGuard, gil_held};
-    use crate::GIL_DEPTH;
+    use crate::state::execution_tls;
     use std::sync::mpsc;
     use std::sync::{
         Arc,
@@ -618,39 +636,39 @@ mod tests {
     /// transition releases the mutex regardless of drop order.
     #[test]
     fn gil_nested_guards_are_compositional() {
-        let start = GIL_DEPTH.with(|depth| depth.get());
+        let start = execution_tls().gil_depth.get();
         {
             // Outermost guard performs the 0->1 transition and takes the mutex.
             let _g1 = GilGuard::new();
-            let depth1 = GIL_DEPTH.with(|depth| depth.get());
+            let depth1 = execution_tls().gil_depth.get();
             assert_eq!(depth1, start + 1, "outer guard owns the depth gate");
             assert!(gil_held());
             {
                 // Re-entry increments custody without relocking the mutex.
                 let _g2 = GilGuard::new();
-                let depth2 = GIL_DEPTH.with(|depth| depth.get());
+                let depth2 = execution_tls().gil_depth.get();
                 assert_eq!(depth2, depth1 + 1);
                 assert!(gil_held());
                 {
                     // Deeper nesting adds another independent custody unit.
                     let _g3 = GilGuard::new();
-                    let depth3 = GIL_DEPTH.with(|depth| depth.get());
+                    let depth3 = execution_tls().gil_depth.get();
                     assert_eq!(depth3, depth2 + 1);
                     assert!(gil_held());
                 }
                 // Dropping the deepest guard leaves the other two live.
-                assert_eq!(GIL_DEPTH.with(|depth| depth.get()), depth2);
+                assert_eq!(execution_tls().gil_depth.get(), depth2);
                 assert!(gil_held());
             }
             // Dropping inner guards leaves the outer gate untouched.
-            let depth1_after = GIL_DEPTH.with(|depth| depth.get());
+            let depth1_after = execution_tls().gil_depth.get();
             assert_eq!(depth1_after, start + 1);
             assert!(gil_held());
         }
 
         // The outer guard's drop performed the 1->0 transition and released the
         // mutex exactly once.
-        let final_depth = GIL_DEPTH.with(|depth| depth.get());
+        let final_depth = execution_tls().gil_depth.get();
         assert_eq!(final_depth, start, "depth restored after all guards drop");
         assert!(
             !gil_held(),
@@ -672,14 +690,14 @@ mod tests {
         ready_rx.recv().unwrap();
         let outer = GilGuard::new();
         let inner = GilGuard::new();
-        assert_eq!(GIL_DEPTH.with(|depth| depth.get()), 2);
+        assert_eq!(execution_tls().gil_depth.get(), 2);
         proceed_tx.send(()).unwrap();
         drop(outer);
-        assert_eq!(GIL_DEPTH.with(|depth| depth.get()), 1);
+        assert_eq!(execution_tls().gil_depth.get(), 1);
         assert!(gil_held());
         assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
         drop(inner);
-        assert_eq!(GIL_DEPTH.with(|depth| depth.get()), 0);
+        assert_eq!(execution_tls().gil_depth.get(), 0);
         assert!(!gil_held());
         acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         worker.join().unwrap();
@@ -689,10 +707,10 @@ mod tests {
     fn releasing_persistent_custody_preserves_live_shutdown_guard() {
         super::hold_runtime_gil(GilGuard::new());
         let shutdown_guard = GilGuard::new();
-        assert_eq!(GIL_DEPTH.with(|depth| depth.get()), 2);
+        assert_eq!(execution_tls().gil_depth.get(), 2);
 
         super::release_runtime_gil();
-        assert_eq!(GIL_DEPTH.with(|depth| depth.get()), 1);
+        assert_eq!(execution_tls().gil_depth.get(), 1);
         assert!(gil_held());
         assert!(
             super::molt_gil().try_lock().is_none(),

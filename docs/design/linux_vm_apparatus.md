@@ -187,13 +187,25 @@ two without copying Lima's defaults.
   keeps OpenSSH's argument form. `--checkout` runs one guest command that
   refuses (exit 1, the reason printed) when the clone has changes (untracked
   files included), when its index lock exists, or when a guest process of
-  any user has its working directory in the clone (`/proc/<pid>/cwd`, read as
-  root); otherwise it checks out the exact commit, detached. Without
-  `--checkout` it prints that checkout command, with the commit, not the
-  shared ref.
+  any user has its working directory or an open file in the clone
+  (`/proc/<pid>/cwd` and `/proc/<pid>/fd/*`, read as root by one `find`;
+  root also expands the `/proc` globs, and `hidepid` hides no process from
+  root); otherwise it checks out the exact commit, detached. The listing
+  must show the target of init's `/proc/1/cwd`, which only root can read,
+  and the checking shell's own `/proc/$$/cwd`: a `find` that failed, or did
+  not run as root, fails the command instead of reading as "no process uses
+  the clone". Without passwordless sudo it fails, and the report says so.
+  It does not see a process that
+  names the clone only by path and has no file open there at that moment (a
+  `git -C` or `cargo --manifest-path` between two file accesses). Checks and
+  checkout run in one guest command, but another session can start a process
+  in the clone between them; Git's index lock still fails a concurrent Git
+  command that writes the index. Without `--checkout` it prints that checkout
+  command, with the commit, not the shared ref.
 - `release` serves VMs that mount host paths. For each, the host creates a
   forget set under every mount (`<mount>/.molt-linux-vm-forget/00` to `63`,
-  empty files, created once), and the guest runs one command: `echo 2 >
+  empty files, created once, never through a link: a guest with a writable
+  mount could plant one), and the guest runs one command: `echo 2 >
   /proc/sys/vm/drop_caches`, `stat` of the forget sets, and the drop again.
   The first drop forgets every unused inode; the lookups give each mount 64
   fresh inodes, and the second drop forgets them, which carries every earlier
@@ -201,8 +213,11 @@ two without copying Lima's defaults.
   and they are not deleted while the VM mounts them. The release reports
   deleted files and bytes before and after, from one `lsof` each. A VM process
   is matched to its instance by the disk image it holds open; only numbered
-  descriptors count. A mount whose forget set cannot be written fails alone
-  (`mount_errors`, exit 1); the release runs through the other mounts, whose
+  descriptors count. The reported counts are per file (lsof's device and
+  inode): a file a guest process has open holds two descriptors and counts
+  once. The release record keeps every descriptor. A mount whose forget set
+  cannot be written, or is a link, fails alone (`mount_errors`, exit 1); the
+  release runs through the other mounts, whose
   forgets free every mount's pins because the server counts per VM process.
   Each release records the deleted files it left held, which guest processes
   hold open, in `<instance>/molt-linux-vm-release.json` with the VM process's
@@ -234,20 +249,36 @@ two without copying Lima's defaults.
   unguarded, in its own session and process group, from `/` (the hostagent
   inherits no checkout as its working directory), with its output in
   anonymous files (a hostagent that inherited them cannot delay the
-  return), and with a deadline that ends only `limactl` itself. The
-  subprocess-guard audit lists this one launch and why
-  (`tools/check_subprocess_guard_coverage.py`). The VM counts as started
-  only when `limactl start` exits 0 and Lima's listing then shows it
-  running; apply never reports success from the exit status alone.
+  return), with an environment that names nothing a guard retires (no guard
+  token, marker or scratch: `molt.temporary_artifacts.environment_outliving_guard`,
+  the backend suite daemon's authority too), and with a deadline that ends
+  only `limactl` itself. The subprocess-guard audit lists this one launch
+  and why (`tools/check_subprocess_guard_coverage.py`). The VM counts as
+  started only when `limactl start` exits 0 and Lima's listing then shows it
+  running; apply never reports success from the exit status alone. An
+  enclosing Molt memory guard would close the hostagent the same way: the
+  guard follows parents, not sessions. So `apply` refuses to restart a
+  running VM under a live guard, before it touches the guest. It asks the
+  guard authority (`molt.pytest_memory_guard_bootstrap.live_enclosing_guard_pid`):
+  the guard the environment names (`MOLT_MEMORY_GUARD_ACTIVE=1` and its pid)
+  counts while that process lives, from any checkout, whether it runs as
+  `tools/memory_guard.py` or inside a tool's own process (as
+  `harness_memory_guard` runs it). A dead guard's leftover variables do not
+  block `apply`; a guard that dropped those variables is not seen. The
+  narrower `outer_memory_guard_active`, which counts only this checkout's
+  guard, serves test custody, where a miss starts one more guard.
 - When the VM does not run after its start, `apply` restores the config it
   replaced, starts the VM again the same way and checks the listing again.
-  When `limactl start` failed but the VM runs (a timeout, a degraded
-  requirement), it reports the failure and does not restart the VM again. It
-  keeps the first config it replaced as `lima.yaml.molt-previous` and never
-  overwrites that file. After a successful apply it removes the forget sets
-  of the mounts it ended, unless another instance's config still mounts
-  that location or a parent of it (it removes only the set's own 64 files),
-  and the VM's release record.
+  When Lima's listing fails after the start, the VM does not count as
+  started, and its hostagent's `ha.pid` says whether it runs. When `limactl
+  start` failed but the VM runs (a timeout, a degraded requirement), it
+  reports the failure and does not restart the VM again. It keeps the first
+  config it replaced as `lima.yaml.molt-previous` and never overwrites that
+  file. After a successful apply it removes the forget sets of the mounts it
+  ended, unless another instance's config still mounts that location or a
+  parent of it, and the VM's release record. It removes only the set's own
+  empty numbered files, through directory descriptors that follow no link,
+  so a set or entry a guest replaced with a link stays, with its target.
 - `apply` refuses without `--confirm-restart`, refuses a vz/arch change (only
   a new VM can make one), and refuses while the guest is busy. A process is
   idle only by its executable: the kernel's path for it
@@ -256,7 +287,9 @@ two without copying Lima's defaults.
   child is called `exe`, as is any program that re-executes
   `/proc/self/exe`, and any program can be called `containerd`. The user's
   `sshd` and `(sd-pam)` are not dumpable, so only root can read their
-  executables; without passwordless sudo the probe fails and apply refuses.
+  executables. The probe runs `sudo -n true` first: without passwordless
+  sudo it fails and apply refuses, naming passwordless sudo; a failed `ps`
+  is reported as itself.
   Busy are:
   - a process of the guest user that is not idle;
   - a process in a login session (`session-*.scope`) that is not idle,
@@ -301,7 +334,14 @@ After `apply` (both VMs on their definitions, 2026-10-22, host load 9-12):
   32 executables readable as root).
 - `push --checkout`'s guest checks: 50-60 ms per guest (`sudo -n true`, a
   `/proc/*/cwd` listing of 142 and 121 entries, `git status` of a clean
-  clone), read-only parts measured without the checkout.
+  clone), read-only parts measured without the checkout. The process check
+  that also reads open files (the same day, read-only, run by the guests'
+  `dash` and GNU `find`, globs expanded by root): 16-27 ms per guest for
+  `sudo -n true` and one `find` over `/proc/*/cwd` and `/proc/*/fd` (936-940
+  entries in `molt-linux`, 781-783 in `molt-x86`). Both controls passed in
+  both guests: init's `/proc/1/cwd` read as `/`, and the checking shell's
+  own entry was there. Asked about `/dev`, it named 32 and 30 processes;
+  asked about the clone or a missing path, none.
 - A boot after `apply`: 9 s (`molt-linux`) and 12 s (`molt-x86`) from the
   hostagent's start to Lima's "final requirement" (`ha.stderr.log`; the
   operator's own `limactl start`).
@@ -327,14 +367,22 @@ After `apply` (both VMs on their definitions, 2026-10-22, host load 9-12):
 ## Not verified
 
 - `apply` through the service launch on the real VMs: that restarts them.
-  The fake host proves the start goes through `start_service` and that a VM
-  that stops after its start fails apply; a real `sh` proves the service
-  outlives its command in its own process group.
+  The fake host proves the start goes through `start_service`, that a VM
+  that stops after its start, or whose listing then fails while its
+  hostagent is dead, gets its replaced config back, and that an enclosing
+  guard refuses the restart. Real processes prove the
+  service outlives its command in its own process group, outlives the
+  deadline that ends the command (in its own group or the command's), and
+  inherits none of the guard's token, marker or scratch
+  (`MOLT_MEMORY_GUARD_ACTIVE` and `MOLT_MEMORY_GUARD_PID` stay, as for the
+  backend suite daemon). The real `tools/memory_guard.py` marks a child that
+  the guard authority then reports.
 - A real `push` and `--checkout` into the guests: they write guest state.
   Neither guest clone has a `refs/heads/host/` branch yet. Real Git with a
   fake `ssh` proves the push, and the real checkout command, run by `dash`
-  (the guests' `/bin/sh`) against a clone with a fake `/proc` listing,
-  proves its checks.
+  (the guests' `/bin/sh`) against a clone with a fake `/proc` listing of
+  working directories and open files, proves its checks; its process check
+  ran read-only in both guests (Measured costs).
 - The batch size on other macOS releases. It is Apple's undocumented
   behavior; the opt-in real-VM test (`MOLT_LINUX_VM_TESTS=1`) fails if a
   release stops freeing pins (it skips while no VM mounts a host path).

@@ -8,12 +8,13 @@ counts the wrong descriptors, reports the wrong numbers.
 
 Its guest and virtiofs server follow what the real VMs showed
 (docs/design/linux_vm_apparatus.md, "Mechanism"): a lookup opens a host
-descriptor; ``drop_caches`` makes the guest forget every inode no guest
-process uses; the server closes forgotten descriptors only when its 64th
-pending forget arrives. So a release that only drops caches frees nothing
-here, as it freed nothing on the real VMs. ``SERVER_FORGET_BATCH`` is the
-measured number, kept apart from the module's constant. The opt-in test at
-the end checks the release against a real guest.
+descriptor, and a file a guest process has open holds a second one;
+``drop_caches`` makes the guest forget every inode no guest process uses; the
+server closes forgotten descriptors only when its 64th pending forget
+arrives. So a release that only drops caches frees nothing here, as it freed
+nothing on the real VMs. ``SERVER_FORGET_BATCH`` is the measured number, kept
+apart from the module's constant. The opt-in test at the end checks the
+release against a real guest.
 
 Lima's own validator is the oracle for the rendered YAML when ``limactl`` is
 installed; real Git is the oracle for ``push``.
@@ -21,15 +22,18 @@ installed; real Git is the oracle for ``push``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+import itertools
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import sys
 import time
+from typing import Any
 import uuid
 
 import pytest
@@ -50,6 +54,10 @@ DEAD_PID = 2**31  # beyond every POSIX pid, so never alive
 # Measured on macOS 26.4 (Darwin 25.4.0), Lima 2.2.1, guests on Linux 6.8 and
 # 7.0: the server closed forgotten descriptors at every 64th FUSE_FORGET.
 SERVER_FORGET_BATCH = 64
+# The fake server numbers a held file's open-file descriptor this far above
+# its lookup's descriptor.
+OPEN_DESCRIPTOR_OFFSET = 1000
+_INODES = itertools.count(7_000_000)
 
 
 # --------------------------------------------------------------------------
@@ -59,11 +67,16 @@ SERVER_FORGET_BATCH = 64
 
 @dataclass
 class HostFile:
+    """One descriptor of the VM process, and the host file it holds."""
+
     name: str
     size: int
     links: int
     fd: str
     kind: str = "REG"
+    # The file: each new HostFile is a file of its own unless it names one.
+    inode: int = field(default_factory=lambda: next(_INODES))
+    device: str = "0x1000012"
 
 
 @dataclass
@@ -81,7 +94,9 @@ class FakeVm:
     # Host files whose inode the guest caches and no guest process uses: a
     # drop makes the guest forget them.
     cached: list[HostFile] = field(default_factory=list)
-    # Host files a guest process holds open: a drop keeps them.
+    # Host files a guest process holds open, by their lookup's descriptor.
+    # The server holds a second descriptor for each while it is open
+    # (measured: two per held file). A drop keeps both.
     held_open: list[HostFile] = field(default_factory=list)
     # Forgotten files whose descriptors the server has not closed yet.
     forgotten: list[HostFile] = field(default_factory=list)
@@ -91,7 +106,9 @@ class FakeVm:
     # (pid, ppid, uid, comm, cgroup, executable or "-")
     processes: list[tuple[int, int, int, str, str, str]] = field(default_factory=list)
     probe_shell: int = 4000
-    probe_rc: int = 0
+    # How the idle probe fails: "" (it does not), "sudo" (no passwordless
+    # sudo), "ps" (sudo works, `ps` fails) or "ssh" (Lima's SSH fails).
+    probe_failure: str = ""
     next_fd: int = 100
 
     def json(self) -> str:
@@ -118,7 +135,29 @@ class FakeVm:
             HostFile(str(self.directory / "disk"), self.disk, 1, "3"),
             HostFile(str(self.directory / "cidata.iso"), 4096, 1, "4"),
         ]
-        return files + self.cached + self.held_open + self.forgotten
+        opened = [
+            HostFile(
+                item.name,
+                item.size,
+                item.links,
+                str(int(item.fd) + OPEN_DESCRIPTOR_OFFSET),
+                item.kind,
+                inode=item.inode,
+                device=item.device,
+            )
+            for item in self.held_open
+        ]
+        return files + self.cached + self.held_open + opened + self.forgotten
+
+    def close(self, item: HostFile) -> None:
+        """The guest process closes a held file (its reader exits).
+
+        The server closes the open file's descriptor at once. The lookup's
+        stays: the guest still caches the inode, so only a drop forgets it,
+        and only the server's batch closes it.
+        """
+        self.held_open.remove(item)
+        self.cached.append(item)
 
     def forget(self, files: Sequence[HostFile]) -> None:
         for item in files:
@@ -130,7 +169,9 @@ class FakeVm:
         """`stat -- <dir>/*` in the guest: one host descriptor per file."""
         assert guest_glob.endswith("/*"), guest_glob
         guest_dir = Path(guest_glob[:-2])
-        for raw in self.config.get("mounts") or ():
+        mounts = self.config.get("mounts") or []
+        assert isinstance(mounts, list)
+        for raw in mounts:
             point, location = Path(raw["mountPoint"]), Path(raw["location"])
             if guest_dir.is_relative_to(point):
                 host_dir = location / guest_dir.relative_to(point)
@@ -179,6 +220,24 @@ def probe_text(
     return "\n".join(lines) + "\n"
 
 
+def probe_failure(script: str, failure: str) -> linux_vm.Completed:
+    """The probe's result when a step fails, read from the probe's own text.
+
+    Without passwordless sudo its first `sudo -n` step fails; with sudo, its
+    `sudo -n ps` step can fail on its own. Each step's `|| exit N` is the
+    status the shell returns.
+    """
+    if failure == "ssh":
+        return linux_vm.Completed(
+            255, "", "ssh: connect to host 127.0.0.1: Connection refused\n"
+        )
+    step = r"sudo -n [^;|]*" if failure == "sudo" else r"sudo -n ps [^;|]*"
+    match = re.search(step + r"\|\| exit (\d+);", script)
+    assert match is not None, (failure, script)
+    said = {"sudo": "sudo: a password is required", "ps": "ps: cannot read /proc"}
+    return linux_vm.Completed(int(match.group(1)), "", said[failure] + "\n")
+
+
 def probe_output(vm: FakeVm) -> str:
     return probe_text(
         vm.guest_uid, vm.guest_user, vm.probe_shell, [vm.subuid], vm.processes
@@ -201,14 +260,15 @@ class FakeHost:
         lima: bool = True,
         validate_rc: int = 0,
         drop_rc: int = 0,
-        on_start: Callable[[FakeVm], None] | None = None,
     ) -> None:
         self.vms = {vm.name: vm for vm in vms}
         self.others = list(others)
         self.lima = lima
         self.validate_rc = validate_rc
         self.drop_rc = drop_rc
-        self.on_start = on_start
+        # What `enclosing_guard` reports: the Molt memory guard this process
+        # runs under, if any.
+        self.guard: str | None = None
         self.calls: list[tuple[str, ...]] = []
         # Commands run through `start_service`, in order (also in `calls`).
         self.services: list[tuple[str, ...]] = []
@@ -220,6 +280,10 @@ class FakeHost:
         # lists. A hostagent that dies after the command returns leaves
         # (0, "Stopped"), as on 2026-10-22 (HF-471).
         self.start_outcomes: list[tuple[int, str]] = []
+        # Each start's effect on the `limactl list` that follows it: a
+        # non-empty entry makes that listing fail with it as stderr.
+        self.listings_after_start: list[str] = []
+        self._failing_listing = ""
         self.started_with: list[str] = []
         self.commits: dict[str, str] = {}
         self.checkout = linux_vm.Completed(0, "", "")
@@ -234,6 +298,9 @@ class FakeHost:
         if name == "limactl" and not self.lima:
             return None
         return f"/fake/bin/{name}"
+
+    def enclosing_guard(self) -> str | None:
+        return self.guard
 
     def start_service(
         self, argv: Sequence[str], *, timeout: float
@@ -253,13 +320,21 @@ class FakeHost:
                     if self.start_outcomes
                     else (0, "Running")
                 )
+                self._failing_listing = (
+                    self.listings_after_start.pop(0)
+                    if self.listings_after_start
+                    else ""
+                )
                 vm.status = status
+                # The hostagent writes its pid file; a VM that did not come
+                # up has no live hostagent.
+                ha_pid = vm.directory / "ha.pid"
                 if status == "Running":
-                    (vm.directory / "ha.pid").write_text("1\n", encoding="utf-8")
+                    ha_pid.write_text(f"{os.getpid()}\n", encoding="utf-8")
                     later = time.time() + 5
-                    os.utime(vm.directory / "ha.pid", (later, later))
-                    if self.on_start is not None:
-                        self.on_start(vm)
+                    os.utime(ha_pid, (later, later))
+                else:
+                    ha_pid.unlink(missing_ok=True)
                 stderr = "" if rc == 0 else "INFO starting\nvz: boot failed\n"
                 return linux_vm.Completed(rc, "", stderr)
         raise AssertionError(f"unexpected service {argv}")
@@ -269,7 +344,7 @@ class FakeHost:
         argv: Sequence[str],
         *,
         timeout: float,
-        env_overrides: dict[str, str] | None = None,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> linux_vm.Completed:
         argv = tuple(argv)
         self.calls.append(argv)
@@ -277,6 +352,9 @@ class FakeHost:
         assert timeout > 0
         match argv:
             case ("limactl", "list", "--json", *names):
+                if self._failing_listing:
+                    stderr, self._failing_listing = self._failing_listing, ""
+                    return linux_vm.Completed(1, "", stderr)
                 rows = [
                     self._listed(vm)
                     for vm in self.vms.values()
@@ -313,13 +391,12 @@ class FakeHost:
                 if script.startswith("set -u\n"):
                     return self.checkout
                 assert script == linux_vm.IDLE_PROBE, script
-                if vm.probe_rc:
-                    return linux_vm.Completed(
-                        vm.probe_rc, "", "sudo: a password is required"
-                    )
+                if vm.probe_failure:
+                    return probe_failure(script, vm.probe_failure)
                 return linux_vm.Completed(0, probe_output(vm), "")
             case ("limactl", "stop", name):
                 self.vms[name].status = "Stopped"
+                (self.vms[name].directory / "ha.pid").unlink(missing_ok=True)
                 return linux_vm.Completed(0, "", "")
             case ("git", "-C", _repo, "rev-parse", "--verify", "--quiet", rev):
                 commit = self.commits.get(rev.removesuffix("^{commit}"), "")
@@ -388,10 +465,15 @@ class FakeHost:
                 out.append(f"c{command}")
             for item in listed:
                 out.append(f"f{item.fd}")
+                # lsof's own order: type, device, size, inode, links, name.
                 if "t" in fields:
                     out.append(f"t{item.kind}")
+                if "D" in fields:
+                    out.append(f"D{item.device}")
                 if "s" in fields:
                     out.append(f"s{item.size}")
+                if "i" in fields:
+                    out.append(f"i{item.inode}")
                 if "k" in fields and links_listed:
                     out.append(f"k{item.links}")
                 if "n" in fields:
@@ -486,6 +568,12 @@ def matching_vm(
 
 def instance_of(fake: FakeVm) -> linux_vm.Instance:
     return linux_vm.list_instances(FakeHost([fake]))[0]
+
+
+def measured(held: linux_vm.Held | None) -> linux_vm.Held:
+    """A release's measurement, which a test expects to exist."""
+    assert held is not None, "no VM process was measured"
+    return held
 
 
 def deleted_names(host: FakeHost, vm: FakeVm) -> list[str]:
@@ -687,7 +775,7 @@ def test_lima_parses_the_rendered_config_as_the_definition_says(
 def _set(path: str, value: object) -> Callable[[dict[str, object]], None]:
     def edit(config: dict[str, object]) -> None:
         *parents, key = path.split(".")
-        target: object = config
+        target: Any = config
         for part in parents:
             target = (
                 target[int(part)]
@@ -695,9 +783,9 @@ def _set(path: str, value: object) -> Callable[[dict[str, object]], None]:
                 else target.setdefault(part, {})
             )
         if value is _DELETE:
-            del target[key]  # type: ignore[index]
+            del target[key]
         else:
-            target[key] = value  # type: ignore[index]
+            target[key] = value
 
     return edit
 
@@ -743,7 +831,9 @@ def test_compare_reads_an_extra_forward_rule_ahead_of_the_ignore_rule_as_drift(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
     fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
-    fake.config["portForwards"].insert(  # type: ignore[union-attr]
+    forwards = fake.config["portForwards"]
+    assert isinstance(forwards, list)
+    forwards.insert(
         0,
         {
             "guestIPMustBeZero": False,
@@ -848,8 +938,10 @@ def test_held_files_maps_each_vm_process_by_its_disk_and_counts_only_share_pins(
     held = linux_vm.held_files(host, linux_vm.list_instances(host))
     assert held == {
         # Deleted regular files on numbered descriptors: the share's pins.
-        # The deleted txt mapping and the deleted directory are not counted.
-        # The VM's own disk lies under its drifted mount and is not counted.
+        # tmp/log, which a guest process holds open, has two descriptors
+        # and counts once. The deleted txt mapping and the deleted directory
+        # are not counted. The VM's own disk lies under its drifted mount and
+        # is not counted.
         "molt-linux": linux_vm.Held(
             pid=9200, deleted_files=3, deleted_bytes=1107, open_under_mounts=2
         ),
@@ -859,6 +951,36 @@ def test_held_files_maps_each_vm_process_by_its_disk_and_counts_only_share_pins(
         ),
     }
     assert [call[0] for call in host.calls] == ["limactl", "lsof"]
+
+
+def test_held_files_counts_files_by_device_and_inode_not_descriptors(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    """MINOR-A: the reports say files and bytes, so a file counts once.
+
+    The server holds two descriptors for a file a guest process has open; one
+    file, one count, one size. A name does not identify a file: two deleted
+    files can share lsof's partial name, and one inode number can repeat on
+    another device. The release record still keeps every descriptor.
+    """
+    linux, x86, custody = two_vms(definitions, tmp_path)
+    shared = HostFile("/3f1c0ffee", 2000, 0, "16")  # another file, same name
+    elsewhere = HostFile(str(custody / "tmp/other"), 30, 0, "18", device="0x2000001")
+    elsewhere.inode = linux.held_open[0].inode  # same inode, other device
+    readme = HostFile(str(custody / "molt-src/setup.py"), 9, 1, "19")
+    linux.cached += [shared, elsewhere]
+    linux.held_open.append(readme)  # an open file that still has its links
+    host = FakeHost([linux, x86])
+    held = linux_vm.held_files(
+        host, linux_vm.list_instances(host, ["molt-linux"]), paths=[custody]
+    )["molt-linux"]
+    # a.py, the two /3f1c0ffee files, tmp/log (two descriptors), tmp/other.
+    assert (held.deleted_files, held.deleted_bytes) == (5, 100 + 1000 + 2000 + 7 + 30)
+    # README.md, elsewhere.txt and setup.py (two descriptors) under the mount.
+    assert held.open_under_mounts == 3
+    # README.md and setup.py under the custody root.
+    assert held.open_under_paths == 2
+    assert len(held.deleted) == 6, "every deleted descriptor stays in the set"
 
 
 # --------------------------------------------------------------------------
@@ -904,11 +1026,11 @@ def test_a_drop_alone_frees_nothing_and_the_release_frees_every_cached_pin(
     results = linux_vm.release(host, linux_vm.list_instances(host))
     assert deleted_names(host, linux) == [str(custody / "tmp/log")]
     by_name = {result.name: result for result in results}
-    assert by_name["molt-linux"].before.deleted_files == 3
+    assert measured(by_name["molt-linux"].before).deleted_files == 3
     assert by_name["molt-linux"].after == linux_vm.Held(
         pid=9200, deleted_files=1, deleted_bytes=7, open_under_mounts=0
     )
-    assert by_name["molt-x86"].after.open_under_mounts == 0
+    assert measured(by_name["molt-x86"].after).open_under_mounts == 0
     assert all(result.error is None for result in results)
     # Each mount got its forget set on the host.
     for location in (tmp_path, custody):
@@ -1124,8 +1246,9 @@ def test_the_hook_releases_only_covering_vms_that_hold_files_under_the_path(
     )
     assert [r.name for r in results] == ["molt-linux"]
     [result] = results
-    assert (result.before.open_under_paths, result.after.open_under_paths) == (1, 0)
-    assert (result.before.deleted_files, result.after.deleted_files) == (3, 1)
+    before, after = measured(result.before), measured(result.after)
+    assert (before.open_under_paths, after.open_under_paths) == (1, 0)
+    assert (before.deleted_files, after.deleted_files) == (3, 1)
     assert x86.cached, "a VM that does not mount the path keeps its caches"
     # One snapshot decides and serves as the "before" measurement.
     assert [call[:2] for call in host.calls] == [
@@ -1152,7 +1275,9 @@ def test_a_retirement_after_a_release_runs_nothing_in_a_guest(
     first = linux_vm.release_for_paths(
         [custody / "worktrees" / "old"], environment=environment, host=host
     )
-    assert [(r.name, r.after.deleted_files) for r in first] == [("molt-linux", 0)]
+    assert [(r.name, measured(r.after).deleted_files) for r in first] == [
+        ("molt-linux", 0)
+    ]
     host.calls.clear()
     assert (
         linux_vm.release_for_paths(
@@ -1176,7 +1301,8 @@ def test_the_hook_also_frees_deleted_files_a_covering_vm_already_pins(
         host=host,
     )
     assert [
-        (r.name, r.before.deleted_bytes, r.after.deleted_bytes) for r in results
+        (r.name, measured(r.before).deleted_bytes, measured(r.after).deleted_bytes)
+        for r in results
     ] == [("molt-x86", 4096, 0)]
 
 
@@ -1188,6 +1314,13 @@ def test_the_hook_skips_a_release_that_cannot_free_what_a_guest_holds_open(
     The first release records what it left. A later retirement whose VM
     holds exactly that skips the release; a new pin, a closed file or a new
     VM process each make the release worth running again.
+
+    The fake server holds two descriptors for a held file, as measured. When
+    the reader exits, only the open file's descriptor closes: the lookup's
+    still pins the file. The record changed, so the next retirement
+    releases, and that release frees it. A rule that compared files, not
+    descriptors, would skip that release and pin the file until something
+    else changed.
     """
     linux, x86, custody = two_vms(definitions, tmp_path)
     x86.vz_pid = None
@@ -1209,16 +1342,23 @@ def test_the_hook_skips_a_release_that_cannot_free_what_a_guest_holds_open(
     record = json.loads(
         (linux.directory / linux_vm.RELEASE_RECORD).read_text(encoding="utf-8")
     )
-    assert record["pid"] == 9200 and len(record["deleted"]) == 2
+    # Two descriptors for each held file: the lookup's and the open file's.
+    assert record["pid"] == 9200 and len(record["deleted"]) == 4
     # Nothing changed: no guest command.
     assert retire("two") == ["list", "lsof"]
     # A new pin: release, and the new record holds the open files again.
     linux.cached.append(HostFile(str(custody / "worktrees/two/x"), 3, 0, "40"))
     assert retire("three") == ["list", "lsof", "shell", "lsof"]
     assert retire("four") == ["list", "lsof"]
-    # The guest closed one file: fewer descriptors, so its lookup can go.
-    linux.held_open = [log]
+    # log2's reader exits: its open descriptor closes, its lookup's stays.
+    linux.close(log2)
+    assert deleted_names(host, linux) == sorted([log.name, log2.name]), (
+        "a close alone frees nothing"
+    )
     assert retire("five") == ["list", "lsof", "shell", "lsof"]
+    assert deleted_names(host, linux) == [log.name], (
+        "the release after the reader exits frees the file"
+    )
     assert retire("six") == ["list", "lsof"]
     # A restarted VM process holds new descriptors: the record is stale.
     linux.vz_pid = 9300
@@ -1284,12 +1424,22 @@ def test_push_reports_a_refused_checkout_with_the_exact_commit(
     host.checkout = linux_vm.Completed(
         linux_vm.CHECKOUT_REFUSED, "processes work in /home/m/molt-main (pid 7)\n", ""
     )
-    common = dict(rev="HEAD", ref="lane/x", definitions=definitions, host=host)
-    assert linux_vm.push("molt-linux", checkout=True, **common) == 1
+
+    def push(checkout: bool) -> int:
+        return linux_vm.push(
+            "molt-linux",
+            rev="HEAD",
+            ref="lane/x",
+            checkout=checkout,
+            definitions=definitions,
+            host=host,
+        )
+
+    assert push(checkout=True) == 1
     out = capsys.readouterr().out
     assert "REFUSED: checkout in molt-linux: processes work" in out
     assert "waits as refs/heads/host/lane/x" in out
-    assert linux_vm.push("molt-linux", checkout=False, **common) == 0
+    assert push(checkout=False) == 0
     assert f"git -C ~/molt-main checkout --detach {'c' * 40}" in capsys.readouterr().out
 
 
@@ -1359,7 +1509,8 @@ class GitHost(FakeHost):
 
     `git` runs with a fake `ssh` first on PATH; the guest command runs in a
     shell whose HOME is the guest's home, with a fake `sudo` whose `find`
-    prints the `/proc/<pid>/cwd` listing in ``proc`` (macOS has no /proc).
+    prints the listing in ``proc``: `find`'s `%p %l` lines for every
+    `/proc/<pid>/cwd` and `/proc/<pid>/fd/<n>` (macOS has no /proc).
     ``environment`` is the host environment `run` overrides from.
     """
 
@@ -1369,7 +1520,7 @@ class GitHost(FakeHost):
         super().__init__(vms)
         self.environment = environment
         self.home = home
-        self.proc = home.parent / "proc-cwd.txt"
+        self.proc = home.parent / "proc-links.txt"
         self.proc.write_text("", encoding="utf-8")
 
     def _real(
@@ -1389,7 +1540,7 @@ class GitHost(FakeHost):
         argv: Sequence[str],
         *,
         timeout: float,
-        env_overrides: dict[str, str] | None = None,
+        env_overrides: Mapping[str, str] | None = None,
     ) -> linux_vm.Completed:
         argv = list(argv)
         if argv[0] == "git":
@@ -1405,7 +1556,7 @@ class GitHost(FakeHost):
             guest = {
                 **self.environment,
                 "HOME": str(self.home),
-                "FAKE_PROC_CWD": str(self.proc),
+                "FAKE_PROC_LINKS": str(self.proc),
             }
             # The guests' /bin/sh is dash; macOS ships one too.
             shell = shutil.which("dash") or "sh"
@@ -1439,9 +1590,12 @@ def git_guest(
 
     The fake `ssh` takes OpenSSH's form (options, the host, the remote
     command) and requires the instance's ssh.config; the fake `sudo` serves
-    `sudo -n true` and the checkout's `sudo -n find /proc ...`. The push runs
-    under the guard, whose Git transfer bound wraps `GIT_SSH_COMMAND`
-    (tools/git_transfer.py) and keeps the command it wraps.
+    `sudo -n true` and the checkout's `sudo -n sh -c 'exec find
+    /proc/[0-9]*/cwd /proc/[0-9]*/fd ...'`. Like a real `find`, which lists
+    every process, its listing includes the checking shell: it adds a
+    `cwd` line for its parent and grandparent, one of which is that shell.
+    The push runs under the guard, whose Git transfer bound wraps
+    `GIT_SSH_COMMAND` (tools/git_transfer.py) and keeps the command it wraps.
     """
     repo, home = tmp_path / "repo", tmp_path / "guest-home"
     for directory in (repo, home / "molt-main"):
@@ -1479,7 +1633,15 @@ sys.exit(subprocess.run(["sh", "-c", command], cwd={str(home)!r}).returncode)
 shift
 case "$1" in
   true) exit 0 ;;
-  find) [ "$2" = /proc ] || exit 1; cat "$FAKE_PROC_CWD" ;;
+  sh)
+    [ "$2" = -c ] || exit 1
+    case "$3" in
+      ('exec find /proc/[0-9]*/cwd /proc/[0-9]*/fd -maxdepth 1 '*) ;;
+      (*) exit 1 ;;
+    esac
+    cat "$FAKE_PROC_LINKS"
+    grand=$(ps -o ppid= -p "$PPID" | tr -d ' ')
+    printf '/proc/%s/cwd /\n/proc/%s/cwd /\n' "$PPID" "$grand" ;;
   *) exit 1 ;;
 esac
 """,
@@ -1562,7 +1724,19 @@ def test_push_preserves_divergent_guest_commits_before_checkout(
 
 
 @pytest.mark.parametrize(
-    "state", ["clean", "untracked", "modified", "index-lock", "cwd", "no-sudo"]
+    "state",
+    [
+        "clean",
+        "untracked",
+        "modified",
+        "index-lock",
+        "cwd",
+        "open-file",
+        "no-sudo",
+        "listing-without-the-shell",
+        "listing-without-root",
+        "no-listing",
+    ],
 )
 def test_push_checks_out_the_exact_commit_only_into_a_clean_idle_clone(
     definitions: linux_vm.Definitions,
@@ -1573,9 +1747,14 @@ def test_push_checks_out_the_exact_commit_only_into_a_clean_idle_clone(
     """A-4: the guest's own checkout command, run for real against a clone.
 
     Untracked or modified files, a held index lock, or a process whose
-    working directory lies in the clone each refuse the checkout and leave
-    the clone where it was; a guest without passwordless sudo fails it. Only
-    a clean, idle clone moves, detached, to the pushed commit.
+    working directory or an open file lies in the clone each refuse the
+    checkout and leave the clone where it was; a guest without passwordless
+    sudo fails it, and the report says so. The listing must show the target
+    of init's `/proc/1/cwd`, which only root can read, and the checking
+    shell's own `/proc/$$/cwd`. A `find` that failed, or ran without root
+    (init's link then has no target), fails it too: no listing never reads
+    as "no process". Only a clean, idle clone moves, detached, to the pushed
+    commit.
     """
     host, repo, clone, head = git_guest(definitions, tmp_path)
     (clone / "g.txt").write_text("g\n", encoding="utf-8")
@@ -1583,8 +1762,17 @@ def test_push_checks_out_the_exact_commit_only_into_a_clean_idle_clone(
     run_git("-C", str(clone), "commit", "-qm", "guest base")
     before = run_git("-C", str(clone), "rev-parse", "HEAD")
     resolved = clone.resolve()
-    # Processes elsewhere, one in a sibling whose path shares the prefix.
-    lines = ["/proc/1 /", f"/proc/2 {resolved}-other", "/proc/3 /tmp"]
+    # `find`'s lines for processes elsewhere: a directory line with no link,
+    # a sibling whose path shares the clone's prefix, a socket.
+    lines = [
+        "/proc/1/cwd /",
+        "/proc/1/fd ",
+        "/proc/1/fd/0 /dev/null",
+        f"/proc/2/cwd {resolved}-other",
+        f"/proc/2/fd/3 {resolved}-other/x",
+        "/proc/3/cwd /tmp",
+        "/proc/3/fd/4 socket:[123]",
+    ]
     if state == "untracked":
         (clone / "scratch.txt").write_text("x\n", encoding="utf-8")
     elif state == "modified":
@@ -1592,9 +1780,33 @@ def test_push_checks_out_the_exact_commit_only_into_a_clean_idle_clone(
     elif state == "index-lock":
         (clone / ".git" / "index.lock").write_text("", encoding="utf-8")
     elif state == "cwd":
-        lines.append(f"/proc/4242 {resolved}/target/debug")
+        lines.append(f"/proc/4242/cwd {resolved}/target/debug")
+    elif state == "open-file":
+        # `cargo --manifest-path` and `git -C` work in the clone from
+        # elsewhere: their open files name it, their working directory does
+        # not. One process holds two files there.
+        lines += [
+            "/proc/4243/cwd /",
+            f"/proc/4243/fd/7 {resolved}/target/debug/.cargo-lock",
+            f"/proc/4243/fd/9 {resolved}/.git/objects/pack/p.pack (deleted)",
+            "/proc/51/cwd /home/m",
+            f"/proc/51/fd/3 {resolved}/src/x.py",
+        ]
     elif state == "no-sudo":
-        (tmp_path / "bin" / "sudo").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (tmp_path / "bin" / "sudo").write_text(
+            "#!/bin/sh\necho 'sudo: a password is required' >&2\nexit 1\n",
+            encoding="utf-8",
+        )
+    elif state == "listing-without-root":
+        # Without root, find lists init's cwd link but cannot read its
+        # target, and hidepid hides other users' processes.
+        lines = ["/proc/1/cwd ", "/proc/3/cwd /tmp"]
+    elif state in ("listing-without-the-shell", "no-listing"):
+        listing = 'cat "$FAKE_PROC_LINKS"' if state != "no-listing" else "exit 1"
+        (tmp_path / "bin" / "sudo").write_text(
+            f'#!/bin/sh\ncase "$2" in true) exit 0 ;; sh) {listing} ;; esac\nexit 1\n',
+            encoding="utf-8",
+        )
     host.proc.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     rc = linux_vm.push(
         "molt-linux",
@@ -1623,10 +1835,31 @@ def test_push_checks_out_the_exact_commit_only_into_a_clean_idle_clone(
         "modified": "g.txt",
         "index-lock": "index.lock exists",
         "cwd": "(pid 4242)",
-        "no-sudo": "FAILED: checkout in molt-linux",
+        "open-file": "(pid 51 4243)",
+        "no-sudo": (
+            "FAILED: checkout in molt-linux: the check reads every guest process "
+            "as root, and molt-linux's guest user has no passwordless sudo"
+        ),
+        "listing-without-the-shell": (
+            "FAILED: checkout in molt-linux: cannot read the guest's processes "
+            "as root: the listing lacks /proc/"
+        ),
+        "listing-without-root": (
+            "FAILED: checkout in molt-linux: cannot read the guest's processes "
+            "as root: the listing lacks /proc/1/cwd"
+        ),
+        "no-listing": (
+            "FAILED: checkout in molt-linux: cannot read the guest's processes "
+            "as root: the listing lacks /proc/1/cwd"
+        ),
     }[state]
     assert expected in out, out
-    if state != "no-sudo":
+    if state == "no-sudo":
+        assert "sudo said: sudo: a password is required" in out
+        assert "waits as refs/heads/host/head" in out
+    elif state == "listing-without-the-shell":
+        assert "lacks /proc/1/cwd" not in out, "init's line is there"
+    elif "listing" not in state:
         assert "REFUSED: checkout in molt-linux" in out
 
 
@@ -1824,7 +2057,7 @@ def test_busy_guest_processes_exempts_this_session_and_guest_daemons(
 
 
 def apply_setup(
-    definitions: linux_vm.Definitions, tmp_path: Path, **host_options: object
+    definitions: linux_vm.Definitions, tmp_path: Path, *, validate_rc: int = 0
 ) -> tuple[FakeHost, FakeVm, str]:
     fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
     fake.config["mounts"] = [mounted(tmp_path)]
@@ -1838,7 +2071,7 @@ def apply_setup(
         definitions.vms["molt-linux"],
         minimum_lima_version=definitions.minimum_lima_version,
     )
-    host = FakeHost([fake], **host_options)
+    host = FakeHost([fake], validate_rc=validate_rc)
     host.configs_by_text[text] = lima_filled(rendered)
     original = (fake.directory / "lima.yaml").read_text(encoding="utf-8")
     return host, fake, original
@@ -1893,16 +2126,42 @@ def test_apply_refuses_a_change_only_a_new_vm_can_make(
     assert [call[1] for call in host.calls] == ["list"]
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (
+            "sudo",
+            "cannot list molt-linux's processes: the check reads every guest "
+            "process as root, and molt-linux's guest user has no passwordless "
+            "sudo (`sudo -n` failed; Lima's default config gives it one); sudo "
+            "said: sudo: a password is required",
+        ),
+        ("ps", "cannot list molt-linux's processes: ps: cannot read /proc"),
+        (
+            "ssh",
+            "cannot list molt-linux's processes: ssh: connect to host "
+            "127.0.0.1: Connection refused",
+        ),
+    ],
+)
 def test_apply_refuses_when_the_guest_cannot_list_every_executable(
     definitions: linux_vm.Definitions,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    failure: str,
+    expected: str,
 ) -> None:
-    """Without passwordless sudo the probe cannot read root's executables."""
+    """Without passwordless sudo the probe cannot read root's executables.
+
+    The refusal names passwordless sudo only when sudo failed; a `ps` or SSH
+    failure quotes its own error.
+    """
     host, fake, original = apply_setup(definitions, tmp_path)
-    fake.probe_rc = 3
+    fake.probe_failure = failure
     assert run_apply(definitions, host) == 1
-    assert "cannot list molt-linux's processes: sudo" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert expected in out, out
+    assert ("passwordless" in out) == (failure == "sudo")
     assert [call[1] for call in host.calls] == ["list", "validate", "shell"]
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
 
@@ -1966,7 +2225,10 @@ def test_a_failed_start_restores_and_restarts_the_replaced_config(
     # A retry fails the same way and still keeps the hand-made original.
     host.start_outcomes = [(1, "Stopped"), (1, "Stopped")]
     assert run_apply(definitions, host) == 1
-    assert "does not run with that config either" in capsys.readouterr().out
+    assert (
+        "restored the replaced config and started it again with that config: "
+        "limactl start molt-linux exited 1: INFO starting | vz: boot failed"
+    ) in capsys.readouterr().out
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
     assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
         encoding="utf-8"
@@ -1998,8 +2260,10 @@ def test_a_vm_that_stops_after_its_start_fails_apply(
     host.start_outcomes = [(0, "Stopped"), (0, "Broken")]
     assert run_apply(definitions, host) == 1
     out = capsys.readouterr().out
-    assert "does not run with that config either" in out
-    assert "but Lima lists molt-linux as Broken" in out
+    assert (
+        "started it again with that config: limactl start molt-linux exited 0, "
+        "but Lima lists molt-linux as Broken"
+    ) in out
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
 
 
@@ -2024,6 +2288,244 @@ def test_a_start_that_fails_on_a_running_vm_is_reported_not_rolled_back(
     assert installed == host.validated[0]
 
 
+LISTING_FAILED = "limactl: cannot read the instance directory"
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "listings", "restored", "said"),
+    [
+        # The VM did not come up, and Lima's listing then failed: its
+        # hostagent is dead, so apply restores and restarts the old config.
+        (
+            [(1, "Stopped"), (0, "Running")],
+            [LISTING_FAILED, ""],
+            True,
+            "exited 1: INFO starting | vz: boot failed; Lima's listing then "
+            "failed: limactl list failed: limactl: cannot read the instance "
+            "directory; restored the replaced config and restarted it with the "
+            "replaced config",
+        ),
+        (
+            [(0, "Stopped"), (0, "Running")],
+            [LISTING_FAILED, LISTING_FAILED],
+            True,
+            "started it again with that config: limactl start molt-linux exited "
+            f"0; Lima's listing then failed: limactl list failed: {LISTING_FAILED}",
+        ),
+        # The VM came up, and the listing failed: its hostagent lives, so
+        # only a stop could restore; apply says what runs.
+        (
+            [(0, "Running")],
+            [LISTING_FAILED],
+            False,
+            "molt-linux runs the installed definition",
+        ),
+    ],
+)
+def test_a_failed_listing_after_the_start_restores_unless_the_vm_runs(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    outcomes: list[tuple[int, str]],
+    listings: list[str],
+    restored: bool,
+    said: str,
+) -> None:
+    """C-5: a `limactl list` failure after the start is a failed start.
+
+    It never escapes as an error with the new config installed and the VM
+    down: apply restores the replaced config and starts the VM again, as for
+    any start that did not come up.
+    """
+    host, fake, original = apply_setup(definitions, tmp_path)
+    host.start_outcomes = outcomes
+    host.listings_after_start = listings
+    assert run_apply(definitions, host) == 1
+    out = capsys.readouterr().out
+    assert "FAILED: limactl start molt-linux exited" in out
+    assert f"Lima's listing then failed: limactl list failed: {LISTING_FAILED}" in out
+    assert said in out, out
+    assert "OK:" not in out and "ERROR:" not in out
+    installed = (fake.directory / "lima.yaml").read_text(encoding="utf-8")
+    if restored:
+        assert installed == original
+        assert host.started_with == [host.validated[0], original]
+    else:
+        assert installed == host.validated[0]
+        assert len(host.started_with) == 1
+    assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
+        encoding="utf-8"
+    ) == original
+
+
+def test_apply_refuses_to_restart_a_vm_under_an_enclosing_memory_guard(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C-1: an outer guard would close the hostagent apply starts (HF-471).
+
+    apply refuses before it touches the guest or the config. A stopped VM
+    starts nothing, so apply installs its config under a guard too.
+    """
+    host, fake, original = apply_setup(definitions, tmp_path)
+    host.guard = "a Molt memory guard (pid 77)"
+    assert run_apply(definitions, host) == 1
+    out = capsys.readouterr().out
+    assert "under a Molt memory guard (pid 77)" in out
+    assert "run apply from a plain shell" in out
+    assert [call[1] for call in host.calls] == ["list"]
+    assert host.services == []
+    assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
+    assert not (fake.directory / linux_vm.NEXT_CONFIG).exists()
+    fake.status = "Stopped"
+    host.calls.clear()
+    assert run_apply(definitions, host) == 0
+    assert [call[1] for call in host.calls] == ["list", "validate", "list"]
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {},
+        {"MOLT_MEMORY_GUARD_ACTIVE": "0", "MOLT_MEMORY_GUARD_PID": "77"},
+        # A guard's variables with no live guard behind them: no marker, and
+        # the pid is no process, so no guard closes this process's children.
+        {"MOLT_MEMORY_GUARD_ACTIVE": "1", "MOLT_MEMORY_GUARD_PID": str(DEAD_PID)},
+        {"MOLT_MEMORY_GUARD_ACTIVE": "1"},
+    ],
+)
+def test_the_local_host_sees_no_guard_where_none_runs(
+    environment: dict[str, str],
+) -> None:
+    assert linux_vm.LocalHost(environment).enclosing_guard() is None
+
+
+def test_the_local_host_sees_the_real_memory_guard_around_it() -> None:
+    """The guard authority against the real guard (tools/memory_guard.py).
+
+    A child under the guard asks `LocalHost(os.environ).enclosing_guard()`.
+    The oracle is the guard itself: it marks its child with its own pid (the
+    test helper runs the guard in this process), and the answer names that
+    live pid.
+    """
+    code = (
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "from tools import linux_vm\n"
+        "print(linux_vm.LocalHost(os.environ).enclosing_guard())\n"
+        "print(os.environ['MOLT_MEMORY_GUARD_PID'])\n"
+    )
+    completed = run_guarded_test_process(
+        [sys.executable, "-B", "-c", code], cwd=ROOT, timeout=120.0
+    )
+    assert completed.returncode == 0, completed.stderr
+    answer, pid = completed.stdout.strip().splitlines()[-2:]
+    assert pid_alive(int(pid)), "the guard that marked the child runs"
+    assert answer == f"a Molt memory guard (pid {pid})"
+
+
+# Prints the repository files `tools.memory_guard` loads from `root` to run
+# one guarded command in its own process (``-I -S``: nothing but `root`).
+_GUARD_CLOSURE = """
+import os, sys
+root = sys.argv[1]
+sys.path.insert(0, root)
+from tools import memory_guard
+memory_guard.run_guarded(
+    [sys.executable, "-B", "-c", "pass"],
+    max_rss_kb=2_000_000, poll_interval=0.2, timeout=60,
+)
+for module in list(sys.modules.values()):
+    path = getattr(module, "__file__", None)
+    if path and path.startswith(root + os.sep):
+        print(os.path.relpath(path, root))
+"""
+
+# A tool of checkout `other` runs the guard in its own process, as
+# harness_memory_guard does; its child asks this checkout's LocalHost.
+_OTHER_CHECKOUT_GUARD = """
+import os, sys
+other, root = sys.argv[1], sys.argv[2]
+sys.path.insert(0, other)
+from tools import memory_guard
+child = (
+    "import os, sys\\n"
+    f"sys.path.insert(0, {root!r})\\n"
+    "from tools import linux_vm\\n"
+    "print(linux_vm.LocalHost(os.environ).enclosing_guard())\\n"
+)
+result = memory_guard.run_guarded(
+    [sys.executable, "-B", "-c", child],
+    max_rss_kb=2_000_000, poll_interval=0.2, timeout=120, cwd=root,
+)
+out = result.stdout if isinstance(result.stdout, str) else result.stdout.decode()
+print(memory_guard.__file__)
+print(os.getpid())
+print(result.returncode)
+print(out.strip().splitlines()[-1] if out.strip() else "")
+"""
+
+
+def test_the_local_host_sees_a_live_in_process_guard_of_another_checkout(
+    tmp_path: Path,
+) -> None:
+    """MINOR-B1: any live guard closes the hostagent, whatever its checkout.
+
+    A second checkout (a copy of the files its guard loads) runs the real
+    guard in a tool's own process, as harness_memory_guard does for
+    guarded_exec and dev.py. Its marker names the other checkout's guard
+    module, and no ancestor runs tools/memory_guard.py, so a rule that
+    counts only this checkout's guard sees none, and apply would restart the
+    VM under a guard that then closes its hostagent (HF-471). The oracle is
+    the guard: its pid is the tool's, and the answer names that pid.
+    """
+    closure = run_guarded_test_process(
+        [sys.executable, "-I", "-S", "-B", "-c", _GUARD_CLOSURE, str(ROOT)],
+        timeout=120.0,
+    )
+    assert closure.returncode == 0, closure.stderr
+    other = tmp_path / "other-checkout"
+    for relative in [*closure.stdout.splitlines(), "pyproject.toml"]:
+        (other / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, other / relative)
+    probe = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            _OTHER_CHECKOUT_GUARD,
+            str(other),
+            str(ROOT),
+        ],
+        timeout=180.0,
+    )
+    assert probe.returncode == 0, probe.stderr
+    guard_file, guard_pid, returncode, answer = probe.stdout.splitlines()[-4:]
+    assert Path(guard_file).resolve().is_relative_to(other.resolve()), guard_file
+    assert returncode == "0", probe.stdout
+    assert answer == f"a Molt memory guard (pid {guard_pid})", probe.stdout
+
+
+def test_a_guarded_apply_through_the_cli_refuses_before_it_stops_the_vm(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI path: `main` runs `apply`, which refuses under the guard the
+    host reports, before it touches the guest or the config.
+    """
+    host, fake, original = apply_setup(definitions, tmp_path)
+    host.guard = "a Molt memory guard (pid 4321)"
+    assert linux_vm.main(["apply", "molt-linux", "--confirm-restart"], host=host) == 1
+    assert "under a Molt memory guard (pid 4321)" in capsys.readouterr().out
+    assert [call[1] for call in host.calls] == ["list"]
+    assert fake.status == "Running"
+    assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
+
+
 def test_apply_removes_the_forget_sets_of_the_mounts_it_ends(
     definitions: linux_vm.Definitions,
     tmp_path: Path,
@@ -2040,7 +2542,9 @@ def test_apply_removes_the_forget_sets_of_the_mounts_it_ends(
     nested = deep / "nested"
     for location in (other, nested, kept):
         location.mkdir(parents=True)
-        fake.config["mounts"].append(mounted(location))  # type: ignore[union-attr]
+        mounts = fake.config["mounts"]
+        assert isinstance(mounts, list)
+        mounts.append(mounted(location))
     for location in (tmp_path, other, nested, kept):
         linux_vm.forget_set(location)
     (kept / linux_vm.FORGET_SET / "notes.txt").write_text("x", encoding="utf-8")
@@ -2070,6 +2574,79 @@ def test_a_second_apply_keeps_the_first_replaced_config(
     assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
         encoding="utf-8"
     ) == original
+
+
+def _decoys(directory: Path) -> list[Path]:
+    """Host files a planted link could reach: the forget set's own names."""
+    directory.mkdir()
+    decoys = [directory / name for name in ("00", "01", "63")]
+    for decoy in decoys:
+        decoy.write_text("", encoding="utf-8")
+    return decoys
+
+
+def test_forget_sets_follow_no_link_a_guest_could_plant(tmp_path: Path) -> None:
+    """C-6: a guest with a writable mount controls what lies under it.
+
+    It can make the forget set, or one of its names, a link to another host
+    directory or file. Removal follows no link: a linked set and a linked
+    entry are kept, and nothing outside them is deleted. Creation follows
+    none either: a linked set fails the mount, and no file appears through
+    it.
+    """
+    outside = _decoys(tmp_path / "outside")
+    linked, partly, mount = tmp_path / "linked", tmp_path / "partly", tmp_path / "m"
+    for location in (linked, partly, mount):
+        location.mkdir()
+    (linked / linux_vm.FORGET_SET).symlink_to(tmp_path / "outside")
+    linux_vm.forget_set(partly)
+    target = tmp_path / "secret"
+    target.write_text("keep", encoding="utf-8")
+    (partly / linux_vm.FORGET_SET / "05").unlink()
+    (partly / linux_vm.FORGET_SET / "05").symlink_to(target)
+    notes = linux_vm.retire_forget_sets([linked, partly], [])
+    assert all(decoy.exists() for decoy in outside)
+    assert (linked / linux_vm.FORGET_SET).is_symlink()
+    assert target.read_text(encoding="utf-8") == "keep"
+    # The set's own files went; the planted entry and its directory stay.
+    assert os.listdir(partly / linux_vm.FORGET_SET) == ["05"]
+    assert notes[0].startswith(f"  kept {linked / linux_vm.FORGET_SET}: not a")
+    assert notes[1].startswith(f"  kept {partly / linux_vm.FORGET_SET}: ")
+    # A guest-written forget file is not the set's own either, nor an empty
+    # entry of another type (a symbolic link's size is never 0; a FIFO's
+    # is), nor an empty regular file under a name the set does not use.
+    linux_vm.forget_set(mount)
+    (mount / linux_vm.FORGET_SET / "07").write_text("guest data", encoding="utf-8")
+    (mount / linux_vm.FORGET_SET / "08").unlink()
+    os.mkfifo(mount / linux_vm.FORGET_SET / "08")
+    for foreign in ("64", "notes"):
+        (mount / linux_vm.FORGET_SET / foreign).write_text("", encoding="utf-8")
+    linux_vm.retire_forget_sets([mount], [])
+    assert sorted(os.listdir(mount / linux_vm.FORGET_SET)) == [
+        "07",
+        "08",
+        "64",
+        "notes",
+    ]
+    # Creation: a linked set fails, and creates nothing through the link.
+    for decoy in outside[1:]:
+        decoy.unlink()
+    with pytest.raises(OSError):
+        linux_vm.forget_set(linked)
+    assert os.listdir(tmp_path / "outside") == ["00"]
+
+
+def test_a_release_reports_a_linked_forget_set_as_a_mount_error(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    linux, x86, custody = two_vms(definitions, tmp_path)
+    _decoys(tmp_path / "outside")
+    (custody / linux_vm.FORGET_SET).symlink_to(tmp_path / "outside")
+    host = FakeHost([linux, x86])
+    [result] = linux_vm.release(host, linux_vm.list_instances(host, ["molt-x86"]))
+    assert result.error == "no mount has a forget set"
+    assert str(custody) in result.mount_errors[0]
+    assert sorted(os.listdir(tmp_path / "outside")) == ["00", "01", "63"]
 
 
 # --------------------------------------------------------------------------
@@ -2117,6 +2694,77 @@ def test_a_service_launch_ends_only_its_command_at_the_deadline() -> None:
     assert not pid_alive(int(completed.stdout.split()[0]))
     missing = host.start_service(["/nonexistent/limactl", "start"], timeout=5.0)
     assert missing.returncode == 127 and "cannot run" in missing.stderr
+
+
+def test_at_the_deadline_the_services_the_command_started_survive(
+    tmp_path: Path,
+) -> None:
+    """C-7: the deadline ends `limactl` alone, never the hostagent it started.
+
+    The command starts two services, one in its own process group (as Lima
+    starts its hostagent) and one in the command's group, prints their
+    pids, and hangs past the deadline. The kernel is the oracle: the command
+    is gone and both services live on. A deadline that ended the command's
+    group or tree would end one or both.
+    """
+    stop = tmp_path / "stop"
+    loop = f"while [ ! -e {shlex.quote(str(stop))} ]; do sleep 0.05; done"
+    script = (
+        "import subprocess, sys, time\n"
+        f"own = subprocess.Popen(['sh', '-c', {loop!r}], process_group=0)\n"
+        f"shared = subprocess.Popen(['sh', '-c', {loop!r}])\n"
+        "print(own.pid, shared.pid, flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    services: list[int] = []
+    try:
+        completed = linux_vm.LocalHost(os.environ).start_service(
+            [sys.executable, "-c", script], timeout=2.0
+        )
+        services = [int(word) for word in completed.stdout.split()]
+        assert completed.returncode == 124, completed.stderr
+        assert len(services) == 2, completed.stdout
+        assert all(pid_alive(pid) for pid in services), "the services outlive it"
+    finally:
+        stop.touch()
+    deadline = time.monotonic() + 10.0
+    while any(pid_alive(pid) for pid in services) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not any(pid_alive(pid) for pid in services)
+
+
+def test_a_service_inherits_nothing_a_guard_retires(tmp_path: Path) -> None:
+    """C-1: what a persistent daemon never inherits (environment_registry).
+
+    The real launch's child prints its environment: the guard's token,
+    marker and scratch root, and a temporary directory inside that scratch,
+    are gone; every other variable stays.
+    """
+    scratch = tmp_path / "scratch"
+    (scratch / "t").mkdir(parents=True)
+    host = linux_vm.LocalHost(
+        {
+            "PATH": os.environ["PATH"],
+            "MOLT_MEMORY_GUARD_TOKEN": "a" * 32,
+            "MOLT_MEMORY_GUARD_MARKER": str(tmp_path / "guard-1.json"),
+            "MOLT_GUARD_SCRATCH_ROOT": str(scratch),
+            "TMPDIR": str(scratch / "t"),
+            "TEMP": str(tmp_path),
+            "LIMA_HOME": str(tmp_path / "lima"),
+        }
+    )
+    completed = host.start_service(["env"], timeout=30.0)
+    assert completed.returncode == 0, completed.stderr
+    names = {line.partition("=")[0] for line in completed.stdout.splitlines()}
+    assert not names & {
+        "MOLT_MEMORY_GUARD_TOKEN",
+        "MOLT_MEMORY_GUARD_MARKER",
+        "MOLT_GUARD_SCRATCH_ROOT",
+        "TMPDIR",
+    }
+    assert {"PATH", "TEMP", "LIMA_HOME"} <= names
+    # The host's own environment is unchanged; only the launch drops them.
+    assert host.environment["MOLT_MEMORY_GUARD_TOKEN"] == "a" * 32
 
 
 # --------------------------------------------------------------------------

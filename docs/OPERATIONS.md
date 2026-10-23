@@ -626,6 +626,20 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   flushes (20 ms median each on the build volume), so parallel compiles ran one
   at a time. `CompilationCacheStats.telemetry` counts hits, writes, reuses,
   quarantines, trims and evictions.
+- **Backend TIR cache root**: molt resolves the cache root once
+  (`molt.default_paths`) and passes it, absolute, to every backend process as
+  `MOLT_CACHE` (`molt.backend_environment.backend_process_environment`); the
+  JIT runner takes it from its image. The process-scoped `cache` group of
+  `src/molt/backend_environment.json` holds the root and the TIR and daemon
+  cache limits, so a daemon serves only builds that share them. A backend
+  started without `MOLT_CACHE` (a Rust test, a direct run) keeps no
+  persistent TIR cache. It no longer falls back to `.molt_cache` in its current
+  directory, which for a daemon was the compiler checkout (HF-443). Each TIR
+  cache writes `CACHEDIR.TAG` into its own directory when it first creates it
+  (a write or a trim), without replacing a tag already there, so backup tools
+  and lane retirement treat it as regenerable; the Molt cache root
+  is never tagged, since it also holds durable state (`home/`: installed tools
+  and `MOLT_BIN`).
 - **One-shot backend stdin limit**: non-daemon backend IR reads from stdin are
   bounded by `MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES` and default to the same
   512 MiB ceiling as daemon requests. Msgpack and NDJSON stdin paths stream
@@ -846,8 +860,13 @@ python3 tools/linux_vm.py apply molt-linux --confirm-restart
   only that host-owned namespace, so a guest branch is never moved. With
   `--checkout` it checks the exact commit out, detached, but refuses while the
   clone has changes (untracked files too), a Git command holds its index, or
-  any guest process works in the clone; without it, it prints the checkout
-  command. For a writable tree,
+  a guest process has its working directory or an open file in the clone
+  (read as root, so the guest needs Lima's passwordless sudo; a listing that
+  lacks root's view fails the checkout); without it, it
+  prints the checkout command. The check does not see a process that names
+  the clone only by path between file accesses (`git -C`, `cargo
+  --manifest-path`), or one that starts between the check and the checkout:
+  on a shared VM, check by hand. For a writable tree,
   `git -C ~/molt-main archive host/head | tar -x -C /tmp/<x>` in the guest.
   Copy a single file with `limactl copy <file> <vm>:/tmp/`. A guest cannot
   fetch from a host path: nothing is mounted, and the clones' `origin`
@@ -862,18 +881,23 @@ python3 tools/linux_vm.py apply molt-linux --confirm-restart
   leave behind (those, a guest process holds open). `check` shows what each
   mounting VM holds. `release` never stops a VM. It keeps
   `<mount>/.molt-linux-vm-forget/` (64 empty files) under each mount while a
-  VM mounts it; `apply` removes the sets of the mounts it ends. A mount whose
-  set cannot be written is reported, and the others still release.
+  VM mounts it; `apply` removes the sets of the mounts it ends, only their
+  own empty files. Neither follows a link a guest planted there. A mount
+  whose set cannot be written, or is a link, is reported, and the others
+  still release.
 - **Apply.** `apply` restarts the VM. It starts the VM as a service launch,
   so Lima's hostagent outlives `limactl start` (HF-471), and it succeeds only
-  when Lima then lists the VM as running; otherwise it restores the replaced
-  config and restarts the VM on it. Run it from a plain shell: a memory guard
-  around `apply` itself would see the hostagent as its descendant too. It refuses
-  while the guest is busy: a process of the guest user, or any process in a
-  login session (`sudo` work too), whose executable is not one of the
-  definition's idle executables (read as root, so the guest needs Lima's
-  passwordless sudo); a process under the user's subordinate ids (a container
-  user) or a containerd shim (a running container); or `apt`, `dpkg` or
+  when Lima then lists the VM as running; otherwise, or when that listing
+  fails and the hostagent is dead, it restores the replaced config and
+  restarts the VM on it. Run it from a plain shell: under a live Molt memory
+  guard (any checkout's, also one inside a tool such as `guarded_exec.py`)
+  it refuses to restart a running VM, because the guard would close the
+  hostagent too. The hostagent inherits no guard token, marker or scratch. It refuses while the guest is busy: a process of
+  the guest user, or any process in a login session (`sudo` work too), whose
+  executable is not one of the definition's idle executables (read as root,
+  so the guest needs Lima's passwordless sudo, and the refusal says so); a
+  process under the user's subordinate ids (a container user) or a
+  containerd shim (a running container); or `apt`, `dpkg` or
   `cloud-init`. It does not see root work outside a login session (a
   `systemd-run` unit, a cron job) or an idle executable a user runs by hand,
   and a session that starts after its probe is stopped with the VM, so check
