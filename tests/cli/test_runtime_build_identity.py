@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.runtime_wasm_build_support import runtime_reloc_publication_action
+
 from molt.process_environment import ProcessEnvironmentBuilder
 
 import os
@@ -32,6 +34,7 @@ from tests.process_guard_common import current_thread_only, install_module_view
 from tests.executable_test_support import native_executable_donor
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    publication_executor,
     clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
 )
@@ -220,21 +223,25 @@ def _resolve(
                     "shared",
                     *((("-C", f"link-arg=@{response_path}")) if response_path else ()),
                 ),
-                publication_transform=(
-                    publication if kind == "shared" else "strip-final-link-metadata-v1"
+                publication=schema.RuntimePublicationAction(
+                    schema.RuntimePublicationTransform.SHARED,
+                    publication == "unstripped-debug-v1",
+                    identity.capture_runtime_publication_executor(
+                        root, schema.RuntimePublicationTransform.SHARED
+                    ),
                 ),
-                preserve_debug=False,
                 link_args=("--export=shared",),
             ),
             schema.RuntimeBuildMemberPlan(
                 kind="reloc",
                 resolved_rustflags=("-C", "panic=abort", "--cfg", "reloc"),
-                publication_transform=(
-                    publication
-                    if kind == "reloc"
-                    else "relocatable-wasm-byte-identity-v1"
+                publication=runtime_reloc_publication_action(
+                    ("-C", "link-arg=--export=reloc"),
+                    module_name="molt_runtime_reloc.wasm",
+                    executor=identity.capture_runtime_publication_executor(
+                        root, schema.RuntimePublicationTransform.RELOC
+                    ),
                 ),
-                preserve_debug=False,
                 link_args=("--export=reloc",),
             ),
         ),
@@ -292,13 +299,13 @@ def identity_root(
     source = tmp_path / "runtime" / "src"
     source.mkdir(parents=True)
     (source / "lib.rs").write_text("pub fn runtime() {}\n", encoding="utf-8")
+    for transform in schema.RuntimePublicationTransform:
+        for relative in schema.runtime_publication_executor_paths(transform):
+            executor = tmp_path / relative
+            executor.parent.mkdir(parents=True, exist_ok=True)
+            executor.write_text("# publication executor fixture\n")
     tooling = tmp_path / "runtime-planner.py"
     tooling.write_text("# runtime planning authority\n", encoding="utf-8")
-    monkeypatch.setattr(
-        identity,
-        "runtime_build_tooling_paths",
-        lambda root: (root / "runtime-planner.py",),
-    )
     archive_root = tmp_path / "archives"
     archive_root.mkdir()
     (archive_root / "libcompiler_builtins.rlib").write_bytes(b"rust compiler builtins")
@@ -312,8 +319,8 @@ def identity_root(
     )
     monkeypatch.setattr(
         identity,
-        "_cargo_crate_source_closure",
-        lambda *, project_root, **_kwargs: (project_root / "runtime" / "src",),
+        "wasm_cpython_abi_source_paths",
+        lambda project_root: (project_root / "runtime" / "src",),
     )
     monkeypatch.setattr(
         cargo_plans.RuntimeCargoPlan,
@@ -335,7 +342,7 @@ def identity_root(
 
 
 @pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
-def test_resolvers_own_one_source_and_tooling_observation_per_call(
+def test_resolvers_own_one_source_observation_per_call(
     identity_root: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     observations: list[tuple[str, ...]] = []
@@ -353,23 +360,20 @@ def test_resolvers_own_one_source_and_tooling_observation_per_call(
         return _resolve(identity_root, kind=kind, publication="tree-observation")
 
     before = resolve()
-    assert observations == [
-        ("source/runtime/src", "runtime-tooling/runtime-planner.py")
-    ]
+    assert observations == [("source/runtime/src",)]
     # A separate live admission must see files introduced after the first one.
     (identity_root / "runtime/src/new.rs").write_bytes(b"new source input")
     after_source = resolve()
     assert len(observations) == 2
     assert before.compile_digest != after_source.compile_digest
     assert (
-        before.payload["family"]["publication_authority"]
-        == after_source.payload["family"]["publication_authority"]
+        before.payload["family"]["members"] == after_source.payload["family"]["members"]
     )
     (identity_root / "runtime-planner.py").write_bytes(b"new publication input")
     after_tooling = resolve()
     assert len(observations) == 3
     assert after_source.compile_digest == after_tooling.compile_digest
-    assert after_source.family_digest != after_tooling.family_digest
+    assert after_source == after_tooling
     assert observations == [observations[0]] * 3
 
 
@@ -545,7 +549,7 @@ def test_dependency_profile_fields_invalidate_compile_and_member_identity(
     assert len({item.digest for item in identities}) == 3
 
 
-def test_publication_authority_content_is_family_identity_input(
+def test_unconsumed_planner_edit_preserves_complete_product_identity(
     identity_root: Path,
 ) -> None:
     before = _resolve(
@@ -563,8 +567,8 @@ def test_publication_authority_content_is_family_identity_input(
     )
 
     assert before.compile_digest == after.compile_digest
-    assert before.family_digest != after.family_digest
-    assert before.digest != after.digest
+    assert before.family_digest == after.family_digest
+    assert before.digest == after.digest
 
 
 def test_exact_producer_artifact_selection_is_family_identity_input(
@@ -611,7 +615,7 @@ def test_identity_json_objects_reject_non_string_key_aliasing() -> None:
     with pytest.raises(ValueError, match="incomplete"):
         schema.RuntimeBuildIdentity.from_dict(
             {
-                "schema": "molt.runtime-build-member-identity.v4",
+                "schema": "molt.runtime-build-member-identity.v5",
                 "digest": "0" * 64,
                 "compile_digest": "0" * 64,
                 "family_digest": "0" * 64,
@@ -681,13 +685,15 @@ def test_identity_rejects_digest_valid_shape_and_type_drift(
         schema.RuntimeBuildIdentity.from_dict(compile_extra)
 
     member_type = json.loads(json.dumps(baseline))
-    member_type["payload"]["family"]["members"]["shared"]["preserve_debug"] = 1
+    member_type["payload"]["family"]["members"]["shared"]["publication"][
+        "preserve_debug"
+    ] = 1
     _reseal_runtime_build_identity(member_type)
-    with pytest.raises(ValueError, match="member shape"):
+    with pytest.raises(ValueError, match="publication|member shape"):
         schema.RuntimeBuildIdentity.from_dict(member_type)
 
     direct_payload = member_type["payload"]
-    with pytest.raises(ValueError, match="member shape"):
+    with pytest.raises(ValueError, match="publication|member shape"):
         schema.RuntimeBuildIdentity(
             digest=member_type["digest"],
             compile_digest=member_type["compile_digest"],
@@ -697,77 +703,22 @@ def test_identity_rejects_digest_valid_shape_and_type_drift(
 
 
 @pytest.mark.parametrize(
-    "owned_relative",
+    "relative",
     [
-        "src/molt/cli/cargo_build_reads.py",
-        "src/molt/process_environment.py",
+        "src/molt/dx.py",
+        "src/molt/cli/runtime_build_identity.py",
+        "src/molt/cli/runtime_wasm_build_spec.py",
         "src/molt/file_publication.py",
-        "src/molt/package_import_custody.py",
-        "src/molt/python_identity_common.py",
     ],
 )
-def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
-    tmp_path: Path,
-    owned_relative: str,
-) -> None:
-    authority_paths = {
-        path.relative_to(tmp_path).as_posix()
-        for path in identity.runtime_build_tooling_paths(tmp_path)
-    }
-    assert "pyproject.toml" in authority_paths
-    assert "uv.lock" not in authority_paths
-    assert "src/molt/python_runtime_admission.py" not in authority_paths
-    assert "src/molt/cli/runtime_build_python.py" not in authority_paths
-    assert "src/molt/cli/cargo_command.py" in authority_paths
-    assert "src/molt/cli/cargo_build_reads.py" in authority_paths
-    assert "src/molt/pyproject.toml" not in authority_paths
-    for relative in authority_paths:
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# {relative}\n", encoding="utf-8")
-    unrelated = [
-        tmp_path / relative
-        for relative in (
-            "src/molt/cli/frontend_pipeline.py",
-            "src/molt/python_environment_identity.py",
-            "src/sitecustomize.py",
-        )
-    ]
-    for path in unrelated:
-        assert path.relative_to(tmp_path).as_posix() not in authority_paths
-        path.write_text("# unrelated 1\n", encoding="utf-8")
-    _, before = identity._capture_runtime_build_trees(tmp_path, ())
-    for path in unrelated:
-        path.write_text("# unrelated 2\n", encoding="utf-8")
-    _, after_unrelated = identity._capture_runtime_build_trees(tmp_path, ())
-    assert "src/molt/rust_toolchain.py" in authority_paths
-    assert owned_relative in authority_paths
-    owned = tmp_path / owned_relative
-    owned.write_text("# runtime authority changed\n", encoding="utf-8")
-    _, after_owned = identity._capture_runtime_build_trees(tmp_path, ())
-
-    assert before["schema"] == "molt.runtime-build-tooling-authority.v2"
-    assert before["file_count"] == len(authority_paths)
-    assert after_unrelated == before
-    assert after_owned["digest"] != before["digest"]
-
-
-def test_runtime_tooling_source_projection_is_independent_of_install_layout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "compiler-source"
-    expected = identity.runtime_build_tooling_paths(source)
-    package = tmp_path / "environment/Lib/site-packages/molt"
-    monkeypatch.setattr(
-        identity, "__file__", str(package / "cli/runtime_build_identity.py")
-    )
-    assert identity.runtime_build_tooling_paths(source) == expected
-    assert source / "src/molt/rust_toolchain.py" in expected
-    assert source / "src/molt/cli/cargo_build_reads.py" in expected
-    assert source / "src/molt/python_environment_identity.py" not in expected
-    assert source / "src/sitecustomize.py" not in expected
-    assert source / "pyproject.toml" in expected
-    assert source / "src/molt/file_publication.py" in expected
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc"])
+def test_tooling_source_is_not_a_product_input(identity_root, relative, kind):
+    before = _resolve(identity_root, kind=kind, publication="stable")
+    path = identity_root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# unrelated implementation edit\n")
+    after = _resolve(identity_root, kind=kind, publication="stable")
+    assert before == after
 
 
 def test_native_cpu_policy_splits_the_native_runtime_identity(
@@ -1130,8 +1081,11 @@ def test_identity_records_flag_tokens_exactly() -> None:
             kind="shared",
             resolved_rustflags="-C panic=abort",  # type: ignore[arg-type]
             link_args=(),
-            publication_transform="shared-runtime-publication-v3",
-            preserve_debug=False,
+            publication=schema.RuntimePublicationAction(
+                schema.RuntimePublicationTransform.SHARED,
+                False,
+                publication_executor(schema.RuntimePublicationTransform.SHARED),
+            ),
         )
 
 
@@ -2428,3 +2382,150 @@ def test_retired_rust_python_sidecar_epochs_are_rejected(
         _reseal_runtime_build_identity(value)
     with pytest.raises(ValueError, match="schema|family shape"):
         schema.RuntimeBuildIdentity.from_dict(value)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["order", "flag", "exports", "module-name", "missing", "duplicate"]
+)
+def test_publication_action_covers_link_semantics_and_rejects_incomplete_inputs(
+    mutation,
+):
+    action = runtime_reloc_publication_action(
+        ("-C", "link-arg=--export=molt_add"),
+        module_name="molt_runtime_reloc.wasm",
+        executor=publication_executor(schema.RuntimePublicationTransform.RELOC),
+    )
+    command = list(action.link_command)
+    if mutation == "missing":
+        command.remove(schema.RuntimePublicationInput.LIBC)
+    elif mutation == "duplicate":
+        command.append(schema.RuntimePublicationInput.STATICLIB)
+    elif mutation == "order":
+        a, b = (
+            command.index(schema.RuntimePublicationInput.LIBC),
+            command.index(schema.RuntimePublicationInput.COMPILER_RT),
+        )
+        command[a], command[b] = command[b], command[a]
+    elif mutation == "flag":
+        command[0] = "--relocatable"
+    elif mutation == "module-name":
+        command[command.index("--soname=molt_runtime_reloc.wasm")] = (
+            "--soname=other.wasm"
+        )
+    if mutation in {"missing", "duplicate"}:
+        with pytest.raises(ValueError, match="incomplete"):
+            replace(action, link_command=tuple(command))
+        return
+    changed = replace(
+        action,
+        link_command=tuple(command),
+        link_exports=("--export=molt_other",)
+        if mutation == "exports"
+        else action.link_exports,
+    )
+    assert canonical_json_sha256(action.to_dict()) != canonical_json_sha256(
+        changed.to_dict()
+    )
+    assert schema.RuntimePublicationAction.from_dict(changed.to_dict()) == changed
+    from tests.runtime_build_identity_helper import runtime_build_identity
+
+    baseline = runtime_build_identity("reloc")
+
+    def with_action(selected):
+        wire = baseline.to_dict()
+        wire["payload"]["family"]["members"]["reloc"]["publication"] = (
+            selected.to_dict()
+        )
+        _reseal_runtime_build_identity(wire)
+        return schema.RuntimeBuildIdentity.from_dict(wire)
+
+    before, after = with_action(action), with_action(changed)
+    assert before.compile_digest == after.compile_digest
+    assert before.family_digest != after.family_digest
+    assert (
+        schema.runtime_build_fingerprint(before)["hash"]
+        != schema.runtime_build_fingerprint(after)["hash"]
+    )
+
+
+@pytest.mark.parametrize("coordinate", ["member", "family"])
+def test_pre_action_runtime_identity_epoch_is_rejected(coordinate):
+    from tests.runtime_build_identity_helper import runtime_build_identity
+
+    wire = runtime_build_identity("shared").to_dict()
+    if coordinate == "member":
+        wire["schema"] = "molt.runtime-build-member-identity.v4"
+    else:
+        wire["payload"]["family"]["schema"] = "molt.runtime-build-family.v4"
+        _reseal_runtime_build_identity(wire)
+    with pytest.raises(ValueError, match="schema|family shape"):
+        schema.RuntimeBuildIdentity.from_dict(wire)
+
+
+@pytest.mark.parametrize(
+    "kind,relative",
+    [
+        ("native", "src/molt/cli/native_link_manifest.py"),
+        ("native", "src/molt/cli/native_link_custody.py"),
+        ("native", "src/molt/native_target_shape.py"),
+        ("shared", "src/molt/wasm_artifact.py"),
+        ("reloc", "src/molt/cli/wasm_link_args.py"),
+        ("reloc", "src/molt/cli/runtime_identity_schema.py"),
+    ],
+)
+def test_executor_edit_changes_publication_only_and_planner_edit_reuses(
+    identity_root, kind, relative
+):
+    before = _resolve(identity_root, kind=kind, publication="stable")
+    path = identity_root / relative
+    path.write_bytes(path.read_bytes() + b"# changed output algorithm\n")
+    after = _resolve(identity_root, kind=kind, publication="stable")
+    assert before.compile_digest == after.compile_digest
+    assert before.digest != after.digest
+    assert before.family_digest != after.family_digest
+    planner = identity_root / "src/molt/cli/runtime_wasm_build_spec.py"
+    planner.parent.mkdir(parents=True, exist_ok=True)
+    planner.write_text("# planner change with identical resolved action\n")
+    assert after == _resolve(identity_root, kind=kind, publication="stable")
+
+
+@pytest.mark.parametrize(
+    "mutation", ["absent", "null", "missing", "partial", "extra", "bad-digest"]
+)
+def test_publication_executor_receipt_rejects_incomplete_closure(mutation):
+    action = schema.RuntimePublicationAction(
+        schema.RuntimePublicationTransform.SHARED,
+        False,
+        publication_executor(schema.RuntimePublicationTransform.SHARED),
+    ).to_dict()
+    if mutation == "absent":
+        del action["executor"]
+    elif mutation == "null":
+        action["executor"] = None
+    else:
+        executor = action["executor"]
+        if mutation == "missing":
+            executor["missing"] = executor["roots"][:1]
+        elif mutation == "partial":
+            executor["roots"] = executor["roots"][:-1]
+            executor["file_count"] -= 1
+        elif mutation == "extra":
+            executor["roots"].append("unowned.py")
+            executor["file_count"] += 1
+        else:
+            executor["digest"] = "not-a-digest"
+    with pytest.raises(ValueError, match="publication|executor"):
+        schema.RuntimePublicationAction.from_dict(action)
+
+
+def test_copy_only_capi_has_no_python_executor(identity_root):
+    before = _resolve(identity_root, kind="cpython-abi", publication="stable")
+    (identity_root / "src/molt/wasm_artifact.py").write_text("# changed rewrite\n")
+    assert _resolve(identity_root, kind="cpython-abi", publication="stable") == before
+    action = schema.runtime_publication_action(before)
+    assert action.executor is None
+    with pytest.raises(ValueError, match="byte-preserving"):
+        replace(
+            action,
+            executor=publication_executor(schema.RuntimePublicationTransform.SHARED),
+        )

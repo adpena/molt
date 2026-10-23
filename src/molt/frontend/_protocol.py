@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.lowering.function_lifecycle import FrameRestoreScope
     from molt.compiler_analysis.python_function_kind import FunctionKind
+    from molt.compiler_analysis.native_support_slice import ModuleBodySelection
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.compiler_analysis.python_imports import ModuleImportContext
     from molt.compiler_analysis.python_imports import ModuleImportFlow
@@ -135,6 +136,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_annotation_items: list[tuple[str, ast.expr, int]]
     module_annotations: MoltValue | None
     module_annotations_conditional: Any
+    module_body_selection: ModuleBodySelection
     module_chunk_counter: Any
     module_chunk_globals: set[str]
     module_chunk_max_ops: Any
@@ -165,7 +167,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     mutated_classes: set[ClassId]
     native_callable_exports: dict[str, dict[str, Any]]
     native_python_exports: set[str]
-    native_support_function_roots: set[str] | None
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parameter_bindings: dict[str, str]
@@ -220,7 +221,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         known_func_kinds: dict[str, dict[str, str]] | None = ...,
         native_callable_exports: dict[str, dict[str, Any]] | None = ...,
         native_python_exports: set[str] | None = ...,
-        native_support_function_roots: set[str] | None = ...,
+        module_body_selection: ModuleBodySelection | None = ...,
         target_python: tuple[int, int] = ...,
         target_sys_platform: str | None = ...,
         module_chunking: bool = ...,
@@ -2208,8 +2209,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _named_callee_value(
         self, target_info: MoltValue, func_id: str, node: ast.Call
     ) -> MoltValue: ...
-
-    def _native_support_function_roots(self) -> frozenset[str]: ...
 
     def _new_async_internal_slot(self) -> int: ...
 

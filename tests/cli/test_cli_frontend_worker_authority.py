@@ -180,6 +180,107 @@ def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
     )
 
 
+@pytest.mark.parametrize("selection", [None, {"kind": "native_support", "roots": []}])
+def test_worker_refuses_missing_or_ambiguous_producer_before_source_read(selection):
+    # No path or source lease exists: selection must be admitted first.
+    with pytest.raises(ValueError, match="selection"):
+        frontend_worker._frontend_lower_module_worker({"body_selection": selection})
+
+
+@pytest.mark.parametrize("roots", [(), ("f",), ("f", "g")])
+def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
+    tmp_path, monkeypatch, isolated_molt_cache, roots
+):
+    from molt.cli.module_graph import _build_module_graph_metadata
+
+    monkeypatch.delenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", raising=False)
+    path = tmp_path / "app.py"
+    path.write_text(
+        "def f():\n    def child(): return 7\n    return child()\ndef g(): return 9\n",
+        encoding="utf-8",
+    )
+    lease = _ModuleSourceLease.path_backed(path)
+    deps = {"app": set()}
+    closures = {"app": frozenset({"app"})}
+    scoped = module_cache._build_scoped_lowering_inputs(
+        ("app",),
+        module_deps=deps,
+        module_dep_closures=closures,
+        known_modules={"app"},
+        known_func_defaults={},
+        known_func_kinds={},
+        pgo_hot_function_names=(),
+        type_facts=None,
+        native_support_function_roots_by_module={"app": roots},
+    )
+    context = _SerialFrontendLoweringContext(
+        syntax_error_modules={},
+        module_source_catalog=_ModuleSourceCatalog({"app": lease}),
+        generated_module_source_paths={},
+        project_root=tmp_path,
+        parse_codec="json",
+        type_hint_policy="ignore",
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"app"},
+        direct_call_modules={"app"},
+        stdlib_allowlist=set(),
+        known_func_defaults={},
+        known_func_kinds={},
+        native_callable_exports={},
+        native_python_exports=(),
+        module_deps=deps,
+        source_modules={"app"},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=(),
+        known_modules_sorted=("app",),
+        stdlib_allowlist_sorted=(),
+        pgo_hot_function_names_sorted=(),
+        module_dep_closures=closures,
+        scoped_lowering_inputs=scoped,
+        module_graph_metadata=_build_module_graph_metadata(
+            {"app": path},
+            generated_module_source_paths={},
+            entry_module="app",
+            entry_execution_kind="script",
+            namespace_module_names=set(),
+        ),
+        known_classes={},
+        frontend_phase_timeout=None,
+        target_python=TargetPythonVersion(3, 12, 0),
+        target_sys_platform=None,
+    )
+    cold = frontend_worker._lower_module_serial_with_context(
+        "app", path, lowering_context=context
+    )
+    expected = (
+        {"kind": "native_support", "roots": list(roots)}
+        if roots
+        else {"kind": "complete_source", "roots": []}
+    )
+    assert cold[4] is False
+    assert cold[0]["body_selection"] == expected
+    symbols = {function["name"] for function in cold[0]["functions"]}
+    assert {"app__f", "app__g"} & symbols == {
+        "app__" + name for name in (roots or ("f", "g"))
+    }
+
+    def forbidden_lowering(*args, **kwargs):
+        raise AssertionError("warm producer was lowered again")
+
+    monkeypatch.setattr(
+        frontend_worker, "_module_frontend_generator", forbidden_lowering
+    )
+    warm = frontend_worker._lower_module_serial_with_context(
+        "app", path, lowering_context=context
+    )
+    assert warm[4] is True
+    assert warm[0]["body_selection"] == expected
+    assert warm[0]["functions"] == cold[0]["functions"]
+
+
 @pytest.mark.parametrize("reader", ["serial", "worker", "syntax_stub"])
 def test_lowering_rejects_same_size_restored_mtime_generation(
     tmp_path: Path, reader: str
@@ -355,6 +456,8 @@ def _parser_error_signature(error: SyntaxError) -> tuple[object, ...]:
         b"# coding: latin-1\nvalue = 'caf\xe9' +\n",
         b"# coding: not-a-real-encoding\nvalue = 1\n",
         b"# coding: utf-8\nvalue = '\xff'\n",
+        b"\xef\xbb\xbfvalue = '\xff'\n",
+        b"# coding: utf-8\r\nvalue = '\xff'\r\n",
     ],
 )
 def test_module_syntax_error_keeps_native_class_args_and_spans(source) -> None:
@@ -375,7 +478,10 @@ def test_module_syntax_error_keeps_native_class_args_and_spans(source) -> None:
     assert isinstance(expression, MoltSyntaxError)
     args = tuple(ast.literal_eval(value) for value in expression.args)
     restored = type(original)(*args)
-    restored.print_file_and_line = ast.literal_eval(expression.print_file_and_line)
+    for name, value in zip(
+        expression.attribute_names, expression.attribute_values, strict=True
+    ):
+        setattr(restored, name, ast.literal_eval(value))
     with pytest.raises(type(original)) as transported:
         raise restored
     assert type(transported.value) is type(original)
@@ -409,7 +515,10 @@ def test_module_syntax_error_preserves_print_flag_and_missing_details() -> None:
     tree = frontend_worker._syntax_error_stub_ast(info)
     expression = tree.body[0].exc
     restored = SyntaxError(*(ast.literal_eval(arg) for arg in expression.args))
-    restored.print_file_and_line = ast.literal_eval(expression.print_file_and_line)
+    for name, value in zip(
+        expression.attribute_names, expression.attribute_values, strict=True
+    ):
+        setattr(restored, name, ast.literal_eval(value))
     assert _parser_error_signature(restored) == _parser_error_signature(original)
     gen = SimpleTIRGenerator(module_name="invalid_module")
     gen.visit(tree)
@@ -417,6 +526,66 @@ def test_module_syntax_error_preserves_print_flag_and_missing_details() -> None:
     assert any(
         op.kind == "SETATTR_GENERIC_OBJ" and op.args[1] == "print_file_and_line"
         for op in operations
+    )
+
+
+@pytest.mark.parametrize("exception_type", [SyntaxError, IndentationError, TabError])
+def test_parser_state_transport_keeps_attributes_independent_of_args(exception_type):
+    from molt.cli.frontend_pipeline import _syntax_error_info_from_exception
+
+    original = exception_type("original", ("args.py", 1, 2, "old text", 3, 4))
+    updates = {
+        "msg": "changed message",
+        "filename": "decoded-α.py",
+        "lineno": 17,
+        "offset": 9,
+        "text": "changed text",
+        "end_lineno": None,
+        "end_offset": None,
+        "print_file_and_line": 1,
+    }
+    for name, value in updates.items():
+        setattr(original, name, value)
+    # Pickling the transport tests process boundaries, not exception state:
+    # reconstructing the exception from args alone intentionally loses updates.
+    info = pickle.loads(pickle.dumps(_syntax_error_info_from_exception(original)))
+    assert info.args == ("original", ("args.py", 1, 2, "old text", 3, 4))
+    tree = frontend_worker._syntax_error_stub_ast(info)
+    expression = tree.body[0].exc
+    restored = exception_type(*(ast.literal_eval(arg) for arg in expression.args))
+    for name, value in zip(
+        expression.attribute_names, expression.attribute_values, strict=True
+    ):
+        setattr(restored, name, ast.literal_eval(value))
+    assert _parser_error_signature(restored) == _parser_error_signature(original)
+    assert set(expression.attribute_names) == set(updates)
+    gen = SimpleTIRGenerator(module_name="invalid_module")
+    gen.visit(tree)
+    stores = [
+        op.args[1]
+        for function in gen.funcs_map.values()
+        for op in function["ops"]
+        if op.kind == "SETATTR_GENERIC_OBJ"
+    ]
+    assert sorted(stores) == sorted(updates)
+
+
+@pytest.mark.parametrize(
+    "details", [None, ("input.py", 2, 3, "bad"), ("input.py", 2, 3, "bad", 4, 5)]
+)
+def test_parser_state_transport_emits_no_redundant_attribute_stores(details):
+    from molt.cli.frontend_pipeline import _syntax_error_info_from_exception
+
+    args = ("message",) if details is None else ("message", details)
+    original = SyntaxError(*args)
+    info = _syntax_error_info_from_exception(original)
+    assert info.attribute_overrides == ()
+    gen = SimpleTIRGenerator(module_name="invalid_module")
+    gen.visit(frontend_worker._syntax_error_stub_ast(info))
+    assert not any(
+        op.kind == "SETATTR_GENERIC_OBJ"
+        for function in gen.funcs_map.values()
+        for op in function["ops"]
     )
 
 

@@ -4609,7 +4609,8 @@
         "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [

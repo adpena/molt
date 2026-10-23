@@ -5,9 +5,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt._wasm_runtime_exports import (
-    wasm_split_runtime_export_rename_map,
-)
 from molt.cli.artifact_state import (
     _build_state_root,
 )
@@ -16,6 +13,12 @@ from molt.cli.atomic_io import (
 )
 from molt.cli.build_locks import _build_lock, BuildLockAcquisitionError
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.cli.runtime_identity_schema import (
+    RuntimeBuildIdentity,
+    RuntimePublicationAction,
+    RuntimePublicationTransform,
+    runtime_publication_action,
+)
 from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
@@ -66,6 +69,22 @@ class _RuntimeWasmMemberFinalizer:
     def target_build_state_root(self) -> Path:
         return _build_state_root(self.root)
 
+    def publication_action(self) -> RuntimePublicationAction:
+        if self.spec.fingerprint is None:
+            raise ValueError("runtime publication lost its selected identity")
+        identity = RuntimeBuildIdentity.from_dict(
+            self.spec.fingerprint.get("build_identity")
+        )
+        action = runtime_publication_action(identity)
+        expected = (
+            RuntimePublicationTransform.RELOC
+            if self.reloc
+            else RuntimePublicationTransform.SHARED
+        )
+        if action.transform is not expected:
+            raise ValueError("runtime publication selected another member action")
+        return action
+
     def finalize_publication(self) -> bool:
         # Relocatable objects retain every custom section until the final link.
         # Removing ``name``/debug sections shifts section ordinals while the
@@ -78,19 +97,12 @@ class _RuntimeWasmMemberFinalizer:
                 raise ValueError(
                     "runtime WASM publication requires its resolved Cargo plan"
                 )
-            preserve_debug = (
-                self.reloc
-                or self.spec.cargo_plan.preserve_debug_for_profile(
-                    self.spec.cargo_profile
-                )
-            )
+            action = self.publication_action()
             metrics = transform_wasm_publication_file(
                 self.runtime_wasm,
-                rename_map=(
-                    {} if self.reloc else wasm_split_runtime_export_rename_map(None)
-                ),
-                final_artifact=not self.reloc,
-                preserve_debug=preserve_debug,
+                rename_map=dict(action.export_renames),
+                final_artifact=action.transform is RuntimePublicationTransform.SHARED,
+                preserve_debug=action.preserve_debug,
             )
         except (OSError, ValueError) as exc:
             raise ValueError(
@@ -170,7 +182,7 @@ def _reuse_target_runtime_wasm(
             output_path=ctx.runtime_wasm,
             json_output=ctx.json_output,
             link_timeout=ctx.cargo_timeout,
-            export_link_args=ctx.spec.runtime_exports,
+            publication=ctx.publication_action(),
             cargo_plan=ctx.spec.cargo_plan,
         ):
             return False

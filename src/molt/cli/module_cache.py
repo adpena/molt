@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 from dataclasses import dataclass
 
 import ast
@@ -630,7 +632,9 @@ def _scoped_lowering_input_view(
         known_func_kinds=scoped_known_func_kinds,
         native_callable_exports=scoped_native_callable_exports,
         native_python_exports=scoped_native_python_exports,
-        native_support_function_roots=scoped_native_support_function_roots,
+        body_selection=ModuleBodySelection.from_requested_roots(
+            scoped_native_support_function_roots
+        ),
         pgo_hot_function_names=scoped_pgo_hot_function_names,
         type_facts=scoped_type_facts,
         known_modules_payload=list(scoped_known_modules),
@@ -642,12 +646,6 @@ def _scoped_lowering_input_view(
         ),
         native_python_exports_payload=list(scoped_native_python_exports),
         native_python_exports_set=frozenset(scoped_native_python_exports),
-        native_support_function_roots_payload=list(
-            scoped_native_support_function_roots
-        ),
-        native_support_function_roots_set=frozenset(
-            scoped_native_support_function_roots
-        ),
         pgo_hot_function_names_payload=list(scoped_pgo_hot_function_names),
         pgo_hot_function_names_set=frozenset(scoped_pgo_hot_function_names),
     )
@@ -762,10 +760,10 @@ def _frontend_lowering_cache_disabled() -> bool:
     }
 
 
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 12
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 13
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 9
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 10
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -786,7 +784,7 @@ def _module_analysis_record_key(
         module_name,
         package_kind,
         import_scan_mode,
-        repr(native_support_function_roots),
+        repr(ModuleBodySelection.from_requested_roots(native_support_function_roots)),
         "module-analysis",
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
@@ -814,8 +812,10 @@ def _validate_persisted_module_analysis_payload(
         or payload.get("compiler_fingerprint")
         != _frontend_semantic_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
-        or payload.get("native_support_function_roots")
-        != list(native_support_function_roots)
+        or payload.get("body_selection")
+        != ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload()
         or "imports" in payload
     ):
         return None
@@ -941,7 +941,9 @@ def _write_persisted_module_analysis(
         "module_name": module_name,
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
-        "native_support_function_roots": list(native_support_function_roots),
+        "body_selection": ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload(),
         "target_python": target_python.tag,
         "size": len(snapshot.content),
         "mtime_ns": stat.st_mtime_ns,
@@ -1196,7 +1198,7 @@ def _load_module_analysis(
             selected, _source_pruned = resolution_cache.native_support_view(
                 path,
                 tree,
-                native_support_function_roots,
+                ModuleBodySelection.from_requested_roots(native_support_function_roots),
                 ast_digest_admission=parsed.admission,
                 target_python=target_python,
             )
@@ -1346,7 +1348,6 @@ def _module_lowering_context_payload(
     scoped_known_func_kinds = scoped_inputs.known_func_kinds
     scoped_native_callable_exports = scoped_inputs.native_callable_exports
     scoped_native_python_exports = scoped_inputs.native_python_exports
-    scoped_native_support_function_roots = scoped_inputs.native_support_function_roots
     if scoped_known_classes is None:
         scoped_known_classes = _scoped_known_classes_view(
             module_name,
@@ -1361,7 +1362,7 @@ def _module_lowering_context_payload(
     return {
         # The context owns the captured bytes, not a later file stat/hash.
         # Inline text and raw path bytes are distinct source generations.
-        "version": 6,
+        "version": 7,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
@@ -1387,7 +1388,7 @@ def _module_lowering_context_payload(
         "known_func_kinds": scoped_known_func_kinds,
         "native_callable_exports": scoped_native_callable_exports,
         "native_python_exports": scoped_native_python_exports,
-        "native_support_function_roots": scoped_native_support_function_roots,
+        "body_selection": scoped_inputs.body_selection.payload(),
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
@@ -1635,6 +1636,7 @@ def _validate_persisted_module_lowering_payload(
     source_lease: _ModuleSourceLease,
     module_name: str,
     context_digest: str,
+    body_selection: ModuleBodySelection,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Admit schema/context, source custody and local reference closure."""
@@ -1644,6 +1646,14 @@ def _validate_persisted_module_lowering_payload(
         return None
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
+        return None
+    try:
+        if (
+            ModuleBodySelection.from_payload(raw_result.get("body_selection"))
+            != body_selection
+        ):
+            return None
+    except ValueError:
         return None
     raw_functions = raw_result.get("functions")
     if not isinstance(raw_functions, list):
@@ -1697,6 +1707,7 @@ def _read_persisted_module_lowering(
     source_lease: _ModuleSourceLease,
     module_name: str,
     context_digest: str,
+    body_selection: ModuleBodySelection,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     if _frontend_lowering_cache_disabled():
@@ -1725,6 +1736,14 @@ def _read_persisted_module_lowering(
     ):
         return None
     try:
+        if (
+            ModuleBodySelection.from_payload(raw_result.get("body_selection"))
+            != body_selection
+        ):
+            return None
+    except ValueError:
+        return None
+    try:
         functions, seeds = decode_function_records(view)
     except (ValueError, TypeError, RecursionError):
         return None
@@ -1735,6 +1754,7 @@ def _read_persisted_module_lowering(
         source_lease=source_lease,
         module_name=module_name,
         context_digest=context_digest,
+        body_selection=body_selection,
         known_modules=known_modules,
     )
     if result is not None:
@@ -1754,6 +1774,9 @@ def _write_persisted_module_lowering(
         return ()
     source_lease.validate_path(path)
     source_lease.validate()
+    # A producer must state which source body it lowered. Missing selection is
+    # not evidence of complete source and cannot be written as a current record.
+    ModuleBodySelection.from_payload(result.get("body_selection"))
     functions = result["functions"]
     metadata = {
         "version": _MODULE_LOWERING_CACHE_SCHEMA_VERSION,
@@ -1875,6 +1898,21 @@ def _load_cached_module_lowering_result(
         source_lease=source_lease,
         module_name=module_name,
         context_digest=context_digest,
+        body_selection=(
+            scoped_inputs.body_selection
+            if scoped_inputs is not None
+            else ModuleBodySelection.from_requested_roots(
+                scoped_lowering_inputs.native_support_function_roots_by_module[
+                    module_name
+                ]
+                if scoped_lowering_inputs is not None
+                and module_name
+                in scoped_lowering_inputs.native_support_function_roots_by_module
+                else _scoped_native_support_function_roots(
+                    module_name, native_support_function_roots_by_module
+                )
+            )
+        ),
         known_modules=known_modules,
     )
 
@@ -1967,9 +2005,7 @@ def _module_worker_payload(
         "known_func_kinds": scoped_inputs.known_func_kinds,
         "native_callable_exports": scoped_inputs.native_callable_exports_payload,
         "native_python_exports": scoped_inputs.native_python_exports_payload,
-        "native_support_function_roots": (
-            scoped_inputs.native_support_function_roots_payload
-        ),
+        "body_selection": scoped_inputs.body_selection.payload(),
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,

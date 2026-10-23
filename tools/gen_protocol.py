@@ -138,6 +138,7 @@ _TYPE_CHECKING_IMPORTS = {
     "StatefulLocalsLayout": "molt.frontend.sema.funcmeta",
     "FrameRestoreScope": "molt.frontend.lowering.function_lifecycle",
     "ModuleExecutionKind": "molt.compiler_analysis.python_imports",
+    "ModuleBodySelection": "molt.compiler_analysis.native_support_slice",
     "ModuleImportContext": "molt.compiler_analysis.python_imports",
     "ModuleImportFlow": "molt.compiler_analysis.python_imports",
     "PythonBindingIndex": "molt.compiler_analysis.python_binding_facts",

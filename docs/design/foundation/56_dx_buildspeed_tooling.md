@@ -854,16 +854,15 @@ tests that place their target in a temporary directory.
   sources by content and logical root and never by checkout path. A store miss
   builds once in the checkout's own target and publishes; every later build of
   the same inputs on the host reuses the entry with no Cargo build. "The same
-  inputs" is narrower than "unchanged Rust": the identity also covers the
-  toolchain content root, and the runtime's covers about 116 Python tooling
-  files (`runtime_build_tooling_paths`), so a lane that edits only, say,
-  `src/molt/dx.py` rebuilds the runtime cold, and a clone with its own toolchain root shares nothing
-  (one such clone's first build took 710.2 s with four Cargo runs, against the
-  330.8 s baseline). Measured after this change on the integrator Mac
-  (2026-10-21, another session and load than the baseline, so not a paired
-  comparison): a second clone of one commit and toolchain built
-  `examples/hello.py` in 39.4 s with no Cargo build; one 1.3 s Cargo probe and
-  three `rustc` version probes still ran.
+  inputs" includes the resolved Cargo action and its source/tool/resource closure,
+  plus each member's captured publication action and narrow actual byte/sidecar
+  executor content. Python planner source bytes do
+  not independently invalidate runtime products: a planner edit that changes the
+  resolved action changes its identity; an unrelated edit can reuse the archive.
+  See [runtime compilation and publication identity](../../spec/areas/tooling/0001-toolchains.md#runtime-compilation-and-publication-identity).
+  The historical broad tooling-source key caused runtime rebuilds after unrelated
+  tooling edits. The action migration retains product-byte admission and does not
+  by itself establish a measured warm-build latency improvement.
 - A variant inside an entry holds what one observed Cargo environment
   (`CargoEnvironmentInputs`) produced, named by its digest. A build-script
   variable can change bytes without changing the declared identity, so a

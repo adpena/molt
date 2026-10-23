@@ -21,6 +21,14 @@ def _assert_no_recursive_mutex_panic(stderr: str) -> None:
     assert "cannot recursively acquire mutex" not in stderr, stderr
 
 
+def test_wasm_imported_syntax_errors_keep_native_identity_and_payload(
+    tmp_path: Path,
+) -> None:
+    from tests.cli.test_cli_smoke import _assert_imported_syntax_error_payload
+
+    _assert_imported_syntax_error_payload(tmp_path, target="wasm")
+
+
 def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
     tmp_path: Path,
 ) -> None:

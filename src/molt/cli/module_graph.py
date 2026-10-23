@@ -596,15 +596,13 @@ def _extend_native_support_source_closure(
         previous.validate(module, support_paths[module])
         if (
             previous.source_sha256 is not None
-            and not previous.native_support_function_roots
+            and previous.body_selection.kind == "complete_source"
         ):
             # Captured ordinary source keeps its actual initialization and bodies.
             requested_roots[module] = ()
         elif roots_for_module:
             requested_roots[module] = tuple(
-                sorted(
-                    set(roots_for_module) | set(previous.native_support_function_roots)
-                )
+                sorted(set(roots_for_module) | set(previous.body_selection.roots))
             )
     slices = _native_support_source_slices(
         native_artifact_plan=native_artifact_plan,
@@ -1411,7 +1409,7 @@ def _finalize_runtime_import_closure(
         for name, path in owner_sources:
             source_authority = scan_authorities.get(name)
             native_roots = (
-                source_authority.native_support_function_roots
+                source_authority.body_selection.roots
                 if source_authority is not None
                 else ()
             )
@@ -1676,9 +1674,9 @@ def _materialize_import_plan(
     source_modules = frozenset(module_graph)
     native_artifact_modules = native_artifact_plan.native_module_names()
     native_support_function_roots_by_module = {
-        source.module_name: source.native_support_function_roots
+        source.module_name: source.body_selection.roots
         for source in final_scan_authority.sources
-        if source.native_support_function_roots
+        if source.body_selection.kind == "native_support"
     }
     known_modules = source_modules | native_artifact_modules
     stdlib_allowlist.update(stub_parents)

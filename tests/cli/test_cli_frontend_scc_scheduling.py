@@ -252,6 +252,7 @@ def test_a2_worker_applies_phase_timeout_per_module(tmp_path, monkeypatch) -> No
 
     def _payload(frontend_phase_timeout):
         return {
+            "body_selection": {"kind": "complete_source", "roots": []},
             "module_name": "slow_module",
             "module_path": str(module_path),
             "source_lease": _ModuleSourceLease.inline(

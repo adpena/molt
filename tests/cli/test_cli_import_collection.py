@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 from molt.cargo_execution_policy import cargo_profile_directory
 
 from molt import native_target
@@ -2008,7 +2010,7 @@ def test_materialize_import_plan_preserves_source_and_lowers_selected_native_sup
     assert compiled_path == support_path.resolve() == authority.source_path
     assert authority.source_sha256 == support_sha
     assert hashlib.sha256(compiled_path.read_bytes()).hexdigest() == support_sha
-    assert authority.native_support_function_roots == ("gaussian_filter",)
+    assert authority.body_selection.roots == ("gaussian_filter",)
     assert import_plan.native_support_function_roots_by_module[module] == (
         "gaussian_filter",
     )
@@ -2021,7 +2023,7 @@ def test_materialize_import_plan_preserves_source_and_lowers_selected_native_sup
         native_callable_exports=(
             import_plan.native_artifact_plan.native_callable_exports_by_qualified_name()
         ),
-        native_support_function_roots=set(authority.native_support_function_roots),
+        module_body_selection=authority.body_selection,
         target_python=prepared.target_python.feature_version,
     )
     generator.visit(
@@ -12087,7 +12089,7 @@ def test_malformed_cached_values_are_rejected_by_both_frontend_validators(
         "version": cli_module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
         "import_scan_mode": "full",
-        "native_support_function_roots": [],
+        "body_selection": {"kind": "complete_source", "roots": []},
         "size": len(snapshot.content),
         "source_sha256": snapshot.sha256,
         "func_defaults": {},
@@ -12115,24 +12117,34 @@ def test_malformed_cached_values_are_rejected_by_both_frontend_validators(
         "size": source_lease.source_size,
         "source_sha256": source_lease.source_sha256,
         "source_kind": source_lease.source_kind,
-        "result": {"functions": [], "function_metadata": {}},
+        "result": {
+            "body_selection": {"kind": "complete_source", "roots": []},
+            "functions": [],
+            "function_metadata": {},
+        },
     }
 
     def validate_lowering(payload):
         return cli_module_cache._validate_persisted_module_lowering_payload(
             payload,
             source,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=source_lease,
             module_name="pkg",
             context_digest=context_digest,
         )
 
-    assert validate_lowering(lowering) == {"functions": [], "function_metadata": {}}
+    assert validate_lowering(lowering) == {
+        "body_selection": {"kind": "complete_source", "roots": []},
+        "functions": [],
+        "function_metadata": {},
+    }
     assert (
         validate_lowering(
             dict(
                 lowering,
                 result={
+                    "body_selection": {"kind": "complete_source", "roots": []},
                     "functions": [],
                     "function_metadata": {},
                     "extra": malformed,
@@ -16125,7 +16137,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
                 "module_name": "pkg",
                 "is_package": False,
                 "import_scan_mode": "full",
-                "native_support_function_roots": [],
+                "body_selection": {"kind": "complete_source", "roots": []},
                 "target_python": TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION.tag,
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
@@ -16512,6 +16524,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     )
     assert context_digest is not None
     result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "function_metadata": {},
         "functions": [],
         "func_code_ids": {},
@@ -16531,6 +16544,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
 
     cached = cli_module_cache._read_persisted_module_lowering(
         module_path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         context_digest=context_digest,
@@ -16540,6 +16554,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
 
     miss = cli_module_cache._read_persisted_module_lowering(
         module_path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         context_digest="other",
@@ -16586,10 +16601,16 @@ def test_module_lowering_reuses_generated_source_across_output_paths(tmp_path):
         first,
         source_lease=cli_module_source._ModuleSourceLease.inline(first, source),
         context_digest=first_key,
-        result={"functions": [], "function_metadata": {}, "value": 42},
+        result={
+            "body_selection": {"kind": "complete_source", "roots": []},
+            "functions": [],
+            "function_metadata": {},
+            "value": 42,
+        },
     )
     loaded = cli_module_cache._read_persisted_module_lowering(
         second,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.inline(second, source),
         module_name="pkg",
         context_digest=second_key,
@@ -16608,6 +16629,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     )
     assert context_digest is not None
     result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "function_metadata": {},
         "functions": [
             {
@@ -16667,6 +16689,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     assert (
         cli_module_cache._read_persisted_module_lowering(
             module_path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
             module_name="pkg",
             context_digest=context_digest,
@@ -16766,6 +16789,7 @@ def test_persisted_module_lowering_tracks_source_content(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
@@ -16781,6 +16805,7 @@ def test_persisted_module_lowering_tracks_source_content(
     assert (
         cli_module_cache._read_persisted_module_lowering(
             module_path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
             module_name="pkg",
             context_digest=context_digest,
@@ -16804,6 +16829,7 @@ def test_persisted_module_lowering_decodes_once_per_hit(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
@@ -16824,6 +16850,7 @@ def test_persisted_module_lowering_decodes_once_per_hit(
     monkeypatch.setattr(cli_module_cache, "decode_lowering_record", observed_decode)
     first = cli_module_cache._read_persisted_module_lowering(
         module_path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         context_digest=context_digest,
@@ -16831,6 +16858,7 @@ def test_persisted_module_lowering_decodes_once_per_hit(
 
     second = cli_module_cache._read_persisted_module_lowering(
         module_path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         context_digest=context_digest,
@@ -16857,6 +16885,7 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [
                 {
@@ -16882,12 +16911,14 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
 
     first = cli_module_cache._read_persisted_module_lowering(
         module_path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         context_digest=context_digest,
     )
     second = cli_module_cache._read_persisted_module_lowering(
         module_path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         context_digest=context_digest,
@@ -16942,6 +16973,7 @@ def test_persisted_module_lowering_rejects_incomplete_parameter_declarations(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [
                 {
@@ -16962,6 +16994,7 @@ def test_persisted_module_lowering_rejects_incomplete_parameter_declarations(
 
     cached = cli_module_cache._read_persisted_module_lowering(
         module_path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         context_digest=context_digest,
@@ -17015,6 +17048,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         assert context_digest == "digest"
         assert known_modules == {"alpha"}
         return {
+            "body_selection": {"kind": "complete_source", "roots": []},
             "module": module_name,
             "kind": "cached",
             "functions": [],
@@ -17067,6 +17101,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     assert worker_payloads == []
     assert cached_results == {
         "alpha": {
+            "body_selection": {"kind": "complete_source", "roots": []},
             "module": "alpha",
             "kind": "cached",
             "functions": [],
@@ -17112,6 +17147,7 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         assert known_modules == {"alpha"}
         reads.append(module_name)
         return {
+            "body_selection": {"kind": "complete_source", "roots": []},
             "module": module_name,
             "kind": "cached",
             "functions": [],
@@ -17164,6 +17200,7 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
     assert worker_payloads == []
     assert cached_results == {
         "alpha": {
+            "body_selection": {"kind": "complete_source", "roots": []},
             "module": "alpha",
             "kind": "cached",
             "functions": [],
@@ -17232,6 +17269,7 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
@@ -17395,7 +17433,12 @@ def test_frontend_analysis_resolves_known_native_artifact_dependencies(
         module_graph=module_graph,
         scan_authority=_ModuleGraphScanAuthority(
             tuple(
-                _ModuleSourceScanAuthority(name, path, "full")
+                _ModuleSourceScanAuthority(
+                    name,
+                    path,
+                    "full",
+                    body_selection=ModuleBodySelection("complete_source"),
+                )
                 for name, path in module_graph.items()
             )
         ),
@@ -18281,6 +18324,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
     module_path.write_text("pass\n", encoding="utf-8")
     source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     scoped_inputs = cli_models._ScopedLoweringInputView(
+        body_selection=ModuleBodySelection("complete_source"),
         known_modules=("alpha", "main"),
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
         known_func_kinds={"main": {"run": "sync"}},
@@ -18333,6 +18377,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scoped_inputs = cli_models._ScopedLoweringInputView(
+        body_selection=ModuleBodySelection("complete_source"),
         known_modules=("alpha", "main"),
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
         known_func_kinds={"main": {"run": "sync"}},
@@ -18398,6 +18443,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [],
             "func_code_ids": {},
@@ -18441,6 +18487,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         pgo_hot_function_names=set(),
         context_digest=context_digest,
         scoped_inputs=cli_models._ScopedLoweringInputView(
+            body_selection=ModuleBodySelection("complete_source"),
             known_modules=("alpha",),
             known_func_defaults={},
             known_func_kinds={},
@@ -18469,6 +18516,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
         optimization_profile="dev",
         target_python=TARGET_PYTHON._parse_target_python_version("3.14"),
         scoped_inputs=cli_models._ScopedLoweringInputView(
+            body_selection=ModuleBodySelection("complete_source"),
             known_modules=("alpha", "main"),
             known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
             known_func_kinds={"main": {"run": "sync"}},
@@ -18521,6 +18569,7 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
         pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_inputs=cli_models._ScopedLoweringInputView(
+            body_selection=ModuleBodySelection("complete_source"),
             known_modules=("alpha", "main"),
             known_func_defaults={},
             known_func_kinds={},
@@ -18805,6 +18854,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main"})},
         scoped_inputs=cli_models._ScopedLoweringInputView(
+            body_selection=ModuleBodySelection("complete_source"),
             known_modules=("main",),
             known_func_defaults={},
             known_func_kinds={},
@@ -18836,6 +18886,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main"})},
         scoped_inputs=cli_models._ScopedLoweringInputView(
+            body_selection=ModuleBodySelection("complete_source"),
             known_modules=("main",),
             known_func_defaults={},
             known_func_kinds={},
@@ -19637,7 +19688,12 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
         module_graph=module_graph,
         scan_authority=_ModuleGraphScanAuthority(
             tuple(
-                _ModuleSourceScanAuthority(name, path, "full")
+                _ModuleSourceScanAuthority(
+                    name,
+                    path,
+                    "full",
+                    body_selection=ModuleBodySelection("complete_source"),
+                )
                 for name, path in module_graph.items()
             )
         ),
@@ -20674,7 +20730,7 @@ def test_native_support_source_slices_reuse_original_source_and_selected_view(
         support_slice.scan.authority.source_sha256
         == hashlib.sha256(source_path.read_bytes()).hexdigest()
     )
-    assert support_slice.scan.authority.native_support_function_roots == ("kept",)
+    assert support_slice.scan.authority.body_selection.roots == ("kept",)
     assert support_slice.imports == ("beta",)
 
 
@@ -20875,6 +20931,7 @@ def test_frontend_lower_module_worker_smoke(
         cli_frontend_worker, "_parse_source_for_target", parse_for_target
     )
     payload = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "module_name": "worker_module",
         "module_path": str(module_path),
         "source_lease": cli_module_source._ModuleSourceLease.inline(

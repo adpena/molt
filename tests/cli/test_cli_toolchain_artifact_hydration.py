@@ -468,6 +468,11 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     source = root / "runtime/molt-cpython-abi/src/lib.rs"
     source.parent.mkdir(parents=True)
     source.write_text("pub fn provider() {}\n", encoding="utf-8")
+    (source.parent.parent / "Cargo.toml").write_text(
+        '[package]\nname = "molt-lang-cpython-abi"\nversion = "0.1.0"\n'
+        'edition = "2024"\n[lib]\ncrate-type = ["staticlib"]\n',
+        encoding="utf-8",
+    )
     target_root = root / "target"
     profile_dir = cargo_profile_directory("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_cpython_abi_staticlib_path(
@@ -653,6 +658,11 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
     source = root / "runtime/molt-cpython-abi/src/lib.rs"
     source.parent.mkdir(parents=True)
     source.write_text("pub fn provider() {}\n", encoding="utf-8")
+    (source.parent.parent / "Cargo.toml").write_text(
+        '[package]\nname = "molt-lang-cpython-abi"\nversion = "0.1.0"\n'
+        'edition = "2024"\n[lib]\ncrate-type = ["staticlib"]\n',
+        encoding="utf-8",
+    )
     target_root = root / "target"
     evidence_root = root / "state"
     provider = target_root / "wasm32-wasip1" / "dev-fast" / "libmolt_cpython_abi.a"

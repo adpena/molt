@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 import warnings
 
@@ -193,7 +195,7 @@ def test_support_pruning_keeps_bool_phase_separate_from_source_diagnostics():
         target_python=(3, 14),
         module_name="support",
         known_modules={"support"},
-        native_support_function_roots={"kept"},
+        module_body_selection=ModuleBodySelection.from_requested_roots({"kept"}),
     )
     with warnings.catch_warnings(record=True) as observed:
         warnings.simplefilter("always", SyntaxWarning)

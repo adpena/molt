@@ -57,7 +57,6 @@ from molt.cli.runtime_artifact_selection import (
 )
 from molt.cli.runtime_build_identity import (
     resolve_native_runtime_build_identity,
-    runtime_build_tooling_paths,
 )
 from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.cli.runtime_identity_schema import (
@@ -1024,10 +1023,7 @@ def _publish_native_runtime_build(
         detail = uncovered_build_inputs(
             reads,
             plan.project_root,
-            (
-                *runtime_source_paths(plan.project_root, plan.fingerprint_features),
-                *runtime_build_tooling_paths(plan.project_root),
-            ),
+            (*runtime_source_paths(plan.project_root, plan.fingerprint_features),),
             identity="runtime",
         )
     except (OSError, CargoBuildReadsError, ValueError) as exc:

@@ -24,6 +24,7 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
 )
 from molt._wasm_runtime_exports import (
+    wasm_split_runtime_export_rename_map,
     wasm_cpython_abi_requested_data_export_names,
     wasm_cpython_abi_distribution_export_names,
     wasm_cpython_abi_requested_export_names,
@@ -49,11 +50,14 @@ from molt.cli.runtime_artifact_selection import (
 )
 from molt.cli.runtime_build_identity import (
     _tree_hash_worker_count,
+    capture_runtime_publication_executor,
     resolve_wasm_runtime_build_family_identities,
 )
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeBuildMemberPlan,
+    RuntimePublicationAction,
+    RuntimePublicationTransform,
 )
 from molt.cli.runtime_cargo_plan import (
     RuntimeCargoPlan,
@@ -75,6 +79,7 @@ from molt.cli.runtime_wasm_build_policy import (
     _runtime_wasm_incremental_target_root,
 )
 from molt.cli.runtime_wasm_build_support import (
+    runtime_reloc_publication_action,
     _cargo_cmd_with_json_artifact_messages,
     _wasm_runtime_codegen_flags,
 )
@@ -96,6 +101,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     Cargo plan and compile/member fingerprint projections.
     """
 
+    publication_name: str
     requested_cargo_profile: str
     cargo_profile: str
     profile_dir: str
@@ -213,15 +219,28 @@ def _resolved_runtime_wasm_family_identities(
                 kind="shared",
                 resolved_rustflags=shared_spec.fingerprint_rustflags,
                 link_args=shared_spec.link_flags,
-                publication_transform="shared-runtime-publication-v3",
-                preserve_debug=preserve_debug,
+                publication=RuntimePublicationAction(
+                    RuntimePublicationTransform.SHARED,
+                    preserve_debug,
+                    capture_runtime_publication_executor(
+                        root, RuntimePublicationTransform.SHARED
+                    ),
+                    export_renames=tuple(
+                        sorted(wasm_split_runtime_export_rename_map(None).items())
+                    ),
+                ),
             ),
             RuntimeBuildMemberPlan(
                 kind="reloc",
                 resolved_rustflags=reloc_spec.fingerprint_rustflags,
                 link_args=reloc_spec.link_flags,
-                publication_transform="relocatable-runtime-publication-v2",
-                preserve_debug=True,
+                publication=runtime_reloc_publication_action(
+                    reloc_spec.runtime_exports,
+                    module_name=reloc_spec.publication_name,
+                    executor=capture_runtime_publication_executor(
+                        root, RuntimePublicationTransform.RELOC
+                    ),
+                ),
             ),
         ),
         cargo_plan=shared_spec.cargo_plan,
@@ -441,6 +460,7 @@ def _compute_runtime_wasm_build_spec(
         target_root = _cargo_target_root(root)
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     return _RuntimeWasmBuildSpec(
+        publication_name=runtime_wasm.name,
         requested_cargo_profile=requested_cargo_profile,
         cargo_profile=cargo_profile,
         profile_dir=profile_dir,
