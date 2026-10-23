@@ -14,7 +14,6 @@ import shlex
 import shutil
 import sys
 import tempfile
-import time
 from dataclasses import replace
 from pathlib import Path
 from collections.abc import Mapping
@@ -59,7 +58,6 @@ from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _CROSS_MEMORY_GUARD_PREFIX,
     _DIFF_MEMORY_GUARD_PREFIX,
-    _run_completed_command,
 )
 from molt.cli.env_paths import _base_env
 from molt.cli.build_request import BuildProfile
@@ -392,13 +390,15 @@ def _run_script_cross(
                 json_output,
                 command="run",
             )
-        if not json_output:
+        if json_output:
+            data: dict[str, Any] = {"output": str(mlir_artifact), "executed": False}
+            if timing:
+                data["timing"] = {"build_s": t_build, "total_s": t_build}
+            _emit_json(_json_payload("run", "ok", data=data), json_output=True)
+        else:
             _success(f"MLIR output: {mlir_artifact}", file=sys.stderr)
-        if timing and not json_output:
-            print(
-                f"\n--- timing: build {t_build:.3f}s ---",
-                file=sys.stderr,
-            )
+            if timing:
+                print(f"\n--- timing: build {t_build:.3f}s ---", file=sys.stderr)
         return 0
     else:
         return _fail(
@@ -407,28 +407,17 @@ def _run_script_cross(
             command="run",
         )
 
-    if not json_output and verbose:
-        print(f"Running: {shlex.join(run_cmd)}", file=sys.stderr)
-
-    t_run_start = time.monotonic()
-    run_res = _run_completed_command(
+    return _run_program(
         run_cmd,
         env=env,
         cwd=project_root,
-        capture_output=False,
+        json_output=json_output,
+        verbose=verbose,
+        timing=timing,
+        build_duration_s=t_build,
+        start_receipt=None,
         memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
     )
-    t_run = getattr(run_res, "elapsed_s", None)
-    if t_run is None:
-        t_run = time.monotonic() - t_run_start
-
-    if timing and not json_output:
-        print(
-            f"\n--- timing: build {t_build:.3f}s | run {t_run:.3f}s | "
-            f"total {t_build + t_run:.3f}s ---",
-            file=sys.stderr,
-        )
-    return run_res.returncode
 
 
 def _deploy(
@@ -819,6 +808,7 @@ def _run_program(
     timing: bool,
     build_duration_s: float,
     start_receipt: Path | None,
+    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
 ) -> int:
     """Run a built program and report it.
 
@@ -832,7 +822,7 @@ def _run_program(
         cwd=cwd,
         verbose=verbose and not json_output,
         capture_output=json_output,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
+        memory_guard_prefix=memory_guard_prefix,
     )
     if start_receipt is not None and not jit_program_started(start_receipt):
         # As a failed AOT build reports its compiler's stderr (wrapper_build).
