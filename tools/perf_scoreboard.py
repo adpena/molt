@@ -279,12 +279,12 @@ _CODEX_EXCLUDE = "codex"  # never counted/killed (project policy)
 # two-part: (1) INNER-REPEAT — wrap the benchmark body in ``for _ in range(N)``
 # inside ONE process so launch amortizes (pyperf's inner_loops model); and
 # (2) SYMBOLICATE — build with MOLT_KEEP_SYMBOLS=1 so the linker keeps molt
-# user-fn / runtime symbol names (release default strips them via -Wl,-x -Wl,-S
-# + a post-link `strip -x`), letting /usr/bin/sample attribute to real
-# functions instead of ``???``.
+# user-fn / runtime symbol names (the release default strips them at link time
+# with -Wl,-x -Wl,-S, or with `strip -x` after a zig Mach-O link), letting
+# /usr/bin/sample attribute to real functions instead of ``???``.
 #
 # MOLT_KEEP_SYMBOLS=1 is molt's EXISTING diagnostic-only build env hatch
-# (src/molt/cli.py): it skips BOTH the link-time strip and the post-link strip,
+# (src/molt/cli/native_link_command.py): it sets the strip stage to NONE,
 # keeping local symbol names. It never changes default product output and adds
 # only a symbol table (the CODE is byte-identical to the stripped build, so the
 # profiling binary's TIMING is representative). We REUSE it rather than add a

@@ -101,11 +101,16 @@ def test_gnu_coff_linker_discovery_and_replay_custody_use_same_role(
         )
         == "lld"
     )
+    capabilities = native_link_capabilities(target=target, linker_hint="lld")
     plan = NativeLinkPlan(
         target=target,
-        capabilities=native_link_capabilities(target=target, linker_hint="lld"),
+        capabilities=capabilities,
         policy=native_link_policy(
-            target=target, profile="dev", keep_symbols=False, bolt_requested=False
+            target=target,
+            capabilities=capabilities,
+            profile="dev",
+            keep_symbols=False,
+            bolt_requested=False,
         ),
         command=(str(driver), "-fuse-ld=lld"),
         linker_hint="lld",
