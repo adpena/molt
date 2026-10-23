@@ -24,7 +24,7 @@ fn discard_itertools_class(py: &crate::PyToken<'_>, class: u64) -> u64 {
 /// The namespace owns the callables; there is no parallel method cache. The
 /// `__next__` callback is also the class's native next slot (CPython
 /// `tp_iternext`), so iteration calls it without a lookup or a bound method.
-/// Like CPython 3.12's itertools heap types, the class is immutable: its
+/// Like CPython's itertools heap types, the class is immutable: its
 /// `__next__` cannot diverge from that slot. The tee and groupby iterator
 /// classes are final, like CPython's `_tee` and `_grouper`.
 pub(crate) fn alloc_itertools_class(
@@ -383,7 +383,7 @@ mod tests {
                 );
                 dec_ref_bits(py, module);
             }
-            // CPython 3.12 itertools types are immutable heap types.
+            // CPython itertools types are immutable heap types.
             let key = attr_name_bits_from_bytes(py, b"__next__").unwrap();
             let count_class = unsafe { object_class_bits(obj_from_bits(count).as_ptr().unwrap()) };
             let _ = crate::molt_set_attr_name(count_class, key, int(0));
