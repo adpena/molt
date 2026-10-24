@@ -417,6 +417,7 @@ def _bundle_tree(root: Path) -> Path:
         "source/tools/script.py": b"#!/usr/bin/env python3\n",
         "source/src/molt/__init__.py": b"",
         "source/release-compiler-source.json": b"{}",
+        "source/data/comma,name.txt": b"legal portable wheel member name",
     }.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -491,6 +492,7 @@ def test_platform_wheel_carries_the_bundle_for_pip(tmp_path: Path) -> None:
             )
         )
         recorded = {row[0]: row[1:] for row in rows}
+        assert len(rows) == len(recorded)
         assert set(recorded) == set(files)
         for name, (digest, size) in recorded.items():
             if name.endswith("/RECORD"):

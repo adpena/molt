@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -27,6 +29,7 @@ def _source_wheel(path: Path, *, raw_root: Path) -> None:
         path,
         entries=(
             (extension_path, b"\x00asm-canonical"),
+            ('scipy/data/comma,quote".txt', b"retained data"),
             (
                 "extension_manifest.json",
                 json.dumps(manifest, sort_keys=True).encode() + b"\n",
@@ -36,11 +39,6 @@ def _source_wheel(path: Path, *, raw_root: Path) -> None:
         ),
         record_path="scipy-1.0.dist-info/RECORD",
     )
-
-
-def _record_line(path: str, data: bytes) -> str:
-    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode()
-    return f"{path},sha256={digest.rstrip('=')},{len(data)}"
 
 
 def test_staged_wheel_identity_comes_only_from_canonical_manifest(
@@ -90,12 +88,19 @@ def test_staged_wheel_identity_comes_only_from_canonical_manifest(
             info.filename for info in infos[:-1]
         ) + ["scipy-1.0.dist-info/RECORD"]
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in infos)
-        record_lines = wheel.read("scipy-1.0.dist-info/RECORD").decode().splitlines()
+        rows = list(
+            csv.reader(io.StringIO(wheel.read("scipy-1.0.dist-info/RECORD").decode()))
+        )
+        assert len(rows) == len(infos)
+        assert [row[0] for row in rows] == [info.filename for info in infos]
         assert wheel.read("_nd_image.molt.wasm") == b"\x00asm-canonical"
         assert "scipy/ndimage/_nd_image.molt.wasm" not in wheel.namelist()
-        for info in infos[:-1]:
-            assert _record_line(info.filename, wheel.read(info)) in record_lines
-        assert record_lines[-1] == "scipy-1.0.dist-info/RECORD,,"
+        for (name, digest, size), info in zip(rows[:-1], infos[:-1], strict=True):
+            payload = wheel.read(info)
+            expected = base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
+            assert digest == "sha256=" + expected.rstrip(b"=").decode("ascii")
+            assert int(size) == len(payload)
+        assert rows[-1] == ["scipy-1.0.dist-info/RECORD", "", ""]
 
 
 def test_staged_wheel_rejects_canonical_extension_member_collision(

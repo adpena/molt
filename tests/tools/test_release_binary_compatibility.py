@@ -7,7 +7,11 @@ fabricates tool output or compatibility receipts.
 
 from __future__ import annotations
 
+import base64
+import csv
+import hashlib
 import importlib.util
+import io
 from pathlib import Path
 import shutil
 import sys
@@ -16,6 +20,7 @@ import zipfile
 import pytest
 
 from molt.verified_subset import current_host_coordinate
+from molt.wheel_record import wheel_record_bytes
 from tools.release import binary_compatibility as compat
 from tools.release import release_model
 
@@ -67,6 +72,58 @@ def test_bundle_without_native_members_has_no_binary_evidence(tmp_path):
         )
 
 
+def test_audit_wheel_records_every_member_without_rereading(tmp_path, monkeypatch):
+    member = tmp_path / "native"
+    member.write_bytes(b"\x7fELF payload")
+    original = Path.read_bytes
+    reads = []
+
+    def read_once(path):
+        if path == member:
+            reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_once)
+    wheel = compat._write_audit_wheel(
+        {'bin/comma,quote"': member}, tmp_path, "linux_x86_64"
+    )
+    assert reads == [member]
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        record_path = "molt_binary_audit-0.dist-info/RECORD"
+        rows = list(csv.reader(io.StringIO(archive.read(record_path).decode("utf-8"))))
+        assert len(rows) == len(names) == len({row[0] for row in rows})
+        assert {row[0] for row in rows} == set(names)
+        assert rows[-1] == [record_path, "", ""]
+        assert "molt_binary_audit-0.dist-info/METADATA" in names
+        assert "molt_binary_audit-0.dist-info/WHEEL" in names
+        for name, digest, size in rows[:-1]:
+            payload = archive.read(name)
+            expected = base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
+            assert digest == "sha256=" + expected.rstrip(b"=").decode("ascii")
+            assert int(size) == len(payload)
+
+
+@pytest.mark.parametrize("duplicate", ["payload", "dist-info/RECORD"])
+def test_record_serializer_rejects_duplicate_or_self_member(duplicate):
+    rows = [("payload", hashlib.sha256(b"a").digest(), 1)]
+    rows.append((duplicate, hashlib.sha256(b"b").digest(), 1))
+    with pytest.raises(ValueError, match="duplicate wheel RECORD member"):
+        wheel_record_bytes(rows, record_path="dist-info/RECORD")
+
+
+def test_record_serializer_preserves_ordinary_member_bytes():
+    # Published SHA-256 of the empty byte string; normal paths retain the old
+    # LF-terminated wheel bytes while paths needing CSV escaping are quoted.
+    assert wheel_record_bytes(
+        [("empty.txt", hashlib.sha256(b"").digest(), 0)],
+        record_path="pkg.dist-info/RECORD",
+    ) == (
+        b"empty.txt,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0\n"
+        b"pkg.dist-info/RECORD,,\n"
+    )
+
+
 def _elf_needing(fragment: str) -> Path | None:
     """A real host executable whose dynamic section needs a non-policy library."""
     from auditwheel.lddtree import ldd
@@ -93,7 +150,9 @@ def _tree_with(tmp_path: Path, executable: Path) -> Path:
 
 @pytest.mark.skipif(not _LINUX, reason="auditwheel audits Linux ELF binaries")
 def test_linux_tag_is_derived_from_the_binaries_and_reaudits(tmp_path):
-    tree = _tree_with(tmp_path, Path(sys.executable).resolve())
+    # A relocated uv interpreter can lose its private libpython RUNPATH. This
+    # control needs a genuine system-linked ELF, not Python installation custody.
+    tree = _tree_with(tmp_path, Path("/usr/bin/true"))
     derived = compat.derive_bundle_wheel_compatibility(
         tree, platform="linux", arch=ARCH
     )
@@ -104,7 +163,7 @@ def test_linux_tag_is_derived_from_the_binaries_and_reaudits(tmp_path):
     with zipfile.ZipFile(wheel, "w") as archive:
         with zipfile.ZipFile(
             compat._write_audit_wheel(
-                {"bin/molt-backend": tree / "bin" / "molt-backend"},
+                {'bin/comma,quote"': tree / "bin" / "molt-backend"},
                 tmp_path,
                 derived.tag,
             )
@@ -129,7 +188,7 @@ def test_linux_external_library_closure_fails_with_evidence(tmp_path):
 
 @pytest.mark.skipif(not _LINUX, reason="auditwheel audits Linux ELF binaries")
 def test_linked_program_newer_than_the_claimed_floor_is_rejected(tmp_path):
-    executable = Path(sys.executable).resolve()
+    executable = Path("/usr/bin/true")
     derived = compat.audit_linked_executable(
         executable,
         platform="linux",
@@ -138,7 +197,7 @@ def test_linked_program_newer_than_the_claimed_floor_is_rejected(tmp_path):
     )
     older = f"manylinux_2_0_{ARCH}"
     if compat.tag_floor("linux", ARCH, derived.tag) <= (2, 0):
-        pytest.skip("host interpreter has no glibc floor above 2.0")
+        pytest.skip("host executable has no glibc floor above 2.0")
     with pytest.raises(compat.WheelCompatibilityError, match="newer than"):
         compat.audit_linked_executable(
             executable, platform="linux", arch=ARCH, claimed_tag=older
