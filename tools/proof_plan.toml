@@ -5546,6 +5546,7 @@ name = "performance-measurement"
 toolchains = ["python", "uv"]
 description = "Typed sample transport, deployment selection and complete benchmark artifact lifetimes."
 globs = [
+  "tools/git_identity.py",
   "tools/bench.py", "tools/bench_audit.py", "tools/bench_reporting.py",
   "tools/safe_run.py", "tools/cold_start_decompose.py", "tools/perf_scoreboard*.py",
   "src/molt/backend_executable_names.py", "src/molt/host_tool_products.py",
@@ -5715,17 +5716,26 @@ globs = [
   "tools/legacy_inventory.py",
   "tools/pact_witness_receipt.py",
   "tools/phase_exit_manifest.py",
+  "tools/git_identity.py",
   "tools/release_exit_gate.py",
+  "tools/release_criterion_receipt.py",
+  "tools/release_matrix_acceptance.py",
   "tools/release/release_authority.py",
   "tools/release/release_model.py",
   "tools/public_contract_gate.py",
   "tests/tools/test_public_contract_gate.py",
+  "tests/tools/test_release_exit_gate.py",
+  "tests/tools/test_release_criterion_receipt.py",
+  "tests/tools/test_release_matrix_acceptance.py",
 ]
 gates = [
   "python tools/public_contract_gate.py --check",
 ]
 pytest = [
   "tests/tools/test_public_contract_gate.py",
+  "tests/tools/test_release_exit_gate.py",
+  "tests/tools/test_release_criterion_receipt.py",
+  "tests/tools/test_release_matrix_acceptance.py",
 ]
 
 [[rule]]
@@ -5733,6 +5743,8 @@ name = "installed-compiler-distribution"
 toolchains = ["python"]
 description = "Installed executable admission, provenance and complete bundle/wheel consumer projections move together."
 globs = [
+  "tools/git_identity.py",
+  "tools/release/git_source_snapshot.py",
   "src/molt/compiler_distribution.py",
   "src/molt/host_tool_products.py",
   "src/molt/cli/wasm_facts_tool.py",

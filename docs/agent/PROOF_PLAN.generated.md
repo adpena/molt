@@ -405,14 +405,14 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
 | `timing-ratio-authority` | 2 | 0 |
-| `performance-measurement` | 28 | 1 |
+| `performance-measurement` | 29 | 1 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 13 | 2 |
 | `linux-vm-apparatus` | 3 | 0 |
 | `import-symbol-gate` | 2 | 1 |
 | `phase-exit-manifest` | 7 | 1 |
-| `public-contract` | 19 | 1 |
-| `installed-compiler-distribution` | 16 | 0 |
+| `public-contract` | 25 | 1 |
+| `installed-compiler-distribution` | 18 | 0 |
 | `edgebox-typescript` | 4 | 1 |
 | `browser-simd` | 14 | 0 |
 | `rust-clippy-changed` | 8 | 1 |
