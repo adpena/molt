@@ -1302,6 +1302,29 @@ contracts constitutes actual six-host execution or release acceptance.
 
 ## Runtime compilation and publication identity
 
+Runtime archives preserve their declared debugging profile while removing private
+build locations from compiler-generated paths. Rust production flags use the
+shared path-remapping authority after Cargo configuration selection; source and
+build roots have explicit logical identities. Mapping destinations, precedence
+and scope remain semantic inputs. Changing a destination or flag order must not
+reuse an old identity merely because the physical source root is unchanged.
+
+Molt-owned C translation units apply path maps through the shared
+`runtime/build_support/c_codegen.rs` owner after selecting the target compiler.
+The selected compiler dialect owns its spelling, including for WASI compilation
+on a Windows host. Unit-owned source and generated-output locations supply the
+maps; externally observed `CFLAGS` and other build-script environment inputs
+retain their exact-value custody. Debug stripping, ignored environment reads and
+post-publication receipt rewriting cannot establish reproducibility.
+
+This uses compiler-supported path mapping described by
+[rustc](https://doc.rust-lang.org/rustc/remap-source-paths.html) and
+[Clang](https://clang.llvm.org/docs/ClangCommandLineReference.html#cmdoption-clang-fdebug-prefix-map).
+The decisive product proof is byte equality across independent source/build
+locations, including the archive, callable projection and link manifest. A path
+scan can disprove that equality early; absence of one spelling cannot prove it.
+These are compiler/build operations; emitted programs perform no path checks.
+
 The runtime family identity binds its resolved Cargo action, source closure,
 observed build environment and tool/resource bytes. The member identity also
 binds a closed publication action (`RuntimePublicationAction`): shared WASM

@@ -38,6 +38,7 @@ from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 from molt.rust_toolchain import (
     canonical_rust_codegen_option,
     rust_flag_spans,
+    rust_remap_path_flags,
     cargo_configuration_paths,
     cargo_configuration_value,
     cargo_selected_value,
@@ -1408,6 +1409,8 @@ class RuntimeCargoPlan:
             *self.resource_paths,
             *(("tool/" + role, path) for role, path in self.tools.items()),
             *(("wrapper/" + role, path) for role, path in self.wrappers.items()),
+            ("cargo-build", self.build_directory_base),
+            ("source", self.project_root),
         )
 
     def project_link_arguments(self, arguments: Sequence[str]) -> tuple[str, ...]:
@@ -2153,12 +2156,44 @@ def resolve_runtime_cargo_plan(
             for item in transformed
         ):
             raise ValueError("runtime resolved Rust flag token is invalid")
+        # Compiler metadata must not depend on checkout/intermediate custody.
+        # Cargo's selected flags remain intact. Apply the more specific root
+        # last; if both roots coincide, source spelling owns that directory.
+        # This also covers generated Rust in OUT_DIR, outside the source tree.
+        build_root = _cargo_build_directory_base(root, environment)
+        mappings = ((root, "/molt/source"), (build_root, "/molt/build"))
+        if root.is_relative_to(build_root):
+            mappings = mappings[::-1]
+        remaps = rust_remap_path_flags(mappings)
+        # A retained plan can re-enter target policy (WASM adds codegen flags
+        # after its inherited vector). Remove only our exact mapping spans,
+        # then append the owned policy once; values of other options are not
+        # flags, and user mappings with different operands retain their order.
+        transformed = tuple(
+            token
+            for span in rust_flag_spans(transformed)
+            if span.option != "--remap-path-prefix"
+            or "--remap-path-prefix=" + (span.value or "") not in remaps
+            for token in transformed[span.start : span.stop]
+        )
         flag_plan = _resolve_rust_flag_resources(
             transformed,
             cargo_command,
             root=root,
             env=environment,
             wasi_plan=wasi_plan,
+        )
+        # SDK mode normalization can append flags too. Add resource-free
+        # remaps after it, to both the dependency vector and its combined
+        # final-crate metadata lane, without a second resource walk.
+        dependency_flags = flag_plan.flags
+        flag_plan = replace(
+            flag_plan,
+            flags=(*dependency_flags, *remaps),
+            flag_lanes=tuple(
+                (*dependency_flags, *remaps, *lane[len(dependency_flags) :])
+                for lane in flag_plan.flag_lanes
+            ),
         )
         # These metadata vectors already have complete resource custody from
         # their original dependency/final-crate lanes. Their combined vector

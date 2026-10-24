@@ -296,8 +296,16 @@ def test_native_runtime_cargo_plan_carries_the_build_rust_cpu_policy(native_buil
     baseline = native_build.plans[-1]
 
     # Cargo executes the flags the plan pins, never a process RUSTFLAGS.
-    assert native.rustflags[-2:] == ("-C", "target-cpu=native")
-    assert native.environment["CARGO_ENCODED_RUSTFLAGS"].endswith("target-cpu=native")
+    assert ("-C", "target-cpu=native") in tuple(
+        zip(native.rustflags, native.rustflags[1:])
+    )
+    assert native.rustflags[-2:] == (
+        f"--remap-path-prefix={native.project_root}=/molt/source",
+        f"--remap-path-prefix={native.build_directory_base}=/molt/build",
+    )
+    assert native.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(
+        native.rustflags
+    )
     assert "target-cpu=native" not in baseline.rustflags
     assert "target-cpu=native" not in baseline.environment["CARGO_ENCODED_RUSTFLAGS"]
 

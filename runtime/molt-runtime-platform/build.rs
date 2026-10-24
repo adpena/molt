@@ -43,6 +43,7 @@ fn main() {
     // require a WASI SDK/capture for a native build.
     let mut build = cc::Build::new();
     build.target(&target);
+    c_codegen::apply_source_path_policy(&mut build, &manifest, &out);
     let values = target_errno::evaluate(&declaration, &shape, &mut build, &out)
         .expect("selected native C errno evaluation");
     fs::write(

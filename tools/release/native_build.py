@@ -61,6 +61,7 @@ from molt.rust_toolchain import (  # noqa: E402
     resolve_rustup_proxy,
     rust_channel,
     rustc_host,
+    rust_remap_path_flags,
 )
 from molt.toolchain_identity import (  # noqa: E402
     native_executable_content_identity,
@@ -714,7 +715,11 @@ def _select_build_tools(
     env[f"CARGO_TARGET_{triple.replace('-', '_').upper()}_LINKER"] = str(
         paths["linker"]
     )
-    rustflags = [f"--remap-path-prefix={work}=/molt", "-C", f"linker={paths['linker']}"]
+    rustflags = [
+        *rust_remap_path_flags(((work, "/molt"),)),
+        "-C",
+        f"linker={paths['linker']}",
+    ]
     if platform == "windows":
         rustflags.extend(("-C", "link-arg=/Brepro", "-C", "link-arg=/DEBUG:NONE"))
         # cl owns this argument string in both cc-rs and CMake builds. Keeping

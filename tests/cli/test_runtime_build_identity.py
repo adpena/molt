@@ -1089,6 +1089,169 @@ def test_identity_records_flag_tokens_exactly() -> None:
         )
 
 
+@pytest.mark.parametrize("joined", [False, True])
+def test_remap_projection_preserves_textual_matching_and_semantics(tmp_path, joined):
+    root = tmp_path / "source = tree"
+    projection = identity._RuntimeFlagProjection.capture((("source", root),))
+
+    def remap(source, destination):
+        operand = f"{source}={destination}"
+        return (
+            ("--remap-path-prefix=" + operand,)
+            if joined
+            else ("--remap-path-prefix", operand)
+        )
+
+    first = remap(root, "/molt/source")
+    second = remap(root / "runtime", "/molt/runtime")
+    expected = [
+        "--remap-path-prefix=${source}=/molt/source",
+        "--remap-path-prefix=${source}" + os.sep + "runtime=/molt/runtime",
+    ]
+    assert projection.rustflags((*first, *second)) == expected
+    assert projection.rustflags(("cargo", "rustc", "--", *first)) == [
+        "cargo",
+        "rustc",
+        "--",
+        expected[0],
+    ]
+    assert projection.rustflags((*second, *first)) == expected[::-1]
+    assert projection.rustflags(remap(root, "/different")) != expected[:1]
+    assert projection.rustflags(remap("${source}", "/molt/source")) != expected[:1]
+    assert projection.rustflags((*first, "--remap-path-scope=debuginfo")) != (
+        projection.rustflags((*first, "--remap-path-scope=all"))
+    )
+    # rustc does textual replacement, not filesystem normalization. These
+    # sources can match different strings even if they resolve to one path.
+    dotted = os.fspath(root) + os.sep + "runtime" + os.sep + ".."
+    assert projection.rustflags(remap(dotted, "/molt/source")) == [
+        "--remap-path-prefix=${source}"
+        + os.sep
+        + "runtime"
+        + os.sep
+        + "..=/molt/source"
+    ]
+    with pytest.raises(ValueError, match="unknown absolute host path in Rust remap"):
+        projection.rustflags(remap(os.fspath(root) + "-other", "/molt/source"))
+    # A destination is semantic text, including an absolute-looking string or
+    # '@'; it is neither a host input nor a linker response file.
+    assert projection.rustflags(remap(root, "/unowned/@destination")) == [
+        "--remap-path-prefix=${source}=/unowned/@destination"
+    ]
+
+
+def test_remap_projection_does_not_fold_windows_case_or_separators():
+    # The exact textual root is intentional; this exercises Windows spelling
+    # without pretending the host can resolve a foreign filesystem.
+    projection = identity._RuntimeFlagProjection(
+        roots=(("source", Path("unused"), r"C:\owned\Source"),)
+    )
+    assert projection.rustflags((r"--remap-path-prefix=C:\owned\Source=/molt",)) == [
+        "--remap-path-prefix=${source}=/molt"
+    ]
+    for source in (r"C:\owned\source", "C:/owned/Source"):
+        with pytest.raises(
+            ValueError, match="unknown absolute host path in Rust remap"
+        ):
+            projection.rustflags((f"--remap-path-prefix={source}=/molt",))
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+def test_runtime_source_and_build_remaps_relocate_without_losing_flags(
+    identity_root, tmp_path_factory, kind
+):
+    relocated = tmp_path_factory.mktemp("remap= second source") / "source"
+    shutil.copytree(identity_root, relocated)
+    results = []
+    for root in (identity_root, relocated):
+        # Owned target/config flags must survive. Applying an encoded env
+        # override before Cargo selection would silently lose this cfg.
+        config = root / ".cargo" / "config.toml"
+        config.parent.mkdir(exist_ok=True)
+        target = _TEST_HOST_TARGET if kind == "native" else "wasm32-wasip1"
+        config.write_text(
+            f'[target.{target}]\nrustflags = ["--cfg", "owned_configuration"]\n',
+            encoding="utf-8",
+        )
+        # _resolve deliberately selects RUSTFLAGS; the plan-level control
+        # below separately checks the configuration-only selection.
+        results.append(
+            _resolve(
+                root,
+                kind=kind,
+                publication="remap-source-build",
+                extra_env={
+                    "CARGO_TARGET_DIR": str(root.parent / (root.name + "-build"))
+                },
+            )
+        )
+    assert results[0] == results[1]
+    encoded = json.dumps(results[0].to_dict(), sort_keys=True)
+    assert str(identity_root) not in encoded and str(relocated) not in encoded
+    family = results[0].payload["family"]
+    flags = (
+        family["members"]["staticlib"]["resolved_rustflags"]
+        if kind == "cpython-abi"
+        else family["compile"]["common_config"]["base_rustflags"]
+    )
+    assert "--remap-path-prefix=${source}=/molt/source" in flags
+    assert "--remap-path-prefix=${cargo-build}=/molt/build" in flags
+
+
+@pytest.mark.parametrize("build_location", ["inside", "outside", "same", "ancestor"])
+def test_runtime_remap_order_and_cargo_configuration_selection(
+    identity_root, monkeypatch, build_location
+):
+    from molt.flag_strings import FlagStringRule
+
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    config = identity_root / ".cargo" / "config.toml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(
+        '[target.wasm32-wasip1]\nrustflags = ["--cfg", "owned_configuration"]\n',
+        encoding="utf-8",
+    )
+    build = {
+        "inside": identity_root / "target",
+        "outside": identity_root.parent / "outside-build",
+        "same": identity_root,
+        "ancestor": identity_root.parent,
+    }[build_location]
+    plan = _test_plan(
+        identity_root,
+        {
+            **os.environ,
+            "RUSTC": sys.executable,
+            "CARGO": sys.executable,
+            "CARGO_HOME": str(identity_root / "cargo-home"),
+            "CARGO_TARGET_DIR": str(build),
+            "RUSTC_WRAPPER": "",
+            "RUSTC_WORKSPACE_WRAPPER": "",
+        },
+    )
+    assert ("--cfg", "owned_configuration") in tuple(
+        zip(plan.rustflags, plan.rustflags[1:])
+    )
+    remaps = [
+        flag for flag in plan.rustflags if flag.startswith("--remap-path-prefix=")
+    ]
+    source_map = f"--remap-path-prefix={identity_root}=/molt/source"
+    build_map = f"--remap-path-prefix={build}=/molt/build"
+    if build_location in {"same", "ancestor"}:
+        assert remaps == [build_map, source_map]
+    else:
+        # Outside roots do not overlap; their relative order has no effect.
+        assert set(remaps) == {source_map, build_map}
+        if build_location == "inside":
+            assert remaps == [source_map, build_map]
+    assert (
+        FlagStringRule.CARGO_ENCODED.decode(plan.environment["CARGO_ENCODED_RUSTFLAGS"])
+        == plan.rustflags
+    )
+    plan.verify()
+
+
 def test_flag_canonicalization_enforces_path_boundaries(identity_root: Path) -> None:
     sysroot = identity_root / "wasi-sysroot"
     projection = identity._RuntimeFlagProjection.capture((("wasi-sysroot", sysroot),))

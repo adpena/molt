@@ -31,6 +31,7 @@ from molt.cli.runtime_identity_schema import (
     _freeze_json,
 )
 from molt import host_capacity
+from molt.rust_toolchain import rust_flag_spans
 from molt.file_publication import metadata_is_link_like
 from molt.toolchain_identity import (
     StableRegularFileChangedError,
@@ -596,7 +597,7 @@ def _is_host_absolute(value: str) -> bool:
 class _RuntimeFlagProjection:
     """Ordered logical paths captured once for one runtime identity operation.
 
-    Resolved roots and their text forms are local to this capture, never a
+    Resolved roots and their original text forms are local to this capture, never a
     process cache. Absolute operands still resolve when inspected; response
     files retain the Cargo plan's separate content and custody checks.
     """
@@ -613,7 +614,7 @@ class _RuntimeFlagProjection:
     ) -> _RuntimeFlagProjection:
         return cls(
             roots=tuple(
-                (label, resolved, os.fspath(resolved))
+                (label, resolved, os.fspath(root))
                 for label, root in logical_paths
                 for resolved in (root.resolve(strict=False),)
             ),
@@ -696,7 +697,40 @@ class _RuntimeFlagProjection:
         # A str is a Sequence[str] too; splitting one here would guess a grammar.
         if isinstance(value, str):
             raise TypeError("runtime flag vectors are token sequences, not strings")
-        return [self.token(token) for token in value]
+        result: list[str] = []
+        for span in rust_flag_spans(value):
+            if value[span.start] == "--":
+                result.append("--")
+                result.extend(self.rustflags(value[span.start + 1 :]))
+            elif span.option == "--remap-path-prefix":
+                source, separator, destination = (span.value or "").rpartition("=")
+                if not separator:
+                    raise ValueError("Rust --remap-path-prefix requires FROM=TO")
+                # This is textual substitution, not a filesystem resource:
+                # resolving '..', case, quotes or separators would change
+                # rustc's matching semantics. Only replace an exact known
+                # root prefix, retaining the remainder and TO byte-for-byte.
+                if _is_host_absolute(source):
+                    for label, _root, root_text in sorted(
+                        self.roots, key=lambda row: len(row[2]), reverse=True
+                    ):
+                        if source == root_text or source.startswith(root_text + os.sep):
+                            source = "${" + label + "}" + source[len(root_text) :]
+                            break
+                    else:
+                        raise ValueError(
+                            f"unknown absolute host path in Rust remap: {source!r}"
+                        )
+                else:
+                    # A relative spelling such as '${source}' is literal
+                    # compiler input, never an already projected root token.
+                    source = "relative:" + source
+                result.append("--remap-path-prefix=" + source + "=" + destination)
+            else:
+                result.extend(
+                    self.token(token) for token in value[span.start : span.stop]
+                )
+        return result
 
     def link_args(self, args: Sequence[str]) -> list[str]:
         return [self.token(arg) for arg in args]

@@ -359,7 +359,11 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         config_digest = canonical_json_sha256(configuration.read_text(encoding="utf-8"))
         # Cargo selects the configured build flags; the plan pins the policy's
         # result exactly as the real resolver does.
-        rustflags = rustflags_transform(("-Copt-level=2",))
+        rustflags = (
+            *rustflags_transform(("-Copt-level=2",)),
+            f"--remap-path-prefix={root}=/molt/source",
+            f"--remap-path-prefix={env['CARGO_TARGET_DIR']}=/molt/build",
+        )
         return SimpleNamespace(
             environment={**env, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(rustflags)},
             configuration=(),
@@ -401,8 +405,17 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         native = admission(baseline_env, RustCpuPolicy.NATIVE)
         assert native is not baseline
         assert len(seen) == 2
-    assert baseline.plan.rustflags == ("-Copt-level=2",)
-    assert native.plan.rustflags == ("-Copt-level=2", "-C", "target-cpu=native")
+    remaps = (
+        f"--remap-path-prefix={tmp_path}=/molt/source",
+        f"--remap-path-prefix={tmp_path / 'target'}=/molt/build",
+    )
+    assert baseline.plan.rustflags == ("-Copt-level=2", *remaps)
+    assert native.plan.rustflags == (
+        "-Copt-level=2",
+        "-C",
+        "target-cpu=native",
+        *remaps,
+    )
     assert native.fingerprint != baseline.fingerprint
     # The policy reaches the plan as a value; the Cargo environment the plan
     # starts from carries no Rust CPU flag of its own.

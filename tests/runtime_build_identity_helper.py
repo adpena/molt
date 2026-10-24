@@ -31,7 +31,7 @@ from molt.cli.runtime_identity_schema import (
     runtime_publication_executor_paths,
 )
 from molt.exact_json import canonical_json_sha256
-from molt.rust_toolchain import cargo_configuration_paths
+from molt.rust_toolchain import cargo_configuration_paths, rust_flag_spans
 from molt.cli.cargo_resource_custody import (
     CargoExecutableCustody,
     CargoResourceCustody,
@@ -768,6 +768,22 @@ def runtime_cargo_plan(
         environment[
             "CARGO_TARGET_" + requested_target.upper().replace("-", "_") + "_LINKER"
         ] = str(wasi.linker)
+    # This fixture supplies a real plan value without spawning Cargo/rustc.
+    # Retain the production planner's source/build metadata policy explicitly.
+    build_root = _cargo_build_directory_base(root, environment)
+    remaps = (
+        f"--remap-path-prefix={root}=/molt/source",
+        f"--remap-path-prefix={build_root}=/molt/build",
+    )
+    if root.is_relative_to(build_root):
+        remaps = remaps[::-1]
+    flags = tuple(
+        token
+        for span in rust_flag_spans(flags)
+        if span.option != "--remap-path-prefix"
+        or "--remap-path-prefix=" + (span.value or "") not in remaps
+        for token in flags[span.start : span.stop]
+    )
     flag_plan = _resolve_rust_flag_resources(
         flags,
         cargo_command,
@@ -775,7 +791,7 @@ def runtime_cargo_plan(
         env=environment,
         wasi_plan=wasi,
     )
-    flags = flag_plan.flags
+    flags = (*flag_plan.flags, *remaps)
     environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     if flag_plan.dependency_linker is not None:
         tool_paths["linker"] = flag_plan.dependency_linker

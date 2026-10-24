@@ -102,7 +102,6 @@ fn main() {
         // Auto-vectorisation hints for clang/gcc.
         .flag_if_supported("-fvectorize")
         .flag_if_supported("-fslp-vectorize");
-    c_codegen::apply_codegen_policy(&mut build, &target_os);
     if target_arch == "wasm32" {
         match target_os.as_str() {
             "wasi" | "unknown" => {
@@ -129,6 +128,8 @@ fn main() {
             ),
         }
     }
+
+    c_codegen::apply_codegen_policy(&mut build, &target_os, &manifest, &out_dir);
 
     // On Linux (rust-lld) the shim archive was force-included via a separate
     // `--whole-archive <full-path>` link-arg (the old `"linux"` match arm below)

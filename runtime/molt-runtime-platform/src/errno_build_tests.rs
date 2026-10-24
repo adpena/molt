@@ -51,6 +51,47 @@ fn object(source: &str, owner: &CargoTestArtifacts) -> Vec<u8> {
 }
 
 #[test]
+fn c_source_and_generated_debug_metadata_are_relocatable() {
+    let owner = CargoTestArtifacts::new("c-source-relocation").unwrap();
+    let mut generations = Vec::new();
+    for name in ["first tree", "second tree"] {
+        let work = owner.path().join(name);
+        let manifest = work.join("source/runtime/probe");
+        let out = work.join("generated");
+        fs::create_dir_all(&manifest).unwrap();
+        fs::create_dir_all(&out).unwrap();
+        let source = manifest.join("source.c");
+        let generated = out.join("generated.c");
+        fs::write(&source, "const char source_file[] = __FILE__;\n").unwrap();
+        fs::write(&generated, "const char generated_file[] = __FILE__;\n").unwrap();
+        let mut build = compiler(&out);
+        build.debug(true).file(&source).file(&generated);
+        c_codegen::apply_source_path_policy(&mut build, &manifest, &out);
+        let bodies: Vec<_> = build
+            .try_compile_intermediates()
+            .unwrap()
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        let spelling = work.to_string_lossy();
+        for body in &bodies {
+            assert!(!body
+                .windows(spelling.len())
+                .any(|window| window == spelling.as_bytes()));
+        }
+        assert!(bodies[0]
+            .windows(b"/molt/source".len())
+            .any(|window| window == b"/molt/source"));
+        assert!(bodies[1]
+            .windows(b"/molt/generated".len())
+            .any(|window| window == b"/molt/generated"));
+        generations.push(bodies);
+    }
+    assert_eq!(generations[0], generations[1]);
+}
+
+#[test]
 fn actual_c_expression_presence_aliases_and_generated_versioned_consumer() {
     let owner = CargoTestArtifacts::new("errno-target-header").unwrap();
     // Deliberately neither Linux11 nor Darwin35: host errno substitution fails.
