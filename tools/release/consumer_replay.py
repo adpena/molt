@@ -53,9 +53,15 @@ def provision_verifier() -> tuple[Path, dict[str, object]]:
 
 
 def expected_runs(
-    proofs: list[dict[str, Any]], pip_proof: dict[str, Any]
+    proofs: list[dict[str, Any]],
+    pip_proof: dict[str, Any],
+    *,
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
 ) -> list[dict[str, Any]]:
-    lanes = {lane.id: lane for lane in capture_release_lanes(ROOT).lanes}
+    lanes = {
+        lane.id: lane
+        for lane in capture_release_lanes(ROOT).require_selection(selected_lanes)
+    }
     rows = []
     for owner, proof in [*(("bundle", proof) for proof in proofs), ("pip", pip_proof)]:
         if proof["python"] not in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
@@ -214,12 +220,14 @@ def prepare(
     supervisor: Path,
     generation: dict[str, Any],
     argv: tuple[str, ...],
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
 ) -> dict[str, Any]:
     platform, arch = candidate["target"]["platform"], candidate["target"]["arch"]
     if platform != "linux":
         raise ValueError(
             f"sealed standalone replay has no qualified {platform}/{arch} filesystem adapter; host execution is forbidden"
         )
+    lanes = capture_release_lanes(ROOT).require_selection(selected_lanes)
     # Fail missing provisionable inputs before uninstall or any guest launch.
     providers = execution_root.archive_inputs(arch=arch)
     evidence.mkdir(parents=True, exist_ok=False)
@@ -271,7 +279,7 @@ def prepare(
                 executable=False,
             )
         )
-    rows = expected_runs(proofs, pip_proof)
+    rows = expected_runs(proofs, pip_proof, selected_lanes=lanes)
     executable_paths = ["bin/node", "bin/molt-proof-supervisor"]
     for row in rows:
         prefix = f"app/{row['id']}/"
@@ -471,7 +479,9 @@ def validate(
     supervisor: Path,
     argv: tuple[str, ...],
     expected_stdout: str,
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
 ) -> None:
+    lanes = capture_release_lanes(ROOT).require_selection(selected_lanes)
     if (
         not isinstance(reference, dict)
         or set(reference) != {"path", "filename", "sha256", "size"}
@@ -568,7 +578,7 @@ def validate(
         ):
             raise ValueError("standalone Node runner source closure changed")
         admitted.add(selected)
-    expected = expected_runs(proofs, pip_proof)
+    expected = expected_runs(proofs, pip_proof, selected_lanes=lanes)
     if not isinstance(replay["runs"], list) or len(replay["runs"]) != len(expected):
         raise ValueError("standalone replay coordinate closure is incomplete")
     nonces: set[str] = set()
@@ -1653,13 +1663,21 @@ def validate_installed_compilation(
     controller_python: Path,
     owner: str,
     supervisor: Path,
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
+    selected_stdlib_profile: str | None = None,
 ) -> None:
     """Bind the retained compilation to the release candidate and replay cells."""
+    from molt.cli.config_resolution import RUNTIME_STDLIB_PROFILE_TIERS
     from molt.compiler_distribution import installed_compiler
-    from .release_authority import consumer_lanes
 
     if owner not in {"bundle", "pip"}:
         raise ValueError("installed compilation owner is invalid")
+    if selected_stdlib_profile is not None and (
+        not isinstance(selected_stdlib_profile, str)
+        or selected_stdlib_profile not in RUNTIME_STDLIB_PROFILE_TIERS
+    ):
+        raise ValueError("installed compilation runtime stdlib profile is invalid")
+    lanes = capture_release_lanes(ROOT).require_selection(selected_lanes)
     expected_path = f"compilation-evidence/{owner}-{proof['python']}/compilation.json"
     if (
         not isinstance(reference, dict)
@@ -1712,7 +1730,11 @@ def validate_installed_compilation(
     _equal_artifact(execution_root.file_identity(interpreter_file), interpreter)
     installed.verify_launcher()
     installed.verify_wasm_facts()
-    lanes = consumer_lanes()
+    if (
+        capture_release_lanes(installed.source_root).require_selection(selected_lanes)
+        != lanes
+    ):
+        raise ValueError("installed compilation lane policy differs from release")
     validate_compilation(
         evidence=record_path.parent,
         compilation=compilation,
@@ -1739,6 +1761,12 @@ def validate_installed_compilation(
         launcher=launcher,
         controller_python=controller_python,
     )
+    if selected_stdlib_profile is not None and any(
+        cell["runtime_cell"]["key"]["stdlib_profile"] != selected_stdlib_profile
+        for phase in (compilation, cold)
+        for cell in phase["cells"]
+    ):
+        raise ValueError("installed compilation used another runtime stdlib profile")
     if cold["cache_seed"] or cold["origins"] or not compilation["cache_seed"]:
         raise ValueError(
             "installed cold/warm compilation phases have incorrect reuse inputs"

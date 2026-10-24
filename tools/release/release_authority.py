@@ -8,6 +8,7 @@ import sys
 import hashlib
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
@@ -95,11 +96,45 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 CANDIDATE_SCHEMA = "molt.release-candidate.v6"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
 CONSUMER_SCHEMA = "molt.release-consumer-proof.v11"
+COMPONENT_CONSUMER_SCHEMA = "molt.release-consumer-component-proof.v1"
 
 
-def consumer_lanes() -> tuple[ReleaseLane, ...]:
+def consumer_lanes(
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
+) -> tuple[ReleaseLane, ...]:
     """Required logical products, not a claim of shipped compiler capability."""
-    return capture_release_lanes(ROOT).lanes
+    return capture_release_lanes(ROOT).require_selection(selected_lanes)
+
+
+@dataclass(frozen=True)
+class ConsumerComponent:
+    """Explicit development evidence; never a full release consumer proof."""
+
+    python_minor: str
+    lanes: tuple[ReleaseLane, ...]
+    stdlib_profile: str
+
+    def __post_init__(self) -> None:
+        from molt.cli.config_resolution import RUNTIME_STDLIB_PROFILE_TIERS
+
+        coordinates, _ = consumer_python_policy()
+        if (
+            not isinstance(self.python_minor, str)
+            or not isinstance(self.stdlib_profile, str)
+            or self.lanes != consumer_lanes(self.lanes)
+            or self.python_minor not in dict(coordinates)
+            or self.stdlib_profile not in RUNTIME_STDLIB_PROFILE_TIERS
+        ):
+            raise ValueError(
+                "consumer component selection differs from declared policy"
+            )
+
+    def as_record(self) -> dict[str, object]:
+        return {
+            "python": self.python_minor,
+            "lanes": [lane.as_record() for lane in self.lanes],
+            "stdlib_profile": self.stdlib_profile,
+        }
 
 
 # A flag-shaped argument and an embedded space prove verbatim argv forwarding.
@@ -181,7 +216,9 @@ def consumer_guest_command(
     ]
 
 
-def consumer_command_roles(*, pip: bool = False) -> tuple[str, ...]:
+def consumer_command_roles(
+    *, pip: bool = False, selected_lanes: tuple[ReleaseLane, ...] | None = None
+) -> tuple[str, ...]:
     """One role projection for bundle and platform-wheel logical products."""
     prefix = "pip_" if pip else ""
     roles = (
@@ -189,11 +226,11 @@ def consumer_command_roles(*, pip: bool = False) -> tuple[str, ...]:
         if pip
         else ["environment", "cli_setup", "cli_help", "worker_help"]
     )
-    for lane in consumer_lanes():
+    for lane in consumer_lanes(selected_lanes):
         roles.append(
             f"{prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}"
         )
-    for lane in consumer_lanes():
+    for lane in consumer_lanes(selected_lanes):
         if lane.target == "native":
             roles.append(f"{prefix}build_{lane.id}")
         roles.append(f"{prefix}run_{lane.id}")
@@ -788,12 +825,13 @@ def _validate_consumer_guest_cells(
     source: str,
     compiler_sha256: str,
     role_prefix: str,
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
 ) -> tuple[str, set[PurePosixPath | PureWindowsPath]]:
     """Bind each installed target/profile cell to its command, compiler and bytes.
 
     Returns the one compiler fingerprint and every cell output directory.
     """
-    lanes = consumer_lanes()
+    lanes = consumer_lanes(selected_lanes)
     if not isinstance(cells, list) or len(cells) != len(lanes):
         raise ValueError("release consumer guest cells are incomplete")
     path_type = PureWindowsPath if windows else PurePosixPath
@@ -947,9 +985,51 @@ def validate_consumer_proof(
     evidence_root: Path,
     supervisor: Path,
 ) -> None:
+    """Require the full release matrix, including the full-proof schema."""
+    _validate_consumer_scope(
+        consumer,
+        candidate,
+        evidence_root=evidence_root,
+        supervisor=supervisor,
+        component=None,
+    )
+
+
+def validate_component_consumer_proof(
+    consumer: object,
+    candidate: dict[str, Any],
+    *,
+    component: ConsumerComponent,
+    evidence_root: Path,
+    supervisor: Path,
+) -> None:
+    """Validate explicitly selected evidence without granting release acceptance."""
+    if not isinstance(component, ConsumerComponent):
+        raise ValueError("consumer component requires an explicit declared selection")
+    _validate_consumer_scope(
+        consumer,
+        candidate,
+        evidence_root=evidence_root,
+        supervisor=supervisor,
+        component=component,
+    )
+
+
+def _validate_consumer_scope(
+    consumer: object,
+    candidate: dict[str, Any],
+    *,
+    evidence_root: Path,
+    supervisor: Path,
+    component: ConsumerComponent | None,
+) -> None:
     """Admit the exact installed Python x target x profile execution closure."""
     coordinates, policy_sha256 = consumer_python_policy()
-    lanes = consumer_lanes()
+    lanes = consumer_lanes(None if component is None else component.lanes)
+    if component is not None:
+        coordinates = tuple(
+            row for row in coordinates if row[0] == component.python_minor
+        )
     for lane in lanes:
         if lane.compiler_profile != candidate["compiler"]["profile"] or not set(
             lane.compiler_features
@@ -962,30 +1042,35 @@ def validate_consumer_proof(
     if (
         not isinstance(consumer, dict)
         or set(consumer)
-        != {
-            "schema",
-            "candidate",
-            "candidate_sha256",
-            "target",
-            "source_sha",
-            "selected",
-            "executed",
-            "passed",
-            "failed",
-            "errors",
-            "compiler",
-            "launcher",
-            "wasm_facts",
-            "runtime",
-            "pip_proof",
-            "guest_cells",
-            "expected_stdout",
-            "python_policy_sha256",
-            "python_proofs",
-            "uninstall_verified",
-            "standalone",
-        }
-        or consumer.get("schema") != CONSUMER_SCHEMA
+        != (
+            {
+                "schema",
+                "candidate",
+                "candidate_sha256",
+                "target",
+                "source_sha",
+                "selected",
+                "executed",
+                "passed",
+                "failed",
+                "errors",
+                "compiler",
+                "launcher",
+                "wasm_facts",
+                "runtime",
+                "pip_proof",
+                "guest_cells",
+                "expected_stdout",
+                "python_policy_sha256",
+                "python_proofs",
+                "uninstall_verified",
+                "standalone",
+            }
+            | ({"scope"} if component is not None else set())
+        )
+        or consumer.get("schema")
+        != (CONSUMER_SCHEMA if component is None else COMPONENT_CONSUMER_SCHEMA)
+        or (component is not None and consumer.get("scope") != component.as_record())
         or consumer.get("candidate") != "candidate.json"
         or consumer.get("candidate_sha256") != canonical_json_sha256(candidate)
         or consumer.get("target") != candidate["target"]
@@ -1046,7 +1131,7 @@ def validate_consumer_proof(
         )
         interpreter_paths.add(executable)
         commands = _validate_consumer_command_records(
-            proof["commands"], roles=consumer_command_roles()
+            proof["commands"], roles=consumer_command_roles(selected_lanes=lanes)
         )
         launcher = _validate_consumer_command_bindings(
             commands,
@@ -1074,6 +1159,7 @@ def validate_consumer_proof(
             source=proof["source"],
             compiler_sha256=candidate["compiler"]["sha256"],
             role_prefix="",
+            selected_lanes=lanes,
         )
         from tools.release import consumer_replay
 
@@ -1085,6 +1171,10 @@ def validate_consumer_proof(
             launcher=launcher,
             controller_python=Path(executable),
             owner="bundle",
+            selected_lanes=lanes,
+            selected_stdlib_profile=None
+            if component is None
+            else component.stdlib_profile,
             supervisor=supervisor,
         )
         fingerprints.add(fingerprint)
@@ -1105,6 +1195,7 @@ def validate_consumer_proof(
     _validate_consumer_pip_proof(
         consumer["pip_proof"],
         candidate,
+        component=component,
         evidence_root=evidence_root,
         supervisor=supervisor,
     )
@@ -1119,11 +1210,17 @@ def validate_consumer_proof(
         supervisor=supervisor,
         argv=CONSUMER_GUEST_ARGV,
         expected_stdout=CONSUMER_EXPECTED_STDOUT,
+        selected_lanes=lanes,
     )
 
 
 def _validate_consumer_pip_proof(
-    proof: object, candidate: dict[str, Any], *, evidence_root: Path, supervisor: Path
+    proof: object,
+    candidate: dict[str, Any],
+    *,
+    evidence_root: Path,
+    supervisor: Path,
+    component: ConsumerComponent | None = None,
 ) -> None:
     """The same logical products through one ordinary platform-wheel install."""
     windows = candidate["target"]["platform"] == "windows"
@@ -1152,6 +1249,11 @@ def _validate_consumer_pip_proof(
         raise ValueError("release consumer pip proof is incomplete")
     wheel = wheels[0]
     coordinates, _policy = consumer_python_policy()
+    lanes = consumer_lanes(None if component is None else component.lanes)
+    if component is not None:
+        coordinates = tuple(
+            row for row in coordinates if row[0] == component.python_minor
+        )
     if (
         (proof["python"], proof["reference_python"]) != coordinates[0]
         or proof["wheel"] != {key: wheel[key] for key in ("filename", "sha256", "size")}
@@ -1173,7 +1275,7 @@ def _validate_consumer_pip_proof(
         reference_python=proof["reference_python"],
     )
     by_role = _validate_consumer_command_records(
-        proof["commands"], roles=consumer_command_roles(pip=True)
+        proof["commands"], roles=consumer_command_roles(pip=True, selected_lanes=lanes)
     )
     environment = by_role["pip_environment"]["argv"]
     install = by_role["pip_install"]["argv"]
@@ -1185,8 +1287,9 @@ def _validate_consumer_pip_proof(
         raise ValueError(
             "release consumer pip preparation source differs from its environment"
         )
-    first_build = by_role[f"pip_build_{consumer_lanes()[0].id}"]["argv"]
-    launcher = first_build[:1]
+    first_lane = lanes[0]
+    first_role = "build" if first_lane.target == "native" else "run"
+    launcher = by_role[f"pip_{first_role}_{first_lane.id}"]["argv"][:1]
     if (
         path_type(environment[0]).name.lower() not in {"uv", "uv.exe"}
         or environment[1:5]
@@ -1213,6 +1316,7 @@ def _validate_consumer_pip_proof(
         source=proof["source"],
         compiler_sha256=candidate["compiler"]["sha256"],
         role_prefix="pip_",
+        selected_lanes=lanes,
     )
 
     from tools.release import consumer_replay
@@ -1225,6 +1329,8 @@ def _validate_consumer_pip_proof(
         launcher=launcher,
         controller_python=Path(install[5]),
         owner="pip",
+        selected_lanes=lanes,
+        selected_stdlib_profile=None if component is None else component.stdlib_profile,
         supervisor=supervisor,
     )
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce every installed-runtime cell from one immutable source snapshot.
+"""Produce declared installed-runtime cells from one immutable source snapshot.
 
 Release-time production is the only distribution lane that runs runtime Cargo
 plans. Coverage is derived from the existing authorities: guest profiles
@@ -15,6 +15,8 @@ as ``<output>/<cell-id>/<member>`` plus ``runtime-inventory.json``. Staged
 receipts pass the installed admission rules and their ``compile.sources`` must
 equal the snapshot's runtime source tree identity. The inventory carries the
 snapshot's Git identity, which the bundle must match.
+Explicit component requests use the same producer and admission path; their
+inventory names only the cells produced and does not attest full release coverage.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 import argparse  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 import contextlib  # noqa: E402
-from dataclasses import dataclass  # noqa: E402
+from dataclasses import dataclass, fields  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -70,6 +72,69 @@ class RuntimeCellRequest:
     stdlib_profile: str
     extra_runtime_features: tuple[str, ...] = ()
     freestanding: bool = False
+
+
+def _selected_runtime_cells(
+    requests: tuple[RuntimeCellRequest, ...] | None, source_root: Path
+) -> tuple[RuntimeCellRequest, ...]:
+    declared = declared_runtime_cells(source_root)
+    if requests is None:
+        return declared
+    if type(requests) is not tuple or not requests:
+        raise ValueError("component runtime requests must be a nonempty tuple")
+    for request in requests:
+        if (
+            type(request) is not RuntimeCellRequest
+            or any(
+                type(value) is not str
+                for value in (
+                    request.kind,
+                    request.runtime_profile,
+                    request.stdlib_profile,
+                )
+            )
+            or type(request.freestanding) is not bool
+            or type(request.extra_runtime_features) is not tuple
+            or any(type(value) is not str for value in request.extra_runtime_features)
+        ):
+            raise ValueError("component runtime request has invalid field types")
+    if len(set(requests)) != len(requests):
+        raise ValueError("duplicate component runtime request")
+    if not set(requests) <= set(declared):
+        raise ValueError(
+            "component runtime request is outside the pinned release policy"
+        )
+    return requests
+
+
+def _read_component_requests(path: Path) -> tuple[RuntimeCellRequest, ...]:
+    from molt.exact_json import read_exact
+
+    records = read_exact(
+        path, max_bytes=1024 * 1024, label="component runtime requests"
+    )
+    names = {field.name for field in fields(RuntimeCellRequest)}
+    if not isinstance(records, list) or not records:
+        raise ValueError("component runtime requests must be a nonempty JSON list")
+    requests = []
+    for record in records:
+        if (
+            not isinstance(record, dict)
+            or set(record) != names
+            or not isinstance(record["extra_runtime_features"], list)
+        ):
+            raise ValueError(
+                "component runtime request must contain exactly its declared fields"
+            )
+        requests.append(
+            RuntimeCellRequest(
+                **{
+                    **record,
+                    "extra_runtime_features": tuple(record["extra_runtime_features"]),
+                }
+            )
+        )
+    return tuple(requests)
 
 
 def require_release_policy_environment(env: Mapping[str, str] = os.environ) -> None:
@@ -395,12 +460,15 @@ def produce_runtime_cells(
     platform: str,
     arch: str,
     cargo_timeout: float | None = None,
+    requests: tuple[RuntimeCellRequest, ...] | None = None,
 ) -> dict[str, Any]:
-    """Publish all cells and their verified inventory in one durable commit.
+    """Publish selected declared cells (all by default) in one durable commit.
 
     Compilation, provenance checks and inventory admission happen in a private
     sibling. Failure leaves the requested path absent; an existing generation
     is never replaced, including one committed by a concurrent producer.
+    None selects the complete pinned policy; an explicit tuple must be nonempty,
+    unique and contained in that policy. Coverage admission remains the caller's.
     """
     from molt.file_publication import (
         durable_publish_directory_exclusive,
@@ -428,6 +496,7 @@ def produce_runtime_cells(
             platform=platform,
             arch=arch,
             cargo_timeout=cargo_timeout,
+            requests=requests,
         )
         durable_publish_directory_exclusive(stage, output)
     return inventory
@@ -441,6 +510,7 @@ def _populate_runtime_cells(
     platform: str,
     arch: str,
     cargo_timeout: float | None = None,
+    requests: tuple[RuntimeCellRequest, ...] | None = None,
 ) -> dict[str, Any]:
     from molt.compiler_distribution import (
         NATIVE_RUNTIME_CELL,
@@ -470,10 +540,10 @@ def _populate_runtime_cells(
         )
         records = [entry.as_record() for entry in snapshot.files]
         with _isolated_build_environment(work):
-            requests = declared_runtime_cells(source_root)
+            selected = _selected_runtime_cells(requests, source_root)
             expected_keys = sorted(
                 _selector(request.kind, runtime_cell_key(request))
-                for request in requests
+                for request in selected
             )
             cells = [
                 (
@@ -481,7 +551,7 @@ def _populate_runtime_cells(
                     if request.kind == NATIVE_RUNTIME_CELL
                     else _produce_wasm
                 )(request, source_root, output, cargo_timeout)
-                for request in requests
+                for request in selected
             ]
         # Every staged cell passes the installed receipt admission, and each
         # identity's recorded runtime sources must be this snapshot's. The
@@ -548,6 +618,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--arch", required=True)
     parser.add_argument("--cargo-timeout", type=float)
+    parser.add_argument(
+        "--component-requests",
+        type=Path,
+        help="Produce only these declared request records; not full release coverage",
+    )
     args = parser.parse_args(argv)
     inventory = produce_runtime_cells(
         ROOT,
@@ -556,6 +631,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         platform=args.platform,
         arch=args.arch,
         cargo_timeout=args.cargo_timeout,
+        requests=(
+            _read_component_requests(args.component_requests)
+            if args.component_requests is not None
+            else None
+        ),
     )
     print(json.dumps({"cells": len(inventory["cells"])}, sort_keys=True))
     return 0

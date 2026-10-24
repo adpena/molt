@@ -43,6 +43,9 @@ from tools.release.release_authority import (  # noqa: E402
     CONSUMER_GUEST_ARGV,
     consumer_lanes,
     CONSUMER_SCHEMA,
+    COMPONENT_CONSUMER_SCHEMA,
+    ConsumerComponent,
+    validate_component_consumer_proof,
     consumer_guest_command,
     consumer_guest_source,
     consumer_python_policy,
@@ -576,6 +579,7 @@ def _verify_guest_cells(
     supervisor: Path,
     generation: dict[str, Any],
     projection: SealedExecutionProjection,
+    selected_lanes: tuple[ReleaseLane, ...] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Prepare inputs, then admit actual installed products before uninstall.
 
@@ -590,7 +594,7 @@ def _verify_guest_cells(
     from molt.toolchain_identity import find_executable
     from molt.wasm_optimizer_identity import find_wasm_opt
 
-    lanes = consumer_lanes()
+    lanes = consumer_lanes(selected_lanes)
     selected = []
     native_inputs = {}
     tools: list[Path] = []
@@ -821,10 +825,13 @@ def _verify_pip_distribution(
     supervisor: Path,
     generation: dict[str, Any],
     projection: SealedExecutionProjection,
+    component: ConsumerComponent | None = None,
 ) -> dict[str, Any]:
     """Install one platform wheel and produce the complete logical lane set."""
     root.mkdir(parents=True)
     env = _consumer_environment(root)
+    if component is not None:
+        env = env.updated({"MOLT_STDLIB_PROFILE": component.stdlib_profile})
     venv = root / "venv"
     python = _venv_python(venv)
     commands = [
@@ -892,6 +899,7 @@ def _verify_pip_distribution(
         supervisor=supervisor,
         generation=generation,
         projection=projection,
+        selected_lanes=None if component is None else component.lanes,
     )
     if (
         _capture_python_execution(
@@ -942,10 +950,13 @@ def _verify_python_coordinate(
     supervisor: Path,
     generation: dict[str, Any],
     projection: SealedExecutionProjection,
+    component: ConsumerComponent | None = None,
 ) -> dict[str, Any]:
     project = root / "project"
     project.mkdir(parents=True)
     env = _consumer_environment(root)
+    if component is not None:
+        env = env.updated({"MOLT_STDLIB_PROFILE": component.stdlib_profile})
     venv = root / "venv"
     commands = [
         _run(
@@ -1017,6 +1028,7 @@ def _verify_python_coordinate(
         supervisor=supervisor,
         generation=generation,
         projection=projection,
+        selected_lanes=None if component is None else component.lanes,
     )
     if (
         _capture_python_execution(
@@ -1097,8 +1109,16 @@ def verify(
     *,
     compilation_projection: SealedExecutionProjection,
     archive_cache: Path | None = None,
+    component: ConsumerComponent | None = None,
 ) -> dict[str, object]:
-    if receipt != candidate_dir / "consumer-verification.json":
+    if component is not None and not isinstance(component, ConsumerComponent):
+        raise ValueError("component consumer requires an explicit declared selection")
+    receipt_name = (
+        "consumer-verification.json"
+        if component is None
+        else "consumer-component-verification.json"
+    )
+    if receipt != candidate_dir / receipt_name:
         raise ValueError("consumer receipt must be beside its candidate")
     candidate_path = candidate_dir / "candidate.json"
     candidate = _load_candidate(candidate_path)
@@ -1116,7 +1136,12 @@ def verify(
         candidate["target"]["arch"],
     ):
         raise ValueError("release consumer must run on its candidate host")
-    coordinates, policy_sha256 = consumer_python_policy()
+    all_coordinates, policy_sha256 = consumer_python_policy()
+    coordinates = all_coordinates
+    if component is not None:
+        coordinates = tuple(
+            row for row in coordinates if row[0] == component.python_minor
+        )
     artifacts = candidate.get("artifacts", [])
     if not isinstance(artifacts, list):
         raise ValueError("candidate artifacts must be a list")
@@ -1202,7 +1227,7 @@ def verify(
             != candidate["native_build"]["llvm"]["policy_sha256"]
         ):
             raise ValueError("Bundle LLVM policy differs from native build receipt")
-        lanes = consumer_lanes()
+        lanes = consumer_lanes(None if component is None else component.lanes)
         for profile in sorted({lane.compiler_profile for lane in lanes}):
             features = {
                 feature
@@ -1214,8 +1239,10 @@ def verify(
         compiler.verify_runtime()
         if compiler.runtime != candidate["runtime"]:
             raise ValueError("Bundle runtime cells differ from candidate")
-        if inventory_cell_keys(compiler.runtime) != declared_cell_keys(
-            compiler.source_root
+        actual_keys = inventory_cell_keys(compiler.runtime)
+        declared_keys = declared_cell_keys(compiler.source_root)
+        if (component is None and actual_keys != declared_keys) or (
+            component is not None and not set(actual_keys).issubset(declared_keys)
         ):
             raise ValueError(
                 "Bundle runtime cells differ from the derived release policy"
@@ -1234,7 +1261,7 @@ def verify(
         if consumer_python_policy(
             bundle_root / "source/config/verified_subset.toml"
         ) != (
-            coordinates,
+            all_coordinates,
             policy_sha256,
         ):
             raise ValueError("Bundle Python policy differs from release authority")
@@ -1276,6 +1303,7 @@ def verify(
                 supervisor=supervisor,
                 generation=generation,
                 projection=projection,
+                component=component,
             )
             for minor, reference in coordinates
         ]
@@ -1300,6 +1328,7 @@ def verify(
             supervisor=supervisor,
             generation=generation,
             projection=projection,
+            component=component,
         )
         standalone_evidence = receipt.parent / "consumer-evidence"
         replay = consumer_replay.prepare(
@@ -1312,6 +1341,7 @@ def verify(
             supervisor=supervisor,
             generation=generation,
             argv=CONSUMER_GUEST_ARGV,
+            selected_lanes=None if component is None else component.lanes,
         )
         standalone = _uninstall_and_replay(
             root=root,
@@ -1324,10 +1354,12 @@ def verify(
             supervisor=supervisor,
         )
 
-        lanes = consumer_lanes()
+        lanes = consumer_lanes(None if component is None else component.lanes)
         count = (len(coordinates) + 1) * len(lanes)
         payload: dict[str, object] = {
-            "schema": CONSUMER_SCHEMA,
+            "schema": CONSUMER_SCHEMA
+            if component is None
+            else COMPONENT_CONSUMER_SCHEMA,
             "candidate": candidate_path.name,
             "candidate_sha256": canonical_json_sha256(candidate),
             "target": candidate["target"],
@@ -1349,17 +1381,30 @@ def verify(
             "uninstall_verified": True,
             "standalone": standalone,
         }
-        validate_consumer_proof(
-            payload, candidate, evidence_root=receipt.parent, supervisor=supervisor
-        )
+        if component is None:
+            validate_consumer_proof(
+                payload, candidate, evidence_root=receipt.parent, supervisor=supervisor
+            )
+        else:
+            payload["scope"] = component.as_record()
+            validate_component_consumer_proof(
+                payload,
+                candidate,
+                component=component,
+                evidence_root=receipt.parent,
+                supervisor=supervisor,
+            )
         write_json(receipt, payload)
-        consumer_replay.publish_archive(
-            candidate_dir=candidate_dir, receipt=receipt, candidate=candidate
-        )
+        if component is None:
+            consumer_replay.publish_archive(
+                candidate_dir=candidate_dir, receipt=receipt, candidate=candidate
+            )
         return payload
 
 
 def main() -> None:
+    from molt.cli.config_resolution import RUNTIME_STDLIB_PROFILE_TIERS
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
@@ -1367,7 +1412,37 @@ def main() -> None:
     parser.add_argument("--compile-memory-max-bytes", type=int, required=True)
     parser.add_argument("--compile-workspace-max-bytes", type=int, required=True)
     parser.add_argument("--compile-runtime-max-seconds", type=int, required=True)
+    parser.add_argument(
+        "--component-python",
+        choices=[minor for minor, _ in consumer_python_policy()[0]],
+    )
+    parser.add_argument(
+        "--component-lane",
+        action="append",
+        choices=[lane.id for lane in consumer_lanes()],
+    )
+    parser.add_argument(
+        "--component-stdlib-profile", choices=tuple(RUNTIME_STDLIB_PROFILE_TIERS)
+    )
     args = parser.parse_args()
+    requested = (
+        args.component_python,
+        args.component_lane,
+        args.component_stdlib_profile,
+    )
+    component = None
+    if any(value is not None for value in requested):
+        if not all(value is not None for value in requested):
+            parser.error(
+                "component evidence requires Python, lane and stdlib selections"
+            )
+        if len(set(args.component_lane)) != len(args.component_lane):
+            parser.error("component evidence cannot repeat a lane")
+        component = ConsumerComponent(
+            args.component_python,
+            tuple(lane for lane in consumer_lanes() if lane.id in args.component_lane),
+            args.component_stdlib_profile,
+        )
     payload = verify(
         args.candidate,
         args.receipt,
@@ -1377,6 +1452,7 @@ def main() -> None:
             workspace_max_bytes=args.compile_workspace_max_bytes,
             runtime_max_seconds=args.compile_runtime_max_seconds,
         ),
+        component=component,
     )
     print(json.dumps(payload, sort_keys=True))
 
