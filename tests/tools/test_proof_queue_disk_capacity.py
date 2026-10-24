@@ -45,10 +45,12 @@ def test_cleanup_cannot_silently_replace_invalid_admission_policy(raw: str) -> N
 def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
     args = argparse.Namespace(
         db=str(tmp_path / "queue.sqlite3"),
         logs_root=str(tmp_path / "runs"),
-        repo_root=str(tmp_path),
+        repo_root=str(source),
     )
     envelope = {"toolchains": ["cargo"]}
     monkeypatch.setattr(
@@ -85,7 +87,7 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
         logical_id="capacity-unit",
         reason="unit-test capacity admission",
         command=command,
-        cwd=tmp_path,
+        cwd=source,
         resource_family="cargo",
         contention_key="compiler-build",
         scopes=[],

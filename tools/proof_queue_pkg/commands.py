@@ -182,72 +182,79 @@ def _load_specs(path: Path) -> list[dict[str, object]]:
 
 def _cmd_submit(args: argparse.Namespace) -> int:
     specs = _load_specs(Path(args.dsl))
+    prepared: list[dict[str, object]] = []
+    logical_to_run: dict[str, str] = {}
+    for spec in specs:
+        logical_id = str(spec.get("id") or spec.get("logical_id") or "proof")
+        if logical_id in logical_to_run:
+            raise SystemExit(f"duplicate proof logical id {logical_id!r}")
+        command = spec.get("command")
+        if not isinstance(command, list) or not all(
+            isinstance(x, str) for x in command
+        ):
+            raise SystemExit(f"proof {logical_id!r} needs command = [..]")
+        policy_error = policy._proof_command_policy_error(list(command))
+        if policy_error is not None:
+            raise SystemExit(f"proof {logical_id!r}: {policy_error}")
+        lifetime = spec.get("cargo_output_lifetime", "retain")
+        output_root = spec.get("cargo_output_root")
+        envelope = command_admission.envelope_for_command(
+            command, cargo_output_lifetime=lifetime, cargo_output_root=output_root
+        )
+        output_error = runner._submission_output_error(
+            command=command,
+            repo_root=state._repo_root(args),
+            logs_root=state._logs_root(args),
+        )
+        if output_error is not None:
+            raise SystemExit(f"proof {logical_id!r}: {output_error}")
+        if output_root is not None:
+            command_admission.cargo_output_layout.CargoOutputLayout.for_envelope(
+                envelope,
+                result_root=state._logs_root(args),
+                source_root=state._repo_root(args),
+            )
+        edge_kind = str(spec.get("edge_kind") or state.DEFAULT_EDGE_KIND)
+        if edge_kind not in state.EDGE_KINDS:
+            allowed = ", ".join(sorted(state.EDGE_KINDS))
+            raise SystemExit(
+                f"proof {logical_id!r}: unknown proof edge kind "
+                f"{edge_kind!r}; allowed: {allowed}"
+            )
+        edge_note_raw = spec.get("edge_note")
+        if edge_note_raw is not None and not isinstance(edge_note_raw, str):
+            raise SystemExit(f"proof {logical_id!r}: edge_note must be a string")
+        env_overrides = policy._env_overrides_from_spec(spec.get("env"))
+        env_policy_error = policy._proof_env_policy_error(env_overrides)
+        if env_policy_error is not None:
+            raise SystemExit(f"proof {logical_id!r}: {env_policy_error}")
+        initial_notes = state._notes_from_raw(spec.get("note"))
+        initial_notes.extend(state._notes_from_raw(spec.get("notes")))
+        depends_on = state._dependencies_from_raw(spec.get("depends_on"))
+        depends_on.extend(state._dependencies_from_raw(spec.get("after")))
+        run_id = (
+            f"{state._compact_utc()}-{state._slug(logical_id)}-{uuid.uuid4().hex[:16]}"
+        )
+        logical_to_run[logical_id] = run_id
+        prepared.append(
+            {
+                "logical_id": logical_id,
+                "command": list(command),
+                "cargo_output_lifetime": lifetime,
+                "cargo_output_root": output_root,
+                "reason": str(spec.get("reason") or logical_id),
+                "resource_family": str(spec.get("resource_family") or "generic"),
+                "contention_key": str(spec.get("contention_key") or "generic:default"),
+                "scope": [str(x) for x in spec.get("scope", [])],
+                "env_overrides": env_overrides,
+                "initial_notes": initial_notes,
+                "depends_on": depends_on,
+                "edge_kind": edge_kind,
+                "edge_note": edge_note_raw or "",
+                "run_id": run_id,
+            }
+        )
     with closing(state._connect(state._db_path(args))) as conn:
-        prepared: list[dict[str, object]] = []
-        logical_to_run: dict[str, str] = {}
-        for spec in specs:
-            logical_id = str(spec.get("id") or spec.get("logical_id") or "proof")
-            if logical_id in logical_to_run:
-                raise SystemExit(f"duplicate proof logical id {logical_id!r}")
-            command = spec.get("command")
-            if not isinstance(command, list) or not all(
-                isinstance(x, str) for x in command
-            ):
-                raise SystemExit(f"proof {logical_id!r} needs command = [..]")
-            policy_error = policy._proof_command_policy_error(list(command))
-            if policy_error is not None:
-                raise SystemExit(f"proof {logical_id!r}: {policy_error}")
-            lifetime = spec.get("cargo_output_lifetime", "retain")
-            output_root = spec.get("cargo_output_root")
-            envelope = command_admission.envelope_for_command(
-                command, cargo_output_lifetime=lifetime, cargo_output_root=output_root
-            )
-            if output_root is not None:
-                command_admission.cargo_output_layout.CargoOutputLayout.for_envelope(
-                    envelope,
-                    result_root=state._logs_root(args),
-                    source_root=state._repo_root(args),
-                )
-            edge_kind = str(spec.get("edge_kind") or state.DEFAULT_EDGE_KIND)
-            if edge_kind not in state.EDGE_KINDS:
-                allowed = ", ".join(sorted(state.EDGE_KINDS))
-                raise SystemExit(
-                    f"proof {logical_id!r}: unknown proof edge kind "
-                    f"{edge_kind!r}; allowed: {allowed}"
-                )
-            edge_note_raw = spec.get("edge_note")
-            if edge_note_raw is not None and not isinstance(edge_note_raw, str):
-                raise SystemExit(f"proof {logical_id!r}: edge_note must be a string")
-            env_overrides = policy._env_overrides_from_spec(spec.get("env"))
-            env_policy_error = policy._proof_env_policy_error(env_overrides)
-            if env_policy_error is not None:
-                raise SystemExit(f"proof {logical_id!r}: {env_policy_error}")
-            initial_notes = state._notes_from_raw(spec.get("note"))
-            initial_notes.extend(state._notes_from_raw(spec.get("notes")))
-            depends_on = state._dependencies_from_raw(spec.get("depends_on"))
-            depends_on.extend(state._dependencies_from_raw(spec.get("after")))
-            run_id = f"{state._compact_utc()}-{state._slug(logical_id)}-{uuid.uuid4().hex[:16]}"
-            logical_to_run[logical_id] = run_id
-            prepared.append(
-                {
-                    "logical_id": logical_id,
-                    "command": list(command),
-                    "cargo_output_lifetime": lifetime,
-                    "cargo_output_root": output_root,
-                    "reason": str(spec.get("reason") or logical_id),
-                    "resource_family": str(spec.get("resource_family") or "generic"),
-                    "contention_key": str(
-                        spec.get("contention_key") or "generic:default"
-                    ),
-                    "scope": [str(x) for x in spec.get("scope", [])],
-                    "env_overrides": env_overrides,
-                    "initial_notes": initial_notes,
-                    "depends_on": depends_on,
-                    "edge_kind": edge_kind,
-                    "edge_note": edge_note_raw or "",
-                    "run_id": run_id,
-                }
-            )
         planned_edges: set[tuple[str, str, str]] = set()
         planned_children: dict[str, list[str]] = {}
         for item in prepared:
