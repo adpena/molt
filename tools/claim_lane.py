@@ -49,7 +49,7 @@ from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E40
 # Binding the executor binds the repository, so the tools package resolves next.
 _COMMANDS = CommandExecutor.for_file(__file__)
 
-from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
+from tools.git_identity import immutable_git_environment  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 
 CLAIMS_REL = cs.CLAIMS_REL

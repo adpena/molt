@@ -14,6 +14,14 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v8 binds source and ancestry to original Git objects, ignoring
+replacement refs and legacy grafts. Performance freshness resolves the current
+`origin/main` rather than retaining a process-lifetime ref or ancestry verdict.
+These checks follow [Git's replacement semantics](https://git-scm.com/docs/git-replace)
+and apply to development/release evidence, with no work in emitted programs.
+Historical boards retain their recorded methodology; this correction does not
+authenticate missing compiler/runtime execution identities or full-matrix evidence.
+
 Methodology v7 routes benchmark build targets through the compiler's admitted
 target authority. Exact WASI and freestanding targets retain their distinct
 deployment rules. This can change selected builds or admission outcomes, so v6

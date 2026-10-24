@@ -185,7 +185,7 @@ from tools.git_identity import (  # noqa: E402
     clean_checkout_status_arguments,
     require_git_object_id,
 )
-from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
+from tools.git_identity import immutable_git_environment  # noqa: E402
 from molt.file_locks import (  # noqa: E402
     _acquire_file_lock,
     _release_file_lock,

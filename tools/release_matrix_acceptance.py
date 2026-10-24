@@ -6,6 +6,8 @@ semantic receipts and canonical performance cells to a source-bound required set
 
 from __future__ import annotations
 
+import os
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
@@ -24,6 +26,8 @@ from molt.toolchain_identity import (
     verify_stable_regular_file_identity,
 )
 from tools import bench_suites
+
+from tools.git_identity import immutable_git_environment
 
 SHARD_SCHEMA = "molt.release-performance-shard.v2"
 _ROOT = Path(__file__).resolve().parents[1]
@@ -424,6 +428,7 @@ def source_admission_problems(*, root: Path, source_sha: str) -> list[str]:
     def git(*args: str, input_bytes: bytes | None = None) -> bytes:
         completed = subprocess.run(
             ["git", "-C", str(root), *args],
+            env=immutable_git_environment(os.environ),
             input=input_bytes,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

@@ -34,8 +34,9 @@ is the only lane permitted to emit ``authoritative=true``. See
 
 from __future__ import annotations
 
+import os
+
 import datetime as dt
-import functools
 import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -57,7 +58,7 @@ from molt.metric_ratios import (  # noqa: E402
 )
 from tools import perf_schema as perf_schema  # noqa: E402
 from tools import bench_suites as bench_suites  # noqa: E402
-from tools.git_identity import is_git_object_id  # noqa: E402
+from tools.git_identity import immutable_git_environment, is_git_object_id  # noqa: E402
 
 __all__ = [
     "CANONICAL_GATE",
@@ -203,6 +204,7 @@ def _git_output(args: list[str]) -> str | None:
     try:
         res = subprocess.run(
             ["git", *args],
+            env=immutable_git_environment(os.environ),
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
@@ -218,14 +220,9 @@ def _git_output(args: list[str]) -> str | None:
     return out or None
 
 
-@functools.lru_cache(maxsize=1)
-def _origin_main_rev() -> str | None:
-    return _git_output(["rev-parse", "origin/main"])
-
-
 def current_origin_main_rev() -> str | None:
     """Return the current ``origin/main`` SHA known to this checkout, if any."""
-    return _origin_main_rev()
+    return _git_output(["rev-parse", "origin/main"])
 
 
 def non_canonical_provenance(
@@ -847,7 +844,6 @@ def release_scoreboard_problems(
     return problems
 
 
-@functools.lru_cache(maxsize=512)
 def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
     """Is ``git_rev`` an ancestor of (or equal to) ``origin/main``?
 
@@ -858,14 +854,13 @@ def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
     """
     if not git_rev or git_rev == "unknown":
         return None
-    origin = _origin_main_rev()
-    if origin is None:
-        return None
     # `git merge-base --is-ancestor A B` exits 0 iff A is an ancestor of B
-    # (or A == B). Run it directly so we get the exit code, not stdout.
+    # (or A == B). Resolve the current ref in that same Git invocation; a
+    # separate rev-parse would add a process and a stale-ref interval.
     try:
         res = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", git_rev, origin],
+            ["git", "merge-base", "--is-ancestor", git_rev, "origin/main"],
+            env=immutable_git_environment(os.environ),
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,

@@ -75,7 +75,7 @@ from tools.molt_dev_common import (
 )
 from tools import drift_harvest, molt_dev_controller, molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
-from tools.release.git_source_snapshot import immutable_git_environment
+from tools.git_identity import immutable_git_environment
 
 LANE_BRANCH_PREFIX = "lane/"
 TASK_PREFIX = "lane-"

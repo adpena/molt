@@ -29,7 +29,11 @@ from tools.release import release_model
 from tools.release import release_evidence
 from tools import release_exit_gate
 from tools.command_execution import CommandExecutor
-from tools.git_identity import clean_checkout_status_arguments, read_git_blob_batch
+from tools.git_identity import (
+    clean_checkout_status_arguments,
+    immutable_git_environment,
+    read_git_blob_batch,
+)
 from tools.release import update_manifests
 from tools.release import verify_consumer
 from tools.release import compiler_payload
@@ -358,6 +362,7 @@ def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
         "GIT_OPTIONAL_LOCKS": "0",
         "LC_ALL": "C",
         "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_GRAFT_FILE": os.devnull,
     }
     assert env.rule is rule
 
@@ -365,17 +370,30 @@ def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
 @pytest.mark.parametrize("rule", list(NameRule))
 def test_immutable_git_environment_preserves_distinct_posix_names(rule):
     original = ProcessEnvironment(
-        {"Git_No_Replace_Objects": "ambient", "GIT_NO_REPLACE_OBJECTS": "0"},
+        {
+            "Git_No_Replace_Objects": "ambient",
+            "GIT_NO_REPLACE_OBJECTS": "0",
+            "Git_Graft_File": "ambient",
+            "GIT_GRAFT_FILE": "alternate",
+        },
         rule=rule,
     )
-    env = git_source_snapshot.immutable_git_environment(original)
+    env = immutable_git_environment(original)
     assert dict(env) == (
-        {"Git_No_Replace_Objects": "1"}
+        {"Git_No_Replace_Objects": "1", "Git_Graft_File": os.devnull}
         if rule is NameRule.WINDOWS
-        else {"Git_No_Replace_Objects": "ambient", "GIT_NO_REPLACE_OBJECTS": "1"}
+        else {
+            "Git_No_Replace_Objects": "ambient",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "Git_Graft_File": "ambient",
+            "GIT_GRAFT_FILE": os.devnull,
+        }
     )
     assert original["Git_No_Replace_Objects"] == (
         "0" if rule is NameRule.WINDOWS else "ambient"
+    )
+    assert original["Git_Graft_File"] == (
+        "alternate" if rule is NameRule.WINDOWS else "ambient"
     )
 
 
