@@ -1067,9 +1067,10 @@ fn runtime_provider_definitions_cannot_create_implicit_globals() {
         .emit("molt_json_dumps(molt_pack_list(1))", false)
         .unwrap();
     assert!(json.source.contains("\tmolt_json_dumps = (function()"));
-    assert!(json
-        .source
-        .contains("\t\treturn function(value: any): string"));
+    assert!(
+        json.source
+            .contains("\t\treturn function(value: any): string")
+    );
     assert!(!json.source.contains("molt_json_dumps = function(value"));
     validate_luau_source(&json.source).unwrap();
     for source in [
@@ -2306,8 +2307,10 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
     assert!(!frame_runtime::FRAME_RUNTIME.contains("context.owner"));
     assert!(frame_runtime::FRAME_RUNTIME.contains("{__mode = \"kv\"}"));
     assert!(frame_runtime::FRAME_RUNTIME.contains("molt_frame_owned_context(owner) ~= context"));
-    assert!(!frame_runtime::FRAME_RUNTIME
-        .contains("owner ~= current_owner or molt_frame_contexts[owner]"));
+    assert!(
+        !frame_runtime::FRAME_RUNTIME
+            .contains("owner ~= current_owner or molt_frame_contexts[owner]")
+    );
     assert_eq!(
         frame_runtime::FRAME_RUNTIME
             .matches("molt_frame_contexts[owner]")
@@ -2718,12 +2721,14 @@ fn isolated_builtin_module_ir() -> SimpleIR {
         }
         ops.push(OpIR {
             kind: "ret".to_string(),
-            args: Some(vec![if kind.is_some() {
-                "selected"
-            } else {
-                "namespace"
-            }
-            .to_string()]),
+            args: Some(vec![
+                if kind.is_some() {
+                    "selected"
+                } else {
+                    "namespace"
+                }
+                .to_string(),
+            ]),
             ..OpIR::default()
         });
         functions.push(FunctionIR {
@@ -2743,11 +2748,12 @@ fn isolated_builtin_module_ir() -> SimpleIR {
 #[test]
 fn isolated_module_cache_and_attribute_consumers_select_namespace_bootstrap() {
     let ir = isolated_builtin_module_ir();
-    assert!(ir
-        .functions
-        .iter()
-        .flat_map(|function| &function.ops)
-        .all(|op| !matches!(op.kind.as_str(), "builtin_func" | "module_get_global")));
+    assert!(
+        ir.functions
+            .iter()
+            .flat_map(|function| &function.ops)
+            .all(|op| !matches!(op.kind.as_str(), "builtin_func" | "module_get_global"))
+    );
     let source = LuauBackend::new().compile_checked(&ir).unwrap();
     assert_eq!(
         source
@@ -5236,8 +5242,11 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
         .expect("bounded sys version bootstrap does not require Python import dispatch");
     assert!(source.contains("local major: number = 3"));
     assert!(source.contains("local minor: number = 14"));
-    assert!(source
-        .contains("function molt_sys_set_version_info(major, minor, micro, releaselevel, serial)"));
+    assert!(
+        source.contains(
+            "function molt_sys_set_version_info(major, minor, micro, releaselevel, serial)"
+        )
+    );
     assert!(source.contains("function molt_sys_seed_module()"));
 }
 
