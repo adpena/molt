@@ -656,7 +656,7 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   removes the lease after the request completes. Both receivers use the same
   typed complete-frame reader and reject nonregular file descriptors before
   reading. File inputs have no additional byte ceiling; the stdin ceiling
-  above applies only to stdin. Daemon protocol 4 has only digest-probe and
+  above applies only to stdin. The daemon protocol has only digest-probe and
   MessagePack-file states; inline IR is retired. Its version is shared through
   `src/molt/backend_daemon_protocol_version.txt`. JSON exports and MLIR stdin
   retain their separate JSON contracts. These are compiler-side costs and

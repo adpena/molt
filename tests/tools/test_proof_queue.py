@@ -6081,13 +6081,231 @@ def test_proof_queue_durable_state_uses_external_custody_root(
     assert state._logs_root(args) == custody_root / "logs" / "proof_queue" / "runs"
 
 
-def test_guarded_execution_rejects_source_owned_outputs_before_arming(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("detach", [False, True])
+@pytest.mark.parametrize(
+    "layout,diagnostic",
+    [
+        ("source", "outputs must be outside effective source"),
+        ("missing-source-parent", "outputs must be outside effective source"),
+        ("parent-symlink", "outputs must be outside effective source"),
+        ("symlink-loop", "proof submission refused:"),
+        ("cas-symlink", "custody CAS must be outside effective source"),
+        ("missing-cas-target", "custody CAS must be outside effective source"),
+        ("relative", "result path must be absolute"),
+        ("uv-directory", "outputs must be outside effective source"),
+    ],
+)
+def test_proof_queue_refuses_output_layout_before_submission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    detach: bool,
+    layout: str,
+    diagnostic: str,
+) -> None:
+    repo = tmp_path / "source"
+    repo.mkdir()
+    logs = repo if layout == "source" else repo / "missing" / "runs"
+    command = [sys.executable, "-c", "pass"]
+    if layout == "parent-symlink":
+        link = tmp_path / "source-link"
+        link.symlink_to(repo, target_is_directory=True)
+        logs = link / "missing" / "runs"
+    elif layout == "symlink-loop":
+        first = tmp_path / "loop-a"
+        second = tmp_path / "loop-b"
+        first.symlink_to(second, target_is_directory=True)
+        second.symlink_to(first, target_is_directory=True)
+        logs = first / "missing"
+    elif layout in {"cas-symlink", "missing-cas-target"}:
+        logs = tmp_path / "external"
+        logs.mkdir()
+        destination = repo if layout == "cas-symlink" else repo / "missing"
+        (logs / "custody-cas").symlink_to(destination, target_is_directory=True)
+    elif layout == "relative":
+        logs = Path("relative-proof-runs")
+    elif layout == "uv-directory":
+        selected = repo / "selected"
+        selected.mkdir()
+        logs = selected / "missing" / "runs"
+        command = [
+            "uv",
+            "run",
+            "--active",
+            "--project",
+            ".",
+            "--python",
+            "3.12",
+            "--no-sync",
+            "--no-config",
+            "--directory",
+            "selected",
+            "python",
+            "-V",
+        ]
+    db = tmp_path / "history.sqlite3"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("CREATE TABLE retained_history (value TEXT)")
+        conn.execute("INSERT INTO retained_history VALUES ('original receipt')")
+        conn.commit()
+    before_db = db.read_bytes()
+    before_paths = set(tmp_path.rglob("*"))
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("output layout must be refused before queue state or dispatch")
+
+    monkeypatch.setattr(state, "_connect", forbidden)
+    monkeypatch.setattr(runner, "_dispatch_detached_runner", forbidden)
+    rc = cli.main(
+        [
+            "--db",
+            str(db),
+            "--repo-root",
+            str(repo),
+            "--logs-root",
+            str(logs),
+            "exec",
+            "--id",
+            "output-layout",
+            "--reason",
+            "independent prelaunch output boundary",
+            "--note",
+            "do not start a child or change existing history",
+            *(["--detach"] if detach else []),
+            "--",
+            *command,
+        ]
+    )
+    assert rc == 2
+    error = capsys.readouterr().err
+    assert diagnostic in error
+    assert "--logs-root" in error and "before the subcommand" in error
+    assert db.read_bytes() == before_db
+    assert set(tmp_path.rglob("*")) == before_paths
+
+
+@pytest.mark.parametrize(
+    "directory,project,diagnostic",
+    [
+        ("missing-source", ".", "missing-source"),
+        ("tools", "..", "uv --project must equal the effective command cwd"),
+    ],
+)
+def test_proof_queue_source_selection_refusal_does_not_prescribe_output_relocation(
+    tmp_path: Path, directory: str, project: str, diagnostic: str
+) -> None:
+    repo = tmp_path / "source"
+    (repo / "tools").mkdir(parents=True)
+    logs = tmp_path / "external" / "runs"
+    command = [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        project,
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "--directory",
+        directory,
+        "python",
+        "-V",
+    ]
+    error = runner._submission_output_error(
+        command=command, repo_root=repo, logs_root=logs
+    )
+    assert error is not None
+    assert "invalid effective source selection" in error
+    assert diagnostic in error
+    assert "--logs-root" not in error
+    assert not logs.parent.exists()
+
+
+@pytest.mark.parametrize("uv_directory", [False, True])
+def test_proof_queue_external_output_submission_preserves_history(
+    tmp_path: Path, uv_directory: bool
 ) -> None:
     repo = tmp_path / "source"
     _initialize_clean_git_repo(repo)
-    result = repo / "logs" / "proof-execution.json"
+    (repo / "selected").mkdir()
+    command = (
+        [
+            "uv",
+            "run",
+            "--active",
+            "--project",
+            ".",
+            "--python",
+            "3.12",
+            "--no-sync",
+            "--no-config",
+            "--directory",
+            "selected",
+            "python",
+            "-V",
+        ]
+        if uv_directory
+        else [sys.executable, "-c", "pass"]
+    )
+    # A uv command consumes its selected directory, not the containing checkout.
+    logs = (repo if uv_directory else tmp_path) / "evidence" / "runs"
+    assert (
+        runner._submission_output_error(command=command, repo_root=repo, logs_root=logs)
+        is None
+    )
+    assert not logs.parent.exists()
+    # Execution retains its stricter existing-parent precondition.
+    with pytest.raises(FileNotFoundError):
+        command_admission._require_external_execution_outputs(
+            result_path=logs / "proof.execution.json",
+            effective_source=repo / "selected" if uv_directory else repo,
+        )
+    assert not logs.parent.exists()
+    db = tmp_path / "history.sqlite3"
+    with closing(state._connect(db)) as conn:
+        conn.execute("CREATE TABLE retained_history (value TEXT)")
+        conn.execute("INSERT INTO retained_history VALUES ('original receipt')")
+        conn.commit()
+    args = SimpleNamespace(
+        db=db, logs_root=logs, notebooks_root=tmp_path / "notebooks", repo_root=repo
+    )
+    rc, run_id = runner._queue_one(
+        args,
+        logical_id="safe-layout",
+        reason="external output admission",
+        command=command,
+        resource_family="python",
+        contention_key="python:layout",
+        scopes=[],
+        env_overrides={},
+        initial_notes=["queue only; no child launch"],
+    )
+    assert rc == 0 and run_id is not None
+    with closing(sqlite3.connect(db)) as conn:
+        assert conn.execute("SELECT value FROM retained_history").fetchall() == [
+            ("original receipt",)
+        ]
+        assert conn.execute(
+            "SELECT status, log_path FROM proof_runs WHERE run_id=?", (run_id,)
+        ).fetchone() == ("queued", str(logs / f"{run_id}.log"))
+    assert not (logs / f"{run_id}.execution.json").exists()
+    assert not (logs / "custody-cas").exists()
+
+
+@pytest.mark.parametrize("layout", ["source", "cas-symlink", "missing-cas-target"])
+def test_guarded_execution_rejects_source_owned_outputs_before_arming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    repo = tmp_path / "source"
+    _initialize_clean_git_repo(repo)
+    result = (
+        (repo if layout == "source" else tmp_path) / "logs" / "proof-execution.json"
+    )
     result.parent.mkdir()
+    if layout != "source":
+        target = repo if layout == "cas-symlink" else repo / "missing"
+        (result.parent / "custody-cas").symlink_to(target, target_is_directory=True)
     command = [sys.executable, "-c", "pass"]
     request = tmp_path / "source-output.request.json"
     request.write_text(
@@ -6112,12 +6330,16 @@ def test_guarded_execution_rejects_source_owned_outputs_before_arming(
         "provision",
         lambda **_kwargs: pytest.fail("supervisor provisioned before boundary check"),
     )
-    with pytest.raises(ValueError, match="outputs must be outside effective source"):
+    before_paths = set(tmp_path.rglob("*"))
+    diagnostic = "outputs" if layout == "source" else "custody CAS"
+    with pytest.raises(
+        ValueError, match=f"{diagnostic} must be outside effective source"
+    ):
         guarded_execution.execute_guarded_request(request)
     assert not result.exists()
     assert not result.with_suffix(".supervisor-policy.json").exists()
     assert not result.with_suffix(".supervisor-receipt.json").exists()
-    assert not (result.parent / "custody-cas").exists()
+    assert set(tmp_path.rglob("*")) == before_paths
 
 
 def test_proof_queue_migrates_legacy_interpreter_authority_without_fabricating_receipt(

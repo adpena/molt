@@ -1099,20 +1099,23 @@ def _execution_source_paths(envelope: Mapping[str, object], *, cwd: Path) -> Pat
 
 
 def _require_external_execution_outputs(
-    *, result_path: Path, effective_source: Path
+    *,
+    result_path: Path,
+    effective_source: Path,
+    require_existing_parent: bool = True,
 ) -> None:
     """Reject proof output authorities that overlap the consumed source tree."""
     if not result_path.is_absolute():
         raise ValueError("proof execution result path must be absolute")
     source = effective_source.resolve(strict=True)
-    output_parent = result_path.parent.resolve(strict=True)
+    output_parent = result_path.parent.resolve(strict=require_existing_parent)
     if output_parent == source or output_parent.is_relative_to(source):
         raise ValueError("proof execution outputs must be outside effective source")
-    cas_root = output_parent / "custody-cas"
-    if cas_root.exists():
-        resolved_cas = cas_root.resolve(strict=True)
-        if resolved_cas == source or resolved_cas.is_relative_to(source):
-            raise ValueError("proof custody CAS must be outside effective source")
+    # Resolve existing symlink prefixes even when the destination is not created.
+    # Submission checks must not create output paths in order to reject them.
+    resolved_cas = (output_parent / "custody-cas").resolve(strict=False)
+    if resolved_cas == source or resolved_cas.is_relative_to(source):
+        raise ValueError("proof custody CAS must be outside effective source")
 
 
 def _canonical_uv_prefix(

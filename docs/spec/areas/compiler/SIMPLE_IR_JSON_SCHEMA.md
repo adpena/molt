@@ -59,7 +59,7 @@ The backend daemon fills the rest from its resident store and names the
 positions it lacks (`docs/design/backend_compile_daemon.md`). JSON, CBOR and
 NDJSON inputs keep their `functions` array, and JSON exports and the MLIR stdin
 boundary retain JSON. All file receivers share regular-file admission and EOF
-validation. File sizes are not bounded by the stdin ceiling. Daemon protocol 4
+validation. File sizes are not bounded by the stdin ceiling. The daemon protocol
 keeps its small control frame in JSON and admits only a cache probe that names
 the program's digests (`function_digests`, hex) without an IR path, or a
 compile with a nonempty MessagePack `ir_path`; inline `ir` is rejected,

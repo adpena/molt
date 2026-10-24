@@ -6,6 +6,18 @@ exact command and git snapshot, writes guarded logs, enforces proof DAG
 dependencies, and projects each noted or linked run into a deterministic marimo
 notebook for collaborative inspection.
 
+Proof result files and their `custody-cas` must be outside the effective source
+root, including a command's `uv --directory`. New submissions check this before
+recording a run or starting a detached runner; execution checks it again before
+capture. Existing symlink prefixes are resolved without creating output paths.
+For a plain clone whose default custody logs are inside the checkout, select an
+owned external evidence directory with the global option before the subcommand:
+`python tools/proof_queue.py --logs-root /absolute/external/proof-runs cargo ...`.
+Use the normal full DX/RunContext environment as well; that environment does not
+relocate queue logs. This explicit output configuration leaves the default SQLite
+history in place. Existing rows retain their absolute artifact paths; notebooks
+follow their existing `--notebooks-root` selection or the logs-parent default.
+
 Queued Cargo executable selection is shared by dispatch and tool capture. An
 explicit executable path in a typed direct or delegated Cargo command takes
 precedence over `CARGO`; a bare Cargo role uses `CARGO` before the command's
