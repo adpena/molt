@@ -53,6 +53,7 @@ import os
 import sys
 import sysconfig
 import subprocess
+import textwrap
 import time
 import venv
 from pathlib import Path
@@ -6602,9 +6603,12 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
 
 @pytest.mark.parametrize("outcome", [0, 1])
 def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_cwd(
-    origin_and_clone, tmp_path, outcome
+    origin_and_clone, tmp_path, driver_seed, outcome
 ):
     """The actual new pinned consumer resumes context; supervisors stay outside."""
+    from tools import molt_dev_controller
+    from tools.venv_exec import venv_python
+
     origin, _main = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_controller_cwd")
     main = tmp_path / "mainclone"
@@ -6613,21 +6617,24 @@ def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_
         (wt / "README.md").write_text("independent tracked edit\n", encoding="utf-8")
     key = "c" * 32
     cache = main / ".git" / "molt" / "controllers" / key
-    (cache / "tools").mkdir(parents=True)
+    copy_driver_trees(cache, seed=driver_seed)
+    # Use the controller's interpreter, without the proof environment's
+    # editable-install startup hooks binding Molt to a different source tree.
+    molt_dev_controller._sync_environment(cache)
     (cache / ".molt-controller.json").write_text("{}\n", encoding="utf-8")
     report = tmp_path / "controller-context.json"
     state = tmp_path / "preserved-state"
     state.write_bytes(b"independent state")
     driver = cache / "tools" / "molt_dev.py"
-    driver.write_text(
-        f"""
+    probe = f"""
 import json, os, sys, tempfile
 from pathlib import Path
-sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
 from tools import molt_dev as actual
 from tools import molt_dev_controller as controller
 from tools import molt_dev_retire
 
+assert Path(actual.__file__).resolve() == Path(__file__).resolve()
 args = actual.build_parser().parse_args(sys.argv[1:])
 physical_cwd = Path.cwd()
 controller.resume_controller_cwd(args, driver_file=__file__)
@@ -6642,6 +6649,13 @@ assert os.environ["TMP"] == "relative-tmp"
 assert os.environ["TEMP"] == "relative-tmp"
 selected_temp = Path(tempfile.gettempdir())
 assert selected_temp == repo / "relative-tmp"
+assert not (Path(__file__).resolve().parents[1] / "relative-tmp").exists()
+temporary_fd = os.open(Path(os.environ["TMPDIR"]) / "selected-child", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+try:
+    os.write(temporary_fd, b"logical temporary output")
+finally:
+    os.close(temporary_fd)
+temporary_bytes = (selected_temp / "selected-child").read_bytes()
 # Check repository association only after the original environment context is
 # restored; this is the same existing identity owner used by command dispatch.
 common = actual._git_common_directory(repo)
@@ -6651,11 +6665,19 @@ result = molt_dev_retire.cleanup_worktree(actual.Git(repo), repo, "origin/main",
 Path({str(report)!r}).write_text(json.dumps({{
     "physical_cwd": str(physical_cwd), "logical_cwd": str(repo),
     "argv": sys.argv[1:], "remaining_context": args.controller_cwd,
-    "selected_temp": str(selected_temp),
+    "selected_temp": str(selected_temp), "temporary_bytes": temporary_bytes.decode("ascii"),
     "result": result, "repo_exists": repo.exists(),
 }}), encoding="utf-8")
 raise SystemExit(result)
-""",
+"""
+    # Give every imported consumer the same fixture-owned pinned source tree.
+    # Replace only the script entrypoint; tools.molt_dev still imports its real
+    # implementation, and all source-derived launch directories remain local.
+    original_driver = driver.read_text(encoding="utf-8")
+    entrypoint = "    raise SystemExit(main(sys.argv[1:]))"
+    assert original_driver.count(entrypoint) == 1
+    driver.write_text(
+        original_driver.replace(entrypoint, textwrap.indent(probe, "    ")),
         encoding="utf-8",
     )
     # Isolate the process-wide cwd transition from pytest's guard threads.
@@ -6663,14 +6685,12 @@ raise SystemExit(result)
 import os, sys
 from pathlib import Path
 from types import SimpleNamespace
-sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
 from tools import molt_dev_controller as controller
 os.chdir({str(wt)!r})
 assert Path.cwd() == Path({str(wt)!r})
 os.environ.update(CARGO_TARGET_DIR="relative-target", CARGO_HOME="relative-cargo-home", TMPDIR="relative-tmp", TMP="relative-tmp", TEMP="relative-tmp")
-os.environ["MOLT_SOURCE_ROOT"] = os.path.relpath({str(REPO_ROOT)!r}, Path.cwd())
-# Retain the actual selected environment; do not create a second controller venv.
-controller.venv_python = lambda _: Path(sys.executable)
+os.environ["MOLT_SOURCE_ROOT"] = os.path.relpath({str(cache)!r}, Path.cwd())
 real_os = controller.os
 controller.os = SimpleNamespace(name="nt", chdir=real_os.chdir, environ=real_os.environ)
 rc = controller.run_controller(controller.Controller({key!r}, Path({str(cache)!r})),
@@ -6680,7 +6700,7 @@ assert rc == {outcome}
 raise SystemExit(0)
 """
     completed = run_guarded_test_process(
-        [sys.executable, "-I", "-c", code],
+        [str(venv_python(cache / ".venv")), "-I", "-c", code],
         cwd=tmp_path,
         env=ProcessEnvironment(os.environ),
         timeout=120,
@@ -6691,10 +6711,14 @@ raise SystemExit(0)
     assert Path(observed["logical_cwd"]) == wt
     assert observed["remaining_context"] is None
     assert Path(observed["selected_temp"]) == wt / "relative-tmp"
+    assert observed["temporary_bytes"] == "logical temporary output"
     assert observed["result"] == outcome
     assert observed["repo_exists"] is (outcome != 0)
     assert wt.exists() is (outcome != 0)
     assert state.read_bytes() == b"independent state"
+    # Imported implementation sources supply code, not this fixture's output
+    # cwd. Relative selections must never materialize in the proof checkout.
+    assert not (REPO_ROOT / "relative-tmp").exists()
 
 
 @pytest.mark.parametrize("command", [["integrate"], ["queue", "run"]])
