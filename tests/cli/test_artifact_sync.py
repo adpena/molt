@@ -1019,7 +1019,9 @@ def test_sealed_cache_transfer_republishes_generation_without_retagging(
     }
     if defect == "receipt":
         receipt["source_key"] = "another-key"
-    backend_cache_sync_receipt_path(source).write_text(json.dumps(receipt))
+    backend_cache_sync_receipt_path(source).write_text(
+        json.dumps(receipt), encoding="utf-8"
+    )
     if defect == "output":
         source.write_bytes(b"fn replaced() {}\n")
     destination = tmp_path / "live" / name
@@ -1037,7 +1039,9 @@ def test_sealed_cache_transfer_republishes_generation_without_retagging(
         cache.restore_backend_cache_artifact(
             source, destination, artifact_contract=contract
         )
-        actual = json.loads(backend_cache_sync_receipt_path(destination).read_text())
+        actual = json.loads(
+            backend_cache_sync_receipt_path(destination).read_text(encoding="utf-8")
+        )
         assert actual["emission_origin"] == origin
         assert actual["generation"] == [
             destination.stat().st_dev,
@@ -1046,7 +1050,10 @@ def test_sealed_cache_transfer_republishes_generation_without_retagging(
         assert actual["generation"] != receipt["generation"]
         assert destination.read_bytes() == content
         assert (
-            json.loads(backend_cache_sync_receipt_path(source).read_text()) == receipt
+            json.loads(
+                backend_cache_sync_receipt_path(source).read_text(encoding="utf-8")
+            )
+            == receipt
         )
 
 
@@ -1168,7 +1175,9 @@ def test_admission_cache_export_fences_consumed_stdlib_generation(
     archive = root / "shared-stdlib" / key / "stdlib.a"
     archive.parent.mkdir(parents=True)
     archive.write_bytes(archive_bytes)
-    archive.with_suffix(".origin.json").write_text(json.dumps(stdlib_payload))
+    archive.with_suffix(".origin.json").write_text(
+        json.dumps(stdlib_payload), encoding="utf-8"
+    )
     app = root / (
         "d" * 64 + ".artifact-" + contract.cache_identity + ".stdlib-" + key + ".a"
     )
@@ -1188,11 +1197,13 @@ def test_admission_cache_export_fences_consumed_stdlib_generation(
         else:
             coordinate.write_bytes(archive_bytes)
             coordinate.with_suffix(".origin.json").write_text(
-                json.dumps(stdlib_payload)
+                json.dumps(stdlib_payload), encoding="utf-8"
             )
     elif defect == "other-origin":
         worker_payload["scope"] = "f" * 64
-        archive.with_suffix(".origin.json").write_text(json.dumps(stdlib_payload))
+        archive.with_suffix(".origin.json").write_text(
+            json.dumps(stdlib_payload), encoding="utf-8"
+        )
     context = cache.compilation_cache_export_paths(
         root,
         cache={"compiler": str(app), "stdlib": str(coordinate)},

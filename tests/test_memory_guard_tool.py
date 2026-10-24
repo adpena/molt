@@ -9080,7 +9080,7 @@ def test_published_observer_marker_keeps_custody_refusals(tmp_path, defect):
         "MOLT_MEMORY_GUARD_TOKEN": token,
         "MOLT_MEMORY_GUARD_MARKER": str(marker),
     }
-    raw = json.loads(marker.read_text())
+    raw = json.loads(marker.read_text(encoding="utf-8"))
     if defect == "token":
         env["MOLT_MEMORY_GUARD_TOKEN"] = "0" * 32
     elif defect == "terminal":
@@ -9092,7 +9092,7 @@ def test_published_observer_marker_keeps_custody_refusals(tmp_path, defect):
     else:
         marker.unlink()
     if defect != "missing":
-        marker.write_text(json.dumps(raw))
+        marker.write_text(json.dumps(raw), encoding="utf-8")
     assert not bootstrap._active_guard_marker_valid(env, guard_pid=os.getpid())
 
 
