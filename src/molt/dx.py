@@ -19,7 +19,11 @@ from typing import Literal, Mapping, Sequence, cast
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
-from molt.cargo_execution_policy import cargo_compiler_wrappers, sccache_server_endpoint
+from molt.cargo_execution_policy import (
+    cargo_compiler_wrappers,
+    sccache_auto_selection_allowed,
+    sccache_server_endpoint,
+)
 from molt.disk_capacity import capacity_bytes_from_gib, probe_capacity
 from molt.default_paths import (
     DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
@@ -1402,6 +1406,8 @@ def _ensure_sccache_wrapper(env: MutableMapping[str, str]) -> None:
     lanes) and name the command that provisions it; never download it here.
     Respects every explicit Cargo compiler-wrapper selector."""
     global _sccache_degrade_warned
+    if not sccache_auto_selection_allowed(env):
+        return
     if cargo_compiler_wrappers(env):
         return
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
@@ -1448,7 +1454,7 @@ def _install_dx_defaults(repo_root: Path, env: MutableMapping[str, str]) -> None
     # sccache off-by-default on Windows: measured 0 cache hits + mid-compile
     # crashes (os error 10054) that time builds out. Power users force it with
     # MOLT_USE_SCCACHE=1; cargo_execution also treats "auto" as off-on-Windows.
-    env.setdefault("MOLT_USE_SCCACHE", "0" if os.name == "nt" else "1")
+    env.setdefault("MOLT_USE_SCCACHE", "0" if os.name == "nt" else "auto")
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
@@ -1739,6 +1745,7 @@ class RunContext:
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
     ) -> ProcessEnvironment:
+        sccache_auto_selection_allowed(os.environ if base is None else base)
         env = ProcessEnvironmentBuilder(
             self.canonical_env(
                 base,
@@ -1925,6 +1932,7 @@ class DxProject:
                 if key in CANONICAL_ROOT_ENV_KEYS or key == "PYTHONPATH":
                     value = str(Path(value).expanduser().resolve())
                 env[key] = value
+        sccache_auto_selection_allowed(env)
         env = ProcessEnvironmentBuilder(
             RunContext(
                 self.root,

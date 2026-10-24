@@ -164,6 +164,11 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
         "producer-failure": (chosen,),
     }[selection]
     for name, value in {
+        "MOLT_USE_SCCACHE": "1",
+        "RUSTC_WRAPPER": "sccache",
+        "RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
+        "CARGO_BUILD_RUSTC_WRAPPER": "sccache",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
         "CARGO_INCREMENTAL": "1",
         "SOURCE_DATE_EPOCH": "17",
         "LC_ALL": "ambient-locale",
@@ -208,6 +213,16 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
         assert os.environ["SOURCE_DATE_EPOCH"] == "1700000000"
         assert os.environ["LC_ALL"] == "C"
         assert os.environ["TZ"] == "UTC"
+        assert os.environ["MOLT_USE_SCCACHE"] == "0"
+        assert all(
+            os.environ[name] == ""
+            for name in (
+                "RUSTC_WRAPPER",
+                "RUSTC_WORKSPACE_WRAPPER",
+                "CARGO_BUILD_RUSTC_WRAPPER",
+                "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+            )
+        )
         # The common Cargo plan owns remapping after flag selection; the
         # release wrapper must not overwrite Cargo's ambient selection first.
         assert os.environ.get("CARGO_ENCODED_RUSTFLAGS") == environment_before.get(

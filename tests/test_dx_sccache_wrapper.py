@@ -10,7 +10,11 @@ regresses, the cache silently turned off again or Molt installed a tool unasked.
 
 from __future__ import annotations
 
-from molt.process_environment import ProcessEnvironmentBuilder
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 
 import os
 from pathlib import Path
@@ -20,6 +24,84 @@ import pytest
 from tests.process_guard_common import install_module_os_view
 
 import molt.dx as dx
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+@pytest.mark.parametrize("epoch", ["", "1700000000"])
+@pytest.mark.parametrize("mode", [None, "auto", "0", "1"])
+@pytest.mark.parametrize("consumer", ["dx", "cli"])
+def test_epoch_cache_selection_preserves_input_before_discovery(
+    monkeypatch, rule, epoch, mode, consumer
+):
+    import molt.cli.cargo_execution as ce
+
+    module, select = (
+        (dx, dx._ensure_sccache_wrapper)
+        if consumer == "dx"
+        else (ce, ce._maybe_enable_sccache)
+    )
+    monkeypatch.setattr(
+        module,
+        "pinned_sccache",
+        lambda _env: pytest.fail("epoch selection must precede discovery"),
+    )
+    env = ProcessEnvironmentBuilder({"SOURCE_DATE_EPOCH": epoch}, rule=rule)
+    if mode is not None:
+        env["MOLT_USE_SCCACHE"] = mode
+    original = dict(env)
+    if mode == "1":
+        with pytest.raises(ValueError, match="MOLT_USE_SCCACHE.*SOURCE_DATE_EPOCH"):
+            select(env)
+    else:
+        select(env)
+    assert dict(env) == original
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_dx_epoch_refusal_precedes_artifact_creation(tmp_path, monkeypatch, rule):
+    monkeypatch.setattr(
+        dx, "pinned_sccache", lambda _env: pytest.fail("unexpected discovery")
+    )
+    artifacts = tmp_path / "not-created"
+    env = ProcessEnvironment(
+        {
+            "MOLT_EXT_ROOT": str(artifacts),
+            "SOURCE_DATE_EPOCH": "",
+            "RUSTC_WRAPPER": "sccache",
+        },
+        rule=rule,
+    )
+    with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+        dx.RunContext(tmp_path).dx_env(env)
+    assert not artifacts.exists()
+
+
+@pytest.mark.parametrize("consumer", ["dx", "cli"])
+def test_explicit_other_wrapper_shadows_forced_automatic_cache(monkeypatch, consumer):
+    import molt.cli.cargo_execution as ce
+    from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
+
+    module, select = (
+        (dx, dx._ensure_sccache_wrapper)
+        if consumer == "dx"
+        else (ce, ce._maybe_enable_sccache)
+    )
+    monkeypatch.setattr(
+        module,
+        "pinned_sccache",
+        lambda _env: pytest.fail("explicit wrapper owns selection"),
+    )
+    for selector in CARGO_WRAPPER_ENV_NAMES:
+        env = ProcessEnvironmentBuilder(
+            {
+                selector: "custom-wrapper",
+                "SOURCE_DATE_EPOCH": "1",
+                "MOLT_USE_SCCACHE": "1",
+            }
+        )
+        original = dict(env)
+        select(env)
+        assert dict(env) == original
 
 
 def test_wires_rustc_wrapper_when_sccache_available(monkeypatch):

@@ -22,7 +22,6 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.cargo_execution_policy import (  # noqa: E402
-    CARGO_WRAPPER_ENV_NAMES,
     admit_cargo_build,
 )
 from molt.cli.native_binary import validate_native_binary_architecture  # noqa: E402
@@ -575,7 +574,6 @@ def build_environment(
         rule=inherited.rule,
     )
     channel = rust_channel((source / "rust-toolchain.toml").read_bytes())
-    env.update({name: "" for name in CARGO_WRAPPER_ENV_NAMES})
     env.update(
         {
             "CARGO_HOME": str(work / "cargo-home"),
