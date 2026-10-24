@@ -36,6 +36,7 @@ from tests.tools.test_release_supply_chain import (
     release_source,
     release_transport_files,
 )
+from tests.tools.test_release_native_build import llvm_input_fixture
 
 _TAG = "manylinux_2_39_x86_64"
 
@@ -701,14 +702,33 @@ def test_pip_command_records_share_typed_admission(release_inputs, mutate):
         _admit(release_inputs, mutate)
 
 
-def test_bundle_rejects_runtime_cells_from_another_source(tmp_path, release_source):
-    other = replace(release_source, source_sha="d" * 40)
+@pytest.mark.parametrize("mismatch", ["runtime-source", "gnu-x32"])
+def test_bundle_rejects_runtime_cells_from_another_source(
+    tmp_path, release_source, monkeypatch, mismatch
+):
+    other = (
+        replace(release_source, source_sha="d" * 40)
+        if mismatch == "runtime-source"
+        else release_source
+    )
     cells = _runtime_cells(
         tmp_path / "cells", platform="linux", arch="x86_64", snapshot=other
     )
     worker = tmp_path / "molt-worker"
     worker.write_bytes(b"worker")
-    with pytest.raises(ValueError, match="not produced from the bundle source"):
+    llvm_inputs = llvm_input_fixture(release_source, platform="linux", arch="x86_64")
+    if mismatch == "gnu-x32":
+        llvm_inputs["link_plan"]["host_target"] = "x86_64-unknown-linux-gnux32"
+        llvm_inputs["link_plan"]["host_abi"].update(pointer_bits=32, header_bits=32)
+
+    def unexpected_export(*_args, **_kwargs):
+        pytest.fail("mismatched source or ABI must refuse before source export")
+
+    monkeypatch.setattr(build_bundle, "materialize_sources", unexpected_export)
+    match = (
+        "not produced from the bundle source" if mismatch == "runtime-source" else "ABI"
+    )
+    with pytest.raises(ValueError, match=match):
         build_bundle.build_bundle(
             version="0.0.001",
             platform="linux",
@@ -722,7 +742,9 @@ def test_bundle_rejects_runtime_cells_from_another_source(tmp_path, release_sour
             wasm_facts=worker,
             snapshot=release_source,
             runtime_cells=cells,
+            llvm_inputs=llvm_inputs,
         )
+    assert not (tmp_path / "bundle.tar.gz").exists()
 
 
 def test_release_manifest_requires_one_platform_wheel_per_target(

@@ -1286,18 +1286,62 @@ component result has its own scope, while the required release matrix remains
 unchanged. The same producer, installed caller and evidence receiver own both
 scopes; there is no second executor or proof registry.
 
-The compiler production feature tuple includes `llvm` and retains the base
-`llvm22-1` pin alongside `inkwell/llvm22-1-force-static`. Source and release builds
-share one selected-SDK admission: `llvm-config`, selected headers and the complete
-`--libnames --link-static` archive closure remain under resource custody through
-publication. `--libdir` and `--includedir` must refer to the selected SDK. Native
-build v3 records this location-neutral input identity and source policy; candidate
-admission and the signed SBOM consume that record. Static LLVM linkage does not
-claim static system C/C++ linkage; the existing target compatibility audits own
-that boundary. Installed readiness checks delivered compiler/runtime capability
-and does not require source-development SDK tools. Full SDK provisioning uses the
-existing Linux package and non-Linux source-build owners. None of these source
-contracts constitutes actual six-host execution or release acceptance.
+The production compiler enables `llvm`, retains the `llvm22-1` pin, and uses
+`inkwell/llvm22-1-no-llvm-linking`. Upstream `llvm-sys` still produces its C target
+wrappers. The optional `molt-llvm-link/native-link` dependency owns native linkage
+once; ordinary workspace checks leave it inactive and require no SDK.
+
+SDK usability and compiler delivery are distinct contracts. The SDK verifier and
+proof capture retain the raw ordered `llvm-config --libnames --link-static` and
+`--system-libs --link-static` closure and its C++ link probe. The compiler's
+`molt.llvm_link_plan` then selects a typed per-library plan. Static LLVM archives
+remain mandatory; system dependencies retain their individual static, shared or
+framework kind. `llvm-config --host-target` and the existing native shape
+registry supply pointer-width and byte-order facts, checked against Cargo's
+actual target in addition to the declared architecture family. These shape
+checks do not prove every ABI detail: the release Rust target/toolchain and
+final binary audit retain that obligation. The receipt consumer joins the SDK
+shape to that actual Rust target too. An absent or mismatched active plan
+refuses before native linking.
+
+Release selection uses auditwheel's pinned, maintained portable-policy shared
+library capability. A non-policy dependency selects a real static archive when
+available. If none exists, its selected shared file remains explicitly
+policy-unadmitted: an unused SDK operand may be removed by the linker, but a
+referenced prohibited dependency fails the actual final binary audit. The native
+producer audits before publication; bundle and written-wheel audits still run.
+There is no library-name exception, grafting or tag relaxation.
+
+Exact static paths are bundled in a dependency rlib through Rust's
+[`+bundle,+verbatim` native linkage](https://doc.rust-lang.org/reference/items/external-blocks.html#linking-modifiers-bundle).
+This prevents another Cargo search root from substituting an archive and lets
+backend-local tests consume the same upstream metadata. Intentional OS shared
+libraries remain named ABI selectors. Their selected SDK files are retained
+observations, not a claim that Rust binds a shared selector to that exact file.
+Native-build v6 and the signed SBOM retain the plan, policy and file identities;
+resource custody fences selected SDK, configuration, driver and system files.
+
+For Linux release manufacturing, selected system-static archives also retain
+observed dpkg package ownership and independently captured archive hashes. Full
+copyright notices and referenced Debian common-license bytes accompany the
+receipt, bundle and wheel, following
+[Debian's copyright-information contract](https://www.debian.org/doc/debian-policy/ch-docs.html#copyright-information).
+SPDX represents each dependency package separately with `NOASSERTION`; observed
+local ownership does not authenticate upstream provenance. An empty system-static
+selection launches no package-manager process. This capture is release tooling,
+with no SDK or package-manager requirement for emitted programs.
+
+Selection costs one driver search-directory query per fresh admission plus
+bounded metadata/file selection; retained-plan projections make no repeated
+selection query. Exact static bundling retains the existing LLVM archive-copy
+cost. These are development/compiler-production costs and add no execution
+context, checks or allocations to emitted user programs. The SDK source builder's
+CMake flags and configuration digest project one option table, including its
+existing host-optional compression exclusion. This follows
+[LLVM's per-dependency static linkage](https://github.com/llvm/llvm-project/blob/llvmorg-22.1.8/llvm/lib/Support/CMakeLists.txt)
+rather than applying static CRT policy to unrelated system libraries. Installed
+readiness uses delivered capabilities and requires no development SDK. These
+contracts do not establish unexecuted host cells or full release acceptance.
 
 
 ## Runtime compilation and publication identity

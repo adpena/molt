@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -467,10 +468,17 @@ def test_lock_projection_is_mandatory_without_raw_lock_in_source_paths(tmp_path)
 def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     tmp_path, monkeypatch, mutate_during_admission, runtime_fixture_root
 ):
-    from molt import llvm_toolchain
+    from molt import llvm_toolchain, llvm_link_plan
     from molt.cli import cargo_execution, runtime_cargo_plan
     from tests.runtime_build_identity_helper import runtime_cargo_plan as fixture_plan
 
+    contract = tmp_path / "config/llvm_toolchain_arches.toml"
+    contract.parent.mkdir()
+    contract.write_bytes(
+        (
+            Path(__file__).resolve().parents[2] / "config/llvm_toolchain_arches.toml"
+        ).read_bytes()
+    )
     prefix = tmp_path / "llvm"
     library = prefix / "lib" / "libLLVM.a"
     header = prefix / "include" / "llvm-c" / "Core.h"
@@ -481,6 +489,9 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
         (header, b"/* core */"),
         (unrelated, b"# lldb"),
         (llvm_config, b"llvm-config"),
+        (prefix / "bin/clang++", b"driver"),
+        (prefix / "lib/libc++.dylib", b"C++ ABI"),
+        (prefix / "lib/libstdc++.so", b"C++ ABI"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
@@ -490,8 +501,17 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
         lambda root, **kw: SimpleNamespace(
             prefix=prefix,
             llvm_config=llvm_config,
+            version="22.1.8",
+            host_target="x86_64-unknown-linux-gnu",
             link_closure=("lib/libLLVM.a",),
             tool_versions=(
+                llvm_toolchain.LlvmToolVersionFact(
+                    "clang++",
+                    "bin/clang++",
+                    "22.1.8",
+                    6,
+                    hashlib.sha256(b"driver").hexdigest(),
+                ),
                 llvm_toolchain.LlvmToolVersionFact(
                     "llvm-config",
                     "bin/llvm-config",
@@ -507,6 +527,12 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
                 ),
             ),
         ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain, "llvm_sdk_probe_environment", ProcessEnvironment
+    )
+    monkeypatch.setattr(
+        llvm_link_plan, "_driver_library_directories", lambda *_args: (prefix / "lib",)
     )
     monkeypatch.setattr(
         llvm_toolchain,
@@ -574,12 +600,24 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     after_header = admission()
     assert after_header.fingerprint != after_library.fingerprint
     assert after_header.plan.build_directory != after_library.plan.build_directory
-    # Only the consumed content set (headers plus attested link-closure
-    # libraries) is a build input; the rest of the install is not.
+    # The selected C++ ABI library is observed/captured even though Rust keeps
+    # its intentional OS ABI selector. It must invalidate reuse like SDK bytes.
+    cpp = (
+        prefix
+        / "lib"
+        / ("libc++.dylib" if sys.platform == "darwin" else "libstdc++.so")
+    )
+    rewrite(cpp, b"new ABI")
+    with pytest.raises(compiler_identity.CompilerIdentityError):
+        after_header.verify()
+    after_abi = admission()
+    assert after_abi.fingerprint != after_header.fingerprint
+    assert after_abi.plan.build_directory != after_header.plan.build_directory
+    # Only the consumed content set is a build input; unrelated SDK files are not.
     rewrite(unrelated, b"# lldb, revised")
     after_unrelated = admission()
-    assert after_unrelated.fingerprint == after_header.fingerprint
-    assert after_unrelated.plan.build_directory == after_header.plan.build_directory
+    assert after_unrelated.fingerprint == after_abi.fingerprint
+    assert after_unrelated.plan.build_directory == after_abi.plan.build_directory
 
 
 def test_compiler_cargo_projection_never_admits_runtime_build_python(

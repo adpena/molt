@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.compiler_distribution import InstalledCompiler
+    from molt.llvm_link_plan import LlvmNativeLinkPlan
     from molt.llvm_toolchain import LlvmPrefixVerification
     from molt.toolchain_identity import StableRegularFileVersion
 
@@ -109,12 +110,13 @@ class LlvmCompilerInputs:
     root: Path
     verification: LlvmPrefixVerification
     resources: CargoResourceCustody
+    link_plan: LlvmNativeLinkPlan
 
     def environment(self, env: Mapping[str, str]) -> ProcessEnvironment:
         from molt.llvm_toolchain import project_llvm_toolchain_environment
 
         return project_llvm_toolchain_environment(
-            self.root, self.verification, environ=env
+            self.root, self.verification, environ=env, native_link_plan=self.link_plan
         )
 
     def verify(self) -> None:
@@ -122,17 +124,25 @@ class LlvmCompilerInputs:
 
 
 def admit_llvm_compiler_inputs(
-    root: Path, env: Mapping[str, str]
+    root: Path,
+    env: Mapping[str, str],
+    *,
+    shared_capability: tuple[Mapping[str, object], frozenset[str]] | None = None,
 ) -> LlvmCompilerInputs:
     from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
     from molt.llvm_toolchain import sdk_content_paths, verify_available_llvm_toolchain
+    from molt.llvm_link_plan import select_native_llvm_link_plan
 
     verification = verify_available_llvm_toolchain(root, environ=env)
     if verification is None:
         raise CompilerIdentityError(
             "Selected LLVM backend has no admitted LLVM toolchain"
         )
-    # llvm-sys consumes llvm-config, headers and its complete static archive set.
+    link_plan = select_native_llvm_link_plan(
+        root, verification, environ=env, shared_capability=shared_capability
+    )
+    # llvm-sys supplies the C wrappers; the native receiver consumes this exact
+    # LLVM archive and system dependency plan, with all selected files in custody.
     # Keep the verifier's broader SDK content family; do not scan unrelated tools.
     resources = CargoResourceCustody.capture(
         (
@@ -145,10 +155,10 @@ def admit_llvm_compiler_inputs(
                 for path in sdk_content_paths(verification)
             ),
             CargoResourceRoot("compiler/llvm-config", verification.llvm_config),
+            CargoResourceRoot("compiler/llvm-driver", link_plan.driver),
             *(
-                CargoResourceRoot(f"compiler/llvm-system/{index}", Path(token[7:]))
-                for index, token in enumerate(verification.link_closure)
-                if token.startswith("system:") and Path(token[7:]).is_absolute()
+                CargoResourceRoot(f"compiler/llvm-system/{index}", path)
+                for index, path in enumerate(link_plan.system_paths)
             ),
         )
     )
@@ -159,6 +169,15 @@ def admit_llvm_compiler_inputs(
         config.size,
     ):
         raise CompilerIdentityError("llvm-config changed after SDK verification")
+    driver = resources.file_identity(link_plan.driver)
+    driver_facts = [
+        fact for fact in verification.tool_versions if fact.role == "clang++"
+    ]
+    if len(driver_facts) != 1 or (driver_facts[0].sha256, driver_facts[0].size) != (
+        driver.sha256,
+        driver.size,
+    ):
+        raise CompilerIdentityError("LLVM dependency driver changed after verification")
     for fact in verification.content_facts:
         identity = resources.file_identity(verification.prefix / fact.path)
         if (
@@ -171,7 +190,7 @@ def admit_llvm_compiler_inputs(
             or (fact.sha256 and identity.sha256 != fact.sha256)
         ):
             raise CompilerIdentityError("LLVM SDK content changed after verification")
-    return LlvmCompilerInputs(root, verification, resources)
+    return LlvmCompilerInputs(root, verification, resources, link_plan)
 
 
 @dataclass(frozen=True)

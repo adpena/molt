@@ -310,8 +310,21 @@ recalculate artifact digests.
 `vendor/llvm/LICENSE.TXT` retains the exact notice from the source-pinned LLVM
 release. Bundle production copies it to `share/molt/LLVM-LICENSE.TXT`, and the
 platform wheel projects the same tree. The SBOM projects one SDK package per
-release host from the admitted native-build v3 input record, including upstream
+release host from the admitted native-build v6 input record, including upstream
 source digest, static link closure and location-neutral SDK byte identity.
+Selected static system archives have separate SPDX package entries with
+`NOASSERTION` license expressions. Linux release manufacturing requires
+`dpkg-query` to observe each archive's installed owner, version and architecture;
+unavailable or ambiguous ownership refuses the build. Package ownership does
+not authenticate upstream bytes: the admitted link plan separately records the
+exact selected archive hash and size. Full package copyright and referenced
+[Debian common-license notices](https://www.debian.org/doc/debian-policy/ch-docs.html#copyright-information)
+are embedded in the native receipt, copied under
+`share/molt/system-dependencies/`, and indexed by
+`share/molt/system-dependencies.json` in both bundle and platform wheel. Empty
+static-system selections launch no package queries, and ordinary developer or
+installed compilation performs none. Direct bundle production requires an
+explicit `--native-build` receipt bound to its source, target and binary bytes.
 This uses the existing candidate admission and signing path; a feature list or
 self-reported summary cannot replace native-build and installed-consumer receipts.
 Consumer proof v8 and sealed replay v2 carry complete logical lane records.

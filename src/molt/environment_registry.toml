@@ -2877,6 +2877,14 @@ owner = "runtime/molt-backend-native/src/native_backend/simple_backend/compile_d
 summary = "Exactly 1 (after trim) makes the LLVM backend write the module's pre-optimization IR to llvm/before_opt.ll under the debug artifact root, and the molt CLI then streams backend stderr; any other value writes nothing."
 
 [[variable]]
+name = "MOLT_LLVM_LINK_PLAN"
+audience = "internal"
+kind = "string"
+default = ""
+owner = "src/molt/llvm_link_plan.py"
+summary = "Canonical native LLVM dependency plan projected from the admitted SDK into Cargo; records target, ordered exact library files and individual linkage kinds, and the native receiver refuses an absent or mismatched plan rather than rediscovering SDK dependencies."
+
+[[variable]]
 name = "MOLT_LLVM_NM"
 audience = "user"
 kind = "path"

@@ -12,7 +12,7 @@ import tomllib
 from typing import Any, Iterable
 import zipfile
 
-from molt.exact_json import loads_exact
+from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.release_matrix import RELEASE_TARGETS
 from molt.portable_paths import portable_relative_path
 from molt.toolchain_identity import stable_regular_file_identity
@@ -385,10 +385,44 @@ def _llvm_spdx_packages(
                     {"algorithm": "SHA256", "checksumValue": release["source_sha256"]}
                 ],
                 "sourceInfo": json.dumps(inputs, sort_keys=True, separators=(",", ":")),
-                "comment": "Statically linked LLVM; native-build v3 input custody. System C/C++ linkage remains subject to platform binary compatibility admission.",
+                "comment": "Statically linked LLVM SDK; native-build input custody. Static system dependencies have distinct package entries; all final linkage remains subject to platform binary compatibility admission.",
             }
         )
-    return packages
+        for dependency in inputs["system_static_dependencies"]:
+            package = dependency["package"]
+            packages.append(
+                {
+                    "SPDXID": _spdx_id(
+                        "SystemStatic-"
+                        + target
+                        + "-"
+                        + package["name"]
+                        + "-"
+                        + package["architecture"]
+                    )
+                    + "-"
+                    + canonical_json_sha256(
+                        [
+                            package["manager"],
+                            target,
+                            package["name"],
+                            package["version"],
+                            package["architecture"],
+                        ]
+                    ),
+                    "name": package["name"] + " (" + target + ")",
+                    "versionInfo": package["version"],
+                    "downloadLocation": "NOASSERTION",
+                    "filesAnalyzed": False,
+                    "licenseConcluded": "NOASSERTION",
+                    "licenseDeclared": "NOASSERTION",
+                    "sourceInfo": json.dumps(
+                        dependency, sort_keys=True, separators=(",", ":")
+                    ),
+                    "comment": "Observed installed dpkg package ownership, not authenticated upstream bytes. sourceInfo binds selected static archives and full copyright/common-license notices.",
+                }
+            )
+    return sorted(packages, key=lambda item: item["SPDXID"])
 
 
 def validate_spdx_llvm_inputs(document: dict[str, Any]) -> None:
@@ -414,7 +448,18 @@ def validate_spdx_llvm_inputs(document: dict[str, Any]) -> None:
             inputs[expected[item["SPDXID"]]] = loads_exact(item["sourceInfo"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("release SBOM LLVM input record is invalid") from exc
-    if sorted(actual, key=lambda item: item["SPDXID"]) != _llvm_spdx_packages(inputs):
+    projected = [
+        item
+        for item in packages
+        if isinstance(item, dict)
+        and (
+            item.get("SPDXID") in expected
+            or str(item.get("SPDXID", "")).startswith("SPDXRef-SystemStatic-")
+        )
+    ]
+    if sorted(projected, key=lambda item: item["SPDXID"]) != _llvm_spdx_packages(
+        inputs
+    ):
         raise ValueError("release SBOM LLVM projection differs from input custody")
 
 

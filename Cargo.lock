@@ -2469,6 +2469,7 @@ dependencies = [
  "llvm-sys",
  "molt-codegen-abi",
  "molt-ir",
+ "molt-llvm-link",
  "molt-tir",
  "object 0.40.0",
  "rayon",
@@ -2636,6 +2637,14 @@ name = "molt-launcher"
 version = "0.1.0"
 dependencies = [
  "dunce",
+]
+
+[[package]]
+name = "molt-llvm-link"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

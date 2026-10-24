@@ -18,6 +18,10 @@
 ))]
 compile_error!("Molt's Cranelift native backend supports x86_64, aarch64, riscv64, and s390x");
 
+// Retain the dependency's native link metadata for binaries and local tests.
+#[cfg(feature = "llvm")]
+extern crate molt_llvm_link as _;
+
 // Native and LLVM codegen authority lives here so Cranelift/LLVM edits do not
 // rebuild the backend composition crate.
 pub use molt_ir::{

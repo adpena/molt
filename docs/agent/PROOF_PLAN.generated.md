@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 383 |
+| Hashed executable authority inputs | 1 | 384 |
 | Local path rules | 35 | 87 |
 | Unique local commands | 73 | 77 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -53,7 +53,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `native_integration` | pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 35 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 342 min | 20280 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 44 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
@@ -423,7 +423,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 14 | 2 |
 | `backend-luau` | 3 | 1 |
-| `backend-llvm` | 3 | 1 |
+| `backend-llvm` | 6 | 1 |
 | `tir-midend` | 11 | 2 |
 | `wasm-host` | 5 | 1 |
 | `gpu-runtime` | 3 | 1 |
