@@ -115,6 +115,34 @@ An independent audit (2026-10-17) found more:
    parent divides its memory slice among the units it admits and exports it;
    a child sizes itself against the smaller of its slice and live memory.
 
+### Landing test resource cohorts
+
+One unfiltered pytest invocation previously inherited every selected owner's
+toolchain requirements and the largest worker-memory envelope. In the retained
+429255673 landing, 5,517 tests used three workers under a 20.11 GiB tree cap;
+the largest observed worker was 1.50 GiB. The declared 6.25 GiB envelope remains
+necessary for its owning family. It must not restrict unrelated test families.
+The aggregate Cargo requirement also left a 56.73-second serialized tail.
+These observations identify an opportunity, not a demonstrated speedup.
+
+The selection authority uses the existing memory-ownership trie and typed
+test declarations. Overlapping requests form indivisible components. Each
+component owns the maximum measured envelope and union of its contributors'
+prerequisites; independent components share a cohort only when both agree.
+The existing Ninja-pool and pytest-xdist precedents above motivate retaining
+resource custody on the work that needs it. Literal targets, explicit
+selectors and parameter IDs keep their meaning. Repository-entry spelling
+and symlink refusal occur at admission; queries and grouping perform linear
+trie work without filesystem access or test collection.
+
+The existing executor still bounds pytest sessions and serializes all gates
+that can mutate the shared Cargo target. This adds no scheduler or result
+cache. Extra interpreter/collection cost, actual parallelism, memory peaks,
+case-union equality and matched wall time must qualify the partition before
+claiming an improvement. All costs and checks are development-side; emitted
+programs are unaffected. Hierarchical CPU allocation, complete evidence reuse
+and broader HF-334 release obligations remain separate work.
+
 ### Guard delegation
 
 An inherited tree limit is an allocation ceiling, not a new machine. Keep the

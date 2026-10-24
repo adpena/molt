@@ -127,11 +127,21 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    without changing the validated executable image.
    Before these gates, selected explicit pytest nodes are admitted with
    [pytest's own collection](https://docs.pytest.org/en/stable/how-to/usage.html#specifying-which-tests-to-run)
-   under the cohort's interpreter, configuration and guard. The unfiltered
-   merged cohort collects only its explicit nodes; file-only targets add no
+   under the cohort's interpreter, configuration and guard. Each unfiltered
+   cohort collects only its explicit nodes; file-only targets add no
    collection process. Filtered cohorts retain their declared selection.
    Collection failure stops the candidate before compilation. Successful
    collection never replaces test execution or contributes a passing gate.
+   Unfiltered requests first join overlapping directory/file/node selections,
+   then group independent requests with the same declared memory envelope and
+   prerequisites. Every contributing owner retains its requirements; a Cargo
+   requirement on one request does not serialize unrelated Python-only work.
+   Literal targets and parameter IDs retain their order within a cohort.
+   Canonical repository-entry admission happens once when the policy loads;
+   cohort selection uses tries without collection or filesystem probing.
+   These remain ordinary gates in the existing executor: its session ceiling,
+   delegated memory and single shared Cargo writer still apply. Extra process
+   startup is an explicit cost to measure against worker utilization.
    This adds one guarded import pass for the selected modules, with workers
    disabled, separate collection logs and progress events. Emitted programs
    perform none of this development validation.

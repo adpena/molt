@@ -632,7 +632,9 @@ def test_cmd_fix_uses_the_selected_environment_without_per_command_wrappers(
 # --------------------------------------------------------------------------
 
 
-def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv, tmp_path):
+def test_selected_rules_share_one_pytest_invocation_for_equal_requirements(
+    drv, tmp_path
+):
     source = """
 always = ["python tools/check_a.py"]
 [[rule]]
@@ -657,11 +659,11 @@ toolchains = ["python"]
     (tmp_path / "tests").mkdir()
     for name in ("a", "b", "c", "shared"):
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
-    cfg = GateConfig.parse(source, "merged pytest fixture", root=tmp_path)
+    cfg = GateConfig.parse(source, "equal-requirement pytest fixture", root=tmp_path)
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
     gates = [gate.command for gate in gates]
     assert [rule.name for rule in matched] == ["first", "second"]
-    # Explicit gates precede the merged consumer run, each target once.
+    # Equal envelopes and tools share one run after the explicit gates.
     assert gates == [
         "python tools/check_a.py",
         "python tools/check_first.py",
@@ -679,6 +681,99 @@ toolchains = ["python"]
             "tests/test_b.py::test_one",
         ),
     ]
+
+
+@pytest.mark.parametrize("duplicate_explicit", [False, True])
+def test_landing_cohorts_join_overlaps_and_all_target_owners(
+    drv, tmp_path, monkeypatch, duplicate_explicit
+):
+    from tools import proof_plan
+
+    (tmp_path / "tests").mkdir()
+    for name in ("light", "also", "shared", "heavy", "nodes", "parameter"):
+        (tmp_path / "tests" / f"{name}.py").touch()
+    parameter = "tests/parameter.py::test_literal[x::y / & 'quotes' {value} [nested]]"
+    prefix = ("python", "-m", "pytest", "-q", "-n", "auto")
+    heavy = (
+        *prefix,
+        "--molt-worker-memory-gb=6.25",
+        "tests/nodes.py",
+        "tests/heavy.py",
+        "tests/nodes.py::test_heavy",
+    )
+    policy = """
+always = []
+[[command]]
+pytest = ["tests/light.py", "tests/also.py", "tests/shared.py", "tests/nodes.py", "tests/parameter.py"]
+pytest_worker_memory_gb = 0.5
+[[command]]
+pytest = ["tests/heavy.py", "tests/nodes.py::test_heavy"]
+pytest_worker_memory_gb = 6.25
+[[rule]]
+name = "pure"
+globs = ["src/**"]
+gates = []
+pytest = ["tests/light.py", "tests/shared.py", "tests/nodes.py", "tests/also.py"]
+toolchains = ["python"]
+[[rule]]
+name = "compiled"
+globs = ["src/**"]
+gates = []
+pytest = ["tests/heavy.py", "tests/shared.py", "tests/nodes.py::test_heavy", PARAMETER]
+toolchains = ["python", "cargo"]
+""".replace("PARAMETER", json.dumps(parameter))
+    if duplicate_explicit:
+        # Later deduplication must still address the existing explicit command
+        # after earlier new cohorts have been selected for insertion.
+        policy += (
+            '\n[[rule]]\nname = "explicit"\nglobs = ["src/**"]\n'
+            f"gates = [{json.dumps(shlex.join(heavy))}]\n"
+            'toolchains = ["python", "sdk"]\n'
+        )
+    config = GateConfig.parse(policy, "target-owned resource cohorts", root=tmp_path)
+
+    def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("cohort selection probed the filesystem after admission")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(proof_plan.os, "listdir", unexpected_probe)
+        patch.setattr(Path, "stat", unexpected_probe)
+        patch.setattr(Path, "lstat", unexpected_probe)
+        gates, matched = config.select(["src/changed.py"])
+    assert [rule.name for rule in matched] == ["pure", "compiled"] + (
+        ["explicit"] if duplicate_explicit else []
+    )
+    assert [(gate.command, gate.toolchains) for gate in gates] == [
+        (
+            (*prefix, "--molt-worker-memory-gb=0.5", "tests/light.py", "tests/also.py"),
+            ("python",),
+        ),
+        (
+            (*prefix, "--molt-worker-memory-gb=0.5", "tests/shared.py", parameter),
+            ("python", "cargo"),
+        ),
+        (
+            shlex.join(heavy) if duplicate_explicit else heavy,
+            ("python", "sdk", "cargo") if duplicate_explicit else ("python", "cargo"),
+        ),
+    ]
+    assert all(gate.pytest for gate in gates)
+    targets = [
+        arg
+        for gate in gates
+        for arg in (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+        if arg.startswith("tests/")
+    ]
+    assert len(targets) == len(set(targets)) == 7
+    assert gates[0].collection_command is None
+    assert gates[1].collection_command[-2:] == (parameter, "--collect-only")
+    assert gates[2].collection_command[-2:] == (
+        "tests/nodes.py::test_heavy",
+        "--collect-only",
+    )
+    assert "tests/nodes.py" not in gates[2].collection_command
 
 
 def test_selected_rules_run_each_pytest_selection_on_its_own(drv, tmp_path):
@@ -765,7 +860,9 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
     )
     from tools.proof_plan import PytestMemoryUnits, local_pytest_argv
 
-    command = local_pytest_argv(targets, memory_units=PytestMemoryUnits(()))
+    command = local_pytest_argv(
+        targets, memory_units=PytestMemoryUnits((), root=tmp_path)
+    )
     observed = []
 
     def guarded(argv, **kwargs):
@@ -6149,10 +6246,11 @@ toolchains = ["extra"]
         "python tools/check_changed_clippy.py",
         "python tools/perf_methodology.py --check",
         "explicit-extra",
-        (*prefix, "tests/test_a.py", "tests/test_b.py"),
+        (*prefix, "tests/test_a.py"),
+        (*prefix, "tests/test_b.py"),
         (*prefix, "-k", "chosen", "tests/test_b.py"),
     ]
-    assert len(gates) == len({gate.command for gate in gates}) == 8
+    assert len(gates) == len({gate.command for gate in gates}) == 9
     assert [rule.name for rule in matched] == [
         "first",
         "second",
@@ -6169,12 +6267,15 @@ toolchains = ["extra"]
     assert next(
         gate.toolchains for gate in gates if gate.command == "explicit-extra"
     ) == ("extra",)
-    batched = next(
+    cohorts = [
         gate
         for gate in gates
         if isinstance(gate.command, tuple) and "-k" not in gate.command
-    )
-    assert batched.toolchains == ("first", "second")
+    ]
+    assert [(gate.command[-1], gate.toolchains) for gate in cohorts] == [
+        ("tests/test_a.py", ("first",)),
+        ("tests/test_b.py", ("second",)),
+    ]
     selected = next(
         gate
         for gate in gates

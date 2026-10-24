@@ -190,7 +190,7 @@ def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(source):
     }
 
 
-def test_landing_pytest_inherits_actual_larger_owning_units():
+def test_landing_pytest_preserves_each_actual_owning_envelope():
     cfg = GateConfig.load(COMMITTED_GATES)
     gates, _rules = cfg.select(
         [
@@ -206,18 +206,17 @@ def test_landing_pytest_inherits_actual_larger_owning_units():
     )
     assert "--molt-worker-memory-gb=6.25" in import_run
     assert import_run[import_run.index("-k") + 1].startswith("backend_codegen or ")
-    merged = next(
+    light = next(
         gate
         for gate in gates
         if isinstance(gate, tuple) and "tests/test_table_drift_gate.py" in gate
     )
-    # Backend preparation consumes admitted frontend digest seeds, so its joined
-    # assembly proof includes CLI controls and inherits that cell's declared unit.
-    # Compiled heavy-regression cells remain separate below.
-    assert "--molt-worker-memory-gb=6.25" in merged
-    assert "tests/test_resource_enforcement_e2e.py" not in merged
-    assert "tests/test_wasm_runtime_heavy_regressions.py" not in merged
-    assert "-k" not in merged and "-m" not in merged[3:]
+    # An unrelated heavier frontend owner cannot impose its unit or selectors
+    # on a lightweight scanner target. The real import selection keeps 6.25 GiB.
+    assert "--molt-worker-memory-gb=0.5" in light
+    assert "tests/test_resource_enforcement_e2e.py" not in light
+    assert "tests/test_wasm_runtime_heavy_regressions.py" not in light
+    assert "-k" not in light and "-m" not in light[3:]
 
 
 def _gate_args(gate):
@@ -571,8 +570,13 @@ def test_committed_gate_manifest_selects_codec_table_registry():
     ]
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
-    assert "tests/test_gen_codecs.py" in merged
+    assert (
+        sum(
+            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
+            for gate in gates
+        )
+        == 1
+    )
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     gates = [gate.command for gate in gates]
@@ -607,8 +611,13 @@ def test_committed_gate_manifest_selects_codec_table_registry():
     assert "codec-tables" in {r.name for r in matched}
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
-    assert "tests/test_gen_codecs.py" in merged
+    assert (
+        sum(
+            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
+            for gate in gates
+        )
+        == 1
+    )
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet():

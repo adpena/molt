@@ -268,7 +268,7 @@ def pytest_target_spelling_error(
     path, separator, node = target.partition("::")
     if separator and not node:
         return f"pytest target {target!r} names an empty node"
-    directory = root
+    directory = root.resolve()
     for part in path.split("/"):
         names = listings.get(directory)
         if names is None:
@@ -280,6 +280,8 @@ def pytest_target_spelling_error(
         if part not in names:
             return f"pytest target does not exist with this exact spelling: {target!r}"
         directory = directory / part
+    if directory.resolve() != directory.absolute():
+        return f"pytest target must name its repository entry directly: {target!r}"
     if separator and not directory.is_file():
         return f"pytest node id must name a file: {target!r}"
     return None
@@ -914,7 +916,7 @@ def _pytest_target_parts(target: str) -> tuple[str, ...]:
     )
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _PytestMemoryNode:
     children: dict[str, _PytestMemoryNode] = dataclass_field(default_factory=dict)
     owned_gb: float | None = None
@@ -930,22 +932,21 @@ class PytestMemoryUnits:
     no finer memory measurement is inferred from a -k or -m expression.
     """
 
-    def __init__(self, commands: Iterable[Mapping[str, Any]]) -> None:
+    def __init__(self, commands: Iterable[Mapping[str, Any]], *, root: Path) -> None:
         self._root = _PytestMemoryNode()
+        root = root.resolve()
+        listings: dict[Path, frozenset[str]] = {}
         for command in commands:
+            if errors := pytest_declaration_errors(
+                "pytest memory owner", command, root=root, listings=listings
+            ):
+                raise ValueError("\n".join(errors))
             # A row declares its targets and measured unit as data (HF-179);
             # nothing reads them back from argv, and no test is collected.
             unit = command.get("pytest_worker_memory_gb")
             if unit is None:
                 continue
-            if isinstance(unit, bool) or not isinstance(unit, (int, float)):
-                raise ValueError("pytest_worker_memory_gb must be a number")
             unit = float(unit)
-            size = unit * 1024**3
-            if not math.isfinite(size) or size < 1:
-                raise ValueError(
-                    "pytest_worker_memory_gb must describe a positive finite byte count"
-                )
             for target in command.get("pytest", ()):
                 node = self._root
                 node.maximum_gb = max(node.maximum_gb, unit)
@@ -977,6 +978,35 @@ class PytestMemoryUnits:
                 )
         return maximum or default
 
+    def overlapping_requests(
+        self, targets: Iterable[str]
+    ) -> tuple[tuple[str, ...], ...]:
+        """Keep requested ancestors and descendants in one collection.
+
+        Reuse the memory-ownership trie and typed declaration admission.
+        Work is linear in path/node components, with
+        no collection, filesystem reads or pairwise comparisons at selection.
+        """
+        requests = tuple((target, _pytest_target_parts(target)) for target in targets)
+        selected = _PytestMemoryNode()
+        for target, parts in requests:
+            node = selected
+            for part in parts:
+                child = node.children.get(part)
+                if child is None:
+                    child = node.children[part] = _PytestMemoryNode()
+                node = child
+            node.owned_gb = self.memory_gb((target,))
+        groups: dict[_PytestMemoryNode, list[str]] = {}
+        for target, parts in requests:
+            node = selected
+            for part in parts:
+                node = node.children[part]
+                if node.owned_gb is not None:
+                    groups.setdefault(node, []).append(target)
+                    break
+        return tuple(tuple(group) for group in groups.values())
+
 
 def local_pytest_argv(
     targets: Iterable[str],
@@ -984,11 +1014,10 @@ def local_pytest_argv(
     *,
     memory_units: PytestMemoryUnits,
 ) -> tuple[str, ...]:
-    """The one pytest invocation for local gate test targets.
+    """Format one local pytest cohort with its declared resource envelope.
 
-    Integration merges every selected rule's targets into one run, so the
-    interpreter, guard and collection costs are paid once. ``-n auto`` sizes
-    the workers from the host using the largest owning target envelope. A
+    Integration groups independent requests by memory and prerequisites.
+    ``-n auto`` sizes workers from the host and this cohort's envelope. A
     selection (``-k`` or ``-m``) applies
     to every target of its run, so each one runs on its own.
     """
