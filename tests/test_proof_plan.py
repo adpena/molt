@@ -419,7 +419,9 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
         command
         for command, _tools in proof_plan.local_gate_commands(
             {"always": PLAN.always, "rule": PLAN.local_rules},
-            memory_units=proof_plan.PytestMemoryUnits(c.data for c in PLAN.commands),
+            memory_units=proof_plan.PytestMemoryUnits(
+                (c.data for c in PLAN.commands), root=proof_plan.ROOT
+            ),
         ).values()
     }
     assert expected <= commands
@@ -477,7 +479,7 @@ def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
     with pytest.raises(ValueError, match="placeholder"):
         proof_plan.local_gate_commands(
             {"always": [command]},
-            memory_units=proof_plan.PytestMemoryUnits(()),
+            memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
         )
     with pytest.raises(molt_dev_common.DriverError, match="placeholder"):
         molt_dev_policy.GateConfig.parse(
@@ -530,7 +532,7 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
     commands = proof_plan.local_gate_commands(
         {"rule": [rule]},
-        memory_units=proof_plan.PytestMemoryUnits(()),
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     command, tools = commands[f"local.{rule['name']}.pytest"]
     assert shlex.split(command) == [
@@ -570,7 +572,7 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
     commands = proof_plan.local_gate_commands(
         {"rule": [rule]},
-        memory_units=proof_plan.PytestMemoryUnits(()),
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets"}
@@ -590,9 +592,14 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
         assert tools == tuple(rule["toolchains"])
 
 
-def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> None:
+def test_local_pytest_units_preserve_path_and_node_ownership_boundaries(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "tests/light").mkdir(parents=True)
+    for name in ("nodes.py", "sibling.py", "partial.py", "light/child.py"):
+        (tmp_path / "tests" / name).touch()
     commands = [
-        {"pytest": ["tests/light/"], "pytest_worker_memory_gb": 0.5},
+        {"pytest": ["tests/light"], "pytest_worker_memory_gb": 0.5},
         {"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 0.75},
         {
             "pytest": ["tests/nodes.py::Case::test_heavy"],
@@ -608,7 +615,7 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
         {"pytest": ["tests/sibling.py"], "pytest_worker_memory_gb": 0.5},
         {"pytest": ["tests/partial.py::test_one"], "pytest_worker_memory_gb": 0.5},
     ]
-    units = proof_plan.PytestMemoryUnits(iter(commands))
+    units = proof_plan.PytestMemoryUnits(iter(commands), root=tmp_path)
     cases = [
         (["tests/light/child.py::test_one"], 0.5),
         (["tests/lightly/child.py"], 2.5),
@@ -618,20 +625,48 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
         (["tests/nodes.py::test_special[another]"], 0.75),
         (["tests/nodes.py"], 6.25),
         (["tests/nodes.py::Case"], 6.25),
+        (["tests/nodes.py::case::test_heavy"], 0.75),
+        (["tests/NODES.py::Case::test_heavy"], 2.5),
         (["tests/sibling.py"], 1),
         (["tests/sibling.py.extra"], 2.5),
         (["tests/partial.py::test_one"], 0.5),
         (["tests/partial.py"], 2.5),
-        (["tests/light/", "tests/unowned.py"], 2.5),
+        (["tests/light", "tests/unowned.py"], 2.5),
         (["tests"], 6.25),
     ]
     # The index owns its derived observation; queries never rescan the rows.
     commands.clear()
-    for targets, expected in cases:
-        assert units.memory_gb(iter(targets)) == expected
+
+    def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("an indexed memory/overlap query probed the filesystem")
+
+    light = "tests/light/child.py::test_one"
+    child = "tests/nodes.py::Case::test_light"
+    parameter = "tests/nodes.py::test_special[x::y / & 'quotes' {value} [nested]]"
+    with monkeypatch.context() as patch:
+        patch.setattr(proof_plan.os, "listdir", unexpected_probe)
+        patch.setattr(Path, "stat", unexpected_probe)
+        patch.setattr(Path, "lstat", unexpected_probe)
+        for targets, expected in cases:
+            assert units.memory_gb(iter(targets)) == expected
+        # Ancestor requests keep all overlapping literal children in the same
+        # collection, even when the ancestor appears after a requested child.
+        for requests, expected in (
+            ((light, child), ((light,), (child,))),
+            (
+                (child, "tests/nodes.py", light, parameter),
+                ((child, "tests/nodes.py", parameter), (light,)),
+            ),
+            (("tests", child, light, parameter), (("tests", child, light, parameter),)),
+            ((child, parameter), ((child,), (parameter,))),
+            ((), ()),
+        ):
+            assert units.overlapping_requests(iter(requests)) == expected
 
 
-def test_pytest_memory_units_read_the_declared_unit_and_targets() -> None:
+def test_pytest_memory_units_read_the_declared_unit_and_targets(tmp_path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/heavy.py").touch()
     # A row declares its worker unit and targets as data (HF-179), so neither a
     # spelled option nor a separate option value can become a target: the
     # review's `--molt-worker-memory-gb 3 tests/x.py` grew a `3` node.
@@ -642,8 +677,8 @@ def test_pytest_memory_units_read_the_declared_unit_and_targets() -> None:
                 "pytest": ["tests/heavy.py"],
                 "pytest_worker_memory_gb": 6.0,
             },
-            {"argv": ["python", "-m", "pytest", "--molt-worker-memory-gb", "3"]},
-        ]
+        ],
+        root=tmp_path,
     )
     default = proof_plan.host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB
     assert default not in {3, 6}
@@ -699,6 +734,8 @@ def test_pytest_memory_units_read_the_declared_unit_and_targets() -> None:
 def test_pytest_declarations_are_checked_without_pytest(data, message) -> None:
     errors = proof_plan.pytest_declaration_errors("row", data, root=proof_plan.ROOT)
     assert any(message in error for error in errors), errors
+    with pytest.raises(ValueError, match=re.escape(message)):
+        proof_plan.PytestMemoryUnits([data], root=proof_plan.ROOT)
 
 
 @pytest.mark.parametrize(
@@ -763,10 +800,56 @@ def test_pytest_targets_have_one_canonical_spelling(
         "row", {"pytest": [spelling]}, root=tmp_path
     )
     assert errors, spelling
+    with pytest.raises(ValueError, match="pytest target"):
+        proof_plan.PytestMemoryUnits(
+            [{"pytest": [spelling], "pytest_worker_memory_gb": 0.5}], root=tmp_path
+        )
     if not spelling.endswith("/") and spelling.startswith("tests/"):
         assert proof_plan.local_pytest_target_errors(
             "rule", [spelling], root=tmp_path
         ), spelling
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_pytest_admission_rejects_linked_source_entries(tmp_path, directory) -> None:
+    root = tmp_path / "source"
+    (root / "tests").mkdir(parents=True)
+    source = root / "tests" / ("real" if directory else "real.py")
+    if directory:
+        source.mkdir()
+        (source / "test_one.py").touch()
+    else:
+        source.touch()
+    link = root / "tests" / ("alias" if directory else "alias.py")
+    checkout = tmp_path / "checkout"
+    try:
+        link.symlink_to(source, target_is_directory=directory)
+        checkout.symlink_to(root, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"host cannot create the required symlink witness: {error}")
+    target = "tests/alias/test_one.py::test_one" if directory else "tests/alias.py"
+    data = {"pytest": [target], "pytest_worker_memory_gb": 0.5}
+    real = "tests/real/test_one.py::test_one" if directory else "tests/real.py"
+    valid = {"pytest": [real], "pytest_worker_memory_gb": 0.5}
+    for selected_root in (root, checkout):
+        # A symlink above the repository boundary is a valid way to reach it;
+        # aliases inside that boundary must still be refused.
+        assert not proof_plan.pytest_declaration_errors(
+            "row", valid, root=selected_root
+        )
+        assert not proof_plan.local_pytest_target_errors(
+            "rule", [real], root=selected_root
+        )
+        assert (
+            proof_plan.PytestMemoryUnits([valid], root=selected_root).memory_gb([real])
+            == 0.5
+        )
+        assert proof_plan.pytest_declaration_errors("row", data, root=selected_root)
+        assert proof_plan.local_pytest_target_errors(
+            "rule", [target], root=selected_root
+        )
+        with pytest.raises(ValueError, match="pytest target"):
+            proof_plan.PytestMemoryUnits([data], root=selected_root)
 
 
 def test_a_plan_pytest_row_executes_its_declared_targets() -> None:
@@ -790,10 +873,15 @@ def test_a_plan_pytest_row_executes_its_declared_targets() -> None:
     assert row.pytest_targets == ("tests/a.py", "tests/b.py::test_x")
 
 
-def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
+def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv(
+    tmp_path,
+) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/nodes.py").touch()
     target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
     units = proof_plan.PytestMemoryUnits(
-        [{"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 4.0}]
+        [{"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 4.0}],
+        root=tmp_path,
     )
     argv = proof_plan.local_pytest_argv(
         iter([target]), ("-k", "literal or 'other'"), memory_units=units
@@ -818,9 +906,14 @@ def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> Non
     assert proof_plan.bind_local_gate_command(argv, upstream_commit="a" * 40) is argv
 
 
-def test_local_pytest_unit_projection_does_not_round_down_its_envelope() -> None:
+def test_local_pytest_unit_projection_does_not_round_down_its_envelope(
+    tmp_path,
+) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/precise.py").touch()
     units = proof_plan.PytestMemoryUnits(
-        [{"pytest": ["tests/precise.py"], "pytest_worker_memory_gb": 1.0000004}]
+        [{"pytest": ["tests/precise.py"], "pytest_worker_memory_gb": 1.0000004}],
+        root=tmp_path,
     )
     argv = proof_plan.local_pytest_argv(["tests/precise.py"], memory_units=units)
     assert "--molt-worker-memory-gb=1.0000004" in argv
@@ -1551,10 +1644,12 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
     rule = next(r for r in config.rules if r.name == "installed-compiler-distribution")
     gates, matched = replace(config, rules=[rule], always=[]).select([changed])
     assert [r.name for r in matched] == [rule.name]
-    assert len(gates) == 1
-    command = gates[0].command
-    argv = shlex.split(command) if isinstance(command, str) else command
-    assert {arg for arg in argv if arg.startswith("tests/")} == {
+    assert gates and all(gate.pytest for gate in gates)
+    targets = [
+        arg for gate in gates for arg in gate.command if arg.startswith("tests/")
+    ]
+    assert len(targets) == len(set(targets))
+    assert set(targets) == {
         "tests/cli/test_installed_compiler.py",
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
@@ -1562,7 +1657,7 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
         "tests/tools/test_release_native_build.py",
         "tests/tools/test_release_supply_chain.py",
     }
-    assert gates[0].toolchains == ("python",)
+    assert all(gate.toolchains == ("python",) for gate in gates)
     assert replace(config, rules=[rule], always=[]).select(
         ["runtime/molt-wasm-facts/src/main.rs"]
     ) == ([], [])
@@ -1681,8 +1776,13 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     assert _classes(path)["rust"] is True
     assert set(rule.gates) <= {gate.command for gate in gates}
     assert "tests/cli/test_runtime_source_closure.py" in rule.pytest
-    merged = next(gate.command for gate in gates if isinstance(gate.command, tuple))
-    assert "tests/cli/test_runtime_source_closure.py" in merged
+    assert (
+        sum(
+            gate.pytest and "tests/cli/test_runtime_source_closure.py" in gate.command
+            for gate in gates
+        )
+        == 1
+    )
     local = tuple(next(g for g in rule.gates if g.startswith("cargo test")).split())
     ci = next(
         command.argv

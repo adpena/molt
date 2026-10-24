@@ -164,7 +164,7 @@ class GateConfig:
         if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
             raise DriverError("gate manifest `always` must be a list of str")
         try:
-            memory_units = PytestMemoryUnits(data.get("command", ()))
+            memory_units = PytestMemoryUnits(data.get("command", ()), root=root)
             commands = local_gate_commands(data, memory_units=memory_units)
         except ValueError as exc:
             raise DriverError(f"invalid local gate policy: {exc}") from exc
@@ -300,7 +300,7 @@ class GateConfig:
         seen_pytest: set[str] = set()
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
-        pytest_tools: dict[str, None] = {}
+        pytest_tools: dict[str, dict[str, None]] = {}
         pytest_index: int | None = None
         pytest_commands: set[str] = set()
 
@@ -358,7 +358,10 @@ class GateConfig:
             if rule.pytest:
                 if pytest_index is None:
                     pytest_index = len(selected)
-                pytest_tools.update(dict.fromkeys(tools(f"{owner}.pytest")))
+                for target in rule.pytest:
+                    pytest_tools.setdefault(target, {}).update(
+                        dict.fromkeys(tools(f"{owner}.pytest"))
+                    )
             for index, (select, targets) in enumerate(rule.pytest_select):
                 command = local_pytest_argv(
                     targets, select, memory_units=self.pytest_memory_units
@@ -395,29 +398,45 @@ class GateConfig:
                 tuple(dict.fromkeys(name for owner in owners for name in owner)),
             )
         if pytest_index is not None:
-            command = local_pytest_argv(
-                pytest_targets, memory_units=self.pytest_memory_units
-            )
-            pytest_commands.add(command_key(command))
-            # File-only targets run once; only explicit named nodes collect early.
-            named_targets = tuple(target for target in pytest_targets if "::" in target)
-            size = len(selected)
-            add(
-                command,
-                tuple(pytest_tools),
-                pytest=True,
-                collection_command=(
-                    local_pytest_collection_argv(
-                        local_pytest_argv(
-                            named_targets, memory_units=self.pytest_memory_units
-                        )
+            assignments: dict[str, tuple[float, tuple[str, ...]]] = {}
+            for group in self.pytest_memory_units.overlapping_requests(pytest_targets):
+                group_tools = tuple(
+                    dict.fromkeys(
+                        tool for target in group for tool in pytest_tools[target]
                     )
-                    if named_targets
-                    else None
-                ),
-            )
-            if len(selected) != size:
-                selected.insert(pytest_index, selected.pop())
+                )
+                key = (self.pytest_memory_units.memory_gb(group), group_tools)
+                assignments.update(dict.fromkeys(group, key))
+            cohorts: dict[tuple[float, tuple[str, ...]], list[str]] = {}
+            for target in pytest_targets:
+                cohorts.setdefault(assignments[target], []).append(target)
+            # Keep add()'s command indices valid until every deduplication and
+            # prerequisite union is complete. Only newly appended cohorts move.
+            before_cohorts = len(selected)
+            for (_unit, cohort_tools), targets in cohorts.items():
+                command = local_pytest_argv(
+                    targets, memory_units=self.pytest_memory_units
+                )
+                pytest_commands.add(command_key(command))
+                # Preserve each literal request; only explicit nodes collect early.
+                named_targets = tuple(target for target in targets if "::" in target)
+                add(
+                    command,
+                    cohort_tools,
+                    pytest=True,
+                    collection_command=(
+                        local_pytest_collection_argv(
+                            local_pytest_argv(
+                                named_targets, memory_units=self.pytest_memory_units
+                            )
+                        )
+                        if named_targets
+                        else None
+                    ),
+                )
+            appended = selected[before_cohorts:]
+            del selected[before_cohorts:]
+            selected[pytest_index:pytest_index] = appended
         # Run declared source/metadata and compilation controls before Python
         # consumers. This also moves already-required Cargo gates earlier; it
         # adds no commands or builds and preserves each phase's relative order.
