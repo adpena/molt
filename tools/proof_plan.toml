@@ -1282,7 +1282,7 @@ dependencies = []
 [[ci_family]]
 name = "browser_simd"
 description = "Standalone browser SIMD source, artifact, numeric and consumer contracts without compiler/runtime builds."
-inputs = [".github/workflows/ci.yml", "rust-toolchain.toml", "src/molt/wasm_artifact.py", "deploy/browser/compute-engine.js", "deploy/browser/simd-ops-rs/**", "deploy/browser/simd-ops.wasm", "tools/build_browser_simd.py", "tests/tools/test_build_browser_simd.py", "tests/e2e/simd_test_support.js", "tests/e2e/simd_diff_harness.js", "tests/e2e/test_simd_differential.py", "tests/test_browser_compute_backend_semantics.py"]
+inputs = [".github/workflows/ci.yml", ".cargo/config.toml", "rust-toolchain.toml", "src/molt/wasm_artifact.py", "deploy/browser/compute-engine.js", "deploy/browser/simd-ops-rs/**", "deploy/browser/simd-ops.wasm", "tools/build_browser_simd.py", "tests/tools/test_build_browser_simd.py", "tests/e2e/simd_test_support.js", "tests/e2e/simd_diff_harness.js", "tests/e2e/test_simd_differential.py", "tests/test_browser_compute_backend_semantics.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "browser-simd"
@@ -5780,6 +5780,9 @@ name = "browser-simd"
 toolchains = ["python", "rustc", "cargo", "node"]
 description = "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer."
 globs = [
+  ".cargo/config.toml",
+  "rust-toolchain.toml",
+  "src/molt/wasm_artifact.py",
   "deploy/browser/compute-engine.js",
   "deploy/browser/simd-ops-rs/**",
   "deploy/browser/simd-ops.wasm",
