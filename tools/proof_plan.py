@@ -1016,7 +1016,7 @@ def local_pytest_argv(
 ) -> tuple[str, ...]:
     """Format one local pytest cohort with its declared resource envelope.
 
-    Integration groups independent requests by memory and prerequisites.
+    Integration groups independent requests by prerequisites.
     ``-n auto`` sizes workers from the host and this cohort's envelope. A
     selection (``-k`` or ``-m``) applies
     to every target of its run, so each one runs on its own.

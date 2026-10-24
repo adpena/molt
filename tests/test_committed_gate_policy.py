@@ -8,11 +8,13 @@ reads changes (HF-457); the driver's own tests run only when the driver does.
 from __future__ import annotations
 
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import tomllib
 
 import pytest
 
 from molt.process_environment import ProcessEnvironment
+from molt import host_capacity
 from tools.molt_dev_gates import display
 from tools.molt_dev_policy import GateConfig
 
@@ -211,9 +213,40 @@ def test_landing_pytest_preserves_each_actual_owning_envelope():
         for gate in gates
         if isinstance(gate, tuple) and "tests/test_table_drift_gate.py" in gate
     )
-    # An unrelated heavier frontend owner cannot impose its unit or selectors
-    # on a lightweight scanner target. The real import selection keeps 6.25 GiB.
-    assert "--molt-worker-memory-gb=0.5" in light
+    # Equal-tool targets conservatively share their largest requirement.
+    # Read declared units independently; do not ask the selection's own index.
+    declarations = tomllib.loads(COMMITTED_GATES.read_text(encoding="utf-8"))
+    covering: dict[str, float] = {}
+    descendants: dict[str, float] = {}
+    for row in declarations["command"]:
+        if "pytest_worker_memory_gb" not in row:
+            continue
+        unit = float(row["pytest_worker_memory_gb"])
+        for target in row.get("pytest", ()):
+            path, node, _ = target.partition("::")
+            descendants[path] = max(descendants.get(path, 0.0), unit)
+            if not node:
+                covering[path] = max(covering.get(path, 0.0), unit)
+    envelopes = []
+    for target in (arg for arg in light if arg.startswith("tests/")):
+        # This committed consumer cohort requests whole files. A named-node
+        # migration needs a new independent envelope oracle at that boundary.
+        assert "::" not in target and target.endswith(".py")
+        path = PurePosixPath(target)
+        inherited = [
+            covering[str(parent)]
+            for parent in (path, *path.parents)
+            if str(parent) in covering
+        ]
+        envelopes.append(
+            max(
+                max(inherited)
+                if inherited
+                else host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB,
+                descendants.get(target, 0.0),
+            )
+        )
+    assert f"--molt-worker-memory-gb={max(envelopes)}" in light
     assert "tests/test_resource_enforcement_e2e.py" not in light
     assert "tests/test_wasm_runtime_heavy_regressions.py" not in light
     assert "-k" not in light and "-m" not in light[3:]

@@ -127,8 +127,11 @@ These observations identify an opportunity, not a demonstrated speedup.
 
 The selection authority uses the existing memory-ownership trie and typed
 test declarations. Overlapping requests form indivisible components. Each
-component owns the maximum measured envelope and union of its contributors'
-prerequisites; independent components share a cohort only when both agree.
+component owns the union of its contributors' prerequisites. Independent
+components with the same prerequisites share one cohort, which takes their
+largest declared memory envelope. Separating every memory value repeated
+startup and cleanup without a commensurate wall-time gain in the matched
+workload; this coarser grouping trades worker concurrency for fewer starts.
 The existing Ninja-pool and pytest-xdist precedents above motivate retaining
 resource custody on the work that needs it. Literal targets, explicit
 selectors and parameter IDs keep their meaning. Repository-entry spelling

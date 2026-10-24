@@ -398,22 +398,21 @@ class GateConfig:
                 tuple(dict.fromkeys(name for owner in owners for name in owner)),
             )
         if pytest_index is not None:
-            assignments: dict[str, tuple[float, tuple[str, ...]]] = {}
+            assignments: dict[str, tuple[str, ...]] = {}
             for group in self.pytest_memory_units.overlapping_requests(pytest_targets):
                 group_tools = tuple(
                     dict.fromkeys(
                         tool for target in group for tool in pytest_tools[target]
                     )
                 )
-                key = (self.pytest_memory_units.memory_gb(group), group_tools)
-                assignments.update(dict.fromkeys(group, key))
-            cohorts: dict[tuple[float, tuple[str, ...]], list[str]] = {}
+                assignments.update(dict.fromkeys(group, group_tools))
+            cohorts: dict[tuple[str, ...], list[str]] = {}
             for target in pytest_targets:
                 cohorts.setdefault(assignments[target], []).append(target)
             # Keep add()'s command indices valid until every deduplication and
             # prerequisite union is complete. Only newly appended cohorts move.
             before_cohorts = len(selected)
-            for (_unit, cohort_tools), targets in cohorts.items():
+            for cohort_tools, targets in cohorts.items():
                 command = local_pytest_argv(
                     targets, memory_units=self.pytest_memory_units
                 )
