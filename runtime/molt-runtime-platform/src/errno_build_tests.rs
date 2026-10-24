@@ -76,16 +76,22 @@ fn c_source_and_generated_debug_metadata_are_relocatable() {
         assert_eq!(bodies.len(), 2);
         let spelling = work.to_string_lossy();
         for body in &bodies {
-            assert!(!body
-                .windows(spelling.len())
-                .any(|window| window == spelling.as_bytes()));
+            assert!(
+                !body
+                    .windows(spelling.len())
+                    .any(|window| window == spelling.as_bytes())
+            );
         }
-        assert!(bodies[0]
-            .windows(b"/molt/source".len())
-            .any(|window| window == b"/molt/source"));
-        assert!(bodies[1]
-            .windows(b"/molt/generated".len())
-            .any(|window| window == b"/molt/generated"));
+        assert!(
+            bodies[0]
+                .windows(b"/molt/source".len())
+                .any(|window| window == b"/molt/source")
+        );
+        assert!(
+            bodies[1]
+                .windows(b"/molt/generated".len())
+                .any(|window| window == b"/molt/generated")
+        );
         generations.push(bodies);
     }
     assert_eq!(generations[0], generations[1]);
