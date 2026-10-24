@@ -19,7 +19,7 @@ REMAINDER = ["ordinary::parallel_case", support.TRAP, support.TRAP_CHILD, suppor
 
 @pytest.fixture
 def selected_cargo(monkeypatch, tmp_path):
-    from molt.cli.runtime_cargo_plan import _tool_path
+    from molt.cli.runtime_tool_selection import runtime_tool_path
     from molt.rust_toolchain import rustup_proxy_selection
 
     suffix = ".exe" if os.name == "nt" else ""
@@ -38,7 +38,9 @@ def selected_cargo(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(proxy.parent))
     # Prove that a bare selector would choose a real proxy identity, not the
     # queue-published physical Cargo. No compiler or proxy process is executed.
-    assert _tool_path("cargo", root=tmp_path, env=os.environ, role="cargo") == proxy
+    assert (
+        runtime_tool_path("cargo", root=tmp_path, env=os.environ, role="cargo") == proxy
+    )
     selection = rustup_proxy_selection(proxy)
     assert selection is not None and selection.entrypoint == rustup
     return str(selected)
@@ -1146,7 +1148,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
 ):
     import json
     from types import SimpleNamespace
-    from molt.cli import runtime_cargo_plan
+    from molt.cli import runtime_cargo_plan, runtime_tool_selection
 
     # This policy executes the native production host, not Node. Preserve an
     # unrelated Node setting rather than imposing the counter policy on it.
@@ -1252,7 +1254,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         assert env["NODE_OPTIONS"] == inherited_node_options
         # Exercise the real planner's executable-selection boundary, while its
         # SDK/configuration/compiler work remains outside this host unit test.
-        selected = runtime_cargo_plan._tool_path(
+        selected = runtime_tool_selection.runtime_tool_path(
             cargo_command[0], root=root, env=env, role="cargo"
         )
         assert selected == Path(selected_cargo)
@@ -1727,7 +1729,7 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
     flags,
     refused,
 ):
-    from molt.cli import runtime_cargo_plan as plan
+    from molt.cli import runtime_cargo_plan as plan, runtime_tool_selection
     from molt import rust_toolchain
     from tools.proof_queue_pkg import toolchain_capture
 
@@ -1736,7 +1738,9 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
     monkeypatch.setattr(
         plan, "capture_cargo_configuration_inputs", lambda *a, **kw: captured
     )
-    monkeypatch.setattr(plan, "_tool_path", lambda *a, **kw: tmp_path / "rustc")
+    monkeypatch.setattr(
+        runtime_tool_selection, "runtime_tool_path", lambda *a, **kw: tmp_path / "rustc"
+    )
     monkeypatch.setattr(rust_toolchain, "resolve_rustup_proxy", lambda path, **kw: path)
 
     def capture(**kw):

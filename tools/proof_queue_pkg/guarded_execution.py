@@ -397,7 +397,7 @@ def execute_guarded_request(request_path: Path) -> int:
             if output_layout.declaration is not None:
                 custody_cas._durable_makedirs(output_layout.temporary)
             normalized_env, applied_cargo_policies = normalize_cargo_environment(
-                inherited_env
+                inherited_env, cwd=cwd
             )
             inherited_env = ProcessEnvironmentBuilder(normalized_env)
             # A stable selection-only path avoids putting this run's nonce in

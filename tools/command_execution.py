@@ -519,6 +519,7 @@ class CommandExecutor:
         env, _cargo_policies = harness_memory_guard.cargo_subprocess_environment(
             command,
             env,
+            cwd=cwd,
         )
         process_guard = _process_guard_authority(str(self.repo_root))
         process = subprocess.Popen(
@@ -613,6 +614,7 @@ class CommandExecutor:
         env, _cargo_policies = harness_memory_guard.cargo_subprocess_environment(
             command,
             env,
+            cwd=cwd,
         )
         if harness:
             launch_environment = harness_memory_guard.canonical_harness_env(

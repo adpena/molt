@@ -1189,7 +1189,7 @@ def guarded_completed_process(
         command, cwd=cwd, env=env, capture_output=capture_output
     )
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
-    env, _cargo_policies = cargo_subprocess_environment(command, env)
+    env, _cargo_policies = cargo_subprocess_environment(command, env, cwd=cwd)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing interpreter against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.
@@ -1486,7 +1486,7 @@ def guarded_completed_process_to_tempfiles(
     command, env, no_output_timeout = _bound_git_transfer(
         command, cwd=cwd, env=env, capture_output=True
     )
-    env, _cargo_policies = cargo_subprocess_environment(command, env)
+    env, _cargo_policies = cargo_subprocess_environment(command, env, cwd=cwd)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing executable against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.

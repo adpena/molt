@@ -77,7 +77,7 @@ def test_epoch_wrapper_refusal_has_no_process_or_files(
     )
     original = dict(env)
     with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH.*pinned sccache"):
-        normalize_cargo_environment(env)
+        normalize_cargo_environment(env, cwd=None)
     with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
         CARGO._run_cargo_with_sccache_retry(
             ["cargo", "build"],
@@ -89,6 +89,61 @@ def test_epoch_wrapper_refusal_has_no_process_or_files(
         )
     assert dict(env) == original
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+@pytest.mark.parametrize("selector", ["CC", "CXX", "HOST_CC", "TARGET_CXX"])
+@pytest.mark.parametrize("exact_child_file", [True, False])
+def test_epoch_c_selection_uses_child_cwd_exact_file(
+    tmp_path, monkeypatch, rule, selector, exact_child_file
+):
+    from molt.cargo_execution_policy import normalize_cargo_environment
+
+    caller = tmp_path / "caller"
+    child = tmp_path / "child"
+    caller.mkdir()
+    child.mkdir()
+    monkeypatch.chdir(caller)
+    # Same selector text is an exact executable in only one directory. It is
+    # a wrapper command in the other; caller-cwd parsing reverses the answer.
+    (child if exact_child_file else caller).joinpath("sccache gcc").write_bytes(b"tool")
+    env = ProcessEnvironment(
+        {selector: "sccache gcc", "SOURCE_DATE_EPOCH": "1"}, rule=rule
+    )
+    before = dict(env)
+    calls = []
+
+    def attempt(command, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["cwd"] == child
+        assert dict(kwargs["env"]) == before
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(CARGO, "_run_cargo_attempt", attempt)
+    if exact_child_file:
+        selected, _ = normalize_cargo_environment(env, cwd=child)
+        assert dict(selected) == before
+        result = CARGO._run_cargo_with_sccache_retry(
+            ["cargo", "build"],
+            cwd=child,
+            env=env,
+            timeout=1,
+            json_output=False,
+            label="child cwd selection",
+        )
+        assert result.returncode == 0 and len(calls) == 1
+    else:
+        with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+            CARGO._run_cargo_with_sccache_retry(
+                ["cargo", "build"],
+                cwd=child,
+                env=env,
+                timeout=1,
+                json_output=False,
+                label="child cwd selection",
+            )
+        assert calls == []
+    assert dict(env) == before
 
 
 def _cargo_env(target_root: Path, **values: str) -> dict[str, str]:

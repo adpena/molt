@@ -165,12 +165,12 @@ def _run_fast_captured_bytes(
 
 
 def _gate_launch(
-    cmd: str | tuple[str, ...], env: ProcessEnvironment
+    cmd: str | tuple[str, ...], env: ProcessEnvironment, *, cwd: Path
 ) -> tuple[list[str], ProcessEnvironment]:
     # A compound shell gate can launch Cargo in any arm. Its opaque shell argv
     # cannot trigger direct-Cargo admission, so normalize the inherited wrapper
     # environment before launching it, without parsing shell syntax.
-    env, _policies = normalize_cargo_environment(env)
+    env, _policies = normalize_cargo_environment(env, cwd=cwd)
     if not isinstance(cmd, str):
         return list(cmd), env
     if os.name == "nt":
@@ -183,7 +183,7 @@ def _run_live_gate(
     cmd: str | tuple[str, ...], *, repo: Path, env: ProcessEnvironment
 ) -> int:
     """Run shell syntax or structured argv live through memory custody."""
-    argv, env = _gate_launch(cmd, env)
+    argv, env = _gate_launch(cmd, env, cwd=repo)
     proc = harness_memory_guard.guarded_completed_process(
         argv,
         prefix="MOLT_TEST_SUITE",
@@ -217,7 +217,7 @@ def _run_captured_gate(
     the outcome holds only each stream's bounded end. ``label`` keeps the
     guard's keepalive line, which a captured run otherwise drops.
     """
-    argv, env = _gate_launch(cmd, env)
+    argv, env = _gate_launch(cmd, env, cwd=repo)
     files: dict[str, object] = {}
     if streams is not None:
         files = {

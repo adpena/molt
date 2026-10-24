@@ -519,10 +519,14 @@ def sccache_client_environment(
 def normalize_cargo_environment(
     environ: Mapping[str, str] | None,
     *,
+    cwd: str | Path | None,
     default_incremental: str | None = None,
     admit_c_tools: bool = True,
 ) -> tuple[ProcessEnvironment, tuple[str, ...]]:
     """Return one executable Cargo environment and its applied policy names.
+
+    ``cwd`` is the actual child working directory; explicit ``None`` means
+    inherit the caller directory. Relative exact C-tool paths use that boundary.
 
     Cargo accepts compiler wrappers through both direct Rust variables and
     ``build.*`` configuration environment variables.  Every subprocess boundary
@@ -541,7 +545,9 @@ def normalize_cargo_environment(
     """
 
     child = ProcessEnvironmentBuilder(os.environ if environ is None else environ)
-    validate_sccache_epoch_environment(child, admit_c_tools=admit_c_tools)
+    validate_sccache_epoch_environment(
+        child, cwd=None if cwd is None else Path(cwd), admit_c_tools=admit_c_tools
+    )
     if sccache_compiler_wrappers(child):
         if child.get("CARGO_INCREMENTAL", "0") != "0":
             del child["CARGO_INCREMENTAL"]
@@ -746,6 +752,7 @@ def cargo_subprocess_environment(
     command: Sequence[str],
     environ: Mapping[str, str] | None,
     *,
+    cwd: str | Path | None,
     default_incremental: str | None = None,
 ) -> tuple[ProcessEnvironment | None, tuple[str, ...]]:
     if not is_cargo_command(command):
@@ -757,6 +764,7 @@ def cargo_subprocess_environment(
     return normalize_cargo_environment(
         environ,
         default_incremental=default_incremental,
+        cwd=cwd,
     )
 
 

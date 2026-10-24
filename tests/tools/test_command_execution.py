@@ -600,6 +600,35 @@ def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
     assert "CARGO_INCREMENTAL" not in kwargs["env"]
 
 
+@pytest.mark.parametrize("exact_child_file", [True, False])
+def test_owned_cargo_epoch_admission_uses_child_cwd(
+    tmp_path, monkeypatch, exact_child_file
+):
+    caller, child = tmp_path / "caller", tmp_path / "child"
+    caller.mkdir()
+    child.mkdir()
+    monkeypatch.chdir(caller)
+    (child if exact_child_file else caller).joinpath("sccache gcc").write_bytes(b"tool")
+    calls = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            calls.append(kwargs)
+
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, command_execution, Popen=FakePopen
+    )
+    executor = command_execution.CommandExecutor.for_file(__file__)
+    env = {"CC": "sccache gcc", "SOURCE_DATE_EPOCH": "1"}
+    if exact_child_file:
+        executor.start_owned(["cargo", "metadata"], cwd=child, env=env)
+        assert calls[0]["cwd"] == child and calls[0]["env"] == env
+    else:
+        with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+            executor.start_owned(["cargo", "metadata"], cwd=child, env=env)
+        assert calls == []
+
+
 def test_executor_loads_process_guard_without_repo_package_importable(
     tmp_path: Path,
 ) -> None:
@@ -624,7 +653,7 @@ def test_executor_loads_process_guard_without_repo_package_importable(
         "authority = _process_guard_authority(str(bootstrap_actionlint._COMMANDS.repo_root))\n"
         "normalized, applied = authority.cargo_subprocess_environment("
         "['cargo', '--version'], "
-        "{'RUSTC_WORKSPACE_WRAPPER': 'sccache', 'CARGO_INCREMENTAL': '1'})\n"
+        "{'RUSTC_WORKSPACE_WRAPPER': 'sccache', 'CARGO_INCREMENTAL': '1'}, cwd=None)\n"
         "assert 'CARGO_INCREMENTAL' not in normalized\n"
         "assert applied == ('sccache-profile-incremental',)\n"
         "assert authority.cargo_subprocess_environment.__module__.startswith("

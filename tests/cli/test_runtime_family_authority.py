@@ -24,6 +24,7 @@ import pytest
 from molt.cli import cargo_command as cargo_argv
 from molt.cli import cargo_resource_custody as resource_custody
 from molt.cli import runtime_cargo_plan as plans
+from molt.cli import runtime_tool_selection
 from molt.cli import rustc_probes
 from molt.cli import cargo_target_cfg
 from molt.cli import runtime_fingerprints as fingerprints
@@ -121,7 +122,7 @@ def test_native_dependency_unowned_capabilities_fail_before_tool_probes(
     def probe_forbidden(*_args, **_kwargs):
         pytest.fail("unsupported native dependency selection must precede tool probes")
 
-    monkeypatch.setattr(plans, "_tool_path", probe_forbidden)
+    monkeypatch.setattr(runtime_tool_selection, "runtime_tool_path", probe_forbidden)
     env = {"CARGO_HOME": str(tmp_path / "cargo-home"), **controls}
     before = dict(env)
     with pytest.raises(ValueError, match="AWS-LC") as raised:
@@ -670,10 +671,14 @@ def plan_root(
             write_mock_executable(path, b"MZ" + str(value).encode())
         return path
 
-    monkeypatch.setattr(plans, "resolve_executable", executable)
-    monkeypatch.setattr(
-        plans, "find_executable", lambda value, **_kwargs: tmp_path / value
-    )
+    monkeypatch.setattr(runtime_tool_selection, "resolve_executable", executable)
+
+    def find(value, *, cwd, **_kwargs):
+        assert cwd == tmp_path
+        return tmp_path / value
+
+    for owner in (plans, runtime_tool_selection):
+        monkeypatch.setattr(owner, "find_executable", find)
 
     def metadata_command(command, **kwargs):
         if tuple(command[1:]) == ("--version",):
@@ -1338,7 +1343,7 @@ def test_cargo_wrapper_policy_and_removal_keep_the_name_rule(rule):
         {"rustc_wrapper": "sccache", "Cargo_Incremental": "1"}, rule=rule
     )
     selected, policies = cargo_execution_policy.normalize_cargo_environment(
-        env, default_incremental="1"
+        env, cwd=None, default_incremental="1"
     )
     removed = cargo_execution_policy.without_sccache_compiler_wrappers(env)
     assert selected.rule is removed.rule is rule

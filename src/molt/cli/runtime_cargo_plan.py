@@ -9,7 +9,6 @@ from __future__ import annotations
 from molt.cargo_execution_policy import (
     cargo_command_options,
     cargo_c_tool_environment_names,
-    cargo_c_tool_words,
     validate_sccache_epoch_environment,
 )
 
@@ -32,6 +31,7 @@ from molt.process_environment import (
     ProcessEnvironmentBuilder,
 )
 from molt.cli import cargo_command as cargo_argv
+from molt.cli import runtime_tool_selection
 from molt.cli import rustc_probes
 from molt.cli.cargo_search_path import cargo_search_path, derives_cargo_search_path
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
@@ -73,7 +73,6 @@ from molt.toolchain_identity import (
     find_executable,
     StableRegularFileIdentity,
     capture_stable_regular_file,
-    resolve_executable,
     verify_stable_regular_file_identity,
 )
 from molt.toolchain_facts import (
@@ -799,7 +798,7 @@ def _resolve_rust_flag_resources(
             else:
                 switch, option = key.split(":", 1)
                 if option == "linker":
-                    path = _tool_path(
+                    path = runtime_tool_selection.runtime_tool_path(
                         value, root=root, env=env, role="Rust flag linker"
                     )
                     linker = path
@@ -985,63 +984,6 @@ def cargo_configuration_document(raw: bytes, path: Path) -> Mapping[str, object]
     return _freeze_json(value)
 
 
-def _tool_path(value: object, *, root: Path, env: Mapping[str, str], role: str) -> Path:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"runtime {role} executable is not selected")
-    command = value.strip()
-    if role in {
-        "cc",
-        "cxx",
-        "ar",
-        "ranlib",
-        "host_cc",
-        "host_cxx",
-        "host_ar",
-        "host_ranlib",
-    }:
-        words = cargo_c_tool_words(
-            value, cwd=root, windows=ProcessEnvironment(env).rule is NameRule.WINDOWS
-        )
-        if len(words) != 1:
-            raise ValueError(
-                f"runtime {role} compound C commands require an attested executable dependency plan"
-            )
-        command = words[0]
-        if not Path(command).is_absolute() and (root / command).exists():
-            command = os.fspath(root / command)
-    candidate = Path(command)
-    if not candidate.is_absolute() and any(part in command for part in ("/", "\\")):
-        candidate = root / candidate
-        command = os.fspath(candidate)
-    # Cargo executable selectors are paths, not shell commands. Compound C
-    # wrapper commands require a separate attested executable dependency plan.
-    return resolve_executable(command, environment=env, label=f"runtime {role}")
-
-
-def runtime_c_tool_selection(
-    role: str,
-    *,
-    root: Path,
-    env: Mapping[str, str],
-    target: str,
-    host_target: str,
-    allow_default: bool = True,
-) -> Path | None:
-    """One cc-rs selector precedence for Cargo and its development proof."""
-    names = cargo_c_tool_environment_names(role, target=target, host_target=host_target)
-    value = next((env[name] for name in names if env.get(name)), None)
-    if value is None and allow_default and target == host_target:
-        value = next(
-            (
-                name
-                for name in _target_tool_defaults(target)[role]
-                if find_executable(name, environment=env) is not None
-            ),
-            None,
-        )
-    return None if value is None else _tool_path(value, root=root, env=env, role=role)
-
-
 def runtime_c_environment_name(name: str) -> bool:
     """Selection, flag, and search controls shared by proof environment custody."""
     if name in {*_C_FLAG_CONTROLS, *_C_SEARCH_ENVIRONMENTS}:
@@ -1053,81 +995,6 @@ def runtime_c_environment_name(name: str) -> bool:
         or name in ("HOST_" + prefix, "TARGET_" + prefix)
         for prefix in prefixes
     )
-
-
-def _select_host_c_tools(
-    tools: dict[str, Path],
-    environment: ProcessEnvironmentBuilder,
-    *,
-    root: Path,
-    target: str,
-    host_target: str,
-) -> None:
-    """Pin explicit host C selections for cross-target build dependencies.
-
-    Native builds already select the host lane as their target lane. A cross
-    build cannot use its target compiler receipt to attest HOST_CC et al.
-    Implicit host compiler SDK/resource discovery remains a separate admission
-    boundary; do not pretend the target compiler's sysroot supplies it.
-    """
-    if target == host_target:
-        return
-    for role in ("cc", "cxx", "ar", "ranlib"):
-        names = cargo_c_tool_environment_names(
-            role, target=host_target, host_target=host_target
-        )
-        path = runtime_c_tool_selection(
-            role,
-            root=root,
-            env=environment,
-            target=host_target,
-            host_target=host_target,
-            allow_default=False,
-        )
-        if path is None:
-            continue
-        tools["host_" + role] = path
-        for name in names[:2]:
-            environment[name] = os.fspath(path)
-
-
-def _target_tool_defaults(target: str) -> Mapping[str, tuple[str, ...]]:
-    if target.endswith("-pc-windows-msvc"):
-        return {
-            "cc": ("cl",),
-            "cxx": ("cl",),
-            "ar": ("lib",),
-            "ranlib": ("lib",),
-            "linker": ("link",),
-        }
-    if "windows-gnu" in target or "windows-gnullvm" in target:
-        return {
-            "cc": ("gcc", "clang"),
-            "cxx": ("g++", "clang++"),
-            "ar": ("ar", "llvm-ar"),
-            "ranlib": ("ranlib", "llvm-ranlib"),
-            "linker": ("gcc", "clang"),
-        }
-    if "-apple-" in target or target.endswith("-darwin"):
-        return {
-            "cc": ("cc", "clang"),
-            "cxx": ("c++", "clang++"),
-            "ar": ("ar", "llvm-ar"),
-            "ranlib": ("ranlib", "llvm-ranlib"),
-            "linker": ("cc", "clang"),
-        }
-    if "-linux-" in target:
-        return {
-            "cc": ("cc", "gcc", "clang"),
-            "cxx": ("c++", "g++", "clang++"),
-            "ar": ("ar", "llvm-ar"),
-            "ranlib": ("ranlib", "llvm-ranlib"),
-            "linker": ("cc", "gcc", "clang"),
-        }
-    # WebAssembly C tools are never host guesses: the manifest-pinned WASI SDK
-    # owns them and `llvm_toolchain.apply_provisioned_wasm_toolchain` selects
-    # them, like every other target without a host default.
-    return {role: () for role in ("cc", "cxx", "ar", "ranlib", "linker")}
 
 
 def _flags(value: object, *, label: str, rule: FlagStringRule) -> tuple[str, ...]:
@@ -2055,7 +1922,9 @@ def resolve_runtime_cargo_plan(
         ("RUSTC", "CARGO_BUILD_RUSTC"),
         "rustc",
     )
-    rustc = _tool_path(rustc_selector, root=root, env=environment, role="rustc")
+    rustc = runtime_tool_selection.runtime_tool_path(
+        rustc_selector, root=root, env=environment, role="rustc"
+    )
     rustc = resolve_rustup_proxy(rustc, role="rustc", root=root, env=environment)
     rustc_custody = CargoExecutableCustody.capture("tool/rustc", rustc)
     environment["RUSTC"] = os.fspath(rustc)
@@ -2064,7 +1933,9 @@ def resolve_runtime_cargo_plan(
     for name, value in wrapper_selectors.items():
         environment[name] = ""  # Explicit empty disables inherited config.
         if value:
-            wrappers[name] = _tool_path(value, root=root, env=environment, role=name)
+            wrappers[name] = runtime_tool_selection.runtime_tool_path(
+                value, root=root, env=environment, role=name
+            )
             environment[name] = os.fspath(wrappers[name])
     wrapper_custody = tuple(
         CargoExecutableCustody.capture("wrapper/" + role, path)
@@ -2243,12 +2114,14 @@ def resolve_runtime_cargo_plan(
         transform=finalize_flags,
     )
     assert flag_plan is not None
-    cargo = _tool_path(cargo_command[0], root=root, env=environment, role="cargo")
+    cargo = runtime_tool_selection.runtime_tool_path(
+        cargo_command[0], root=root, env=environment, role="cargo"
+    )
     cargo = resolve_rustup_proxy(cargo, role="cargo", root=root, env=environment)
     cargo_custody = CargoExecutableCustody.capture("tool/cargo", cargo)
     _require_cargo_build_directory(cargo_custody, root=root, env=environment)
     tools: dict[str, Path] = {"rustc": rustc, "cargo": cargo}
-    defaults = _target_tool_defaults(target)
+    defaults = runtime_tool_selection.target_tool_defaults(target)
     for role in ("cc", "cxx", "ar", "ranlib", "linker"):
         if role == "linker":
             value = cargo_selected_value(
@@ -2275,7 +2148,7 @@ def resolve_runtime_cargo_plan(
             names = cargo_c_tool_environment_names(
                 role, target=target, host_target=host_target
             )
-            selected_c_tool = runtime_c_tool_selection(
+            selected_c_tool = runtime_tool_selection.runtime_c_tool_selection(
                 role, root=root, env=environment, target=target, host_target=host_target
             )
             value = None if selected_c_tool is None else os.fspath(selected_c_tool)
@@ -2284,7 +2157,8 @@ def resolve_runtime_cargo_plan(
                 (
                     name
                     for name in defaults[role]
-                    if find_executable(name, environment=environment) is not None
+                    if find_executable(name, environment=environment, cwd=root)
+                    is not None
                 ),
                 None,
             )
@@ -2309,7 +2183,9 @@ def resolve_runtime_cargo_plan(
                 )
             continue  # Native Rust-only builds need no absent C tool.
         selected_tool = (
-            _tool_path(value, root=root, env=environment, role=role)
+            runtime_tool_selection.runtime_tool_path(
+                value, root=root, env=environment, role=role
+            )
             if role == "linker"
             else selected_c_tool
         )
@@ -2321,7 +2197,7 @@ def resolve_runtime_cargo_plan(
         else:
             environment[f"{role.upper()}_{target}"] = selected
             environment[f"{role.upper()}_{target.replace('-', '_')}"] = selected
-    _select_host_c_tools(
+    runtime_tool_selection.select_host_c_tools(
         tools, environment, root=root, target=target, host_target=host_target
     )
     validate_cargo_native_dependency_environment(

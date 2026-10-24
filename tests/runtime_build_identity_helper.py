@@ -43,8 +43,8 @@ from molt.cli.runtime_cargo_plan import (
     _cargo_build_directory_base,
     _resolve_rust_flag_resources,
     _resolve_c_build_resources,
-    _select_host_c_tools,
 )
+from molt.cli.runtime_tool_selection import select_host_c_tools
 from molt.cli.runtime_wasm_build_support import runtime_reloc_publication_action
 from molt.cli.runtime_wasm_build_spec import (
     _RuntimeWasmBuildSpec,
@@ -797,7 +797,7 @@ def runtime_cargo_plan(
         tool_paths["linker"] = flag_plan.dependency_linker
     if flag_plan.final_linker is not None:
         tool_paths["final_linker"] = flag_plan.final_linker
-    _select_host_c_tools(
+    select_host_c_tools(
         tool_paths,
         environment,
         root=root,

@@ -3033,7 +3033,7 @@ def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -
         "UV_CACHE_DIR": "C:\\uv-cache",
         "UNRELATED_SECRET_TOKEN": "must-not-appear",
     }
-    normalized, policies = normalize_cargo_environment(base)
+    normalized, policies = normalize_cargo_environment(base, cwd=None)
     execution_env, contract = (
         execution_environment._deterministic_execution_environment(
             normalized, override_names=[]
