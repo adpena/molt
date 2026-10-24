@@ -2,6 +2,7 @@ from __future__ import annotations
 import shutil
 
 import ast
+import fnmatch
 import hashlib
 import json
 import os
@@ -1761,6 +1762,9 @@ def test_luau_change_selects_formal_without_stale_backend_path() -> None:
 def test_llvm_control_plane_changes_run_llvm_stack() -> None:
     for path in (
         "src/molt/llvm_toolchain.py",
+        "src/molt/llvm_link_plan.py",
+        "runtime/molt-llvm-link/build.rs",
+        "runtime/molt-llvm-link/src/lib.rs",
         "config/llvm_toolchain_arches.toml",
         ".github/actions/setup-llvm/action.yml",
         "tools/bootstrap_llvm.py",
@@ -1772,6 +1776,12 @@ def test_llvm_control_plane_changes_run_llvm_stack() -> None:
         "vendor/llvm/LICENSE.TXT",
     ):
         assert _classes(path)["llvm"] is True, path
+    rule = next(row for row in PLAN.local_rules if row["name"] == "backend-llvm")
+    for path in (
+        "runtime/molt-llvm-link/build.rs",
+        "runtime/molt-llvm-link/src/lib.rs",
+    ):
+        assert any(fnmatch.fnmatchcase(path, glob) for glob in rule["globs"]), path
 
 
 def test_release_lane_changes_exercise_installed_and_source_consumers() -> None:

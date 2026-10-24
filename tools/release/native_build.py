@@ -33,6 +33,10 @@ from molt.llvm_toolchain import (  # noqa: E402
     required_llvm_backend_pin,
     required_llvm_targets_for_host,
 )
+from molt.llvm_link_plan import (  # noqa: E402
+    native_link_plan_record,
+    validate_native_link_plan_record,
+)
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_environment import (  # noqa: E402
     ProcessEnvironment,
@@ -77,6 +81,10 @@ from tools.release.compiler_payload import (  # noqa: E402
     source_environment,
     source_snapshot,
 )
+from tools.release.native_dependencies import (  # noqa: E402
+    capture_system_static_dependencies,
+    validate_system_static_dependencies,
+)
 from tools.release.git_source_snapshot import (  # noqa: E402
     GitSourceSnapshot,
     materialize_git_source_snapshot,
@@ -84,7 +92,7 @@ from tools.release.git_source_snapshot import (  # noqa: E402
 )
 from tools.release.release_model import ROOT, target_by_id  # noqa: E402
 
-SCHEMA = "molt.release-native-build.v5"
+SCHEMA = "molt.release-native-build.v6"
 RECEIPT_NAME = "native-build.json"
 _COMMANDS = CommandExecutor.for_file(__file__)
 _COMPONENTS = {
@@ -159,6 +167,10 @@ LLVM_POLICY_PATHS = (
     "config/llvm_toolchain_releases.toml",
     "runtime/molt-backend-native/Cargo.toml",
     "runtime/molt-backend/Cargo.toml",
+    "runtime/molt-llvm-link/Cargo.toml",
+    "runtime/molt-llvm-link/build.rs",
+    "runtime/molt-llvm-link/src/lib.rs",
+    "src/molt/llvm_link_plan.py",
 )
 
 
@@ -187,23 +199,22 @@ def llvm_input_record(
     if verification.release is None:
         raise ValueError("release compiler requires a manifest-pinned LLVM release")
     config = inputs.resources.file_identity(verification.llvm_config)
-    closure = [
-        f"system:${{compiler/llvm-system/{index}}}"
-        if token.startswith("system:") and Path(token[7:]).is_absolute()
-        else token
-        for index, token in enumerate(verification.link_closure)
-    ]
     return validate_llvm_inputs(
         {
-            "linkage": "force-static",
+            "linkage": "static-llvm-explicit-system",
             "version": verification.version,
             "upstream_release": asdict(verification.release),
             "policy_sha256": llvm_policy_sha256(
                 item.as_record() for item in snapshot.files
             ),
             "targets": list(verification.targets),
-            "link_closure": closure,
+            "link_plan": native_link_plan_record(
+                inputs.link_plan, verification.prefix, inputs.resources
+            ),
             "llvm_config": {"sha256": config.sha256, "size": config.size},
+            "system_static_dependencies": capture_system_static_dependencies(
+                inputs.link_plan, inputs.resources
+            ),
             "resources": inputs.resources.content_identity(),
         }
     )
@@ -218,7 +229,8 @@ def validate_llvm_inputs(value: object) -> dict[str, Any]:
             "upstream_release",
             "policy_sha256",
             "targets",
-            "link_closure",
+            "link_plan",
+            "system_static_dependencies",
             "llvm_config",
             "resources",
         },
@@ -228,7 +240,7 @@ def validate_llvm_inputs(value: object) -> dict[str, Any]:
     release = None if pin is None else llvm_release(pin.default_release, ROOT)
     if (
         release is None
-        or record["linkage"] != "force-static"
+        or record["linkage"] != "static-llvm-explicit-system"
         or record["version"] != release.version
         or record["upstream_release"] != asdict(release)
         or not _digest(record["policy_sha256"])
@@ -268,7 +280,9 @@ def validate_llvm_inputs(value: object) -> dict[str, Any]:
         or not isinstance(roots, list)
         or not all(
             isinstance(item, str)
-            and re.fullmatch(r"compiler/llvm-(?:config|sdk/[^\\:]+|system/\d+)", item)
+            and re.fullmatch(
+                r"compiler/llvm-(?:config|driver|sdk/[^\\:]+|system/\d+)", item
+            )
             for item in roots
         )
         or roots != sorted(set(roots))
@@ -278,37 +292,45 @@ def validate_llvm_inputs(value: object) -> dict[str, Any]:
         raise ValueError("invalid native LLVM resource custody")
     for root in roots:
         portable_relative_path(root)
-    closure = record["link_closure"]
-    if (
-        not isinstance(closure, list)
-        or not closure
-        or not all(isinstance(item, str) for item in closure)
-    ):
-        raise ValueError("invalid native LLVM static link closure")
-    archives = []
-    for index, token in enumerate(closure):
-        if token.startswith("system:"):
-            operand = token[7:]
-            if operand == f"${{compiler/llvm-system/{index}}}":
-                if f"compiler/llvm-system/{index}" not in roots:
-                    raise ValueError("LLVM external system input lacks byte custody")
-            elif (
-                re.fullmatch(r"(?:-l[A-Za-z0-9_.+-]+|[A-Za-z0-9_.+-]+\.lib)", operand)
-                is None
-            ):
-                raise ValueError("LLVM system selector is not location-neutral")
-        else:
-            if (
-                not token.startswith("lib/")
-                or ".." in Path(token).parts
-                or Path(token).suffix.lower() not in {".a", ".lib"}
-                or "compiler/llvm-sdk/" + token not in roots
-            ):
-                raise ValueError("LLVM archive lacks admitted static SDK bytes")
-            archives.append(token)
-    if not archives or len(archives) != len(set(archives)):
-        raise ValueError("LLVM static archive inventory must be nonempty and unique")
+    link_plan = validate_native_link_plan_record(record["link_plan"], set(roots))
+    if link_plan["llvm_version"] != record["version"]:
+        raise ValueError("native LLVM dependency plan version differs from SDK")
+    validate_system_static_dependencies(record["system_static_dependencies"], link_plan)
     return record
+
+
+def validate_llvm_target(llvm_record: object, rust_target: str) -> None:
+    """Join a native LLVM receipt to one declared release Rust target."""
+    llvm = validate_llvm_inputs(llvm_record)
+    coordinates = [
+        coordinate
+        for coordinate, triple in RUST_TARGET_BY_COORDINATE.items()
+        if triple == rust_target
+    ]
+    if len(coordinates) != 1:
+        raise ValueError("native LLVM target is not a declared release Rust target")
+    platform, arch = coordinates[0]
+    rust_arch = rust_target.split("-", 1)[0]
+    native_plan = llvm["link_plan"]
+    if (
+        native_plan["target_os"] != platform
+        or rust_arch not in native_plan["target_arches"]
+    ):
+        raise ValueError("native LLVM link plan differs from compiler target")
+    from molt.native_target_shape import native_artifact_shape
+
+    target_shape = native_artifact_shape(rust_arch, target_triple=rust_target)
+    if native_plan["host_abi"] != {
+        "architecture": target_shape.architecture,
+        "pointer_bits": target_shape.pointer_bits,
+        "header_bits": target_shape.header_bits,
+        "byte_order": target_shape.byte_order,
+    }:
+        raise ValueError(
+            "native LLVM SDK host ABI differs from compiler Rust target ABI"
+        )
+    if not set(required_llvm_targets_for_host(ROOT, arch)).issubset(llvm["targets"]):
+        raise ValueError("native LLVM SDK omits a required host code generator")
 
 
 def snapshot_rust_channel(repo_root: Path, snapshot: GitSourceSnapshot) -> str:
@@ -504,11 +526,7 @@ def validate_receipt(payload: object) -> dict[str, Any]:
             raise ValueError("native non-Rust tool identity must use content bytes")
     channel = policy["rust_channel"]
     _validate_rust_tools(tools, channel, triple)
-    llvm = validate_llvm_inputs(receipt["llvm"])
-    if not set(required_llvm_targets_for_host(ROOT, target["arch"])).issubset(
-        llvm["targets"]
-    ):
-        raise ValueError("native LLVM SDK omits a required host code generator")
+    validate_llvm_target(receipt["llvm"], triple)
     artifacts = _object(receipt["artifacts"], set(_COMPONENTS), "artifacts")
     for role, artifact in artifacts.items():
         _object(artifact, {"path", "sha256", "size"}, f"{role} artifact")
@@ -838,7 +856,14 @@ def produce_native_build(
             darwin = select_darwin_toolchain(inherited)
             inherited = inherited.updated(darwin.environment())
             versions = darwin.versions()
-        llvm_inputs = admit_llvm_compiler_inputs(source, inherited)
+        from tools.release.binary_compatibility import linux_shared_library_capability
+
+        capability = (
+            linux_shared_library_capability(arch) if platform == "linux" else None
+        )
+        llvm_inputs = admit_llvm_compiler_inputs(
+            source, inherited, shared_capability=capability
+        )
         env = build_environment(source, work, inherited, epoch=source_date_epoch)
         if platform == "windows":
             versions = {
@@ -895,6 +920,9 @@ def produce_native_build(
             }
             destination.chmod(0o755)
         llvm_inputs.verify()
+        from tools.release.binary_compatibility import derive_bundle_wheel_compatibility
+
+        derive_bundle_wheel_compatibility(stage, platform=platform, arch=arch)
         snapshot.verify(source)
         if darwin is not None and darwin != select_darwin_toolchain(
             env, developer_dir=darwin.developer_dir

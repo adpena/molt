@@ -4441,6 +4441,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_LLVM_LINK_PLAN",
+      "output_neutral": false,
+      "owner": "src/molt/llvm_link_plan.py",
+      "summary": "Canonical native LLVM dependency plan projected from the admitted SDK into Cargo; records target, ordered exact library files and individual linkage kinds, and the native receiver refuses an absent or mismatched plan rather than rediscovering SDK dependencies.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "",
       "kind": "path",

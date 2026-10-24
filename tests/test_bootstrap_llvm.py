@@ -1344,6 +1344,21 @@ def test_managed_builds_exclude_host_optional_libraries(
             ninja=NINJA_TOOL,
         )
     assert "-DLLVM_ENABLE_ZSTD=OFF" in commands[0]
+    identity = bootstrap_llvm._build_cache_identity(
+        release_identity={},
+        source_identity={},
+        architecture_contract_sha256="a" * 64,
+        targets="X86;WebAssembly",
+        projects="clang;lld;mlir;polly",
+        build_type="Release",
+        cmake=CMAKE_TOOL,
+        ninja=NINJA_TOOL,
+    )
+    contract = identity["inputs"]["config"]["cmake_contract"]
+    assert contract["LLVM_ENABLE_ZSTD"] == "OFF"
+    assert {f"-D{name}={value}" for name, value in contract.items()}.issubset(
+        commands[0]
+    )
 
 
 @pytest.mark.parametrize("name", ["ordinary", "OneDrive - archive cache"])
@@ -1368,6 +1383,16 @@ def test_cached_archive_uses_bytes_not_directory_brand(tmp_path, monkeypatch, na
 def test_bootstrap_check_uses_selected_tool_state_for_default_prefix(
     tmp_path, monkeypatch
 ):
+    from molt import llvm_toolchain
+    from tests.test_llvm_toolchain import _projection_plan
+
+    # Projection-only SDK fixture; external dependency selection is covered by
+    # the native plan tests and the real installed SDK link witness.
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "select_native_llvm_link_plan",
+        lambda _root, verification, **_kwargs: _projection_plan(verification),
+    )
     selected = tmp_path / "selected tools"
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(selected))
     pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
@@ -1461,6 +1486,16 @@ def test_bootstrap_warm_canonical_prefix_skips_cold_prerequisites(
     capsys: pytest.CaptureFixture[str],
     system: str,
 ) -> None:
+    from molt import llvm_toolchain
+    from tests.test_llvm_toolchain import _projection_plan
+
+    # Projection-only SDK fixture; external dependency selection is covered by
+    # the native plan tests and the real installed SDK link witness.
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "select_native_llvm_link_plan",
+        lambda _root, verification, **_kwargs: _projection_plan(verification),
+    )
     paths = attested_canonical_llvm_prefix
     attestation = paths.prefix / ".molt-llvm-toolchain.json"
     before = attestation.read_bytes()

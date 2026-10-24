@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import io
 from dataclasses import replace
 import copy
@@ -32,8 +33,12 @@ from tools.git_identity import clean_checkout_status_arguments, read_git_blob_ba
 from tools.release import update_manifests
 from tools.release import verify_consumer
 from tools.release import compiler_payload
+from tools.release import native_dependencies
 from tools.release import git_source_snapshot
-from tests.tools.test_release_native_build import native_build_fixture
+from tests.tools.test_release_native_build import (
+    native_build_fixture,
+    llvm_input_fixture,
+)
 from tests.process_guard_common import install_module_view
 
 
@@ -45,6 +50,287 @@ from tests.release_lane_fixtures import (
 
 ROOT = Path(__file__).resolve().parents[2]
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+
+def _static_dependency_fixture():
+    payloads = {
+        "usr/share/doc/libsample-dev/copyright": b"Full package notice. See /usr/share/common-licenses/MIT\n",
+        "usr/share/common-licenses/MIT": b"Full common license fixture\n",
+    }
+    return {
+        "package": {
+            "manager": "dpkg",
+            "name": "libsample-dev",
+            "version": "1.2-3",
+            "architecture": "amd64",
+        },
+        "archives": [
+            {
+                "path": "${compiler/llvm-system/0}",
+                "name": "sample",
+                "sha256": hashlib.sha256(b"archive bytes").hexdigest(),
+                "size": len(b"archive bytes"),
+            }
+        ],
+        "notices": [
+            {
+                "path": path,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+                "content_base64": base64.b64encode(data).decode("ascii"),
+            }
+            for path, data in sorted(payloads.items())
+        ],
+    }
+
+
+def _with_static_dependency(inputs):
+    dependency = _static_dependency_fixture()
+    inputs["link_plan"]["libraries"].append(
+        {
+            **dependency["archives"][0],
+            "source": "system",
+            "kind": "static",
+            "policy_admitted": None,
+        }
+    )
+    inputs["resources"]["roots"].append("compiler/llvm-system/0")
+    inputs["resources"]["file_count"] += 1
+    inputs["resources"]["total_size"] += dependency["archives"][0]["size"]
+    inputs["system_static_dependencies"] = [dependency]
+    return inputs
+
+
+def test_static_dependency_capture_reuses_package_notices(tmp_path, monkeypatch):
+    from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
+
+    paths = [tmp_path / "libone.a", tmp_path / "libtwo.a"]
+    for index, path in enumerate(paths):
+        path.write_bytes(b"actual archive " + bytes([index]))
+    resources = CargoResourceCustody.capture(
+        tuple(
+            CargoResourceRoot(f"compiler/llvm-system/{i}", p)
+            for i, p in enumerate(paths)
+        )
+    )
+    plan = SimpleNamespace(
+        target_os="linux",
+        libraries=tuple(
+            SimpleNamespace(source="system", kind="static", name=p.stem, path=p)
+            for p in paths
+        ),
+    )
+    commands = []
+
+    def query(argv, **kwargs):
+        commands.append(argv)
+        assert "--admindir=/var/lib/dpkg" in argv
+        if "--search" in argv:
+            return "libsample-dev:amd64: " + argv[-1] + "\n"
+        assert "--show" in argv and argv[-1] == "libsample-dev:amd64"
+        return "libsample-dev\t1.2-3\tamd64\tinstalled\n"
+
+    monkeypatch.setattr(
+        native_dependencies, "_COMMANDS", SimpleNamespace(check_output=query)
+    )
+    monkeypatch.setattr(
+        native_dependencies, "resolve_executable", lambda *_a, **_k: Path("/dpkg-query")
+    )
+    captures = []
+    actual_capture = native_dependencies.capture_stable_regular_file
+    for notice in _static_dependency_fixture()["notices"]:
+        path = tmp_path / notice["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(base64.b64decode(notice["content_base64"]))
+
+    def capture(path, **kwargs):
+        captures.append(path)
+        return actual_capture(tmp_path / path.relative_to("/"), **kwargs)
+
+    monkeypatch.setattr(native_dependencies, "capture_stable_regular_file", capture)
+    # Resolve notice paths in this synthetic Debian filesystem only.
+    original_resolve = Path.resolve
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda p, **kw: (
+            p if str(p).startswith("/usr/share/") else original_resolve(p, **kw)
+        ),
+    )
+    result = native_dependencies.capture_system_static_dependencies(plan, resources)
+    assert len(commands) == 3  # two archive owners, one package metadata query
+    assert len(captures) == 2  # copyright and its referenced common license once
+    assert result[0]["package"] == _static_dependency_fixture()["package"]
+    assert result[0]["notices"] == _static_dependency_fixture()["notices"]
+    assert [row["sha256"] for row in result[0]["archives"]] == [
+        hashlib.sha256(p.read_bytes()).hexdigest() for p in paths
+    ]
+    assert (
+        native_dependencies.capture_system_static_dependencies(
+            SimpleNamespace(libraries=()), None
+        )
+        == []
+    )
+    assert len(commands) == 3
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["archive", "notice", "missing-notice", "missing-archive", "extra", "duplicate"],
+)
+def test_static_dependency_provenance_rejects_tampering(mutation):
+    dependency = _static_dependency_fixture()
+    plan = {
+        "libraries": [
+            {**dependency["archives"][0], "source": "system", "kind": "static"}
+        ]
+    }
+    assert native_dependencies.validate_system_static_dependencies(
+        [dependency], plan
+    ) == [dependency]
+    altered = copy.deepcopy(dependency)
+    if mutation == "archive":
+        altered["archives"][0]["sha256"] = "f" * 64
+    elif mutation == "notice":
+        altered["notices"][0]["content_base64"] = base64.b64encode(b"changed").decode(
+            "ascii"
+        )
+    elif mutation == "missing-notice":
+        altered["notices"].pop(0)
+    elif mutation == "missing-archive":
+        altered["archives"] = []
+    elif mutation == "extra":
+        altered["package"]["license"] = "MIT"
+    else:
+        altered["notices"].append(altered["notices"][0])
+    with pytest.raises(ValueError):
+        native_dependencies.validate_system_static_dependencies([altered], plan)
+
+
+def test_static_system_spdx_is_distinct_and_observed(release_source):
+    inputs = {
+        target.id: llvm_input_fixture(
+            release_source, platform=target.platform, arch=target.arch
+        )
+        for target in release_model.release_targets()
+    }
+    _with_static_dependency(inputs["linux-x86_64"])
+    packages = release_model._llvm_spdx_packages(inputs)
+    system = [p for p in packages if p["SPDXID"].startswith("SPDXRef-SystemStatic-")]
+    assert len(system) == 1
+    assert (
+        system[0]["licenseDeclared"] == system[0]["licenseConcluded"] == "NOASSERTION"
+    )
+    assert json.loads(system[0]["sourceInfo"]) == _static_dependency_fixture()
+    release_model.validate_spdx_llvm_inputs({"packages": packages})
+    with pytest.raises(ValueError, match="projection differs"):
+        release_model.validate_spdx_llvm_inputs(
+            {"packages": [p for p in packages if p not in system]}
+        )
+    system[0]["sourceInfo"] = "{}"
+    with pytest.raises(ValueError, match="projection differs"):
+        release_model.validate_spdx_llvm_inputs({"packages": packages})
+
+
+def test_static_system_spdx_preserves_distinct_package_spellings(release_source):
+    inputs = {
+        target.id: llvm_input_fixture(
+            release_source, platform=target.platform, arch=target.arch
+        )
+        for target in release_model.release_targets()
+    }
+    llvm = inputs["linux-x86_64"]
+    for index, name in enumerate(("libfoo+bar-dev", "libfoo-bar-dev")):
+        dependency = _static_dependency_fixture()
+        dependency["package"]["name"] = name
+        archive = dependency["archives"][0]
+        archive["path"] = f"${{compiler/llvm-system/{index}}}"
+        for notice in dependency["notices"]:
+            notice["path"] = notice["path"].replace("/libsample-dev/", f"/{name}/")
+        llvm["system_static_dependencies"].append(dependency)
+        llvm["link_plan"]["libraries"].append(
+            {**archive, "source": "system", "kind": "static", "policy_admitted": None}
+        )
+        llvm["resources"]["roots"].append(f"compiler/llvm-system/{index}")
+        llvm["resources"]["file_count"] += 1
+        llvm["resources"]["total_size"] += archive["size"]
+    packages = release_model._llvm_spdx_packages(inputs)
+    ids = [p["SPDXID"] for p in packages]
+    assert len(ids) == len(set(ids))
+    system = [p for p in packages if p["SPDXID"].startswith("SPDXRef-SystemStatic-")]
+    assert {json.loads(p["sourceInfo"])["package"]["name"] for p in system} == {
+        "libfoo+bar-dev",
+        "libfoo-bar-dev",
+    }
+    release_model.validate_spdx_llvm_inputs({"packages": packages})
+    system[1]["SPDXID"] = system[0]["SPDXID"]
+    with pytest.raises(ValueError, match="projection differs"):
+        release_model.validate_spdx_llvm_inputs({"packages": packages})
+
+
+def test_static_dependency_capture_refuses_missing_package_manager(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise ValueError(
+            "static system release package manager is unavailable: dpkg-query"
+        )
+
+    monkeypatch.setattr(native_dependencies, "resolve_executable", unavailable)
+    plan = SimpleNamespace(
+        target_os="linux", libraries=(SimpleNamespace(source="system", kind="static"),)
+    )
+    with pytest.raises(ValueError, match="package manager is unavailable"):
+        native_dependencies.capture_system_static_dependencies(plan, None)
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "compiler", "policy", "inventory"])
+def test_bundle_cli_requires_receipt_bound_compiler_bytes(
+    tmp_path, monkeypatch, release_source, mismatch, capsys
+):
+    root = tmp_path / "native"
+    receipt = native_build_fixture(root, release_source)
+    compiler = root / receipt["artifacts"]["compiler"]["path"]
+    monkeypatch.setattr(
+        compiler_payload, "source_snapshot", lambda *_args: release_source
+    )
+    if mismatch == "compiler":
+        compiler = tmp_path / "substitute-compiler"
+        compiler.write_bytes(b"unrelated binary")
+    elif mismatch in {"policy", "inventory"}:
+        if mismatch == "policy":
+            receipt["llvm"]["policy_sha256"] = "f" * 64
+        else:
+            receipt["source"]["files_sha256"] = "f" * 64
+        (root / "native-build.json").write_text(json.dumps(receipt), encoding="utf-8")
+    argv = [
+        "build_bundle",
+        "--version",
+        "0.0.1",
+        "--platform",
+        "linux",
+        "--arch",
+        "x86_64",
+        "--output",
+        str(tmp_path / "bundle.tar.gz"),
+        "--source-sha",
+        release_source.source_sha,
+        "--source-date-epoch",
+        "1700000000",
+        "--compiler",
+        str(compiler),
+    ]
+    if mismatch != "missing":
+        argv.extend(["--native-build", str(root / "native-build.json")])
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as error:
+        build_bundle.main()
+    assert error.value.code == 2
+    assert {
+        "missing": "--native-build is required",
+        "compiler": "compiler bytes differ from native-build receipt",
+        "policy": "native LLVM policy differs from source snapshot",
+        "inventory": "native build receipt differs from candidate source",
+    }[mismatch] in capsys.readouterr().err
+    assert not (tmp_path / "bundle.tar.gz").exists()
 
 
 @pytest.mark.parametrize("rule", list(NameRule))
@@ -1084,6 +1370,9 @@ def test_bundle_archives_are_byte_reproducible(
         arch="x86_64",
         snapshot=release_source,
     )
+    llvm_inputs = llvm_input_fixture(release_source, platform=platform, arch="x86_64")
+    if platform == "linux":
+        _with_static_dependency(llvm_inputs)
     for output in (first, second):
         wheel = build_bundle.build_bundle(
             version="0.0.1",
@@ -1100,6 +1389,7 @@ def test_bundle_archives_are_byte_reproducible(
             runtime_cells=cells,
             pure_wheel=pure_wheel,
             wheel_output_dir=tmp_path / f"wheel-{output.stem}",
+            llvm_inputs=llvm_inputs,
         )
         assert wheel is not None
         wheels.append(wheel)
@@ -1108,6 +1398,24 @@ def test_bundle_archives_are_byte_reproducible(
     extracted = tmp_path / "extracted"
     verify_consumer._extract(first, extracted)
     bundle = extracted / "molt-0.0.1"
+    assert (
+        json.loads((bundle / "share/molt/system-dependencies.json").read_bytes())
+        == llvm_inputs["system_static_dependencies"]
+    )
+    for dependency in llvm_inputs["system_static_dependencies"]:
+        for notice in dependency["notices"]:
+            relative = (
+                "share/molt/system-dependencies/libsample-dev/amd64/" + notice["path"]
+            )
+            expected_notice = base64.b64decode(notice["content_base64"])
+            assert (bundle / relative).read_bytes() == expected_notice
+            with zipfile.ZipFile(wheels[0]) as archive:
+                assert (
+                    archive.read(
+                        "molt-0.0.1.data/data/share/molt/distribution/" + relative
+                    )
+                    == expected_notice
+                )
     assert not (bundle / "lib/molt/bootstrap.py").exists()
     assert not (bundle / "share/molt/wheels").exists()
     assert not (bundle / "source" / omitted).exists()
@@ -1749,7 +2057,7 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
             if corruption == "shared":
                 inputs["linkage"] = "prefer-static"
             else:
-                inputs["link_closure"] = ["lib/libLLVM.so"]
+                inputs["link_plan"]["libraries"][0]["kind"] = "dylib"
             entry["sourceInfo"] = json.dumps(inputs)
         with pytest.raises(ValueError):
             release_model.validate_spdx_llvm_inputs(invalid_sbom)
@@ -1956,6 +2264,7 @@ def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkey
         wasm_facts=facts,
         snapshot=snapshot,
         runtime_cells=cells,
+        llvm_inputs=llvm_input_fixture(snapshot, platform=platform, arch=arch),
     )
     extracted = tmp_path / "extracted"
     verify_consumer._extract(archive, extracted)

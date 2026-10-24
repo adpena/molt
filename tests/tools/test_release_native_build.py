@@ -62,26 +62,18 @@ def _policy_files():
     root = Path(__file__).resolve().parents[2]
     return {
         "rust-toolchain.toml": b'[toolchain]\nchannel="1.96.1"\n',
-        **{
-            name: (root / name).read_bytes()
-            for name in (
-                "config/llvm_toolchain_arches.toml",
-                "config/llvm_toolchain_releases.toml",
-                "runtime/molt-backend-native/Cargo.toml",
-                "runtime/molt-backend/Cargo.toml",
-            )
-        },
+        **{name: (root / name).read_bytes() for name in native_build.LLVM_POLICY_PATHS},
     }
 
 
-def llvm_input_fixture(snapshot, *, arch):
+def llvm_input_fixture(snapshot, *, arch, platform):
     """Independent transport facts; this is not an executable LLVM build proof."""
     from molt.llvm_toolchain import llvm_release
 
     release = llvm_release("22.1.8", Path(__file__).resolve().parents[2])
     assert release is not None
     return {
-        "linkage": "force-static",
+        "linkage": "static-llvm-explicit-system",
         "version": "22.1.8",
         "upstream_release": asdict(release),
         "policy_sha256": native_build.llvm_policy_sha256(
@@ -90,18 +82,49 @@ def llvm_input_fixture(snapshot, *, arch):
         "targets": ["AArch64", "WebAssembly"]
         if arch in {"aarch64", "arm64"}
         else ["WebAssembly", "X86"],
-        "link_closure": ["lib/libLLVMCore.a"],
+        "link_plan": {
+            "schema": "molt.llvm-native-link.v1",
+            "target_os": platform,
+            "target_arches": ["aarch64" if arch == "arm64" else arch],
+            "host_target": RUST_TARGET_BY_COORDINATE[(platform, arch)],
+            "host_abi": {
+                "architecture": "aarch64" if arch == "arm64" else arch,
+                "pointer_bits": 64,
+                "header_bits": 64,
+                "byte_order": "little",
+            },
+            "llvm_config": "${compiler/llvm-config}",
+            "driver": "${compiler/llvm-driver}",
+            "llvm_version": "22.1.8",
+            "policy": None,
+            "libraries": [
+                {
+                    "kind": "static",
+                    "name": "LLVMCore",
+                    "source": "sdk",
+                    "path": "${compiler/llvm-sdk/lib/libLLVMCore.a}",
+                    "size": 10,
+                    "sha256": hashlib.sha256(b"LLVM bytes").hexdigest(),
+                    "policy_admitted": None,
+                }
+            ],
+        },
         "llvm_config": {
             "sha256": hashlib.sha256(b"configuration").hexdigest(),
             "size": 13,
         },
+        "system_static_dependencies": [],
         "resources": {
             "digest": hashlib.sha256(
                 b"independent SDK transport inventory"
             ).hexdigest(),
-            "file_count": 2,
-            "total_size": 23,
-            "roots": ["compiler/llvm-config", "compiler/llvm-sdk/lib/libLLVMCore.a"],
+            "file_count": 3,
+            "total_size": 29,
+            "roots": [
+                "compiler/llvm-config",
+                "compiler/llvm-driver",
+                "compiler/llvm-sdk/lib/libLLVMCore.a",
+            ],
             "missing": [],
         },
     }
@@ -161,7 +184,7 @@ def native_build_fixture(
             "components": plans,
         },
         "tools": tools,
-        "llvm": llvm_input_fixture(snapshot, arch=arch),
+        "llvm": llvm_input_fixture(snapshot, arch=arch, platform=platform),
         "artifacts": {},
     }
     for role, plan in plans.items():
@@ -603,7 +626,7 @@ def test_dependency_tools_fail_by_name_before_build(
         native_build._tool_paths(tmp_path, {}, platform=platform, arch=arch)
 
 
-@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "llvm"])
+@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "llvm", "binary"])
 def test_producer_publishes_only_complete_verified_generation(
     tmp_path, snapshot, monkeypatch, failure
 ):
@@ -632,9 +655,10 @@ def test_producer_publishes_only_complete_verified_generation(
         "_tool_paths",
         lambda *_args, **_kwargs: {role: tmp_path / role for role in template["tools"]},
     )
-    from molt import llvm_toolchain
+    from molt import llvm_toolchain, llvm_link_plan
+    from tools.release import binary_compatibility
 
-    # Fake only the SDK's external verifier. Retained file custody, projection,
+    # Fake only external tools, policy provider and the SDK verifier. Retained file custody, projection,
     # native receipt admission and failure-atomic publication remain real.
     sdk = tmp_path / "sdk"
     config = sdk / "bin" / "llvm-config"
@@ -643,10 +667,46 @@ def test_producer_publishes_only_complete_verified_generation(
     archive.parent.mkdir(parents=True)
     config.write_bytes(b"configuration")
     archive.write_bytes(b"LLVMarchive")
+    driver = sdk / "bin/clang++"
+    driver.write_bytes(b"driver")
+    (sdk / "lib/libstdc++.so").write_bytes(b"C++ ABI")
+    monkeypatch.setattr(
+        llvm_link_plan, "_driver_library_directories", lambda *_args: (sdk / "lib",)
+    )
+    install_module_view(monkeypatch, "sys", sys, llvm_link_plan, platform="linux")
+    monkeypatch.setattr(
+        binary_compatibility,
+        "linux_shared_library_capability",
+        lambda _arch: (
+            {
+                "tool": "auditwheel",
+                "version": "6.8.2",
+                "platform": "linux",
+                "arch": "x86_64",
+                "policy_name": "manylinux_2_39_x86_64",
+                "policy_sha256": "a" * 64,
+                "shared_libraries": ("libstdc++.so.6",),
+            },
+            frozenset({"libstdc++.so.6"}),
+        ),
+    )
+    audit_observations = []
+
+    def audit(root, **coordinate):
+        audit_observations.append((root, coordinate))
+        assert not (tmp_path / "published").exists()
+        if failure == "binary":
+            raise ValueError("independent final binary audit refusal")
+        return SimpleNamespace(tag="manylinux_2_39_x86_64")
+
+    monkeypatch.setattr(
+        binary_compatibility, "derive_bundle_wheel_compatibility", audit
+    )
     verification = SimpleNamespace(
         prefix=sdk,
         llvm_config=config,
         version="22.1.8",
+        host_target="x86_64-unknown-linux-gnu",
         targets=("WebAssembly", "X86"),
         release=llvm_toolchain.llvm_release(
             "22.1.8", Path(__file__).resolve().parents[2]
@@ -659,6 +719,13 @@ def test_producer_publishes_only_complete_verified_generation(
             ),
         ),
         tool_versions=(
+            llvm_toolchain.LlvmToolVersionFact(
+                "clang++",
+                "bin/clang++",
+                "22.1.8",
+                6,
+                hashlib.sha256(b"driver").hexdigest(),
+            ),
             llvm_toolchain.LlvmToolVersionFact(
                 "llvm-config",
                 "bin/llvm-config",
@@ -748,6 +815,8 @@ def test_producer_publishes_only_complete_verified_generation(
             build_root=tmp_path / "isolated-builds",
         )
         assert len(observations) == 4
+        assert len(audit_observations) == 1
+        assert audit_observations[0][1] == {"platform": "linux", "arch": "x86_64"}
         assert set(receipt["artifacts"]) == {
             "compiler",
             "launcher",
@@ -843,9 +912,13 @@ def test_native_receipt_requires_complete_static_llvm_inputs(
     elif mutation == "source":
         inputs["upstream_release"]["source_sha256"] = "f" * 64
     elif mutation == "archive":
-        inputs["link_closure"] = ["lib/libLLVM.so"]
+        inputs["link_plan"]["libraries"][0]["path"] = (
+            "${compiler/llvm-sdk/lib/libLLVM.so}"
+        )
     elif mutation == "system":
-        inputs["link_closure"].append("system:${compiler/llvm-system/1}")
+        row = copy.deepcopy(inputs["link_plan"]["libraries"][0])
+        row.update(source="system", path="${compiler/llvm-system/1}")
+        inputs["link_plan"]["libraries"].append(row)
     elif mutation == "config":
         inputs["resources"]["roots"].remove("compiler/llvm-config")
     elif mutation == "host":
@@ -934,7 +1007,17 @@ def test_native_producer_removes_sdk_names_with_child_rule(tmp_path, monkeypatch
         output.mkdir()
         return output
 
-    def admit_llvm(_source, inherited):
+    from tools.release import binary_compatibility
+
+    capability = ({"shared_libraries": ()}, frozenset())
+    monkeypatch.setattr(
+        binary_compatibility,
+        "linux_shared_library_capability",
+        lambda _arch: capability,
+    )
+
+    def admit_llvm(_source, inherited, *, shared_capability):
+        assert shared_capability is capability
         assert dict(inherited) == (
             {} if rule is NameRule.WINDOWS else {"SdkRoot": "mixed"}
         )
@@ -954,3 +1037,14 @@ def test_native_producer_removes_sdk_names_with_child_rule(tmp_path, monkeypatch
             build_root=tmp_path / "builds",
         )
     assert not output.exists()
+
+
+def test_native_receipt_rejects_consistent_foreign_sdk_pointer_abi(tmp_path, snapshot):
+    # Architecture-family membership and an internally consistent SDK shape are
+    # insufficient: this candidate's actual Rust target has 64-bit pointers.
+    receipt = native_build_fixture(tmp_path, snapshot)
+    plan = receipt["llvm"]["link_plan"]
+    plan["host_target"] = "x86_64-unknown-linux-gnux32"
+    plan["host_abi"].update(pointer_bits=32, header_bits=32)
+    with pytest.raises(ValueError, match="LLVM.*ABI"):
+        native_build.validate_receipt(receipt)

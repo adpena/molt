@@ -506,6 +506,7 @@ def assemble_candidate(
                     wasm_facts=facts_binary if kind == "molt" else None,
                     snapshot=snapshot if kind == "molt" else None,
                     runtime_cells=runtime_cells if kind == "molt" else None,
+                    llvm_inputs=native["llvm"] if kind == "molt" else None,
                     pure_wheel=wheel if kind == "molt" else None,
                     wheel_output_dir=destination.parent if kind == "molt" else None,
                 )

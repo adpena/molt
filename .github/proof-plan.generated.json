@@ -213,6 +213,7 @@
     "src/molt/cargo_workspace.py",
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
+    "src/molt/llvm_link_plan.py",
     "src/molt/wasi_sdk_identity.py",
     "src/molt/wasi_c_abi_protocol.txt",
     "tools/provision_wasi_sdk.py",
@@ -1020,6 +1021,8 @@
         "runtime/molt-artifact-publish/**",
         "runtime/molt-backend-mlir/**",
         "runtime/molt-backend-native/**",
+        "runtime/molt-llvm-link/**",
+        "src/molt/llvm_link_plan.py",
         "runtime/molt-ir/**",
         "runtime/molt-passes/**",
         "runtime/molt-tir/**",
@@ -11980,6 +11983,9 @@
         "globs": [
           "runtime/test_support/native_object_execution.rs",
           "runtime/molt-backend-native/Cargo.toml",
+          "runtime/molt-backend-native/src/lib.rs",
+          "runtime/molt-llvm-link/**",
+          "src/molt/llvm_link_plan.py",
           "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
         ],
         "name": "backend-llvm",

@@ -12,6 +12,7 @@ import csv
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -27,6 +28,57 @@ from tools.release import release_model
 PLATFORM, ARCH = current_host_coordinate()
 _LINUX = PLATFORM == "linux" and importlib.util.find_spec("auditwheel") is not None
 _MACOS = PLATFORM == "macos" and importlib.util.find_spec("delocate") is not None
+
+
+@pytest.mark.skipif(
+    not _LINUX, reason="release capability uses pinned Linux auditwheel"
+)
+@pytest.mark.parametrize("arch", ["x86_64", "aarch64"])
+def test_linux_shared_library_capability_binds_maintained_policy(arch):
+    from importlib.metadata import version
+    from importlib.resources import files
+
+    from auditwheel.architecture import Architecture
+    from auditwheel.libc import Libc
+    from auditwheel.policy import WheelPolicies
+
+    raw = files("auditwheel.policy").joinpath("manylinux-policy.json").read_bytes()
+    # Independently select the lowest-priority portable row from upstream data;
+    # selecting the unconstrained linux row would silently permit any library.
+    row = min(
+        (
+            row
+            for row in json.loads(raw)
+            if row["name"] != "linux" and arch in row["symbol_versions"]
+        ),
+        key=lambda row: row["priority"],
+    )
+    identity, libraries = compat.linux_shared_library_capability(arch)
+    assert libraries == frozenset(row["lib_whitelist"])
+    assert (
+        libraries
+        == WheelPolicies(libc=Libc.GLIBC, arch=Architecture(arch)).lowest.whitelist
+    )
+    assert isinstance(libraries, frozenset)
+    assert dict(identity) == {
+        "tool": "auditwheel",
+        "version": version("auditwheel"),
+        "platform": "linux",
+        "arch": arch,
+        "policy_name": f"{row['name']}_{arch}",
+        "policy_sha256": hashlib.sha256(raw).hexdigest(),
+        "shared_libraries": tuple(sorted(row["lib_whitelist"])),
+    }
+    with pytest.raises(TypeError):
+        identity["policy_name"] = "linux"
+
+
+@pytest.mark.skipif(
+    not _LINUX, reason="release capability uses pinned Linux auditwheel"
+)
+def test_linux_shared_library_capability_rejects_unknown_architecture():
+    with pytest.raises(ValueError):
+        compat.linux_shared_library_capability("not-an-architecture")
 
 
 @pytest.mark.parametrize(

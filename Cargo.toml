@@ -33,6 +33,7 @@ members = [
     "runtime/molt-artifact-publish",
     "runtime/molt-host-process",
     "runtime/molt-backend-native",
+    "runtime/molt-llvm-link",
     "runtime/molt-jit",
     "runtime/molt-backend-luau",
     "runtime/molt-backend-rust",
