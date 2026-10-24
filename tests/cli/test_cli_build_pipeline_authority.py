@@ -101,14 +101,16 @@ def _capture_pipeline(
 
 @pytest.mark.parametrize("capture", [False, True])
 @pytest.mark.parametrize("wasm", [False, True])
+@pytest.mark.parametrize("backend", ["cranelift", "llvm"])
 def test_input_capture_reaches_backend_for_linkable_outputs(
-    monkeypatch, tmp_path, capture, wasm
+    monkeypatch, tmp_path, capture, wasm, backend
 ):
     result, calls = _capture_pipeline(
         monkeypatch,
         tmp_path,
         capture=capture,
         layout_changes={"is_wasm": wasm, "linked": wasm},
+        backend=backend,
     )
     assert result == 0
     assert calls == ["frontend", ("backend", capture)]
@@ -123,7 +125,6 @@ def test_input_capture_reaches_backend_for_linkable_outputs(
         ({"is_rust_transpile": True}, "cranelift", None),
         ({"is_luau_transpile": True}, "cranelift", None),
         ({"is_wasm": True, "linked": False}, "cranelift", None),
-        ({}, "llvm", None),
         ({}, "cranelift", object()),
     ],
 )

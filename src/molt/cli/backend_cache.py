@@ -20,14 +20,18 @@ from molt.default_paths import (
     shared_stdlib_archive_cache_root,
     validate_required_stdlib_output,
     backend_cache_artifact_filename,
+    backend_cache_sync_receipt_path,
+    backend_cache_publication_lock_name,
     shared_stdlib_cache_entry,
     shared_stdlib_publish_lock_path,
 )
 
+from molt.backend_protocol import BackendEmissionOrigin, BackendStdlibOrigin
 from molt.backend_environment import compilation_diagnostics_requested
 from molt.cli import function_references as _function_references
 from molt.cli import native_symbol_inspection as _native_symbols
 from molt.cli.artifact_sync import (
+    _artifact_sync_emission_origin,
     _artifact_sync_state_matches,
     _artifact_sync_state_path,
     _read_artifact_sync_state,
@@ -46,6 +50,7 @@ from molt.cli.backend_artifact_contract import (
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.cache_keys import FunctionDigests, _cache_key, _sorted_ir_functions
+from molt.cli.link_input_observation import CompilationCacheRecord
 from molt.cli.models import (
     _ModuleGraphMetadata,
     _SharedStdlibCacheValidationToken,
@@ -275,12 +280,6 @@ def _shared_stdlib_native_symbol_closure_issue(
     return "; ".join(issues) if issues else None
 
 
-def _immutable_publish_lock_name(dst: Path) -> str:
-    """Stable per-destination lock name for the no-hard-link copy-publish path."""
-    digest = hashlib.sha256(str(dst.resolve()).encode("utf-8")).hexdigest()[:16]
-    return f"immutable-publish-{digest}"
-
-
 def _copy_verified_backend_artifact(
     src: Path, dst: Path, *, identity: StableRegularFileIdentity
 ) -> StableRegularFileIdentity:
@@ -312,6 +311,37 @@ def _require_matching_backend_content(
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _BackendCacheGeneration:
+    identity: StableRegularFileIdentity
+    emission_origin: BackendEmissionOrigin | None
+
+
+@dataclass(frozen=True, slots=True)
+class _BackendArtifactStageResult:
+    error: str | None
+    emission_origin: BackendEmissionOrigin | None
+
+
+def _backend_cache_generation(
+    artifact: Path, *, identity: StableRegularFileIdentity
+) -> _BackendCacheGeneration:
+    # Caller owns the publication lock, including the byte/receipt read fence.
+    state = _read_artifact_sync_state(backend_cache_sync_receipt_path(artifact))
+    try:
+        verify_stable_regular_file_identity(identity, label="backend cache generation")
+    except ValueError as error:
+        raise BackendArtifactValidationError(str(error)) from error
+    origin = (
+        _artifact_sync_emission_origin(state, identity=identity)
+        if state is not None
+        and state.get("source_key") == artifact.name
+        and state.get("tier") == "immutable"
+        else None
+    )
+    return _BackendCacheGeneration(identity, origin)
+
+
 def _publish_immutable_backend_cache_artifact(
     src: Path,
     dst: Path,
@@ -319,60 +349,228 @@ def _publish_immutable_backend_cache_artifact(
     artifact_contract: BackendArtifactContract,
     warnings: list[str],
     identity: StableRegularFileIdentity | None = None,
-) -> StableRegularFileIdentity:
-    """Publish one admitted generation; a key cannot silently name other bytes."""
+    emission_origin: BackendEmissionOrigin | None = None,
+) -> _BackendCacheGeneration:
+    """Publish bytes and their optional origin under one generation lock.
+
+    An existing winner always retains its own origin, including unknown legacy
+    origin. Byte equality does not authorize grafting a new producer onto it.
+    """
     identity = _validate_backend_cache_artifact(
         src, artifact_contract=artifact_contract, identity=identity
     )
+    if emission_origin is not None and (
+        emission_origin.output_sha256 != identity.sha256
+        or emission_origin.output_size != identity.size
+    ):
+        raise BackendArtifactValidationError(
+            "Backend cache origin names different bytes"
+        )
     dst.parent.mkdir(parents=True, exist_ok=True)
-
-    def existing_generation() -> StableRegularFileIdentity:
+    with _shared_cache_lock(
+        backend_cache_publication_lock_name(dst), cache_root=dst.parent
+    ):
+        if dst.exists():
+            try:
+                existing = _validate_backend_cache_artifact(
+                    dst, artifact_contract=artifact_contract, publish_symbol_facts=True
+                )
+            except BackendArtifactValidationError:
+                warnings.append(
+                    f"Ignoring invalid immutable cache artifact; cleanup owns removal: {dst}"
+                )
+                return _BackendCacheGeneration(identity, emission_origin)
+            _require_matching_backend_content(identity, existing)
+            return _backend_cache_generation(dst, identity=existing)
+        # A retired artifact can leave an orphan receipt. It never belongs to
+        # this new generation, even if a filesystem later reuses its inode.
+        backend_cache_sync_receipt_path(dst).unlink(missing_ok=True)
+        tmp_path = staged_file_path(dst, purpose="backend-cache")
         try:
-            existing = _validate_backend_cache_artifact(
-                dst,
-                artifact_contract=artifact_contract,
-                publish_symbol_facts=True,
-            )
-        except BackendArtifactValidationError:
-            warnings.append(
-                f"Ignoring invalid immutable cache artifact; cleanup owns removal: {dst}"
-            )
-            return identity
-        _require_matching_backend_content(identity, existing)
-        return existing
-
-    if dst.exists():
-        return existing_generation()
-    tmp_path = staged_file_path(dst, purpose="backend-cache")
-    try:
-        # Copy through the existing verified publication primitive. Linking the
-        # caller's writable source into a cache transfers neither ownership nor
-        # immutability; a later in-place write would poison every linked tier.
-        _copy_verified_backend_artifact(src, tmp_path, identity=identity)
-        try:
-            os.link(tmp_path, dst)
-        except FileExistsError:
-            return existing_generation()
-        except OSError as exc:
-            if not _link_failure_wants_copy(exc):
-                raise
-            with _shared_cache_lock(
-                _immutable_publish_lock_name(dst), cache_root=dst.parent
-            ):
-                if dst.exists():
-                    return existing_generation()
+            _copy_verified_backend_artifact(src, tmp_path, identity=identity)
+            try:
+                os.link(tmp_path, dst)
+            except FileExistsError:
+                existing = _validate_backend_cache_artifact(
+                    dst, artifact_contract=artifact_contract, publish_symbol_facts=True
+                )
+                _require_matching_backend_content(identity, existing)
+                return _backend_cache_generation(dst, identity=existing)
+            except OSError as exc:
+                if not _link_failure_wants_copy(exc):
+                    raise
                 os.replace(tmp_path, dst)
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError as error:
-            warnings.append(
-                f"Backend cache publication temporary cleanup failed: {error}"
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError as error:
+                warnings.append(
+                    f"Backend cache publication temporary cleanup failed: {error}"
+                )
+        # Unlinking the temporary hard link changes ctime. Capture only after it.
+        published = _validate_backend_cache_artifact(
+            dst, artifact_contract=artifact_contract, publish_symbol_facts=True
+        )
+        _require_matching_backend_content(identity, published)
+        if emission_origin is not None:
+            _write_artifact_sync_state(
+                backend_cache_sync_receipt_path(dst),
+                source_key=dst.name,
+                tier="immutable",
+                artifact=dst,
+                identity=published,
+                emission_origin=emission_origin,
             )
-    # Removing the last private hard link changes the published inode's change
-    # time. Capture the returned generation only after that owned mutation, not
-    # before finally runs; peers and consumers must see the final identity.
-    return existing_generation()
+        return _BackendCacheGeneration(published, emission_origin)
+
+
+def restore_backend_cache_artifact(
+    source: Path,
+    destination: Path,
+    *,
+    artifact_contract: BackendArtifactContract,
+) -> None:
+    """Republish a sealed cache snapshot, preserving its original observation.
+
+    This explicit transfer boundary consumes a receiver-inventoried immutable
+    snapshot, whose inode cannot survive export. Ordinary cache admission still
+    requires the local generation fence. Neither boundary authenticates an
+    observation: the closed original supervisor session owns that decision.
+    """
+    if (
+        not is_backend_cache_artifact_name(source.name)
+        or destination.name != source.name
+    ):
+        raise BackendArtifactValidationError(
+            "Cache transfer requires the same canonical artifact name"
+        )
+    identity = _validate_backend_cache_artifact(
+        source, artifact_contract=artifact_contract
+    )
+    receipt = backend_cache_sync_receipt_path(source)
+    origin = None
+    if receipt.exists():
+        state = _read_artifact_sync_state(receipt)
+        if (
+            state is None
+            or state["source_key"] != source.name
+            or state["tier"] != "immutable"
+            or (state["sha256"], state["size"]) != (identity.sha256, identity.size)
+        ):
+            raise BackendArtifactValidationError(
+                "Cache transfer receipt does not bind snapshot bytes"
+            )
+        if state["emission_origin"] is not None:
+            origin = BackendEmissionOrigin.from_payload(state["emission_origin"])
+            origin.verify_output(source)
+    warnings: list[str] = []
+    published = _publish_immutable_backend_cache_artifact(
+        source,
+        destination,
+        artifact_contract=artifact_contract,
+        warnings=warnings,
+        identity=identity,
+        emission_origin=origin,
+    )
+    if warnings or published.identity.path != destination.expanduser().absolute():
+        raise BackendArtifactValidationError(
+            "Cache transfer did not publish the requested destination"
+        )
+    if published.emission_origin != origin:
+        raise BackendArtifactValidationError(
+            "Cache transfer destination already owns another emission observation"
+        )
+
+
+@contextmanager
+def compilation_cache_export_paths(
+    cache_root: Path,
+    *,
+    cache: CompilationCacheRecord,
+    compiler_origin: BackendEmissionOrigin,
+    stdlib_origin: BackendStdlibOrigin | None,
+    artifact_contract: BackendArtifactContract,
+) -> Generator[tuple[Path, ...], None, None]:
+    """Pin the producer's exact consumed cache coordinates for admission export.
+
+    Coordinates are selection hints, independently fenced against the actual
+    generation and output. No directory enumeration or unrelated-byte hashing
+    occurs. The caller copies this bounded family while these locks remain held.
+    """
+    if cache["compiler"] is None:
+        raise ValueError("consumed compiler output has no retained cache coordinate")
+    root = cache_root.resolve(strict=True)
+    artifact = Path(cache["compiler"])
+    if (
+        artifact.parent != root
+        or not is_backend_cache_artifact_name(artifact.name)
+        or not artifact.name.endswith(artifact_contract.suffix)
+        or f".artifact-{artifact_contract.cache_identity}" not in artifact.name
+        or artifact.resolve(strict=True) != artifact
+    ):
+        raise ValueError("compiler cache coordinate is outside its canonical owner")
+    selected = [artifact, backend_cache_sync_receipt_path(artifact)]
+    with contextlib.ExitStack() as locks:
+        locks.enter_context(
+            _shared_cache_lock(
+                backend_cache_publication_lock_name(artifact), cache_root=root
+            )
+        )
+        identity = _validate_backend_cache_artifact(
+            artifact, artifact_contract=artifact_contract
+        )
+        generation = _backend_cache_generation(artifact, identity=identity)
+        if generation.emission_origin != compiler_origin:
+            raise ValueError("compiler cache coordinate owns another emission")
+        compiler_origin.verify_output(artifact)
+        if stdlib_origin is None:
+            if cache["stdlib"] is not None or ".stdlib-" in artifact.name:
+                raise ValueError("unused stdlib cache coordinate cannot enter export")
+        else:
+            if cache["stdlib"] is None:
+                raise ValueError(
+                    "consumed stdlib archive has no retained cache coordinate"
+                )
+            archive = Path(cache["stdlib"])
+            if (
+                shared_stdlib_archive_cache_root(archive) != root
+                or archive.resolve(strict=True) != archive
+                or not artifact.name.endswith(
+                    f".stdlib-{archive.parent.name}{artifact_contract.suffix}"
+                )
+            ):
+                raise ValueError(
+                    "stdlib cache coordinate is outside its canonical owner"
+                )
+            locks.enter_context(_shared_stdlib_cache_lock(archive))
+            _, data = capture_stable_regular_file(
+                _stdlib_object_origin_sidecar_path(archive),
+                label="stdlib cache export origin",
+                max_bytes=64 * 1024 * 1024,
+            )
+            from molt.exact_json import loads_exact
+
+            original = BackendStdlibOrigin.from_payload(
+                loads_exact(data.decode("utf-8"))
+            )
+            if original != stdlib_origin:
+                raise ValueError("stdlib cache coordinate owns another emission")
+            original.verify_output(archive)
+            selected.append(archive)
+            for sidecar in (
+                _stdlib_object_count_sidecar_path,
+                _stdlib_object_key_sidecar_path,
+                _stdlib_object_manifest_sidecar_path,
+                _stdlib_object_partition_manifest_sidecar_path,
+                _stdlib_object_digest_sidecar_path,
+                _stdlib_object_symbol_contract_sidecar_path,
+                _stdlib_object_origin_sidecar_path,
+                _native_symbols._native_object_symbol_facts_sidecar_path,
+            ):
+                path = sidecar(archive)
+                if path.is_file() and not path.is_symlink():
+                    selected.append(path)
+        yield tuple(selected)
 
 
 def _materialize_cached_backend_artifact(
@@ -390,18 +588,33 @@ def _materialize_cached_backend_artifact(
     output_stat: os.stat_result | None = None,
     artifact_contract: BackendArtifactContract,
     candidate_identity: StableRegularFileIdentity | None = None,
-) -> bool:
+    require_origin: bool = False,
+) -> _SyncedBackendOutput | None:
     try:
         observed = candidate.lstat()
-        candidate_identity = _validate_backend_cache_artifact(
-            candidate, artifact_contract=artifact_contract, identity=candidate_identity
-        )
+        with _shared_cache_lock(
+            backend_cache_publication_lock_name(candidate), cache_root=candidate.parent
+        ):
+            candidate_identity = _validate_backend_cache_artifact(
+                candidate,
+                artifact_contract=artifact_contract,
+                identity=candidate_identity,
+            )
+            generation = _backend_cache_generation(
+                candidate, identity=candidate_identity
+            )
+        emission_origin = generation.emission_origin
     except _native_symbols.NativeSymbolInspectionError:
         # Reader failures are operational failures, never soft cache misses.
         raise
     except (OSError, BackendArtifactValidationError) as exc:
         warnings.append(f"Cache candidate admission failed: {exc}")
-        return False
+        return None
+    if require_origin and emission_origin is None:
+        raise BackendArtifactValidationError(
+            "Captured backend cache reuse requires original emission origin; "
+            f"the cache generation contains bytes only: {candidate}"
+        )
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
         state = _read_artifact_sync_state(state_path)
@@ -421,7 +634,7 @@ def _materialize_cached_backend_artifact(
                 _require_matching_backend_content(candidate_identity, synced_identity)
             except BackendArtifactValidationError as exc:
                 warnings.append(str(exc))
-                return False
+                return None
             if (
                 candidate.parent == _default_molt_cache()
                 and is_backend_cache_artifact_name(candidate.name)
@@ -429,7 +642,11 @@ def _materialize_cached_backend_artifact(
                 refresh_cache_entry_recency(
                     candidate, cache_root=candidate.parent, observed=observed
                 )
-            return True
+            return _SyncedBackendOutput(
+                tier,
+                synced_identity,
+                _artifact_sync_emission_origin(state, identity=synced_identity),
+            )
     sync_tier = tier
     sync_source_key = source_key
     try:
@@ -444,15 +661,17 @@ def _materialize_cached_backend_artifact(
                     artifact_contract=artifact_contract,
                     warnings=warnings,
                     identity=candidate_identity,
+                    emission_origin=emission_origin,
                 )
                 if (
                     module_cache_key
-                    and published_module_cache.path
+                    and published_module_cache.identity.path
                     == cache_path.expanduser().absolute()
                 ):
                     # Once the canonical module cache path is valid, future
                     # daemon sync checks should treat output.o as module-synced
                     # rather than function-only.
+                    emission_origin = published_module_cache.emission_origin
                     sync_tier = "module"
                     sync_source_key = module_cache_key
             except OSError as exc:
@@ -465,6 +684,7 @@ def _materialize_cached_backend_artifact(
                 tier=sync_tier,
                 artifact=output_artifact,
                 identity=output_identity,
+                emission_origin=emission_origin,
             )
         except OSError as exc:
             warnings.append(f"Backend cache sync receipt write failed: {exc}")
@@ -474,10 +694,10 @@ def _materialize_cached_backend_artifact(
             refresh_cache_entry_recency(
                 candidate, cache_root=candidate.parent, observed=observed
             )
-        return True
+        return _SyncedBackendOutput(tier, output_identity, emission_origin)
     except OSError as exc:
         warnings.append(f"Cache copy failed: {exc}")
-        return False
+        return None
 
 
 def _backend_artifact_sync_identity(
@@ -518,6 +738,7 @@ def _backend_artifact_sync_identity(
 class _SyncedBackendOutput:
     tier: str
     identity: StableRegularFileIdentity
+    emission_origin: BackendEmissionOrigin | None
 
 
 def _synced_backend_output_cache_hit(
@@ -554,7 +775,9 @@ def _synced_backend_output_cache_hit(
             identity=identity,
         ):
             return None
-        return _SyncedBackendOutput(tier, identity)
+        return _SyncedBackendOutput(
+            tier, identity, _artifact_sync_emission_origin(state, identity=identity)
+        )
     return None
 
 
@@ -643,13 +866,14 @@ def _try_cached_backend_candidates(
     stdlib_module_symbols: Collection[str] | None = None,
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None,
     stage_timings_ms: dict[str, float] | None = None,
-) -> tuple[bool, str | None]:
+    require_origin: bool = False,
+) -> _SyncedBackendOutput | None:
     artifact_contract.validate_shared_stdlib(
         enabled=stdlib_object_path is not None or bool(stdlib_object_cache_key)
     )
     # Both synchronized outputs and stored candidates bypass backend execution.
     if compilation_diagnostics_requested():
-        return False, None
+        return None
     stage_start = time.perf_counter()
     state_path = _artifact_sync_state_path(project_root, output_artifact)
     state = _read_artifact_sync_state(state_path)
@@ -694,7 +918,7 @@ def _try_cached_backend_candidates(
             )
         # Native application archive cache hits are invalid without the matching
         # stdlib_shared object they were compiled against.
-        return False, None
+        return None
 
     stage_start = time.perf_counter()
     synced = _synced_backend_output_cache_hit(
@@ -713,7 +937,12 @@ def _try_cached_backend_candidates(
         stage_start,
     )
     if synced is not None:
-        return True, synced.tier
+        if require_origin and synced.emission_origin is None:
+            raise BackendArtifactValidationError(
+                "Captured backend cache reuse requires original emission origin; "
+                "the synchronized output contains bytes only"
+            )
+        return synced
 
     for tier, candidate in cache_candidates:
         stage_start = time.perf_counter()
@@ -779,7 +1008,7 @@ def _try_cached_backend_candidates(
             stage_start,
         )
         stage_start = time.perf_counter()
-        if _materialize_cached_backend_artifact(
+        materialized = _materialize_cached_backend_artifact(
             project_root,
             candidate,
             output_artifact,
@@ -803,19 +1032,26 @@ def _try_cached_backend_candidates(
             output_stat=output_stat,
             artifact_contract=artifact_contract,
             candidate_identity=candidate_identity,
-        ):
+            require_origin=require_origin,
+        )
+        if materialized is not None:
+            if require_origin and materialized.emission_origin is None:
+                raise BackendArtifactValidationError(
+                    "Captured backend cache reuse requires original emission origin; "
+                    f"the cache generation contains bytes only: {candidate}"
+                )
             _record_backend_cache_stage_ms(
                 stage_timings_ms,
                 "backend_cache_try_materialize",
                 stage_start,
             )
-            return True, tier
+            return materialized
         _record_backend_cache_stage_ms(
             stage_timings_ms,
             "backend_cache_try_materialize",
             stage_start,
         )
-    return False, None
+    return None
 
 
 def _backend_daemon_skip_output_sync_flags(
@@ -898,7 +1134,8 @@ def _stage_backend_output_and_caches(
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
     artifact_contract: BackendArtifactContract,
-) -> str | None:
+    emission_origin: BackendEmissionOrigin | None = None,
+) -> _BackendArtifactStageResult:
     artifact_contract.validate_shared_stdlib(enabled=bool(stdlib_object_cache_key))
     if any(
         destination is not None
@@ -906,28 +1143,44 @@ def _stage_backend_output_and_caches(
         == destination.expanduser().absolute()
         for destination in (cache_path, function_cache_path)
     ):
-        return "Backend output must be build-owned, not an evictable cache destination"
+        return _BackendArtifactStageResult(
+            "Backend output must be build-owned, not an evictable cache destination",
+            None,
+        )
     try:
         staged_identity = _validate_backend_cache_artifact(
             backend_output, artifact_contract=artifact_contract
         )
+        if emission_origin is not None and (
+            emission_origin.output_sha256 != staged_identity.sha256
+            or emission_origin.output_size != staged_identity.size
+        ):
+            raise BackendArtifactValidationError(
+                "Backend emission origin names different staged output bytes"
+            )
         if output_artifact.parent != Path("."):
             output_artifact.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        return f"Failed to move backend output: {exc}"
+        return _BackendArtifactStageResult(
+            f"Failed to move backend output: {exc}", None
+        )
 
     staged_source = backend_output
     if cache_path is not None:
         try:
-            _publish_immutable_backend_cache_artifact(
+            published = _publish_immutable_backend_cache_artifact(
                 backend_output,
                 cache_path,
                 artifact_contract=artifact_contract,
                 warnings=warnings,
                 identity=staged_identity,
+                emission_origin=emission_origin,
             )
+            emission_origin = published.emission_origin
         except OSError as exc:
-            return f"Failed to publish backend cache output: {exc}"
+            return _BackendArtifactStageResult(
+                f"Failed to publish backend cache output: {exc}", None
+            )
 
     if state_path is None:
         state_path = _artifact_sync_state_path(project_root, output_artifact)
@@ -959,10 +1212,13 @@ def _stage_backend_output_and_caches(
             try:
                 _require_matching_backend_content(staged_identity, synced_identity)
             except BackendArtifactValidationError as exc:
-                return str(exc)
+                return _BackendArtifactStageResult(str(exc), None)
     try:
         if output_already_synced:
-            pass
+            assert synced_identity is not None
+            emission_origin = _artifact_sync_emission_origin(
+                state, identity=synced_identity
+            )
         elif staged_source == output_artifact:
             verify_stable_regular_file_identity(
                 staged_identity, label="backend staged output"
@@ -973,7 +1229,9 @@ def _stage_backend_output_and_caches(
                 staged_source, output_artifact, identity=staged_identity
             )
     except (OSError, ValueError) as exc:
-        return f"Failed to move backend output: {exc}"
+        return _BackendArtifactStageResult(
+            f"Failed to move backend output: {exc}", None
+        )
 
     if cache_path is not None:
         if function_cache_path is not None and function_cache_path != cache_path:
@@ -984,6 +1242,7 @@ def _stage_backend_output_and_caches(
                     artifact_contract=artifact_contract,
                     warnings=warnings,
                     identity=staged_identity,
+                    emission_origin=emission_origin,
                 )
             except OSError as exc:
                 warnings.append(f"Function cache write failed: {exc}")
@@ -1000,6 +1259,7 @@ def _stage_backend_output_and_caches(
                     tier="module",
                     artifact=output_artifact,
                     identity=output_identity,
+                    emission_origin=emission_origin,
                 )
             except OSError as exc:
                 warnings.append(f"Backend cache sync receipt write failed: {exc}")
@@ -1009,7 +1269,7 @@ def _stage_backend_output_and_caches(
             backend_output.unlink(missing_ok=True)
         except OSError as exc:
             warnings.append(f"Backend private output cleanup failed: {exc}")
-    return None
+    return _BackendArtifactStageResult(None, emission_origin)
 
 
 def _stdlib_object_count_sidecar_path(stdlib_object_path: Path) -> Path:
@@ -1030,6 +1290,10 @@ def _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path: Path) -> 
 
 def _stdlib_object_digest_sidecar_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_suffix(".sha256")
+
+
+def _stdlib_object_origin_sidecar_path(stdlib_object_path: Path) -> Path:
+    return stdlib_object_path.with_suffix(".origin.json")
 
 
 def _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path: Path) -> Path:
@@ -1117,6 +1381,7 @@ def _hydrate_shared_stdlib_archive(
     staged_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
         staged_stdlib_obj
     )
+    staged_origin_path = _stdlib_object_origin_sidecar_path(staged_stdlib_obj)
     staged_digest_path = _stdlib_object_digest_sidecar_path(staged_stdlib_obj)
     source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
     source_count_path = _stdlib_object_count_sidecar_path(stdlib_object_path)
@@ -1124,6 +1389,7 @@ def _hydrate_shared_stdlib_archive(
     source_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
         stdlib_object_path
     )
+    source_origin_path = _stdlib_object_origin_sidecar_path(stdlib_object_path)
     source_digest_path = _stdlib_object_digest_sidecar_path(stdlib_object_path)
     with (
         _shared_stdlib_cache_lock(stdlib_object_path),
@@ -1160,6 +1426,10 @@ def _hydrate_shared_stdlib_archive(
                 _copy_verified_backend_artifact(source, destination, identity=identity)
 
             copy_snapshot(stdlib_object_path, staged_stdlib_obj)
+            if source_origin_path.exists():
+                copy_snapshot(source_origin_path, staged_origin_path)
+            else:
+                staged_origin_path.unlink(missing_ok=True)
             if source_key_path.exists():
                 copy_snapshot(source_key_path, staged_key_path)
             elif stdlib_object_cache_key:
@@ -1221,6 +1491,7 @@ def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
         _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path),
         _stdlib_object_digest_sidecar_path(stdlib_object_path),
         _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path),
+        _stdlib_object_origin_sidecar_path(stdlib_object_path),
         _native_symbols._native_object_symbol_facts_sidecar_path(stdlib_object_path),
     )
     failures: list[tuple[Path, OSError]] = []
@@ -1587,6 +1858,9 @@ def _shared_stdlib_cache_generation_token(
         _stdlib_object_digest_sidecar_path(stdlib_object_path),
         _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path),
     ]
+    origin_path = _stdlib_object_origin_sidecar_path(stdlib_object_path)
+    if origin_path.exists():
+        paths.append(origin_path)
     if stdlib_object_manifest is not None:
         paths.append(_stdlib_object_manifest_sidecar_path(stdlib_object_path))
     entries: list[StableRegularFileIdentity] = []

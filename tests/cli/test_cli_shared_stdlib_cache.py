@@ -2363,7 +2363,7 @@ def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
         cli_backend_cache, "_remove_shared_stdlib_cache_artifacts", fail_remove
     )
 
-    cache_hit, tier = cli_backend_cache._try_cached_backend_candidates(
+    hit = cli_backend_cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=(("module", candidate),),
         output_artifact=output_artifact,
@@ -2377,15 +2377,16 @@ def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
         warnings=warnings,
     )
 
-    assert (cache_hit, tier) == (False, None)
+    assert hit is None
     assert any("mismatched contract" in warning for warning in warnings)
     assert stdlib_object.exists()
     assert cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).exists()
 
 
 @pytest.mark.parametrize("same_root", [False, True])
+@pytest.mark.parametrize("has_origin", [False, True])
 def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_root: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_root: bool, has_origin: bool
 ) -> None:
     artifacts = tmp_path / "build"
     source = (artifacts if same_root else tmp_path / "cache") / "stdlib.a"
@@ -2399,6 +2400,40 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
         (BACKEND_CACHE._stdlib_object_digest_sidecar_path, "digest"),
     ):
         path_function(source).write_text(payload, encoding="utf-8")
+    # This lifetime cell controls archive admission above; the origin remains a
+    # raw observation copied exactly, never promoted into an admission flag.
+    origin_bytes = json.dumps(
+        {
+            "schema": "molt.stdlib-archive-origin.v1",
+            "output": {
+                "sha256": hashlib.sha256(b"admitted archive").hexdigest(),
+                "size": len(b"admitted archive"),
+            },
+            "workers": [
+                {
+                    "schema": "molt.native-worker-origin.v2",
+                    "process_id": 101,
+                    "scope": "a" * 64,
+                    "input": {
+                        "sha256": hashlib.sha256(b"input").hexdigest(),
+                        "size": 5,
+                    },
+                    "output": {
+                        "sha256": hashlib.sha256(b"object").hexdigest(),
+                        "size": 6,
+                    },
+                }
+            ],
+        }
+    ).encode()
+    source_origin = BACKEND_CACHE._stdlib_object_origin_sidecar_path(source)
+    output = artifacts / "shared-stdlib-link" / source.name
+    output_origin = BACKEND_CACHE._stdlib_object_origin_sidecar_path(output)
+    output_origin.parent.mkdir(parents=True)
+    output_origin.write_bytes(b"stale destination origin")
+    if has_origin:
+        source_origin.write_bytes(origin_bytes)
+    copied_origins = []
     locked = False
     validations = 0
     original_copy = BACKEND_CACHE._copy_verified_backend_artifact
@@ -2419,6 +2454,8 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
             replacement = source.with_name("next-generation.a")
             replacement.write_bytes(b"replacement archive")
             replacement.replace(source)
+            if has_origin:
+                source_origin.write_bytes(b"replacement generation origin")
 
     def validate(*args, **kwargs):
         nonlocal validations
@@ -2431,6 +2468,8 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
         assert source_path.resolve() != destination.resolve()
         result = original_copy(source_path, destination, identity=identity)
         assert not source_path.samefile(destination)
+        if source_path == source_origin:
+            copied_origins.append(identity.sha256)
         return result
 
     monkeypatch.setattr(BACKEND_CACHE, "_shared_stdlib_cache_lock", publication_lock)
@@ -2446,6 +2485,13 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
     assert staged.parent == artifacts / "shared-stdlib-link"
     assert staged.read_bytes() == b"admitted archive"
     assert source.read_bytes() == b"replacement archive"
+    if has_origin:
+        assert output_origin.read_bytes() == origin_bytes
+        assert copied_origins == [hashlib.sha256(origin_bytes).hexdigest()]
+        assert source_origin.read_bytes() == b"replacement generation origin"
+    else:
+        assert not output_origin.exists()
+        assert copied_origins == []
 
 
 def test_stdlib_snapshot_rejects_source_alias_without_invalidation(
@@ -2619,7 +2665,7 @@ def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token
         raising=True,
     )
 
-    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+    hit = BACKEND_CACHE._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=(("module", candidate),),
         output_artifact=output_artifact,
@@ -2634,7 +2680,8 @@ def test_try_cached_backend_candidates_reuses_prevalidated_stdlib_contract_token
         stdlib_contract_validation_token=token,
     )
 
-    assert (cache_hit, tier) == (True, "module")
+    assert hit is not None and hit.tier == "module"
+    assert hit.emission_origin is None
     assert output_artifact.read_bytes() == application_bytes
     assert warnings == []
 
@@ -2678,7 +2725,7 @@ def test_try_cached_backend_candidates_reuses_synced_output_without_candidate_pr
         raising=True,
     )
 
-    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+    hit = BACKEND_CACHE._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=(("module", missing_candidate),),
         output_artifact=output_artifact,
@@ -2692,7 +2739,8 @@ def test_try_cached_backend_candidates_reuses_synced_output_without_candidate_pr
         stage_timings_ms=stage_timings_ms,
     )
 
-    assert (cache_hit, tier) == (True, "module")
+    assert hit is not None and hit.tier == "module"
+    assert hit.emission_origin is None
     assert warnings == []
     assert "backend_cache_try_synced_output" in stage_timings_ms
     assert "backend_cache_try_candidate_exists" not in stage_timings_ms
@@ -2746,7 +2794,7 @@ def test_try_cached_backend_candidates_rejects_synced_output_with_bad_stdlib_con
         raising=True,
     )
 
-    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+    hit = BACKEND_CACHE._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=(("module", missing_candidate),),
         output_artifact=output_artifact,
@@ -2761,7 +2809,7 @@ def test_try_cached_backend_candidates_rejects_synced_output_with_bad_stdlib_con
         stage_timings_ms=stage_timings_ms,
     )
 
-    assert (cache_hit, tier) == (False, None)
+    assert hit is None
     assert warnings == [
         "Ignoring shared stdlib cache with mismatched contract: bad-contract"
     ]
@@ -2813,7 +2861,7 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
         raising=True,
     )
 
-    cache_hit, tier = BACKEND_CACHE._try_cached_backend_candidates(
+    hit = BACKEND_CACHE._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=(("module", candidate),),
         output_artifact=output_artifact,
@@ -2828,7 +2876,8 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
         stdlib_contract_validation_token=token,
     )
 
-    assert (cache_hit, tier) == (True, "module")
+    assert hit is not None and hit.tier == "module"
+    assert hit.emission_origin is None
     assert output_artifact.read_bytes() == application_bytes
     assert calls == {"revalidate": 1}
     assert warnings == []
@@ -3067,7 +3116,7 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
             target=admit_target(target_triple or "native"),
             emit_mode="bin" if archive else "obj",
         ),
-    )
+    ).error
 
     assert err is None
     assert output_artifact.exists()
@@ -3408,7 +3457,7 @@ def test_optional_native_candidate_loss_is_a_miss_but_reader_failure_is_not(
             admit()
         assert candidate.exists()
     else:
-        assert admit() == (False, None)
+        assert admit() is None
         assert not candidate.exists()
     assert not output.exists()
 

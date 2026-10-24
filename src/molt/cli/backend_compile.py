@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.backend_protocol import BackendDaemonJobOrigin
+from molt.backend_protocol import BackendEmissionOrigin, validate_emission_scope
 
 from molt.compilation_target import target_name
 
@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import nullcontext
+from contextlib import nullcontext, ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ContextManager, Mapping
@@ -98,6 +98,14 @@ from molt.cli.wasm_codegen_layout import (
     WasmCodegenLayout,
     prepare_wasm_codegen_layout,
 )
+from molt.artifact_publication import discard_staged_output
+from molt.file_publication import staged_file_path
+from molt.toolchain_identity import (
+    capture_stable_regular_file,
+    stable_regular_file_identity,
+)
+from molt.exact_json import loads_exact
+from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 from molt.file_locks import _shared_cache_lock
 from molt.target_python import TargetPythonVersion
 from molt import host_capacity
@@ -122,7 +130,7 @@ class _BackendExecutionResult:
     backend_daemon_cached: bool | None
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None
-    backend_daemon_origin: BackendDaemonJobOrigin | None = None
+    backend_emission_origin: BackendEmissionOrigin | None = None
 
 
 def _record_pipeline_stage_ms(
@@ -582,9 +590,16 @@ def _prepare_backend_dispatch(
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
     start_daemon: bool = True,
+    capture_origin: bool = False,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
+    backend_environment = dict(backend_environment)
+    backend_environment.pop("MOLT_EMISSION_SCOPE", None)
     try:
+        if capture_origin:
+            scope = validate_emission_scope(os.environ.get("MOLT_EMISSION_SCOPE"))
+            if scope is not None:
+                backend_environment["MOLT_EMISSION_SCOPE"] = scope
         if (
             not (is_wasm or is_rust_transpile or is_luau_transpile)
             and native_runtime_codegen_binding is None
@@ -702,6 +717,7 @@ def _prepare_backend_dispatch(
 
 def _execute_backend_compile(
     *,
+    capture_origin: bool = False,
     cache: bool,
     cache_path: Path | None,
     function_cache_path: Path | None,
@@ -737,7 +753,7 @@ def _execute_backend_compile(
     codegen: CodegenSelection,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
-    backend_daemon_origin: BackendDaemonJobOrigin | None = None
+    backend_emission_origin: BackendEmissionOrigin | None = None
     target_triple = cache_setup.artifact_contract.target_triple
     # Both daemon and one-shot dispatch consume the same effective operation.
     backend_env = _backend_request_environment(
@@ -775,7 +791,7 @@ def _execute_backend_compile(
     native_output_kind = (
         cache_setup.artifact_contract.native_kind or NativeArtifactKind.OBJECT
     )
-    with backend_output_ctx as backend_output:
+    with backend_output_ctx as backend_output, ExitStack() as origin_custody:
         daemon_identity_path = (
             _backend_daemon_identity_path(
                 molt_root,
@@ -934,7 +950,7 @@ def _execute_backend_compile(
                 if daemon_log_delta:
                     print(daemon_log_delta, file=sys.stderr)
             if daemon_compile.cached is not None:
-                backend_daemon_origin = daemon_compile.origin
+                backend_emission_origin = daemon_compile.origin
                 backend_daemon_cached = daemon_compile.cached
             if daemon_compile.cache_tier is not None:
                 backend_daemon_cache_tier = daemon_compile.cache_tier
@@ -1001,7 +1017,7 @@ def _execute_backend_compile(
                     daemon_error = daemon_compile.error
                     backend_output_exists = daemon_compile.output_exists
                     if daemon_compile.cached is not None:
-                        backend_daemon_origin = daemon_compile.origin
+                        backend_emission_origin = daemon_compile.origin
                         backend_daemon_cached = daemon_compile.cached
                     if daemon_compile.cache_tier is not None:
                         backend_daemon_cache_tier = daemon_compile.cache_tier
@@ -1054,6 +1070,15 @@ def _execute_backend_compile(
                 wasm_runtime_poll_slots=wasm_runtime_poll_slots,
             )
             cmd_with_output = cmd + ["--output", str(backend_output)]
+            origin_path: Path | None = None
+            if capture_origin:
+                origin_path = staged_file_path(
+                    backend_output, purpose="emission-origin", suffix=".json"
+                )
+                origin_custody.callback(discard_staged_output, origin_path)
+                cmd_with_output.extend(["--capture-origin", str(origin_path)])
+                if scope := backend_env.get("MOLT_EMISSION_SCOPE"):
+                    cmd_with_output.extend(["--emission-scope", scope])
             # Ensure the output directory exists — --rebuild may have
             # cleared the cache tree, and the backend's own
             # ensure_output_parent_dir may race with ld -r timing.
@@ -1131,6 +1156,46 @@ def _execute_backend_compile(
                     backend_process.returncode or 1,
                     command="build",
                 )
+            if origin_path is not None:
+                try:
+                    _, payload = capture_stable_regular_file(
+                        origin_path,
+                        label="backend emission origin",
+                        max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+                    )
+                    backend_emission_origin = BackendEmissionOrigin.from_payload(
+                        loads_exact(payload.decode("utf-8"))
+                    )
+                    if (
+                        backend_emission_origin.producer.kind != "one-shot"
+                        or backend_emission_origin.producer.scope
+                        != backend_env.get("MOLT_EMISSION_SCOPE")
+                    ):
+                        raise ValueError(
+                            "one-shot emission names another producer scope"
+                        )
+                    backend_emission_origin.verify_output(backend_output)
+                    lease = stable_regular_file_identity(
+                        ir_file_path, label="captured backend IR lease"
+                    )
+                    if (
+                        (
+                            backend_emission_origin.input.lease_sha256,
+                            backend_emission_origin.input.lease_size,
+                        )
+                        != (lease.sha256, lease.size)
+                        or backend_emission_origin.input.function_digests
+                        != program.digest_hex()
+                    ):
+                        raise ValueError(
+                            "one-shot emission names a different consumed input assembly"
+                        )
+                except (OSError, ValueError) as exc:
+                    return None, _fail(
+                        f"Backend emission capture failed: {exc}",
+                        json_output,
+                        command="build",
+                    )
             backend_output_written = True
         if backend_output_written and not (
             daemon_ready and backend_compiled and backend_output_exists
@@ -1145,10 +1210,11 @@ def _execute_backend_compile(
             if cache and cache_path is not None:
                 if diagnostics_enabled and "backend_cache_write" not in phase_starts:
                     phase_starts["backend_cache_write"] = time.perf_counter()
-            stage_error = _stage_backend_output_and_caches(
+            staged = _stage_backend_output_and_caches(
                 project_root,
                 backend_output,
                 output_artifact,
+                emission_origin=backend_emission_origin,
                 cache_path=cache_path if cache else None,
                 cache_key=cache_key if cache else None,
                 stdlib_object_cache_key=(
@@ -1166,10 +1232,11 @@ def _execute_backend_compile(
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
             )
-            if stage_error is not None:
-                return None, _fail(stage_error, json_output, command="build")
+            if staged.error is not None:
+                return None, _fail(staged.error, json_output, command="build")
+            backend_emission_origin = staged.emission_origin
     return _BackendExecutionResult(
-        backend_daemon_origin=backend_daemon_origin,
+        backend_emission_origin=backend_emission_origin,
         backend_daemon_cached=backend_daemon_cached,
         backend_daemon_cache_tier=backend_daemon_cache_tier,
         backend_daemon_health=backend_daemon_health,
@@ -1178,6 +1245,7 @@ def _execute_backend_compile(
 
 def _prepare_backend_compile(
     *,
+    capture_origin: bool = False,
     diagnostics_enabled: bool,
     phase_starts: dict[str, float],
     cache_report: bool,
@@ -1218,7 +1286,7 @@ def _prepare_backend_compile(
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
 ) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
-    backend_daemon_origin: BackendDaemonJobOrigin | None = None
+    backend_emission_origin = cache_setup.backend_emission_origin
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
@@ -1259,7 +1327,7 @@ def _prepare_backend_compile(
     )
     with compile_lock:
         if not cache_hit and cache_enabled:
-            cache_hit, cache_hit_tier = _try_cached_backend_candidates(
+            cached_output = _try_cached_backend_candidates(
                 project_root=project_root,
                 cache_candidates=cache_setup.cache_candidates,
                 output_artifact=output_artifact,
@@ -1277,6 +1345,17 @@ def _prepare_backend_compile(
                 ),
             )
 
+            cache_hit = cached_output is not None
+            cache_hit_tier = cached_output.tier if cached_output is not None else None
+            backend_emission_origin = (
+                cached_output.emission_origin if cached_output is not None else None
+            )
+        if capture_origin and cache_hit and backend_emission_origin is None:
+            return None, _fail(
+                "Cached output has no original emission origin; rebuild it with capture before admission",
+                json_output,
+                command="build",
+            )
         if not cache_hit:
             if diagnostics_enabled:
                 now = time.perf_counter()
@@ -1286,6 +1365,7 @@ def _prepare_backend_compile(
                     phase_starts["backend_prepare"] = now
             prepared_backend_dispatch, prepared_backend_dispatch_error = (
                 _prepare_backend_dispatch(
+                    capture_origin=capture_origin,
                     native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
                     is_rust_transpile=is_rust_transpile,
                     is_luau_transpile=is_luau_transpile,
@@ -1316,6 +1396,7 @@ def _prepare_backend_compile(
                 phase_starts["backend_dispatch"] = time.perf_counter()
             backend_execution_result, backend_execution_error = (
                 _execute_backend_compile(
+                    capture_origin=capture_origin,
                     native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
                     cache=cache_enabled,
                     cache_path=cache_path,
@@ -1357,7 +1438,7 @@ def _prepare_backend_compile(
             if backend_execution_error is not None:
                 return None, backend_execution_error
             assert backend_execution_result is not None
-            backend_daemon_origin = backend_execution_result.backend_daemon_origin
+            backend_emission_origin = backend_execution_result.backend_emission_origin
             backend_daemon_cached = backend_execution_result.backend_daemon_cached
             backend_daemon_cache_tier = (
                 backend_execution_result.backend_daemon_cache_tier
@@ -1368,7 +1449,7 @@ def _prepare_backend_compile(
             )
 
     return _PreparedBackendCompile(
-        backend_daemon_origin=backend_daemon_origin,
+        backend_emission_origin=backend_emission_origin,
         cache_enabled=cache_enabled,
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,

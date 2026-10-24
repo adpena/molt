@@ -232,7 +232,7 @@ class NativeArchiveFixtureCatalog:
         expected_members = (
             StaticArchiveMemberIdentity(
                 ordinal=0,
-                member=StaticArchiveMember("object.o", 68, size),
+                member=StaticArchiveMember("object.o", 68, size, "short-or-gnu"),
                 sha256=hashlib.sha256(payload[68 : 68 + size]).hexdigest(),
             ),
         )

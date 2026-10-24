@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from molt.cli.link_input_observation import CompilationInputRecord
 
-from molt.backend_protocol import BackendDaemonJobOrigin
+from molt.backend_protocol import BackendEmissionOrigin
 
 from molt.compilation_target import target_name
 
@@ -64,7 +64,7 @@ def _observed_build_toolchain(
     runtime_lib: Path | None,
     output: Path,
     selected_profiles: Mapping[str, str] | None = None,
-    daemon_job_origin: BackendDaemonJobOrigin | None = None,
+    emission_origin: BackendEmissionOrigin | None = None,
     link_input_observation: CompilationInputRecord | None = None,
 ) -> dict[str, Any]:
     """Observe selected bytes; unknown or failed observations never become claims.
@@ -78,8 +78,8 @@ def _observed_build_toolchain(
     }
     if link_input_observation is not None:
         facts["link_input_observation"] = dict(link_input_observation)
-    if daemon_job_origin is not None:
-        facts["daemon_job_origin"] = daemon_job_origin.payload()
+    if emission_origin is not None:
+        facts["emission_origin"] = emission_origin.payload()
     if selected_profiles is not None:
         facts["selected_profiles"] = dict(selected_profiles)
     for name, path, executable in (
@@ -605,7 +605,7 @@ def _emit_native_link_result(
     selected_profiles: Mapping[str, str] | None = None,
     finalize_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,
-    daemon_job_origin: BackendDaemonJobOrigin | None = None,
+    emission_origin: BackendEmissionOrigin | None = None,
     link_input_observation: CompilationInputRecord | None = None,
 ) -> int:
     def emit_finalization_failure(message: str) -> int:
@@ -733,7 +733,7 @@ def _emit_native_link_result(
                 runtime_lib=runtime_lib,
                 output=output_binary,
                 selected_profiles=selected_profiles,
-                daemon_job_origin=daemon_job_origin,
+                emission_origin=emission_origin,
                 link_input_observation=link_input_observation,
             )
             _attach_build_metadata(

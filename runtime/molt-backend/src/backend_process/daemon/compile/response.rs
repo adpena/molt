@@ -22,7 +22,7 @@ pub(super) fn daemon_job_needs_functions_response(
 pub(super) fn daemon_job_success_response(
     id: String,
     warnings: Vec<String>,
-    origin: super::super::origin::DaemonJobOrigin,
+    origin: crate::backend_process::origin::EmissionOrigin,
 ) -> DaemonJobResponse {
     DaemonJobResponse {
         id,

@@ -1,9 +1,9 @@
 use crate::backend_process::io_limits::write_cached_output;
 use std::sync::Arc;
 
-use super::super::super::origin::DaemonJobOrigin;
 use super::super::super::protocol::{DaemonCacheKey, DaemonJobRequest, DaemonJobResponse};
 use super::super::shared::DaemonCache;
+use crate::backend_process::origin::EmissionOrigin;
 
 pub(crate) fn try_write_cached_daemon_job_output(
     cache: &DaemonCache,
@@ -42,7 +42,7 @@ pub(crate) fn try_write_cached_daemon_job_output(
 fn cached_daemon_job_response(
     job: &DaemonJobRequest,
     cache_tier: &str,
-    origin: DaemonJobOrigin,
+    origin: EmissionOrigin,
     write_result: std::io::Result<bool>,
 ) -> DaemonJobResponse {
     match write_result {

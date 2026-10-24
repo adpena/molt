@@ -47,7 +47,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
-    from molt.backend_protocol import BackendDaemonJobOrigin
+    from molt.backend_protocol import BackendEmissionOrigin
     from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
     from molt.cli.link_input_observation import CompilationInputRecord
     from molt.cli.external_native import (
@@ -728,6 +728,7 @@ class _BackendCacheSetup:
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
     stdlib_cache_entry_path: Path | None = None
     wasm_layout: WasmCodegenLayout | None = None
+    backend_emission_origin: BackendEmissionOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -1897,7 +1898,7 @@ class _PreparedBackendCompile:
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None
     backend_daemon_config_digest: str | None
-    backend_daemon_origin: BackendDaemonJobOrigin | None = None
+    backend_emission_origin: BackendEmissionOrigin | None = None
 
 
 @dataclass(frozen=True)

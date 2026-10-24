@@ -1828,6 +1828,8 @@ def test_compile_root_projection_cannot_be_replayed_as_an_ordinary_guest(tmp_pat
         "driver-omission",
         "driver-substitution",
         "forged-summary",
+        "missing-origin-scope",
+        "wrong-nonce-digest",
     ],
 )
 def test_compilation_process_join_replays_native_receipt_before_origin_join(
@@ -1836,7 +1838,8 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
     # These are receiver controls over independently authored journal bytes.
     # Native verification is a seam, so this never claims a kernel positive.
     from molt.backend_protocol import (
-        BackendDaemonJobOrigin,
+        BackendEmissionOrigin,
+        BackendEmissionProducer,
         BackendAddressedProgramInput,
         BackendCodegenOrigin,
         BackendNativeWorkerOrigin,
@@ -1848,9 +1851,10 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
     driver_image = ("/clang", "2" * 64, 23)
     output = {"size": 3, "sha256": hashlib.sha256(b"obj").hexdigest()}
     runtime = {"size": 3, "sha256": hashlib.sha256(b"lib").hexdigest()}
-    worker = BackendNativeWorkerOrigin(8, "d" * 64, 5, "e" * 64, 3)
-    origin = BackendDaemonJobOrigin(
-        7,
+    origin_scope = "b" * 64 if defect == "missing-origin-scope" else "a" * 64
+    worker = BackendNativeWorkerOrigin(8, origin_scope, "d" * 64, 5, "e" * 64, 3)
+    origin = BackendEmissionOrigin(
+        BackendEmissionProducer("daemon", 7, origin_scope),
         BackendAddressedProgramInput("c" * 64, 5, "1" * 64 + "2" * 64),
         output["sha256"],
         output["size"],
@@ -1866,6 +1870,8 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
             "roles": {"compiler_output": "/object", "runtime": "/runtime"},
             "reproducer": {"size": 2048, "sha256": "f" * 64},
         },
+        stdlib=None,
+        cache={"compiler": None, "stdlib": None},
     )
     records = []
     for pid, image in [
@@ -1907,6 +1913,9 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
     raw = b"".join(json.dumps(row).encode() + b"\n" for row in records)
     digest = hashlib.sha256(raw).hexdigest()
     receipt_path = tmp_path / "receipt.json"
+    policy_path = tmp_path / "policy.json"
+    policy_bytes = _json({"nonce": "a" * 64})
+    policy_path.write_bytes(policy_bytes)
     journal = receipt_path.with_name(f"{receipt_path.name}.events.{digest}.jsonl")
     journal.write_bytes(raw)
     receipt = {
@@ -1920,6 +1929,12 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
         "violations": [],
         "accounting": {"active_processes": 0},
         "identity_sha256": "1" * 64,
+        "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+        "nonce_sha256": (
+            "0" * 64
+            if defect == "wrong-nonce-digest"
+            else hashlib.sha256(("a" * 64).encode()).hexdigest()
+        ),
         "event_log": {
             "schema": supervisor_custody.SUPERVISOR_EVENT_LOG_SCHEMA,
             "file": journal.name,
@@ -1934,6 +1949,8 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
         invoked.append(kwargs)
         assert kwargs["require_closed"] is True
         assert kwargs["rootfs"] == tmp_path / "rootfs"
+        assert kwargs["policy_path"] == policy_path
+        assert kwargs["policy_path"].read_bytes() == policy_bytes
         if defect == "forged-summary":
             raise ValueError("native replay rejected forged summary")
         return receipt
@@ -1959,6 +1976,15 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
             for row in joined["compiler_processes"]
         ] == [(7, "linux:7:1"), (8, "linux:8:1")]
         assert joined["receipt_identity_sha256"] == receipt["identity_sha256"]
+        assert all(row["scope"] == "a" * 64 for row in joined["compiler_processes"])
+        assert joined["emission_scopes"] == [
+            {
+                "scope": "a" * 64,
+                "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+                "receipt_identity_sha256": "1" * 64,
+                "event_log": receipt["event_log"],
+            }
+        ]
     assert len(invoked) == 1
 
 
@@ -2083,9 +2109,12 @@ def test_sealed_root_long_runtime_names_use_one_exact_pax_encoding(tmp_path, met
         )
 
 
-def _compilation_export_fixture(tmp_path, target, defect=None):
+def _compilation_export_fixture(
+    tmp_path, target, defect=None, *, worker_family=None, worker_defect=None
+):
     from molt.backend_protocol import (
-        BackendDaemonJobOrigin,
+        BackendEmissionOrigin,
+        BackendEmissionProducer,
         BackendCodegenOrigin,
         BackendAddressedProgramInput,
     )
@@ -2111,7 +2140,47 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
         return {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
     emitted, runtime = b"object", b"runtime"
+    worker_origins = ()
+    stdlib_origin = None
+    archive_bytes = None
+    if worker_family is not None:
+        from molt.backend_protocol import BackendNativeWorkerOrigin, BackendStdlibOrigin
+        from tests.native_artifact_fixtures import native_relocatable_object
+
+        assert target == "native" and worker_family in {"app", "stdlib"}
+        members = tuple(
+            native_relocatable_object(
+                target_triple="x86_64-unknown-linux-gnu", symbols=(symbol,)
+            )
+            for symbol in ("first", "second")
+        )
+        # Independent ar framing with actual ELF members. Both outputs come
+        # from one process, so omission changes neither the process hint set
+        # nor the archive bytes/whole digest. No production archive serializer.
+        framed = bytearray(b"!<arch>\n")
+        for index, member in enumerate(members):
+            name = f"molt_{index:08}.o/"
+            header = f"{name:<16}{0:<12}{0:<6}{0:<6}{'100644':<8}{len(member):<10}`\n".encode()
+            assert len(header) == 60
+            framed.extend(header + member)
+            if len(member) % 2:
+                framed.extend(b"\n")
+        archive_bytes = bytes(framed)
+        worker_origins = tuple(
+            BackendNativeWorkerOrigin(
+                8, "a" * 64, "d" * 64, 12, content(member)["sha256"], len(member)
+            )
+            for member in members
+        )
+        if worker_family == "app":
+            emitted = archive_bytes
+        else:
+            stdlib_origin = BackendStdlibOrigin(
+                content(archive_bytes)["sha256"], len(archive_bytes), worker_origins
+            )
     buffers = {"/work/object": emitted, "/installed/runtime": runtime}
+    if worker_family == "stdlib":
+        buffers["/work/stdlib.a"] = archive_bytes
     if target == "native":
         buffers["/usr/lib/molt-capture-fixture-crt.o"] = (
             b"CRT input from the linker buffer"
@@ -2141,6 +2210,8 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
         },
         "reproducer": content(report.read_bytes()),
     }
+    if worker_family == "stdlib":
+        observed["roles"]["stdlib"] = "/work/stdlib.a"
     if defect == "forged-summary":
         observed["inputs"][0]["sha256"] = "f" * 64
     link = (
@@ -2156,19 +2227,41 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
             "links": {"linked": observed},
         }
     )
-    origin = BackendDaemonJobOrigin(
-        7,
+    origin = BackendEmissionOrigin(
+        BackendEmissionProducer("daemon", 7, "a" * 64),
         BackendAddressedProgramInput("a" * 64, 12, "b" * 64),
         content(emitted)["sha256"],
         len(emitted),
-        BackendCodegenOrigin(7, ()),
+        BackendCodegenOrigin(None, worker_origins)
+        if worker_family == "app"
+        else BackendCodegenOrigin(7, ()),
     )
+    compiler_payload = origin.payload()
+    stdlib_payload = None if stdlib_origin is None else stdlib_origin.payload()
+    if worker_defect is not None:
+        workers = (
+            compiler_payload["codegen"]["workers"]
+            if worker_family == "app"
+            else stdlib_payload["workers"]
+        )
+        original_hints = {(worker["scope"], worker["process_id"]) for worker in workers}
+        if worker_defect == "worker-digest":
+            workers[0]["output"]["sha256"] = "f" * 64
+        elif worker_defect == "worker-omission":
+            workers.pop()
+        else:
+            raise AssertionError(worker_defect)
+        assert {
+            (worker["scope"], worker["process_id"]) for worker in workers
+        } == original_hints
     observation = source / (program.name + ".molt-link-inputs.json")
     observation.write_text(
         json.dumps(
             {
-                "schema": "molt.compilation-inputs.v1",
-                "compiler": origin.payload(),
+                "schema": "molt.compilation-inputs.v2",
+                "cache": {"compiler": None, "stdlib": None},
+                "stdlib": stdlib_payload,
+                "compiler": compiler_payload,
                 "link": link,
             }
         ),
@@ -2249,6 +2342,30 @@ def _compilation_export_fixture(tmp_path, target, defect=None):
         target=target,
     )
     return args, content, emitted
+
+
+@pytest.mark.parametrize("worker_family", ["app", "stdlib"])
+@pytest.mark.parametrize("worker_defect", [None, "worker-digest", "worker-omission"])
+def test_compilation_export_rechecks_worker_archive_members(
+    tmp_path, worker_family, worker_defect
+):
+    args, _, _ = _compilation_export_fixture(
+        tmp_path, "native", worker_family=worker_family, worker_defect=worker_defect
+    )
+    if worker_defect is None:
+        received = consumer_replay.receive_compilation_outputs(**args)
+        origin = (
+            received["observation"]["compiler"]["codegen"]
+            if worker_family == "app"
+            else received["observation"]["stdlib"]
+        )
+        assert len(origin["workers"]) == 2
+    else:
+        message = (
+            "member differs" if worker_defect == "worker-digest" else "omits or repeats"
+        )
+        with pytest.raises(ValueError, match=message):
+            consumer_replay.receive_compilation_outputs(**args)
 
 
 @pytest.mark.parametrize("target", ["native", "wasm"])
@@ -2344,7 +2461,15 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
 
     def runtime(root, **kwargs):
         staged.append(kwargs["key"]["cell"])
-        return [], {"id": kwargs["key"]["cell"], "files": []}
+        return [], {
+            "id": kwargs["key"]["cell"],
+            "key": {
+                "target_triple": "x86_64-unknown-linux-gnu"
+                if kwargs["kind"] == "native"
+                else "wasm32-wasip1"
+            },
+            "files": [],
+        }
 
     monkeypatch.setattr(execution_root, "stage_compilation_inputs", inputs)
     monkeypatch.setattr(execution_root, "stage_compilation_runtime", runtime)
@@ -2400,6 +2525,9 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
     )
     prepared = consumer_replay.prepare_compilation(**args)
     assert staged == ["inputs", native.id, wasm.id]
+    assert prepared["schema"] == "molt.installed-compilation.v2"
+    assert prepared["origins"] == []
+    assert prepared["cache_seed"] == []
     assert [row["id"] for row in prepared["cells"]] == [native.id, wasm.id]
     root = args["evidence"] / "rootfs"
     assert (
@@ -2418,6 +2546,16 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         )
         policies.append(policy)
         assert config["command"] == cell["command"]
+        assert config["cache_seed"] == "/app/cache/" + lane.id
+        assert config["cache_contract"] == {
+            "kind": "native-archive" if lane.target == "native" else "wasm",
+            "target_triple": "x86_64-unknown-linux-gnu"
+            if lane.target == "native"
+            else "wasm32-wasip1",
+        }
+        assert config["compiler_source_root"] == "/installed/source"
+        assert config["environment"]["MOLT_EMISSION_SCOPE"] == policy["nonce"]
+        assert len(policy["nonce"]) == 64
         assert config["environment"]["MOLT_WASM_CARGO_PROFILE"] == lane.runtime_profile
         assert "MOLT_MEMORY_GUARD_TOKEN" not in config["environment"]
         assert policy["derived_roots"] == []
@@ -2552,12 +2690,31 @@ def test_retained_compilation_replays_export_before_accepting_summary(
     monkeypatch.setattr(
         consumer_replay, "validate_sealed_systemd_stop", lambda *args, **kwargs: None
     )
+    policy_path = rootfs / cell["policy"]
+    policy_path.parent.mkdir(parents=True)
+    policy_path.write_text(json.dumps({"nonce": "a" * 64}), encoding="utf-8")
+    scope_sources = {"a" * 64: (policy_path, evidence / cell["execution"]["receipt"])}
+    verified_scopes = {}
+    scope_checks = []
+
+    def native_scope(scope, **kwargs):
+        # This fixture controls native admission; the separate process-join
+        # family replays real journal bytes and rejects absent original scopes.
+        assert scope == "a" * 64
+        assert kwargs["sources"] == scope_sources
+        scope_checks.append(scope)
+        result = ({"identity_sha256": "a" * 64}, None)
+        kwargs["verified_scopes"][scope] = result
+        return result
+
+    monkeypatch.setattr(consumer_replay, "_verified_emission_scope", native_scope)
     process_calls = []
 
     def native_join(**kwargs):
         assert kwargs["additional_images"] == (
             ("/clang", hashlib.sha256(b"driver").hexdigest(), len(b"driver")),
         )
+        assert kwargs["_scope_sources"] == scope_sources
         process_calls.append(kwargs)
         return {"receipt_identity_sha256": "a" * 64}
 
@@ -2580,11 +2737,16 @@ def test_retained_compilation_replays_export_before_accepting_summary(
             "providers",
             "root",
             "supervisor_generation",
+            "origins",
+            "cache_seed",
             "transport",
             "files",
         )
     }
     compilation.update(
+        schema="molt.installed-compilation.v2",
+        origins=[],
+        cache_seed=[],
         execution=args["projection"].to_dict(),
         target={"arch": "x86_64"},
         transport={"root": "/root"},
@@ -2597,6 +2759,8 @@ def test_retained_compilation_replays_export_before_accepting_summary(
         cell=cell,
         installed=installed,
         supervisor=tmp_path / "supervisor",
+        scope_sources=scope_sources,
+        verified_scopes=verified_scopes,
     )
     assert cell["outputs"]["artifact"]["path"] == "program"
     assert len(process_calls) == 1
@@ -2628,6 +2792,7 @@ def test_retained_compilation_replays_export_before_accepting_summary(
     else:
         consumer_replay.validate_compilation(**kwargs)
     assert len(process_calls) == 2
+    assert scope_checks == ["a" * 64]
 
 
 @pytest.mark.parametrize(
@@ -2743,3 +2908,68 @@ def test_native_preparation_stages_lexical_header_inputs_without_readmitting_cha
         assert staged_alias.read_bytes() == b"#define VALUE 1\n"
         assert not (root / str(source).removeprefix("/")).exists()
         assert {row["path"] for row in retained} == {str(alias).removeprefix("/")}
+
+
+def test_repeated_warm_cache_selection_keeps_only_the_original_emission_scope(tmp_path):
+    # Selection is not native admission: independently authored source sessions
+    # remain raw artifacts, and later validation must replay their journals.
+    _compilation_export_fixture(tmp_path, "native")
+    observation = json.loads(
+        (tmp_path / "export/program.molt-link-inputs.json").read_bytes()
+    )
+    evidence = tmp_path / "prior"
+    rootfs = evidence / "rootfs"
+    policy_path = rootfs / "policies/cell.json"
+    config_path = rootfs / "app/compilation-cell.json"
+    policy_path.parent.mkdir(parents=True)
+    config_path.parent.mkdir(parents=True)
+    cold_identity, warm_identity = "d" * 64, "e" * 64
+    cold_dir = evidence / "origins" / cold_identity
+    old_warm_dir = evidence / "origins" / warm_identity
+    for directory, scope, identity in (
+        (cold_dir, "a" * 64, cold_identity),
+        (old_warm_dir, "b" * 64, warm_identity),
+    ):
+        directory.mkdir(parents=True)
+        (directory / "policy.json").write_text(
+            json.dumps({"nonce": scope}), encoding="utf-8"
+        )
+        (directory / "config.json").write_text(
+            json.dumps({"environment": {"MOLT_EMISSION_SCOPE": scope}}),
+            encoding="utf-8",
+        )
+        (directory / "receipt.json").write_text(
+            json.dumps({"identity_sha256": identity}), encoding="utf-8"
+        )
+    cells = [
+        {
+            "id": "cell",
+            "policy": "policies/cell.json",
+            "outputs": {"observation": observation},
+        }
+    ]
+    original_bytes = {path.name: path.read_bytes() for path in cold_dir.iterdir()}
+    for current_scope, origins in (
+        (
+            "b" * 64,
+            [{"scope": "a" * 64, "cell": "cell", "identity_sha256": cold_identity}],
+        ),
+        (
+            "c" * 64,
+            [
+                {"scope": "a" * 64, "cell": "cell", "identity_sha256": cold_identity},
+                {"scope": "b" * 64, "cell": "cell", "identity_sha256": warm_identity},
+            ],
+        ),
+    ):
+        policy_path.write_text(json.dumps({"nonce": current_scope}), encoding="utf-8")
+        config_path.write_text(
+            json.dumps({"environment": {"MOLT_EMISSION_SCOPE": current_scope}}),
+            encoding="utf-8",
+        )
+        assert consumer_replay._compilation_reuse_scopes(
+            evidence, {"cells": cells, "origins": origins}
+        ) == [("a" * 64, "cell", cold_dir / "policy.json", cold_dir / "receipt.json")]
+    assert {
+        path.name: path.read_bytes() for path in cold_dir.iterdir()
+    } == original_bytes

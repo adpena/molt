@@ -99,14 +99,13 @@ def _run_build_pipeline(
         or output_layout.is_mlir_emit
         or output_layout.is_rust_transpile
         or output_layout.is_luau_transpile
-        or prepared_build_config.codegen.backend != "cranelift"
         or output_layout.is_wasm
         and not output_layout.linked
     ):
         return return_after_build_diagnostics(
             _fail(
-                "Link input capture requires a linked native/WASM artifact with retained daemon emission origin; "
-                "JIT, factgraph, object, transpiler and LLVM capture are not implemented.",
+                "Link input capture requires a linked native/WASM artifact with retained original emission origin; "
+                "JIT, factgraph, object and transpiler capture are not implemented.",
                 json_output,
                 command="build",
             )

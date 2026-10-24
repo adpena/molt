@@ -7,6 +7,8 @@ import pytest
 from molt._wasm_abi_generated import WASM_POLL_TABLE_IMPORTS
 from molt.backend_environment import CodegenSelection
 from molt.cli import backend_compile
+from molt.cli.backend_cache import _SyncedBackendOutput
+from molt.toolchain_identity import stable_regular_file_identity
 from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.cache_keys import FunctionDigests
 from molt.cli.backend_artifact_contract import (
@@ -153,10 +155,15 @@ def test_codegen_and_all_cache_hits_preserve_runtime_layout(
     binding = runtime_wasm_codegen_binding_fixture(tmp_path)
     emitted = []
     monkeypatch.setattr(backend_compile, "_backend_daemon_enabled", lambda: False)
+    cached_output = tmp_path / "output.wasm"
+    cached_output.write_bytes(b"\0asm\x01\0\0\0")
+    cached_identity = stable_regular_file_identity(
+        cached_output, label="fixture output"
+    )
     monkeypatch.setattr(
         backend_compile,
         "_try_cached_backend_candidates",
-        lambda **kwargs: (True, "function"),
+        lambda **kwargs: _SyncedBackendOutput("function", cached_identity, None),
     )
 
     def execute(**kwargs):

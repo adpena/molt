@@ -556,7 +556,7 @@ def test_admission_link_capture_checks_actual_buffers_before_publication(
     import hashlib
     import io
     import tarfile
-    from molt.backend_protocol import BackendDaemonJobOrigin
+    from molt.backend_protocol import BackendEmissionOrigin
     from molt.cli.link_input_observation import LinkInputObservation
 
     target = "x86_64-unknown-linux-gnu"
@@ -566,10 +566,10 @@ def test_admission_link_capture_checks_actual_buffers_before_publication(
     admitted_runtime, admitted_app = runtime.read_bytes(), app.read_bytes()
     identity = write_test_native_link_manifest(runtime, target_triple=target)
     binding = native_codegen_binding(runtime, identity)
-    origin = BackendDaemonJobOrigin.from_payload(
+    origin = BackendEmissionOrigin.from_payload(
         {
-            "schema": "molt.daemon-job-origin.v2",
-            "daemon_pid": 123,
+            "schema": "molt.backend-emission-origin.v1",
+            "producer": {"kind": "daemon", "process_id": 123, "scope": None},
             "input": {
                 "schema": "molt.addressed-program-input.v1",
                 "lease": {"size": 3, "sha256": hashlib.sha256(b"IR!").hexdigest()},
@@ -661,7 +661,7 @@ def test_admission_link_capture_checks_actual_buffers_before_publication(
         link_timeout=None,
         warnings=[],
         capture_link_inputs=True,
-        daemon_job_origin=None if mutation == "missing_origin" else origin,
+        emission_origin=None if mutation == "missing_origin" else origin,
     )
     assert len(calls) == (0 if mutation == "missing_origin" else 1)
     assert not binary.exists()
@@ -725,8 +725,8 @@ def test_wasm_compilation_observation_retains_typed_runtime_without_verification
     compiler = content(b"original compiler output")
     runtime = content(b"runtime module")
     origin = {
-        "schema": "molt.daemon-job-origin.v2",
-        "daemon_pid": 123,
+        "schema": "molt.backend-emission-origin.v1",
+        "producer": {"kind": "daemon", "process_id": 123, "scope": None},
         "input": {
             "schema": "molt.addressed-program-input.v1",
             "lease": content(b"partial lease"),
@@ -769,9 +769,13 @@ def test_wasm_compilation_observation_retains_typed_runtime_without_verification
         link["source_inputs"]["verified"] = True
     if damage:
         with pytest.raises(ValueError):
-            compilation_input_observation(origin, link)
+            compilation_input_observation(
+                origin, link, stdlib=None, cache={"compiler": None, "stdlib": None}
+            )
         return
-    admitted = compilation_input_observation(origin, link)
+    admitted = compilation_input_observation(
+        origin, link, stdlib=None, cache={"compiler": None, "stdlib": None}
+    )
     assert (
         validate_compilation_input_observation(json.loads(json.dumps(admitted)))
         == admitted

@@ -134,16 +134,20 @@ def test_compilation_diagnostics_bypass_backend_candidates_and_synced_outputs(
         )
 
     if synced_output:
-        assert admit() == (True, tier)
+        hit = admit()
+        assert hit is not None and hit.tier == tier
+        assert hit.emission_origin is None
         assert output.read_bytes() == wasm_bytes
         candidate.unlink()
     for value in ("", "1"):
         monkeypatch.setenv("MOLT_DUMP_IR", value)
-        assert admit() == (False, None)
+        assert admit() is None
         assert output.exists() == synced_output
     monkeypatch.delenv("MOLT_DUMP_IR")
     monkeypatch.setenv("MOLT_BACKEND_TIMING", "1")
-    assert admit() == (True, tier)
+    hit = admit()
+    assert hit is not None and hit.tier == tier
+    assert hit.emission_origin is None
     assert output.read_bytes() == wasm_bytes
 
 

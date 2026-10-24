@@ -1,9 +1,9 @@
-use super::super::super::origin::{DaemonCacheEntry, DaemonJobOrigin};
 use super::super::super::protocol::DaemonCacheKey;
 use super::super::entries::insert_daemon_cache_entries;
 use super::super::shared::DaemonCache;
 use crate::backend_process::input::ContentIdentity;
 use crate::backend_process::input::content::AddressedInputIdentity;
+use crate::backend_process::origin::{DaemonCacheEntry, EmissionOrigin};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
@@ -15,9 +15,9 @@ pub(crate) fn capture_native_output(
     cache_key: Option<&Arc<DaemonCacheKey>>,
     function_cache_key: Option<&Arc<DaemonCacheKey>>,
     input: AddressedInputIdentity,
-    codegen: super::super::super::origin::CodegenOrigin,
+    codegen: crate::backend_process::origin::CodegenOrigin,
     emitted_output: ContentIdentity,
-) -> Result<(Vec<String>, DaemonJobOrigin), String> {
+) -> Result<(Vec<String>, EmissionOrigin), String> {
     let mut file =
         molt_artifact_publish::open_regular_artifact(output_path).map_err(|e| e.to_string())?;
     let expected = file.metadata().map_err(|e| e.to_string())?.len();
@@ -56,7 +56,7 @@ pub(crate) fn capture_native_output(
     if observed_output != emitted_output {
         return Err("daemon output changed after emission".into());
     }
-    let origin = DaemonJobOrigin::new(input, emitted_output, codegen);
+    let origin = EmissionOrigin::daemon(input, emitted_output, codegen);
     if let Some(bytes) = retained {
         insert_daemon_cache_entries(
             cache,
@@ -88,9 +88,9 @@ mod tests {
     #[test]
     fn daemon_native_capture_rejects_same_length_post_emission_substitution() {
         use super::{DaemonCache, capture_native_output};
-        use crate::backend_process::daemon::origin::CodegenOrigin;
         use crate::backend_process::input::ContentIdentity;
         use crate::backend_process::input::content::AddressedInputIdentity;
+        use crate::backend_process::origin::CodegenOrigin;
         let output = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path(
             "daemon-origin-substitution",
         )

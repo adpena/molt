@@ -199,8 +199,8 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
                     "cached": False,
                     "output_written": True,
                     "origin": {
-                        "schema": "molt.daemon-job-origin.v2",
-                        "daemon_pid": 42,
+                        "schema": "molt.backend-emission-origin.v1",
+                        "producer": {"kind": "daemon", "process_id": 42, "scope": None},
                         "input": {
                             "schema": "molt.addressed-program-input.v1",
                             "lease": identity(lease.read_bytes()),
@@ -341,8 +341,8 @@ def test_daemon_client_ships_only_the_bodies_the_daemon_lacks(
                 else ""
             )
             row["origin"] = {
-                "schema": "molt.daemon-job-origin.v2",
-                "daemon_pid": 73,
+                "schema": "molt.backend-emission-origin.v1",
+                "producer": {"kind": "daemon", "process_id": 73, "scope": None},
                 "input": {
                     "schema": "molt.addressed-program-input.v1",
                     "lease": {
@@ -724,6 +724,8 @@ def test_partial_ir_write_failure_releases_only_its_lease(tmp_path, monkeypatch)
         "missing",
         "schema",
         "pid_bool",
+        "producer_kind",
+        "scope_noncanonical",
         "extra",
         "input_size_bool",
         "assembly_swap",
@@ -743,7 +745,7 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
 ):
     import hashlib
     import json
-    from molt.backend_protocol import BackendDaemonJobOrigin
+    from molt.backend_protocol import BackendEmissionOrigin
 
     output = tmp_path / "program.wasm"
     origins = []
@@ -770,8 +772,8 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
         consumed = prior_input if cached else Path(job["ir_path"]).read_bytes()
         output.write_bytes(b"independently emitted artifact")
         origin = {
-            "schema": "molt.daemon-job-origin.v2",
-            "daemon_pid": 73,
+            "schema": "molt.backend-emission-origin.v1",
+            "producer": {"kind": "daemon", "process_id": 73, "scope": None},
             "input": {
                 "schema": "molt.addressed-program-input.v1",
                 "lease": identity(consumed),
@@ -787,8 +789,12 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
         origins.append(origin.copy())
         if fault == "schema":
             origin["schema"] = "unadmitted"
+        if fault == "producer_kind":
+            origin["producer"]["kind"] = "one-shot"
+        if fault == "scope_noncanonical":
+            origin["producer"]["scope"] = "A" * 64
         if fault == "pid_bool":
-            origin["daemon_pid"] = True
+            origin["producer"]["process_id"] = True
         if fault == "extra":
             origin["compiled_with_verified"] = True
         if fault == "input_size_bool":
@@ -848,8 +854,8 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
     accepted = fault is None or cached and fault in {"input_swap", "assembly_swap"}
     assert result.ok is accepted, result.error
     if accepted:
-        assert isinstance(result.origin, BackendDaemonJobOrigin)
-        assert result.origin.daemon_pid == 73
+        assert isinstance(result.origin, BackendEmissionOrigin)
+        assert result.origin.producer.process_id == 73
         assert (
             result.origin.output_sha256
             == hashlib.sha256(output.read_bytes()).hexdigest()
@@ -876,6 +882,7 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
         "member_name",
         "worker_pid_bool",
         "worker_schema",
+        "worker_scope",
         "worker_extra",
         "empty_workers",
         "in_process_pid",
@@ -924,7 +931,8 @@ def test_daemon_origin_native_workers_follow_actual_archive_members(
         output.write_bytes(b"!<arch>\n" + b"".join(members))
         workers = [
             {
-                "schema": "molt.native-worker-origin.v1",
+                "schema": "molt.native-worker-origin.v2",
+                "scope": None,
                 "process_id": 80 + index,
                 "input": identity(f"worker job {index}".encode()),
                 "output": identity(obj),
@@ -939,6 +947,8 @@ def test_daemon_origin_native_workers_follow_actual_archive_members(
             workers.reverse()
         if fault == "worker_pid_bool":
             workers[0]["process_id"] = True
+        if fault == "worker_scope":
+            workers[0]["scope"] = "a" * 64
         if fault == "worker_schema":
             workers[0]["schema"] = "unadmitted"
         if fault == "worker_extra":
@@ -951,8 +961,8 @@ def test_daemon_origin_native_workers_follow_actual_archive_members(
         if fault == "codegen_extra":
             codegen["verified"] = True
         origin = {
-            "schema": "molt.daemon-job-origin.v2",
-            "daemon_pid": 73,
+            "schema": "molt.backend-emission-origin.v1",
+            "producer": {"kind": "daemon", "process_id": 73, "scope": None},
             "input": {
                 "schema": "molt.addressed-program-input.v1",
                 "lease": identity(consumed),
@@ -1015,10 +1025,10 @@ def test_daemon_origin_native_workers_follow_actual_archive_members(
             backend_bin=None,
             runtime_lib=None,
             output=output,
-            daemon_job_origin=result.origin,
+            emission_origin=result.origin,
         )
         assert observation["compiled_with_verified"] is False
-        assert observation["daemon_job_origin"] == result.origin.payload()
+        assert observation["emission_origin"] == result.origin.payload()
         from tools.perf_authority import scoreboard_observed_toolchain_problems
 
         # Even intact origin, forged summary and omitted cell observations cannot
@@ -1084,8 +1094,8 @@ def test_daemon_origin_synced_output_uses_retained_artifact(
                     else tier,
                     "output_written": False,
                     "origin": {
-                        "schema": "molt.daemon-job-origin.v2",
-                        "daemon_pid": 73,
+                        "schema": "molt.backend-emission-origin.v1",
+                        "producer": {"kind": "daemon", "process_id": 73, "scope": None},
                         "input": {
                             "schema": "molt.addressed-program-input.v1",
                             "lease": identity(b"original input"),

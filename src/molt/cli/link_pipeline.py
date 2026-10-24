@@ -4,7 +4,7 @@ from molt.cli.link_input_observation import CompilationInputRecord
 
 from dataclasses import dataclass
 import json
-from molt.backend_protocol import BackendDaemonJobOrigin
+from molt.backend_protocol import BackendEmissionOrigin, BackendStdlibOrigin
 from molt.cli.link_input_observation import (
     capture_link_inputs as observe_link_inputs,
     compilation_input_observation,
@@ -29,6 +29,7 @@ from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli import link_fingerprints
 from molt.cli.backend_cache import (
     _validate_shared_stdlib_output_for_link,
+    _shared_stdlib_cache_lock,
 )
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.external_native import (
@@ -194,7 +195,9 @@ def _prepare_native_link(
     compiled_source_paths: tuple[str, ...] = (),
     bolt_requested: bool = False,
     capture_link_inputs: bool = False,
-    daemon_job_origin: BackendDaemonJobOrigin | None = None,
+    emission_origin: BackendEmissionOrigin | None = None,
+    compiler_cache_path: Path | None = None,
+    stdlib_cache_path: Path | None = None,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     if diagnostics_enabled:
         phase_starts["link"] = time.perf_counter()
@@ -288,7 +291,7 @@ def _prepare_native_link(
         )
         print(f"native-link plan: {link_plan}", file=sys.stderr)
     if capture_link_inputs and (
-        daemon_job_origin is None
+        emission_origin is None
         or link_plan.capabilities.linker is not NativeLinkerKind.LLD
         or link_plan.capabilities.object_format is not NativeObjectFormat.ELF
     ):
@@ -398,6 +401,7 @@ def _prepare_native_link(
     link_input_artifacts = None
     link_input_observation = None
     capture_expected = None
+    stdlib_origin = None
     if link_skipped:
         link_process = subprocess.CompletedProcess(
             args=link_cmd,
@@ -432,7 +436,7 @@ def _prepare_native_link(
                     raise ValueError("link input capture has no unique selected linker")
                 selected_linker = Path(str(selected_linkers[0]["path"]))
                 selected_driver = Path(str(selected_drivers[0]["path"]))
-                assert daemon_job_origin is not None
+                assert emission_origin is not None
                 report = output_binary.with_name(
                     output_binary.name + ".molt-link-inputs.tar"
                 )
@@ -475,8 +479,8 @@ def _prepare_native_link(
                     "compiler_output": (
                         output_obj,
                         {
-                            "size": daemon_job_origin.output_size,
-                            "sha256": daemon_job_origin.output_sha256,
+                            "size": emission_origin.output_size,
+                            "sha256": emission_origin.output_sha256,
                         },
                     ),
                     "runtime": (
@@ -490,6 +494,27 @@ def _prepare_native_link(
                         },
                     ),
                 }
+                if link_stdlib_obj is not None:
+                    from molt.toolchain_identity import capture_stable_regular_file
+                    from molt.exact_json import loads_exact
+
+                    with _shared_stdlib_cache_lock(link_stdlib_obj):
+                        _, data = capture_stable_regular_file(
+                            link_stdlib_obj.with_suffix(".origin.json"),
+                            label="shared stdlib emission origin",
+                            max_bytes=64 * 1024 * 1024,
+                        )
+                        stdlib_origin = BackendStdlibOrigin.from_payload(
+                            loads_exact(data.decode("utf-8"))
+                        )
+                        stdlib_origin.verify_output(link_stdlib_obj)
+                    capture_expected["stdlib"] = (
+                        link_stdlib_obj,
+                        {
+                            "size": stdlib_origin.output_size,
+                            "sha256": stdlib_origin.output_sha256,
+                        },
+                    )
                 validate_link_output_paths(
                     {
                         **link_outputs,
@@ -546,9 +571,21 @@ def _prepare_native_link(
                         linker_path=selected_linker,
                         expected=capture_expected,
                     ).as_record()
-                    assert daemon_job_origin is not None
+                    assert emission_origin is not None
                     link_input_observation = compilation_input_observation(
-                        daemon_job_origin.payload(), observed_inputs
+                        emission_origin.payload(),
+                        observed_inputs,
+                        stdlib=stdlib_origin.payload()
+                        if stdlib_origin is not None
+                        else None,
+                        cache={
+                            "compiler": str(compiler_cache_path)
+                            if compiler_cache_path
+                            else None,
+                            "stdlib": str(stdlib_cache_path)
+                            if stdlib_cache_path
+                            else None,
+                        },
                     )
                     link_input_artifacts["input_observation"][0].write_text(
                         json.dumps(

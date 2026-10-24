@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use super::super::origin::DaemonCacheEntry;
 use super::super::protocol::DaemonCacheKey;
 use super::shared::DaemonCache;
+use crate::backend_process::origin::DaemonCacheEntry;
 
 pub(crate) fn insert_daemon_cache_entries(
     cache: &DaemonCache,

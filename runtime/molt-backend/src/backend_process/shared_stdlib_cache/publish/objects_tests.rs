@@ -159,6 +159,17 @@ fn object_bytes(symbol: &str) -> Vec<u8> {
     object.write().unwrap()
 }
 
+fn worker_origin(bytes: &[u8], process_id: u32) -> NativeWorkerOrigin {
+    use crate::backend_process::input::ContentIdentity;
+    NativeWorkerOrigin {
+        schema: "molt.native-worker-origin.v2".into(),
+        process_id,
+        scope: Some("a".repeat(64)),
+        input: ContentIdentity::of_bytes(b"retained worker job"),
+        output: ContentIdentity::of_bytes(bytes),
+    }
+}
+
 #[test]
 fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_generation() {
     let cache = cache();
@@ -168,7 +179,8 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     assert!(cache.admit(&key).unwrap().is_none());
     let bytes = object_bytes("original");
     std::fs::write(&source, &bytes).unwrap();
-    assert_eq!(cache.publish(&key, &source).unwrap(), bytes.len() as u64);
+    let origin = worker_origin(&bytes, 101);
+    assert_eq!(cache.publish(&key, &source, &origin).unwrap(), origin);
     let entry = cache.path(&key);
     let owner = entry.parent().unwrap();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86400);
@@ -189,7 +201,8 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     directory.set_modified(old).unwrap();
     let aged = owner.metadata().unwrap().modified().unwrap();
     let stored_modified = entry.metadata().unwrap().modified().unwrap();
-    let admitted = cache.admit(&key).unwrap().expect("published generation");
+    let (admitted, retained) = cache.admit(&key).unwrap().expect("published generation");
+    assert_eq!(retained, origin);
     assert_eq!(admitted.as_ref(), bytes.as_slice());
     assert_eq!(admitted.len(), bytes.len() as u64);
     let reused = owner.metadata().unwrap().modified().unwrap();
@@ -207,7 +220,8 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     {
         // The mapping owns the admitted bytes: retention may unlink the entry
         // while assembly still reads them.
-        let held = cache.admit(&key).unwrap().expect("held generation");
+        let (held, retained) = cache.admit(&key).unwrap().expect("held generation");
+        assert_eq!(retained, origin);
         let stored = std::fs::read(&entry).unwrap();
         std::fs::remove_file(&entry).unwrap();
         assert_eq!(held.as_ref(), bytes.as_slice());
@@ -216,17 +230,19 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     }
     directory.set_modified(old).unwrap();
     let stored = std::fs::read(cache.path(&key)).unwrap();
-    std::fs::write(&source, object_bytes("different")).unwrap();
+    let different = object_bytes("different");
+    std::fs::write(&source, &different).unwrap();
+    let changed_origin = worker_origin(&different, 505);
     assert!(
         cache
-            .publish(&key, &source)
+            .publish(&key, &source, &changed_origin)
             .unwrap_err()
             .to_string()
             .contains("different output")
     );
     assert_eq!(std::fs::read(cache.path(&key)).unwrap(), stored);
     std::fs::write(&source, b"invalid object").unwrap();
-    assert!(cache.publish(&key, &source).is_err());
+    assert!(cache.publish(&key, &source, &origin).is_err());
     assert_eq!(std::fs::read(cache.path(&key)).unwrap(), stored);
     let mut corrupt = stored;
     *corrupt.last_mut().unwrap() ^= 1;
@@ -324,4 +340,83 @@ fn constituent_key_binds_actual_emitter_and_presence_gated_pass_inputs() {
             name.name()
         );
     }
+}
+
+#[test]
+fn identical_constituent_publication_retains_original_worker_and_scope() {
+    let cache = cache();
+    std::fs::create_dir_all(&cache.cache_root).unwrap();
+    let source = cache.cache_root.join("source.o");
+    let bytes = object_bytes("same");
+    std::fs::write(&source, &bytes).unwrap();
+    let key = cache.input_key(&job()).unwrap();
+    let first = worker_origin(&bytes, 101);
+    let mut later = worker_origin(&bytes, 202);
+    later.scope = Some("b".repeat(64));
+    assert_eq!(cache.publish(&key, &source, &first).unwrap(), first);
+    let before = std::fs::read(cache.path(&key)).unwrap();
+    assert_eq!(cache.publish(&key, &source, &later).unwrap(), first);
+    assert_eq!(std::fs::read(cache.path(&key)).unwrap(), before);
+    let (mapped, retained) = cache.admit(&key).unwrap().unwrap();
+    assert_eq!(mapped.as_ref(), bytes.as_slice());
+    assert_eq!(retained, first);
+    drop(mapped);
+    std::fs::remove_dir_all(cache.cache_root).unwrap();
+}
+
+#[test]
+fn unsupported_constituent_generation_is_replaced_without_relabeling_old_bytes() {
+    let cache = cache();
+    std::fs::create_dir_all(&cache.cache_root).unwrap();
+    let source = cache.cache_root.join("source.o");
+    let bytes = object_bytes("replacement");
+    std::fs::write(&source, &bytes).unwrap();
+    let key = cache.input_key(&job()).unwrap();
+    let path = cache.path(&key);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let old = b"MOLTNO01retired bytes-only generation";
+    std::fs::write(&path, old).unwrap();
+    assert!(cache.admit(&key).unwrap().is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), old);
+    let origin = worker_origin(&bytes, 303);
+    assert_eq!(cache.publish(&key, &source, &origin).unwrap(), origin);
+    let (mapped, retained) = cache.admit(&key).unwrap().unwrap();
+    assert_eq!(mapped.as_ref(), bytes.as_slice());
+    assert_eq!(retained, origin);
+    drop(mapped);
+    std::fs::remove_dir_all(cache.cache_root).unwrap();
+}
+
+#[test]
+fn constituent_origin_substitution_and_unbounded_extent_are_refused() {
+    let cache = cache();
+    std::fs::create_dir_all(&cache.cache_root).unwrap();
+    let source = cache.cache_root.join("source.o");
+    let bytes = object_bytes("original");
+    std::fs::write(&source, &bytes).unwrap();
+    let key = cache.input_key(&job()).unwrap();
+    let origin = worker_origin(&bytes, 404);
+    let wrong = worker_origin(&object_bytes("other"), 404);
+    assert!(cache.publish(&key, &source, &wrong).is_err());
+    assert!(!cache.path(&key).exists());
+    cache.publish(&key, &source, &origin).unwrap();
+    let original = std::fs::read(cache.path(&key)).unwrap();
+    let mut mutated = original.clone();
+    mutated[80..88].copy_from_slice(&u64::MAX.to_le_bytes());
+    std::fs::write(cache.path(&key), mutated).unwrap();
+    assert!(cache.admit(&key).is_err());
+    let mut mutated = original;
+    let length = u64::from_le_bytes(mutated[80..88].try_into().unwrap()) as usize;
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&mutated[HEADER_SIZE..HEADER_SIZE + length]).unwrap();
+    record["output"]["sha256"] = serde_json::json!("f".repeat(64));
+    let replacement = serde_json::to_vec(&record).unwrap();
+    mutated.splice(
+        HEADER_SIZE..HEADER_SIZE + length,
+        replacement.iter().copied(),
+    );
+    mutated[80..88].copy_from_slice(&(replacement.len() as u64).to_le_bytes());
+    std::fs::write(cache.path(&key), mutated).unwrap();
+    assert!(cache.admit(&key).is_err());
+    std::fs::remove_dir_all(cache.cache_root).unwrap();
 }

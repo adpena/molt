@@ -1303,71 +1303,57 @@ resolved command and consumed input content determine reuse. It does not claim
 that an action description proves kernel consumption or loaded-image identity.
 
 
-### Daemon emission origin
+### Original emission and retained cache generations
 
-Daemon protocol 4 retains one typed origin with each in-memory artifact cache
-entry. `backend_process/input` hashes the exact addressed MessagePack lease while
-the canonical decoder consumes it. That lease can omit resident bodies: it is
-not a full serialized program. Only after ordered assembly and program validation
-succeed, `molt.addressed-program-input.v1` records the lease's SHA-256/size plus
-the concatenated lowercase digests of every assembled function in program order.
-The lease binds header fields and shipped bytes; the ordered digest list binds
-the validated resident bodies. `molt.daemon-job-origin.v2` records that input,
-the emitted output content, the serving daemon PID and the code-generating
-processes. Native output identity is retained from the emitted object bytes or
-the existing private archive publication handle; later readback must match it
-before cache insertion. Module and function cache hits, probes, synchronized-output replies
-and concurrent followers reuse the original entry; they never manufacture a new
-origin from the process or request serving the hit. Cache eviction accounts for
-the origin's retained strings (including 64 bytes per function digest) and worker
-vector along with the output bytes. Origin transport adds O(functions) response
-bytes; it never re-encodes resident function bodies. This join has no new timing
-claim; qualification must measure that cost alongside the avoided body transport.
+Protocol 5 uses the single `molt.backend-emission-origin.v1` authority for native
+Cranelift/LLVM and WASM. Its producer kind distinguishes one-shot from daemon,
+and its optional scope is an untrusted correlation nonce, never authentication.
+`molt.addressed-program-input.v1` binds the exact consumed MessagePack lease and
+the ordered digests of all validated assembled functions. A partial daemon lease
+is not mislabeled a full serialized program. One-shot capture requires a complete
+lease; ordinary one-shot decoding does not hash input for an absent consumer.
+Native workers retain their actual consumed job and emitted object identities.
 
-Direct native and WASM code generation identify the daemon itself. Native batch
-workers hash their consumed JSON job and emitted object, then return a bounded
-internal stdout record. The spawning parent checks the actual child PID, the
-streamed job identity and the opened object content. Ordered worker records flow
-through archive assembly into the same daemon cache entry. The Python daemon
-receiver requires the strict origin shape, verifies the actual output (the
-explicit retained artifact when a cache reply skips writing), and checks
-every native archive member against its corresponding worker record. Fresh
-compiles compare the observed lease bytes and ordered assembled digests with the
-current request. Cached inputs identify the original assembly and partial lease;
-that identity alone is not a proof of
-semantic equivalence to a later request. Existing target/environment cache-key
-authorities continue to own lookup semantics.
+Artifact cache entries keep their original producer and scope on hits, probes,
+followers and equal-byte publication races. Disk publication atomically associates
+its existing sync receipt with the local file generation and exact output bytes
+under the same lock used by eviction. Sealed admission snapshots explicitly
+republish through that owner: copying changes the inode, not the original emitter.
+Bytes-only generations remain reusable ordinarily and cannot fabricate capture.
+The stdlib object envelope retains each worker observation; archive publication
+retains ordered constituent origins in its generation sidecar. Canonical archive
+parsing distinguishes BSD extended names from GNU/short names. Only documented
+Darwin Mach-O member-data alignment admits exact newline padding; the full archive
+hash and each original object hash remain mandatory.
 
-This is an emission observation, not authenticated used-byte admission. A PID is
-not a kernel process generation or loaded-image identity. The existing supervisor
-journal must independently bind producing process generations and executable
-images before release consumers can admit them. Runtime compilation and linkage
-remain governed by the native/WASM generation and link-custody authorities; this
-observation does not establish the final artifact's complete runtime closure.
-Publication exposes the optional `daemon_job_origin` in `observed_toolchain` for
-native and WASM and always leaves `compiled_with_verified` false. Performance and
-release consumers continue to reject unavailable compiler/runtime used-byte
-receipts, including when a caller supplies a true flag or complete-looking
-publication hashes.
+`molt.compilation-inputs.v2` binds the compiler and optional shared stdlib origins
+to the actual linker input buffers. Its nullable cache coordinates name the exact
+producer-selected artifact and stdlib generation; they are untrusted selection
+hints. Admission export fences canonical roots/entry names, original observations
+and bytes under existing publication locks. It never discovers candidates by
+scanning the cache or hashing unrelated artifacts. Publication exposes `backend_emission_origin`
+and always leaves `compiled_with_verified` false. Final admission is post-closure:
+the existing native supervisor validates each distinct original policy, completed
+receipt and journal once per consumer invocation. The original scope and PID join
+to that journal's stable process generation and loaded image, never to the current
+process or current journal. References bind immutable retained evidence; artifacts
+do not copy a journal per function or cache entry. A missing, ambiguous or open
+original session refuses admission without destroying the retained observation.
 
-Disk backend caches, one-shot compilation and persisted shared stdlib generations
-have no retained daemon origin and remain explicitly unknown. The stdlib object
-cache has its own atomic object/envelope and immutable archive generation owner;
-it does not store this daemon entry. Its worker transport consumes the new result
-but does not invent an origin for persisted cache hits. None of these coordinates
-is admitted by partial daemon metadata. Later admission must migrate those
-producer and consumer contracts together and retain the original compile-session
-supervisor evidence before post-uninstall replay.
+This follows [Bazel's separation of action results and content-addressed outputs](https://bazel.build/remote/caching)
+and [SLSA 1.2's separation of builder/run identity, inputs, subjects and completed invocation metadata](https://slsa.dev/spec/v1.2/build-provenance).
+Post-closure finalization follows Molt's actual terminal evidence boundary; it is
+not an SLSA requirement or a claim of SLSA compliance.
 
-The cold path adds streaming SHA-256 over consumed input and emitted output.
-Native worker input hashing occurs during decoding; the parent additionally hashes
-the already serialized job and reads the published object once. The daemon reads
-native output in 64 KiB blocks, retaining it only when cache policy allows it.
-Worker stdout is bounded to 16 KiB. No extra compiler processes, artifact sidecars,
-flushes or scheduler are introduced. Warm hits retain the original origin and the
-Python receiver reads the output once, plus archive member contents when batched.
-These are source-level costs; latency/RSS and real subprocess validation require
-the owning native executor and are not implied by Python receiver tests.
+Scope affects process routing only, never Cargo/runtime or semantic code-cache
+keys. Optional capture adds streaming input/output hashing, bounded origin metadata,
+link reproducer writes and original-session verification on the development side.
+Worker stdout is bounded to 16 KiB. Ordinary one-shot builds avoid the input hash;
+emitted binaries perform no admission work. Warm installed admission imports only
+the consumed artifact/archive generations and their referenced evidence. This
+qualifies whole-artifact/archive reuse when actually executed; independent object
+cache hit admission remains a separate unverified coordinate. Latency, bytes and
+process-tree cost require actual installed measurements, not source or unit claims.
 
 ### Explicit final-link input capture
 
@@ -1424,7 +1410,7 @@ bundle/Python coordinate and the platform wheel first prepare inputs with the
 public CLI, then compile the complete declared lane set in the compilation
 projection before uninstall. Preparation results never become replay products
 or measurement samples. The fresh compilation exports its final-link family,
-command streams and native process journal. Consumer proof v10 binds each
+command streams and native process journal. Consumer proof v11 binds each
 coordinate to `compilation-evidence/<owner>-<python>/compilation.json`; the
 existing reproducible consumer archive retains that tree alongside
 `consumer-evidence`. Admission replays each raw compilation export and journal,
@@ -1441,7 +1427,7 @@ read-only input root, including the bootstrap owner's selected private frontend.
 The fresh workspace owns cache, daemon sockets, temporary files and outputs.
 This cold preparation cost is confined to release admission, never ordinary warm
 builds. Installed Linux execution and its resource costs require qualification;
-LLVM, one-shot or persisted-cache emission origins that are unavailable continue
-to refuse capture. The full lane matrix is unchanged. These compilation receipts
+Any missing original emission or closed-session evidence continues
+to refuse admission. The full lane matrix is unchanged. These compilation receipts
 alone do not admit performance measurements or authenticated H0/full-release
 claims.
