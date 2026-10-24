@@ -425,9 +425,12 @@ def _produce_wasm(
 
 
 @contextlib.contextmanager
-def _isolated_build_environment(work: Path) -> Iterator[None]:
-    """Keep Cargo and build state outside the immutable source snapshot."""
+def _isolated_build_environment(work: Path, *, epoch: int) -> Iterator[None]:
+    """Keep release metadata deterministic and outputs outside the source snapshot."""
+    from tools.release.compiler_payload import reproducible_build_environment
+
     updates = {
+        **reproducible_build_environment(epoch),
         "CARGO_TARGET_DIR": str(work / "target"),
         "MOLT_BUILD_STATE_DIR": str(work / "build-state"),
         "MOLT_HOME": str(work / "home"),
@@ -523,10 +526,15 @@ def _populate_runtime_cells(
     from molt.cli.runtime_build_identity import verify_runtime_source_identities
     from molt.exact_json import write_exact
     from molt.toolchain_identity import resolve_executable
-    from tools.release.compiler_payload import source_environment, source_snapshot
+    from tools.release.compiler_payload import (
+        source_commit_epoch,
+        source_environment,
+        source_snapshot,
+    )
     from tools.release.git_source_snapshot import materialize_git_source_snapshot
 
     snapshot = source_snapshot(repo_root, source_sha)
+    epoch = source_commit_epoch(repo_root, snapshot.source_sha)
     output.mkdir(parents=True, exist_ok=False)
     with OwnedTemporaryDirectory(prefix="molt-runtime-cells-") as temporary:
         work = Path(temporary)
@@ -539,7 +547,7 @@ def _populate_runtime_cells(
             environment=env,
         )
         records = [entry.as_record() for entry in snapshot.files]
-        with _isolated_build_environment(work):
+        with _isolated_build_environment(work, epoch=epoch):
             selected = _selected_runtime_cells(requests, source_root)
             expected_keys = sorted(
                 _selector(request.kind, runtime_cell_key(request))

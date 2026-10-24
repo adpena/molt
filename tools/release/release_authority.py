@@ -45,6 +45,7 @@ from tools.release.compiler_payload import (  # noqa: E402
     launcher_record,
     wasm_facts_record,
     source_snapshot,
+    source_commit_epoch,
 )
 from tools.release.runtime_cells import read_runtime_inventory  # noqa: E402
 from tools.release.native_build import (  # noqa: E402
@@ -293,7 +294,7 @@ def resolve_source(requested_version: str, source_sha: str) -> dict[str, str]:
         not in _git("tag", "--points-at", "HEAD", "--list", expected_tag).splitlines()
     ):
         raise ValueError(f"release checkout is not the exact {expected_tag} tag")
-    source_date_epoch = _git("show", "-s", "--format=%ct", "HEAD")
+    source_date_epoch = str(source_commit_epoch(ROOT, source_sha))
     if _git(*clean_checkout_status_arguments()):
         raise ValueError("release checkout must be clean")
     _git("merge-base", "--is-ancestor", head, "origin/main")
@@ -1903,7 +1904,7 @@ def main() -> None:
         require_git_object_id(args.source_sha, label="release evidence source")
         if _git("rev-parse", "HEAD") != args.source_sha:
             raise ValueError("release evidence source differs from checkout")
-        commit_epoch = int(_git("show", "-s", "--format=%ct", "HEAD"))
+        commit_epoch = source_commit_epoch(ROOT, args.source_sha)
         if args.source_date_epoch <= 0 or args.source_date_epoch != commit_epoch:
             raise ValueError("release evidence epoch differs from source commit")
         common: dict[str, Any] = dict(

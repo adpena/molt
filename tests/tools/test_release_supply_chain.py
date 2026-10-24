@@ -93,6 +93,105 @@ def test_immutable_git_environment_preserves_distinct_posix_names(rule):
     )
 
 
+def test_release_epoch_uses_exact_original_commit_not_head_or_replacement(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "GIT_NO_REPLACE_OBJECTS"
+    }
+    _COMMANDS.run(
+        ["git", "init", str(repo)], check=True, capture_output=True, timeout=30
+    )
+    tree = (
+        _COMMANDS.check_output(["git", "mktree"], cwd=repo, input=b"", timeout=30)
+        .decode()
+        .strip()
+    )
+
+    def commit(epoch):
+        env = {
+            **environment,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "GIT_AUTHOR_DATE": f"{epoch} +0000",
+            "GIT_COMMITTER_DATE": f"{epoch} +0000",
+        }
+        return (
+            _COMMANDS.check_output(
+                ["git", "commit-tree", tree, "-m", "epoch control"],
+                cwd=repo,
+                env=env,
+                timeout=30,
+            )
+            .decode()
+            .strip()
+        )
+
+    original = commit(1700000000)
+    decoy = commit(1800000000)
+    for arguments in (("update-ref", "HEAD", decoy), ("replace", original, decoy)):
+        _COMMANDS.run(
+            ["git", *arguments],
+            cwd=repo,
+            env=environment,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    # Establish that an ordinary Git lookup really sees the poisoned timestamp.
+    assert (
+        _COMMANDS.check_output(
+            ["git", "show", "-s", "--format=%ct", original],
+            cwd=repo,
+            env=environment,
+            timeout=30,
+        ).strip()
+        == b"1800000000"
+    )
+    git = Path(shutil.which("git"))
+    assert (
+        git_source_snapshot.read_git_commit_epoch(
+            repo, original, git=git, environment=environment
+        )
+        == 1700000000
+    )
+    assert compiler_payload.source_commit_epoch(repo, original) == 1700000000
+    assert compiler_payload.source_commit_epoch(repo, decoy) == 1800000000
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "b" * 40 + "\n1700000000",
+        "a" * 40 + "\n0",
+        "a" * 40 + "\n-1",
+        "a" * 40 + "\n+1",
+        "a" * 40 + "\n01",
+        "a" * 40 + "\n1\n2",
+        "a" * 40 + "\n１",
+        "a" * 40,
+    ],
+)
+def test_release_epoch_refuses_inexact_or_nonpositive_commit_record(
+    tmp_path, monkeypatch, record
+):
+    monkeypatch.setattr(git_source_snapshot, "_run_git_text", lambda *_: record)
+    with pytest.raises(ValueError, match="exact commit and positive timestamp"):
+        git_source_snapshot.read_git_commit_epoch(
+            tmp_path, "a" * 40, git=tmp_path / "git", environment={}
+        )
+
+
+@pytest.mark.parametrize("epoch", [True, False, 0, -1, "1700000000", None])
+def test_release_build_environment_refuses_invalid_epoch(epoch):
+    with pytest.raises(ValueError, match="positive integer"):
+        compiler_payload.reproducible_build_environment(epoch)
+
+
 @pytest.mark.parametrize("rule", list(NameRule))
 def test_captured_index_override_uses_child_name_rule(tmp_path, monkeypatch, rule):
     index = tmp_path / "index"
@@ -367,8 +466,6 @@ def test_release_plan_requires_exact_project_tag_and_source(
             return "a" * 40
         if args == ("tag", "--points-at", "HEAD", "--list", "v0.0.001"):
             return "v0.0.001"
-        if args == ("show", "-s", "--format=%ct", "HEAD"):
-            return "1700000000"
         if args == clean_checkout_status_arguments() or args == (
             "merge-base",
             "--is-ancestor",
@@ -378,9 +475,18 @@ def test_release_plan_requires_exact_project_tag_and_source(
             return ""
         raise AssertionError(args)
 
+    epoch_queries = []
+
+    def epoch(root, commit):
+        epoch_queries.append((root, commit))
+        return 1700000000
+
+    monkeypatch.setattr(release_authority, "source_commit_epoch", epoch)
     monkeypatch.setattr(release_authority, "_git", exact_git)
     plan = release_authority.resolve_source("v0.0.001", "a" * 40)
     assert plan["version"] == "0.0.001"
+    assert plan["source_date_epoch"] == "1700000000"
+    assert epoch_queries == [(release_authority.ROOT, "a" * 40)]
     assert plan["release_exit_archive"] == release_model.release_exit_archive_filename(
         "a" * 40
     )
@@ -400,8 +506,6 @@ def _stable_git(*args: str) -> str:
         return "a" * 40
     if args == ("tag", "--points-at", "HEAD", "--list", "v1.0.0"):
         return "v1.0.0"
-    if args == ("show", "-s", "--format=%ct", "HEAD"):
-        return "1700000000"
     if args == clean_checkout_status_arguments() or args == (
         "merge-base",
         "--is-ancestor",
@@ -1037,6 +1141,7 @@ def release_evidence_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
+    monkeypatch.setattr(release_authority, "source_commit_epoch", lambda *_: 1700000000)
     # Transport/admission unit fixture: semantic producers are tested by their
     # owning gate suite. No fixture is release acceptance evidence.
     monkeypatch.setattr(release_authority, "_project_version", lambda: "0.0.001")
@@ -1046,7 +1151,6 @@ def release_evidence_inputs(
         lambda *args: {
             ("rev-parse", "HEAD"): "a" * 40,
             ("tag", "--points-at", "HEAD", "--list", "v0.0.001"): "v0.0.001",
-            ("show", "-s", "--format=%ct", "HEAD"): "1700000000",
             clean_checkout_status_arguments(): "",
             ("merge-base", "--is-ancestor", "a" * 40, "origin/main"): "",
         }[args],
@@ -2012,6 +2116,7 @@ def test_evidence_cli_rejects_epoch_different_from_commit(
         "_git",
         lambda *args: "a" * 40 if args == ("rev-parse", "HEAD") else "1700000000",
     )
+    monkeypatch.setattr(release_authority, "source_commit_epoch", lambda *_: 1700000000)
     output = tmp_path / "output"
     monkeypatch.setattr(
         sys,
