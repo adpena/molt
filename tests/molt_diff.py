@@ -4765,8 +4765,9 @@ if __name__ == "__main__":
         action="append",
         default=[],
         help=(
-            "Backend(s) to validate against CPython: native (default), wasm, "
-            "llvm, luau, or 'all'. Repeatable and comma-separated "
+            "Backend(s) to validate against CPython: "
+            f"{', '.join(test_policy.ALL_BACKENDS)} (native by default), or 'all'. "
+            "Repeatable and comma-separated "
             "(e.g. --target native,wasm). When two or more backends run, they "
             "are ALSO compared against each other (cross-backend divergence is a "
             "FAIL). A backend whose toolchain is unavailable is reported as a "
