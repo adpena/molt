@@ -326,8 +326,10 @@ One runner owns main. Agents enqueue and continue.
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
-  It builds a candidate in its own sandbox worktree: main's tip, then a
-  `--no-ff` merge of each ready lane tip in queue order, preserving source DAGs
+  It builds a candidate in its own sandbox worktree. When the first enrolled
+  tip already contains captured main, it checks out that tip directly and adds
+  a dedicated candidate commit. Otherwise it starts at main. Remaining tips
+  merge with `--no-ff` in queue order, preserving source DAGs
   and resolution-only changes through the final citation amendment. A conflicting
   merge is aborted and the preceding candidate verified before proceeding;
   a failed restoration stops the runner. The conflicting lane leaves with a report. The runner resolves change ids, takes the repository integration
@@ -338,6 +340,15 @@ One runner owns main. Agents enqueue and continue.
   person. Speculation is a candidate chain (main + L1, main + L1 + L2, ...)
   that runs as far as the admitted capacity allows: one chain on this Mac,
   wider on the farm.
+  Direct materialization uses Git's
+  [`merge-base --is-ancestor`](https://git-scm.com/docs/git-merge-base) predicate
+  and ordinary [`commit --allow-empty`](https://git-scm.com/docs/git-commit),
+  including its hooks. The candidate's tree and parent must remain exactly the
+  enrolled tree and tip; a hook that changes either stops admission. This keeps
+  citation amendment off the source commit without the old main-then-lane
+  checkout, which rewrote byte-identical Rust inputs on every failed retry.
+  Unchanged inputs and ignored build products stay in place; their timestamps
+  never establish compiler-artifact admission. No gate result is reused.
 - **Cost.** N small lanes pay the fixed gate cost once, not N times. A bad
   lane costs O(log N) extra runs. The runner is one process per batch; it
   waits for the integration lock with the lock authority's 2 s retry and

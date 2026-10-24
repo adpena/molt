@@ -150,9 +150,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Preflight selected toolchains, targets and runtime prerequisites through their owners with the full
   child environment before expensive work; parser acceptance alone does not prove readiness. Validate
   mutation targets canonically and turn mistakes into checks at that boundary, without duplicate gates.
-- After failure, classify product, harness, artifact drift or unknown before retrying. Preserve the
-  failed receipt and reuse completed phases only when source, tool, environment, workload and
-  artifact evidence still match; rerun only missing or invalidated obligations.
+- Stop dependent command batches at the first failure. Classify product, harness, artifact drift or
+  unknown before retrying; preserve failed receipts. Reuse completed phases only when source, tool,
+  environment, workload and artifacts match; rerun only missing or invalidated obligations.
 - Run the owning proof families locally before pushing; CI arbitrates release candidates. Make
   repeated manual triage, profiling or log pipelines a tested tool and point to it below.
 - Every test file belongs to a proof cell; a test that no cell runs rots without notice.

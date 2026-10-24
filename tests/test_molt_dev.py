@@ -3363,6 +3363,117 @@ def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
     assert queue.pending(paths) == [] and not paths.plan.exists()
 
 
+def test_queue_retry_preserves_unchanged_inputs_and_ignored_products(
+    drv, origin_and_clone
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    first = _lane(work, "incremental", {"runtime.rs": "pub fn runtime() {}\n"})
+    paths, requests = _enqueue(drv, work, first)
+    git = drv.Git(work)
+
+    def run(arguments):
+        result = git._run(list(arguments), check=False)
+        return queue.GitResult(result.returncode, result.stdout, result.stderr)
+
+    assert queue.build_candidate(run, upstream, requests).included == tuple(requests)
+    prior_candidate = git.head_sha()
+    source = work / "runtime.rs"
+    before = source.stat()
+    (work / ".git/info/exclude").write_text("target/\n", encoding="utf-8")
+    product = work / "target/retained"
+    product.parent.mkdir()
+    product.write_bytes(b"unchanged build output")
+    second = _commit_file(
+        work.parent / "lane-incremental",
+        "fixture.py",
+        "assert True\n",
+        "repair only a test fixture",
+    )
+    _, retry = _enqueue(drv, work, second)
+
+    assert queue.build_candidate(run, upstream, retry).included == tuple(retry)
+
+    after = source.stat()
+    assert (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mtime_ns,
+        before.st_size,
+    )
+    assert source.read_text(encoding="utf-8") == "pub fn runtime() {}\n"
+    assert product.read_bytes() == b"unchanged build output"
+    assert git.head_sha() != second
+    assert run(["merge-base", "--is-ancestor", second, "HEAD"]).returncode == 0
+    assert run(["merge-base", "--is-ancestor", upstream, "HEAD"]).returncode == 0
+    assert run(["merge-base", "--is-ancestor", prior_candidate, "HEAD"]).returncode == 1
+    assert not run(["status", "--porcelain"]).stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "hook", ["reject", "stage-unrequested", "ancestry-error", "extra-parent"]
+)
+def test_queue_direct_materialization_keeps_hooks_and_enrolled_tree(
+    drv, origin_and_clone, hook
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    source = _lane(work, "hooked", {"feature.py": "value = 1\n"})
+    _, requests = _enqueue(drv, work, source)
+    foreign = None
+    if hook == "extra-parent":
+        foreign = _lane(work, "foreign", {"foreign.py": "unrequested = True\n"})
+        commit_hook = work / ".git/hooks/post-commit"
+        body = (
+            "set -eu\n"
+            "original=$(git rev-parse HEAD)\n"
+            "parent=$(git rev-parse HEAD^)\n"
+            "tree=$(git rev-parse 'HEAD^{tree}')\n"
+            f'rewritten=$(printf \'unrequested parent\\n\' | git commit-tree "$tree" -p "$parent" -p {foreign})\n'
+            'git update-ref HEAD "$rewritten" "$original"\n'
+        )
+    else:
+        commit_hook = work / ".git/hooks/pre-commit"
+        body = (
+            "exit 31\n"
+            if hook == "reject"
+            else "printf 'unexpected\\n' > unrequested.py\ngit add -- unrequested.py\n"
+        )
+    commit_hook.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    commit_hook.chmod(0o755)
+    git = drv.Git(work)
+
+    def run(arguments):
+        if hook == "ancestry-error" and list(arguments[:2]) == [
+            "merge-base",
+            "--is-ancestor",
+        ]:
+            return queue.GitResult(2, "", "cannot read commit graph")
+        result = git._run(list(arguments), check=False)
+        return queue.GitResult(result.returncode, result.stdout, result.stderr)
+
+    diagnostic = {
+        "reject": "git commit .*failed",
+        "stage-unrequested": "enrolled source tree",
+        "ancestry-error": "cannot establish enrolled lane's upstream ancestry",
+        "extra-parent": "enrolled source tree",
+    }[hook]
+    with pytest.raises(drv.DriverError, match=diagnostic):
+        queue.build_candidate(run, upstream, requests)
+    if hook == "extra-parent":
+        assert _git(work, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[
+            1:
+        ] == [source, foreign]
+        assert (
+            _git(work, "rev-parse", "HEAD^{tree}").stdout
+            == _git(work, "rev-parse", f"{source}^{{tree}}").stdout
+        )
+
+
 @pytest.mark.parametrize("advance_before_integrate", [False, True])
 def test_queue_preserves_source_merges_and_resolves_their_citations(
     drv, origin_and_clone, tmp_path, monkeypatch, advance_before_integrate

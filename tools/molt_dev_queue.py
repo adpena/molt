@@ -377,8 +377,8 @@ def build_candidate(
     """Merge each immutable lane tip onto upstream in queue order.
 
     A lane that does not apply on top of the lanes ahead of it is reported and
-    left out; the rest keep their order. The sandbox belongs to the queue, so
-    the runner resets it to upstream before each batch.
+    left out; the rest keep their order. Materialize an up-to-date first lane
+    directly, without rewriting unchanged inputs through an older upstream.
     """
 
     def git(*args: str) -> GitResult:
@@ -390,12 +390,40 @@ def build_candidate(
             )
         return result
 
-    git("checkout", "--quiet", "--detach", "--force", upstream)
+    first = batch[0] if batch else None
+    direct = False
+    if first is not None and first.head != upstream:
+        ancestry = run_git(["merge-base", "--is-ancestor", upstream, first.head])
+        if ancestry.returncode not in (0, 1):
+            raise DriverError(
+                "cannot establish enrolled lane's upstream ancestry: "
+                + (ancestry.stderr.strip() or ancestry.stdout.strip())
+            )
+        direct = ancestry.returncode == 0
+    target = first.head if first is not None and direct else upstream
+    git("checkout", "--quiet", "--detach", "--force", target)
     # Ignored files (.venv, target/, node_modules) stay warm between batches.
     git("clean", "-ffd", "--quiet")
     included: list[LandingRequest] = []
     conflicted: list[tuple[LandingRequest, str]] = []
-    for request in batch:
+    if direct:
+        assert first is not None
+        # Citation resolution amends this dedicated candidate, never the
+        # immutable enrolled source. Ordinary commit hooks remain active.
+        git("commit", "--quiet", "--allow-empty", "-m", f"Integrate {first.head}")
+        observed = git(
+            "rev-parse", f"{first.head}^{{tree}}", "HEAD^{tree}", "HEAD^@"
+        ).stdout.splitlines()
+        if (
+            len(observed) != 3
+            or observed[0] != observed[1]
+            or observed[2] != first.head
+        ):
+            raise DriverError(
+                "direct landing candidate changed the enrolled source tree or ancestry"
+            )
+        included.append(first)
+    for request in batch[1:] if direct else batch:
         before = git("rev-parse", "HEAD").stdout.strip()
         # Preserve the source DAG and manual merge resolutions. A forced merge
         # also keeps request.head ancestral when integrate amends the batch tip

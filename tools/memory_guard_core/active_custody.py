@@ -614,10 +614,14 @@ def has_active_guard_marker(active_dir: Path) -> bool:
 
 
 @contextmanager
-def _marker_lock(path: Path) -> Generator[Path]:
-    canonical = canonical_file_leaf(path, create_parent=True, role="active marker")
+def _marker_lock(path: Path, *, create_parent: bool = True) -> Generator[Path]:
+    canonical = canonical_file_leaf(
+        path, create_parent=create_parent, role="active marker"
+    )
     lock_path = canonical_file_leaf(
-        canonical.with_suffix(".lock"), create_parent=True, role="active marker lock"
+        canonical.with_suffix(".lock"),
+        create_parent=create_parent,
+        role="active marker lock",
     )
     handle = _acquire_file_lock(
         lock_path,
@@ -629,6 +633,21 @@ def _marker_lock(path: Path) -> Generator[Path]:
             yield canonical
     finally:
         _release_file_lock(handle)
+
+
+def read_published_marker_record(path: Path) -> MarkerRecord:
+    """Capture an inherited guard's immutable snapshot under its publisher lock.
+
+    Bootstrap reads may overlap child-birth/telemetry publication. Complete the
+    stable-file read, including its closing identity fences, while holding the
+    same lock as updates and retirement. Consumers inspect the decoded snapshot;
+    they must not revalidate the mutable path after releasing this lock.
+    """
+    try:
+        with _marker_lock(path, create_parent=False) as canonical:
+            return read_marker_record(canonical)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return MarkerRecord(path, error=str(exc))
 
 
 def write_active_guard_marker(path: Path, payload: Mapping[str, object]) -> None:
