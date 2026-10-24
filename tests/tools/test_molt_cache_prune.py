@@ -952,7 +952,7 @@ def test_required_backend_output_survives_eviction_after_each_cache_publication(
         backend_cache, "_publish_immutable_backend_cache_artifact", publish_then_evict
     )
     output = tmp_path / "output.rs"
-    error = backend_cache._stage_backend_output_and_caches(
+    staged = backend_cache._stage_backend_output_and_caches(
         tmp_path,
         source,
         output,
@@ -965,7 +965,8 @@ def test_required_backend_output_survives_eviction_after_each_cache_publication(
         state_path=tmp_path / "state.json",
         artifact_contract=contract,
     )
-    assert error is None
+    assert staged.error is None
+    assert staged.emission_origin is None
     assert published == [module, function]
     assert output.read_bytes() == payload
     assert not source.exists()  # Producer cleanup happens only after both transfers.
