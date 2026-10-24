@@ -163,8 +163,10 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    `GateFailure` (a `CandidateFailure`); a source refusal or a stop of the
    executor itself stays a plain `DriverError`. The block leaves an executor receipt with
    each gate's duration, peak RSS and outcome at
-   `<git common dir>/molt-integrate/receipts/<commit>.gates.json`. Rule, pytest
-   and Cargo gates then run one at a time. Every gate writes its stdout and stderr to
+   `<git common dir>/molt-integrate/receipts/<commit>.gates.json`. Remaining
+   read-only rule checks run in declared order before the heavy gate block.
+   Cargo and pytest gates then share the executor under the plan's resource
+   limits and delegated memory; Cargo writers stay serialized. Every gate writes its stdout and stderr to
    `<receipt>.d/<run>/gate-<ordinal>.{stdout,stderr}.log` while it runs, and the guard's
    keepalive line shows progress. A passing gate prints one line, and its
    `gate_finished` progress event names both files; a failed gate prints the file

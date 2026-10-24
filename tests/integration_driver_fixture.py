@@ -42,6 +42,31 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_DRIVER_TREES = ("src/molt/stdlib", "tools/browser_asset_graph")
 
 
+@pytest.fixture
+def isolated_checkout_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    developer_host_context: None,
+) -> Path:
+    """Synthetic checkouts own state; tool caches and guard custody stay shared."""
+    from molt.dx import ARTIFACT_ROOT_ENV, MOLT_ROOT_ENV_KEYS, RunContext
+
+    # These explicit selectors can outlive the derived run context cleared by
+    # developer_host_context and otherwise address another checkout's state.
+    for key in ("MOLT_BUILD_STATE_DIR", "MOLT_BACKEND_DAEMON_SOCKET_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    monkeypatch.setenv(ARTIFACT_ROOT_ENV, str(artifacts))
+    # Clearing inherited roots alone would let generic gates choose work/target
+    # and create control locks in the synthetic source. Bind every derived root
+    # through DX, without reselecting tool caches or process-guard custody.
+    selected = RunContext(tmp_path).root_env()
+    for key in MOLT_ROOT_ENV_KEYS:
+        monkeypatch.setenv(key, selected[key])
+    return artifacts
+
+
 def driver_tree_files() -> list[str]:
     """The driver's files in this working tree, relative to the checkout."""
     listed = _run_fast_captured_command(
