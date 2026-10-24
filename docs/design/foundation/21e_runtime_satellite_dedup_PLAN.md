@@ -37,7 +37,7 @@ The source authorities are pinned CPython
 [`Lib/base64.py`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Lib/base64.py)
 and [`Modules/binascii.c`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Modules/binascii.c),
 with the other version pins in `config/cpython_regrtest_sources.toml`.
-`src/molt/target_python.py` owns target admission; a pending source pin, including
+`src/molt/target_python_policy.py` owns target admission; a pending source pin, including
 Python 3.15, is not a support or release-qualification claim.
 
 `molt-runtime-serial::base64_mod::b64_decode` is the shared Base64 primitive for

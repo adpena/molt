@@ -1067,10 +1067,9 @@ fn runtime_provider_definitions_cannot_create_implicit_globals() {
         .emit("molt_json_dumps(molt_pack_list(1))", false)
         .unwrap();
     assert!(json.source.contains("\tmolt_json_dumps = (function()"));
-    assert!(
-        json.source
-            .contains("\t\treturn function(value: any): string")
-    );
+    assert!(json
+        .source
+        .contains("\t\treturn function(value: any): string"));
     assert!(!json.source.contains("molt_json_dumps = function(value"));
     validate_luau_source(&json.source).unwrap();
     for source in [
@@ -2307,10 +2306,8 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
     assert!(!frame_runtime::FRAME_RUNTIME.contains("context.owner"));
     assert!(frame_runtime::FRAME_RUNTIME.contains("{__mode = \"kv\"}"));
     assert!(frame_runtime::FRAME_RUNTIME.contains("molt_frame_owned_context(owner) ~= context"));
-    assert!(
-        !frame_runtime::FRAME_RUNTIME
-            .contains("owner ~= current_owner or molt_frame_contexts[owner]")
-    );
+    assert!(!frame_runtime::FRAME_RUNTIME
+        .contains("owner ~= current_owner or molt_frame_contexts[owner]"));
     assert_eq!(
         frame_runtime::FRAME_RUNTIME
             .matches("molt_frame_contexts[owner]")
@@ -2721,14 +2718,12 @@ fn isolated_builtin_module_ir() -> SimpleIR {
         }
         ops.push(OpIR {
             kind: "ret".to_string(),
-            args: Some(vec![
-                if kind.is_some() {
-                    "selected"
-                } else {
-                    "namespace"
-                }
-                .to_string(),
-            ]),
+            args: Some(vec![if kind.is_some() {
+                "selected"
+            } else {
+                "namespace"
+            }
+            .to_string()]),
             ..OpIR::default()
         });
         functions.push(FunctionIR {
@@ -2748,12 +2743,11 @@ fn isolated_builtin_module_ir() -> SimpleIR {
 #[test]
 fn isolated_module_cache_and_attribute_consumers_select_namespace_bootstrap() {
     let ir = isolated_builtin_module_ir();
-    assert!(
-        ir.functions
-            .iter()
-            .flat_map(|function| &function.ops)
-            .all(|op| !matches!(op.kind.as_str(), "builtin_func" | "module_get_global"))
-    );
+    assert!(ir
+        .functions
+        .iter()
+        .flat_map(|function| &function.ops)
+        .all(|op| !matches!(op.kind.as_str(), "builtin_func" | "module_get_global")));
     let source = LuauBackend::new().compile_checked(&ir).unwrap();
     assert_eq!(
         source
@@ -5242,11 +5236,8 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
         .expect("bounded sys version bootstrap does not require Python import dispatch");
     assert!(source.contains("local major: number = 3"));
     assert!(source.contains("local minor: number = 14"));
-    assert!(
-        source.contains(
-            "function molt_sys_set_version_info(major, minor, micro, releaselevel, serial)"
-        )
-    );
+    assert!(source
+        .contains("function molt_sys_set_version_info(major, minor, micro, releaselevel, serial)"));
     assert!(source.contains("function molt_sys_seed_module()"));
 }
 
@@ -5310,6 +5301,22 @@ fn lune_oracle_sys_target_commit_is_canonical_idempotent_and_failure_atomic() {
     let emitted = LuauBackend::new()
         .compile_checked(&ir)
         .expect("five-field target bootstrap and real sys metadata consumer");
+    let (default_major, default_minor, default_micro, default_level, default_serial) =
+        crate::python_version_policy_generated::DEFAULT_TARGET_PYTHON_VERSION;
+    let (default_suffix, default_nibble) = match default_level {
+        "alpha" => (format!("a{default_serial}"), 0xa),
+        "beta" => (format!("b{default_serial}"), 0xb),
+        "candidate" => (format!("rc{default_serial}"), 0xc),
+        "final" => (String::new(), 0xf),
+        _ => panic!("invalid generated release level"),
+    };
+    let default_version =
+        format!("{default_major}.{default_minor}.{default_micro}{default_suffix} (molt)");
+    let default_hexversion = (default_major << 24)
+        | (default_minor << 16)
+        | (default_micro << 8)
+        | (default_nibble << 4)
+        | default_serial;
     for (minor, micro, level, serial, version, hexversion) in [
         (12, 0, "final", 0, "3.12.0 (molt)", 0x030c00f0),
         (13, 0, "alpha", 1, "3.13.0a1 (molt)", 0x030d00a1),
@@ -5317,7 +5324,7 @@ fn lune_oracle_sys_target_commit_is_canonical_idempotent_and_failure_atomic() {
         (14, 256, "candidate", 17, "3.14.256rc17 (molt)", 0x030e00c1),
     ] {
         let mut source = emitted.clone();
-        source.push_str(
+        source.push_str(&format!(
             r#"
 local function expect_error(kind, message, action)
     local ok, err = pcall(action)
@@ -5326,8 +5333,9 @@ local function expect_error(kind, message, action)
 end
 local initial = read_target_sys()
 local provisional = initial.version_info
-assert(provisional[1] == 3 and provisional[2] == 12 and provisional[3] == 0)
-assert(initial.version == "3.12.0 (molt)" and initial.hexversion == 0x030c00f0)
+assert(provisional[1] == {default_major} and provisional[2] == {default_minor} and provisional[3] == {default_micro})
+assert(provisional[4] == {default_level:?} and provisional[5] == {default_serial})
+assert(initial.version == {default_version:?} and initial.hexversion == {default_hexversion})
 expect_error("TypeError", "major must be int", function() set_target_version("3", 13, 0, "final", 0) end)
 expect_error("TypeError", "minor must be int", function() set_target_version(3, 13.5, 0, "final", 0) end)
 expect_error("TypeError", "sys.version_info releaselevel must be str", function() set_target_version(3, 13, 0, 0, 0) end)
@@ -5336,7 +5344,7 @@ expect_error("ValueError", "sys.version_info releaselevel must be alpha, beta, c
 expect_error("ValueError", "unsupported compiled Python target 3.99", function() set_target_version(3, 99, 0, "final", 0) end)
 assert(read_target_sys() == initial and initial.version_info == provisional)
 "#,
-        );
+        ));
         let late_minor = if minor == 12 { 13 } else { 12 };
         source.push_str(&format!(
             r#"
@@ -5353,7 +5361,7 @@ expect_error("RuntimeError", "compiled Python target is already set", function()
 assert(read_target_sys() == initial and initial.version_info == committed)
 assert(initial.version == {version:?} and initial.hexversion == {hexversion})
 assert(not pcall(function() committed[2] = 99 end))
-assert(provisional[2] == 12 and committed[2] == {minor})
+assert(provisional[2] == {default_minor} and committed[2] == {minor})
 print("sys target commit preserved")
 "#,
         ));

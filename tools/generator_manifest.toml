@@ -41,12 +41,13 @@
 # Field contract (per [[generator]] row):
 #   outputs         list  — the files the generator writes. The audit treats
 #                           each as generated and skips it.
-#   output_family   str   — instead of outputs, for a generator whose files are
+#   output_family   str   — for a generator whose files are
 #                           not fixed and sit among hand-written sources;
 #                           generated_outputs() enumerates them at run time.
 #                           The audit does not treat them as generated, so the
 #                           debt they record stays counted. A row declares
-#                           exactly one of a non-empty outputs or output_family.
+#                           at least one of a non-empty outputs or output_family;
+#                           mixed producers also list their fixed outputs.
 #   check_mode      bool  — the generator supports `--check`. MUST be true for a
 #                           non-discovery authority (the meta-gate fails otherwise).
 #   ci_checkable    bool  — default true. false ⇒ the source is not reproducible
@@ -232,10 +233,12 @@ outputs = [
   "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
   "runtime/molt-obj-model/src/python_version_generated.rs",
   "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
+  "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
   "wasm/host_capabilities_generated.js",
   "docs/spec/areas/security/host_capabilities.generated.md",
 ]
-source = "runtime/host_capabilities.toml + src/molt/target_python.py + tools/generator_io.py"
+source = "runtime/host_capabilities.toml + src/molt/target_python.py + src/molt/target_python_policy.py + src/molt/_python_release_generated.py + tools/generator_io.py"
+upstream_generators = ["tools/gen_stdlib_module_union.py"]
 check_mode = true
 check_command = "tools/gen_host_capabilities.py --check"
 toolchains = ["rustfmt"]
@@ -548,9 +551,9 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_stdlib_module_union.py"
-outputs = []
-output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending source pins produce no module baseline"
-source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI, release-note and token source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + tools/generator_io.py"
+outputs = ["src/molt/_python_release_generated.py"]
+output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending pins produce no module baseline"
+source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI, release-note and token source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + src/molt/target_python_policy.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_stdlib_module_union.py --check"

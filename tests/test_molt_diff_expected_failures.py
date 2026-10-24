@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.verified_subset import load_verified_subset_policy
 
 import importlib.util
@@ -81,7 +81,9 @@ def _declare_cpython_oracle(
     pytest, so a target derived from the host rather than the oracle cannot
     pass. Target admission itself stays real.
     """
-    oracle = TargetPythonVersion(3, 12 if sys.version_info[:2] == (3, 13) else 13, 0)
+    oracle = _parse_target_python_version(
+        "3.12" if sys.version_info[:2] == (3, 13) else "3.13"
+    )
     command = module._resolve_python_command(python_exe)
 
     def metadata(probed: tuple[str, ...], *, budget=None):
@@ -312,7 +314,7 @@ def test_native_adapter_preserves_first_failure_and_admitted_selection(
     monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
 
     context = module.compat_backends.BackendExecutionContext(
-        target_python=module.TargetPythonVersion(3, 12, 0),
+        target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
         environment=environment,
@@ -373,7 +375,7 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
     monkeypatch.setattr(module, "run_molt", timed_out)
     monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
     context = module.compat_backends.BackendExecutionContext(
-        target_python=module.TargetPythonVersion(3, 12, 0),
+        target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
         environment={"MOLT_CAPABILITY_TIER": "none"},
@@ -1191,7 +1193,7 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
     )
 
     context = module.compat_backends.BackendExecutionContext(
-        target_python=module.TargetPythonVersion(3, 14, 0),
+        target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
         capabilities="",
         # A complete execution environment names its cache; without one the
@@ -1282,7 +1284,7 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     context = module.compat_backends.BackendExecutionContext(
-        target_python=module.TargetPythonVersion(3, 14, 0),
+        target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
         capabilities="fs,env,time,random",
         # A complete execution environment names its cache; without one the
@@ -1808,7 +1810,6 @@ def test_guest_replaced_leaf_is_never_retired(admitted_guest_environment):
 def test_guest_backends_preserve_primary_and_cleanup_failure(
     admitted_guest_environment, monkeypatch, backend, outcome
 ):
-    from molt.target_python import TargetPythonVersion
     from tools.compat import backends, diff_output_layout as output
 
     repo, env = admitted_guest_environment
@@ -1818,7 +1819,7 @@ def test_guest_backends_preserve_primary_and_cleanup_failure(
     # Ambient selection is deliberately incompatible with the supplied context.
     monkeypatch.setenv(output.ROOT_ENV, str(repo / "ambient-missing"))
     context = backends.BackendExecutionContext(
-        target_python=TargetPythonVersion(3, 12, 0),
+        target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
         environment=env,

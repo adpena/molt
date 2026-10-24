@@ -23,9 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 from tools.generator_io import generator_main  # noqa: E402
-from molt.target_python import (  # noqa: E402
-    SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
-)
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
 
 
 SOURCE = ROOT / "config" / "release_targets.toml"

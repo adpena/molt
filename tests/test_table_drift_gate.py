@@ -44,7 +44,9 @@ def test_gate_module_paths_resolve_to_this_repo() -> None:
     assert GATE.TYPE_IDS_RS.exists()
     assert GATE.EXCEPTIONS_RS.exists()
     assert GATE.EXCEPTION_SCHEMA_RS.exists()
-    assert GATE.TARGET_PYTHON_PY.exists()
+    assert Path(GATE.target_python_policy.__file__).resolve() == (
+        ROOT / "src/molt/target_python_policy.py"
+    )
     assert GATE.STDLIB_UNION_PY.exists()
     assert GATE.GEN_STDLIB_UNION_PY.exists()
 
@@ -328,8 +330,12 @@ def test_unicode_facts_gate_distinguishes_same_minor_across_majors(
 ):
     # This private catalog checks identity transport only, not version admission.
     monkeypatch.setattr(GATE, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        GATE.target_python_policy,
+        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS",
+        ("3.0", "4.0"),
+    )
     fixtures = {
-        "TARGET_PYTHON_PY": "versions = (TargetPythonVersion(3, 0, 0), TargetPythonVersion(4, 0, 0))\n",
         "STDLIB_UNION_PY": 'BASELINE_PYTHON_VERSIONS = ("3.0", "4.0")\n',
         "GEN_STDLIB_UNION_PY": "DEFAULT_PYTHONS = SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS\n",
     }

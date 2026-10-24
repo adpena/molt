@@ -31,7 +31,7 @@ from tools.generator_io import generator_main  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
 
 SOURCE = ROOT / "config/python_numeric_errors.toml"
 OUTPUTS = tuple(

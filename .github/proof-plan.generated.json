@@ -105,6 +105,8 @@
     "src/molt/metric_ratios.py",
     "src/molt/node_runtime.py",
     "src/molt/target_python.py",
+    "src/molt/target_python_policy.py",
+    "src/molt/_python_release_generated.py",
     "src/molt/compiler_analysis/python_syntax.py",
     "tests/tools/test_check_perf_gate_wiring.py",
     "tests/tools/test_perf_authority.py",
@@ -9533,7 +9535,7 @@
       "local.suite-honesty.0": "python tools/check_differential_suite_layout.py",
       "local.suite-honesty.1": "python tools/check_suite_honesty.py",
       "local.table-drift.0": "python tools/check_table_drift.py --check",
-      "local.table-drift.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_table_drift_gate.py tests/tools/test_gen_token_metadata.py tests/tools/test_gen_stdlib_module_union_memory_guard.py",
+      "local.table-drift.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_table_drift_gate.py tests/tools/test_gen_token_metadata.py tests/tools/test_gen_stdlib_module_union_memory_guard.py tests/test_compat_multibackend_oracle.py tests/test_molt_diff_memory_guard.py tests/test_molt_diff_expected_failures.py tests/test_molt_diff_scheduling.py tests/test_target_python_oracle.py tests/cli/test_cli_target_python.py tests/cli/test_backend_initialization_contract.py tests/cli/test_cli_cache_fingerprint.py",
       "local.timing-ratio-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_signed_ratio.py",
       "local.tinygrad-op-contract.0": "python tools/check_tinygrad_pin.py --check",
       "local.tinygrad-op-contract.1": "python tools/gen_gpu_op_contract.py --check",
@@ -9965,7 +9967,10 @@
           "src/molt/_host_capabilities_generated.py",
           "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
           "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
+          "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
           "src/molt/target_python.py",
+          "src/molt/target_python_policy.py",
+          "src/molt/_python_release_generated.py",
           "wasm/host_capabilities_generated.js",
           "docs/spec/areas/security/host_capabilities.generated.md",
           "tests/test_gen_host_capabilities.py"
@@ -11174,6 +11179,8 @@
           "include/molt/Python.h",
           "runtime/molt-cpython-abi/include/Python.h",
           "src/molt/target_python.py",
+          "src/molt/target_python_policy.py",
+          "src/molt/_python_release_generated.py",
           "tools/stdlib_module_union.py",
           "tools/gen_stdlib_module_union.py",
           "config/cpython_stdlib_snapshot.json",
@@ -11189,7 +11196,15 @@
         "pytest": [
           "tests/test_table_drift_gate.py",
           "tests/tools/test_gen_token_metadata.py",
-          "tests/tools/test_gen_stdlib_module_union_memory_guard.py"
+          "tests/tools/test_gen_stdlib_module_union_memory_guard.py",
+          "tests/test_compat_multibackend_oracle.py",
+          "tests/test_molt_diff_memory_guard.py",
+          "tests/test_molt_diff_expected_failures.py",
+          "tests/test_molt_diff_scheduling.py",
+          "tests/test_target_python_oracle.py",
+          "tests/cli/test_cli_target_python.py",
+          "tests/cli/test_backend_initialization_contract.py",
+          "tests/cli/test_cli_cache_fingerprint.py"
         ],
         "toolchains": [
           "python",
@@ -11673,6 +11688,8 @@
           "src/molt/cli/__init__.py",
           "src/molt/release_matrix.py",
           "src/molt/target_python.py",
+          "src/molt/target_python_policy.py",
+          "src/molt/_python_release_generated.py",
           "src/molt/compiler_distribution.py",
           "src/molt/verified_subset.py",
           "tools/gen_release_matrix.py",
@@ -13805,7 +13822,7 @@
       "selection_only": true,
       "setup_command": "uv python install 3.12",
       "setup_evidence": [
-        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+        "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
       ],
       "setup_value": "3.12",
       "version_args": [
@@ -13839,7 +13856,7 @@
       "selection_only": true,
       "setup_command": "uv python install 3.13",
       "setup_evidence": [
-        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+        "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
       ],
       "setup_value": "3.13",
       "version_args": [
@@ -13873,7 +13890,7 @@
       "selection_only": true,
       "setup_command": "uv python install 3.14",
       "setup_evidence": [
-        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+        "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
       ],
       "setup_value": "3.14",
       "version_args": [

@@ -47,7 +47,11 @@ def test_runtime_and_luau_python_defaults_follow_the_target_authority(
     # and hard-coded copies of today's 3.12.0 default.
     target = TargetPythonVersion(3, 14, 7, "candidate", 2)
     monkeypatch.setattr(gen, "_DEFAULT_TARGET_PYTHON_VERSION", target)
-    for source in (gen.render_rust_python_policy(), gen.render_luau_python_policy()):
+    for source in (
+        gen.render_rust_python_policy(),
+        gen.render_luau_python_policy(),
+        gen.render_rust_backend_python_policy(),
+    ):
         default = re.search(
             r"pub const DEFAULT_TARGET_PYTHON_VERSION:[^=]+=(.*?);", source
         )

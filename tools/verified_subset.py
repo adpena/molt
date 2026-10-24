@@ -118,6 +118,10 @@ def verified_subset_authority_files(
         (repo_root / "config" / "release_targets.toml").resolve(strict=True),
         (repo_root / "src" / "molt" / "release_matrix.py").resolve(strict=True),
         (repo_root / "src" / "molt" / "target_python.py").resolve(strict=True),
+        (repo_root / "src" / "molt" / "target_python_policy.py").resolve(strict=True),
+        (repo_root / "src" / "molt" / "_python_release_generated.py").resolve(
+            strict=True
+        ),
         (repo_root / "src" / "molt" / "verified_subset.py").resolve(strict=True),
         (repo_root / "tests" / "molt_diff.py").resolve(strict=True),
         (repo_root / "tools" / "compat" / "backends.py").resolve(strict=True),

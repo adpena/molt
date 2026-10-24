@@ -6021,7 +6021,7 @@ def test_selected_catalog_admission_preserves_imports_after_proof_plan_collectio
 def test_integrate_uses_selected_committed_target_catalog_without_import_rebinding(
     drv, origin_and_clone, monkeypatch
 ):
-    from molt import target_python
+    from molt import target_python_policy
     from tools import proof_plan
 
     _, work = origin_and_clone
@@ -6034,7 +6034,7 @@ def test_integrate_uses_selected_committed_target_catalog_without_import_rebindi
     )
     _commit_file(
         work,
-        "src/molt/target_python.py",
+        "src/molt/target_python_policy.py",
         "from molt._selected_test_catalog import VERSIONS\nSUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = VERSIONS\n",
         "selected target catalog",
     )
@@ -6055,7 +6055,7 @@ python_versions = "supported-targets"
         "selected target prerequisites",
     )
     before_path = list(sys.path)
-    before_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    before_catalog = target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     observed = []
 
     def probe(policy, *, environment):
@@ -6082,8 +6082,8 @@ python_versions = "supported-targets"
     assert "local.always.0" in str(caught.value)
     assert "3.15" in str(caught.value) and "executed=0" in str(caught.value)
     assert sys.path == before_path
-    assert sys.modules["molt.target_python"] is target_python
-    assert target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is before_catalog
+    assert sys.modules["molt.target_python_policy"] is target_python_policy
+    assert target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is before_catalog
 
 
 def test_gate_selection_preserves_tools_across_batching_dedup_and_extras(drv, tmp_path):

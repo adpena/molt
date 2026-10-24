@@ -106,7 +106,7 @@ Failure of any invariant is a hard CI failure.
    [version-addition workflow](../../../../../DEVELOPER_GUIDE.md) and existing
    V1-35 entry in [the findings ledger](../../../../../agent/V1_HANDOFF_FINDINGS.md).
 4. Complete and qualify the affected semantic families before extending
-   `src/molt/target_python.py`. Then regenerate the admitted baseline offline:
+   `src/molt/target_python_policy.py`. Then regenerate the admitted baseline offline:
    - `python3 tools/gen_stdlib_module_union.py --write`
    `tools/check_table_drift.py` continues requiring baseline versions to equal
    the target catalog. Declaring a source pin alone does not change admission.

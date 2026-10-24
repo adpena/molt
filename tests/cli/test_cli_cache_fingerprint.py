@@ -1259,8 +1259,12 @@ def test_lowering_dependency_graph_reuse_ends_with_build_transaction(
     assert set(captured) == {source, helper}
 
 
+@pytest.mark.parametrize(
+    "version_module",
+    ["target_python", "target_python_policy", "_python_release_generated"],
+)
 def test_installed_python_layout_drives_both_fingerprint_scopes(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version_module: str
 ) -> None:
     site_packages = tmp_path / "site-packages"
     package = site_packages / "molt"
@@ -1268,9 +1272,9 @@ def test_installed_python_layout_drives_both_fingerprint_scopes(
     frontend.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (frontend / "__init__.py").write_text(
-        "from molt.target_python import TARGET\n", encoding="utf-8"
+        f"from molt.{version_module} import TARGET\n", encoding="utf-8"
     )
-    target = package / "target_python.py"
+    target = package / f"{version_module}.py"
     target.write_text("TARGET = 312\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path))
     monkeypatch.setattr(COMPILER_METADATA, "_SRC_ROOT", site_packages)

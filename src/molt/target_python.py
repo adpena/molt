@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from molt import target_python_policy
+from molt._python_release_generated import CPYTHON_RELEASES
+
 
 @dataclass(frozen=True, slots=True)
 class TargetPythonVersion:
@@ -30,15 +33,16 @@ class TargetPythonVersion:
         return f"py{self.major}{self.minor}"
 
 
-_SUPPORTED_TARGET_PYTHON_VERSIONS: tuple[TargetPythonVersion, ...] = (
-    TargetPythonVersion(3, 12, 0),
-    TargetPythonVersion(3, 13, 0),
-    TargetPythonVersion(3, 14, 0),
+_SUPPORTED_TARGET_PYTHON_VERSIONS: tuple[TargetPythonVersion, ...] = tuple(
+    TargetPythonVersion(*CPYTHON_RELEASES[short])
+    for short in target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 )
 _SUPPORTED_TARGET_PYTHON_BY_SHORT = {
     version.short: version for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
 }
-_DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"]
+_DEFAULT_TARGET_PYTHON_VERSION = _SUPPORTED_TARGET_PYTHON_BY_SHORT[
+    target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
+]
 FRONTEND_PYTHON_REQUIREMENT = "CPython 3.12+ (Python 3.14 requires 3.14.1+)"
 
 
@@ -63,18 +67,6 @@ def require_frontend_python() -> None:
         )
 
 
-# Single authority for the set of supported target-Python short versions
-# ("3.12", "3.13", ...). This is the `TargetPythonVersion` authority; the
-# stdlib-coverage tooling (tools/stdlib_module_union.py baseline and
-# tools/gen_stdlib_module_union.py generator) must NOT re-declare this list —
-# they derive from or are gated against this tuple by
-# tools/check_table_drift.py so a version bump here cannot silently drift stdlib
-# coverage.
-SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS: tuple[str, ...] = tuple(
-    version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
-)
-
-
 def _target_platform_name(value: str | None = None) -> str:
     raw = (platform_module.system() if value is None else value).strip().lower()
     return {"win32": "windows", "darwin": "macos"}.get(raw, raw)
@@ -96,7 +88,7 @@ def required_verified_subset_python_tuples() -> tuple[tuple[str, str], ...]:
 def require_supported_target_python(
     target: TargetPythonVersion,
 ) -> TargetPythonVersion:
-    supported = set(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)
+    supported = set(target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)
     if target.short not in supported:
         rendered = ", ".join(sorted(supported))
         raise ValueError(
@@ -159,9 +151,7 @@ def resolve_target_python_for_oracle(
     """Require the compiled language minor to match the measured CPython oracle."""
     if oracle_version is None:
         raise ValueError("cannot derive Molt target Python from the CPython oracle")
-    derived = require_supported_target_python(
-        TargetPythonVersion(oracle_version[0], oracle_version[1], 0)
-    )
+    derived = _parse_target_python_version(f"{oracle_version[0]}.{oracle_version[1]}")
     if explicit is None:
         return derived
     target = (
@@ -226,7 +216,11 @@ def _target_python_from_requires_python(
             f"invalid project.requires-python specifier {requires_python!r}"
         ) from exc
     for target in _SUPPORTED_TARGET_PYTHON_VERSIONS:
-        if Version(target.short) in specifier:
+        release = f"{target.short}.{target.micro}"
+        if target.release != "final":
+            prefix = {"alpha": "a", "beta": "b", "candidate": "rc"}[target.release]
+            release += f"{prefix}{target.serial}"
+        if Version(release) in specifier:
             return target
     supported = ", ".join(
         version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS

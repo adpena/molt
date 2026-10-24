@@ -300,6 +300,16 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
         for profile in policy.build_profiles
     }
     assert len({coordinate.id for coordinate in coordinates}) == 108
+    # Admission, pinned release facts and their semantic join must each
+    # invalidate a receipt when changed; no one file substitutes for the others.
+    assert {
+        "src/molt/target_python.py",
+        "src/molt/target_python_policy.py",
+        "src/molt/_python_release_generated.py",
+    } <= {
+        path.relative_to(verified_subset.ROOT).as_posix()
+        for path in verified_subset.verified_subset_authority_files(policy)
+    }
 
 
 def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(

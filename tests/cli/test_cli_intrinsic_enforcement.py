@@ -11,8 +11,8 @@ from molt.cli import module_graph_cache
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.source_record_store import SourceRecordStore
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.target_python import (
-    SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_target_python_version,
 )

@@ -20,7 +20,7 @@ from molt.exact_json import (
     loads_exact,
     read_exact,
 )
-from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.release_lanes import ReleaseLane, capture_release_lanes
 from molt.toolchain_identity import (
     capture_stable_regular_file,

@@ -7,7 +7,7 @@ from dataclasses import replace
 import re
 import pytest
 
-from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from tools import gen_stdlib_module_union as sources
 from tools import gen_token_metadata as gen
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.target_python import _parse_target_python_version
+
 import concurrent.futures
 import gc
 import json
@@ -1492,7 +1494,7 @@ def _install_held_backend_probe(initializer, initargs, released, entered):
     """Use the real worker/capture/comparison path with build-free backends."""
     initializer(*initargs)
     backends = molt_diff.compat_backends
-    version = molt_diff.TargetPythonVersion(3, 12, 0)
+    version = _parse_target_python_version("3.12")
     molt_diff._resolve_python_command = lambda *a, **k: (sys.executable,)
     molt_diff._python_exe_version = lambda *a, **k: (3, 12)
     molt_diff._backend_execution_context = lambda *a, **k: (

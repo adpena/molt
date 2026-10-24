@@ -10,6 +10,79 @@ fn op(kind: &str) -> OpIR {
     }
 }
 
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+#[test]
+fn emitted_sys_default_and_full_release_metadata_execute() {
+    mod expected {
+        include!("../src/rust/python_version_policy_generated.rs");
+    }
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            ops: vec![op("ret_void")],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let mut source = RustBackend::new().compile_checked(&ir).unwrap();
+    source.push_str(&format!(
+        r#"
+#[test]
+fn target_version_metadata() {{
+    let state = MoltSysVersionInfo::default();
+    assert_eq!((state.major, state.minor, state.micro, state.releaselevel.as_str(), state.serial), {:?});
+    let mut args = vec![MoltValue::Int(3), MoltValue::Int(14), MoltValue::Int(7), MoltValue::Str("candidate".into()), MoltValue::Int(2)];
+    molt_sys_set_version_info(&mut args);
+    let published = molt_sys_version_state().lock().unwrap();
+    assert_eq!(published.formatted_version(), "3.14.7rc2 (molt)");
+    assert_eq!(published.hexversion(), 0x030e07c2);
+}}
+"#,
+        expected::DEFAULT_TARGET_PYTHON_VERSION,
+    ));
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("sys-version-metadata")
+        .expect("create emitted-source proof artifacts");
+    let input = artifacts.path().join("version.rs");
+    let binary = artifacts.path().join(if cfg!(windows) {
+        "version.exe"
+    } else {
+        "version"
+    });
+    std::fs::write(&input, source).unwrap();
+    let compiled = artifacts
+        .command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .unwrap()
+        .args(["--test", "--edition=2021", "-Awarnings"])
+        .arg(artifacts.argument("", &input).unwrap())
+        .arg("-o")
+        .arg(artifacts.argument("", &binary).unwrap())
+        .output()
+        .expect("compile actual emitted source");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let executed = std::process::Command::new(&binary)
+        .args(["--exact", "target_version_metadata"])
+        .output()
+        .expect("execute standalone emitted Rust without Python");
+    assert!(
+        executed.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&executed.stdout),
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&executed.stdout).contains("1 passed"));
+}
+
 #[test]
 fn rust_backend_rejects_class_slots_without_object_representation() {
     let mut alloc_obj = op("alloc_class");

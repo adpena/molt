@@ -206,6 +206,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "python_private_names.py": _P,
         "stdlib_intrinsic_policy.py": _P,
         "target_python.py": _P,
+        "target_python_policy.py": _P,
+        "_python_release_generated.py": _P,
         "type_facts.py": _P,
         # Target facts behind graph decisions such as is_wasm_target.
         "compilation_target.py": _P,

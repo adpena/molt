@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 384 |
+| Hashed executable authority inputs | 1 | 386 |
 | Local path rules | 35 | 89 |
 | Unique local commands | 73 | 77 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -360,7 +360,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `backend-environment-contract` | 22 | 0 |
 | `stdlib-intrinsic-contracts` | 7 | 1 |
 | `heap-kind-lifetime-authority` | 6 | 0 |
-| `host-capability-authority` | 9 | 0 |
+| `host-capability-authority` | 12 | 0 |
 | `runtime-profile-schema-authority` | 6 | 0 |
 | `op-kind-registry` | 18 | 1 |
 | `frontend-diagnostics` | 6 | 0 |
@@ -398,7 +398,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `encoding-diagnostics` | 2 | 0 |
 | `runtime-cargo-input-custody` | 54 | 0 |
 | `rust-toolchain` | 11 | 1 |
-| `table-drift` | 18 | 1 |
+| `table-drift` | 20 | 1 |
 | `findings-registry` | 4 | 0 |
 | `memory-graph` | 4 | 1 |
 | `ci-wiring` | 56 | 0 |
@@ -412,7 +412,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `import-symbol-gate` | 2 | 1 |
 | `phase-exit-manifest` | 7 | 1 |
 | `git-process-policy` | 3 | 0 |
-| `public-contract` | 25 | 1 |
+| `public-contract` | 27 | 1 |
 | `installed-compiler-distribution` | 18 | 0 |
 | `edgebox-typescript` | 4 | 1 |
 | `browser-simd` | 14 | 0 |

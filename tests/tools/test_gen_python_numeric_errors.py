@@ -378,7 +378,7 @@ def test_compiled_float_divmod_against_host_cpython(tmp_path):
 
 def test_numeric_policy_covers_the_selected_target_python_catalog():
     sys.path.insert(0, str(ROOT / "src"))
-    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
     assert policy.TARGETS == SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS, (
         "a newly admitted target minor requires observed numeric policy coordinates"

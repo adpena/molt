@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 from molt.process_environment import ProcessEnvironment  # noqa: E402
-from molt import target_python  # noqa: E402
+from molt import target_python_policy  # noqa: E402
 from molt.dx import (  # noqa: E402
     DEFAULT_UV_PROJECT_PYTHON,
     DX_ENV_KEYS,
@@ -501,7 +501,7 @@ def main() -> None:
         )
         _log(f"PYTHONPATH={env['PYTHONPATH']}")
         for index, python in enumerate(
-            target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+            target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
         ):
             _log(f"tests start (python {python})")
             start = time.monotonic()
