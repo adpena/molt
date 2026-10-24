@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 import hashlib
 import os
 from pathlib import Path
 from typing import BinaryIO, TypeGuard
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 
 _HEX = frozenset("0123456789abcdef")
 GIT_OBJECT_ID_LENGTHS = frozenset({40, 64})
+
+
+def immutable_git_environment(
+    environment: Mapping[str, str],
+) -> ProcessEnvironmentBuilder:
+    """Read original Git objects and ancestry, without replacement refs or grafts."""
+    env = ProcessEnvironmentBuilder(environment)
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_GRAFT_FILE"] = os.devnull
+    return env
 
 
 def repository_source_paths(

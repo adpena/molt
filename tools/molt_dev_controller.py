@@ -34,7 +34,7 @@ from molt import process_guard
 from tools.git_identity import require_git_object_id
 from tools import molt_dev_common
 from tools.molt_dev_common import _COMMANDS, EXIT_USAGE, DriverError, _say, _warn
-from tools.release.git_source_snapshot import immutable_git_environment
+from tools.git_identity import immutable_git_environment
 from tools.venv_exec import venv_python
 
 SCHEMA = "molt.integration-controller.v1"

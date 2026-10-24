@@ -27,11 +27,11 @@ from molt.toolchain_identity import (
 )
 from molt.cli.native_binary import validate_native_binary_architecture
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
+from tools.git_identity import immutable_git_environment
 from .git_source_snapshot import (
     GitSourceSnapshot,
     capture_git_source_snapshot,
     materialize_git_source_snapshot,
-    immutable_git_environment,
     read_git_commit_epoch,
 )
 

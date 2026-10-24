@@ -20,9 +20,10 @@ from molt.file_publication import (
     resolve_owned_path,
 )
 from molt.portable_paths import portable_path_identity, portable_relative_path
-from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+from molt.process_environment import ProcessEnvironment
 from molt.compiler_distribution import verify_source_inventory
 from molt.toolchain_identity import capture_stable_regular_file
+from tools import git_identity
 from tools.git_identity import read_git_blob_batch, require_git_object_id
 from tools.command_execution import CommandExecutor
 
@@ -99,15 +100,6 @@ def run_git_source_python(
         encoding="utf-8",
         timeout=timeout,
     )
-
-
-def immutable_git_environment(
-    environment: Mapping[str, str],
-) -> ProcessEnvironmentBuilder:
-    """A recorded object ID always denotes its original immutable Git object."""
-    env = ProcessEnvironmentBuilder(environment)
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
-    return env
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +202,7 @@ def _run_git_text(
         completed = _COMMANDS.run(
             [str(git), *arguments],
             cwd=repo_root,
-            env=ProcessEnvironment(immutable_git_environment(environment)),
+            env=ProcessEnvironment(git_identity.immutable_git_environment(environment)),
             check=True,
             capture_output=True,
             timeout=_CAPTURE_TIMEOUT_SECONDS,
@@ -267,7 +259,7 @@ def _map_git_blobs(
         _COMMANDS.run(
             [str(git), "cat-file", "--batch"],
             cwd=repo_root,
-            env=ProcessEnvironment(immutable_git_environment(environment)),
+            env=ProcessEnvironment(git_identity.immutable_git_environment(environment)),
             input=request,
             capture_output=True,
             stdout_capture_path=spool,
@@ -458,7 +450,7 @@ def _capture_git_tree_files(
         listing = _COMMANDS.run(
             command,
             cwd=repo_root,
-            env=ProcessEnvironment(immutable_git_environment(environment)),
+            env=ProcessEnvironment(git_identity.immutable_git_environment(environment)),
             check=True,
             capture_output=True,
             timeout=_CAPTURE_TIMEOUT_SECONDS,

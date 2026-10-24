@@ -4,8 +4,8 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-version = 7
-content_sha256 = "f217f35ed62131965a3455e26010b8501101c5e5263cb0a242fe32f282258655"
+version = 8
+content_sha256 = "d7a9c1d53f5e2625b328e11b0e66d645a1a58e85132e2700e916cce71cf61ed3"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -146,9 +146,9 @@ reason = "captures executable bytes and metadata before samples; identities are 
 path = "tools/sample_profile.py"
 reason = "diagnostic self-time profiles"
 
-[[mechanics]]
+[[methodology]]
 path = "tools/git_identity.py"
-reason = "validates object ids"
+role = "admits original Git objects and ancestry for source/performance provenance"
 
 [[mechanics]]
 path = "src/molt/backend_binary_identity.py"

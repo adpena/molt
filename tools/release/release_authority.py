@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import sys
 import hashlib
@@ -37,7 +39,11 @@ from molt.toolchain_identity import snapshot_stable_regular_file  # noqa: E402
 from molt.verified_subset import capture_verified_subset_policy  # noqa: E402
 from molt.release_lanes import ReleaseLane, capture_release_lanes  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.git_identity import clean_checkout_status_arguments, require_git_object_id  # noqa: E402
+from tools.git_identity import (  # noqa: E402
+    clean_checkout_status_arguments,
+    immutable_git_environment,
+    require_git_object_id,
+)
 
 from tools.release.build_bundle import build_bundle  # noqa: E402
 from tools.release.compiler_payload import (  # noqa: E402
@@ -255,6 +261,7 @@ def consumer_python_policy(
 def _git(*args: str) -> str:
     result = _COMMANDS.run(
         ["git", *args],
+        env=immutable_git_environment(os.environ),
         cwd=ROOT,
         check=True,
         capture_output=True,
