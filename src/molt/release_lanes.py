@@ -83,6 +83,25 @@ class ReleaseLaneInventory:
     semantic_policy: VerifiedSubsetPolicy
     identities: tuple[StableRegularFileIdentity, ...]
 
+    def require_selection(
+        self, lanes: tuple[ReleaseLane, ...] | None = None
+    ) -> tuple[ReleaseLane, ...]:
+        """Admit declared lanes in policy order; omission means the full matrix."""
+        if lanes is None:
+            return self.lanes
+        if (
+            not isinstance(lanes, tuple)
+            or not lanes
+            or any(not isinstance(lane, ReleaseLane) for lane in lanes)
+            or len(set(lanes)) != len(lanes)
+            or any(lane not in self.lanes for lane in lanes)
+        ):
+            raise ValueError(
+                "release lane selection must be nonempty, unique and declared"
+            )
+        selected = frozenset(lanes)
+        return tuple(lane for lane in self.lanes if lane in selected)
+
     def select(self, *, backend: str, runtime_profile: str) -> ReleaseLane:
         matches = tuple(
             lane

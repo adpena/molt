@@ -40,9 +40,10 @@ from tests.tools.test_release_supply_chain import (
 _TAG = "manylinux_2_39_x86_64"
 
 
+@pytest.mark.parametrize("component", [False, True])
 @pytest.mark.parametrize("outcome", ["success", "failed-admission", "rival"])
 def test_runtime_inventory_publication_is_one_exclusive_commit(
-    tmp_path, monkeypatch, outcome
+    tmp_path, monkeypatch, outcome, component
 ):
     from tools.release import runtime_cells
     from molt import verified_subset
@@ -55,8 +56,10 @@ def test_runtime_inventory_publication_is_one_exclusive_commit(
     output = tmp_path / "runtime"
     staged = []
     inventory = {"cells": ["fixture-generation"]}
+    requests = (runtime_cells.declared_runtime_cells()[0],) if component else None
 
     def populate(_repo, stage, **_kwargs):
+        assert _kwargs["requests"] == requests
         assert stage.is_absolute() and stage != output
         assert not output.exists()
         staged.append(stage)
@@ -78,7 +81,12 @@ def test_runtime_inventory_publication_is_one_exclusive_commit(
 
     def produce():
         return runtime_cells.produce_runtime_cells(
-            tmp_path, output, source_sha="a" * 40, platform="linux", arch="x86_64"
+            tmp_path,
+            output,
+            source_sha="a" * 40,
+            platform="linux",
+            arch="x86_64",
+            requests=requests,
         )
 
     if outcome == "failed-admission":
@@ -100,6 +108,213 @@ def test_runtime_inventory_publication_is_one_exclusive_commit(
             == inventory
         )
     assert not staged[0].parent.exists()
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "all",
+        "one",
+        "empty",
+        "duplicate",
+        "unknown",
+        "field-type",
+        "snapshot-policy",
+        "wrong-output",
+    ],
+)
+def test_runtime_component_selection_uses_pinned_policy_before_production(
+    tmp_path, monkeypatch, selection
+):
+    """Exercise the real selection/production/publication flow, without Cargo.
+
+    Artifact receipt validation is a separate boundary; this test observes
+    exactly which producer requests and source checks the transaction executes.
+    """
+    from types import SimpleNamespace
+    from molt import compiler_distribution, verified_subset
+    from molt.cli import installed_runtime, runtime_build_identity
+    from tools.release import compiler_payload, git_source_snapshot, runtime_cells
+
+    for name in runtime_cells.POLICY_OVERRIDE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        verified_subset, "current_host_coordinate", lambda: ("linux", "x86_64")
+    )
+    declared = runtime_cells.declared_runtime_cells()
+    assert len(declared) == 70
+    chosen = next(
+        row
+        for row in declared
+        if row.kind == compiler_distribution.NATIVE_RUNTIME_CELL
+        and row.runtime_profile == "dev-fast"
+        and row.stdlib_profile == "full"
+        and not row.extra_runtime_features
+    )
+    requests = {
+        "all": None,
+        "one": (chosen,),
+        "empty": (),
+        "duplicate": (chosen, chosen),
+        "unknown": (replace(chosen, freestanding=True),),
+        "field-type": (replace(chosen, freestanding=0),),
+        "snapshot-policy": (chosen,),
+        "wrong-output": (chosen,),
+    }[selection]
+    pinned = tmp_path / "pinned-source"
+    pinned.mkdir()
+    snapshot = SimpleNamespace(
+        files=(), object_format="sha1", source_sha="a" * 40, tree_sha="b" * 40
+    )
+    monkeypatch.setattr(compiler_payload, "source_snapshot", lambda *_: snapshot)
+    monkeypatch.setattr(
+        git_source_snapshot, "materialize_git_source_snapshot", lambda *_a, **_k: pinned
+    )
+    policy_reads = []
+
+    def policy(root):
+        policy_reads.append(root)
+        assert root == pinned
+        return (
+            tuple(row for row in declared if row != chosen)
+            if selection == "snapshot-policy"
+            else declared
+        )
+
+    monkeypatch.setattr(runtime_cells, "declared_runtime_cells", policy)
+    produced = []
+
+    def producer(request, source_root, output, timeout):
+        assert source_root == pinned and timeout == 17
+        produced.append(request)
+        actual = declared[0] if selection == "wrong-output" else request
+        return {
+            "id": str(len(produced)),
+            "kind": actual.kind,
+            "key": runtime_cells.runtime_cell_key(actual),
+        }
+
+    monkeypatch.setattr(runtime_cells, "_produce_native", producer)
+    monkeypatch.setattr(runtime_cells, "_produce_wasm", producer)
+    monkeypatch.setattr(
+        installed_runtime,
+        "admit_runtime_cell_receipts",
+        lambda cell, _path: [cell["id"]],
+    )
+    verified = []
+    monkeypatch.setattr(
+        runtime_build_identity,
+        "verify_runtime_source_identities",
+        lambda root, identities: verified.append((root, identities)),
+    )
+    monkeypatch.setattr(
+        compiler_distribution,
+        "verify_source_inventory",
+        lambda root, records: verified.append((root, records)),
+    )
+    monkeypatch.setattr(
+        compiler_distribution,
+        "validate_runtime_inventory",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(compiler_distribution, "verify_runtime_tree", lambda *_: None)
+    output = tmp_path / "runtime"
+
+    def run():
+        return runtime_cells.produce_runtime_cells(
+            tmp_path,
+            output,
+            source_sha="a" * 40,
+            platform="linux",
+            arch="x86_64",
+            cargo_timeout=17,
+            requests=requests,
+        )
+
+    errors = {
+        "empty": "nonempty tuple",
+        "duplicate": "duplicate component",
+        "unknown": "outside the pinned release policy",
+        "field-type": "invalid field types",
+        "snapshot-policy": "outside the pinned release policy",
+        "wrong-output": "produced runtime cells differ",
+    }
+    if selection in errors:
+        with pytest.raises(ValueError, match=errors[selection]):
+            run()
+        assert not output.exists()
+        assert produced == ([chosen] if selection == "wrong-output" else [])
+    else:
+        inventory = run()
+        assert produced == (list(declared) if selection == "all" else [chosen])
+        assert len(inventory["cells"]) == (70 if selection == "all" else 1)
+        assert verified == [
+            (pinned, [str(i) for i in range(1, len(produced) + 1)]),
+            (pinned, []),
+        ]
+        assert (
+            json.loads(
+                (output / runtime_cells.INVENTORY_NAME).read_text(encoding="utf-8")
+            )
+            == inventory
+        )
+    assert policy_reads == [pinned]
+    assert not list(tmp_path.glob(".runtime-cells-*"))
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "default",
+        "component",
+        "unknown-field",
+        "missing-field",
+        "empty",
+        "duplicate-key",
+    ],
+)
+def test_runtime_component_cli_reads_exact_request_records(tmp_path, monkeypatch, mode):
+    from dataclasses import asdict
+    from tools.release import runtime_cells
+
+    for name in runtime_cells.POLICY_OVERRIDE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    request = runtime_cells.declared_runtime_cells()[0]
+    record = asdict(request)
+    if mode == "unknown-field":
+        record["extra"] = True
+    elif mode == "missing-field":
+        del record["freestanding"]
+    path = tmp_path / "requests.json"
+    content = json.dumps([] if mode == "empty" else [record])
+    if mode == "duplicate-key":
+        content = content.replace('"kind":', '"kind": "discarded", "kind":')
+    path.write_text(content, encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        runtime_cells,
+        "produce_runtime_cells",
+        lambda *_a, **kwargs: calls.append(kwargs) or {"cells": []},
+    )
+    args = [
+        "--output",
+        str(tmp_path / "runtime"),
+        "--source-sha",
+        "a" * 40,
+        "--platform",
+        "linux",
+        "--arch",
+        "x86_64",
+    ]
+    if mode != "default":
+        args += ["--component-requests", str(path)]
+    if mode in {"default", "component"}:
+        assert runtime_cells.main(args) == 0
+        assert calls[0]["requests"] == (None if mode == "default" else (request,))
+    else:
+        with pytest.raises(ValueError):
+            runtime_cells.main(args)
+        assert calls == []
 
 
 def test_runtime_cell_staging_never_removes_a_sibling_producers_tree(tmp_path):
@@ -499,7 +714,6 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
         )
         for target in ("native", "wasm")
     )
-    monkeypatch.setattr(verify_consumer, "consumer_lanes", lambda: lanes)
     root, project = tmp_path / "installation", tmp_path / "project"
     root.mkdir()
     project.mkdir()
@@ -706,6 +920,7 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
         role_prefix="" if portable_bundle else "pip_",
         python=python,
         portable_bundle=portable_bundle,
+        selected_lanes=lanes,
         compilation_evidence=evidence,
         archive_cache=tmp_path / "archives",
         supervisor=tmp_path / "supervisor",
@@ -776,6 +991,9 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
         "cold-receipt",
         "cold-command",
         "cold-raw-stdout",
+        "wrong-cold-tier",
+        "wrong-warm-tier",
+        "invalid-tier",
     ],
 )
 def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
@@ -791,7 +1009,6 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
     lane = next(
         lane for lane in release_authority.consumer_lanes() if lane.target == "wasm"
     )
-    monkeypatch.setattr(release_authority, "consumer_lanes", lambda: (lane,))
     root = tmp_path / "compilation-evidence/bundle-3.12"
     retained = root / "outputs" / lane.id
     retained.mkdir(parents=True)
@@ -799,6 +1016,7 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
     files = [{"path": "compiler-source", "size": 1, "sha256": "a" * 64}]
     installed = SimpleNamespace(
         source_sha="a" * 40,
+        source_root=release_authority.ROOT,
         record=record,
         launcher={"path": "bin/molt"},
         wasm_facts={"path": "bin/facts"},
@@ -841,6 +1059,7 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         "cells": [
             {
                 "lane": lane.as_record(),
+                "runtime_cell": {"key": {"stdlib_profile": "micro"}},
                 "outputs": {
                     "artifact": {"path": "program.wasm", "size": 7, "sha256": "c" * 64},
                     "command": command,
@@ -911,6 +1130,10 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         cold_receipt.write_text(
             json.dumps({"identity_sha256": "e" * 64}), encoding="utf-8"
         )
+    if defect == "wrong-cold-tier":
+        cold_cell["runtime_cell"]["key"]["stdlib_profile"] = "full"
+    elif defect == "wrong-warm-tier":
+        compilation["cells"][0]["runtime_cell"]["key"]["stdlib_profile"] = "full"
     cold_path.write_text(json.dumps(cold), encoding="utf-8")
     path = root / "compilation.json"
     path.write_text(json.dumps(compilation), encoding="utf-8")
@@ -1005,10 +1228,15 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         launcher=["/installed/bin/molt"],
         controller_python=Path("/python"),
         owner="bundle",
+        selected_lanes=(lane,),
+        selected_stdlib_profile="micro" if defect != "invalid-tier" else ["micro"],
         supervisor=tmp_path / "supervisor",
     )
     if defect:
         expected_errors = {
+            "wrong-cold-tier": "installed compilation used another runtime stdlib profile",
+            "wrong-warm-tier": "installed compilation used another runtime stdlib profile",
+            "invalid-tier": "installed compilation runtime stdlib profile is invalid",
             "candidate-runtime": "retained compilation installed inputs differ from the release candidate",
             "candidate-source": "retained compilation installed inputs differ from the release candidate",
             "python-image": "emitted artifact changed before its standalone replay",
@@ -1032,8 +1260,11 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
             "candidate-source",
             "python-image",
             "reference",
+            "invalid-tier",
         }:
             assert [row["evidence"] for row in replays] == [root, cold_root]
+        else:
+            assert replays == []
     else:
         consumer_replay.validate_installed_compilation(reference, **kwargs)
         assert [row["evidence"] for row in replays] == [root, cold_root]

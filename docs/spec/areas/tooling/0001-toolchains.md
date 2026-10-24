@@ -1260,6 +1260,32 @@ their older internal shapes together; selected profile observations alone still
 do not establish authenticated compiler/cache origin or used-byte performance
 evidence. Those stronger release requirements remain separately enforced.
 
+Development can qualify an explicit component before the complete campaign.
+`tools/release/runtime_cells.py --component-requests FILE` admits a nonempty,
+unique list of declared physical requests against the pinned source snapshot;
+omitting it still produces the complete derived inventory. The existing candidate
+assembler requires two independent native builds and two independent runtime
+inventories, including for component work. Inventories describe the products
+actually delivered and do not themselves establish full matrix coverage.
+
+`tools/release/verify_consumer.py` accepts the co-required `--component-python`,
+repeatable `--component-lane` and `--component-stdlib-profile` selections. Values
+come from the same source authorities as full qualification. It performs bundle
+and platform-wheel installation, authenticated cold/warm compilation and sealed
+post-uninstall execution for those lanes. Both compilation phases must use the
+selected runtime stdlib tier. The resulting
+`consumer-component-verification.json` uses a distinct component schema, records
+its exact scope and cannot replace `consumer-verification.json` or grant release
+acceptance. Omitting component options still requires every declared coordinate.
+Selection adds no checks or allocations to emitted programs.
+
+This follows explicit selection and honest reporting in
+[LLVM lit](https://llvm.org/docs/CommandGuide/lit.html) and
+[Cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html): a selected
+component result has its own scope, while the required release matrix remains
+unchanged. The same producer, installed caller and evidence receiver own both
+scopes; there is no second executor or proof registry.
+
 The compiler production feature tuple includes `llvm` and retains the base
 `llvm22-1` pin alongside `inkwell/llvm22-1-force-static`. Source and release builds
 share one selected-SDK admission: `llvm-config`, selected headers and the complete

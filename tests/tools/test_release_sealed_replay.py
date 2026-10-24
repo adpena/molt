@@ -1550,6 +1550,124 @@ def test_replay_keeps_all_logical_lane_products_distinct():
 
 
 @pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "selection-order",
+        "empty-selection",
+        "duplicate-selection",
+        "foreign-selection",
+        "untyped-selection",
+        "missing-cell",
+        "foreign-cell",
+        "duplicate-cell",
+        "cell-order",
+        "default-full",
+    ],
+)
+def test_replay_explicit_selection_requires_its_exact_logical_products(mutation):
+    from tests.release_lane_fixtures import EXPECTED_LANES, LANE_FIELDS
+    from molt.release_lanes import ReleaseLane
+
+    records = [dict(zip(LANE_FIELDS, EXPECTED_LANES[i], strict=True)) for i in (0, 4)]
+    lanes = tuple(ReleaseLane(**record) for record in records)
+    selection = lanes
+    cells = [{"lane": record, "artifact": {}, "manifest": None} for record in records]
+    pip = {"python": "3.12", "cells": copy.deepcopy(cells)}
+    if mutation == "selection-order":
+        selection = tuple(reversed(lanes))
+    elif mutation == "empty-selection":
+        selection = ()
+    elif mutation == "duplicate-selection":
+        selection = (lanes[0], lanes[0])
+    elif mutation == "foreign-selection":
+        selection = (ReleaseLane(**{**records[0], "backend": "foreign"}),)
+    elif mutation == "untyped-selection":
+        selection = list(lanes)
+    elif mutation == "missing-cell":
+        cells.pop()
+    elif mutation == "foreign-cell":
+        cells[1]["lane"] = dict(zip(LANE_FIELDS, EXPECTED_LANES[8], strict=True))
+    elif mutation == "duplicate-cell":
+        cells[1] = copy.deepcopy(cells[0])
+    elif mutation == "cell-order":
+        cells.reverse()
+    elif mutation == "default-full":
+        selection = None
+    kwargs = dict(selected_lanes=selection)
+    proofs = [{"python": "3.12", "cells": cells}]
+    if mutation not in {None, "selection-order"}:
+        with pytest.raises(ValueError, match="release lane selection|consumer replay"):
+            consumer_replay.expected_runs(proofs, pip, **kwargs)
+        return
+    rows = consumer_replay.expected_runs(proofs, pip, **kwargs)
+    assert [row["lane"] for row in rows] == records * 2
+    assert [row["owner"] for row in rows] == ["bundle", "bundle", "pip", "pip"]
+    assert len({row["id"] for row in rows}) == 4
+
+
+@pytest.mark.parametrize(
+    "entrypoint", ["prepare", "validate", "installed", "installed-stdlib"]
+)
+def test_replay_selection_refuses_before_evidence_or_provider_access(
+    tmp_path, monkeypatch, entrypoint
+):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("invalid lane selection reached an evidence/provider consumer")
+
+    monkeypatch.setattr(execution_root, "archive_inputs", forbidden)
+    monkeypatch.setattr(consumer_replay, "_artifact_json", forbidden)
+    evidence = tmp_path / "evidence"
+    common = dict(candidate={"target": {"platform": "linux", "arch": "x86_64"}})
+    selection = (
+        {"selected_stdlib_profile": "auto"}
+        if entrypoint == "installed-stdlib"
+        else {"selected_lanes": ()}
+    )
+    with pytest.raises(
+        ValueError, match="release lane selection|runtime stdlib profile"
+    ):
+        if entrypoint == "prepare":
+            consumer_replay.prepare(
+                **common,
+                evidence=evidence,
+                proofs=[],
+                pip_proof={},
+                bundle_source=tmp_path,
+                archive_cache=tmp_path,
+                supervisor=tmp_path / "supervisor",
+                generation={},
+                argv=(),
+                **selection,
+            )
+        elif entrypoint == "validate":
+            consumer_replay.validate(
+                {},
+                **common,
+                evidence_root=evidence,
+                proofs=[],
+                pip_proof={},
+                supervisor=tmp_path / "supervisor",
+                argv=(),
+                expected_stdout="",
+                **selection,
+            )
+        else:
+            consumer_replay.validate_installed_compilation(
+                {},
+                **common,
+                evidence_root=evidence,
+                proof={},
+                launcher=[],
+                controller_python=tmp_path / "python",
+                owner="bundle",
+                supervisor=tmp_path / "supervisor",
+                **selection,
+            )
+    assert not evidence.exists()
+
+
+@pytest.mark.parametrize(
     "mutation", ["duplicate", "llvm-target", "unsupported-profile", "extra-field"]
 )
 def test_replay_refuses_aliases_or_relabelled_logical_products(mutation):
@@ -1583,21 +1701,25 @@ def test_replay_refuses_aliases_or_relabelled_logical_products(mutation):
 def test_replay_stages_only_bounded_compact_supervisor_policy(
     tmp_path, monkeypatch, oversize
 ):
-    # File staging and sealing are real. The selected row and payload providers
-    # are fixture inputs; no ELF, compiler, or container claim is made here.
+    # Selection, file staging and sealing are real. Payload providers are
+    # fixture inputs; no ELF, compiler, or container claim is made here.
+    from tests.release_lane_fixtures import EXPECTED_LANES, LANE_FIELDS
+    from molt.release_lanes import ReleaseLane
+
+    lane_record = dict(zip(LANE_FIELDS, EXPECTED_LANES[0], strict=True))
+    lane = ReleaseLane(**lane_record)
     program = tmp_path / "program"
     program.write_bytes(b"fixture program, not executed")
     supervisor = tmp_path / "supervisor"
     supervisor.write_bytes(b"fixture supervisor, not executed")
-    row = {
-        "id": "fixture-native",
-        "lane": {"target": "native"},
+    cell = {
+        "lane": lane_record,
         "artifact": {"path": str(program), **execution_root.file_identity(program)},
+        "manifest": None,
     }
     monkeypatch.setattr(execution_root, "archive_inputs", lambda **_: [])
     monkeypatch.setattr(execution_root, "support_payloads", lambda *_, **__: ({}, []))
     monkeypatch.setattr(consumer_replay, "wasm_loader_asset_payloads", lambda *_: {})
-    monkeypatch.setattr(consumer_replay, "expected_runs", lambda *_: [row])
     closure_calls = []
 
     def audit_closure(*args, **kwargs):
@@ -1618,8 +1740,8 @@ def test_replay_stages_only_bounded_compact_supervisor_policy(
             "source_sha": "fixture",
             "target": {"platform": "linux", "arch": "x86_64"},
         },
-        proofs=[],
-        pip_proof={},
+        proofs=[{"python": "3.12", "cells": [cell]}],
+        pip_proof={"python": "3.12", "cells": [copy.deepcopy(cell)]},
         bundle_source=tmp_path,
         archive_cache=tmp_path,
         supervisor=supervisor,
@@ -1630,8 +1752,10 @@ def test_replay_stages_only_bounded_compact_supervisor_policy(
             }
         },
         argv=('é\n\\"',),
+        selected_lanes=(lane,),
     )
-    policy_path = evidence / "rootfs/policies/fixture-native.json"
+    product_id = "bundle-3.12-native-native-dev-dev-fast-release"
+    policy_path = evidence / f"rootfs/policies/{product_id}.json"
     if oversize:
         with pytest.raises(ValueError, match="nonce_utf8_bytes"):
             consumer_replay.prepare(**kwargs)
@@ -1645,13 +1769,13 @@ def test_replay_stages_only_bounded_compact_supervisor_policy(
         "nonce": nonce,
         "mode": "leaf",
         "cwd": "/app",
-        "command": ["/app/fixture-native/program", *kwargs["argv"]],
+        "command": [f"/app/{product_id}/program", *kwargs["argv"]],
         "environment": dict(consumer_replay.ENVIRONMENT),
         "root_role": "guest",
         "fixed_images": [
             {
                 "role": "guest",
-                "path": "/app/fixture-native/program",
+                "path": f"/app/{product_id}/program",
                 "sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                 "root_exit_disposition": "require-exit",
             }
@@ -1666,10 +1790,14 @@ def test_replay_stages_only_bounded_compact_supervisor_policy(
     retained = next(
         item
         for item in replay["root"]["files"]
-        if item["path"] == "policies/fixture-native.json"
+        if item["path"] == f"policies/{product_id}.json"
     )
     assert retained["size"] == len(expected_raw)
     assert retained["sha256"] == hashlib.sha256(expected_raw).hexdigest()
+    assert {row["id"] for row in replay["runs"]} == {
+        product_id,
+        "pip-3.12-native-native-dev-dev-fast-release",
+    }
     assert len(closure_calls) == 1
     execution_root.validate_sealed_tar(
         evidence / "rootfs.tar",

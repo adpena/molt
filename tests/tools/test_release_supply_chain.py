@@ -1273,7 +1273,9 @@ def release_inputs(
     )
 
 
-def _consumer_transport_receipt(candidate):
+def _consumer_transport_receipt(
+    candidate, *, python_minor=None, lane_values=EXPECTED_LANES
+):
     """Independent literal command oracle; never compiler execution evidence."""
     windows = candidate["target"]["platform"] == "windows"
     root = "C:/consumer" if windows else "/consumer"
@@ -1284,6 +1286,11 @@ def _consumer_transport_receipt(candidate):
     suffix = ".exe" if windows else ""
     policy_bytes = (ROOT / "config/verified_subset.toml").read_bytes()
     references = tomllib.loads(policy_bytes.decode("utf-8"))["reference_cpython"]
+
+    if python_minor is not None:
+        references = [
+            r for r in references if ".".join(r.split(".")[:2]) == python_minor
+        ]
 
     def command(role, argv, stdout=""):
         return {
@@ -1329,7 +1336,7 @@ def _consumer_transport_receipt(candidate):
             command("worker_help", [f"{worker_bin}/{worker}", "--help"]),
         ]
         cells = []
-        for values in EXPECTED_LANES:
+        for values in lane_values:
             backend, target, profile, _runtime, _compiler = values
             lane_id = "-".join(values)
             cell = f"{project}/{lane_id}"
@@ -1487,7 +1494,7 @@ def _consumer_transport_receipt(candidate):
             "pip_uninstall", ["uv", "pip", "uninstall", "--python", pip_python, "molt"]
         ),
     ]
-    count = (len(references) + 1) * 11
+    count = (len(references) + 1) * len(lane_values)
     return {
         "schema": "molt.release-consumer-proof.v11",
         "candidate": "candidate.json",
@@ -1523,7 +1530,7 @@ def _consumer_transport_receipt(candidate):
             "wasm_facts_sha256": candidate["wasm_facts"]["sha256"],
         },
         "guest_cells": [
-            dict(zip(LANE_FIELDS, values, strict=True)) for values in EXPECTED_LANES
+            dict(zip(LANE_FIELDS, values, strict=True)) for values in lane_values
         ],
         "expected_stdout": guest_stdout,
         "python_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
@@ -2802,3 +2809,121 @@ def test_consumer_archive_candidate_is_the_admitted_object(release_inputs):
             candidate=different,
             supervisor=Path("/fixture-supervisor"),
         )
+
+
+@pytest.mark.parametrize("indices", [(0,), (8,), (0, 8)])
+def test_component_scope_retains_transport_closure_but_never_release_acceptance(
+    release_inputs, indices
+):
+    # Reuse the independent literal command oracle and retained transport bytes.
+    # Native supervisor execution remains the explicitly mocked fixture boundary.
+    candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
+    candidate = release_authority._load_candidate(candidate_dir / "candidate.json")
+    lane_values = tuple(EXPECTED_LANES[index] for index in indices)
+    lanes = tuple(release_authority.consumer_lanes()[index] for index in indices)
+    component = release_authority.ConsumerComponent("3.12", lanes, "micro")
+    payload = _consumer_transport_receipt(
+        candidate, python_minor="3.12", lane_values=lane_values
+    )
+    payload.update(
+        schema="molt.release-consumer-component-proof.v1",
+        scope={
+            "python": "3.12",
+            "lanes": [dict(zip(LANE_FIELDS, row, strict=True)) for row in lane_values],
+            "stdlib_profile": "micro",
+        },
+    )
+    kwargs = dict(evidence_root=candidate_dir, supervisor=Path("/fixture-supervisor"))
+    release_authority.validate_component_consumer_proof(
+        payload, candidate, component=component, **kwargs
+    )
+    # Exercise the actual candidate release consumer, not only the helper.
+    release_model.write_json(candidate_dir / "consumer-verification.json", payload)
+    with pytest.raises(ValueError, match="release consumer proof header is invalid"):
+        release_authority._admit_candidate(
+            candidate,
+            candidate_dir,
+            version=release_inputs["version"],
+            source_sha=release_inputs["source_sha"],
+            source_date_epoch=release_inputs["source_date_epoch"],
+            wheel_record=candidate["wheel"],
+            supervisor=kwargs["supervisor"],
+        )
+    # A genuine focused receipt cannot grant full acceptance, even if relabelled.
+    for promote in (False, True):
+        invalid = copy.deepcopy(payload)
+        if promote:
+            invalid["schema"] = "molt.release-consumer-proof.v11"
+            invalid.pop("scope")
+        with pytest.raises(ValueError):
+            release_authority.validate_consumer_proof(invalid, candidate, **kwargs)
+    for mutate in (
+        lambda p: p["scope"].update(python="3.13"),
+        lambda p: p["scope"].update(stdlib_profile="full"),
+        lambda p: p["python_proofs"].clear(),
+        lambda p: p["python_proofs"][0]["cells"].clear(),
+        lambda p: p["pip_proof"]["commands"].pop(2),
+        lambda p: p["python_proofs"][0]["commands"].__setitem__(
+            4, p["python_proofs"][0]["commands"][-1]
+        ),
+    ):
+        invalid = copy.deepcopy(payload)
+        mutate(invalid)
+        with pytest.raises(ValueError):
+            release_authority.validate_component_consumer_proof(
+                invalid, candidate, component=component, **kwargs
+            )
+
+
+@pytest.mark.parametrize(
+    "selection", ["native", "wasm", "duplicate", "partial", "unknown-python"]
+)
+def test_component_consumer_cli_dispatch_is_explicit_and_source_derived(
+    monkeypatch, tmp_path, selection
+):
+    import sys
+
+    lanes = release_authority.consumer_lanes()
+    lane = (
+        next(lane for lane in lanes if lane.backend == selection)
+        if selection in {"native", "wasm"}
+        else lanes[0]
+    )
+    args = [
+        "verify_consumer",
+        "--candidate",
+        str(tmp_path),
+        "--receipt",
+        str(tmp_path / "consumer-component-verification.json"),
+        "--execution-archive-cache",
+        str(tmp_path / "archives"),
+        "--compile-memory-max-bytes",
+        "1073741824",
+        "--compile-workspace-max-bytes",
+        "1073741824",
+        "--compile-runtime-max-seconds",
+        "60",
+        "--component-python",
+        "9.9" if selection == "unknown-python" else "3.12",
+        "--component-lane",
+        lane.id,
+    ]
+    if selection != "partial":
+        args += ["--component-stdlib-profile", "micro"]
+    if selection == "duplicate":
+        args += ["--component-lane", lane.id]
+    monkeypatch.setattr(sys, "argv", args)
+    calls = []
+    monkeypatch.setattr(
+        verify_consumer, "verify", lambda *a, **kw: calls.append((a, kw)) or {}
+    )
+    if selection in {"native", "wasm"}:
+        verify_consumer.main()
+        assert len(calls) == 1
+        assert calls[0][1]["component"] == release_authority.ConsumerComponent(
+            "3.12", (lane,), "micro"
+        )
+    else:
+        with pytest.raises(SystemExit) as error:
+            verify_consumer.main()
+        assert error.value.code == 2 and calls == []
