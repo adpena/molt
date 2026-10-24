@@ -226,6 +226,32 @@ def _run_git_text(
     return output[:-1].decode("utf-8", errors="strict")
 
 
+def read_git_commit_epoch(
+    repo_root: Path,
+    source_sha: str,
+    *,
+    git: Path,
+    environment: Mapping[str, str],
+) -> int:
+    """Read the original exact commit's positive timestamp, never HEAD's clock."""
+    source_sha = require_git_object_id(source_sha, label="release epoch source")
+    record = _run_git_text(
+        git, repo_root, environment, "show", "-s", "--format=%H%n%ct", source_sha, "--"
+    )
+    commit, separator, timestamp = record.partition("\n")
+    if (
+        commit != source_sha
+        or not separator
+        or not timestamp.isascii()
+        or not timestamp.isdecimal()
+        or timestamp.startswith("0")
+    ):
+        raise ValueError(
+            "release epoch requires an exact commit and positive timestamp"
+        )
+    return int(timestamp)
+
+
 def _map_git_blobs(
     git: Path,
     repo_root: Path,

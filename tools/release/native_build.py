@@ -73,7 +73,11 @@ from molt.toolchain_identity import (  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.git_identity import require_git_object_id  # noqa: E402
 
-from tools.release.compiler_payload import source_environment, source_snapshot  # noqa: E402
+from tools.release.compiler_payload import (  # noqa: E402
+    reproducible_build_environment,
+    source_environment,
+    source_snapshot,
+)
 from tools.release.git_source_snapshot import (  # noqa: E402
     GitSourceSnapshot,
     materialize_git_source_snapshot,
@@ -576,13 +580,10 @@ def build_environment(
         {
             "CARGO_HOME": str(work / "cargo-home"),
             "CARGO_TARGET_DIR": str(work / "target"),
-            "CARGO_INCREMENTAL": "0",
             "RUSTUP_TOOLCHAIN": channel,
-            "SOURCE_DATE_EPOCH": str(epoch),
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
-            "LC_ALL": "C",
-            "TZ": "UTC",
+            **reproducible_build_environment(epoch),
         }
     )
     # Cargo searches the build cwd, not --manifest-path's ancestors. The private

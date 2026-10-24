@@ -1302,6 +1302,14 @@ contracts constitutes actual six-host execution or release acceptance.
 
 ## Runtime compilation and publication identity
 
+Published compiler and runtime products use one reproducible-build environment:
+nonincremental Cargo emission, the exact requested source commit timestamp for
+`SOURCE_DATE_EPOCH`, and fixed locale/timezone. This policy belongs to release
+production and restores ambient values after its owned lifetime; it does not
+disable incremental development or user-code compilation. Runtime production
+derives the epoch from the immutable requested commit, never ambient wall time
+or a moving `HEAD`.
+
 Runtime archives preserve their declared debugging profile while removing private
 build locations from compiler-generated paths. Rust production flags use the
 shared path-remapping authority after Cargo configuration selection; source and

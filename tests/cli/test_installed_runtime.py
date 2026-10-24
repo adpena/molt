@@ -868,8 +868,11 @@ def test_runtime_cell_output_is_bound_before_the_private_cwd(tmp_path, monkeypat
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        compiler_payload, "source_snapshot", lambda *_a: SimpleNamespace(files=())
+        compiler_payload,
+        "source_snapshot",
+        lambda *_a: SimpleNamespace(files=(), source_sha="a" * 40),
     )
+    monkeypatch.setattr(compiler_payload, "source_commit_epoch", lambda *_: 1700000000)
     monkeypatch.setattr(compiler_payload, "source_environment", lambda: {})
     monkeypatch.setattr(
         toolchain_identity, "resolve_executable", lambda *_a, **_k: Path("git")
@@ -2228,7 +2231,7 @@ def test_wasm_release_producer_uses_declared_physical_profile(
     # Only the external compilation boundary is fake. Request/profile selection,
     # artifact state setup, file staging and content-addressed key are real.
     monkeypatch.setattr(runtime_wasm_pair_build, "_ensure_runtime_wasm_both", build)
-    with runtime_cells._isolated_build_environment(work):
+    with runtime_cells._isolated_build_environment(work, epoch=1700000000):
         record = runtime_cells._produce_wasm(
             runtime_cells.RuntimeCellRequest(
                 distribution.WASM_RUNTIME_CELL, profile, "micro"

@@ -31,6 +31,7 @@ from .git_source_snapshot import (
     capture_git_source_snapshot,
     materialize_git_source_snapshot,
     immutable_git_environment,
+    read_git_commit_epoch,
 )
 
 # Harvested from the preserved release-source lane; current config consumers
@@ -114,6 +115,28 @@ def source_environment() -> ProcessEnvironmentBuilder:
         }
     )
     return immutable_git_environment(env)
+
+
+def reproducible_build_environment(epoch: int) -> dict[str, str]:
+    """Release-only Cargo and C metadata policy, shared by native and runtime builds."""
+    if type(epoch) is not int or epoch <= 0:
+        raise ValueError("release source epoch must be a positive integer")
+    return {
+        "CARGO_INCREMENTAL": "0",
+        "SOURCE_DATE_EPOCH": str(epoch),
+        "LC_ALL": "C",
+        "TZ": "UTC",
+    }
+
+
+def source_commit_epoch(repo_root: Path, source_sha: str) -> int:
+    env = source_environment()
+    return read_git_commit_epoch(
+        repo_root,
+        source_sha,
+        git=resolve_executable("git", environment=env, label="release source Git"),
+        environment=env,
+    )
 
 
 def source_snapshot(repo_root: Path, source_sha: str) -> GitSourceSnapshot:

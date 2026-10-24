@@ -121,6 +121,7 @@ def test_runtime_inventory_publication_is_one_exclusive_commit(
         "field-type",
         "snapshot-policy",
         "wrong-output",
+        "producer-failure",
     ],
 )
 def test_runtime_component_selection_uses_pinned_policy_before_production(
@@ -160,13 +161,28 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
         "field-type": (replace(chosen, freestanding=0),),
         "snapshot-policy": (chosen,),
         "wrong-output": (chosen,),
+        "producer-failure": (chosen,),
     }[selection]
+    for name, value in {
+        "CARGO_INCREMENTAL": "1",
+        "SOURCE_DATE_EPOCH": "17",
+        "LC_ALL": "ambient-locale",
+        "TZ": "Pacific/Honolulu",
+    }.items():
+        monkeypatch.setenv(name, value)
     pinned = tmp_path / "pinned-source"
     pinned.mkdir()
     snapshot = SimpleNamespace(
-        files=(), object_format="sha1", source_sha="a" * 40, tree_sha="b" * 40
+        files=(), object_format="sha1", source_sha="c" * 40, tree_sha="b" * 40
     )
     monkeypatch.setattr(compiler_payload, "source_snapshot", lambda *_: snapshot)
+    epoch_queries = []
+
+    def epoch(repo, commit):
+        epoch_queries.append((repo, commit))
+        return 1_700_000_000
+
+    monkeypatch.setattr(compiler_payload, "source_commit_epoch", epoch)
     monkeypatch.setattr(
         git_source_snapshot, "materialize_git_source_snapshot", lambda *_a, **_k: pinned
     )
@@ -188,6 +204,10 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
 
     def producer(request, source_root, output, timeout):
         assert source_root == pinned and timeout == 17
+        assert os.environ["CARGO_INCREMENTAL"] == "0"
+        assert os.environ["SOURCE_DATE_EPOCH"] == "1700000000"
+        assert os.environ["LC_ALL"] == "C"
+        assert os.environ["TZ"] == "UTC"
         # The common Cargo plan owns remapping after flag selection; the
         # release wrapper must not overwrite Cargo's ambient selection first.
         assert os.environ.get("CARGO_ENCODED_RUSTFLAGS") == environment_before.get(
@@ -197,6 +217,8 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
         assert Path(os.environ["CARGO_TARGET_DIR"]) == Path.cwd() / "target"
         assert Path(os.environ["MOLT_BUILD_STATE_DIR"]) == Path.cwd() / "build-state"
         produced.append(request)
+        if selection == "producer-failure":
+            raise ValueError("injected producer failure")
         actual = declared[0] if selection == "wrong-output" else request
         return {
             "id": str(len(produced)),
@@ -248,12 +270,15 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
         "field-type": "invalid field types",
         "snapshot-policy": "outside the pinned release policy",
         "wrong-output": "produced runtime cells differ",
+        "producer-failure": "injected producer failure",
     }
     if selection in errors:
         with pytest.raises(ValueError, match=errors[selection]):
             run()
         assert not output.exists()
-        assert produced == ([chosen] if selection == "wrong-output" else [])
+        assert produced == (
+            [chosen] if selection in {"wrong-output", "producer-failure"} else []
+        )
     else:
         inventory = run()
         assert produced == (list(declared) if selection == "all" else [chosen])
@@ -269,6 +294,7 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
             == inventory
         )
     assert policy_reads == [pinned]
+    assert epoch_queries == [(tmp_path, snapshot.source_sha)]
     assert dict(os.environ) == environment_before
     assert Path.cwd() == cwd_before
     assert not list(tmp_path.glob(".runtime-cells-*"))
