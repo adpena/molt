@@ -943,6 +943,116 @@ def test_execution_context_owns_env_limits_and_batch_kwargs(
     assert callable(kwargs["preexec_fn"])
 
 
+@pytest.mark.parametrize(
+    "route", ["executor", "regular-relative", "tempfiles-relative", "regular-logical"]
+)
+def test_command_executor_materializes_selected_temporary_roots(
+    tmp_path: Path, route: str
+) -> None:
+    from tools.command_execution import CommandExecutor
+
+    cwd = tmp_path / "working"
+    cwd.mkdir()
+    consumer_cwd = tmp_path / "logical" if route == "regular-logical" else cwd
+    if consumer_cwd != cwd:
+        consumer_cwd.mkdir()
+    relative = route != "executor"
+    selected = {
+        name: str(Path("selected temp") / name) if relative else str(tmp_path / name)
+        for name in ("TMPDIR", "TMP", "TEMP")
+    }
+    roots = {name: consumer_cwd / value for name, value in selected.items()}
+    assert not any(path.exists() for path in roots.values())
+    env = {
+        **guard_custody_env(),
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        "MOLT_TARGET_ROOT": str(tmp_path / "tools"),
+        **selected,
+    }
+    child = """import json,os,sys
+assert {name: os.environ[name] for name in ('TMPDIR', 'TMP', 'TEMP')} == json.loads(sys.argv[1])
+if len(sys.argv) > 2:
+    os.chdir(sys.argv[2])
+for name in ('TMPDIR', 'TMP', 'TEMP'):
+    descriptor = os.open(os.path.join(os.environ[name], name),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(name.encode('ascii'))
+"""
+    if route == "executor":
+        run = CommandExecutor.for_file(__file__).run
+        kwargs = {"text": True, "capture_output": True}
+    else:
+        run = (
+            harness_memory_guard.guarded_completed_process_to_tempfiles
+            if route == "tempfiles-relative"
+            else harness_memory_guard.guarded_completed_process
+        )
+        kwargs = {"prefix": "MOLT_TEST"}
+        if route != "tempfiles-relative":
+            kwargs["capture_output"] = True
+        if route == "regular-logical":
+            kwargs["logical_cwd"] = consumer_cwd
+    command = [sys.executable, "-I", "-S", "-c", child, json.dumps(selected)]
+    if consumer_cwd != cwd:
+        command.append(str(consumer_cwd))
+    completed = run(
+        command,
+        cwd=cwd,
+        env=env,
+        timeout=10,
+        **kwargs,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert {name: (path / name).read_bytes() for name, path in roots.items()} == {
+        name: name.encode("ascii") for name in selected
+    }
+    # These are caller-selected roots and files, not guard scratch to reclaim.
+    assert all(path.is_dir() for path in roots.values())
+    if consumer_cwd != cwd:
+        assert not (cwd / "selected temp").exists()
+
+
+def test_selected_temporary_root_error_prevents_child_birth(tmp_path: Path) -> None:
+    blocked = tmp_path / "caller-file"
+    blocked.write_bytes(b"preserve caller data")
+    child_marker = tmp_path / "child-born"
+    state_root = tmp_path / "guard-state"
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_TEST",
+        {
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root),
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+            "MOLT_TARGET_ROOT": str(tmp_path / "tools"),
+            "TMPDIR": str(blocked),
+        },
+    )
+    # Selection remains read-only, including an invalid path unused until run.
+    assert blocked.read_bytes() == b"preserve caller data"
+    with pytest.raises(FileExistsError, match="caller-file") as failure:
+        context.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                "-c",
+                "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b'born')",
+                str(child_marker),
+            ],
+            timeout=10,
+            sampling_scope="owned_tree",
+        )
+    assert not child_marker.exists()
+    assert blocked.read_bytes() == b"preserve caller data"
+    assert any("TMPDIR" in note for note in failure.value.__notes__)
+    [marker] = (state_root / "active").glob("*.json")
+    evidence = json.loads(marker.read_text(encoding="utf-8"))
+    assert evidence["status"] == "guard_exception"
+    assert evidence["exception_type"] == "FileExistsError"
+    assert evidence["child_launch_state"] == "not_started"
+    assert evidence["child_process"] is None
+
+
 def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 

@@ -1129,6 +1129,35 @@ def run_guarded(
         # Register before child birth: an unknown terminal result or raised
         # cleanup failure may outlive this frame and every result reference.
         atexit.register(state_use.close)
+        # Selection is pure: RunContext may publish a new scratch root without
+        # creating it. Native tools use these paths directly, unlike Python's
+        # tempfile fallback. Materialize the actual selections before birth;
+        # they remain caller-owned, outside this guard's scratch reclamation.
+        # A pinned startup worker restores logical_cwd before running tools,
+        # so relative selections follow that consumer directory, as above.
+        working: Path | None = None
+        temporary_roots: dict[Path, str] = {}
+        for name in ("TMPDIR", "TMP", "TEMP"):
+            raw = child_env.get(name)
+            if raw:
+                path = Path(raw)
+                if not path.is_absolute():
+                    if working is None:
+                        selected_cwd = cwd if logical_cwd is None else logical_cwd
+                        working = (
+                            Path.cwd() if selected_cwd is None else Path(selected_cwd)
+                        )
+                        if not working.is_absolute():
+                            working = Path.cwd() / working
+                    path = working / path
+                temporary_roots.setdefault(path, name)
+        for path, name in temporary_roots.items():
+            try:
+                if not path.is_dir():
+                    path.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                error.add_note(f"preparing selected child {name} directory: {path}")
+                raise
         scratch_lease = _temporary_artifacts.acquire_guard_scratch(ROOT, child_env)
         inherited_scratch = child_env.get(_temporary_artifacts.SCRATCH_ENV)
         if (
