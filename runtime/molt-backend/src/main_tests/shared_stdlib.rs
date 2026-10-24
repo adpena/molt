@@ -92,6 +92,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
         None,
+        None,
     )
     .expect("write sidecars");
     assert!(shared_stdlib_cache_matches(
@@ -154,6 +155,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
         None,
+        None,
     )
     .expect("rewrite sidecars");
     std::fs::write(&stdlib_path, b"changed-object").expect("mutate object");
@@ -172,6 +174,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
         None,
     )
     .expect("write matching object sidecars");
@@ -449,6 +452,7 @@ fn shared_stdlib_cache_sidecar_write_failures_propagate() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
         None,
     )
     .expect_err("sidecar writes should fail when parent is not a directory");
@@ -791,7 +795,7 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
     .expect("plan empty stdlib cache");
     assert_eq!(planned.archive_key(), None, "no reuse without a manifest");
     planned
-        .assemble("MOLT_BACKEND(test)", None, |objects| {
+        .assemble("MOLT_BACKEND(test)", None, |objects, _origins| {
             crate::backend_process::write_native_archive_objects(&stdlib, objects)
                 .map(|_unpersisted_content| ())
         })

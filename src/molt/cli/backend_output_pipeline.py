@@ -203,7 +203,8 @@ def _emit_backend_pipeline_outputs(
                 linked=output_layout.linked,
                 require_linked=require_linked,
                 capture_link_inputs=capture_link_inputs,
-                daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
+                emission_origin=prepared_backend_compile.backend_emission_origin,
+                compiler_cache_path=cache_path if cache else None,
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,
                 json_output=json_output,
@@ -294,7 +295,7 @@ def _emit_backend_pipeline_outputs(
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
                     selected_profiles=selected_profiles,
-                    daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
+                    emission_origin=prepared_backend_compile.backend_emission_origin,
                     link_input_observation=prepared_non_native_result.link_input_observation,
                     runtime_lib=None,  # No verified runtime artifact binding for this lane.
                     output=prepared_non_native_result.primary_output,
@@ -437,7 +438,7 @@ def _emit_backend_pipeline_outputs(
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
                     selected_profiles=selected_profiles,
-                    daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
+                    emission_origin=prepared_backend_compile.backend_emission_origin,
                     runtime_lib=None,
                     output=prepared_object_output,
                 )
@@ -477,7 +478,11 @@ def _emit_backend_pipeline_outputs(
             compiled_source_paths=compiled_source_paths,
             bolt_requested=bolt_requested,
             capture_link_inputs=capture_link_inputs,
-            daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
+            emission_origin=prepared_backend_compile.backend_emission_origin,
+            compiler_cache_path=cache_path if cache else None,
+            stdlib_cache_path=prepared_backend_setup.cache_setup.stdlib_cache_entry_path
+            if cache
+            else None,
         )
     )
     if prepared_native_link_error is not None:
@@ -513,7 +518,7 @@ def _emit_backend_pipeline_outputs(
                 )
             )
     return _emit_native_link_result(
-        daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
+        emission_origin=prepared_backend_compile.backend_emission_origin,
         selected_profiles=selected_profiles,
         backend_bin=prepared_backend_runtime_context.backend_bin,
         link_process=prepared_native_link.link_process,

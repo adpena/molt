@@ -3849,6 +3849,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_EMISSION_SCOPE",
+      "output_neutral": false,
+      "owner": "src/molt/cli/backend_compile.py",
+      "summary": "Closed-supervisor policy nonce correlated with optional compiler emission capture; a hint, never admission. Forwarded only for capture and excluded from semantic code-cache keys and emitted runtimes.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "0",
       "kind": "bool",

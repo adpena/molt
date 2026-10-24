@@ -826,6 +826,167 @@ def admit_archive(
     return validate_artifact_record(record, version=candidate["version"])
 
 
+# Bounded, invocation-local projections of the existing retained evidence files.
+# No verified flags or process identities are persisted by a compiler/cache.
+_MAX_EMISSION_SCOPES = 1024
+
+
+def _compilation_scope_sources(
+    evidence: Path, compilation: dict[str, Any]
+) -> dict[str, tuple[Path, Path]]:
+    from molt.backend_protocol import validate_emission_scope
+
+    rootfs = evidence / "rootfs"
+    sources: dict[str, tuple[Path, Path]] = {}
+    cells = {cell["id"]: cell for cell in compilation["cells"]}
+    for cell in cells.values():
+        policy_path = rootfs / cell["policy"]
+        policy = read_exact(
+            policy_path, max_bytes=16 * 1024**2, label="compilation scope policy"
+        )
+        scope = validate_emission_scope(policy["nonce"])
+        if scope is None or scope in sources:
+            raise ValueError("compilation emission scope is absent or repeated")
+        sources[scope] = (policy_path, evidence / "runs" / cell["id"] / "receipt.json")
+    origins = compilation["origins"]
+    if (
+        not isinstance(origins, list)
+        or len(origins) + len(sources) > _MAX_EMISSION_SCOPES
+    ):
+        raise ValueError("retained emission scope inventory exceeds its bound")
+    identities = set()
+    for row in origins:
+        if not isinstance(row, dict) or set(row) != {
+            "scope",
+            "cell",
+            "identity_sha256",
+        }:
+            raise ValueError("retained emission scope reference is not exact")
+        scope = validate_emission_scope(row["scope"])
+        identity = validate_emission_scope(row["identity_sha256"])
+        if (
+            scope is None
+            or identity is None
+            or scope in sources
+            or identity in identities
+            or row["cell"] not in cells
+        ):
+            raise ValueError("retained emission scope is absent, repeated or foreign")
+        identities.add(identity)
+        directory = evidence / "origins" / identity
+        policy_path, receipt_path = (
+            directory / "policy.json",
+            directory / "receipt.json",
+        )
+        policy = read_exact(
+            policy_path, max_bytes=16 * 1024**2, label="original emission policy"
+        )
+        cell = cells[row["cell"]]
+        expected = read_exact(
+            rootfs / cell["policy"],
+            max_bytes=16 * 1024**2,
+            label="current compilation policy template",
+        )
+        expected = {**expected, "nonce": scope}
+        if policy != expected:
+            raise ValueError(
+                "original emission policy differs from admitted process/image coordinate"
+            )
+        config = read_exact(
+            directory / "config.json",
+            max_bytes=1024**2,
+            label="original emission controller configuration",
+        )
+        expected_config = read_exact(
+            rootfs / ("app/compilation-" + cell["id"] + ".json"),
+            max_bytes=1024**2,
+            label="compilation controller template",
+        )
+        expected_config = {
+            **expected_config,
+            "environment": {
+                **expected_config["environment"],
+                "MOLT_EMISSION_SCOPE": scope,
+            },
+        }
+        if config != expected_config:
+            raise ValueError("original emission controller configuration differs")
+        receipt = read_exact(
+            receipt_path,
+            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
+            label="original emission receipt",
+        )
+        if receipt.get("identity_sha256") != identity:
+            raise ValueError(
+                "original emission receipt identity differs from retained reference"
+            )
+        sources[scope] = (policy_path, receipt_path)
+    return sources
+
+
+def _verified_emission_scope(
+    scope: str | None,
+    *,
+    sources: dict[str, tuple[Path, Path]],
+    verified_scopes: dict[str, tuple[dict[str, Any], Any]],
+    supervisor: Path,
+    rootfs: Path,
+) -> tuple[dict[str, Any], Any]:
+    if scope is None or scope not in sources:
+        raise ValueError(
+            "original emission scope has no retained closed supervisor evidence"
+        )
+    if scope in verified_scopes:
+        return verified_scopes[scope]
+    policy_path, receipt_path = sources[scope]
+    policy = read_exact(
+        policy_path, max_bytes=16 * 1024**2, label="original emission scope"
+    )
+    if policy.get("nonce") != scope:
+        raise ValueError("emission scope names another supervisor policy")
+    receipt = supervisor_custody._validated_supervisor_receipt(
+        binary=supervisor,
+        policy_path=policy_path,
+        receipt_path=receipt_path,
+        rootfs=rootfs,
+        cwd=ROOT,
+        env=os.environ,
+        require_closed=True,
+    )
+    require_success(receipt)
+    if receipt["nonce_sha256"] != hashlib.sha256(scope.encode("ascii")).hexdigest():
+        raise ValueError("emission scope differs from its closed receipt")
+    events = supervisor_custody._verified_supervisor_event_artifact(
+        receipt_path=receipt_path,
+        descriptor=receipt["event_log"],
+        collect_images=True,
+        collect_processes=True,
+    )
+    verified_scopes[scope] = (receipt, events)
+    return receipt, events
+
+
+def _compilation_emission_hints(captured: dict[str, Any]) -> set[tuple[str, int]]:
+    from molt.backend_protocol import BackendEmissionOrigin, BackendNativeWorkerOrigin
+
+    origin = BackendEmissionOrigin.from_payload(captured["compiler"])
+    hints = {(origin.producer.scope, origin.producer.process_id)}
+    if origin.codegen.process_id is not None:
+        hints.add((origin.producer.scope, origin.codegen.process_id))
+    hints.update((worker.scope, worker.process_id) for worker in origin.codegen.workers)
+    if captured["stdlib"] is not None:
+        hints.update(
+            (worker.scope, worker.process_id)
+            for worker in (
+                BackendNativeWorkerOrigin.from_payload(row)
+                for row in captured["stdlib"]["workers"]
+            )
+        )
+    if any(scope is None for scope, _ in hints):
+        raise ValueError("compiler emission lacks its original supervisor scope")
+    return {(scope, pid) for scope, pid in hints if scope is not None}
+
+
 def compilation_process_images(
     *,
     supervisor: Path,
@@ -836,6 +997,8 @@ def compilation_process_images(
     compiler_image: tuple[str, str, int],
     linker_image: tuple[str, str, int],
     additional_images: tuple[tuple[str, str, int], ...],
+    _scope_sources: dict[str, tuple[Path, Path]] | None = None,
+    _verified_scopes: dict[str, tuple[dict[str, Any], Any]] | None = None,
 ) -> dict[str, Any]:
     """Join retained emission to actual images through native receipt replay.
 
@@ -845,11 +1008,9 @@ def compilation_process_images(
     File selection, an embedded success flag, and a caller-authored image list
     cannot replace native verification of the policy, receipt and event journal.
     """
-    from molt.backend_protocol import BackendDaemonJobOrigin
     from molt.cli.link_input_observation import validate_compilation_input_observation
 
     captured = validate_compilation_input_observation(observation)
-    origin = BackendDaemonJobOrigin.from_payload(captured["compiler"])
     from molt.cli.link_input_observation import LinkInputObservation
 
     link = captured["link"]
@@ -863,40 +1024,52 @@ def compilation_process_images(
         for row in records
     ):
         raise ValueError("linker process join selected another recorded producer")
-    verified = supervisor_custody._validated_supervisor_receipt(
-        binary=supervisor,
-        policy_path=policy_path,
-        receipt_path=receipt_path,
+    policy = read_exact(
+        policy_path, max_bytes=16 * 1024**2, label="compilation policy scope"
+    )
+    from molt.backend_protocol import validate_emission_scope
+
+    current_scope = validate_emission_scope(policy["nonce"])
+    if current_scope is None:
+        raise ValueError("compilation policy has no emission scope")
+    sources = (
+        _scope_sources
+        if _scope_sources is not None
+        else {current_scope: (policy_path, receipt_path)}
+    )
+    verified_scopes = _verified_scopes if _verified_scopes is not None else {}
+    verified, events = _verified_emission_scope(
+        current_scope,
+        sources=sources,
+        verified_scopes=verified_scopes,
+        supervisor=supervisor,
         rootfs=rootfs,
-        cwd=ROOT,
-        env=os.environ,
-        require_closed=True,
     )
-    require_success(verified)
-    events = supervisor_custody._verified_supervisor_event_artifact(
-        receipt_path=receipt_path,
-        descriptor=verified["event_log"],
-        collect_images=True,
-        collect_processes=True,
-    )
-    ids = {origin.daemon_pid}
-    if origin.codegen.process_id is not None:
-        ids.add(origin.codegen.process_id)
-    ids.update(worker.process_id for worker in origin.codegen.workers)
+    hints = _compilation_emission_hints(captured)
     actual = []
-    for pid in sorted(ids):
-        image = events.producing_image(pid)
+    references = {}
+    for scope, pid in sorted(hints):
+        original, original_events = _verified_emission_scope(
+            scope,
+            sources=sources,
+            verified_scopes=verified_scopes,
+            supervisor=supervisor,
+            rootfs=rootfs,
+        )
+        stable, image = original_events.producing_process(pid)
         if image != compiler_image:
             raise ValueError(
                 "compiler emission belongs to another actual process image"
             )
-        stable = next(
-            stable
-            for observed_pid, stable, _ in events.processes
-            if observed_pid == pid
-        )
+        references[scope] = {
+            "scope": scope,
+            "policy_sha256": original["policy_sha256"],
+            "receipt_identity_sha256": original["identity_sha256"],
+            "event_log": original["event_log"],
+        }
         actual.append(
             {
+                "scope": scope,
                 "process_id": pid,
                 "stable_process_id": stable,
                 "path": image[0],
@@ -912,6 +1085,7 @@ def compilation_process_images(
         )
     return {
         "compiler_processes": actual,
+        "emission_scopes": list(references.values()),
         "linker_image": {
             "path": linker_image[0],
             "sha256": linker_image[1],
@@ -931,17 +1105,70 @@ def compilation_process_images(
 # stdout is a bounded output archive; stderr remains available to run-export.
 _COMPILATION_CONTROLLER = r"""import hashlib,json,os,pathlib,shutil,stat,subprocess,sys,time,zipfile
 config=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if set(config)!={"command","environment","timeout","output_max_bytes"}:
+if set(config)!={"command","environment","timeout","output_max_bytes","cache_seed","cache_contract","compiler_source_root"}:
     raise ValueError("compilation controller configuration is invalid")
 output=pathlib.Path("/work/output")
 output.mkdir()
 for name in ("tmp","state","cache","build-state","cargo","uv-cache"):
     (pathlib.Path("/work")/name).mkdir(exist_ok=True)
+def copy_cache(source,destination,restore=False,paths=None):
+    if not source.exists(): return
+    if restore:
+        sys.path.insert(0,str(pathlib.Path(config["compiler_source_root"])/"src"))
+        os.environ.clear(); os.environ.update(config["environment"])
+        from molt.default_paths import is_backend_cache_artifact_name
+        from molt.cli.backend_artifact_contract import BackendArtifactContract,BackendArtifactKind
+        from molt.cli.backend_cache import restore_backend_cache_artifact
+        contract=BackendArtifactContract(BackendArtifactKind(config["cache_contract"]["kind"]),config["cache_contract"]["target_triple"])
+        cache_artifact=lambda name:is_backend_cache_artifact_name(name) and name.endswith(contract.suffix)
+    total=0; count=0
+    for path in sorted(source.rglob("*") if paths is None else paths):
+        info=path.lstat()
+        if stat.S_ISDIR(info.st_mode): continue
+        if not stat.S_ISREG(info.st_mode) or path.is_symlink(): raise ValueError("cache snapshot contains a link or special file")
+        total+=info.st_size; count+=1
+        if count>4096 or total>config["output_max_bytes"]: raise ValueError("cache snapshot exceeds compilation export budget")
+        target=destination/path.relative_to(source); target.parent.mkdir(parents=True,exist_ok=True)
+        if restore and path.name.endswith(".sync.json") and cache_artifact(path.name[:-len(".sync.json")]):
+            if not path.with_name(path.name[:-len(".sync.json")]).is_file(): raise ValueError("cache snapshot receipt has no artifact")
+            continue
+        if restore and cache_artifact(path.name):
+            restore_backend_cache_artifact(path,target,artifact_contract=contract)
+            continue
+        with path.open("rb") as original,target.open("xb") as copied:
+            before=os.fstat(original.fileno())
+            shutil.copyfileobj(original,copied,64*1024)
+            after=os.fstat(original.fileno())
+        identity=lambda row:(row.st_dev,row.st_ino,row.st_size,row.st_mtime_ns,row.st_ctime_ns)
+        if identity(info)!=identity(before) or identity(before)!=identity(after) or identity(after)!=identity(path.lstat()): raise ValueError("cache generation changed during export")
+copy_cache(pathlib.Path(config["cache_seed"]),pathlib.Path("/work/cache"),restore=True)
 started=time.monotonic()
 with (output/"command.stdout").open("xb") as stdout, (output/"command.stderr").open("xb") as stderr:
     completed=subprocess.run(config["command"],cwd="/work",env=config["environment"],stdout=stdout,stderr=stderr,timeout=config["timeout"],check=False)
 result={"argv":config["command"],"returncode":completed.returncode,"duration_sec":time.monotonic()-started}
 (output/"command.json").write_text(json.dumps(result,sort_keys=True,separators=(",",":"))+"\n",encoding="utf-8")
+if completed.returncode==0:
+    sys.path.insert(0,str(pathlib.Path(config["compiler_source_root"])/"src"))
+    os.environ.clear(); os.environ.update(config["environment"])
+    from molt.backend_protocol import BackendEmissionOrigin,BackendStdlibOrigin
+    from molt.cli.backend_artifact_contract import BackendArtifactContract,BackendArtifactKind
+    from molt.cli.backend_cache import compilation_cache_export_paths
+    from molt.cli.link_fingerprints import _read_link_fingerprint
+    from molt.cli.link_input_observation import validate_compilation_input_observation
+    from molt.exact_json import read_exact
+    matches=[]
+    for path in output.rglob(".molt-artifact-receipt-*.json"):
+        receipt=_read_link_fingerprint(path)
+        if receipt is not None and "input_observation" in receipt["outputs"]: matches.append(receipt)
+    if len(matches)!=1: raise ValueError("cache export requires one captured final-link publication")
+    observation_path=pathlib.Path(matches[0]["outputs"]["input_observation"]["path"])
+    observation_path.relative_to(output)
+    observed=validate_compilation_input_observation(read_exact(observation_path,max_bytes=16*1024**2,label="cache export compilation observation"))
+    compiler_origin=BackendEmissionOrigin.from_payload(observed["compiler"])
+    stdlib_origin=None if observed["stdlib"] is None else BackendStdlibOrigin.from_payload(observed["stdlib"])
+    contract=BackendArtifactContract(BackendArtifactKind(config["cache_contract"]["kind"]),config["cache_contract"]["target_triple"])
+    with compilation_cache_export_paths(pathlib.Path("/work/cache"),cache=observed["cache"],compiler_origin=compiler_origin,stdlib_origin=stdlib_origin,artifact_contract=contract) as paths:
+        copy_cache(pathlib.Path("/work/cache"),output/"cache-export",paths=paths)
 files=[]; total=0
 for path in sorted(output.rglob("*")):
     mode=path.lstat().st_mode
@@ -1056,6 +1283,8 @@ def execute_compilation(
     projection = SealedExecutionProjection.from_dict(compilation["execution"])
     rootfs = evidence / "rootfs"
     transport = SealedRootTransport()
+    scope_sources = _compilation_scope_sources(evidence, compilation)
+    verified_scopes: dict[str, tuple[dict[str, Any], Any]] = {}
     try:
         compilation["transport"] = transport.import_sealed_root(
             evidence / "rootfs.tar",
@@ -1085,16 +1314,17 @@ def execute_compilation(
                 guest_stderr_sha256=hashlib.sha256(stderr).hexdigest(),
             )
             cell["execution"] = result
-            require_success(
-                supervisor_custody._validated_supervisor_receipt(
-                    binary=supervisor,
-                    policy_path=rootfs / cell["policy"],
-                    receipt_path=receipt,
-                    rootfs=rootfs,
-                    cwd=ROOT,
-                    env=os.environ,
-                    require_closed=True,
-                )
+            scope = read_exact(
+                rootfs / cell["policy"],
+                max_bytes=16 * 1024**2,
+                label="compilation policy",
+            )["nonce"]
+            _verified_emission_scope(
+                scope,
+                sources=scope_sources,
+                verified_scopes=verified_scopes,
+                supervisor=supervisor,
+                rootfs=rootfs,
             )
     finally:
         primary = sys.exception()
@@ -1114,6 +1344,14 @@ def execute_compilation(
         arch=compilation["target"]["arch"],
         projection=projection,
     )
+    for scope in scope_sources:
+        _verified_emission_scope(
+            scope,
+            sources=scope_sources,
+            verified_scopes=verified_scopes,
+            supervisor=supervisor,
+            rootfs=rootfs,
+        )
     for cell in compilation["cells"]:
         _receive_compilation_cell(
             evidence=evidence,
@@ -1122,9 +1360,31 @@ def execute_compilation(
             cell=cell,
             installed=installed,
             supervisor=supervisor,
+            scope_sources=scope_sources,
+            verified_scopes=verified_scopes,
         )
+        if compilation["cache_seed"]:
+            current_scope = read_exact(
+                rootfs / cell["policy"],
+                max_bytes=16 * 1024**2,
+                label="warm compilation policy",
+            )["nonce"]
+            if not any(
+                row["scope"] != current_scope
+                for row in cell["processes"]["compiler_processes"]
+            ):
+                raise ValueError(
+                    "seeded compilation did not retain any original cached emission"
+                )
     compilation["files"] = execution_root.root_inventory(evidence)
-    write_json(evidence / "compilation.json", compilation)
+    from molt.exact_json import encode_exact
+    from molt.file_publication import atomic_write_bytes
+
+    # A new final generation owns the verified references. Never mutate a
+    # sealed cache artifact or overwrite an earlier completed compilation.
+    atomic_write_bytes(
+        evidence / "compilation.json", encode_exact(compilation), exclusive=True
+    )
     return compilation
 
 
@@ -1137,6 +1397,8 @@ def _receive_compilation_cell(
     installed: Any,
     supervisor: Path,
     output_root: Path | None = None,
+    scope_sources: dict[str, tuple[Path, Path]],
+    verified_scopes: dict[str, tuple[dict[str, Any], Any]],
 ) -> None:
     projection = SealedExecutionProjection.from_dict(compilation["execution"])
     run = cell["execution"]
@@ -1216,6 +1478,8 @@ def _receive_compilation_cell(
         compiler_image=compiler_image,
         linker_image=(linker_path, linker_identity["sha256"], linker_identity["size"]),
         additional_images=additional_images,
+        _scope_sources=scope_sources,
+        _verified_scopes=verified_scopes,
     )
 
 
@@ -1253,6 +1517,8 @@ def validate_compilation(
         "providers",
         "root",
         "supervisor_generation",
+        "origins",
+        "cache_seed",
         "transport",
         "files",
     }
@@ -1301,6 +1567,16 @@ def validate_compilation(
         "outputs",
         "processes",
     }
+    scope_sources = _compilation_scope_sources(evidence, compilation)
+    verified_scopes: dict[str, tuple[dict[str, Any], Any]] = {}
+    for scope in scope_sources:
+        _verified_emission_scope(
+            scope,
+            sources=scope_sources,
+            verified_scopes=verified_scopes,
+            supervisor=supervisor,
+            rootfs=evidence / "rootfs",
+        )
     with tempfile.TemporaryDirectory(prefix="molt-compilation-readback-") as raw:
         for cell in compilation["cells"]:
             if not isinstance(cell, dict) or set(cell) != cell_keys:
@@ -1314,7 +1590,22 @@ def validate_compilation(
                 installed=installed,
                 supervisor=supervisor,
                 output_root=Path(raw),
+                scope_sources=scope_sources,
+                verified_scopes=verified_scopes,
             )
+            if compilation["cache_seed"]:
+                current_scope = read_exact(
+                    evidence / "rootfs" / cell["policy"],
+                    max_bytes=16 * 1024**2,
+                    label="warm compilation policy",
+                )["nonce"]
+                if not any(
+                    row["scope"] != current_scope
+                    for row in replayed["processes"]["compiler_processes"]
+                ):
+                    raise ValueError(
+                        "retained seeded compilation contains no reused emission"
+                    )
             if replayed != cell:
                 raise ValueError(
                     "retained compilation summary differs from owning evidence"
@@ -1332,6 +1623,24 @@ def validate_compilation(
         if row["path"] != "compilation.json"
     ] != compilation["files"]:
         raise ValueError("retained compilation evidence changed during replay")
+
+
+def _validate_compilation_command(
+    command: dict[str, Any], output: dict[str, Any], retained: Path
+) -> None:
+    expected = output["command"]
+    if (
+        command["argv"] != expected["argv"]
+        or command["returncode"] != expected["returncode"]
+        or command["duration_seconds"] != expected["duration_sec"]
+        or command["stdout_sha256"]
+        != execution_root.file_identity(retained / "command.stdout")["sha256"]
+        or command["stderr_sha256"]
+        != execution_root.file_identity(retained / "command.stderr")["sha256"]
+    ):
+        raise ValueError(
+            "installed command summary differs from its raw compilation export"
+        )
 
 
 def validate_installed_compilation(
@@ -1414,11 +1723,76 @@ def validate_installed_compilation(
         launcher=launcher,
         controller_python=controller_python,
     )
+    cold_evidence = record_path.parent.with_name(record_path.parent.name + "-cold")
+    cold = read_exact(
+        cold_evidence / "compilation.json",
+        max_bytes=64 * 1024**2,
+        label="cold installed compilation",
+    )
+    validate_compilation(
+        evidence=cold_evidence,
+        compilation=cold,
+        compiler=installed,
+        lanes=lanes,
+        python_minor=proof["python"],
+        supervisor=supervisor,
+        launcher=launcher,
+        controller_python=controller_python,
+    )
+    if cold["cache_seed"] or cold["origins"] or not compilation["cache_seed"]:
+        raise ValueError(
+            "installed cold/warm compilation phases have incorrect reuse inputs"
+        )
+    expected_origins = []
+    for scope, cell_id, _, receipt_path in _compilation_reuse_scopes(
+        cold_evidence, cold
+    ):
+        receipt = read_exact(
+            receipt_path,
+            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
+            label="cold emission receipt",
+        )
+        expected_origins.append(
+            {
+                "scope": scope,
+                "cell": cell_id,
+                "identity_sha256": receipt["identity_sha256"],
+            }
+        )
+    expected_seed = []
+    for cell in cold["cells"]:
+        for row in cell["outputs"]["files"]:
+            relative = PurePosixPath(row["path"])
+            if relative.is_relative_to("cache-export"):
+                expected_seed.append(
+                    {
+                        "path": "app/cache/"
+                        + cell["id"]
+                        + "/"
+                        + relative.relative_to("cache-export").as_posix(),
+                        "sha256": row["sha256"],
+                        "size": row["size"],
+                        "mode": 0o444,
+                    }
+                )
+    if compilation["origins"] != expected_origins or compilation[
+        "cache_seed"
+    ] != sorted(expected_seed, key=lambda row: row["path"]):
+        raise ValueError(
+            "warm compilation did not import the selected cold cache generation"
+        )
     cells = proof["cells"]
     if len(cells) != len(compilation["cells"]):
         raise ValueError("release proof omits an installed compilation product")
     by_role = {row["role"]: row for row in proof["commands"]}
     prefix = "pip_" if owner == "pip" else ""
+    for lane, produced in zip(lanes, cold["cells"], strict=True):
+        command = by_role[
+            f"{prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}"
+        ]
+        _validate_compilation_command(
+            command, produced["outputs"], cold_evidence / "outputs" / lane.id
+        )
     for lane, cell, produced in zip(lanes, cells, compilation["cells"], strict=True):
         retained = record_path.parent / "outputs" / lane.id
         output = produced["outputs"]
@@ -1435,19 +1809,7 @@ def validate_installed_compilation(
         command = by_role[
             f"{prefix}{'build' if lane.target == 'native' else 'run'}_{lane.id}"
         ]
-        expected_command = output["command"]
-        if (
-            command["argv"] != expected_command["argv"]
-            or command["returncode"] != expected_command["returncode"]
-            or command["duration_seconds"] != expected_command["duration_sec"]
-            or command["stdout_sha256"]
-            != execution_root.file_identity(retained / "command.stdout")["sha256"]
-            or command["stderr_sha256"]
-            != execution_root.file_identity(retained / "command.stderr")["sha256"]
-        ):
-            raise ValueError(
-                "installed command summary differs from its raw compilation export"
-            )
+        _validate_compilation_command(command, output, retained)
         diagnostics = read_exact(
             retained / "diagnostics.json",
             max_bytes=16 * 1024**2,
@@ -1508,6 +1870,158 @@ def compilation_runtime_selection(
     return kind, dict(row["key"])
 
 
+def _compilation_reuse_scopes(
+    previous: Path, prior: dict[str, Any]
+) -> list[tuple[str, str, Path, Path]]:
+    sources = _compilation_scope_sources(previous, prior)
+    scope_cells = {row["scope"]: row["cell"] for row in prior["origins"]}
+    for cell in prior["cells"]:
+        policy = read_exact(
+            previous / "rootfs" / cell["policy"],
+            max_bytes=16 * 1024**2,
+            label="original policy",
+        )
+        scope_cells[policy["nonce"]] = cell["id"]
+    needed_scopes = {
+        scope
+        for cell in prior["cells"]
+        for scope, _ in _compilation_emission_hints(cell["outputs"]["observation"])
+    }
+    if len(needed_scopes) + len(prior["cells"]) > _MAX_EMISSION_SCOPES:
+        raise ValueError("selected cache emission scopes exceed the retained bound")
+    return [
+        (scope, scope_cells[scope], *sources[scope]) for scope in sorted(needed_scopes)
+    ]
+
+
+def _retain_compilation_reuse(
+    *,
+    evidence: Path,
+    previous: Path,
+    compiler: Any,
+    lanes: tuple[ReleaseLane, ...],
+    python_minor: str,
+    supervisor: Path,
+    launcher: list[str],
+    controller_python: Path,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """Snapshot one validated export and its distinct raw original sessions.
+
+    Copy no recursive evidence roots. The resulting generation references only
+    its own immutable files; prior evidence remains unchanged and independently
+    replayable. This retains process evidence, not performance admission.
+    """
+    identity, prior = capture_exact(
+        previous / "compilation.json",
+        max_bytes=64 * 1024**2,
+        label="prior completed compilation",
+    )
+    validate_compilation(
+        evidence=previous,
+        compilation=prior,
+        compiler=compiler,
+        lanes=lanes,
+        python_minor=python_minor,
+        supervisor=supervisor,
+        launcher=launcher,
+        controller_python=controller_python,
+    )
+    expected = {row["path"]: row for row in prior["files"]}
+
+    def snapshot(source: Path, destination: str, *, root: Path) -> dict[str, Any]:
+        relative = source.relative_to(previous).as_posix()
+        row = expected.get(relative)
+        if row is None:
+            raise ValueError(
+                "original emission evidence is outside completed inventory"
+            )
+        actual = execution_root.stage_file(
+            root, destination, source, executable=False, max_bytes=row["size"]
+        )
+        _equal_artifact(actual, row)
+        return {
+            "path": destination,
+            "sha256": actual["sha256"],
+            "size": actual["size"],
+            "mode": 0o444,
+        }
+
+    origins = []
+    for scope, cell_id, policy_path, receipt_path in _compilation_reuse_scopes(
+        previous, prior
+    ):
+        receipt = read_exact(
+            receipt_path,
+            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
+            label="original closed receipt",
+        )
+        receipt_identity = receipt["identity_sha256"]
+        from molt.backend_protocol import validate_emission_scope
+
+        if validate_emission_scope(receipt_identity) is None:
+            raise ValueError("original emission receipt has no exact identity")
+        owner = "origins/" + receipt_identity
+        config_path = (
+            previous / "rootfs" / ("app/compilation-" + cell_id + ".json")
+            if policy_path.is_relative_to(previous / "rootfs")
+            else policy_path.with_name("config.json")
+        )
+        snapshot(policy_path, owner + "/policy.json", root=evidence)
+        snapshot(config_path, owner + "/config.json", root=evidence)
+        snapshot(receipt_path, owner + "/receipt.json", root=evidence)
+        event_name = receipt["event_log"]["file"]
+        execution_root.relative_path(event_name)
+        if Path(event_name).name != event_name:
+            raise ValueError("original emission event reference escapes its session")
+        snapshot(
+            receipt_path.with_name(event_name), owner + "/" + event_name, root=evidence
+        )
+        origins.append(
+            {
+                "scope": scope,
+                "cell": cell_id,
+                "identity_sha256": receipt_identity,
+            }
+        )
+    seeds = []
+    for cell in prior["cells"]:
+        for row in cell["outputs"]["files"]:
+            relative = PurePosixPath(row["path"])
+            if not relative.is_relative_to("cache-export"):
+                continue
+            leaf = relative.relative_to("cache-export").as_posix()
+            source = previous / "outputs" / cell["id"] / relative
+            seeds.append(
+                snapshot(
+                    source,
+                    "app/cache/" + cell["id"] + "/" + leaf,
+                    root=evidence / "rootfs",
+                )
+            )
+    if not seeds:
+        raise ValueError("prior compilation retained no cache export to reuse")
+    verify_stable_regular_file_identity(
+        identity, label="prior completed compilation", hash_content=True
+    )
+    return origins, sorted(seeds, key=lambda row: row["path"])
+
+
+def _compilation_cache_contract(
+    lane: ReleaseLane, runtime_cell: dict[str, Any]
+) -> dict[str, str]:
+    from molt.compilation_target import admit_target
+    from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+
+    # consumer_guest_command selects native build's default bin emission or
+    # WASM run's wasm emission; exact command replay rejects other requests.
+    contract = resolve_backend_artifact_contract(
+        target=admit_target(runtime_cell["key"]["target_triple"]),
+        emit_mode="bin" if lane.target == "native" else "wasm",
+    )
+    assert contract.target_triple is not None
+    return {"kind": contract.kind.value, "target_triple": contract.target_triple}
+
+
 def prepare_compilation(
     *,
     evidence: Path,
@@ -1525,6 +2039,7 @@ def prepare_compilation(
     archive_cache: Path,
     supervisor: Path,
     generation: dict[str, Any],
+    reuse_compilation: Path | None = None,
 ) -> dict[str, Any]:
     """Prepare one admission-only installed build in a closed input namespace.
 
@@ -1597,7 +2112,9 @@ def prepare_compilation(
             "PYTHONHASHSEED": "0",
         }
     )
-    environment_contract["passed_names"] = sorted(compile_env, key=str.casefold)
+    environment_contract["passed_names"] = sorted(
+        {*compile_env, "MOLT_EMISSION_SCOPE"}, key=str.casefold
+    )
     if not compile_env.get("MOLT_HOME"):
         raise ValueError("installed compilation must retain its prepared MOLT_HOME")
     execution_root.stage_compilation_inputs(
@@ -1656,6 +2173,20 @@ def prepare_compilation(
         _COMPILATION_CONTROLLER.encode(),
         executable=False,
     )
+    origins, cache_seed = (
+        ([], [])
+        if reuse_compilation is None
+        else _retain_compilation_reuse(
+            evidence=evidence,
+            previous=reuse_compilation,
+            compiler=compiler,
+            lanes=tuple(lane for lane, _, _ in cells),
+            python_minor=python_minor,
+            supervisor=supervisor,
+            launcher=launcher,
+            controller_python=python_executable,
+        )
+    )
     files = execution_root.root_inventory(rootfs)
     executable = python_executable.as_posix()
     controller_image = next(
@@ -1705,9 +2236,17 @@ def prepare_compilation(
         )
         config_path = "app/compilation-" + lane.id + ".json"
         policy_path = "policies/compilation-" + lane.id + ".json"
+        scope = secrets.token_hex(32)
         config = {
             "command": command,
-            "environment": {**compile_env, **lane.environment()},
+            "environment": {
+                **compile_env,
+                **lane.environment(),
+                "MOLT_EMISSION_SCOPE": scope,
+            },
+            "cache_seed": "/app/cache/" + lane.id,
+            "cache_contract": _compilation_cache_contract(lane, runtime_cell),
+            "compiler_source_root": compiler.source_root.as_posix(),
             "timeout": projection.runtime_max_seconds - 10,
             "output_max_bytes": projection.stdout_max_bytes,
         }
@@ -1722,7 +2261,7 @@ def prepare_compilation(
         )
         policy = {
             "schema": supervisor_custody.SUPERVISOR_POLICY_SCHEMA,
-            "nonce": secrets.token_hex(32),
+            "nonce": scope,
             "mode": "declared-tree",
             "cwd": "/work",
             "command": [
@@ -1758,7 +2297,9 @@ def prepare_compilation(
         rootfs, evidence / "rootfs.tar", expected_files=files, projection=projection
     )
     return {
-        "schema": "molt.installed-compilation.v1",
+        "schema": "molt.installed-compilation.v2",
+        "origins": origins,
+        "cache_seed": cache_seed,
         "execution": projection.to_dict(),
         "target": {"platform": "linux", "arch": compiler.record["arch"]},
         "source_sha": compiler.source_sha,
@@ -1839,6 +2380,8 @@ def receive_compilation_outputs(
     # observation path or self-contained summary cannot select another family.
     matches = []
     for path in output.rglob(".molt-artifact-receipt-*.json"):
+        if path.is_relative_to(output / "cache-export"):
+            continue
         receipt = _read_link_fingerprint(path)
         if receipt is not None and "input_observation" in receipt["outputs"]:
             matches.append((path, receipt))
@@ -1891,6 +2434,42 @@ def receive_compilation_outputs(
             (name + "_input_reproducer", item) for name, item in link["links"].items()
         ]
         runtime_role = "wasm_reloc_member"
+    from contextlib import contextmanager
+    from collections.abc import Iterator
+    from typing import BinaryIO
+    from molt.backend_protocol import BackendEmissionOrigin, BackendStdlibOrigin
+
+    # The retained LLD buffers, not the producer's archive paths or whole-file
+    # summaries, must own the constituent check. Retain only worker archives
+    # during the existing traversal; the canonical verifier owns their member
+    # coverage/order/digests and documented padding. In-process and WASM bytes
+    # already have the whole-buffer comparison below and need no extra copy.
+    worker_archives: dict[str, list[BackendEmissionOrigin | BackendStdlibOrigin]] = {}
+    if target == "native":
+        native_roles = dict(LinkInputObservation.from_record(link).roles)
+        compiler_origin = BackendEmissionOrigin.from_payload(observation["compiler"])
+        if compiler_origin.codegen.workers:
+            worker_archives.setdefault(native_roles["compiler_output"], []).append(
+                compiler_origin
+            )
+        if observation["stdlib"] is not None:
+            worker_archives.setdefault(native_roles["stdlib"], []).append(
+                BackendStdlibOrigin.from_payload(observation["stdlib"])
+            )
+
+    @contextmanager
+    def verify_worker_buffer(path: str, _size: int) -> Iterator[BinaryIO | None]:
+        origins = worker_archives.get(path)
+        if origins is None:
+            yield None
+            return
+        with tempfile.TemporaryDirectory(prefix="molt-received-worker-archive-") as raw:
+            retained = Path(raw) / "archive.a"
+            with retained.open("xb") as destination:
+                yield destination
+            for origin in origins:
+                origin.verify_output(retained)
+
     for role, record in reports:
         if role not in projected:
             raise ValueError("compile export omitted the raw linker reproducer")
@@ -1906,6 +2485,7 @@ def receive_compilation_outputs(
             expected={
                 name: (Path(path), contents[path]) for name, path in declared.roles
             },
+            input_sink=verify_worker_buffer if worker_archives else None,
         )
         if actual != declared:
             raise ValueError("exported summary differs from raw linker input buffers")
@@ -2031,7 +2611,7 @@ def _validate_compilation_plan(
     from molt.process_environment import NameRule
 
     if (
-        compilation.get("schema") != "molt.installed-compilation.v1"
+        compilation.get("schema") != "molt.installed-compilation.v2"
         or compilation.get("python") != python_minor
         or compilation.get("launcher") != launcher
         or compilation.get("controller_python") != controller_python.as_posix()
@@ -2081,6 +2661,23 @@ def _validate_compilation_plan(
                 else "require-exit",
             }
         )
+    seed_files = [
+        row
+        for row in execution_root.root_inventory(rootfs)
+        if row["path"].startswith("app/cache/")
+    ]
+    if seed_files != compilation["cache_seed"] or bool(seed_files) != bool(
+        compilation["origins"]
+    ):
+        raise ValueError(
+            "compilation cache seed differs from retained immutable inputs"
+        )
+    if any(
+        len(PurePosixPath(row["path"]).parts) < 4
+        or PurePosixPath(row["path"]).parts[2] not in {lane.id for lane in lanes}
+        for row in seed_files
+    ):
+        raise ValueError("compilation cache seed names another lane")
     nonces = set()
     for lane, cell in zip(lanes, compilation["cells"], strict=True):
         policy_path = "policies/compilation-" + lane.id + ".json"
@@ -2113,6 +2710,9 @@ def _validate_compilation_plan(
             "environment",
             "timeout",
             "output_max_bytes",
+            "cache_seed",
+            "cache_contract",
+            "compiler_source_root",
         }:
             raise ValueError("compilation controller configuration fields differ")
         env = config["environment"]
@@ -2138,6 +2738,9 @@ def _validate_compilation_plan(
             "environment": env,
             "timeout": projection.runtime_max_seconds - 10,
             "output_max_bytes": projection.stdout_max_bytes,
+            "cache_seed": "/app/cache/" + lane.id,
+            "cache_contract": _compilation_cache_contract(lane, cell["runtime_cell"]),
+            "compiler_source_root": compilation["compiler_source_root"],
         }:
             raise ValueError(
                 "compilation controller command or resource policy differs"
@@ -2148,8 +2751,16 @@ def _validate_compilation_plan(
             label="compilation native policy",
         )
         nonce = policy.get("nonce")
-        if not isinstance(nonce, str) or nonce in nonces:
-            raise ValueError("compilation policy nonce is absent or repeated")
+        from molt.backend_protocol import validate_emission_scope
+
+        if (
+            validate_emission_scope(nonce) is None
+            or nonce in nonces
+            or env.get("MOLT_EMISSION_SCOPE") != nonce
+        ):
+            raise ValueError(
+                "compilation policy nonce is absent, repeated or differs from emission scope"
+            )
         nonces.add(nonce)
         expected = {
             "schema": supervisor_custody.SUPERVISOR_POLICY_SCHEMA,

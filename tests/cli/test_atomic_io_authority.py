@@ -176,7 +176,7 @@ def test_nested_backend_cache_publication_uses_bounded_stages(tmp_path: Path) ->
         destination,
         artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
         warnings=warnings,
-    )
+    ).identity
     assert identity.path == destination
     assert identity.sha256 == hashlib.sha256(source.read_bytes()).hexdigest()
     assert not source.samefile(destination)

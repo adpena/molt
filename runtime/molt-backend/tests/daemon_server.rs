@@ -259,8 +259,8 @@ fn daemon_origin_tracks_production_workers_and_original_cache_entry() {
         assert_eq!(response["jobs"][0]["ok"], true, "{response}");
         assert_eq!(response["jobs"][0]["cached"], false, "{response}");
         let origin = response["jobs"][0]["origin"].clone();
-        assert_eq!(origin["schema"], "molt.daemon-job-origin.v2");
-        assert_eq!(origin["daemon_pid"], daemon.child.id());
+        assert_eq!(origin["schema"], "molt.backend-emission-origin.v1");
+        assert_eq!(origin["producer"]["process_id"], daemon.child.id());
         assert_eq!(origin["input"]["schema"], "molt.addressed-program-input.v1");
         assert_eq!(origin["input"]["lease"], identity(&consumed));
         #[derive(serde::Deserialize)]
@@ -286,7 +286,7 @@ fn daemon_origin_tracks_production_workers_and_original_cache_entry() {
             let members: Vec<_> = archive.members().map(Result::unwrap).collect();
             assert_eq!(members.len(), workers.len());
             for (index, (member, worker)) in members.iter().zip(workers).enumerate() {
-                assert_eq!(worker["schema"], "molt.native-worker-origin.v1");
+                assert_eq!(worker["schema"], "molt.native-worker-origin.v2");
                 let pid = worker["process_id"].as_u64().unwrap();
                 assert!(
                     pid > 0

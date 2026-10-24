@@ -675,8 +675,11 @@ def _verify_guest_cells(
         supervisor=supervisor,
         cas_root=root / "capture-cas",
     )
-    plan = consumer_replay.prepare_compilation(
-        evidence=compilation_evidence,
+    # The cold export is an actual closed compilation generation. A distinct
+    # warm root imports its retained cache and raw original supervisor sessions;
+    # Command durations exclude cache import/export and evidence verification;
+    # neither these observations nor preparation timings grant performance admission.
+    preparation = dict(
         compiler=compiler,
         launcher=launcher,
         python_executable=python,
@@ -692,16 +695,42 @@ def _verify_guest_cells(
         supervisor=supervisor,
         generation=generation,
     )
-    compilation = consumer_replay.execute_compilation(
-        evidence=compilation_evidence,
-        compilation=plan,
-        supervisor=supervisor,
-        compiler=compiler,
-        lanes=lanes,
-        python_minor=minor,
-        launcher=launcher,
-        controller_python=python,
-    )
+    cold_evidence = compilation_evidence.with_name(compilation_evidence.name + "-cold")
+    compilation = None
+    for destination, reuse in (
+        (cold_evidence, None),
+        (compilation_evidence, cold_evidence),
+    ):
+        plan = consumer_replay.prepare_compilation(
+            evidence=destination,
+            reuse_compilation=reuse,
+            **preparation,
+        )
+        compilation = consumer_replay.execute_compilation(
+            evidence=destination,
+            compilation=plan,
+            supervisor=supervisor,
+            compiler=compiler,
+            lanes=lanes,
+            python_minor=minor,
+            launcher=launcher,
+            controller_python=python,
+        )
+        if reuse is None:
+            for lane, row in zip(lanes, compilation["cells"], strict=True):
+                cold_output = cold_evidence / "outputs" / lane.id
+                result = row["outputs"]["command"]
+                commands.append(
+                    {
+                        "role": f"{role_prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}",
+                        "argv": result["argv"],
+                        "returncode": result["returncode"],
+                        "duration_seconds": result["duration_sec"],
+                        "stdout_sha256": sha256_file(cold_output / "command.stdout"),
+                        "stderr_sha256": sha256_file(cold_output / "command.stderr"),
+                    }
+                )
+    assert compilation is not None
     cells = []
     for lane, row in zip(lanes, compilation["cells"], strict=True):
         cell_root = compilation_evidence / "outputs" / lane.id

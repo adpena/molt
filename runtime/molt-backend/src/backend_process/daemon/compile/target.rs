@@ -29,7 +29,7 @@ pub(crate) enum DaemonCompiledOutput {
     Bytes(Arc<[u8]>),
     #[cfg(feature = "native-backend")]
     WrittenToPath {
-        codegen: super::super::origin::CodegenOrigin,
+        codegen: crate::backend_process::origin::CodegenOrigin,
         output: crate::backend_process::input::ContentIdentity,
     },
 }
@@ -169,8 +169,10 @@ impl ResolvedJobTarget {
                 )
                 .map_err(|err| format!("failed to compile native application artifact: {err}"))?;
                 let codegen = match emitted.workers {
-                    None => super::super::origin::CodegenOrigin::in_process(),
-                    Some(workers) => super::super::origin::CodegenOrigin::NativeWorkers { workers },
+                    None => crate::backend_process::origin::CodegenOrigin::in_process(),
+                    Some(workers) => {
+                        crate::backend_process::origin::CodegenOrigin::NativeWorkers { workers }
+                    }
                 };
                 Ok(DaemonCompiledOutput::WrittenToPath {
                     codegen,

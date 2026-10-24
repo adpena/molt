@@ -397,6 +397,7 @@ def _run_backend_pipeline(
             backend_compile_start = time.perf_counter()
             prepared_backend_compile, prepared_backend_compile_error = (
                 _backend_compile._prepare_backend_compile(
+                    capture_origin=capture_link_inputs,
                     diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
                     phase_starts=prepared_build_preamble.phase_starts,
                     cache_report=cache_report,

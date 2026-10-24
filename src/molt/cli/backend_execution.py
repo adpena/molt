@@ -35,7 +35,8 @@ from molt.backend_environment import (
 from molt import backend_daemon_custody as _daemon_custody
 from molt.backend_protocol import (
     BACKEND_DAEMON_PROTOCOL_VERSION,
-    BackendDaemonJobOrigin,
+    BackendEmissionOrigin,
+    validate_emission_scope,
 )
 from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.backend_executable_names import (
@@ -103,7 +104,7 @@ class _BackendDaemonCompileResult(NamedTuple):
     output_written: bool
     output_exists: bool
     full_request_sent: bool = False
-    origin: BackendDaemonJobOrigin | None = None
+    origin: BackendEmissionOrigin | None = None
 
 
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 8
@@ -380,6 +381,9 @@ def _backend_daemon_config_digest(
             "process_environment": daemon_process_environment_inputs(source),
             "backend_features": sorted(backend_features),
             "backend_compiler_fingerprint": compiler,
+            "emission_scope": validate_emission_scope(
+                source.get("MOLT_EMISSION_SCOPE")
+            ),
             "suite_daemon_lease": source.get("MOLT_BACKEND_DAEMON_SUITE_LEASE", ""),
             "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
             "target_triple": target_triple,
@@ -1536,7 +1540,17 @@ def _start_backend_daemon(
                 daemon_proc = cast(
                     "subprocess.Popen[bytes]",
                     subprocess.Popen(
-                        [str(backend_bin), "--daemon", "--socket", str(socket_path)],
+                        [
+                            str(backend_bin),
+                            "--daemon",
+                            "--socket",
+                            str(socket_path),
+                            *(
+                                ["--emission-scope", daemon_env["MOLT_EMISSION_SCOPE"]]
+                                if daemon_env.get("MOLT_EMISSION_SCOPE")
+                                else []
+                            ),
+                        ],
                         cwd=project_root,
                         stdout=log_file,
                         stderr=subprocess.STDOUT,
@@ -1832,7 +1846,9 @@ def _compile_with_backend_daemon(
             full_request_sent,
         )
     try:
-        origin = BackendDaemonJobOrigin.from_payload(first.get("origin"))
+        origin = BackendEmissionOrigin.from_payload(first.get("origin"))
+        if origin.producer.kind != "daemon":
+            raise ValueError("daemon returned another producer kind")
         if output_written:
             origin.verify_output(backend_output)
         else:

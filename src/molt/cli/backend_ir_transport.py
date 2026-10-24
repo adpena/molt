@@ -1,4 +1,4 @@
-"""Content-addressed backend IR leases (backend daemon protocol 4, HF-516).
+"""Content-addressed backend IR leases (backend daemon protocol 5, HF-516).
 
 A lease is one MessagePack map with lexically sorted keys: the program header
 (``code_slots``, ``module_registry``, ``profile``), ``function_digests`` (one

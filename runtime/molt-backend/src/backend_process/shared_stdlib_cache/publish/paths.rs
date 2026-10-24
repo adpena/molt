@@ -20,6 +20,10 @@ pub(crate) fn stdlib_cache_partition_manifest_sidecar_path(stdlib_path: &Path) -
     stdlib_path.with_extension("partition.json")
 }
 
+pub(super) fn stdlib_cache_origin_sidecar_path(stdlib_path: &Path) -> PathBuf {
+    stdlib_path.with_extension("origin.json")
+}
+
 pub(super) fn stdlib_cache_archive_digest_sidecar_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_extension("sha256")
 }

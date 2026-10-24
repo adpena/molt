@@ -415,11 +415,18 @@ class SupervisorEventArtifact:
     # image generations. A reused numeric PID can never silently select one.
     processes: tuple[tuple[int, str, tuple[str, str, int] | None], ...]
 
-    def producing_image(self, process_id: int) -> tuple[str, str, int]:
-        matches = [image for pid, _stable, image in self.processes if pid == process_id]
-        if len(matches) != 1 or matches[0] is None:
+    def producing_process(self, process_id: int) -> tuple[str, tuple[str, str, int]]:
+        """Finalize a PID hint only within this original verified event session."""
+        matches = [
+            (stable, image)
+            for pid, stable, image in self.processes
+            if pid == process_id
+        ]
+        if len(matches) != 1 or matches[0][1] is None:
             raise ValueError("producing PID has no unique observed process generation")
-        return matches[0]
+        stable, image = matches[0]
+        assert image is not None
+        return stable, image
 
 
 def _verified_supervisor_event_artifact(

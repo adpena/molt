@@ -1,7 +1,7 @@
 #[derive(Debug)]
 pub(crate) struct DaemonJobResponse {
     pub(crate) id: String,
-    pub(crate) origin: Option<crate::backend_process::daemon::origin::DaemonJobOrigin>,
+    pub(crate) origin: Option<crate::backend_process::origin::EmissionOrigin>,
     pub(crate) ok: bool,
     pub(crate) cached: bool,
     pub(crate) cache_tier: Option<String>,

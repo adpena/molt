@@ -439,3 +439,78 @@ def test_shape_visitor_keeps_exact_member_extents_and_stable_handle_custody(tmp_
 
     with pytest.raises(StaticArchiveIdentityError, match="changed"):
         visit_static_archive_members(path, visit_member=mutate_during_visit)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "wrong-padding",
+        "extra-padding",
+        "gnu-name",
+        "elf-object",
+        "retagged-output",
+    ],
+)
+def test_original_worker_bytes_admit_only_documented_darwin_member_padding(
+    tmp_path, defect
+):
+    import hashlib
+    from molt.backend_protocol import BackendStdlibOrigin
+    from tests.native_artifact_fixtures import native_relocatable_object
+
+    target = (
+        "x86_64-unknown-linux-gnu" if defect == "elf-object" else "aarch64-apple-darwin"
+    )
+    # An independent native fixture with a one-byte body tail makes padding visible.
+    original = native_relocatable_object(target_triple=target) + b"x"
+    padding = (-len(original)) % 8
+    assert padding
+    suffix = b"\n" * padding
+    if defect == "wrong-padding":
+        suffix = b"\0" * padding
+    elif defect == "extra-padding":
+        suffix += b"\n" * 8
+    name = b"molt_00000000.o"
+    if defect == "gnu-name":
+        member = _member(name.decode() + "/", original + suffix, timestamp=0)
+    else:
+        # Name padding is NUL; member-data padding is NEWLINE, distinct domains.
+        encoded_name = name + b"\0" * 2
+        member = _member(
+            f"#1/{len(encoded_name)}", encoded_name + original + suffix, timestamp=0
+        )
+    archive = b"!<arch>\n" + member
+    path = tmp_path / "stdlib.a"
+    path.write_bytes(archive)
+
+    def content(data):
+        return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+    payload = {
+        "schema": "molt.stdlib-archive-origin.v1",
+        "output": content(archive),
+        "workers": [
+            {
+                "schema": "molt.native-worker-origin.v2",
+                "process_id": 37,
+                "scope": "a" * 64,
+                "input": content(b"job"),
+                "output": content(original),
+            }
+        ],
+    }
+    if defect == "retagged-output":
+        payload["output"] = content(archive + b"x")
+    observation = BackendStdlibOrigin.from_payload(payload)
+    if defect:
+        with pytest.raises(ValueError):
+            observation.verify_output(path)
+    else:
+        observation.verify_output(path)
+        seen = []
+        visit_static_archive_members(
+            path, visit_member=lambda member, stream: seen.append(member)
+        )
+        assert seen[0].name_format == "bsd-extended"
+        assert seen[0].size == len(original) + padding

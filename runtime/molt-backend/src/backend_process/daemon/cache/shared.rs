@@ -4,9 +4,9 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use molt_ir::FunctionIR;
 use molt_ir::addressed_program::FunctionDigest;
 
-use super::super::origin::DaemonCacheEntry;
 use super::super::protocol::DaemonCacheKey;
 use super::state::DaemonLru;
+use crate::backend_process::origin::DaemonCacheEntry;
 
 /// The daemon's compiled-output cache, shared by concurrent connections.
 ///

@@ -28,7 +28,7 @@ def _facts(*names: str) -> _NativeGlobalSymbolFacts:
             _NativeArchiveMemberSymbolFacts(
                 StaticArchiveMemberIdentity(
                     ordinal,
-                    StaticArchiveMember(name, ordinal * 16, 16),
+                    StaticArchiveMember(name, ordinal * 16, 16, "short-or-gnu"),
                     f"{ordinal + 1:064x}",
                 ),
                 empty,
