@@ -387,9 +387,14 @@ process table, decides which runner works.
 The runner always runs main's pinned controller. Each batch takes the
 bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
 
-1. Reset the queue's own sandbox worktree
-   (`<git-common-dir>/molt/landing-sandbox`) to main's tip and merge each
-   requested tip in queue order with `--no-ff`. This preserves source history and
+1. Materialize the candidate in the queue's own sandbox worktree
+   (`<git-common-dir>/molt/landing-sandbox`). If the first requested tip already
+   contains captured main, check it out directly and create a dedicated candidate
+   commit with the same tree and that tip as its parent. This preserves unchanged
+   source files and ignored build products between retries, while citation amendment
+   changes only the candidate commit. Ordinary commit hooks run; an unexpected tree
+   or parent stops the runner. Otherwise start at main. Merge the remaining
+   requested tips in queue order with `--no-ff`. This preserves source history and
    manual merge resolutions, including through the final citation amendment.
    A conflicting lane is aborted back to the preceding candidate and leaves the
    batch with result `conflict`; inability to restore that candidate stops the runner.

@@ -9000,6 +9000,102 @@ def test_run_guarded_exception_releases_lease_and_updates_marker(
     assert marker["temporary_artifacts"]["finalize_elapsed_s"] >= 0.0
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX atomic marker replacement")
+def test_fresh_observer_custody_serializes_marker_publication(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from molt import pytest_memory_guard_bootstrap as bootstrap
+    from molt import toolchain_identity
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    # A real in-process guard has a pytest command, so marker custody is its
+    # authority; a tools/memory_guard.py argv fallback cannot rescue this read.
+    token, marker = memory_guard._write_active_guard_marker(
+        os.getpid(),
+        command=("pytest",),
+        cwd=tmp_path,
+        environ={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
+    )
+    assert memory_guard._update_active_guard_marker(
+        marker, token, status="spawn_pending", child_launch_state="pending"
+    )
+    env = {
+        "MOLT_MEMORY_GUARD_ACTIVE": "1",
+        "MOLT_MEMORY_GUARD_PID": str(os.getpid()),
+        "MOLT_MEMORY_GUARD_TOKEN": token,
+        "MOLT_MEMORY_GUARD_MARKER": str(marker),
+    }
+    real_open = toolchain_identity.open_stable_regular_file
+    attempted = []
+
+    @contextmanager
+    def publish_during_open(path, **kwargs):
+        with real_open(path, **kwargs) as opened:
+            if path == marker:
+                # Deterministic competing publication at the actual stable-file
+                # read boundary, without sleeps or trusting a synthetic record.
+                handle = _try_acquire_file_lock(marker.with_suffix(".lock"))
+                attempted.append(handle is not None)
+                if handle is not None:
+                    _release_file_lock(handle)
+                    with monkeypatch.context() as publication:
+                        publication.setattr(
+                            toolchain_identity, "open_stable_regular_file", real_open
+                        )
+                        assert memory_guard._update_active_guard_marker(
+                            marker,
+                            token,
+                            status="spawn_pending",
+                            child_launch_state="pending",
+                        )
+            yield opened
+
+    monkeypatch.setattr(
+        toolchain_identity, "open_stable_regular_file", publish_during_open
+    )
+    # This is the same validator used before the fresh observer's pytest main.
+    assert bootstrap._active_guard_marker_valid(env, guard_pid=os.getpid())
+    assert attempted == [False]
+    monkeypatch.setattr(toolchain_identity, "open_stable_regular_file", real_open)
+    record = active_custody.read_marker_record(marker)
+    assert record.guard is not None and record.guard.started_at_ns is not None
+    # The reader releases publication ownership on return.
+    assert memory_guard._update_active_guard_marker(
+        marker, token, status="spawn_pending", child_launch_state="pending"
+    )
+
+
+@pytest.mark.parametrize("defect", ["token", "terminal", "source", "birth", "missing"])
+def test_published_observer_marker_keeps_custody_refusals(tmp_path, defect):
+    from molt import pytest_memory_guard_bootstrap as bootstrap
+
+    token, marker = memory_guard._write_active_guard_marker(
+        os.getpid(),
+        command=("pytest",),
+        cwd=tmp_path,
+        environ={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
+    )
+    env = {
+        "MOLT_MEMORY_GUARD_ACTIVE": "1",
+        "MOLT_MEMORY_GUARD_PID": str(os.getpid()),
+        "MOLT_MEMORY_GUARD_TOKEN": token,
+        "MOLT_MEMORY_GUARD_MARKER": str(marker),
+    }
+    raw = json.loads(marker.read_text())
+    if defect == "token":
+        env["MOLT_MEMORY_GUARD_TOKEN"] = "0" * 32
+    elif defect == "terminal":
+        raw["status"] = "completed"
+    elif defect == "source":
+        raw["path"] = str(tmp_path / "other" / "tools" / "memory_guard.py")
+    elif defect == "birth":
+        raw["guard_process"]["started_at_ns"] = -1
+    else:
+        marker.unlink()
+    if defect != "missing":
+        marker.write_text(json.dumps(raw))
+    assert not bootstrap._active_guard_marker_valid(env, guard_pid=os.getpid())
+
+
 @pytest.mark.parametrize("raw_available", [None, "7.5"])
 def test_run_guarded_exports_backend_memory_contract(
     request, raw_available, monkeypatch

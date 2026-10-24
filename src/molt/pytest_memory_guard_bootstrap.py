@@ -818,9 +818,9 @@ def _active_guard_marker_valid(
     # guard. The record below binds name, pid, token, status and guard path.
     if marker_resolved.parent.name != ACTIVE_DIRNAME:
         return False
-    from tools.memory_guard_core.active_custody import read_marker_record
+    from tools.memory_guard_core.active_custody import read_published_marker_record
 
-    record = read_marker_record(marker)
+    record = read_published_marker_record(marker)
     payload = record.payload
     if not record.accepts_inherited_guard or payload is None:
         return False
