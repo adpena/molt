@@ -1210,17 +1210,19 @@ sys.exit(molt_dev_retire.cleanup_worktree(
     assert not target.exists() and not uv_environment.exists()
 
 
+@pytest.mark.parametrize("release_timing", ["before", "omitted", "after"])
 def test_cleanup_makes_a_running_vm_release_its_pins_of_the_worktree_first(
-    origin_and_clone, tmp_path
+    origin_and_clone, tmp_path, release_timing
 ):
     """A Linux VM that pins files of the retiring checkout releases them first.
 
     The landing runs inside the checkout it removes, with every later import
-    refused, as in the test above. Fake `limactl` and `lsof` executables model
-    one running vz VM that mounts the checkout's parent and whose process
-    holds a file of the checkout until its guest runs the release; the release
-    must come before the removal, while the checkout's sources can still
-    guard a command.
+    refused, as in the test above. A strict Host command boundary models one
+    running vz VM that mounts the checkout's parent and holds a file until
+    release. Real release planning, lsof parsing and Git removal run in the
+    fresh guarded child; fake commands need no nested guards or interpreters.
+    LocalHost process execution belongs to test_linux_vm.py. Omitted and late
+    releases must fail this same filesystem oracle.
     """
     _origin, main = origin_and_clone
     wt = _worktree_off(main, "wt_vm_pins")
@@ -1249,43 +1251,60 @@ def test_cleanup_makes_a_running_vm_release_its_pins_of_the_worktree_first(
             ]
         },
     }
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "limactl").write_text(
-        f"""#!{sys.executable}
-import sys
-from pathlib import Path
-args = sys.argv[1:]
-if args == ["list", "--json"]:
-    print({json.dumps(json.dumps(row))})
-elif (args[:8] == ["shell", "--workdir", "/", "vm", "sudo", "-n", "sh", "-c"]
-      and args[8].startswith("echo 2 > /proc/sys/vm/drop_caches && stat -- ")):
-    Path({str(dropped)!r}).write_text(str(Path({str(wt)!r}).exists()))
-else:
-    sys.exit(f"unexpected limactl {{args}}")
-""",
-        encoding="utf-8",
-    )
-    (bin_dir / "lsof").write_text(
-        f"""#!{sys.executable}
-from pathlib import Path
-lines = ["p77", "ccom.apple.Virtualization.VirtualMachine",
-         "f3", "tREG", "s1", "k1", "n{instance / "disk"}"]
-if not Path({str(dropped)!r}).exists():
-    lines += ["f9", "tREG", "s4096", "k1", "n{wt / "README.md"}"]
-print("\\n".join(lines))
-""",
-        encoding="utf-8",
-    )
-    for tool in ("limactl", "lsof"):
-        (bin_dir / tool).chmod(0o755)
     code = f"""
+import json
 import os
 import sys
 from pathlib import Path
 sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
 from tools import molt_dev as drv
 from tools import molt_dev_retire
+from tools import linux_vm
+
+wt = Path(sys.argv[1])
+dropped = Path({str(dropped)!r})
+
+
+class Host(linux_vm.LocalHost):
+    calls = []
+
+    def which(self, name):
+        assert name == "limactl", name
+        return "/fixture/limactl"
+
+    def start_service(self, argv, **kwargs):
+        raise AssertionError(f"retirement must never start a service: {{argv}}")
+
+    def run(self, argv, *, timeout, env_overrides=None):
+        args = list(argv)
+        assert timeout > 0 and env_overrides is None
+        self.calls.append(args)
+        if args == ["limactl", "list", "--json"]:
+            assert len(self.calls) == 1
+            return linux_vm.Completed(0, json.dumps({row!r}), "")
+        if args == list(linux_vm.LSOF_VZ_FILES):
+            assert len(self.calls) in (2, 4)
+            lines = ["p77", "ccom.apple.Virtualization.VirtualMachine",
+                     "f3", "tREG", "s1", "k1", "n{instance / "disk"}"]
+            if not dropped.exists():
+                lines += ["f9", "tREG", "s4096", "k1", "n{wt / "README.md"}"]
+            return linux_vm.Completed(0, "\\n".join(lines), "")
+        assert len(self.calls) == 3
+        assert args[:9] == ["limactl", "shell", "--workdir", "/", "vm",
+                           "sudo", "-n", "sh", "-c"], args
+        assert len(args) == 10 and args[9].startswith(
+            "echo 2 > /proc/sys/vm/drop_caches && stat -- "), args
+        dropped.write_text(str(wt.exists()), encoding="utf-8")
+        return linux_vm.Completed(0, "", "")
+
+
+linux_vm.LocalHost = Host
+release = molt_dev_retire._release_guest_caches
+pending = []
+if {release_timing!r} == "omitted":
+    molt_dev_retire._release_guest_caches = lambda *args: None
+elif {release_timing!r} == "after":
+    molt_dev_retire._release_guest_caches = lambda *args: pending.append(args)
 
 
 class RefuseAfterRemoval:
@@ -1310,22 +1329,29 @@ def run(command, **kwargs):
 
 
 molt_dev_retire._run_fast_captured_command = run
-wt = Path(sys.argv[1])
 os.chdir(wt)
-sys.exit(molt_dev_retire.cleanup_worktree(
+rc = molt_dev_retire.cleanup_worktree(
     drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
-))
+)
+assert rc == 0 and not wt.exists()
+for args in pending:
+    release(*args)
+assert dropped.exists() and dropped.read_text(encoding="utf-8") == "True", \
+    "VM release must precede worktree removal"
+assert len(Host.calls) == 4
 """
     completed = run_guarded_test_process(
         [sys.executable, "-c", code, str(wt)],
         cwd=tmp_path,
-        env={
-            **os.environ,
-            "LIMA_HOME": str(lima_home),
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        },
+        env={**os.environ, "LIMA_HOME": str(lima_home)},
         timeout=180,
     )
+    if release_timing != "before":
+        assert completed.returncode != 0
+        assert "AssertionError: VM release must precede worktree removal" in (
+            completed.stderr
+        ), completed.stderr
+        return
     assert completed.returncode == 0, completed.stderr
     assert not wt.exists()
     assert f"vm released its pins of {wt}: 1 host files released" in (
