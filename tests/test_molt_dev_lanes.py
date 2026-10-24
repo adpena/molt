@@ -716,6 +716,33 @@ def test_lanes_take_distinct_slots_and_reuse_a_released_one(family: Path) -> Non
     assert _record(family, "third")["lane"]["slot"] is True
 
 
+def test_lane_start_from_released_slot_uses_family_work_in_progress_count(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools import drift_harvest
+
+    main = family / "molt-src"
+    slot = _start(family, "first")
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == molt_dev.EXIT_OK
+    before = _registered(main)
+    # Two registered checkouts, but only main is active WIP. Activating the
+    # released slot consumes the second WIP position without another checkout.
+    assert len(before) == 2
+    monkeypatch.setattr(drift_harvest, "MAX_LIVE_WORKTREES", 2)
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="reused", repo=str(slot)))
+        == molt_dev.EXIT_OK
+    )
+    assert Path(_record(family, "reused")["repo_root"]) == slot
+    assert _registered(main) == before
+    assert _git(slot, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/lane/reused"
+    # The same entrypoint must still refuse a third active lane at the cap.
+    with pytest.raises(DriverError, match="2 live worktrees: .* limit of 2"):
+        lanes.cmd_lane_start(_args(family, slug="excess", repo=str(slot)))
+    assert _ref(main, "refs/heads/lane/excess") is None
+    assert _registered(main) == before
+
+
 def test_a_free_slot_with_changes_is_skipped_untouched(family: Path) -> None:
     """A detached slot with changes is residue someone must reconcile: a start
     neither resets nor takes it."""

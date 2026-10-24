@@ -12,6 +12,7 @@ import importlib.machinery
 import json
 import os
 from pathlib import Path
+import py_compile
 import stat
 import shutil
 import sys
@@ -1574,6 +1575,251 @@ def test_distribution_metadata_is_parsed_from_attested_file_nodes(tmp_path, muta
         ]
         assert "site/demo.py" in owned
         assert scripts == {}
+
+
+@pytest.mark.parametrize(
+    "layout", ["normal", "pytest", "foreign-tag", "adjacent", "source", "unknown"]
+)
+def test_generated_cache_custody_matches_real_importability(tmp_path, layout):
+    site = tmp_path / "site"
+    site.mkdir()
+    source = site / "retired.py"
+    source.write_text("VALUE = 41\n", encoding="utf-8")
+    tag = str(sys.implementation.cache_tag)
+    filename = {
+        "normal": f"retired.{tag}.pyc",
+        "pytest": f"retired.{tag}-pytest-9.1.1.pyc",
+        "foreign-tag": "retired.foreign-interpreter.pyc",
+        "adjacent": "retired.pyc",
+        "source": f"retired.{tag}.pyc",
+        "unknown": "retired.pyc",
+    }[layout]
+    bytecode = (site if layout == "adjacent" else site / "__pycache__") / filename
+    bytecode.parent.mkdir(exist_ok=True)
+    py_compile.compile(str(source), cfile=str(bytecode), doraise=True)
+    if layout != "source":
+        source.unlink()
+
+    # CPython is the independent oracle: orphan cache-directory bytecode is
+    # ignored, whereas a legacy adjacent .pyc is importable without source.
+    probe = _COMMANDS.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            "import importlib.util,json,sys;sys.path.insert(0,sys.argv[1]);"
+            "spec=importlib.util.find_spec('retired');"
+            "print(json.dumps({'found':spec is not None,"
+            "'value':__import__('retired').VALUE if spec else None}))",
+            str(site),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    importable = layout in {"adjacent", "source"}
+    assert json.loads(probe.stdout) == {
+        "found": importable,
+        "value": 41 if importable else None,
+    }
+
+    context = files.PythonFileCaptureContext()
+    pool = files._FileNodePool(capture_context=context)
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    relative = bytecode.relative_to(tmp_path).as_posix()
+    result = environment._bytecode_disposition(
+        relative,
+        tmp_path,
+        set(),
+        entries,
+        metadata,
+        pool,
+        pytest_version=None,
+        source_paths_by_key={
+            files._portable_path_key(p): p
+            for p in entries
+            if p.casefold().endswith(".py")
+        },
+        excluded_path_keys=frozenset(),
+    )
+    inert = layout in {"normal", "pytest", "foreign-tag"}
+    assert result is (
+        environment._BytecodeDisposition.INERT
+        if inert
+        else environment._BytecodeDisposition.UNOWNED
+    )
+    if inert:
+        # Inert is still exact input, never an exclusion from file custody.
+        node = next(row for row in pool.nodes if row["id"] == entries[relative]["node"])
+        assert node["sha256"] == hashlib.sha256(bytecode.read_bytes()).hexdigest()
+        context.verify()
+        bytecode.write_bytes(bytecode.read_bytes() + b"changed inert bytes")
+        with pytest.raises(ValueError, match="changed"):
+            context.verify()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["none", "header", "code", "source", "pytest-none", "pytest-other", "pytest"],
+)
+def test_owned_active_bytecode_keeps_source_and_tool_guards(tmp_path, fault):
+    source = _installed_fixture(tmp_path)
+    rewrite = fault.startswith("pytest")
+    suffix = "-pytest-9.1.1" if rewrite else ""
+    bytecode = (
+        source.parent
+        / "__pycache__"
+        / f"demo.{sys.implementation.cache_tag}{suffix}.pyc"
+    )
+    bytecode.parent.mkdir()
+    py_compile.compile(str(source), cfile=str(bytecode), doraise=True)
+    if fault == "header":
+        bytecode.write_bytes(b"BAD!" + bytecode.read_bytes()[4:])
+    elif fault == "code":
+        bytecode.write_bytes(bytecode.read_bytes()[:-1] + b"!")
+    elif fault == "source":
+        stamp = source.stat()
+        os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
+    pool = files._FileNodePool(capture_context=files.PythonFileCaptureContext())
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    # The independent installed RECORD owns source, never generated caches.
+    _, owned, _ = environment._installed_distributions(
+        ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
+    )
+    version = (
+        None
+        if fault == "pytest-none"
+        else "different"
+        if fault == "pytest-other"
+        else "9.1.1"
+    )
+
+    def classify():
+        return environment._bytecode_disposition(
+            bytecode.relative_to(tmp_path).as_posix(),
+            tmp_path,
+            owned,
+            entries,
+            metadata,
+            pool,
+            pytest_version=version,
+            source_paths_by_key={
+                files._portable_path_key(p): p
+                for p in entries
+                if p.casefold().endswith(".py")
+            },
+            excluded_path_keys=frozenset(),
+        )
+
+    if fault in {"none", "pytest"}:
+        assert classify() is environment._BytecodeDisposition.OWNED
+    else:
+        with pytest.raises(PythonEnvironmentIdentityError):
+            classify()
+
+
+@pytest.mark.parametrize("guard", ["code", "rewrite-tool"])
+def test_active_cache_case_alias_is_not_inert(tmp_path, guard):
+    source = _installed_fixture(tmp_path)
+    original = source.read_bytes()
+    stamp = source.stat()
+    suffix = "-pytest-9.1.1" if guard == "rewrite-tool" else ""
+    cache = (
+        source.parent
+        / "__pycache__"
+        / f"DEMO.{sys.implementation.cache_tag}{suffix}.pyc"
+    )
+    cache.parent.mkdir()
+    # Preserve source metadata but give the cache distinct observable behavior.
+    source.write_bytes(b"VALUE = 2\n")
+    os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    py_compile.compile(str(source), cfile=str(cache), doraise=True)
+    source.write_bytes(original)
+    os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    if guard == "code":
+        aliases = cache.with_name(cache.name.replace("DEMO.", "demo.", 1)).exists()
+        probe = _COMMANDS.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                "import sys;sys.path.insert(0,sys.argv[1]);import demo;print(demo.VALUE)",
+                str(source.parent),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert probe.stdout.strip() == ("2" if aliases else "1")
+    pool = files._FileNodePool(capture_context=files.PythonFileCaptureContext())
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    _, owned, _ = environment._installed_distributions(
+        ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
+    )
+    with pytest.raises(PythonEnvironmentIdentityError):
+        environment._bytecode_disposition(
+            cache.relative_to(tmp_path).as_posix(),
+            tmp_path,
+            owned,
+            entries,
+            metadata,
+            pool,
+            pytest_version=None,
+            source_paths_by_key={
+                files._portable_path_key(p): p
+                for p in entries
+                if p.casefold().endswith(".py")
+            },
+            excluded_path_keys=frozenset(),
+        )
+
+
+def test_explicitly_excluded_importable_source_is_not_an_orphan(tmp_path):
+    source = tmp_path / "site" / "demo.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 41\n", encoding="utf-8")
+    cache = source.parent / "__pycache__" / f"demo.{sys.implementation.cache_tag}.pyc"
+    cache.parent.mkdir()
+    py_compile.compile(str(source), cfile=str(cache), doraise=True)
+    excluded = frozenset({"site/demo.py"})
+    pool = files._FileNodePool(capture_context=files.PythonFileCaptureContext())
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool, excluded=excluded
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    assert "site/demo.py" not in entries
+    assert source.is_file()
+    assert (
+        environment._bytecode_disposition(
+            cache.relative_to(tmp_path).as_posix(),
+            tmp_path,
+            set(),
+            entries,
+            metadata,
+            pool,
+            pytest_version=None,
+            source_paths_by_key={},
+            excluded_path_keys=frozenset(files._portable_path_key(p) for p in excluded),
+        )
+        is environment._BytecodeDisposition.UNOWNED
+    )
 
 
 def test_runtime_startup_projection_preserves_actual_native_selection(
