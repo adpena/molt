@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 386 |
-| Local path rules | 35 | 89 |
-| Unique local commands | 73 | 77 |
+| Local path rules | 35 | 90 |
+| Unique local commands | 73 | 78 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -424,6 +424,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 14 | 2 |
 | `backend-luau` | 3 | 1 |
+| `backend-rust` | 2 | 1 |
 | `backend-llvm` | 6 | 1 |
 | `tir-midend` | 11 | 2 |
 | `wasm-host` | 5 | 1 |
