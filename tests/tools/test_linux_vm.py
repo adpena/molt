@@ -2402,27 +2402,40 @@ def test_the_local_host_sees_no_guard_where_none_runs(
 
 
 def test_the_local_host_sees_the_real_memory_guard_around_it() -> None:
-    """The guard authority against the real guard (tools/memory_guard.py).
+    """The real Host adapter transports a guarded child's result and environment.
 
-    A child under the guard asks `LocalHost(os.environ).enclosing_guard()`.
-    The oracle is the guard itself: it marks its child with its own pid (the
-    test helper runs the guard in this process), and the answer names that
-    live pid.
+    No Lima installation is needed. The child checks its guard's kernel
+    liveness while it runs; exact streams and a nonzero status prove execution.
+    Retirement-order tests can model Host commands without paying for another
+    real guard per simulated Lima/lsof response.
     """
     code = (
-        "import os, sys\n"
+        "import json, os, sys\n"
         f"sys.path.insert(0, {str(ROOT)!r})\n"
         "from tools import linux_vm\n"
-        "print(linux_vm.LocalHost(os.environ).enclosing_guard())\n"
-        "print(os.environ['MOLT_MEMORY_GUARD_PID'])\n"
+        "from molt.process_model import pid_alive\n"
+        "pid = os.environ['MOLT_MEMORY_GUARD_PID']\n"
+        "print(json.dumps({'guard': linux_vm.LocalHost(os.environ).enclosing_guard(),\n"
+        "                  'pid': pid, 'live': pid_alive(int(pid)),\n"
+        "                  'value': os.environ['RETIREMENT_ADAPTER_PROBE']}))\n"
+        "print('adapter stderr', file=sys.stderr)\n"
+        "sys.exit(7)\n"
     )
-    completed = run_guarded_test_process(
-        [sys.executable, "-B", "-c", code], cwd=ROOT, timeout=120.0
+    environment = {**os.environ, "RETIREMENT_ADAPTER_PROBE": "original"}
+    host = linux_vm.LocalHost(environment)
+    completed = host.run(
+        [sys.executable, "-B", "-c", code],
+        timeout=120.0,
+        env_overrides={"RETIREMENT_ADAPTER_PROBE": "selected"},
     )
-    assert completed.returncode == 0, completed.stderr
-    answer, pid = completed.stdout.strip().splitlines()[-2:]
-    assert pid_alive(int(pid)), "the guard that marked the child runs"
-    assert answer == f"a Molt memory guard (pid {pid})"
+    assert completed.returncode == 7, completed.stderr
+    assert completed.stderr == "adapter stderr\n"
+    observed = json.loads(completed.stdout)
+    assert observed["live"] is True, "the guard that marked the child runs"
+    assert observed["guard"] == f"a Molt memory guard (pid {observed['pid']})"
+    assert observed["value"] == "selected"
+    assert environment["RETIREMENT_ADAPTER_PROBE"] == "original"
+    assert host.environment["RETIREMENT_ADAPTER_PROBE"] == "original"
 
 
 # Prints the repository files `tools.memory_guard` loads from `root` to run
