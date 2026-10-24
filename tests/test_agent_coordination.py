@@ -22,6 +22,137 @@ def _identity_fixture_git(repo: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def test_release_work_binds_each_ledger_and_recipe_catalog_to_its_commit(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "release"
+    repo.mkdir()
+    _identity_fixture_git(repo, "init", "--initial-branch=main")
+    ledger = repo / "docs/agent/V1_HANDOFF_FINDINGS.md"
+    ledger.parent.mkdir(parents=True)
+    plan = repo / "tools/proof_plan.toml"
+    plan.parent.mkdir()
+    plan.write_text('[[ci_family]]\nname = "semantic"\n', encoding="utf-8")
+    ledger.write_text(
+        "## Open\n| HF-1 | defect | evidence |\n| HF-2 | sibling | evidence |\n",
+        encoding="utf-8",
+    )
+
+    def commit() -> str:
+        _identity_fixture_git(repo, "add", ".")
+        _identity_fixture_git(
+            repo,
+            "-c",
+            "user.name=Release Test",
+            "-c",
+            "user.email=release@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "release state",
+        )
+        return _identity_fixture_git(repo, "rev-parse", "HEAD")
+
+    published = commit()
+    ledger.write_text(
+        "## Open\n| HF-2 | sibling | evidence |\n"
+        "## Fixed\n| HF-1 | defect | recorded fix |\n",
+        encoding="utf-8",
+    )
+    selected = commit()
+    # Both kinds of replacement must be active in ordinary Git reads, yet must
+    # not change the ledger/catalog bytes attributed to an immutable source.
+    ledger_blob = _identity_fixture_git(
+        repo, "rev-parse", f"{selected}:docs/agent/V1_HANDOFF_FINDINGS.md"
+    )
+    poison = repo / "poison-ledger"
+    poison.write_text("## Fixed\n| HF-2 | wrong | replaced blob |\n", encoding="utf-8")
+    poison_blob = _identity_fixture_git(repo, "hash-object", "-w", str(poison))
+    _identity_fixture_git(repo, "replace", published, selected)
+    _identity_fixture_git(repo, "replace", ledger_blob, poison_blob)
+    assert "replaced blob" in _identity_fixture_git(
+        repo, "show", f"{published}:docs/agent/V1_HANDOFF_FINDINGS.md"
+    )
+    # A dirty source, even with the same path, is not either committed ledger.
+    ledger.write_text("## Fixed\n| HF-2 | wrong | uncommitted |\n", encoding="utf-8")
+    record = {
+        "task": "family",
+        "agent": "owner",
+        "path": "record.json",
+        "status": "running",
+        "release_outcomes": [
+            {
+                "id": "family",
+                "findings": ["HF-1"],
+                "depends_on": [],
+                "proof_families": ["semantic"],
+                "inputs": ["runtime/**"],
+            }
+        ],
+    }
+    errors = []
+    result = agent_coordination._release_work_context(
+        repo, {"origin_main": published, "head": selected}, {"active": [record]}, errors
+    )
+    assert not errors
+    assert result["published"]["source_commit"] == published
+    assert result["selected"]["source_commit"] == selected
+    assert result["published"]["ledger"] == {"open": 2, "fixed": 0, "total": 2}
+    assert result["selected"]["ledger"] == {"open": 1, "fixed": 1, "total": 2}
+    assert (
+        result["published"]["unplanned_open"]
+        == result["selected"]["unplanned_open"]
+        == 1
+    )
+    assert result["selected"]["phase_evidence"] == "NOT_EVALUATED"
+    assert result["selected"]["graph"]["findings"][0]["planning"] is None
+    assert result["coordination_sources"] == [
+        {key: record[key] for key in ("task", "agent", "path", "status")}
+    ]
+    # An absent proof recipe is a broken binding, not an empty successful graph.
+    record["release_outcomes"][0]["proof_families"] = ["missing"]
+    errors = []
+    rejected = agent_coordination._release_work_context(
+        repo, {"origin_main": published, "head": selected}, {"active": [record]}, errors
+    )
+    assert len(errors) == 2
+    assert (
+        rejected["published"]["status"]
+        == rejected["selected"]["status"]
+        == "UNAVAILABLE"
+    )
+
+
+def test_release_work_reads_an_identical_commit_once(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = "a" * 40
+    calls = []
+
+    def read(name, argv, **_kwargs):
+        calls.append(tuple(argv))
+        text = (
+            "## Open\n| HF-1 | defect | evidence |\n"
+            if argv[-1].endswith(".md")
+            else '[[ci_family]]\nname = "semantic"\n'
+        )
+        return agent_coordination.ContextCommandResult(
+            source=name, command=tuple(argv), return_code=0, stdout=text
+        )
+
+    monkeypatch.setattr(agent_coordination, "_run_context_command", read)
+    errors = []
+    result = agent_coordination._release_work_context(
+        tmp_path, {"origin_main": source, "head": source}, {"active": []}, errors
+    )
+    assert not errors
+    assert len(calls) == 2
+    assert result["published"] is result["selected"]
+    assert result["published"]["unplanned_open"] == 1
+    assert result["published"]["graph"]["findings"][0]["planning"] == "UNPLANNED"
+
+
 @pytest.mark.parametrize("detached", [False, True])
 def test_coordination_record_git_identity_in_linked_worktree(
     monkeypatch, tmp_path: Path, detached: bool
