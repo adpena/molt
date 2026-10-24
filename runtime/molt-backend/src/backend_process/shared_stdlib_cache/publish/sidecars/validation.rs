@@ -82,7 +82,6 @@ pub(super) fn validate_stdlib_archive_origins(
     workers: &[crate::backend_process::native_batch::NativeWorkerOrigin],
 ) -> std::io::Result<()> {
     use crate::backend_process::input::ContentIdentity;
-    use object::Object;
     let archive = object::read::archive::ArchiveFile::parse(bytes)
         .map_err(|error| origin_error(&error.to_string()))?;
     if archive.is_thin() {
