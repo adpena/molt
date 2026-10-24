@@ -966,10 +966,10 @@ def test_process_projection_binds_retained_origin_to_unique_kernel_generation(
     )
     if defect in {"pid-reuse", "missing-image"}:
         with pytest.raises(ValueError, match="unique observed process generation"):
-            observed.producing_image(7)
+            observed.producing_process(7)
     elif defect == "later-exec":
-        assert observed.producing_image(7) != compiler
+        assert observed.producing_process(7) == ("linux:7:1", ("/other", "b" * 64, 17))
     else:
-        assert observed.producing_image(7) == compiler
+        assert observed.producing_process(7) == ("linux:7:1", compiler)
     with pytest.raises(ValueError, match="unique observed process generation"):
-        observed.producing_image(999)
+        observed.producing_process(999)

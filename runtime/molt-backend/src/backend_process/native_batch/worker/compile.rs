@@ -12,13 +12,39 @@ use crate::backend_process::input::content::{ContentIdentity, ContentReader};
 pub(crate) struct NativeWorkerOrigin {
     pub(crate) schema: String,
     pub(crate) process_id: u32,
+    pub(crate) scope: Option<String>,
     pub(crate) input: ContentIdentity,
     pub(crate) output: ContentIdentity,
 }
 impl NativeWorkerOrigin {
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        let digest = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if self.schema != "molt.native-worker-origin.v2"
+            || self.process_id == 0
+            || self.scope.as_deref().is_some_and(|scope| !digest(scope))
+            || self.input.size == 0
+            || self.output.size == 0
+            || !digest(&self.input.sha256)
+            || !digest(&self.output.sha256)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native worker origin is invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(molt_backend_daemon)]
     pub(crate) fn retained_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.schema.capacity()
+            + self.scope.as_ref().map_or(0, String::capacity)
             + self.input.sha256.capacity()
             + self.output.sha256.capacity()
     }
@@ -81,7 +107,8 @@ fn decode_compile_native_worker(
     let input = reader.identity();
     let output = compile_native_batch_object_job(job, output_path)?;
     Ok(NativeWorkerOrigin {
-        schema: "molt.native-worker-origin.v1".into(),
+        schema: "molt.native-worker-origin.v2".into(),
+        scope: crate::backend_process::origin::current_scope().map(str::to_owned),
         process_id: std::process::id(),
         input,
         output,

@@ -51,26 +51,26 @@ impl<R: Read> Read for ContentReader<R> {
 /// Input to a successful addressed-program assembly. `lease` observes only the
 /// actual frame read, which may omit resident bodies. The ordered digests name
 /// every validated function assembled for codegen, without reserializing IR.
-#[cfg(molt_backend_daemon)]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AddressedInputIdentity {
-    schema: &'static str,
+    schema: String,
     pub(crate) lease: ContentIdentity,
     pub(crate) function_digests: String,
 }
-#[cfg(molt_backend_daemon)]
 impl AddressedInputIdentity {
     pub(crate) fn new(lease: ContentIdentity, function_digests: String) -> Self {
         Self {
-            schema: "molt.addressed-program-input.v1",
+            schema: "molt.addressed-program-input.v1".into(),
             lease,
             function_digests,
         }
     }
+    #[cfg(molt_backend_daemon)]
     pub(crate) fn retained_bytes(&self) -> usize {
-        self.lease.sha256.capacity() + self.function_digests.capacity()
+        self.schema.capacity() + self.lease.sha256.capacity() + self.function_digests.capacity()
     }
-    #[cfg(test)]
+    #[cfg(all(test, molt_backend_daemon))]
     pub(crate) fn fixture() -> Self {
         Self::new(ContentIdentity::of_bytes(b"fixture lease"), String::new())
     }

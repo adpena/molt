@@ -71,9 +71,16 @@ class WasmLinkInputRecord(TypedDict):
     links: dict[str, LinkInputRecord]
 
 
+class CompilationCacheRecord(TypedDict):
+    compiler: str | None
+    stdlib: str | None
+
+
 class CompilationInputRecord(TypedDict):
-    schema: Literal["molt.compilation-inputs.v1"]
+    schema: Literal["molt.compilation-inputs.v2"]
     compiler: dict[str, object]
+    stdlib: dict[str, object] | None
+    cache: CompilationCacheRecord
     link: LinkInputRecord | WasmLinkInputRecord
 
 
@@ -332,15 +339,34 @@ def validate_wasm_link_inputs(value: object) -> WasmLinkInputRecord:
 
 
 def compilation_input_observation(
-    origin: object, link: object
+    origin: object, link: object, *, stdlib: object, cache: object
 ) -> CompilationInputRecord:
     """Join consumed linker inputs to the retained emitter; no image assertion."""
-    from molt.backend_protocol import BackendDaemonJobOrigin
+    from molt.backend_protocol import BackendEmissionOrigin, BackendStdlibOrigin
 
-    producer = BackendDaemonJobOrigin.from_payload(origin)
+    if not isinstance(cache, dict) or set(cache) != {"compiler", "stdlib"}:
+        raise ValueError("compilation cache coordinates are not exact")
+    for path in cache.values():
+        if path is not None and (
+            not isinstance(path, str)
+            or not Path(path).is_absolute()
+            or "\0" in path
+            or ".." in Path(path).parts
+        ):
+            raise ValueError("compilation cache coordinate is not canonical")
+    cache_record: CompilationCacheRecord = {
+        "compiler": cache["compiler"],
+        "stdlib": cache["stdlib"],
+    }
+    producer = BackendEmissionOrigin.from_payload(origin)
+    constituent_origin = (
+        BackendStdlibOrigin.from_payload(stdlib) if stdlib is not None else None
+    )
     expected = (producer.output_size, producer.output_sha256)
     admitted: LinkInputRecord | WasmLinkInputRecord
     if isinstance(link, dict) and link.get("schema") == "molt.wasm-link-inputs.v1":
+        if constituent_origin is not None:
+            raise ValueError("WASM compiler cannot name a native stdlib archive")
         wasm = validate_wasm_link_inputs(link)
         admitted = wasm
         if _content(wasm["source_inputs"]["compiler_output"]) != expected:
@@ -348,29 +374,41 @@ def compilation_input_observation(
     else:
         observed = LinkInputObservation.from_record(link)
         admitted = observed.as_record()
-        if observed.dialect != "elf-gnu" or set(dict(observed.roles)) != {
-            "compiler_output",
-            "runtime",
-        }:
+        roles = {"compiler_output", "runtime"}
+        if constituent_origin is not None:
+            roles.add("stdlib")
+        if observed.dialect != "elf-gnu" or set(dict(observed.roles)) != roles:
             raise ValueError("native capture omitted compiler or runtime input")
         inputs = {p: (n, h) for p, n, h in observed.inputs}
         if inputs[dict(observed.roles)["compiler_output"]] != expected:
             raise ValueError("native linker buffer differs from compiler emission")
+        if constituent_origin is not None and inputs[
+            dict(observed.roles)["stdlib"]
+        ] != (constituent_origin.output_size, constituent_origin.output_sha256):
+            raise ValueError(
+                "native linker buffer differs from original stdlib emissions"
+            )
     return {
-        "schema": "molt.compilation-inputs.v1",
+        "schema": "molt.compilation-inputs.v2",
         "compiler": producer.payload(),
+        "stdlib": constituent_origin.payload()
+        if constituent_origin is not None
+        else None,
         "link": admitted,
+        "cache": cache_record,
     }
 
 
 def validate_compilation_input_observation(value: object) -> CompilationInputRecord:
     if (
         not isinstance(value, dict)
-        or set(value) != {"schema", "compiler", "link"}
-        or value["schema"] != "molt.compilation-inputs.v1"
+        or set(value) != {"schema", "compiler", "stdlib", "cache", "link"}
+        or value["schema"] != "molt.compilation-inputs.v2"
     ):
         raise ValueError("compilation input observation contract is invalid")
-    return compilation_input_observation(value["compiler"], value["link"])
+    return compilation_input_observation(
+        value["compiler"], value["link"], stdlib=value["stdlib"], cache=value["cache"]
+    )
 
 
 def capture_native_link_preparation(

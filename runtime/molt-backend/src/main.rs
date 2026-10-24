@@ -78,12 +78,20 @@ fn main() -> io::Result<()> {
             Ok(())
         }
         #[cfg(molt_backend_daemon)]
-        BackendCommand::Daemon { socket_path } => run_daemon(socket_path),
+        BackendCommand::Daemon {
+            socket_path,
+            emission_scope,
+        } => {
+            backend_process::origin::initialize_scope(emission_scope)?;
+            run_daemon(socket_path)
+        }
         #[cfg(feature = "native-backend")]
         BackendCommand::NativeBatchJob {
             job_file,
             output_path,
+            emission_scope,
         } => {
+            backend_process::origin::initialize_scope(emission_scope)?;
             let origin =
                 compile_native_batch_object_job_file(Path::new(job_file), Path::new(output_path))?;
             serde_json::to_writer(io::stdout().lock(), &origin).map_err(io::Error::other)
@@ -100,10 +108,21 @@ fn compile_ir_document(request: BackendCompileArgs<'_>) -> io::Result<()> {
             Ok::<_, io::Error>((fact_graph, target_info))
         })
         .transpose()?;
-    let document = request.target.admit_document(read_backend_ir_document(
-        request.ir_format,
-        request.ir_file_path,
-    )?)?;
+    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    backend_process::origin::initialize_scope(request.emission_scope)?;
+    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    let (document, captured_input) = if request.capture_origin.is_some() {
+        let (document, input) = read_captured_msgpack(request.ir_file_path)?;
+        (document, Some(input))
+    } else {
+        (
+            read_backend_ir_document(request.ir_format, request.ir_file_path)?,
+            None,
+        )
+    };
+    #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+    let document = read_backend_ir_document(request.ir_format, request.ir_file_path)?;
+    let document = request.target.admit_document(document)?;
 
     if let Some((fact_graph, target_info)) = fact_graph {
         emit_fact_graph_for_ir(
@@ -121,11 +140,30 @@ fn compile_ir_document(request: BackendCompileArgs<'_>) -> io::Result<()> {
         return Ok(());
     }
 
-    emit_backend_target(BackendTargetEmitRequest {
+    let emission = BackendTargetEmitRequest {
         document,
         output_path: request.output_path,
         target: request.target,
-    })
+        capture_origin: request.capture_origin.is_some(),
+    };
+    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    let emitted = emit_backend_target(emission)?;
+    #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+    emit_backend_target(emission)?;
+    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    if let Some(path) = request.capture_origin {
+        let emitted =
+            emitted.ok_or_else(|| io::Error::other("backend did not produce requested origin"))?;
+        let origin = backend_process::origin::EmissionOrigin::new(
+            backend_process::origin::ProducerKind::OneShot,
+            captured_input.expect("capture decoded its input"),
+            emitted.output,
+            emitted.codegen,
+        );
+        let bytes = serde_json::to_vec(&origin).map_err(io::Error::other)?;
+        molt_artifact_publish::write_bytes_atomically(Path::new(path), &bytes)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

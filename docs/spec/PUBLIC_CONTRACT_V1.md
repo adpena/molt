@@ -51,13 +51,15 @@ It defaults to off and forces a fresh final link, including a full reproducer
 write proportional to the consumed inputs. Ordinary builds do not create this
 capture.
 
-The implemented producer requires Cranelift output with retained daemon emission
-origin. Native capture requires an ELF final link through LLD; WASM capture
-requires `--linked` and WASM LLD. JIT, factgraph, object-only, transpiler, MLIR and
-LLVM capture are refused. Missing emission origin, including unsupported
-one-shot or persisted-cache origin, is also refused rather than reconstructed
-from the currently selected compiler. These capture constraints do not change
-the release-target or Python-version matrices.
+Original-emission capture covers native Cranelift/LLVM and WASM producers,
+including one-shot compilation, daemon responses and cache generations that
+retain their original observation. Native final-link capture requires ELF LLD;
+WASM requires `--linked` and WASM LLD. JIT, factgraph, object-only, transpiler and
+MLIR capture remain refused. An older bytes-only cache entry has unknown origin
+and cannot grant capture. Shared stdlib archives retain the original observations
+of their constituents. These source contracts do not widen the release-target
+or Python-version matrices; installed cold/warm and platform execution remain
+separate qualification obligations.
 
 The release-consumer receipt requires retained compilation evidence, and its
 receiver rechecks the raw linker inputs, output publication and original emission
