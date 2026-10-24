@@ -1,6 +1,8 @@
+# MOLT_META: stderr=exact
 """Purpose: CPython parity for generational GC controls and statistics."""
 
 import gc
+import copy
 
 
 original = gc.get_threshold()
@@ -88,11 +90,48 @@ try:
             "copy_tracking",
             empty,
             gc.is_tracked(source.copy()),
+            gc.is_tracked(copy.copy(source)),
             gc.is_tracked(dict(source)),
             gc.is_tracked(updated),
             gc.is_tracked(occupied),
             gc.is_tracked({**source}),
         )
+
+    # A sparse source takes the compacting, itemwise path, which does not
+    # inherit sticky membership when every surviving entry is atomic.
+    sparse = {i: [] for i in range(8)}
+    for i in range(8):
+        sparse[i] = 0
+    for i in range(6):
+        del sparse[i]
+    print(
+        "sparse_copy_tracking",
+        gc.is_tracked(sparse),
+        gc.is_tracked(sparse.copy()),
+        gc.is_tracked(copy.copy(sparse)),
+        gc.is_tracked(dict(sparse)),
+    )
+
+    # A back edge added after cloning puts every copied dictionary in the
+    # isolated component. Its child's finalizer identifies that component.
+    finalized_copied_children = []
+
+    class CopyChild:
+        def __del__(self):
+            finalized_copied_children.append("copied child")
+
+    child = CopyChild()
+    source = {"child": child}
+    clones = (source.copy(), copy.copy(source), dict(source), {**source})
+    child.back = clones
+    print(
+        "cyclic_copies",
+        all(gc.is_tracked(clone) for clone in clones),
+        all(clone["child"] is child for clone in clones),
+    )
+    del clones, child, source
+    gc.collect()
+    print("copied_cycle_finalized", finalized_copied_children == ["copied child"])
 
     observations = []
 
