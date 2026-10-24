@@ -327,6 +327,11 @@ def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
         '[toolchain]\nchannel="1.96.1"\n', encoding="utf-8"
     )
     inherited = {
+        "MOLT_USE_SCCACHE": "1",
+        "RUSTC_WRAPPER": "sccache",
+        "RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
+        "CARGO_BUILD_RUSTC_WRAPPER": "sccache",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
         "PATH": "tools",
         "CARGO_HOME": "ambient",
         "CARGO_INCREMENTAL": "1",
@@ -354,6 +359,16 @@ def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
     assert env["CARGO_HOME"] == str(tmp_path / "work" / "cargo-home")
     assert env["CARGO_INCREMENTAL"] == "0" and env["SOURCE_DATE_EPOCH"] == "123"
     assert env["LC_ALL"] == "C" and env["TZ"] == "UTC"
+    assert env["MOLT_USE_SCCACHE"] == "0"
+    assert all(
+        env[name] == ""
+        for name in (
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        )
+    )
     assert env["RUSTUP_TOOLCHAIN"] == "1.96.1"
     assert env["VCINSTALLDIR"] == "activated-vc"
     assert env["VSINSTALLDIR"] == "activated-vs"

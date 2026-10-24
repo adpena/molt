@@ -1310,6 +1310,24 @@ disable incremental development or user-code compilation. Runtime production
 derives the epoch from the immutable requested commit, never ambient wall time
 or a moving `HEAD`.
 
+Release production selects direct compiler execution through the shared policy,
+including disabling automatic wrapper selection. General Cargo admission must
+refuse an explicitly selected sccache wrapper when `SOURCE_DATE_EPOCH` is present;
+automatic selection chooses a compatible direct compiler before spawning work.
+Effective Rust wrapper selection is checked before compiler probes. C/C++
+selection is checked after target SDK projection in the resolved runtime plan,
+which owns the actual host and target coordinates. Generic raw Cargo
+normalization checks only unambiguous environment selectors; it does not qualify
+arbitrary target-specific or configured C selection without a resolved plan.
+The pinned [sccache compile-request implementation](https://github.com/mozilla/sccache/blob/v0.18.0/src/cmdline.rs#L288-L305)
+removes that variable. Its [preprocessor-cache validation](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/preprocessor_cache.rs#L291-L296)
+also reads the daemon epoch rather than the request epoch. Recording the desired
+value cannot prove that the compiler received it. This applies to C/C++ wrapping
+through cc-rs as well as Rust compile-time environment observations. Normal
+development caching without that incompatible input remains available. A future
+cache correction needs request-scoped compiler and cache validation evidence;
+macro replacement, cache-buster flags and post-failure retries do not establish it.
+
 Runtime archives preserve their declared debugging profile while removing private
 build locations from compiler-generated paths. Rust production flags use the
 shared path-remapping authority after Cargo configuration selection; source and

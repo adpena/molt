@@ -18,6 +18,7 @@ from molt.compiler_distribution import (
     validate_wasm_facts_record,
 )
 from molt.host_tool_products import HostToolProduct
+from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 from molt.exact_json import write_exact
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.toolchain_identity import (
@@ -122,6 +123,8 @@ def reproducible_build_environment(epoch: int) -> dict[str, str]:
     if type(epoch) is not int or epoch <= 0:
         raise ValueError("release source epoch must be a positive integer")
     return {
+        **dict.fromkeys(CARGO_WRAPPER_ENV_NAMES, ""),
+        "MOLT_USE_SCCACHE": "0",
         "CARGO_INCREMENTAL": "0",
         "SOURCE_DATE_EPOCH": str(epoch),
         "LC_ALL": "C",

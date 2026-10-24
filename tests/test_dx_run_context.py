@@ -787,7 +787,7 @@ def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     assert env["SCCACHE_CACHE_SIZE"] == "10G"
     # sccache is off-by-default on Windows (0 hits + mid-compile crashes there);
     # auto-on elsewhere. The default is platform-derived, so assert accordingly.
-    assert env["MOLT_USE_SCCACHE"] == ("0" if os.name == "nt" else "1")
+    assert env["MOLT_USE_SCCACHE"] == ("0" if os.name == "nt" else "auto")
     assert env["MOLT_DIFF_ALLOW_RUSTC_WRAPPER"] == "1"
     assert env["MOLT_CACHE_MAX_GB"] == "30"
     assert env["MOLT_CACHE_MAX_AGE_DAYS"] == "30"

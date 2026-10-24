@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from molt.process_environment import ProcessEnvironmentBuilder
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 
 import importlib
 import inspect
@@ -28,6 +32,63 @@ RUNTIME_WASM_SUPPORT = importlib.import_module("molt.cli.runtime_wasm_build_supp
 
 
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+@pytest.mark.parametrize("epoch", ["", "1700000000"])
+@pytest.mark.parametrize(
+    "selector",
+    [
+        *CARGO_WRAPPER_ENV_NAMES,
+        "CC",
+        "CXX",
+        "HOST_CC",
+        "HOST_CXX",
+        "TARGET_CC",
+        "TARGET_CXX",
+    ],
+)
+def test_epoch_wrapper_refusal_has_no_process_or_files(
+    tmp_path, monkeypatch, rule, epoch, selector
+):
+    from molt.cargo_execution_policy import normalize_cargo_environment
+
+    monkeypatch.setattr(
+        CARGO,
+        "_run_cargo_attempt",
+        lambda *a, **k: pytest.fail("incompatible compiler started"),
+    )
+    key = selector.lower() if rule is NameRule.WINDOWS else selector
+    value = (
+        r"C:\tools\sccache.exe"
+        if selector in CARGO_WRAPPER_ENV_NAMES
+        else "sccache gcc"
+    )
+    env = ProcessEnvironment(
+        {
+            key: value,
+            "source_date_epoch"
+            if rule is NameRule.WINDOWS
+            else "SOURCE_DATE_EPOCH": epoch,
+            "SCCACHE_DIR": str(tmp_path / "cache"),
+            "TMPDIR": str(tmp_path / "temporary"),
+        },
+        rule=rule,
+    )
+    original = dict(env)
+    with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH.*pinned sccache"):
+        normalize_cargo_environment(env)
+    with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+        CARGO._run_cargo_with_sccache_retry(
+            ["cargo", "build"],
+            cwd=tmp_path,
+            env=env,
+            timeout=1,
+            json_output=False,
+            label="epoch refusal",
+        )
+    assert dict(env) == original
+    assert not list(tmp_path.iterdir())
 
 
 def _cargo_env(target_root: Path, **values: str) -> dict[str, str]:

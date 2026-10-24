@@ -6,7 +6,12 @@ Configuration bytes are parsed and fingerprinted from the same stable snapshot.
 
 from __future__ import annotations
 
-from molt.cargo_execution_policy import cargo_command_options
+from molt.cargo_execution_policy import (
+    cargo_command_options,
+    cargo_c_tool_environment_names,
+    cargo_c_tool_words,
+    validate_sccache_epoch_environment,
+)
 
 import os
 import re
@@ -984,6 +989,26 @@ def _tool_path(value: object, *, root: Path, env: Mapping[str, str], role: str) 
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"runtime {role} executable is not selected")
     command = value.strip()
+    if role in {
+        "cc",
+        "cxx",
+        "ar",
+        "ranlib",
+        "host_cc",
+        "host_cxx",
+        "host_ar",
+        "host_ranlib",
+    }:
+        words = cargo_c_tool_words(
+            value, cwd=root, windows=ProcessEnvironment(env).rule is NameRule.WINDOWS
+        )
+        if len(words) != 1:
+            raise ValueError(
+                f"runtime {role} compound C commands require an attested executable dependency plan"
+            )
+        command = words[0]
+        if not Path(command).is_absolute() and (root / command).exists():
+            command = os.fspath(root / command)
     candidate = Path(command)
     if not candidate.is_absolute() and any(part in command for part in ("/", "\\")):
         candidate = root / candidate
@@ -991,18 +1016,6 @@ def _tool_path(value: object, *, root: Path, env: Mapping[str, str], role: str) 
     # Cargo executable selectors are paths, not shell commands. Compound C
     # wrapper commands require a separate attested executable dependency plan.
     return resolve_executable(command, environment=env, label=f"runtime {role}")
-
-
-def _c_tool_environment_names(
-    role: str, *, target: str, host_target: str
-) -> tuple[str, ...]:
-    prefix = role.upper()
-    return (
-        f"{prefix}_{target}",
-        f"{prefix}_{target.replace('-', '_').replace('.', '_')}",
-        f"{'HOST' if target == host_target else 'TARGET'}_{prefix}",
-        prefix,
-    )
 
 
 def runtime_c_tool_selection(
@@ -1015,7 +1028,7 @@ def runtime_c_tool_selection(
     allow_default: bool = True,
 ) -> Path | None:
     """One cc-rs selector precedence for Cargo and its development proof."""
-    names = _c_tool_environment_names(role, target=target, host_target=host_target)
+    names = cargo_c_tool_environment_names(role, target=target, host_target=host_target)
     value = next((env[name] for name in names if env.get(name)), None)
     if value is None and allow_default and target == host_target:
         value = next(
@@ -1060,7 +1073,7 @@ def _select_host_c_tools(
     if target == host_target:
         return
     for role in ("cc", "cxx", "ar", "ranlib"):
-        names = _c_tool_environment_names(
+        names = cargo_c_tool_environment_names(
             role, target=host_target, host_target=host_target
         )
         path = runtime_c_tool_selection(
@@ -1579,7 +1592,7 @@ class RuntimeCargoPlan:
             if c_role not in {"cc", "cxx", "ar", "ranlib"}:
                 continue
             target = self.host_target if role.startswith("host_") else self.target
-            selector = _c_tool_environment_names(
+            selector = cargo_c_tool_environment_names(
                 c_role, target=target, host_target=self.host_target
             )[0]
             if self.environment.get(selector) != os.fspath(path):
@@ -2008,20 +2021,9 @@ def resolve_runtime_cargo_plan(
             environment_transform(ProcessEnvironment(environment)),
             rule=environment.rule,
         )
-    rustc_selector = cargo_selected_value(
-        configuration,
-        cli,
-        environment,
-        ("build", "rustc"),
-        ("RUSTC", "CARGO_BUILD_RUSTC"),
-        "rustc",
-    )
-    rustc = _tool_path(rustc_selector, root=root, env=environment, role="rustc")
-    rustc = resolve_rustup_proxy(rustc, role="rustc", root=root, env=environment)
-    rustc_custody = CargoExecutableCustody.capture("tool/rustc", rustc)
-    environment["RUSTC"] = os.fspath(rustc)
-    environment.update(rust_toolchain_library_environment(rustc, environment))
-    wrappers: dict[str, Path] = {}
+    # Resolve Cargo's effective selectors before probing either compiler. The
+    # source environment remains exact; this projection only admits the plan.
+    wrapper_selectors: dict[str, str] = {}
     for name, key in (
         ("RUSTC_WRAPPER", "rustc-wrapper"),
         ("RUSTC_WORKSPACE_WRAPPER", "rustc-workspace-wrapper"),
@@ -2036,6 +2038,30 @@ def resolve_runtime_cargo_plan(
         )
         if not isinstance(value, str):
             raise ValueError(f"runtime {name} must be an executable path or empty")
+        wrapper_selectors[name] = value
+    if "SOURCE_DATE_EPOCH" in environment:
+        admission_environment = ProcessEnvironmentBuilder(environment)
+        admission_environment.update(wrapper_selectors)
+        validate_sccache_epoch_environment(
+            admission_environment,
+            cwd=root,
+            admit_c_tools=False,
+        )
+    rustc_selector = cargo_selected_value(
+        configuration,
+        cli,
+        environment,
+        ("build", "rustc"),
+        ("RUSTC", "CARGO_BUILD_RUSTC"),
+        "rustc",
+    )
+    rustc = _tool_path(rustc_selector, root=root, env=environment, role="rustc")
+    rustc = resolve_rustup_proxy(rustc, role="rustc", root=root, env=environment)
+    rustc_custody = CargoExecutableCustody.capture("tool/rustc", rustc)
+    environment["RUSTC"] = os.fspath(rustc)
+    environment.update(rust_toolchain_library_environment(rustc, environment))
+    wrappers: dict[str, Path] = {}
+    for name, value in wrapper_selectors.items():
         environment[name] = ""  # Explicit empty disables inherited config.
         if value:
             wrappers[name] = _tool_path(value, root=root, env=environment, role=name)
@@ -2090,6 +2116,9 @@ def resolve_runtime_cargo_plan(
             wasi_plan = wasi_c_abi_plan(wasi_sdk)
         except LlvmToolchainConfigError as exc:
             raise ValueError(str(exc)) from exc
+    validate_sccache_epoch_environment(
+        environment, cwd=root, target=target, host_target=host_target
+    )
     cargo_target = target.upper().replace("-", "_")
     if wasi_plan is not None:
         environment.setdefault(
@@ -2243,7 +2272,7 @@ def resolve_runtime_cargo_plan(
                 if cfg_linkers:
                     value = cfg_linkers[0][1]
         else:
-            names = _c_tool_environment_names(
+            names = cargo_c_tool_environment_names(
                 role, target=target, host_target=host_target
             )
             selected_c_tool = runtime_c_tool_selection(
