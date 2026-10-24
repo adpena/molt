@@ -33,6 +33,7 @@ SRC_ROOT = REPO_ROOT / "src"
 
 from molt import process_guard  # noqa: E402
 from molt.dx import DX_ENV_KEYS, development_artifact_env, render_env  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
 from tools import check_instruction_hierarchy, claims_status  # noqa: E402
 from tools.memory_guard_core.cli_contract import guardian_argv  # noqa: E402
@@ -671,12 +672,14 @@ def _run_context_command(
     *,
     cwd: Path,
     timeout: float = AGENT_CONTEXT_COMMAND_TIMEOUT_SEC,
+    env: ProcessEnvironment | None = None,
 ) -> ContextCommandResult:
     argv = tuple(str(item) for item in command)
     try:
         completed = process_guard.run_completed_command(
             argv,
             cwd=str(cwd),
+            env=env,
             capture_output=True,
             check=False,
             text=True,
@@ -922,6 +925,7 @@ def _coordination_record_summary(
         "planned_proof_lane": record.planned_proof_lane or None,
         "shared_target_root": record.shared_target_root or None,
         "owned_paths": record.payload.get("owned_paths", []),
+        "release_outcomes": record.payload.get("release_outcomes", []),
         "ownership_request": record.payload.get("ownership_request"),
         "created_at_utc": record.payload.get("created_at_utc"),
         "updated_at_utc": record.payload.get("updated_at_utc"),
@@ -1274,6 +1278,101 @@ def _documentation_context(
     }
 
 
+def _release_work_context(
+    repo_root: Path,
+    git: dict[str, Any],
+    coordination: dict[str, Any],
+    errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Join mutable work declarations to immutable release facts, once per source."""
+    import tomllib
+
+    from tools import finding_status
+    from tools.git_identity import immutable_git_environment, require_git_object_id
+    from tools.release_outcomes import parse_release_outcomes
+
+    entries: list[object] = []
+    owners: list[dict[str, Any]] = []
+    for record in coordination.get("active", []):
+        declared = record.get("release_outcomes", [])
+        if not isinstance(declared, list):
+            errors.append(
+                _context_error(
+                    "release.work",
+                    "invalid_record",
+                    f"{record['path']}: release_outcomes must be an array",
+                )
+            )
+            return {"status": "UNAVAILABLE"}
+        entries.extend(declared)
+        if declared:
+            owners.append(
+                {key: record[key] for key in ("task", "agent", "path", "status")}
+            )
+
+    snapshots: dict[str, dict[str, Any]] = {}
+    result: dict[str, Any] = {"coordination_sources": owners}
+    for label, source in (
+        ("published", git.get("origin_main")),
+        ("selected", git.get("head")),
+    ):
+        try:
+            source = require_git_object_id(source, label=f"{label} release source")
+            if source in snapshots:
+                result[label] = snapshots[source]
+                continue
+            env = ProcessEnvironment(immutable_git_environment(os.environ))
+            contents: dict[str, str] = {}
+            for relative in (
+                finding_status.LEDGER_PATH.as_posix(),
+                "tools/proof_plan.toml",
+            ):
+                command = _run_context_command(
+                    "release.work",
+                    ("git", "show", f"{source}:{relative}"),
+                    cwd=repo_root,
+                    env=env,
+                )
+                if not command.ok:
+                    errors.append(command.error_payload())
+                    result[label] = {"source_commit": source, "status": "UNAVAILABLE"}
+                    break
+                contents[relative] = command.stdout
+            else:
+                findings = finding_status.project(
+                    contents[finding_status.LEDGER_PATH.as_posix()]
+                )
+                manifest = tomllib.loads(contents["tools/proof_plan.toml"])
+                families = {
+                    row["name"]
+                    for section in ("ci_family", "scheduled_family")
+                    for row in manifest.get(section, [])
+                }
+                graph = parse_release_outcomes(
+                    entries, findings=findings, proof_families=families
+                )
+                snapshot = {
+                    "source_commit": source,
+                    "status": "OBSERVED",
+                    "ledger": {
+                        "open": len(findings.open_keys),
+                        "fixed": len(findings.rows) - len(findings.open_keys),
+                        "total": len(findings.rows),
+                    },
+                    "unplanned_open": len(graph.unplanned_findings),
+                    "graph": graph.project(),
+                    "phase_evidence": "NOT_EVALUATED",
+                }
+                snapshots[source] = snapshot
+                result[label] = snapshot
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            errors.append(
+                _context_error("release.work", "invalid_source_or_binding", exc)
+            )
+            result[label] = {"source_commit": source, "status": "UNAVAILABLE"}
+    return result
+
+
 def agent_context(repo_root: Path) -> AgentContext:
     root = repo_root.resolve()
     errors: list[dict[str, Any]] = []
@@ -1283,6 +1382,9 @@ def agent_context(repo_root: Path) -> AgentContext:
         "claims": _claims_context(root, errors),
         "proof_audit": _proof_audit_context(root, errors),
     }
+    live_facts["release_work"] = _release_work_context(
+        root, live_facts["git"], file_records["coordination"], errors
+    )
     documentation = _documentation_context(root, errors)
     return AgentContext(
         generated_at_utc=utc_now(),
@@ -1317,6 +1419,16 @@ def print_text_agent_context(payload: dict[str, Any]) -> None:
         f"worktrees: total={git['worktree_count']} dirty={len(dirty)} "
         f"queried_is_canonical={git['queried_root_is_canonical']}"
     )
+    for label in ("published", "selected"):
+        work = payload["live_facts"].get("release_work", {}).get(label, {})
+        if work.get("status") == "OBSERVED":
+            counts = work["ledger"]
+            print(
+                f"release {label}: source={work['source_commit'][:12]} "
+                f"open={counts['open']} fixed={counts['fixed']} total={counts['total']} "
+                f"outcomes={len(work['graph']['outcomes'])} "
+                f"unplanned_open={work['unplanned_open']} phase_evidence=NOT_EVALUATED"
+            )
     for item in dirty:
         print(
             f"- dirty {item['path']} branch={item['branch']} "

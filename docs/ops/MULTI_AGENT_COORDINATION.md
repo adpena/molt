@@ -23,6 +23,43 @@ The goal is highest expected signal per machine hour:
 
 ## Serialized integration
 
+### Release outcome graph
+
+The canonical `context` command joins the committed findings ledger and proof
+catalog with explicit `release_outcomes` in active coordination records. It reports
+published and selected commit identities separately; dirty working-tree prose
+cannot change either count. Every finding remains visible. An open finding without
+a binding is `UNPLANNED`; a binding is `PLANNED`, which does not attest review,
+semantic proof, landing eligibility or completion. Historical fixed rows keep their
+recorded status without invented phase evidence.
+
+An outcome names a complete invariant or migration family and may own several
+finding IDs. Declare only real prerequisite edges. Independent outcomes need no
+edge merely because they share a release milestone. One active record owns each
+binding; duplicate finding/outcome ownership, unknown findings or proof families,
+escaping input paths and dependency cycles make the projection unavailable with a
+structured diagnostic.
+
+For example, an active record can contain:
+
+```json
+"release_outcomes": [{
+  "id": "execution-evidence",
+  "findings": ["HF-334", "HF-190", "HF-35"],
+  "depends_on": [],
+  "proof_families": ["repository_policy"],
+  "inputs": ["tools/proof_*.py", "tools/molt_dev*.py"]
+}]
+```
+
+These declarations live in existing coordination custody, outside compiler source
+and the proof-policy digest. Updating an assignment or dependency therefore does
+not invalidate unchanged proof receipts. Proof commands, dependencies and resource
+admission remain owned by the proof plan/executor; publication and retirement remain
+owned by the landing queue. This graph projection does not yet connect phase
+evidence to either queue or direct-integration admission. Keep that limitation
+explicit until one shared, source-bound predicate serves both paths.
+
 A live `tools/molt_dev.py integrate` owns one OS file lock in Git's resolved
 common directory, shared by the primary checkout and every linked worktree.
 The handle covers fetch, source selection, gates, push confirmation and cleanup.
