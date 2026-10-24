@@ -74,7 +74,7 @@ from molt.cli.source_extension_toolchain import (
     _meson_native_text,
     _source_extension_meson_cross_properties,
 )
-from molt.target_python import TargetPythonVersion
+from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
 from tests.python_environment_test_support import (
     build_environment_manifest as _build_environment_manifest,
@@ -3129,7 +3129,7 @@ def test_complete_set_validator_rejects_duplicate_module_sidecar(
         ],
     }
     variant = SourceExtensionVariant(
-        target_python=TargetPythonVersion(3, 12, 0),
+        target_python=_parse_target_python_version("3.12"),
         abi_tier="cpython-abi",
         target_triple="wasm32-wasip1",
     )
@@ -3309,7 +3309,7 @@ def _complete_set_abi_case(tmp_path: Path) -> dict[str, Any]:
         "publish_root": publish,
         "extension_set": extension_set,
         "variant": SourceExtensionVariant(
-            target_python=TargetPythonVersion(3, 12, 0),
+            target_python=_parse_target_python_version("3.12"),
             abi_tier="cpython-abi",
             target_triple="wasm32-wasip1",
         ),

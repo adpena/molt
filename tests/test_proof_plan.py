@@ -8534,6 +8534,32 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
     assert set(calls) == {"raises", "missing", "wrong"}
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "src/molt/target_python.py",
+        "src/molt/target_python_policy.py",
+        "src/molt/_python_release_generated.py",
+    ],
+)
+def test_target_release_changes_select_extension_identity_consumers(changed):
+    from tools import molt_dev_policy
+
+    gates, _ = molt_dev_policy.GateConfig.load(PLAN.path).select([changed])
+    selected = {
+        arg
+        for gate in gates
+        for arg in (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+        if arg.startswith("tests/")
+    }
+    assert {
+        "tests/cli/test_source_extension_set_registry.py",
+        "tests/cli/test_source_extension_producer.py",
+    } <= selected
+
+
 def test_canonical_target_python_catalog_is_stdlib_only():
     # Staged-source projection has neither site packages nor ambient imports.
     # Exercise the real authority; a constant-only catalog fixture hides eager
