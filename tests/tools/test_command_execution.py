@@ -291,23 +291,28 @@ def test_git_transfer_http_bound_keeps_a_tighter_user_value(
 def test_git_config_append_accepts_git_zero_count_forms(tmp_path, count):
     from tools.git_identity import add_git_config
 
+    executor = command_execution.CommandExecutor.for_file(__file__)
     environment = dict(os.environ)
     environment["GIT_CONFIG_COUNT"] = count
-    accepted = subprocess.run(
+    accepted = executor.run(
         ["git", "config", "--list"],
         cwd=tmp_path,
         env=environment,
         text=True,
+        encoding="utf-8",
+        timeout=30,
         capture_output=True,
         check=False,
     )
     assert accepted.returncode == 0  # Git defines an empty count as zero.
     add_git_config(environment, "user.name", "Configured name")
-    result = subprocess.run(
+    result = executor.run(
         ["git", "config", "--get", "user.name"],
         cwd=tmp_path,
         env=environment,
         text=True,
+        encoding="utf-8",
+        timeout=30,
         capture_output=True,
         check=False,
     )
@@ -319,13 +324,16 @@ def test_git_config_append_accepts_git_zero_count_forms(tmp_path, count):
 def test_git_config_append_refuses_invalid_inherited_count(tmp_path, count):
     from tools.git_identity import add_git_config
 
+    executor = command_execution.CommandExecutor.for_file(__file__)
     environment = dict(os.environ)
     environment["GIT_CONFIG_COUNT"] = count
-    result = subprocess.run(
+    result = executor.run(
         ["git", "config", "--list"],
         cwd=tmp_path,
         env=environment,
         text=True,
+        encoding="utf-8",
+        timeout=30,
         capture_output=True,
         check=False,
     )
