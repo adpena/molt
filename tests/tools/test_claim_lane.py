@@ -185,11 +185,13 @@ def test_claim_free_lane_lands(
     from molt import dx
     from tests.process_guard_common import guard_custody_env
 
+    foreign_source = tmp_path / "foreign-source"
+    foreign_source.mkdir()
     foreign_artifacts = tmp_path / "foreign-artifacts"
     foreign_artifacts.mkdir()
     sentinel = foreign_artifacts / "sentinel"
     sentinel.write_bytes(b"foreign checkout state")
-    foreign_env = dx.RunContext(tmp_path / "foreign-source").canonical_env(
+    foreign_env = dx.RunContext(foreign_source).canonical_env(
         {dx.ARTIFACT_ROOT_ENV: str(foreign_artifacts)}, create_dirs=False
     )
     custody = guard_custody_env()
