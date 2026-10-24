@@ -59,6 +59,7 @@ import venv
 from pathlib import Path
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
+    guard_custody_env,
     install_module_os_view,
     install_thread_module_view,
     hung_child_marker,
@@ -86,6 +87,7 @@ from tools.molt_dev_common import (  # noqa: E402
 from tests.integration_driver_fixture import (  # noqa: E402
     clone_tree,
     copy_driver_trees,
+    isolated_checkout_artifacts as isolated_checkout_artifacts,
 )
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
@@ -245,7 +247,7 @@ def _clone_origin(tmp_path, seed: Path, monkeypatch) -> tuple[Path, Path]:
 
 
 @pytest.fixture
-def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
+def origin_and_clone(tmp_path, _origin_seed, monkeypatch, isolated_checkout_artifacts):
     """Independent real bare origin and working clone for each integration.
 
     Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
@@ -289,17 +291,78 @@ def _driver_origin_seed(tmp_path_factory, worker_id, driver_seed):
 
 
 @pytest.fixture
-def driver_origin_and_clone(tmp_path, _driver_origin_seed, monkeypatch):
+def driver_origin_and_clone(
+    tmp_path, _driver_origin_seed, monkeypatch, isolated_checkout_artifacts
+):
     """`origin_and_clone` whose main already carries this checkout's driver."""
     return _clone_origin(tmp_path, _driver_origin_seed, monkeypatch)
 
 
 def test_origin_fixture_copies_history_without_mutable_aliases(
-    drv, tmp_path, _origin_seed, monkeypatch
+    drv, tmp_path, _origin_seed, monkeypatch, request
 ):
+    from molt import checkout_state, dx
+    from molt.build_state_layout import build_state_root
+    from tools import disk_guard
+
+    foreign_source = tmp_path / "foreign-source"
+    foreign_source.mkdir()
+    foreign_artifacts = tmp_path / "foreign-artifacts"
+    foreign_artifacts.mkdir()
+    foreign_env = dx.RunContext(foreign_source).canonical_env(
+        {dx.ARTIFACT_ROOT_ENV: str(foreign_artifacts)}, create_dirs=False
+    )
+    target, uv_environment = _shared_checkout_state(foreign_artifacts, foreign_source)
+    control = build_state_root(
+        project_root=foreign_source, cargo_target=target, environment=foreign_env
+    )
+    control.mkdir(parents=True)
+    (control / "sentinel").write_bytes(b"foreign build control")
+    with checkout_state.checkout_state_use(
+        (
+            (target, checkout_state.CheckoutOwner(foreign_source, "cargo-target")),
+            (
+                uv_environment,
+                checkout_state.CheckoutOwner(foreign_source, "uv-environment"),
+            ),
+            (control, checkout_state.CheckoutOwner(target, "build-control")),
+        )
+    ):
+        pass
+    foreign_files = {
+        path.relative_to(foreign_artifacts): path.read_bytes()
+        for path in foreign_artifacts.rglob("*")
+        if path.is_file()
+    }
+    caches = {
+        key: os.environ[key]
+        for key in dx.CANONICAL_ROOT_ENV_KEYS
+        if key in os.environ
+        and key not in dx.MOLT_ROOT_ENV_KEYS
+        and key != "UV_PROJECT_ENVIRONMENT"
+    }
+    custody = guard_custody_env()
+    for key in dx.MOLT_ROOT_ENV_KEYS:
+        monkeypatch.setenv(key, foreign_env[key])
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(control))
+    monkeypatch.setenv(
+        "MOLT_BACKEND_DAEMON_SOCKET_DIR", str(foreign_artifacts / "sockets")
+    )
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.setenv(key, str(tmp_path / "missing-caller-environment"))
-    origin, work = origin_and_clone.__wrapped__(tmp_path, _origin_seed, monkeypatch)
+    # Request after poisoning the caller: fixture admission must reset it, not
+    # merely assume that the enclosing pytest session selected suitable roots.
+    origin, work = request.getfixturevalue("origin_and_clone")
+
+    foreign_reads = []
+    read_owner = disk_guard.read_checkout_owner
+
+    def observed_owner(path):
+        if path.is_relative_to(foreign_artifacts):
+            foreign_reads.append(path)
+        return read_owner(path)
+
+    monkeypatch.setattr(disk_guard, "read_checkout_owner", observed_owner)
     initial = _git(_origin_seed, "rev-parse", "HEAD").stdout.strip()
     original_config = (_origin_seed / "config").read_bytes()
     (origin / "config").write_bytes(original_config + b"\n# private test mutation\n")
@@ -310,12 +373,31 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
     assert _git(origin, "rev-parse", "HEAD").stdout.strip() == new_tip
     assert _git(_origin_seed, "rev-parse", "HEAD").stdout.strip() == initial
+    wt = _worktree_off(work, "wt_isolated_artifacts")
+    assert (
+        molt_dev_retire.cleanup_worktree(
+            drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+        )
+        == drv.EXIT_OK
+    )
+    assert not wt.exists()
     relative = Path("objects") / initial[:2] / initial[2:]
     original_object = (_origin_seed / relative).read_bytes()
     (origin / relative).chmod(0o600)
     (origin / relative).write_bytes(b"deliberately corrupt private copy")
     assert (_origin_seed / relative).read_bytes() == original_object
     assert _git(_origin_seed, "show", "HEAD:README.md").stdout == "seed\n"
+    assert not foreign_reads, "synthetic retirement consulted foreign host artifacts"
+    assert {
+        path.relative_to(foreign_artifacts): path.read_bytes()
+        for path in foreign_artifacts.rglob("*")
+        if path.is_file()
+    } == foreign_files
+    assert os.environ[dx.ARTIFACT_ROOT_ENV] == str(tmp_path / "artifacts")
+    assert all(os.environ.get(key) == value for key, value in caches.items())
+    assert guard_custody_env() == custody
+    assert "MOLT_BUILD_STATE_DIR" not in os.environ
+    assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in os.environ
 
 
 def _make_gate_venv(path: Path, token: str | None) -> Path:
@@ -1228,13 +1310,11 @@ def _shared_checkout_state(ext: Path, checkout: Path) -> tuple[Path, Path]:
 
 
 def test_cleanup_retires_the_checkouts_state_with_it(
-    drv, origin_and_clone, tmp_path, monkeypatch
+    drv, origin_and_clone, tmp_path, monkeypatch, isolated_checkout_artifacts
 ):
     _origin, main = origin_and_clone
     wt = _worktree_off(main, "wt_state")
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
     sibling_target, sibling_uv = _shared_checkout_state(ext, main)
     rc = molt_dev_retire.cleanup_worktree(
@@ -1248,7 +1328,7 @@ def test_cleanup_retires_the_checkouts_state_with_it(
 
 @pytest.mark.parametrize("cwd", ["outside", "inside"])
 def test_cleanup_imports_nothing_after_it_removes_the_worktree(
-    origin_and_clone, tmp_path, cwd
+    origin_and_clone, tmp_path, cwd, isolated_checkout_artifacts
 ):
     """Integration runs from the checkout it removes, so retirement must import
     every module it needs before `git worktree remove`: afterwards a lazy import
@@ -1257,8 +1337,7 @@ def test_cleanup_imports_nothing_after_it_removes_the_worktree(
     directory, which the removal deletes; the "inside" case runs that way."""
     _origin, main = origin_and_clone
     wt = _worktree_off(main, "wt_import_order")
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
     code = f"""
 import os
@@ -1505,15 +1584,13 @@ def test_the_guest_release_never_aborts_a_cleanup(
 
 
 def test_failed_worktree_removal_keeps_the_checkouts_state(
-    drv, origin_and_clone, tmp_path, monkeypatch
+    drv, origin_and_clone, tmp_path, monkeypatch, isolated_checkout_artifacts
 ):
     from molt import checkout_state
 
     _origin, main = origin_and_clone
     wt = _worktree_off(main, "wt_state_kept")
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
     real = molt_dev_retire._run_fast_captured_command
 
@@ -1544,6 +1621,7 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     retirement,
     selection,
     removal_succeeds,
+    isolated_checkout_artifacts,
 ):
     from molt import checkout_state
     from molt.build_state_layout import build_state_root
@@ -1558,8 +1636,7 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
         return ()
 
     monkeypatch.setattr(linux_vm, "release_for_paths", release_guests)
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
     session = target / "sessions" / "idle-session"
     session.mkdir(parents=True)

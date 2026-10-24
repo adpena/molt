@@ -20,6 +20,9 @@ import pytest
 
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
+from tests.integration_driver_fixture import (
+    isolated_checkout_artifacts as isolated_checkout_artifacts,
+)
 from tests.test_molt_dev import _commit_file, _git, _init_repo
 from tools import molt_dev, molt_dev_lanes as lanes
 from tools.molt_dev_change_ids import landing_representation
@@ -91,7 +94,11 @@ def _fixture_checkout_input(name, checkout, environ=None, *, guard_source_root=N
 
 
 @pytest.fixture
-def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_checkout_artifacts: Path,
+) -> Path:
     """origin.git, <root>/molt-src and an empty <root>/worktrees."""
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
@@ -119,10 +126,6 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _git(main, "config", "user.name", "Molt Dev")
 
     monkeypatch.setattr(cp, "checkout_input", _fixture_checkout_input)
-    # Checkout state lives under a private artifact root, never the host's.
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     return root
 
 
@@ -835,6 +838,7 @@ def test_lane_retire_abandon_bundles_the_commits_before_removal(
 
 def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     family: Path,
+    isolated_checkout_artifacts: Path,
 ) -> None:
     from molt import dx
 
@@ -842,7 +846,7 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     worktree = _start(family, "landed")
     tip = _commit_file(worktree, "landed.txt", "landed\n", "landed work")
     _git(worktree, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/lane/landed")
-    artifacts = family.parent / "artifacts"  # the fixture's MOLT_EXT_ROOT
+    artifacts = isolated_checkout_artifacts
     state = dx.stable_uv_project_env_dir(
         artifacts, purpose="dx", python="3.12", source_root=worktree
     )
