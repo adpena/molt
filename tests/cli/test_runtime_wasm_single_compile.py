@@ -102,6 +102,18 @@ _COMMON = dict(
 )
 
 
+@pytest.fixture(autouse=True)
+def admitted_validator_for_pair_controls(monkeypatch, tmp_path):
+    from molt.cli import runtime_wasm_validation
+    from tests.runtime_build_identity_helper import wasm_validator_discovery
+
+    # Pair layout, cache and publication tests do not own tool provisioning.
+    discovery = wasm_validator_discovery(tmp_path)
+    monkeypatch.setattr(
+        runtime_wasm_validation, "require_pinned_tool", lambda _name: discovery
+    )
+
+
 @pytest.mark.parametrize("cache", ["valid", "missing", "corrupt"])
 def test_disabled_pair_build_still_admits_cached_generation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache: str
@@ -1063,12 +1075,14 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         runtime_wasm_pair_build, "_build_state_root", lambda _root: state_root
     )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "_inspect_wasm_binary", lambda _path: "valid"
-    )
-    monkeypatch.setattr(
         runtime_wasm_pair_build,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda _path: True,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_shared_runtime_wasm_validation_error",
+        lambda _path: None,
     )
 
     _reset_runtime_wasm_build_timings()
@@ -1487,12 +1501,14 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
         runtime_wasm_pair_build, "_build_state_root", lambda _root: state_root
     )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "_inspect_wasm_binary", lambda _path: "valid"
-    )
-    monkeypatch.setattr(
         runtime_wasm_pair_build,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda _path: True,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_shared_runtime_wasm_validation_error",
+        lambda _path: None,
     )
 
     assert (
@@ -1644,14 +1660,6 @@ def _empty_app_export_contract(tmp_path: Path) -> Path:
     return path
 
 
-def _record_ensure(name: str, ret: bool, log: list[str]):
-    def _ensure(required_exports=None) -> bool:  # noqa: ANN001
-        log.append(name)
-        return ret
-
-    return _ensure
-
-
 def _run_app_ensure_routing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1659,6 +1667,7 @@ def _run_app_ensure_routing(
     freestanding: bool,
     both_callable: bool,
     both_ret: bool,
+    recorded_failure: str | None = None,
 ) -> list[str]:
     """Drive `_prepare_non_native_build_result` up to the runtime-ensure branch.
 
@@ -1682,6 +1691,26 @@ def _run_app_ensure_routing(
     runtime_shared_missing = tmp_path / "molt_runtime.wasm"
 
     log: list[str] = []
+    state = _RuntimeArtifactState(
+        runtime_wasm=runtime_shared_missing,
+        runtime_reloc_wasm=runtime_reloc,
+        runtime_wasm_selected=runtime_shared_missing,
+        runtime_reloc_wasm_selected=runtime_reloc,
+    )
+
+    def ensure(required_exports=None):
+        log.append("both")
+        if recorded_failure is not None:
+            from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
+
+            return record_runtime_wasm_failure(
+                state,
+                project_root=tmp_path,
+                stage="validator-readiness",
+                summary=recorded_failure,
+            )
+        return both_ret
+
     _result, err = nno._prepare_non_native_build_result(
         validate_inputs=lambda: None,
         resolved_capability_policy=CapabilityManifest().resolve(),
@@ -1694,15 +1723,8 @@ def _run_app_ensure_routing(
         linked_output_path=None,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_state=_RuntimeArtifactState(
-            runtime_wasm=runtime_shared_missing,
-            runtime_reloc_wasm=runtime_reloc,
-            runtime_wasm_selected=runtime_shared_missing,
-            runtime_reloc_wasm_selected=runtime_reloc,
-        ),
-        ensure_runtime_wasm_both=(
-            _record_ensure("both", both_ret, log) if both_callable else None
-        ),
+        runtime_state=state,
+        ensure_runtime_wasm_both=ensure if both_callable else None,
         runtime_cargo_profile="release",
         molt_root=tmp_path,
         split_runtime=True,
@@ -1712,6 +1734,25 @@ def _run_app_ensure_routing(
     # Every configured scenario short-circuits before a successful build.
     assert err is not None
     return log
+
+
+@pytest.mark.parametrize("freestanding", [False, True])
+def test_linked_app_json_preserves_runtime_validator_failure(
+    monkeypatch, tmp_path, capsys, freestanding
+):
+    reason = "wasm-tools validation prerequisite is unavailable"
+    assert _run_app_ensure_routing(
+        monkeypatch,
+        tmp_path,
+        freestanding=freestanding,
+        both_callable=True,
+        both_ret=False,
+        recorded_failure=reason,
+    ) == ["both"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errors"] == [reason]
+    assert payload["data"]["runtime_wasm_failure"]["summary"] == reason
+    assert payload["data"]["runtime_wasm_failure"]["stage"] == "validator-readiness"
 
 
 def test_app_path_default_routes_through_combined_ensure(

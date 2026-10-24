@@ -93,6 +93,7 @@ from molt.cli.runtime_native_codegen import (
 )
 from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
+from molt.cli.runtime_wasm_validation import _require_runtime_wasm_validator
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.wasm_codegen_layout import (
     WasmCodegenLayout,
@@ -273,6 +274,21 @@ def _prepare_backend_setup(
         )
     except InstalledRuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
+    # Runtime and app admission both require this validator. Check before
+    # the backend compiler itself can trigger a source Cargo build.
+    if (
+        is_wasm
+        and _require_runtime_wasm_validator(runtime_state, project_root=molt_root)
+        is None
+    ):
+        failure = runtime_state.runtime_wasm_build_failure
+        assert failure is not None
+        return None, _fail(
+            failure.summary,
+            json_output,
+            command="build",
+            data={"runtime_wasm_failure": failure.json_payload()},
+        )
     runtime_callable_symbols_digest = ""
     callable_symbols_start = time.perf_counter()
     runtime_callable_symbols_digest, callable_symbols_error = (
@@ -343,8 +359,14 @@ def _prepare_backend_setup(
             required_exports=native_artifact_plan.runtime_export_symbols() or None,
             bind_for_codegen=True,
         ):
+            failure = runtime_state.runtime_wasm_build_failure
             return None, _fail(
-                "Runtime wasm build failed", json_output, command="build"
+                "Runtime wasm build failed" if failure is None else failure.summary,
+                json_output,
+                command="build",
+                data=None
+                if failure is None
+                else {"runtime_wasm_failure": failure.json_payload()},
             )
         binding = runtime_state.runtime_wasm_codegen_binding
         if binding is None:

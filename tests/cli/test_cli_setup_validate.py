@@ -800,6 +800,79 @@ def test_runtime_wasm_structural_validation_fails_loud_without_wasm_tools(
     )
 
 
+@pytest.mark.parametrize("available", [False, True])
+@pytest.mark.parametrize("installed", [False, True], ids=["source", "installed"])
+def test_raw_wasm_readiness_requires_attested_validator(
+    monkeypatch, available, installed
+):
+    from types import SimpleNamespace
+    from molt.release_lanes import ReleaseLane
+    from molt.tool_releases import ToolReleaseError
+
+    distribution = (
+        SimpleNamespace(
+            verify_runtime=lambda: None,
+            runtime={"cells": []},
+            runtime_root=ROOT,
+        )
+        if installed
+        else None
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS, "installed_compiler", lambda _root: distribution
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "installed_runtime_profile_readiness",
+        lambda _installed: {
+            ReleaseLane("wasm", "wasm", "dev", "dev-fast", "dev-fast"): True
+        },
+    )
+    install_module_view(
+        monkeypatch, "shutil", shutil, SETUP_READINESS, which=lambda name: name
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "_run_completed_command",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd, 0, "rustc 1.99.1\n", ""
+        ),
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS, "_detect_llvm_backend_toolchain", lambda _root: (None, None)
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS.wasm_toolchain,
+        "rust_target_readiness_error",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS.wasm_toolchain,
+        "resolve_wasm_linker",
+        lambda: SimpleNamespace(diagnostic="admitted linker"),
+    )
+
+    def require(name):
+        assert name == "wasm-tools"
+        if not available:
+            raise ToolReleaseError("missing attested validator; provision wasm-tools")
+        return SimpleNamespace(
+            executable=Path("validator"),
+            release=SimpleNamespace(version="test-release"),
+            executable_sha256="a" * 64,
+        )
+
+    monkeypatch.setattr(SETUP_READINESS, "require_pinned_tool", require)
+    report = SETUP_READINESS._build_toolchain_report(ROOT)
+    check = next(check for check in report.checks if check["name"] == "wasm-tools")
+    assert check["ok"] is available
+    assert report.backends["wasm"] is available
+    assert report.backends["linked-wasm"] is available
+    if not available:
+        assert "missing attested validator" in check["detail"]
+        assert check["advice"]
+
+
 def test_cli_diff_command_uses_diff_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -47,6 +47,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.tool_releases import ToolDiscovery
     from molt.backend_protocol import BackendEmissionOrigin
     from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
     from molt.cli.link_input_observation import CompilationInputRecord
@@ -683,6 +684,9 @@ class _RuntimeArtifactState:
     runtime_reloc_wasm_selected: Path | None = None
     runtime_wasm_expected_identity: Path | None = None
     runtime_wasm_codegen_binding: RuntimeWasmCodegenBinding | None = None
+    # One build operation's prerequisite discovery. Structural validation still
+    # reattests the executable at each actual execution boundary.
+    runtime_wasm_validator: ToolDiscovery | None = None
     extra_runtime_features: tuple[str, ...] = ()
     # The build's Rust CPU policy for the native runtime Cargo plan. WASM
     # runtimes always compile for their fixed baseline.

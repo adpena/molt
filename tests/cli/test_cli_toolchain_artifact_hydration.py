@@ -1108,7 +1108,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         RUNTIME_WASM_BUILD, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
     )
     monkeypatch.setattr(
-        pair_build, "_is_valid_shared_runtime_wasm_artifact", lambda _path: True
+        pair_build, "_shared_runtime_wasm_validation_error", lambda _path: None
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD, "_runtime_missing_exports_for_mode", lambda *_a, **_k: set()
