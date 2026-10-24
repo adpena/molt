@@ -317,6 +317,7 @@ def test_real_package_aliases_and_all_workspace_crates_have_typed_metadata() -> 
     assert contract.layer_of("molt-obj-model", semantics) == "core"
     assert contract.layer_of("molt-cpython-abi", semantics) == "c_api"
     assert semantics["molt-cext-discovery"].layer == "outside"
+    assert semantics["molt-llvm-link"].layer == "outside"
     assert semantics["molt-runtime-platform"].layer == "core"
 
 
