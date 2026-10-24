@@ -20,6 +20,7 @@
     "molt-lang-cpython-abi": 8,
     "molt-lang-obj-model": 26,
     "molt-launcher": 0,
+    "molt-llvm-link": 3,
     "molt-passes": 7,
     "molt-runtime": 1,
     "molt-runtime-asyncio": 2,

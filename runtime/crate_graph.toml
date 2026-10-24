@@ -118,6 +118,12 @@ layer = 0
 role = "host-tool process memory budgets and OS caps; no guest-runtime or compiler dependencies"
 
 [[crate]]
+name = "molt-llvm-link"
+runtime_layer = "outside"
+layer = 0
+role = "compiler-only LLVM native link metadata; no Rust execution behavior or workspace dependencies"
+
+[[crate]]
 name = "molt-artifact-publish"
 runtime_layer = "outside"
 layer = 0
