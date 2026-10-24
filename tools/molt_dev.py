@@ -1778,7 +1778,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-controller",
         action="store_true",
         help="run this checkout's own driver instead of main's pinned controller; "
-        "only to repair a broken controller on main (the progress stream records it)",
+        "only for a reviewed controller repair or input-contract adoption "
+        "(all gates remain mandatory; the progress stream records it)",
     )
     # Set only by the pinned-controller handoff; names the controller this
     # process must be (molt_dev_controller.verify_pinned_controller).

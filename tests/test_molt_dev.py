@@ -2073,7 +2073,7 @@ def test_probe_requires_target(drv):
 
 
 def test_integrate_runs_selected_gate_and_halts_on_failure(
-    drv, origin_and_clone, tmp_path
+    drv, origin_and_clone, tmp_path, capsys
 ):
     # A selected source check must stop the real driver before a later build
     # gate can execute or integration can push. The sentinel uses no compiler.
@@ -2097,11 +2097,10 @@ gates = ["echo build-started > build-started.txt"]
 """,
         "failing source check before build consumer",
     )
-    ns = _integrate_ns(
-        drv,
-        repo=str(work),
-        no_push=True,
+    ns = drv.build_parser().parse_args(
+        ["integrate", "--repo", str(work), "--candidate-controller", "--no-push"]
     )
+    assert not drv.molt_dev_controller.runs_from_pinned_controller(ns)
     # A failing gate halts integrate BEFORE push, as a candidate failure.
     with pytest.raises(GateFailure) as exc:
         drv.cmd_integrate(ns)
@@ -2113,6 +2112,12 @@ gates = ["echo build-started > build-started.txt"]
     origin_main = _git(work, "rev-parse", "origin/main").stdout.strip()
     seed = _git(work, "rev-list", "--max-parents=0", "origin/main").stdout.strip()
     assert origin_main == seed  # still just the seed commit
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema": "molt.integration-progress.v1"')
+    ]
+    assert events and {event["controller"] for event in events} == {"candidate"}
 
 
 def _wait_for(marker: str, *, then: str) -> str:

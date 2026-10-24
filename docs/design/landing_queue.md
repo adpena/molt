@@ -155,8 +155,13 @@ The code that decides whether a change lands is never the change.
   from the candidate. The candidate still supplies its declared data: gate
   selection from its `tools/proof_plan.toml`, and its tests. A change to the
   driver takes effect after it lands, as a stage0 bump does.
-- **Escape.** `--candidate-controller` runs the candidate's driver for a
-  repair of a broken controller on main. A landing's progress stream and
+- **Adoption.** `--candidate-controller` runs the candidate's driver for a
+  reviewed controller repair or controller-owned input-contract transition
+  that main cannot prepare. The complete selected gates remain mandatory;
+  this is an explicit bootstrap, never a post-failure retry policy. Follow the
+  [canonical integration contract](../../ops/INTEGRATION.md#the-driver-lifecycle-integrate).
+  Once landed, the next default invocation uses main's newly pinned controller.
+  A landing's progress stream and
   receipt record which controller ran; a lane command prints it
   (`==> pinned controller <key>`). Each command refuses a pinned claim that
   does not name the controller it runs from

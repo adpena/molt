@@ -38,15 +38,23 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
 ```
 
 0. **controller** — a live `integrate` fetches, then runs the driver of main's
-   tip, never the candidate's. It extracts `tools/`, `src/molt`, `config/`,
+   tip by default. It extracts `tools/`, `src/molt`, `config/`,
    `pyproject.toml`, `uv.lock` and `.python-version` from that commit into
    `<git-common-dir>/molt/controllers/<key>` (the key is the digest of those
    trees, so a landing that changes none of them reuses the extraction), runs
    `uv sync --frozen --no-dev` from main's lock there, and execs the driver as
    `python -I` with `--pinned-controller <key>`. The candidate still supplies
    its gate policy and its tests; a change to the driver takes effect once it
-   lands. `--candidate-controller` runs the checkout's own driver to repair a
-   broken controller on main, and `--dry-run` always runs in-process. Every
+   lands. `--candidate-controller` runs the checkout's own driver for a reviewed
+   controller repair or controller-owned input-contract transition that main's
+   controller cannot prepare. For example, a new native receiver may require
+   linkage metadata that main's older SDK projection does not emit. Pin and
+   review that coherent source and its controller projection first. Adoption
+   runs the same complete selected gates and records `controller: candidate`;
+   it grants no missing capability, skipped gate or failed-proof waiver. There
+   is no automatic retry through candidate code. After the change lands,
+   ordinary invocations again use main's pinned controller, whose tree identity
+   now includes the new projection. `--dry-run` always runs in-process. Every
    progress event names its `controller`. The four most recently used
    controllers stay; an older one retires after a day without use.
 
