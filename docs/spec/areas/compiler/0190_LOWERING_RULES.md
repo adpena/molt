@@ -114,6 +114,16 @@ program overhead. This follows the region/CFG distinction in
 [MLIR SCF](https://mlir.llvm.org/docs/Dialects/SCFDialect/) and the nested control
 grammar of [WebAssembly 3.0](https://webassembly.github.io/spec/core/syntax/instructions.html#control-instructions).
 
+Native block completion runs after FunctionBuilder sealing/finalization, in the
+existing parallel deferred compiler. Actual Cranelift CFG/dominator reachability
+rejects a reachable empty block and retires whole unreachable components through
+Cranelift 0.137's `Context::eliminate_unreachable_code`, before compilation's
+initial verification. Emission-time reachability never protects dead blocks and
+no synthetic traps fill them. This replaces the former pre-seal DFS/trap heuristic.
+It costs a CFG/dominator pass and, when enabled, post-retirement verification before
+Cranelift's normal compilation passes; it does not repair earlier SSA-builder
+invariants or establish a measured compile-time speedup.
+
 Labeled `TRY_START`/`TRY_END` carry path-local exception-region custody, not
 textual brackets. Every named frontend scope carries its handler in the same
 first operand, including context managers and generator resumption; serialization

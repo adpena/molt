@@ -1,4 +1,74 @@
 use super::*;
+use cranelift_codegen::ir::InstBuilder;
+
+#[test]
+fn native_completion_retires_dead_builder_components_without_traps() {
+    let backend = SimpleBackend::new();
+    let mut context = cranelift_codegen::Context::new();
+    context.func.signature.call_conv = backend.module.isa().default_call_conv();
+    let mut builder_context = cranelift_frontend::FunctionBuilderContext::new();
+    let entry;
+    let dead_header;
+    let dead_body;
+    {
+        let mut builder =
+            cranelift_frontend::FunctionBuilder::new(&mut context.func, &mut builder_context);
+        entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.ins().return_(&[]);
+        dead_header = builder.create_block();
+        dead_body = builder.create_block();
+        builder.insert_block_after(dead_header, entry);
+        builder.switch_to_block(dead_body);
+        builder.ins().jump(dead_header, &[]);
+        builder.seal_all_blocks();
+        builder.finalize(backend.module.target_config());
+    }
+    assert!(context.func.layout.is_block_inserted(dead_header));
+    assert!(context.func.layout.is_block_inserted(dead_body));
+    super::super::deferred_codegen::complete_native_control_flow(
+        &mut context,
+        backend.module.isa(),
+        "dead_builder_loop",
+    );
+    assert_eq!(
+        context.func.layout.blocks().collect::<Vec<_>>(),
+        vec![entry]
+    );
+    cranelift_codegen::verify_function(&context.func, backend.module.isa())
+        .expect("the upstream verifier admits completed CFG");
+    context
+        .compile(
+            backend.module.isa(),
+            &mut cranelift_codegen::control::ControlPlane::default(),
+        )
+        .expect("completed builder CFG compiles");
+}
+
+#[test]
+#[should_panic(expected = "native codegen left REACHABLE block")]
+fn native_completion_rejects_reachable_empty_builder_blocks() {
+    let backend = SimpleBackend::new();
+    let mut context = cranelift_codegen::Context::new();
+    context.func.signature.call_conv = backend.module.isa().default_call_conv();
+    let mut builder_context = cranelift_frontend::FunctionBuilderContext::new();
+    {
+        let mut builder =
+            cranelift_frontend::FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let entry = builder.create_block();
+        let empty_target = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.ins().jump(empty_target, &[]);
+        builder.insert_block_after(empty_target, entry);
+        builder.seal_all_blocks();
+        builder.finalize(backend.module.target_config());
+    }
+    super::super::deferred_codegen::complete_native_control_flow(
+        &mut context,
+        backend.module.isa(),
+        "invalid_live_target",
+    );
+}
 
 #[test]
 fn annotate_function_object_compiles_without_signature_mismatch() {
