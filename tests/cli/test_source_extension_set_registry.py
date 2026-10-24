@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from packaging.version import Version
 
 import molt.cli.source_extension_set_registry as registry_module
 from molt.cli.source_extension_set_registry import (
@@ -14,8 +15,9 @@ from molt.cli.source_extension_set_registry import (
     source_extension_set_root,
     verify_source_extension_checkout,
 )
-from molt.target_python import TargetPythonVersion
+from molt.target_python import _parse_target_python_version
 from tests.process_guard_common import run_guarded_test_process
+from tools.cpython_regrtest import load_cpython_sources
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -86,7 +88,12 @@ def test_canonical_registry_has_exact_versioned_package_sets() -> None:
     ]
     numpy = registry.extension_set("numpy", "2.5.1", "pact-witness")
     assert numpy.source.commit == "5e1d03ffac5f2c0a9c39bfcaa9fc853b2b83151e"
-    assert numpy.variants[0].variant.target_python == TargetPythonVersion(3, 12, 0)
+    target = numpy.variants[0].variant.target_python
+    # Use the independent pinned tag, not the resolver which loaded the registry.
+    upstream = Version(load_cpython_sources()["3.12"].tag.removeprefix("v"))
+    assert target.feature_version == (3, 12)
+    assert (target.major, target.minor, target.micro) == upstream.release
+    assert (target.release, target.serial) == ("final", 0)
 
 
 def test_registry_environment_override_is_the_only_alternate_authority(
@@ -117,7 +124,7 @@ def test_root_requires_registered_full_variant_coordinate(
         / "cpython-abi/wasm32-wasip1/demo-core"
     )
     native = SourceExtensionVariant(
-        target_python=TargetPythonVersion(3, 12, 0),
+        target_python=_parse_target_python_version("3.12"),
         abi_tier="cpython-abi",
         target_triple="x86_64-unknown-linux-gnu",
     )

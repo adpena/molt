@@ -5377,6 +5377,26 @@ pytest = [
   "tests/cli/test_cli_cache_fingerprint.py",
 ]
 
+# Target release identity is consumed by source-extension publication as well as
+# codegen. Keep this dependency narrow: a pin update needs the existing registry
+# and ABI-publication controls, not every extension producer/proof workflow.
+[[rule]]
+name = "target-python-extension-release-identity"
+toolchains = ["python"]
+description = "Pinned target release fields agree with registered and recorded extension variants without masking ABI rejection controls."
+globs = [
+  "src/molt/target_python.py",
+  "src/molt/target_python_policy.py",
+  "src/molt/_python_release_generated.py",
+  "tests/cli/test_source_extension_set_registry.py",
+  "tests/cli/test_source_extension_producer.py",
+]
+gates = []
+pytest = [
+  "tests/cli/test_source_extension_set_registry.py",
+  "tests/cli/test_source_extension_producer.py",
+]
+
 # --- APPARATUS A4 findings registry + memo lint --------------------------
 [[rule]]
 name = "findings-registry"
