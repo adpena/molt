@@ -111,6 +111,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   multi-agent or Pact work, read the relevant `docs/agent/ORCHESTRATION.md` sections.
 - Preserve user and parallel-agent work. Never reset, clean, overwrite, revert or broadly stage
   unrelated changes. Integrate with pathspecs and review every diff before commit or landing.
+- Name the checkout explicitly on every Git mutation (`git -C <checkout>` or a bound Git object).
+  Before staging or committing, assert the expected branch/HEAD and exact owned path set; do not
+  rely on a tool call's working directory, especially when launching integration from primary.
 - Generated files are projections; change the source or generator and regenerate in the same arc.
 - Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
   reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).

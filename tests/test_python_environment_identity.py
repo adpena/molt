@@ -1617,6 +1617,7 @@ def test_generated_cache_custody_matches_real_importability(tmp_path, layout):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )
@@ -1760,6 +1761,7 @@ def test_active_cache_case_alias_is_not_inert(tmp_path, guard):
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
             check=False,
         )
