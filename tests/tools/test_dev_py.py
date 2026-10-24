@@ -24,7 +24,9 @@ def test_dev_py_maintenance_uses_default_frontend(monkeypatch, command) -> None:
     module = dev
     calls: list[tuple[list[str], str | None, bool]] = []
     monkeypatch.setattr(
-        module.target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.15", "3.13")
+        module.target_python_policy,
+        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS",
+        ("3.15", "3.13"),
     )
 
     def fake_run_uv(args, python=None, env=None, tty=False):
@@ -469,7 +471,7 @@ def test_dev_py_test_argv_is_consumed_by_real_runner(
 
     module = dev
     monkeypatch.setattr(
-        module.target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", catalog
+        module.target_python_policy, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", catalog
     )
     batches = []
 

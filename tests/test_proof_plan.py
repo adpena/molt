@@ -8510,7 +8510,7 @@ def test_canonical_target_python_catalog_is_stdlib_only():
     # Staged-source projection has neither site packages nor ambient imports.
     # Exercise the real authority; a constant-only catalog fixture hides eager
     # dependencies that break generation from the index.
-    source = proof_plan.ROOT / "src/molt/target_python.py"
+    source = proof_plan.ROOT / "src/molt/target_python_policy.py"
     result = run_guarded_test_process(
         [
             sys.executable,
@@ -8529,20 +8529,23 @@ def test_canonical_target_python_catalog_is_stdlib_only():
         timeout=5,
     )
     assert result.returncode == 0, result.stderr
-    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
     assert tuple(json.loads(result.stdout)) == SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
 
-def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_path):
-    from molt import target_python
+@pytest.mark.parametrize("catalog", [("3.12", "3.15"), ("3.0", "4.0")])
+def test_selected_target_python_family_uses_canonical_catalog(
+    monkeypatch, tmp_path, catalog
+):
+    from molt import target_python_policy
 
-    source = tmp_path / "src/molt/target_python.py"
+    source = tmp_path / "src/molt/target_python_policy.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.12', '3.15')\n", encoding="utf-8"
+        f"SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = {catalog!r}\n", encoding="utf-8"
     )
-    driver_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    driver_catalog = target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     driver_path = list(sys.path)
     policies = proof_plan.load_toolchain_policies(
         {
@@ -8561,8 +8564,7 @@ def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_p
     )
     assert set(proof_plan.toolchain_closure(policies, ("target-pythons",))) == {
         "uv",
-        "target-pythons.3.12",
-        "target-pythons.3.15",
+        *(f"target-pythons.{version}" for version in catalog),
     }
     for policy in policies:
         if policy.name.startswith("target-pythons."):
@@ -8574,8 +8576,19 @@ def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_p
             assert "--no-python-downloads" in policy.data["content_path_command"]
             assert policy.data["setup_command"] == "uv python install " + minor
             assert policy.root == tmp_path
-    assert target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is driver_catalog
-    assert sys.modules["molt.target_python"] is target_python
+    assert target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is driver_catalog
+    assert sys.modules["molt.target_python_policy"] is target_python_policy
+    assert sys.path == driver_path
+    # A selected package may redirect its module search path. The child must
+    # reject the foreign origin, even when it exports a well-formed catalog.
+    (source.parent / "__init__.py").write_text(
+        f"__path__ = [{str(Path(target_python_policy.__file__).parent)!r}]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="policy origin mismatch"):
+        proof_plan._selected_target_python_versions(tmp_path)
+    assert target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is driver_catalog
+    assert sys.modules["molt.target_python_policy"] is target_python_policy
     assert sys.path == driver_path
 
 

@@ -42,8 +42,8 @@ from molt.stdlib_intrinsic_policy import (  # noqa: E402
 )
 from molt.stdlib_intrinsic_policy import StdlibIntrinsicClassification  # noqa: E402
 from molt.stdlib_intrinsic_policy import StdlibModuleIntrinsicFacts  # noqa: E402
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
 from molt.target_python import (  # noqa: E402
-    SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
     _DEFAULT_TARGET_PYTHON_VERSION,
     TargetPythonVersion,
     _parse_target_python_version,

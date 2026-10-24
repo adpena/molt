@@ -3013,8 +3013,8 @@ def test_cpython_eager_relative_protocol_callbacks_warnings_and_errors(monkeypat
 
 @pytest.mark.parametrize("source", ["import pkg", "from pkg import item"])
 def test_import_fact_and_direct_visitor_gateways_preserve_syntax_admission(source):
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     from molt.target_python import (
-        SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
         TargetPythonVersion,
     )
 

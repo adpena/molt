@@ -21,5 +21,10 @@ if expect_313:
     assert stat.SF_SYNTHETIC == 0xC0000000
 
 print("sys_version_triplet", version_triplet)
+print("sys_version_info", tuple(sys.version_info))
+print("sys_version", sys.version.split()[0])
+print("sys_hexversion", hex(sys.hexversion))
+print("implementation_version", tuple(sys.implementation.version))
+print("implementation_hexversion", hex(sys.implementation.hexversion))
 print("expect_313", expect_313)
 print("actual_313", actual_313)

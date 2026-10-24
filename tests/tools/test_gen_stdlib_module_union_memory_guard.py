@@ -105,15 +105,47 @@ FETCHED_ENTRIES = (
 CPYTHON_URL = "https://github.com/python/cpython.git"
 
 
+def _release_header(
+    python: str, *, micro: int = 1, level: str = "FINAL", serial: int = 0
+) -> str:
+    major, minor = python.split(".")
+    return (
+        "#define PY_RELEASE_LEVEL_ALPHA 0xA\n"
+        "#define PY_RELEASE_LEVEL_BETA 0xB\n"
+        "#define PY_RELEASE_LEVEL_GAMMA 0xC\n"
+        "#define PY_RELEASE_LEVEL_FINAL 0xF\n"
+        f"#define PY_MAJOR_VERSION {major}\n"
+        f"#define PY_MINOR_VERSION {minor}\n"
+        f"#define PY_MICRO_VERSION {micro}\n"
+        f"#define PY_RELEASE_LEVEL PY_RELEASE_LEVEL_{level}\n"
+        f"#define PY_RELEASE_SERIAL {serial}\n"
+    )
+
+
 def _evidence_inputs(python: str) -> tuple[gen.SourceInput, ...]:
-    return tuple(
-        gen.SourceInput(
-            role,
-            template.format(python=python),
-            gen._git_blob_id(f"{role} fixture\n".encode()),
-            f"{role} fixture\n",
+    inputs = []
+    for role, template in gen.EVIDENCE_PATHS:
+        text = _release_header(python) if role == "release" else f"{role} fixture\n"
+        inputs.append(
+            gen.SourceInput(
+                role,
+                template.format(python=python),
+                gen._git_blob_id(text.encode()),
+                text,
+            )
         )
-        for role, template in gen.EVIDENCE_PATHS
+    return tuple(inputs)
+
+
+def _with_release(snapshot: gen.SourceSnapshot, text: str) -> gen.SourceSnapshot:
+    return replace(
+        snapshot,
+        inputs=tuple(
+            replace(item, text=text, git_object=gen._git_blob_id(text.encode()))
+            if item.role == "release"
+            else item
+            for item in snapshot.inputs
+        ),
     )
 
 
@@ -163,6 +195,9 @@ def fixture_authority(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(gen, "SNAPSHOT_PATH", snapshot)
     monkeypatch.setattr(gen, "DEFAULT_PYTHONS", ("3.12",))
     monkeypatch.setattr(gen, "OUT_PATH", tmp_path / "stdlib_module_union.py")
+    monkeypatch.setattr(
+        gen, "OUT_RELEASE_PATH", tmp_path / "_python_release_generated.py"
+    )
     return tmp_path
 
 
@@ -280,7 +315,7 @@ def test_committed_outputs_render_offline(monkeypatch, capsys) -> None:
     monkeypatch.setattr(gen, "harness_memory_guard", NoSubprocess())
 
     assert gen.main(["--check"]) == 0
-    assert "4 generated output(s) current" in capsys.readouterr().out
+    assert "5 generated output(s) current" in capsys.readouterr().out
 
 
 def test_committed_snapshot_covers_every_supported_pin() -> None:
@@ -714,7 +749,11 @@ def test_generated_outputs_derive_every_supported_version(
     rendered = gen.generated_outputs()
 
     output = fixture_authority / "stdlib_module_union.py"
-    assert set(rendered) == {output, fixture_authority / "stdlib_module_union_3_12.py"}
+    assert set(rendered) == {
+        output,
+        fixture_authority / "stdlib_module_union_3_12.py",
+        gen.OUT_RELEASE_PATH,
+    }
     assert not any(path.exists() for path in rendered)
     for path, text in rendered.items():
         path.write_text(text, encoding="utf-8")
@@ -723,6 +762,10 @@ def test_generated_outputs_derive_every_supported_version(
     assert namespace["STDLIB_PACKAGE_UNION"] == EXPECTED_PACKAGES
     assert namespace["STDLIB_PY_MODULE_UNION"] == EXPECTED_PY_MODULES
     assert namespace["STDLIB_PY_PACKAGE_UNION"] == EXPECTED_PY_PACKAGES
+    releases = runpy.run_path(str(gen.OUT_RELEASE_PATH))["CPYTHON_RELEASES"]
+    assert releases == {"3.12": (3, 12, 1, "final", 0)}
+    with pytest.raises(TypeError):
+        releases["3.12"] = (3, 12, 0, "final", 0)
 
 
 def test_generated_outputs_fail_closed_on_a_retired_version_module(
@@ -773,6 +816,161 @@ def test_pending_source_capture_does_not_admit_or_generate_target(
     outputs = gen.generated_outputs()
     assert not any("3_15" in path.name for path in outputs)
     assert gen.DEFAULT_PYTHONS == ("3.12",)
+    gen.OUT_RELEASE_PATH.write_text(outputs[gen.OUT_RELEASE_PATH], encoding="utf-8")
+    namespace = runpy.run_path(str(gen.OUT_RELEASE_PATH))
+    assert namespace["CPYTHON_RELEASES"] == {
+        "3.12": (3, 12, 1, "final", 0),
+        "3.15": (3, 15, 1, "final", 0),
+    }
+
+
+@pytest.mark.parametrize(
+    ("level", "serial", "expected"),
+    [
+        ("ALPHA", 2, "alpha"),
+        ("BETA", 5, "beta"),
+        ("GAMMA", 7, "candidate"),
+        ("FINAL", 0, "final"),
+    ],
+)
+def test_release_fields_come_from_receipted_header_not_tag_or_host(
+    level, serial, expected
+):
+    snapshot = _with_release(
+        _snapshot(tag="v3.12.1"),
+        _release_header("3.12", micro=19, level=level, serial=serial),
+    )
+    assert gen.derive_python_release(snapshot) == (3, 12, 19, expected, serial)
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "message"),
+    [
+        ("#define PY_MICRO_VERSION 1\n", "", "missing release macros"),
+        (
+            "#define PY_MICRO_VERSION 1",
+            "#define PY_MICRO_VERSION 1\n#define PY_MICRO_VERSION 1",
+            "duplicate release macro",
+        ),
+        ("PY_MAJOR_VERSION 3", "PY_MAJOR_VERSION 4", "major/minor"),
+        ("PY_MINOR_VERSION 12", "PY_MINOR_VERSION 13", "major/minor"),
+        ("PY_MICRO_VERSION 1", "PY_MICRO_VERSION -1", "literal unsigned integer"),
+        ("PY_MICRO_VERSION 1", "PY_MICRO_VERSION (1 + 2)", "literal unsigned integer"),
+        ("PY_MICRO_VERSION 1", "PY_MICRO_VERSION 256", "exceeds 255"),
+        ("PY_RELEASE_SERIAL 0", "PY_RELEASE_SERIAL 16", "exceeds 15"),
+        (
+            "PY_RELEASE_SERIAL 0",
+            "PY_RELEASE_SERIAL 1",
+            "final release must have serial 0",
+        ),
+        (
+            "PY_RELEASE_LEVEL PY_RELEASE_LEVEL_FINAL",
+            "PY_RELEASE_LEVEL UNKNOWN",
+            "unknown release level macro",
+        ),
+        ("#define PY_RELEASE_LEVEL_FINAL 0xF\n", "", "literal unsigned integer"),
+        (
+            "PY_RELEASE_LEVEL_FINAL 0xF",
+            "PY_RELEASE_LEVEL_FINAL 0xB",
+            "CPython release nibble",
+        ),
+    ],
+)
+def test_release_header_rejects_missing_ambiguous_and_unrepresentable_fields(
+    before, after, message
+):
+    snapshot = _with_release(
+        _snapshot(), _release_header("3.12").replace(before, after)
+    )
+    with pytest.raises(ValueError, match=message):
+        gen.derive_python_release(snapshot)
+
+
+def test_release_macro_comments_are_not_definitions():
+    text = "/*\n#define PY_MICRO_VERSION 99\n*/\n" + _release_header("3.12")
+    text = text.replace(
+        "PY_MICRO_VERSION 1", "PY_MICRO_VERSION 1 /* patch */ // release"
+    )
+    assert gen.derive_python_release(_with_release(_snapshot(), text)) == (
+        3,
+        12,
+        1,
+        "final",
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (_release_header("3.12") + "/*", "malformed release-header comment"),
+        (
+            _release_header("3.12").replace(
+                "PY_MICRO_VERSION 1", "PY_MICRO_VERSION 1/* patch */2"
+            ),
+            "literal unsigned integer",
+        ),
+    ],
+)
+def test_release_comments_cannot_hide_malformed_or_concatenated_fields(text, message):
+    with pytest.raises(ValueError, match=message):
+        gen.derive_python_release(_with_release(_snapshot(), text))
+
+
+def test_release_projection_preserves_source_receipt_validation(fixture_authority):
+    def tamper(row):
+        release = next(item for item in row["inputs"] if item["role"] == "release")
+        release["text"] = release["text"].replace(
+            "PY_MICRO_VERSION 1", "PY_MICRO_VERSION 9"
+        )
+
+    _rewrite_snapshot(gen.SNAPSHOT_PATH, tamper)
+    with pytest.raises(ValueError, match="source evidence sha256 mismatch"):
+        gen.generated_outputs()
+    assert not gen.OUT_RELEASE_PATH.exists()
+
+
+@pytest.mark.parametrize(
+    "prior", [None, "CPYTHON_RELEASES = {'3.12': (3, 12, 0, 'final', 0)}\n"]
+)
+def test_release_projection_regenerates_without_target_or_generated_imports(
+    fixture_authority, prior
+):
+    if prior is not None:
+        gen.OUT_RELEASE_PATH.write_text(prior, encoding="utf-8")
+    code = r"""
+import importlib.abc
+import runpy
+import sys
+from pathlib import Path
+
+class NoTargetFacts(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {"molt.target_python", "molt._python_release_generated"}:
+            raise AssertionError("generator imported its target-fact consumer: " + fullname)
+
+assert "molt.target_python" not in sys.modules
+assert "molt._python_release_generated" not in sys.modules
+sys.meta_path.insert(0, NoTargetFacts())
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, str(Path(sys.argv[1]) / "src"))
+from tools import gen_stdlib_module_union as gen
+
+root = Path(sys.argv[2])
+gen.PINS_PATH = root / "pins.toml"
+gen.SNAPSHOT_PATH = root / "snapshot.json"
+gen.OUT_PATH = root / "stdlib_module_union.py"
+gen.OUT_RELEASE_PATH = root / "_python_release_generated.py"
+gen.DEFAULT_PYTHONS = ("3.12",)
+assert gen.main(["--write"]) == 0
+assert runpy.run_path(str(gen.OUT_RELEASE_PATH))["CPYTHON_RELEASES"] == {"3.12": (3, 12, 1, "final", 0)}
+print("release projection repaired")
+"""
+    result = run_guarded_test_process(
+        [sys.executable, "-I", "-B", "-c", code, str(gen.ROOT), str(fixture_authority)],
+        check=True,
+    )
+    assert "release projection repaired" in result.stdout
 
 
 def _comparison_reference_policy(root: Path, references: list[str]) -> Path:

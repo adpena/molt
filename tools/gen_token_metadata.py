@@ -22,7 +22,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
 from tools import gen_stdlib_module_union as sources  # noqa: E402
 from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
 

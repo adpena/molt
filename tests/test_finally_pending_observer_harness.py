@@ -10,8 +10,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.target_python import (
-    SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
     TargetPythonVersion,
 )
 from tests import test_finally_pending_observer_parity as parity

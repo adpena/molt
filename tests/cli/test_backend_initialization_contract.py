@@ -159,7 +159,21 @@ def test_import_commits_target_before_module_access_with_unique_values(
     )
     assert len(ops[setter]["args"]) == 5
     values = {op["out"]: op for op in ops if "out" in op}
-    assert values[values[ops[setter]["args"][1]]["args"][0]]["value"] == minor
+    actual = []
+    for argument in ops[setter]["args"]:
+        value = values[argument]
+        if value["kind"] == "box":
+            value = values[value["args"][0]]
+        actual.append(
+            value["s_value"] if value["kind"] == "const_str" else value["value"]
+        )
+    assert tuple(actual) == (
+        version.major,
+        version.minor,
+        version.micro,
+        version.release,
+        version.serial,
+    )
     assert setter < next(
         i for i, op in enumerate(ops) if op["kind"] == "module_cache_get"
     )

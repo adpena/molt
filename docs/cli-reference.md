@@ -624,8 +624,13 @@ Target-Python custody has one resolution order: explicit `--python-version`,
 then `[tool.molt.build] python-version`, then the lowest supported Molt target
 admitted by `project.requires-python`, then `3.12`. Backend cache variants,
 frontend cache manifests, wrapper build manifests, runtime `sys.version_info`,
-and translation-validation baselines all consume that resolved target; no path
-falls back to the host process version when a target is selected.
+and translation-validation baselines all consume that resolved target. The selector
+chooses a language major/minor line, including when a patch component is supplied.
+Its reported patch and release fields come from that line's pinned CPython source
+(`Include/patchlevel.h`), independently of the frontend or comparison interpreter.
+`sys.version_info`, the leading version in `sys.version`, `sys.hexversion`, and
+`sys.implementation` version fields share those facts. Source-release metadata is
+not an assertion that every behavior of that patch has passed release qualification.
 
 ---
 

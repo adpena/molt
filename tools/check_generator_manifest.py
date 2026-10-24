@@ -167,10 +167,9 @@ def load_manifest(root: Path) -> Manifest:
             not isinstance(output_family, str) or not output_family.strip()
         ):
             raise ManifestError(f"{tool}: output_family must be a non-empty string")
-        if bool(row["outputs"]) == (output_family is not None):
+        if not row["outputs"] and output_family is None:
             raise ManifestError(
-                f"{tool}: declare exactly one of a non-empty outputs list or an "
-                "output_family"
+                f"{tool}: declare a non-empty outputs list or an output_family"
             )
         if "toolchains" not in row:
             raise ManifestError(f"{tool}: missing explicit toolchains declaration")

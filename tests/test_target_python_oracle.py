@@ -1,10 +1,48 @@
 import pytest
+from molt import target_python_policy
 from molt.target_python import resolve_target_python_for_oracle
 
 
 @pytest.mark.parametrize("minor", [12, 13, 14])
 def test_oracle_target_matches_each_supported_minor(minor):
     assert resolve_target_python_for_oracle((3, minor)).short == f"3.{minor}"
+
+
+@pytest.mark.parametrize(
+    "short", target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+)
+def test_runtime_release_matches_pinned_source_independently_of_frontend(
+    monkeypatch, short
+):
+    from packaging.version import Version
+    from types import SimpleNamespace
+    from molt import target_python
+    from tools.cpython_regrtest import load_cpython_sources
+
+    # The pin tag is an independent release oracle, not the generated header
+    # parser or the interpreter running the compiler/test.
+    upstream = Version(load_cpython_sources()[short].tag.removeprefix("v"))
+    level, serial = (
+        (
+            {"a": "alpha", "b": "beta", "rc": "candidate"}[upstream.pre[0]],
+            upstream.pre[1],
+        )
+        if upstream.pre
+        else ("final", 0)
+    )
+    monkeypatch.setattr(
+        target_python, "sys", SimpleNamespace(version_info=(9, 99, 999))
+    )
+    target = target_python._parse_target_python_version(short)
+    assert (
+        target.major,
+        target.minor,
+        target.micro,
+        target.release,
+        target.serial,
+    ) == (upstream.major, upstream.minor, upstream.micro, level, serial)
+    assert resolve_target_python_for_oracle(target.feature_version) == target
+    assert target_python._parse_target_python_version(f"{short}.0") == target
 
 
 @pytest.mark.parametrize(
@@ -55,7 +93,7 @@ def test_compact_target_tags_preserve_full_catalog_identity(monkeypatch):
         {target.short: target for target in versions},
     )
     monkeypatch.setattr(
-        authority, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.0", "4.0")
+        target_python_policy, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.0", "4.0")
     )
     assert authority._parse_target_python_version("py30").feature_version == (3, 0)
     assert authority._parse_target_python_version("py40").feature_version == (4, 0)

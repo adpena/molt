@@ -900,7 +900,7 @@ Ready to contribute code? Please read [CONTRIBUTING.md](../CONTRIBUTING.md). Not
 ### Adding a CPython version
 
 Keep source discovery, target admission and execution qualification separate.
-`src/molt/target_python.py` owns the admitted language catalog;
+`src/molt/target_python_policy.py` owns the admitted language catalog;
 `config/cpython_regrtest_sources.toml` owns exact upstream tags and commits;
 `config/verified_subset.toml` owns configured executable references. A pending
 source row does not admit that version or prove an execution coordinate.

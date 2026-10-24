@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.target_python import _parse_target_python_version
+
 import importlib.util
 import os
 import sys
@@ -1404,7 +1406,7 @@ def test_native_resource_evidence_survives_build_and_run(
         lambda command, **k: result("build" if "molt.cli" in command else "run"),
     )
     context = module.compat_backends.BackendExecutionContext(
-        target_python=module.TargetPythonVersion(3, 12, 0),
+        target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
         environment={},

@@ -25,7 +25,7 @@ this page explains them and never restates their content.
   snapshot records their omission markers and the owning contract tests verify
   these effective defaults and explicit-option precedence together.
 - **Target Python range.** The supported target versions are generated from
-  `src/molt/target_python.py` into `molt.release_matrix` and snapshotted.
+  `src/molt/target_python_policy.py` into `molt.release_matrix` and snapshotted.
 - **Release targets.** Operating system, architecture, Rust target, and archive
   format per release target, from the same generated matrix. There is no second
   release-target table.

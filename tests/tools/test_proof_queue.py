@@ -17365,7 +17365,7 @@ def test_proof_queue_prune_stale_explicitly_cancels_selected_queued_row(
 
 
 def test_r6_target_version_lanes_cover_every_supported_target_python() -> None:
-    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
     plan = proof_plan.ProofPlan.load()
     lanes = {

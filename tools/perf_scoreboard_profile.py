@@ -202,7 +202,7 @@ def build_profiling_binary(
         "looped_source_path": None,
         "target_python": target_python_version,
     }
-    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
     if target_python_version not in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
         meta["refused"] = True

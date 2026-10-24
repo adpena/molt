@@ -461,7 +461,7 @@ class ToolchainPolicy:
 
 def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
     """Query the selected source authority without rebinding driver imports."""
-    source = root / "src/molt/target_python.py"
+    source = root / "src/molt/target_python_policy.py"
     search_path = [str(root / "src"), str(root)] + [
         entry
         for entry in sys.path
@@ -475,8 +475,12 @@ def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
                 "-P",
                 "-B",
                 "-c",
-                "import json,runpy,sys;print(json.dumps(runpy.run_path(sys.argv[1])"
-                "['SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS']))",
+                "import json,pathlib,sys\n"
+                "from molt import target_python_policy as policy\n"
+                "expected = pathlib.Path(sys.argv[1]).resolve(strict=True)\n"
+                "if pathlib.Path(policy.__file__).resolve(strict=True) != expected:\n"
+                "    raise RuntimeError('selected target-Python policy origin mismatch')\n"
+                "print(json.dumps(policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS))",
                 str(source),
             ],
             cwd=root,
@@ -499,7 +503,7 @@ def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
         not isinstance(versions, list)
         or not versions
         or any(
-            not isinstance(v, str) or re.fullmatch(r"3\.[0-9]+", v) is None
+            not isinstance(v, str) or re.fullmatch(r"[1-9][0-9]*\.[0-9]+", v) is None
             for v in versions
         )
         or len(versions) != len(set(versions))
@@ -576,7 +580,7 @@ def load_toolchain_policies(
                             "version_pattern": rf"^Python {re.escape(version)}\.[0-9]+$",
                             "setup_value": version,
                             "setup_evidence": [
-                                "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+                                "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
                             ],
                             "setup_command": f"uv python install {version}",
                         },
