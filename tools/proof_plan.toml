@@ -6009,6 +6009,19 @@ gates = [
   "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
 ]
 
+# --- Rust source backend -----------------------------------------------
+[[rule]]
+name = "backend-rust"
+toolchains = ["python", "rustc", "cargo"]
+description = "Execute emitted Rust source in its owning crate, without building a native code generator."
+globs = [
+  "runtime/molt-backend-rust/**/*.rs",
+  "runtime/molt-backend-rust/Cargo.toml",
+]
+gates = [
+  "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast",
+]
+
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
 
 [[rule]]

@@ -7789,6 +7789,34 @@ def test_luau_lowering_changes_select_owning_library_without_native_codegen(
     assert isolated.select(["README.md"]) == ([], [])
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "runtime/molt-backend-rust/src/rust/prelude/system.rs",
+        "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
+        "runtime/molt-backend-rust/tests/rust_transpiler_preview.rs",
+        "runtime/molt-backend-rust/Cargo.toml",
+    ],
+)
+def test_rust_emitter_changes_execute_source_without_native_codegen(path: str) -> None:
+    from tools import molt_dev_policy
+
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == "backend-rust")
+    isolated = replace(config, rules=[rule], always=[])
+    gates, matched = isolated.select([path])
+    assert [selected.name for selected in matched] == ["backend-rust"]
+    (gate,) = gates
+    argv = shlex.split(gate.command)
+    assert argv[:2] == ["cargo", "test"]
+    assert argv[argv.index("--test") + 1] == "rust_transpiler_preview"
+    assert argv[argv.index("--features") + 1] == "rust-backend"
+    assert [
+        argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
+    ] == ["molt-backend-rust"]
+    assert isolated.select(["README.md"]) == ([], [])
+
+
 def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> None:
     policies = {policy.name: policy for policy in PLAN.toolchain_policies}
     fixture = policies["hosted-clang"]

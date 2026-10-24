@@ -9438,6 +9438,7 @@
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-luau.0": "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --no-fail-fast",
+      "local.backend-rust.0": "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast",
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.browser-simd.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_build_browser_simd.py tests/e2e/test_simd_differential.py tests/test_browser_compute_backend_semantics.py",
@@ -12026,6 +12027,25 @@
       },
       {
         "command_ids": [
+          "local.backend-rust.0"
+        ],
+        "description": "Execute emitted Rust source in its owning crate, without building a native code generator.",
+        "gates": [
+          "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-backend-rust/**/*.rs",
+          "runtime/molt-backend-rust/Cargo.toml"
+        ],
+        "name": "backend-rust",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
           "local.backend-llvm.0"
         ],
         "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
@@ -12731,6 +12751,12 @@
         "lune"
       ],
       "local.backend-native.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.backend-rust.0": [
         "python",
         "rustc",
         "cargo",
