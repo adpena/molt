@@ -393,7 +393,7 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
         for path in foreign_artifacts.rglob("*")
         if path.is_file()
     } == foreign_files
-    assert os.environ[dx.ARTIFACT_ROOT_ENV] == str(tmp_path / "artifacts")
+    assert dx.artifact_root(work, os.environ) == tmp_path / "artifacts"
     assert all(os.environ.get(key) == value for key, value in caches.items())
     assert guard_custody_env() == custody
     assert "MOLT_BUILD_STATE_DIR" not in os.environ
