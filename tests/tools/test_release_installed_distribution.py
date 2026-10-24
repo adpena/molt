@@ -379,25 +379,40 @@ def _set(path, value):
 
 
 @pytest.mark.parametrize(
-    "mutate",
+    "mutate, expected_error",
     [
-        _set(("wheel", "sha256"), "f" * 64),
-        _set(("compiler_sha256",), "f" * 64),
-        _set(("wasm_facts_sha256",), "f" * 64),
-        _set(("commands", 2, "argv", 0), "/consumer/bundle/molt-0.0.001/bin/molt"),
-        _set(("commands", 2, "argv", 5), "dev"),
-        _set(("commands", 3, "stdout_sha256"), "0" * 64),
-        _set(
-            ("commands", 1, "argv", 6),
-            "/consumer/candidate/molt-0.0.1-py3-none-any.whl",
+        (_set(("wheel", "sha256"), "f" * 64), "release consumer"),
+        (_set(("compiler_sha256",), "f" * 64), "release consumer"),
+        (_set(("wasm_facts_sha256",), "f" * 64), "release consumer"),
+        (
+            _set(("commands", 2, "argv", 0), "/consumer/bundle/molt-0.0.001/bin/molt"),
+            "release consumer",
         ),
-        lambda proof: proof["commands"].pop(),
-        _set(("cells", 0, "artifact", "path"), "/elsewhere/release_consumer"),
+        (_set(("commands", 2, "argv", 5), "dev"), "release consumer"),
+        pytest.param(
+            _set(("commands", 3, "stdout_sha256"), "0" * 64),
+            "^consumer archive differs from admitted candidate/proof$",
+            id="raw-command-stdout",
+        ),
+        (
+            _set(
+                ("commands", 1, "argv", 6),
+                "/consumer/candidate/molt-0.0.1-py3-none-any.whl",
+            ),
+            "release consumer",
+        ),
+        (lambda proof: proof["commands"].pop(), "release consumer"),
+        (
+            _set(("cells", 0, "artifact", "path"), "/elsewhere/release_consumer"),
+            "release consumer",
+        ),
     ],
 )
-def test_pip_consumer_admission_binds_one_plain_pip_install(release_inputs, mutate):
+def test_pip_consumer_admission_binds_one_plain_pip_install(
+    release_inputs, mutate, expected_error
+):
     assert _admit(release_inputs, lambda proof: None)
-    with pytest.raises(ValueError, match="release consumer"):
+    with pytest.raises(ValueError, match=expected_error):
         _admit(release_inputs, mutate)
 
 
@@ -610,18 +625,23 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
     def execute(**kwargs):
         assert kwargs["lanes"] == lanes and kwargs["compiler"] is compiler
         assert kwargs["compilation"] == {"prepared": True}
-        if defect == "compile-failure":
+        destination = kwargs["evidence"]
+        cold = destination.name.endswith("-cold")
+        product = b"cold sealed product" if cold else b"actual sealed product"
+        if defect == "compile-failure" and not cold:
             raise ValueError("actual compilation refused")
         rows = []
         for lane in lanes:
-            folder = evidence / "outputs" / lane.id
+            folder = destination / "outputs" / lane.id
             folder.mkdir(parents=True)
             name = "program.wasm" if lane.target == "wasm" else "program"
-            (folder / name).write_bytes(b"actual sealed product")
+            (folder / name).write_bytes(product)
             diagnostics(
                 folder / "diagnostics.json",
                 lane,
-                "e" * 64 if defect == "compiler-substitution" else "c" * 64,
+                "e" * 64
+                if defect == "compiler-substitution" and not cold
+                else "c" * 64,
             )
             stdout = (
                 release_authority.CONSUMER_EXPECTED_STDOUT.encode()
@@ -630,7 +650,7 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
             )
             (folder / "command.stdout").write_bytes(
                 b"wrong"
-                if defect == "wasm-stdout" and lane.target == "wasm"
+                if defect == "wasm-stdout" and lane.target == "wasm" and not cold
                 else stdout
             )
             (folder / "command.stderr").write_bytes(b"")
@@ -650,23 +670,23 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
                         "artifact": {
                             "path": name,
                             "filename": name,
-                            "size": len(b"actual sealed product"),
-                            "sha256": hashlib.sha256(
-                                b"actual sealed product"
-                            ).hexdigest(),
+                            "size": len(product),
+                            "sha256": hashlib.sha256(product).hexdigest(),
                         },
                         "command": {
                             "argv": command,
                             "returncode": 0,
-                            "duration_sec": 0.5,
+                            "duration_sec": 0.75 if cold else 0.5,
                         },
                     }
                 }
             )
-        if defect == "missing-cell":
+        if defect == "missing-cell" and not cold:
             rows.pop()
         result = {"cells": rows}
-        (evidence / "compilation.json").write_text(json.dumps(result), encoding="utf-8")
+        (destination / "compilation.json").write_text(
+            json.dumps(result), encoding="utf-8"
+        )
         return result
 
     monkeypatch.setattr(consumer_replay, "execute_compilation", execute)
@@ -704,10 +724,36 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
             Path(cell["artifact"]["path"]).read_bytes() == b"actual sealed product"
             for cell in cells
         )
-        assert len(commands) == 3
+        assert len(commands) == 5
         assert all(not row["role"].startswith("prepare_") for row in commands)
-        assert [row["duration_seconds"] for row in commands] == [0.5, 0.1, 0.5]
-        assert len(frontend_calls) == len(capture_calls) == len(plans) == 1
+        assert [row["duration_seconds"] for row in commands] == [
+            0.75,
+            0.75,
+            0.5,
+            0.1,
+            0.5,
+        ]
+        prefix = "" if portable_bundle else "pip_"
+        assert [row["role"] for row in commands[:2]] == [
+            prefix + "cold_build_" + lanes[0].id,
+            prefix + "cold_run_" + lanes[1].id,
+        ]
+        assert len(frontend_calls) == len(capture_calls) == 1
+        cold_evidence = evidence.with_name(evidence.name + "-cold")
+        assert [(plan["evidence"], plan["reuse_compilation"]) for plan in plans] == [
+            (cold_evidence, None),
+            (evidence, cold_evidence),
+        ]
+        assert all(
+            (
+                cold_evidence
+                / "outputs"
+                / lane.id
+                / ("program.wasm" if lane.target == "wasm" else "program")
+            ).read_bytes()
+            == b"cold sealed product"
+            for lane in lanes
+        )
         assert frontend_calls[0]["portable_bundle"] is portable_bundle
 
 
@@ -724,6 +770,12 @@ def test_installed_guest_owner_uses_only_sealed_compilation_products(
         "reference",
         "missing-cell",
         "python-image",
+        "cold-cache-seed",
+        "warm-cache-seed",
+        "warm-origin",
+        "cold-receipt",
+        "cold-command",
+        "cold-raw-stdout",
     ],
 )
 def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
@@ -734,6 +786,7 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
     from molt import compiler_distribution
     from molt.exact_json import canonical_json_sha256
     from tools.release import consumer_replay
+    from tests.tools.test_release_sealed_replay import _compilation_export_fixture
 
     lane = next(
         lane for lane in release_authority.consumer_lanes() if lane.target == "wasm"
@@ -795,6 +848,70 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
             }
         ],
     }
+    # Native process replay remains the named seam below; the installed join
+    # itself reads real independent cold policy/receipt, exported cache bytes,
+    # and separate cold command streams. A current warm invocation cannot
+    # substitute its identity for the original emitting scope.
+    cold_root = root.with_name(root.name + "-cold")
+    cold_output = cold_root / "outputs" / lane.id
+    cold_output.mkdir(parents=True)
+    (cold_output / "command.stdout").write_bytes(b"independent cold stdout")
+    (cold_output / "command.stderr").write_bytes(b"independent cold stderr")
+    cache = cold_output / "cache-export/backend/artifact.o"
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"original cached object")
+    cache_digest = hashlib.sha256(b"original cached object").hexdigest()
+    exported = {
+        "path": "cache-export/backend/artifact.o",
+        "size": len(b"original cached object"),
+        "sha256": cache_digest,
+    }
+    seed = {
+        "path": "app/cache/" + lane.id + "/backend/artifact.o",
+        "size": len(b"original cached object"),
+        "sha256": cache_digest,
+        "mode": 0o444,
+    }
+    cold_policy = cold_root / "rootfs/policy.json"
+    cold_policy.parent.mkdir(parents=True)
+    cold_policy.write_text(json.dumps({"nonce": "a" * 64}), encoding="utf-8")
+    cold_receipt = cold_root / "runs" / lane.id / "receipt.json"
+    cold_receipt.parent.mkdir(parents=True)
+    cold_receipt.write_text(json.dumps({"identity_sha256": "d" * 64}), encoding="utf-8")
+    _compilation_export_fixture(tmp_path, "wasm")
+    observation = json.loads(
+        (tmp_path / "export/program.wasm.molt-link-inputs.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert observation["compiler"]["producer"]["scope"] == "a" * 64
+    cold_command = {
+        "argv": ["/installed/molt", "run", "--cold-fixture"],
+        "returncode": 0,
+        "duration_sec": 0.3,
+    }
+    cold_cell = copy.deepcopy(compilation["cells"][0])
+    cold_cell.update(id=lane.id, policy="policy.json")
+    cold_cell["outputs"].update(
+        command=cold_command, files=[exported], observation=observation
+    )
+    cold = {"cells": [cold_cell], "cache_seed": [], "origins": []}
+    cold_path = cold_root / "compilation.json"
+    compilation.update(
+        cache_seed=[seed],
+        origins=[{"scope": "a" * 64, "cell": lane.id, "identity_sha256": "d" * 64}],
+    )
+    if defect == "cold-cache-seed":
+        cold["cache_seed"] = [seed]
+    elif defect == "warm-cache-seed":
+        compilation["cache_seed"][0]["sha256"] = "e" * 64
+    elif defect == "warm-origin":
+        compilation["origins"][0]["scope"] = "b" * 64
+    elif defect == "cold-receipt":
+        cold_receipt.write_text(
+            json.dumps({"identity_sha256": "e" * 64}), encoding="utf-8"
+        )
+    cold_path.write_text(json.dumps(cold), encoding="utf-8")
     path = root / "compilation.json"
     path.write_text(json.dumps(compilation), encoding="utf-8")
     reference = {
@@ -832,13 +949,21 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         ],
         "commands": [
             {
+                "role": "cold_run_" + lane.id,
+                "argv": cold_command["argv"],
+                "returncode": 0,
+                "duration_seconds": 0.3,
+                "stdout_sha256": hashlib.sha256(b"independent cold stdout").hexdigest(),
+                "stderr_sha256": hashlib.sha256(b"independent cold stderr").hexdigest(),
+            },
+            {
                 "role": "run_" + lane.id,
                 "argv": command["argv"],
                 "returncode": 0,
                 "duration_seconds": 0.2,
                 "stdout_sha256": hashlib.sha256(b"independent stdout").hexdigest(),
                 "stderr_sha256": hashlib.sha256(b"independent stderr").hexdigest(),
-            }
+            },
         ],
     }
     replays = []
@@ -860,7 +985,11 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
     elif defect == "product":
         proof["cells"][0]["artifact"]["sha256"] = "e" * 64
     elif defect == "command":
-        proof["commands"][0]["stdout_sha256"] = "e" * 64
+        proof["commands"][1]["stdout_sha256"] = "e" * 64
+    elif defect == "cold-command":
+        proof["commands"][0]["argv"] = command["argv"]
+    elif defect == "cold-raw-stdout":
+        (cold_output / "command.stdout").write_bytes(b"substituted cold stdout")
     elif defect == "diagnostics":
         proof["cells"][0]["compiler_fingerprint"] = "e" * 64
     elif defect == "manifest":
@@ -879,8 +1008,37 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         supervisor=tmp_path / "supervisor",
     )
     if defect:
-        with pytest.raises(ValueError):
+        expected_errors = {
+            "candidate-runtime": "retained compilation installed inputs differ from the release candidate",
+            "candidate-source": "retained compilation installed inputs differ from the release candidate",
+            "python-image": "emitted artifact changed before its standalone replay",
+            "product": "standalone product differs from its installed compilation",
+            "command": "installed command summary differs from its raw compilation export",
+            "cold-command": "installed command summary differs from its raw compilation export",
+            "cold-raw-stdout": "installed command summary differs from its raw compilation export",
+            "diagnostics": "installed product diagnostics differ from admitted compiler or lane",
+            "manifest": "emitted artifact changed before its standalone replay",
+            "reference": "installed compilation reference is invalid",
+            "missing-cell": "release proof omits an installed compilation product",
+            "cold-cache-seed": "installed cold/warm compilation phases have incorrect reuse inputs",
+            "warm-cache-seed": "warm compilation did not import the selected cold cache generation",
+            "warm-origin": "warm compilation did not import the selected cold cache generation",
+            "cold-receipt": "warm compilation did not import the selected cold cache generation",
+        }
+        with pytest.raises(ValueError, match="^" + expected_errors[defect] + "$"):
             consumer_replay.validate_installed_compilation(reference, **kwargs)
+        if defect not in {
+            "candidate-runtime",
+            "candidate-source",
+            "python-image",
+            "reference",
+        }:
+            assert [row["evidence"] for row in replays] == [root, cold_root]
     else:
         consumer_replay.validate_installed_compilation(reference, **kwargs)
-        assert len(replays) == 1
+        assert [row["evidence"] for row in replays] == [root, cold_root]
+        assert replays[0]["compilation"]["origins"] == [
+            {"scope": "a" * 64, "cell": lane.id, "identity_sha256": "d" * 64}
+        ]
+        assert replays[1]["compilation"]["origins"] == []
+        assert cache.read_bytes() == b"original cached object"

@@ -129,15 +129,17 @@ def test_stdlib_validation_and_eviction_share_publication_lock(
 
 
 def _shared_stdlib_cleanup_paths(artifact: Path) -> tuple[Path, ...]:
+    # Independent publication-family oracle, including retained emission origin.
     return (
         artifact,
-        BACKEND_CACHE._stdlib_object_count_sidecar_path(artifact),
-        BACKEND_CACHE._stdlib_object_key_sidecar_path(artifact),
-        BACKEND_CACHE._stdlib_object_manifest_sidecar_path(artifact),
-        BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path(artifact),
-        BACKEND_CACHE._stdlib_object_digest_sidecar_path(artifact),
-        BACKEND_CACHE._stdlib_object_symbol_contract_sidecar_path(artifact),
-        native_symbol_inspection._native_object_symbol_facts_sidecar_path(artifact),
+        artifact.with_suffix(".count"),
+        artifact.with_suffix(".key"),
+        artifact.with_suffix(".manifest.json"),
+        artifact.with_suffix(".partition.json"),
+        artifact.with_suffix(".sha256"),
+        artifact.with_suffix(".symbol-contract.json"),
+        artifact.with_suffix(".origin.json"),
+        artifact.with_suffix(".symbols.json"),
     )
 
 
@@ -152,6 +154,7 @@ def test_stdlib_cleanup_attempts_all_paths_and_reports_every_failure(
     failures = {
         paths[0]: PermissionError("archive is held open"),
         paths[4]: OSError("partition metadata I/O failure"),
+        paths[7]: PermissionError("retained emission origin is held open"),
     }
     attempted: list[Path] = []
     unlink = Path.unlink
