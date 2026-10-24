@@ -11,15 +11,13 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   actionable custody blocker, and preserve the evidence until the integration owner closes it.
 - Reuse existing work before creating an isolated lane. New isolated work uses the managed
   lane/landing queue lifecycle in `docs/ops/INTEGRATION.md`, which owns automatic retirement.
-- Questions and reviews authorize inspection; change requests authorize in-scope implementation
-  and relevant local checks. Define completion and the integration owner for the current outcome.
+- Questions and reviews authorize inspection; change requests authorize scoped fixes and checks. Name completion and its integration owner.
 - Pause only for input the user alone can provide, a real scope change, or a destructive,
   irreversible, privileged, or externally consequential action that was not already authorized.
   Proceed with safe, reversible work that follows from the request.
 - Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
   useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
-- Ground progress and completion claims in evidence from the current run. Say plainly what passed,
-  failed, was skipped, or remains unknown.
+- Ground claims in current-run evidence; state passes, failures, skips and unknowns.
 - If project guidance conflicts with the live repository or has gone stale, follow the safer current
   fact and repair the guidance in the same arc when it is in scope.
 
@@ -109,11 +107,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Start with `uv run --python 3.12 python tools/agent_coordination.py context` (`--json` for its
   versioned model), `git status`, nested instructions and current source/proof state. For active
   multi-agent or Pact work, read the relevant `docs/agent/ORCHESTRATION.md` sections.
-- Preserve user and parallel-agent work. Never reset, clean, overwrite, revert or broadly stage
-  unrelated changes. Integrate with pathspecs and review every diff before commit or landing.
-- Name the checkout explicitly on every Git mutation (`git -C <checkout>` or a bound Git object).
-  Before staging or committing, assert the expected branch/HEAD and exact owned path set; do not
-  rely on a tool call's working directory, especially when launching integration from primary.
+- Preserve user and parallel-agent work; never reset, clean, overwrite, revert or stage unrelated edits.
+  Bind Git mutations to an explicit checkout (`git -C` or a bound Git object), assert its branch/HEAD
+  and exact owned path set, and review the scoped diff before staging, committing or landing.
 - Generated files are projections; change the source or generator and regenerate in the same arc.
 - Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
   reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).
