@@ -3001,12 +3001,49 @@ def test_native_llvm_plan_selects_real_per_library_linkage(tmp_path, monkeypatch
     assert payload["libraries"][1]["kind"] == compression.kind
     # Shared paths are observations, not an exact-file Rust dylib selector.
     assert payload["libraries"][2]["name"] == "m"
+    if mode in {"portable", "unavailable"}:
+        assert payload["policy"]["shared_libraries"] == ["libm.so.6"]
+        assert capability[0]["shared_libraries"] == ("libm.so.6",)
     assert payload["host_abi"] == {
         "architecture": "aarch64",
         "header_bits": 64,
         "pointer_bits": 64,
         "byte_order": "little",
     }
+
+
+@pytest.mark.parametrize(
+    "mutation", ["non-tuple", "non-string", "duplicate", "identity", "membership"]
+)
+def test_native_llvm_plan_refuses_malformed_policy_before_driver_probe(
+    tmp_path, monkeypatch, mutation
+):
+    owner, verification, _, capability = _native_link_selection_fixture(
+        tmp_path, monkeypatch
+    )
+    identity, allowed = capability
+    if mutation == "non-tuple":
+        identity["shared_libraries"] = "libm.so.6"
+    elif mutation == "non-string":
+        identity["shared_libraries"] = (object(),)
+    elif mutation == "duplicate":
+        identity["shared_libraries"] = ("libm.so.6", "libm.so.6")
+    elif mutation == "identity":
+        identity["policy_sha256"] = "unverified"
+    else:
+        allowed = frozenset({"libunrequested.so.1"})
+
+    def unexpected_probe(*_args):
+        pytest.fail("invalid policy must be refused before the driver query")
+
+    monkeypatch.setattr(owner, "_driver_library_directories", unexpected_probe)
+    with pytest.raises(ValueError, match="capability"):
+        owner.select_native_llvm_link_plan(
+            ROOT,
+            verification,
+            environ={"CXXSTDLIB": ""},
+            shared_capability=(identity, allowed),
+        )
 
 
 @pytest.mark.parametrize(

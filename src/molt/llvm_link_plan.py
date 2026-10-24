@@ -74,10 +74,7 @@ class LlvmNativeLinkPlan:
             ],
             "policy": None
             if self.policy is None
-            else {
-                **self.policy,
-                "shared_libraries": list(self.policy["shared_libraries"]),
-            },
+            else _shared_policy_projection(self.policy)[0],
         }
 
     def environment_value(self) -> str:
@@ -253,6 +250,12 @@ def select_native_llvm_link_plan(
         raise ValueError(f"native LLVM linkage has no target plan for {sys.platform}")
     if shared_capability is not None and target_os != "linux":
         raise ValueError("ELF shared-library capability requires a Linux LLVM target")
+    policy = None if shared_capability is None else shared_capability[0]
+    allowed = None if shared_capability is None else shared_capability[1]
+    if policy is not None:
+        _, policy_names = _shared_policy_projection(policy)
+        if policy_names != allowed:
+            raise ValueError("LLVM shared-library capability differs from its identity")
     driver_facts = tuple(
         fact for fact in verification.tool_versions if fact.role == "clang++"
     )
@@ -275,8 +278,6 @@ def select_native_llvm_link_plan(
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValueError(f"LLVM dependency search query failed: {exc}") from exc
-    policy = None if shared_capability is None else shared_capability[0]
-    allowed = None if shared_capability is None else shared_capability[1]
     libraries: list[LlvmLinkLibrary] = []
     operands = iter(verification.link_closure)
     for operand in operands:
@@ -377,6 +378,17 @@ def native_link_plan_record(
         )
     record["libraries"] = rows
     return record
+
+
+def _shared_policy_projection(
+    policy: Mapping[str, object],
+) -> tuple[dict[str, object], frozenset[str]]:
+    """Validate the immutable source names before producing the JSON wire form."""
+    names = policy.get("shared_libraries")
+    if not isinstance(names, tuple):
+        raise ValueError("invalid native LLVM shared-library capability identity")
+    record = {**policy, "shared_libraries": list(names)}
+    return record, _validate_shared_policy(record)
 
 
 def _validate_shared_policy(policy: object) -> frozenset[str]:
