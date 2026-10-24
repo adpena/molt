@@ -122,6 +122,7 @@ fn main() {
     let mut generated = String::new();
     let mut sdk_count = 0;
     let mut selected = HashSet::new();
+    let mut native_search_directories = HashSet::new();
     for library in &plan.libraries {
         selected_file(&library.path);
         assert!(
@@ -151,11 +152,20 @@ fn main() {
         let (name, kind, modifiers) = match library.kind {
             // Bundle once in this dependency rlib. Absolute +verbatim selection
             // prevents another Cargo -L root from substituting same-name bytes.
-            LinkKind::Static => (
-                library.path.to_str().unwrap(),
-                "static",
-                ", modifiers = \"+bundle,+verbatim\"",
-            ),
+            LinkKind::Static => {
+                // rustc only checks even absolute verbatim names while walking
+                // explicit native search paths. Supply actual archive parents;
+                // the absolute attribute still owns exact-file selection.
+                let directory = library.path.parent().unwrap();
+                if native_search_directories.insert(directory) {
+                    println!("cargo:rustc-link-search=native={}", directory.display());
+                }
+                (
+                    library.path.to_str().unwrap(),
+                    "static",
+                    ", modifiers = \"+bundle,+verbatim\"",
+                )
+            }
             // These are intentional target ABI selectors. The selected SDK file
             // is an observation; the actual emitted ELF/Mach-O audit decides
             // whether the final program has an admissible shared closure.

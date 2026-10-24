@@ -1315,7 +1315,12 @@ There is no library-name exception, grafting or tag relaxation.
 Exact static paths are bundled in a dependency rlib through Rust's
 [`+bundle,+verbatim` native linkage](https://doc.rust-lang.org/reference/items/external-blocks.html#linking-modifiers-bundle).
 This prevents another Cargo search root from substituting an archive and lets
-backend-local tests consume the same upstream metadata. Intentional OS shared
+backend-local tests consume the same upstream metadata. The owner also emits
+each selected static archive parent once as a native search directory:
+[rustc 1.99.1's archive lookup](https://github.com/rust-lang/rust/blob/1.99.1/compiler/rustc_codegen_ssa/src/back/link.rs#L134-L223)
+checks absolute verbatim names only inside that search. No ambient directory is
+needed to make the receiver work; the absolute attribute retains file selection.
+Intentional OS shared
 libraries remain named ABI selectors. Their selected SDK files are retained
 observations, not a claim that Rust binds a shared selector to that exact file.
 Native-build v6 and the signed SBOM retain the plan, policy and file identities;
