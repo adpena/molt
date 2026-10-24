@@ -1036,26 +1036,22 @@ def test_patch_id_stable_across_rebase(drv, origin_and_clone):
 # --------------------------------------------------------------------------
 
 
-def _worktree_off(origin: Path, base: Path, name: str) -> Path:
-    """Add a linked worktree off origin/main so cleanup can `worktree remove` it."""
-    main_clone = base / "mainclone"
-    if not main_clone.exists():
-        _git(base, "clone", "-q", str(origin), str(main_clone))
-        _git(main_clone, "config", "user.email", "d@molt.test")
-        _git(main_clone, "config", "user.name", "D")
-    wt = base / name
+def _worktree_off(main_clone: Path, name: str) -> Path:
+    """Link a disposable worktree to the fixture's already isolated main clone.
+
+    Its Git configuration is shared with the linked worktree; each test's
+    origin, main clone and configuration remain private to that test.
+    """
+    wt = main_clone.parent / name
     _git(main_clone, "worktree", "add", "-q", "--detach", str(wt), "origin/main")
-    _git(wt, "config", "user.email", "d@molt.test")
-    _git(wt, "config", "user.name", "D")
     return wt
 
 
 def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path, monkeypatch):
     from tools import molt_dev_common
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_clean")
-    main = tmp_path / "mainclone"
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_clean")
     original_readme = (main / "README.md").read_bytes()
     # Model a driver loaded from the disposable checkout. The actual launch
     # boundary must leave it before removal, even on POSIX where Git may allow
@@ -1096,8 +1092,8 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
 ):
     from molt.cli import backend_execution
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_daemons")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_daemons")
     retired: list[tuple[Path, bool]] = []
 
     def retire(project_root, env, **kwargs):
@@ -1131,13 +1127,13 @@ def _shared_checkout_state(ext: Path, checkout: Path) -> tuple[Path, Path]:
 def test_cleanup_retires_the_checkouts_state_with_it(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_state")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_state")
     ext = tmp_path / "artifacts"
     ext.mkdir()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
     target, uv_environment = _shared_checkout_state(ext, wt)
-    sibling_target, sibling_uv = _shared_checkout_state(ext, tmp_path / "mainclone")
+    sibling_target, sibling_uv = _shared_checkout_state(ext, main)
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
@@ -1156,8 +1152,8 @@ def test_cleanup_imports_nothing_after_it_removes_the_worktree(
     finds no source. A fresh process with an import guard models that. A
     landing runs `integrate --repo .` with the checkout as its working
     directory, which the removal deletes; the "inside" case runs that way."""
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_import_order")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_import_order")
     ext = tmp_path / "artifacts"
     ext.mkdir()
     target, uv_environment = _shared_checkout_state(ext, wt)
@@ -1226,8 +1222,8 @@ def test_cleanup_makes_a_running_vm_release_its_pins_of_the_worktree_first(
     must come before the removal, while the checkout's sources can still
     guard a command.
     """
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_vm_pins")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_vm_pins")
     lima_home = tmp_path / "lima"
     instance = lima_home / "vm"
     instance.mkdir(parents=True)
@@ -1357,8 +1353,8 @@ def test_the_guest_release_never_aborts_a_cleanup(
     """B5: whatever the release raises, the checkout is still removed."""
     from tools import linux_vm
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_release_raises")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_release_raises")
 
     def fail(*_args, **_kwargs):
         raise error
@@ -1384,8 +1380,8 @@ def test_failed_worktree_removal_keeps_the_checkouts_state(
 ):
     from molt import checkout_state
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_state_kept")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_state_kept")
     ext = tmp_path / "artifacts"
     ext.mkdir()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
@@ -1424,8 +1420,8 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     from molt.build_state_layout import build_state_root
     from tools import drift_harvest, linux_vm
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_retirement_inventory")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_retirement_inventory")
     guest_releases: list[tuple[tuple[Path, ...], bool]] = []
 
     def release_guests(paths, *, environment, host):
@@ -1433,7 +1429,6 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
         return ()
 
     monkeypatch.setattr(linux_vm, "release_for_paths", release_guests)
-    main = tmp_path / "mainclone"
     ext = tmp_path / "artifacts"
     ext.mkdir()
     target, uv_environment = _shared_checkout_state(ext, wt)
@@ -1575,8 +1570,8 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
 
 
 def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_unpushed")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_unpushed")
     _commit_file(wt, "local.py", "n = 1\n", "feat: unpushed local")
     git = drv.Git(wt)
     rc = molt_dev_retire.cleanup_worktree(
@@ -1587,8 +1582,8 @@ def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
 
 
 def test_cleanup_refuses_dirty_tracked(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_dirty")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_dirty")
     # Modify a TRACKED file without committing -> dirty -> refuse.
     (wt / "README.md").write_text("seed\nlocal edit\n", encoding="utf-8")
     rc = molt_dev_retire.cleanup_worktree(
@@ -1603,8 +1598,8 @@ def test_molt_dev_default_ignore_globs_use_dirty_tree_policy_authority(drv):
 
 
 def test_cleanup_refuses_runtime_generation_churn(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_wasm")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_wasm")
     generation = wt / RUNTIME_GENERATION_MANIFEST
     generation.parent.mkdir(parents=True, exist_ok=True)
     generation.write_text("{}\n", encoding="utf-8")
@@ -1617,8 +1612,8 @@ def test_cleanup_refuses_runtime_generation_churn(drv, origin_and_clone, tmp_pat
 
 
 def test_cleanup_force_requires_matching_sha(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_force")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_force")
     _commit_file(wt, "local.py", "n = 1\n", "feat: unpushed")
     git = drv.Git(wt)
     head = git.head_sha()
@@ -1638,11 +1633,7 @@ def test_cleanup_force_requires_matching_sha(drv, origin_and_clone, tmp_path):
 
 def test_cleanup_refuses_main_worktree(drv, origin_and_clone, tmp_path):
     # Targeting the MAIN worktree must be refused (this is for disposable ones).
-    origin, _work = origin_and_clone
-    main_clone = tmp_path / "main_only"
-    _git(tmp_path, "clone", "-q", str(origin), str(main_clone))
-    _git(main_clone, "config", "user.email", "d@molt.test")
-    _git(main_clone, "config", "user.name", "D")
+    _origin, main_clone = origin_and_clone
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(main_clone),
         main_clone,
@@ -6609,9 +6600,8 @@ def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_
     from tools import molt_dev_controller
     from tools.venv_exec import venv_python
 
-    origin, _main = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_controller_cwd")
-    main = tmp_path / "mainclone"
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_controller_cwd")
     (wt / "relative-tmp").mkdir()
     if outcome:
         (wt / "README.md").write_text("independent tracked edit\n", encoding="utf-8")
