@@ -888,6 +888,75 @@ fn eliminate_dead_loop_end_after_return() {
 }
 
 #[test]
+fn paired_loop_closers_survive_terminal_body_paths() {
+    for terminal in [
+        "ret",
+        "ret_void",
+        "jump",
+        "goto",
+        "loop_break",
+        "loop_continue",
+    ] {
+        for depth in 1..=2 {
+            let mut ops = Vec::new();
+            for _ in 0..depth {
+                for kind in ["loop_start", "loop_break_if_false"] {
+                    ops.push(OpIR {
+                        kind: kind.into(),
+                        ..OpIR::default()
+                    });
+                }
+            }
+            ops.push(OpIR {
+                kind: terminal.into(),
+                value: matches!(terminal, "jump" | "goto").then_some(42),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "const_int".into(),
+                out: Some("dead_body_value".into()),
+                value: Some(1),
+                ..OpIR::default()
+            });
+            for _ in 0..depth {
+                ops.push(OpIR {
+                    kind: "loop_end".into(),
+                    ..OpIR::default()
+                });
+            }
+            ops.push(OpIR {
+                kind: "label".into(),
+                value: Some(42),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "const_int".into(),
+                out: Some("after_loop_value".into()),
+                value: Some(2),
+                ..OpIR::default()
+            });
+
+            eliminate_dead_labels(&mut ops);
+
+            assert_eq!(
+                ops.iter().filter(|op| op.kind == "loop_end").count(),
+                depth,
+                "{terminal} at depth {depth} must close every retained loop: {ops:?}"
+            );
+            assert!(
+                !ops.iter()
+                    .any(|op| op.out.as_deref() == Some("dead_body_value")),
+                "{terminal} must kill straight-line body work: {ops:?}"
+            );
+            assert_eq!(ops.last().unwrap().out.as_deref(), Some("after_loop_value"));
+            let mut errors = Vec::new();
+            molt_ir::simple_verify::verify_simple_ir_structure("terminal_loop", &ops, &mut errors);
+            assert!(errors.is_empty(), "{terminal} at depth {depth}: {errors:?}");
+        }
+    }
+}
+
+#[test]
 fn eliminate_dead_jump_after_return() {
     let mut ops = vec![
         OpIR {
@@ -1044,31 +1113,35 @@ fn eliminate_dead_labels_keeps_if_marker_after_dead_label_before_structured_if()
         vec!["ret", "if", "const_none", "else", "raise", "end_if"],
         "dead-label elimination must not orphan structured if markers: {ops:?}"
     );
-    assert!(
-        validate_structured_if_markers(&ops).is_ok(),
-        "structured if markers must remain balanced after dead-label elimination: {ops:?}"
-    );
+    let mut errors = Vec::new();
+    molt_ir::simple_verify::verify_simple_ir_structure("terminal_if", &ops, &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 #[test]
-fn validate_structured_if_markers_rejects_orphan_else() {
-    let ops = vec![
-        OpIR {
-            kind: "ret".into(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "else".into(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "end_if".into(),
-            ..OpIR::default()
-        },
-    ];
-
-    let err = validate_structured_if_markers(&ops).expect_err("must reject orphan else");
-    assert!(err.contains("orphan else"), "{err}");
+fn shared_structure_verifier_rejects_orphaned_and_crossed_regions() {
+    for kinds in [
+        vec!["ret", "else", "end_if"],
+        vec!["loop_start", "ret"],
+        vec!["loop_end"],
+        vec!["if", "loop_start", "end_if", "loop_end"],
+    ] {
+        let ops: Vec<_> = kinds
+            .iter()
+            .map(|kind| OpIR {
+                kind: (*kind).into(),
+                ..OpIR::default()
+            })
+            .collect();
+        let mut errors = Vec::new();
+        molt_ir::simple_verify::verify_simple_ir_structure("invalid_regions", &ops, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == "unbalanced-control-flow"),
+            "invalid lexical nesting must be rejected: {kinds:?}, {errors:?}"
+        );
+    }
 }
 
 #[test]

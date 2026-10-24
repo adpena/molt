@@ -12,9 +12,7 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{AttrValue, OpCode};
 
 use super::cfg::{collect_guard_raise_path_blocks, reverse_postorder, successor_reaches_header};
-use super::cleanup::{
-    eliminate_dead_labels, missing_label_references, validate_structured_if_markers,
-};
+use super::cleanup::{eliminate_dead_labels, missing_label_references};
 use super::op_utils::attr_int;
 use super::structured::{
     LoopRegion, emit_block_arg_loads, emit_block_arg_stores, emit_block_ops_inner, emit_return_ops,
@@ -977,12 +975,14 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         eprintln!("LOWER_DEBUG_PRE_ELIM: {out:#?}");
     }
     eliminate_dead_labels(&mut out);
-    if let Err(detail) = validate_structured_if_markers(&out) {
-        panic!(
-            "[TIR] invalid structured if lowering for {}: {}",
-            func.name, detail
-        );
-    }
+    let mut structure_errors = Vec::new();
+    molt_ir::simple_verify::verify_simple_ir_structure(&func.name, &out, &mut structure_errors);
+    assert!(
+        structure_errors.is_empty(),
+        "[TIR] invalid structured lowering for {}: {:?}",
+        func.name,
+        structure_errors
+    );
 
     // Never turn a lost destination into target-specific falloff. All consumers
     // must receive the same closed namespace, not an optional EH-only warning.

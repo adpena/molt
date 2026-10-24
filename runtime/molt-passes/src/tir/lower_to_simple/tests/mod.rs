@@ -1,8 +1,6 @@
 pub(super) use std::collections::{HashMap, HashSet};
 
-pub(super) use super::cleanup::{
-    eliminate_dead_labels, validate_labels, validate_structured_if_markers,
-};
+pub(super) use super::cleanup::{eliminate_dead_labels, validate_labels};
 pub(super) use super::runner::lower_to_simple_ir;
 pub(super) use super::structured::emit_guard_raise_path;
 pub(super) use crate::ir::{FunctionIR, OpIR};
