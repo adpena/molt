@@ -133,8 +133,9 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    Collection failure stops the candidate before compilation. Successful
    collection never replaces test execution or contributes a passing gate.
    Unfiltered requests first join overlapping directory/file/node selections,
-   then group independent requests with the same declared memory envelope and
-   prerequisites. Every contributing owner retains its requirements; a Cargo
+   then group independent requests with the same prerequisites, taking the
+   largest declared memory envelope in each cohort. Every contributing owner
+   retains its requirements; a Cargo
    requirement on one request does not serialize unrelated Python-only work.
    Literal targets and parameter IDs retain their order within a cohort.
    Canonical repository-entry admission happens once when the policy loads;

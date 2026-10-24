@@ -692,14 +692,23 @@ def test_landing_cohorts_join_overlaps_and_all_target_owners(
     (tmp_path / "tests").mkdir()
     for name in ("light", "also", "shared", "heavy", "nodes", "parameter"):
         (tmp_path / "tests" / f"{name}.py").touch()
-    parameter = "tests/parameter.py::test_literal[x::y / & 'quotes' {value} [nested]]"
+    # Raw explicit commands reserve template braces; the structured-only case
+    # independently keeps the full opaque payload, including {value}.
+    payload = (
+        "x::y / & 'quotes' [nested]"
+        if duplicate_explicit
+        else "x::y / & 'quotes' {value} [nested]"
+    )
+    parameter = f"tests/parameter.py::test_literal[{payload}]"
     prefix = ("python", "-m", "pytest", "-q", "-n", "auto")
-    heavy = (
+    compiled = (
         *prefix,
         "--molt-worker-memory-gb=6.25",
+        "tests/shared.py",
         "tests/nodes.py",
         "tests/heavy.py",
         "tests/nodes.py::test_heavy",
+        parameter,
     )
     policy = """
 always = []
@@ -727,7 +736,7 @@ toolchains = ["python", "cargo"]
         # after earlier new cohorts have been selected for insertion.
         policy += (
             '\n[[rule]]\nname = "explicit"\nglobs = ["src/**"]\n'
-            f"gates = [{json.dumps(shlex.join(heavy))}]\n"
+            f"gates = [{json.dumps(shlex.join(compiled))}]\n"
             'toolchains = ["python", "sdk"]\n'
         )
     config = GateConfig.parse(policy, "target-owned resource cohorts", root=tmp_path)
@@ -749,11 +758,7 @@ toolchains = ["python", "cargo"]
             ("python",),
         ),
         (
-            (*prefix, "--molt-worker-memory-gb=0.5", "tests/shared.py", parameter),
-            ("python", "cargo"),
-        ),
-        (
-            shlex.join(heavy) if duplicate_explicit else heavy,
+            shlex.join(compiled) if duplicate_explicit else compiled,
             ("python", "sdk", "cargo") if duplicate_explicit else ("python", "cargo"),
         ),
     ]
@@ -768,12 +773,13 @@ toolchains = ["python", "cargo"]
     ]
     assert len(targets) == len(set(targets)) == 7
     assert gates[0].collection_command is None
-    assert gates[1].collection_command[-2:] == (parameter, "--collect-only")
-    assert gates[2].collection_command[-2:] == (
+    assert gates[1].collection_command[-3:] == (
         "tests/nodes.py::test_heavy",
+        parameter,
         "--collect-only",
     )
-    assert "tests/nodes.py" not in gates[2].collection_command
+    assert "tests/nodes.py" not in gates[1].collection_command
+    assert "tests/shared.py" not in gates[1].collection_command
 
 
 def test_selected_rules_run_each_pytest_selection_on_its_own(drv, tmp_path):
