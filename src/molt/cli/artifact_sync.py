@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from molt.backend_protocol import BackendEmissionOrigin
 from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
@@ -18,7 +19,7 @@ from molt.toolchain_identity import (
 # artifact. Reconstructible source-analysis candidates belong to json_cache.
 
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[str, dict[str, Any] | None]] = {}
-_ARTIFACT_SYNC_STATE_VERSION = 2
+_ARTIFACT_SYNC_STATE_VERSION = 3
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
@@ -28,6 +29,30 @@ def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
         subdir="artifact_sync",
         stem_suffix="",
         extension="json",
+    )
+
+
+def _artifact_sync_payload_shape(value: object) -> bool:
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        != {
+            "version",
+            "source_key",
+            "tier",
+            "size",
+            "sha256",
+            "generation",
+            "emission_origin",
+        }
+        or value["version"] != _ARTIFACT_SYNC_STATE_VERSION
+    ):
+        return False
+    generation = value["generation"]
+    return (
+        isinstance(generation, list)
+        and len(generation) == 2
+        and all(type(part) is int and part >= 0 for part in generation)
     )
 
 
@@ -51,7 +76,7 @@ def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
     except (ValueError, RecursionError):
         payload = None
     else:
-        payload = decoded if isinstance(decoded, dict) else None
+        payload = decoded if _artifact_sync_payload_shape(decoded) else None
     _ARTIFACT_SYNC_STATE_CACHE[path] = (identity.sha256, payload)
     return payload
 
@@ -63,6 +88,7 @@ def _write_artifact_sync_state(
     tier: str,
     artifact: Path,
     identity: StableRegularFileIdentity | None = None,
+    emission_origin: BackendEmissionOrigin | None = None,
 ) -> None:
     try:
         identity = _artifact_sync_identity(artifact, identity=identity)
@@ -70,12 +96,21 @@ def _write_artifact_sync_state(
         raise OSError(
             f"Cannot attest backend artifact sync receipt: {error}"
         ) from error
+    if emission_origin is not None and (
+        emission_origin.output_sha256 != identity.sha256
+        or emission_origin.output_size != identity.size
+    ):
+        raise OSError("Backend emission origin names different sync artifact bytes")
     payload = {
         "version": _ARTIFACT_SYNC_STATE_VERSION,
         "source_key": source_key,
         "tier": tier,
         "size": identity.size,
         "sha256": identity.sha256,
+        "generation": list(identity.stat_token()[:2]),
+        "emission_origin": (
+            emission_origin.payload() if emission_origin is not None else None
+        ),
     }
     _atomic_write_json(path, payload, indent=2)
     # Only a read of the published generation may populate the process cache;
@@ -103,7 +138,7 @@ def _artifact_sync_state_matches(
     identity: StableRegularFileIdentity | None = None,
 ) -> bool:
     """Match one source receipt to current bytes and any supplied admission."""
-    if state is None or state.get("version") != _ARTIFACT_SYNC_STATE_VERSION:
+    if state is None or not _artifact_sync_payload_shape(state):
         return False
     if state.get("source_key") != source_key or state.get("tier") != tier:
         return False
@@ -111,4 +146,37 @@ def _artifact_sync_state_matches(
         identity = _artifact_sync_identity(artifact, identity=identity)
     except (OSError, ValueError):
         return False
-    return state.get("size") == identity.size and state.get("sha256") == identity.sha256
+    return (
+        state["size"] == identity.size
+        and state["sha256"] == identity.sha256
+        and state["generation"] == list(identity.stat_token()[:2])
+    )
+
+
+def _artifact_sync_emission_origin(
+    state: dict[str, Any] | None,
+    *,
+    identity: StableRegularFileIdentity,
+) -> BackendEmissionOrigin | None:
+    """Read an observation bound to the admitted generation, never an attestation.
+
+    Recency updates change timestamps, so generation custody uses file identity
+    and freshly read content. The closed supervisor journal remains the origin
+    admission authority, independent of these untrusted retained observations.
+    """
+    if (
+        state is None
+        or not _artifact_sync_payload_shape(state)
+        or state.get("sha256") != identity.sha256
+        or state.get("size") != identity.size
+        or state.get("generation") != list(identity.stat_token()[:2])
+        or state.get("emission_origin") is None
+    ):
+        return None
+    try:
+        origin = BackendEmissionOrigin.from_payload(state["emission_origin"])
+    except ValueError:
+        return None
+    if (origin.output_sha256, origin.output_size) != (identity.sha256, identity.size):
+        return None
+    return origin

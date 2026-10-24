@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.backend_protocol import BackendDaemonJobOrigin
+from molt.backend_protocol import BackendEmissionOrigin
 from molt.cli.link_input_observation import (
     compilation_input_observation,
 )
@@ -759,7 +759,8 @@ def _prepare_non_native_build_result(
     linked: bool,
     require_linked: bool,
     capture_link_inputs: bool = False,
-    daemon_job_origin: BackendDaemonJobOrigin | None = None,
+    emission_origin: BackendEmissionOrigin | None = None,
+    compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
     json_output: bool,
@@ -795,7 +796,8 @@ def _prepare_non_native_build_result(
             linked=linked,
             require_linked=require_linked,
             capture_link_inputs=capture_link_inputs,
-            daemon_job_origin=daemon_job_origin,
+            emission_origin=emission_origin,
+            compiler_cache_path=compiler_cache_path,
             linked_output_path=linked_output_path,
             output_artifact=output_artifact,
             json_output=json_output,
@@ -831,7 +833,8 @@ def _prepare_non_native_build_result_in_generation(
     linked: bool,
     require_linked: bool,
     capture_link_inputs: bool = False,
-    daemon_job_origin: BackendDaemonJobOrigin | None = None,
+    emission_origin: BackendEmissionOrigin | None = None,
+    compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
     json_output: bool,
@@ -855,7 +858,7 @@ def _prepare_non_native_build_result_in_generation(
     app_export_contract_path: Path | None = None,
     validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
-    if capture_link_inputs and (not is_wasm or not linked or daemon_job_origin is None):
+    if capture_link_inputs and (not is_wasm or not linked or emission_origin is None):
         return None, _fail(
             "Link input capture requires linked WASM with retained compiler emission origin.",
             json_output,
@@ -2064,15 +2067,22 @@ def _prepare_non_native_build_result_in_generation(
 
         link_input_observation = None
         if capture_link_inputs:
-            assert deployment is not None and daemon_job_origin is not None
+            assert deployment is not None and emission_origin is not None
             try:
                 link_input_observation = compilation_input_observation(
-                    daemon_job_origin.payload(),
+                    emission_origin.payload(),
                     read_exact(
                         deployment.outputs["input_observation"],
                         max_bytes=16 * 1024 * 1024,
                         label="WASM linker input observation",
                     ),
+                    stdlib=None,
+                    cache={
+                        "compiler": str(compiler_cache_path)
+                        if compiler_cache_path
+                        else None,
+                        "stdlib": None,
+                    },
                 )
                 deployment.outputs["input_observation"].write_text(
                     json.dumps(

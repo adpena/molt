@@ -39,6 +39,7 @@ def _process_id(value: object) -> int:
 @dataclass(frozen=True, slots=True)
 class BackendNativeWorkerOrigin:
     process_id: int
+    scope: str | None
     input_sha256: str
     input_size: int
     output_sha256: str
@@ -48,20 +49,22 @@ class BackendNativeWorkerOrigin:
     def from_payload(cls, value: object) -> BackendNativeWorkerOrigin:
         if (
             not isinstance(value, dict)
-            or set(value) != {"schema", "process_id", "input", "output"}
-            or value["schema"] != "molt.native-worker-origin.v1"
+            or set(value) != {"schema", "process_id", "scope", "input", "output"}
+            or value["schema"] != "molt.native-worker-origin.v2"
         ):
             raise ValueError("native worker origin schema is invalid")
         return cls(
             _process_id(value["process_id"]),
+            validate_emission_scope(value["scope"]),
             *_content(value["input"], "worker input"),
             *_content(value["output"], "worker output"),
         )
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema": "molt.native-worker-origin.v1",
+            "schema": "molt.native-worker-origin.v2",
             "process_id": self.process_id,
+            "scope": self.scope,
             "input": {"sha256": self.input_sha256, "size": self.input_size},
             "output": {"sha256": self.output_sha256, "size": self.output_size},
         }
@@ -73,16 +76,16 @@ class BackendCodegenOrigin:
     workers: tuple[BackendNativeWorkerOrigin, ...]
 
     @classmethod
-    def from_payload(cls, value: object, *, daemon_pid: int) -> BackendCodegenOrigin:
+    def from_payload(cls, value: object, *, producer_pid: int) -> BackendCodegenOrigin:
         if (
             isinstance(value, dict)
             and set(value) == {"kind", "process_id"}
             and value["kind"] == "in-process"
         ):
             process_id = _process_id(value["process_id"])
-            if process_id != daemon_pid:
+            if process_id != producer_pid:
                 raise ValueError(
-                    "in-process codegen origin differs from serving daemon"
+                    "in-process codegen origin differs from original producer"
                 )
             return cls(process_id, ())
         if (
@@ -149,76 +152,206 @@ class BackendAddressedProgramInput:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class BackendDaemonJobOrigin:
-    """Decoded input, producing processes and emitted output retained by the daemon.
+def validate_emission_scope(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("emission scope is not a canonical policy nonce")
+    return value
 
-    This is not loaded-image or compiler/runtime release admission. Kernel
-    process identity, persisted-cache origin and runtime closure remain separate.
+
+@dataclass(frozen=True, slots=True)
+class BackendEmissionProducer:
+    kind: Literal["one-shot", "daemon"]
+    process_id: int
+    scope: str | None
+
+    @classmethod
+    def from_payload(cls, value: object) -> BackendEmissionProducer:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"kind", "process_id", "scope"}
+            or value["kind"] not in ("one-shot", "daemon")
+        ):
+            raise ValueError("backend emission producer is invalid")
+        kind: Literal["one-shot", "daemon"] = (
+            "one-shot" if value["kind"] == "one-shot" else "daemon"
+        )
+        return cls(
+            kind,
+            _process_id(value["process_id"]),
+            validate_emission_scope(value["scope"]),
+        )
+
+    def payload(self) -> dict[str, object]:
+        return {"kind": self.kind, "process_id": self.process_id, "scope": self.scope}
+
+
+@dataclass(frozen=True, slots=True)
+class BackendEmissionOrigin:
+    """Original input, producing processes and output, without admission claims.
+
+    Scope and PID are observations. Only the original closed native journal can
+    bind them to a stable generation and image; current process state cannot.
     """
 
-    daemon_pid: int
+    producer: BackendEmissionProducer
     input: BackendAddressedProgramInput
     output_sha256: str
     output_size: int
     codegen: BackendCodegenOrigin
 
     @classmethod
-    def from_payload(cls, value: object) -> BackendDaemonJobOrigin:
+    def from_payload(cls, value: object) -> BackendEmissionOrigin:
         if (
             not isinstance(value, dict)
-            or set(value) != {"schema", "daemon_pid", "input", "output", "codegen"}
-            or value["schema"] != "molt.daemon-job-origin.v2"
+            or set(value) != {"schema", "producer", "input", "output", "codegen"}
+            or value["schema"] != "molt.backend-emission-origin.v1"
         ):
-            raise ValueError("backend daemon origin schema is invalid")
-        pid = _process_id(value["daemon_pid"])
+            raise ValueError("backend emission origin schema is invalid")
+        producer = BackendEmissionProducer.from_payload(value["producer"])
+        input_identity = BackendAddressedProgramInput.from_payload(value["input"])
+        codegen = BackendCodegenOrigin.from_payload(
+            value["codegen"], producer_pid=producer.process_id
+        )
+        if any(worker.scope != producer.scope for worker in codegen.workers):
+            raise ValueError(
+                "application worker origin belongs to another emission scope"
+            )
         return cls(
-            pid,
-            BackendAddressedProgramInput.from_payload(value["input"]),
-            *_content(value["output"], "output"),
-            BackendCodegenOrigin.from_payload(value["codegen"], daemon_pid=pid),
+            producer, input_identity, *_content(value["output"], "output"), codegen
         )
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema": "molt.daemon-job-origin.v2",
-            "daemon_pid": self.daemon_pid,
+            "schema": "molt.backend-emission-origin.v1",
+            "producer": self.producer.payload(),
             "input": self.input.payload(),
             "output": {"sha256": self.output_sha256, "size": self.output_size},
             "codegen": self.codegen.payload(),
         }
 
     def verify_output(self, path: Path) -> None:
-        from molt.toolchain_identity import (
-            open_stable_regular_file,
-            stable_regular_file_handle_identity,
+        _verify_emitted_output(
+            path, self.output_sha256, self.output_size, self.codegen.workers
         )
-        from molt.cli.static_archive_identity import static_archive_member_identities
 
-        with open_stable_regular_file(
-            path, label="backend daemon emitted output"
-        ) as opened:
-            observed = stable_regular_file_handle_identity(
-                opened, label="backend daemon emitted output"
-            )
-            if (observed.sha256, observed.size) != (
-                self.output_sha256,
-                self.output_size,
+
+@dataclass(frozen=True, slots=True)
+class BackendStdlibOrigin:
+    """Archive bytes and ordered original constituent emissions, across scopes."""
+
+    output_sha256: str
+    output_size: int
+    workers: tuple[BackendNativeWorkerOrigin, ...]
+
+    @classmethod
+    def from_payload(cls, value: object) -> BackendStdlibOrigin:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema", "output", "workers"}
+            or value["schema"] != "molt.stdlib-archive-origin.v1"
+            or not isinstance(value["workers"], list)
+            or not 0 < len(value["workers"]) <= 16384
+        ):
+            raise ValueError("stdlib archive origin schema is invalid")
+        return cls(
+            *_content(value["output"], "stdlib output"),
+            tuple(
+                BackendNativeWorkerOrigin.from_payload(row) for row in value["workers"]
+            ),
+        )
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "schema": "molt.stdlib-archive-origin.v1",
+            "output": {"sha256": self.output_sha256, "size": self.output_size},
+            "workers": [worker.payload() for worker in self.workers],
+        }
+
+    def verify_output(self, path: Path) -> None:
+        _verify_emitted_output(path, self.output_sha256, self.output_size, self.workers)
+
+
+def _verify_emitted_output(
+    path: Path, sha256: str, size: int, workers: tuple[BackendNativeWorkerOrigin, ...]
+) -> None:
+    import hashlib
+    from molt.toolchain_identity import (
+        open_stable_regular_file,
+        stable_regular_file_handle_identity,
+    )
+    from molt.cli.static_archive_identity import open_static_archive_members
+    from molt.native_artifact_header import (
+        NativeReader,
+        NativeFileKind,
+        decode_native_artifact,
+    )
+    from molt.native_target_shape import NativeObjectFormat
+
+    with open_stable_regular_file(path, label="backend emitted output") as opened:
+        observed = stable_regular_file_handle_identity(
+            opened, label="backend emitted output"
+        )
+        if (observed.sha256, observed.size) != (sha256, size):
+            raise ValueError("backend emission origin names different output bytes")
+        if not workers:
+            return
+        with open_static_archive_members(opened.path, opened=opened) as (
+            members,
+            stream,
+        ):
+            if len(members) != len(workers):
+                raise ValueError(
+                    "backend archive origin omits or repeats a worker output"
+                )
+            for index, (member, worker) in enumerate(
+                zip(members, workers, strict=True)
             ):
-                raise ValueError("backend daemon origin names different output bytes")
-            if self.codegen.workers:
-                members = static_archive_member_identities(opened.path, opened=opened)
-                if len(members) != len(self.codegen.workers):
-                    raise ValueError(
-                        "backend archive origin omits or repeats a worker output"
-                    )
-                for index, (member, worker) in enumerate(
-                    zip(members, self.codegen.workers, strict=True)
+                if (
+                    member.name != f"molt_{index:08}.o"
+                    or member.size < worker.output_size
                 ):
-                    if member.member.name != f"molt_{index:08}.o" or (
-                        member.sha256,
-                        member.member.size,
-                    ) != (worker.output_sha256, worker.output_size):
+                    raise ValueError(
+                        "backend archive member differs from native worker origin"
+                    )
+                stream.seek(member.content_offset)
+                remaining = worker.output_size
+                digest = hashlib.sha256()
+                while remaining:
+                    block = stream.read(min(1024 * 1024, remaining))
+                    if not block:
+                        raise ValueError("truncated native worker output")
+                    digest.update(block)
+                    remaining -= len(block)
+                if digest.hexdigest() != worker.output_sha256:
+                    raise ValueError(
+                        "backend archive member differs from native worker origin"
+                    )
+                padding = member.size - worker.output_size
+                if padding:
+                    # ar_archive_writer 0.5.3 aligns Darwin member data to eight
+                    # with newlines. This is distinct from BSD extended-name
+                    # padding, which the canonical archive parser already removed.
+                    suffix = stream.read(padding) if padding < 8 else b""
+
+                    def read_at(offset: int, count: int) -> bytes:
+                        stream.seek(offset)
+                        return stream.read(count)
+
+                    artifact = decode_native_artifact(
+                        NativeReader(worker.output_size, read_at, member.content_offset)
+                    )
+                    if (
+                        member.name_format != "bsd-extended"
+                        or artifact.universal
+                        or padding != (-worker.output_size) % 8
+                        or suffix != b"\n" * padding
+                    ):
                         raise ValueError(
-                            "backend archive member differs from native worker origin"
+                            "native archive has undocumented member padding"
                         )
+                    artifact.validate_format_and_kind(
+                        object_format=NativeObjectFormat.MACHO,
+                        kinds=frozenset({NativeFileKind.OBJECT}),
+                    )

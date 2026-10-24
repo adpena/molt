@@ -255,14 +255,14 @@ does not establish authenticated compiler-input or release provenance.
 `src/molt/backend_daemon_protocol_version.txt` owns the protocol version. Python
 reads that packaged integer; Rust includes the same expression at compile time.
 The file participates in backend source identity, package data and release
-source inventory. Protocol 2 retired inline IR. Protocol 4 sends each function
+source inventory. Protocol 2 retired inline IR. Protocol 5 sends each function
 body to a daemon at most once while the daemon keeps it (HF-516), with
-original-emission provenance carried by the compiled artifact entry. Protocol 4
+original-emission provenance carried by the compiled artifact entry. Protocol 5
 is the single combined revision; neither incompatible protocol-3 proposal is
-admitted. See [daemon emission origin](../spec/areas/tooling/0001-toolchains.md#daemon-emission-origin)
+admitted. See [original emission origin](../spec/areas/tooling/0001-toolchains.md#original-emission-and-retained-cache-generations)
 for the partial-lease/ordered-assembly observation and its admission limits.
 
-#### Content-addressed function transport (protocol 4)
+#### Content-addressed function transport (protocol 5)
 
 On 2026-10-23 (macOS arm64, development backend, load average 4-8) a one-line
 edit of a 27-line asyncio program (96 modules, 3,638 functions, 677,711
@@ -322,7 +322,7 @@ body shipped; they keep no store.
 
 Trust: a function the CLI does not ship relies on its seeded digest. The
 artifact cache key already relies on the same seeds (the payload digest is a
-Merkle node over them), so protocol 4 adds no new trust; `MOLT_VERIFY_FUNCTION_DIGESTS=1`
+Merkle node over them), so protocol 5 adds no new trust; `MOLT_VERIFY_FUNCTION_DIGESTS=1`
 re-encodes every seed. Every shipped body is verified by its receiver.
 
 Costs per build: the CLI reads N memoized digests and hex-joins 32·N bytes into
@@ -349,7 +349,7 @@ donor, one-line edits of the program above):
 | New program sharing the stdlib: bodies sent, `backend_daemon_compile` | 3,638, 5.4 s | 5, 3.7 s |
 | Daemon RSS after both programs | 621 MB | 1,024 MB |
 
-These measurements do not qualify the combined protocol 4, which additionally
+These measurements do not qualify the combined protocol 5, which additionally
 hashes consumed lease bytes and retains, transports and verifies the original
 emission observation. Its integrated latency and memory remain unmeasured.
 
@@ -379,7 +379,7 @@ Prior art, read 2026-10-23:
   per absent input, after which the client uploads again. Servers "SHOULD
   increase the lifetimes of the referenced blobs" on a probe
   ([remote_execution.proto](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)).
-  Protocol 4 has the same shape with a request-scoped list and indices.
+  Protocol 5 has the same shape with a request-scoped list and indices.
 - rustc reuses a query result when `try_mark_green` proves its inputs
   unchanged by fingerprint, and reuses a codegen unit's object files when the
   unit's dep-node is green
@@ -398,7 +398,7 @@ Prior art, read 2026-10-23:
   compilation server still sends the whole printed MLIR module per request
   (`Mojo/tools/compilation-server/Protocol.h`, `EmitArchiveParams.module`) in
   [modular/modular](https://github.com/modular/modular). Molt's store is that
-  in-memory tier; protocol 4 also removes the whole-program send.
+  in-memory tier; protocol 5 also removes the whole-program send.
 
 Executable transport maps use lexical key order in both JSON and MessagePack.
 Cold lowering and hydrated function records can have different insertion orders;
@@ -481,3 +481,13 @@ release acceptance.
 - A client that disconnects does not cancel its compile; the output still reaches the cache.
 - The rest of HF-211: the process settings outside the catalog (cache roots, daemon limits) could move
   to typed accessors as well.
+
+
+### Original producer retention
+
+The common `backend_process/origin` owner serves one-shot and daemon emissions;
+protocol 5 transports producer kind, original scope/PID, addressed input and output
+identities. The [toolchain origin contract](../spec/areas/tooling/0001-toolchains.md#original-emission-and-retained-cache-generations)
+owns persisted generation, shared-stdlib, post-closure and cost semantics. Scope is
+an untrusted routing correlation outside semantic cache keys. Existing measurements
+of earlier protocol revisions do not qualify this origin/retention revision.

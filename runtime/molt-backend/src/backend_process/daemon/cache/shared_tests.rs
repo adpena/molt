@@ -1,6 +1,6 @@
 use super::*;
-use crate::backend_process::daemon::origin::DaemonCacheEntry;
 use crate::backend_process::daemon::protocol::DaemonJobRequest;
+use crate::backend_process::origin::DaemonCacheEntry;
 use std::sync::atomic::Ordering;
 use std::thread;
 

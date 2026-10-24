@@ -94,7 +94,7 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v6"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v10"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v11"
 
 
 def consumer_lanes() -> tuple[ReleaseLane, ...]:
@@ -189,6 +189,10 @@ def consumer_command_roles(*, pip: bool = False) -> tuple[str, ...]:
         if pip
         else ["environment", "cli_setup", "cli_help", "worker_help"]
     )
+    for lane in consumer_lanes():
+        roles.append(
+            f"{prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}"
+        )
     for lane in consumer_lanes():
         if lane.target == "native":
             roles.append(f"{prefix}build_{lane.id}")
@@ -852,6 +856,13 @@ def _validate_consumer_guest_cells(
             source="/app/source.py",
             capture_link_inputs=True,
         )
+        cold_role = (
+            f"{role_prefix}cold_{'build' if target == 'native' else 'run'}_{lane.id}"
+        )
+        if by_role[cold_role]["argv"] != command:
+            raise ValueError(
+                "release consumer cold command differs from its installed coordinate"
+            )
         output = path_type(cell["output"])
         run = by_role[f"{role_prefix}run_{lane.id}"]
         if target == "native":

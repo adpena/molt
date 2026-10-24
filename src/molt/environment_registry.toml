@@ -2422,6 +2422,14 @@ owner = "tools/dx_build_timer.py"
 summary = "Lets tools/dx_build_timer.py run its build inside an already active outer memory guard instead of starting its own; 1, true, yes or on enables it, otherwise a truthy MOLT_PROOF_QUEUE enables it, default off."
 
 [[variable]]
+name = "MOLT_EMISSION_SCOPE"
+audience = "internal"
+kind = "string"
+default = ""
+owner = "src/molt/cli/backend_compile.py"
+summary = "Closed-supervisor policy nonce correlated with optional compiler emission capture; a hint, never admission. Forwarded only for capture and excluded from semantic code-cache keys and emitted runtimes."
+
+[[variable]]
 name = "MOLT_EMIT_PASS_DELTA"
 audience = "user"
 kind = "bool"

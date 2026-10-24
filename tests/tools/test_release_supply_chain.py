@@ -1405,6 +1405,14 @@ def _consumer_transport_receipt(candidate):
                     else None,
                 }
             )
+        # Independently authored capture argv above is required once cold and
+        # once after retaining that generation; roles are exact and ordered.
+        cold_commands = [
+            {**copy.deepcopy(row), "role": "cold_" + row["role"]}
+            for row in commands[4:]
+            if row["role"].startswith(("build_", "run_wasm-"))
+        ]
+        commands[4:4] = cold_commands
         python_proofs.append(
             {
                 "python": minor,
@@ -1481,7 +1489,7 @@ def _consumer_transport_receipt(candidate):
     ]
     count = (len(references) + 1) * 11
     return {
-        "schema": release_authority.CONSUMER_SCHEMA,
+        "schema": "molt.release-consumer-proof.v11",
         "candidate": "candidate.json",
         "candidate_sha256": canonical_json_sha256(candidate),
         "target": candidate["target"],
@@ -2425,6 +2433,19 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         payload["python_proofs"][0]["commands"][-1][key] = value
         variants.append(payload)
     for mutate in (
+        # Missing or rebound cold evidence cannot be replaced by warm success.
+        lambda p: p["commands"].remove(
+            role(p, "cold_build_native-native-dev-dev-fast-release")
+        ),
+        lambda p: role(p, "cold_build_native-native-dev-dev-fast-release")[
+            "argv"
+        ].__setitem__(9, "3.11"),
+        lambda p: role(p, "cold_run_wasm-wasm-dev-dev-fast-release")[
+            "argv"
+        ].__setitem__(0, "/consumer/other-molt"),
+        lambda p: role(p, "cold_run_wasm-wasm-dev-dev-fast-release").update(
+            role="run_wasm-wasm-dev-dev-fast-release"
+        ),
         # Missing installed commands and unbound native/WASM inputs.
         lambda p: p["commands"].pop(),
         lambda p: p["commands"].__delitem__(slice(-2, None)),

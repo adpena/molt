@@ -26,6 +26,8 @@ from molt.default_paths import (
     protected_cache_roots,
     shared_cache_lock_path,
     is_backend_cache_artifact_name,
+    backend_cache_sync_receipt_path,
+    backend_cache_publication_lock_name,
     native_stdlib_archive_cache_entry,
     native_stdlib_object_cache_entry,
     resolve_budget,
@@ -61,6 +63,8 @@ class CacheEntry:
     metadata: os.stat_result
     lock_path: Path | None = None
     retirement_scope: str | None = None
+    companions: tuple[tuple[Path, os.stat_result], ...] = ()
+    absent_peer: Path | None = None
 
     @property
     def mtime(self) -> float:
@@ -210,14 +214,37 @@ def _collect_entries(
         return entries
 
     def append(
-        path: Path, lock: Path | None = None, *, retirement_scope: str | None = None
+        path: Path,
+        lock: Path | None = None,
+        *,
+        retirement_scope: str | None = None,
+        companions: tuple[Path, ...] = (),
+        absent_peer: Path | None = None,
     ) -> None:
         try:
             metadata = path.lstat()
         except FileNotFoundError:
             return
+        observed_companions = []
+        for companion in companions:
+            try:
+                companion_metadata = companion.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(companion_metadata.st_mode):
+                return
+            observed_companions.append((companion, companion_metadata))
         entries.append(
-            CacheEntry(path, _entry_size_bytes(path), metadata, lock, retirement_scope)
+            CacheEntry(
+                path,
+                _entry_size_bytes(path)
+                + sum(row.st_size for _, row in observed_companions),
+                metadata,
+                lock,
+                retirement_scope,
+                tuple(observed_companions),
+                absent_peer,
+            )
         )
 
     children = _children(cache_root)
@@ -331,7 +358,28 @@ def _collect_entries(
             and child.is_file()
             and not child.is_symlink()
         ):
-            append(child)
+            append(
+                child,
+                shared_cache_lock_path(
+                    cache_root, backend_cache_publication_lock_name(child)
+                ),
+                companions=(backend_cache_sync_receipt_path(child),),
+            )
+        elif child.name.endswith(".sync.json"):
+            artifact = child.with_name(child.name.removesuffix(".sync.json"))
+            if (
+                is_backend_cache_artifact_name(artifact.name)
+                and not artifact.exists()
+                and child.is_file()
+                and not child.is_symlink()
+            ):
+                append(
+                    child,
+                    shared_cache_lock_path(
+                        cache_root, backend_cache_publication_lock_name(artifact)
+                    ),
+                    absent_peer=artifact,
+                )
         # Unknown namespaces may own live mutable stages or persistent controls.
         # Their root is never an inferred recursive eviction unit.
     return entries
@@ -509,6 +557,17 @@ def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
             # A reader refreshed this entry (or a publisher replaced it) after
             # inventory. The old observation no longer owns its eviction.
             return "busy"
+        if entry.absent_peer is not None and (
+            entry.absent_peer.exists() or entry.absent_peer.is_symlink()
+        ):
+            return "busy"
+        for companion, observed in entry.companions:
+            try:
+                companion_current = companion.lstat()
+            except FileNotFoundError:
+                return "busy"
+            if not _same_cache_generation(companion_current, observed):
+                return "busy"
         if dry_run:
             return "removed"
         if entry.retirement_scope is not None:
@@ -525,6 +584,8 @@ def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
                 pass
         else:
             entry.path.unlink(missing_ok=True)
+            for companion, _ in entry.companions:
+                companion.unlink(missing_ok=True)
         return "failed" if entry.path.exists() or entry.path.is_symlink() else "removed"
     except OSError:
         return "failed"

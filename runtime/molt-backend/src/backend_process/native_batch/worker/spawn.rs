@@ -27,6 +27,9 @@ pub(super) fn run_native_batch_worker(
         .arg(object_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped());
+    if let Some(scope) = crate::backend_process::origin::current_scope() {
+        command.arg("--emission-scope").arg(scope);
+    }
     // A daemon worker gets its request's settings, not the daemon's.
     molt_backend::backend_environment::configure_child(&mut command);
     let mut child = command.spawn().map_err(|err| {
@@ -71,7 +74,8 @@ pub(super) fn run_native_batch_worker(
     })?;
     let origin: NativeWorkerOrigin = serde_json::from_slice(&receipt)
         .map_err(|e| io::Error::other(format!("invalid native worker origin: {e}")))?;
-    if origin.schema != "molt.native-worker-origin.v1"
+    origin.validate()?;
+    if origin.scope.as_deref() != crate::backend_process::origin::current_scope()
         || origin.process_id != process_id
         || origin.input != ContentIdentity::of_bytes(job)
     {

@@ -10,6 +10,8 @@ use super::model::{BackendCommand, BackendCompileArgs, BackendTarget, FactGraphC
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendOption {
     Features,
+    CaptureOrigin,
+    EmissionScope,
     Daemon,
     Socket,
     NativeBatchJobFile,
@@ -29,8 +31,10 @@ enum BackendOption {
 }
 
 impl BackendOption {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 19] = [
         Self::Features,
+        Self::CaptureOrigin,
+        Self::EmissionScope,
         Self::Daemon,
         Self::Socket,
         Self::NativeBatchJobFile,
@@ -52,6 +56,8 @@ impl BackendOption {
     fn flag(self) -> &'static str {
         match self {
             Self::Features => "--features",
+            Self::CaptureOrigin => "--capture-origin",
+            Self::EmissionScope => "--emission-scope",
             Self::Daemon => "--daemon",
             Self::Socket => "--socket",
             Self::NativeBatchJobFile => "--native-batch-job-file",
@@ -157,12 +163,22 @@ impl<'a> BackendCommand<'a> {
             return Ok(Self::Features);
         }
         if supplied.has(BackendOption::Daemon) {
-            supplied.only(BackendOption::Daemon, &[BackendOption::Socket])?;
+            supplied.only(
+                BackendOption::Daemon,
+                &[BackendOption::Socket, BackendOption::EmissionScope],
+            )?;
             return daemon_command(&supplied);
         }
         if let Some(job_file) = supplied.get(BackendOption::NativeBatchJobFile) {
-            supplied.only(BackendOption::NativeBatchJobFile, &[BackendOption::Output])?;
-            return native_batch_command(job_file, supplied.get(BackendOption::Output));
+            supplied.only(
+                BackendOption::NativeBatchJobFile,
+                &[BackendOption::Output, BackendOption::EmissionScope],
+            )?;
+            return native_batch_command(
+                job_file,
+                supplied.get(BackendOption::Output),
+                supplied.get(BackendOption::EmissionScope),
+            );
         }
         if supplied.has(BackendOption::Socket) {
             return Err(invalid("--socket requires --daemon"));
@@ -176,7 +192,10 @@ fn daemon_command<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendComma
     let socket_path = supplied
         .get(BackendOption::Socket)
         .ok_or_else(|| invalid("--daemon requires --socket"))?;
-    Ok(BackendCommand::Daemon { socket_path })
+    Ok(BackendCommand::Daemon {
+        socket_path,
+        emission_scope: supplied.get(BackendOption::EmissionScope),
+    })
 }
 
 #[cfg(not(molt_backend_daemon))]
@@ -191,16 +210,22 @@ fn daemon_command<'a>(_: &SuppliedOptions<'a>) -> io::Result<BackendCommand<'a>>
 fn native_batch_command<'a>(
     job_file: &'a str,
     output_path: Option<&'a str>,
+    emission_scope: Option<&'a str>,
 ) -> io::Result<BackendCommand<'a>> {
     Ok(BackendCommand::NativeBatchJob {
         job_file,
+        emission_scope,
         output_path: output_path
             .ok_or_else(|| invalid("--native-batch-job-file requires --output"))?,
     })
 }
 
 #[cfg(not(feature = "native-backend"))]
-fn native_batch_command<'a>(_: &'a str, _: Option<&'a str>) -> io::Result<BackendCommand<'a>> {
+fn native_batch_command<'a>(
+    _: &'a str,
+    _: Option<&'a str>,
+    _: Option<&'a str>,
+) -> io::Result<BackendCommand<'a>> {
     Err(missing_backend("native-backend"))
 }
 
@@ -243,7 +268,25 @@ fn compile_args<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendCompile
             )));
         }
     };
+    let capture_origin = supplied.get(BackendOption::CaptureOrigin);
+    let emission_scope = supplied.get(BackendOption::EmissionScope);
+    if emission_scope.is_some() && capture_origin.is_none() {
+        return Err(invalid(
+            "--emission-scope requires --capture-origin for one-shot compilation",
+        ));
+    }
+    if capture_origin.is_some()
+        && (fact_graph.is_some()
+            || !matches!(target_name, "native" | "wasm")
+            || supplied.get(BackendOption::IrFormat) != Some("msgpack"))
+    {
+        return Err(invalid(
+            "origin capture requires a native/WASM MessagePack compilation without fact-graph emission",
+        ));
+    }
     Ok(BackendCompileArgs {
+        capture_origin,
+        emission_scope,
         target,
         output_path: supplied.get(BackendOption::Output),
         ir_file_path: supplied.get(BackendOption::IrFile),
@@ -500,6 +543,8 @@ mod tests {
                     ir_file_path: Some("build/app.ir.json"),
                     ir_format: crate::backend_process::input::IrFormat::Json,
                     fact_graph: None,
+                    capture_origin: None,
+                    emission_scope: None,
                 })
             );
         });
@@ -516,6 +561,7 @@ mod tests {
                     parsed.expect("batch job"),
                     BackendCommand::NativeBatchJob {
                         job_file: "job.json",
+                        emission_scope: None,
                         output_path: "job.o",
                     }
                 );
@@ -611,7 +657,8 @@ mod tests {
             assert_eq!(
                 parsed.expect("daemon"),
                 BackendCommand::Daemon {
-                    socket_path: "backend.sock"
+                    socket_path: "backend.sock",
+                    emission_scope: None
                 }
             );
         });

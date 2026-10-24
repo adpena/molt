@@ -160,6 +160,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         Some("manifest"),
         "partition",
         None,
+        None,
     )
     .expect("matching stdlib generation");
     unsafe {
@@ -551,7 +552,7 @@ fn daemon_cache_hit_does_not_retag_the_original_emitter() {
         let mut entry = DaemonCacheEntry::fixture(b"original output");
         let original = Arc::get_mut(&mut entry).unwrap();
         let emitter = if std::process::id() == 1 { 2 } else { 1 };
-        original.origin.daemon_pid = emitter;
+        original.origin.producer.process_id = emitter;
         original.origin.codegen = CodegenOrigin::InProcess {
             process_id: emitter,
         };

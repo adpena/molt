@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import ntpath
 import os
 import re
@@ -245,6 +246,17 @@ def is_backend_cache_artifact_name(name: str) -> bool:
         )
         is not None
     )
+
+
+def backend_cache_sync_receipt_path(artifact: Path) -> Path:
+    """Origin/byte generation receipt owned by the immutable artifact publisher."""
+    return artifact.with_name(artifact.name + ".sync.json")
+
+
+def backend_cache_publication_lock_name(artifact: Path) -> str:
+    """Publication and eviction serialize on the same artifact generation."""
+    digest = hashlib.sha256(str(artifact.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"immutable-publish-{digest}"
 
 
 def cache_control_root(cache_root: Path) -> Path:

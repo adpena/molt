@@ -154,7 +154,7 @@ mod tests {
             response::daemon_job_success_response(
                 "job2".to_string(),
                 Vec::new(),
-                super::super::origin::DaemonCacheEntry::fixture(b"output")
+                crate::backend_process::origin::DaemonCacheEntry::fixture(b"output")
                     .origin
                     .clone(),
             )

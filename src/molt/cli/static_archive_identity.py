@@ -6,7 +6,7 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import BinaryIO, Callable, Mapping
+from typing import BinaryIO, Callable, Mapping, Literal
 
 from molt.toolchain_identity import (
     StableRegularFileHandle,
@@ -58,6 +58,7 @@ class StaticArchiveMember:
     name: str
     content_offset: int
     size: int
+    name_format: Literal["bsd-extended", "short-or-gnu"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,7 +258,14 @@ def _static_archive_stream_members(
             name = raw_name.removesuffix("/")
         if not name:
             raise StaticArchiveIdentityError("archive member name is empty")
-        members.append(StaticArchiveMember(name, content_offset, content_size))
+        members.append(
+            StaticArchiveMember(
+                name,
+                content_offset,
+                content_size,
+                "bsd-extended" if resolved else "short-or-gnu",
+            )
+        )
     return tuple(members)
 
 

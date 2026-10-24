@@ -4,8 +4,8 @@ use molt_ir::FunctionIR;
 use molt_ir::addressed_program::FunctionDigest;
 use molt_passes::resident_cache::ResidentCache;
 
-use super::super::origin::DaemonCacheEntry;
 use super::super::protocol::DaemonCacheKey;
+use crate::backend_process::origin::DaemonCacheEntry;
 
 /// What the daemon keeps resident: compiled artifacts by their typed cache
 /// identity, and admitted function bodies by their content digest (HF-516).

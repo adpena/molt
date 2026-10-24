@@ -308,3 +308,29 @@ fn messagepack_file_receiver_preserves_literal_float_payload_bits() {
         );
     }
 }
+
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[test]
+fn captured_one_shot_observes_exact_frame_and_refuses_suffix() {
+    let valid = InputFile::new(MSGPACK);
+    let (document, identity) = read_captured_msgpack(Some(valid.path())).unwrap();
+    assert!(document.ir.functions.is_empty());
+    assert!(identity.function_digests.is_empty());
+    assert_eq!(identity.lease.size, 37);
+    assert_eq!(
+        identity.lease.sha256,
+        "34b6abb7d6c673da2c027b4727588df7e32b41cdcd938914e023bed019ef686a"
+    );
+    for suffix in [0, b' ', 0xc1] {
+        let mut bytes = MSGPACK.to_vec();
+        bytes.push(suffix);
+        let invalid = InputFile::new(&bytes);
+        assert!(read_captured_msgpack(Some(invalid.path())).is_err());
+    }
+    // One digest with no body cannot borrow another process's resident state.
+    let mut missing = MSGPACK[..MSGPACK.len() - 1].to_vec();
+    missing.push(32);
+    missing.extend([1; 32]);
+    let missing = InputFile::new(&missing);
+    assert!(read_captured_msgpack(Some(missing.path())).is_err());
+}

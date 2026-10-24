@@ -261,7 +261,7 @@ def test_native_object_publication_is_one_admitted_transaction(
                     function_cache_path=None,
                     warnings=[],
                     artifact_contract=contract,
-                )
+                ).error
                 is None
             )
         assert candidate.read_bytes() == object_bytes
@@ -477,8 +477,8 @@ def test_backend_cache_recency_requires_admitted_owned_copy(
                 target=admit_target("native"), emit_mode="obj"
             ),
         )
-        is valid
-    )
+        is not None
+    ) is valid
     assert candidate.read_bytes() == payload
     if valid:
         assert candidate.stat().st_mtime_ns > observed.st_mtime_ns

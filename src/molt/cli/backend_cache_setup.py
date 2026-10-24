@@ -770,7 +770,7 @@ def _prepare_backend_cache_setup(
         cache_candidates.append(("module", cache_path))
     if function_cache_path is not None and function_cache_path != cache_path:
         cache_candidates.append(("function", function_cache_path))
-    cache_hit, cache_hit_tier = _try_cached_backend_candidates(
+    cached_output = _try_cached_backend_candidates(
         project_root=project_root,
         cache_candidates=cache_candidates,
         output_artifact=output_artifact,
@@ -786,6 +786,8 @@ def _prepare_backend_cache_setup(
         stdlib_contract_validation_token=stdlib_contract_validation_token,
         stage_timings_ms=stage_timings_ms,
     )
+    cache_hit = cached_output is not None
+    cache_hit_tier = cached_output.tier if cached_output is not None else None
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_try_candidates",
@@ -796,6 +798,9 @@ def _prepare_backend_cache_setup(
         backend_environment=backend_environment,
         wasm_layout=wasm_layout,
         cache_enabled=True,
+        backend_emission_origin=cached_output.emission_origin
+        if cached_output is not None
+        else None,
         stdlib_cache_entry_path=stdlib_cache_entry_path,
         cache_key=cache_key,
         function_cache_key=function_cache_key,

@@ -45,7 +45,8 @@ pub(super) fn emit_wasm_target(
     code_slots: molt_ir::code_slots::CodeSlotBindings,
     output_file: &str,
     options: WasmTargetOptions,
-) -> io::Result<()> {
+    capture_origin: bool,
+) -> io::Result<Option<crate::backend_process::origin::EmittedArtifact>> {
     if let Some(registry) = module_registry.as_ref() {
         validate_wasm_module_catalog(&ir, registry)?;
     }
@@ -60,7 +61,12 @@ pub(super) fn emit_wasm_target(
         )
     })?;
     println!("Successfully compiled to {output_file}");
-    Ok(())
+    Ok(
+        capture_origin.then(|| crate::backend_process::origin::EmittedArtifact {
+            output: crate::backend_process::input::ContentIdentity::of_bytes(&wasm_bytes),
+            codegen: crate::backend_process::origin::CodegenOrigin::in_process(),
+        }),
+    )
 }
 
 #[cfg(test)]

@@ -30000,8 +30000,8 @@ def _daemon_fixture_origin(data: bytes, output: Path) -> dict[str, object]:
         return {"sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
 
     return {
-        "schema": "molt.daemon-job-origin.v2",
-        "daemon_pid": 42,
+        "schema": "molt.backend-emission-origin.v1",
+        "producer": {"kind": "daemon", "process_id": 42, "scope": None},
         "input": {
             "schema": "molt.addressed-program-input.v1",
             "lease": identity(consumed),
@@ -31725,6 +31725,16 @@ def test_read_artifact_sync_state_reuses_process_cache(
     )
 
     first = cli_artifact_sync._read_artifact_sync_state(state_path)
+    observed = output_artifact.stat()
+    assert first == {
+        "version": 3,
+        "source_key": "module-key",
+        "tier": "module",
+        "size": len(b"artifact"),
+        "sha256": hashlib.sha256(b"artifact").hexdigest(),
+        "generation": [observed.st_dev, observed.st_ino],
+        "emission_origin": None,
+    }
 
     def fail_read_text(*args: object, **kwargs: object) -> str:
         raise AssertionError("unexpected sync-state file read")
@@ -32295,7 +32305,7 @@ def test_stage_backend_output_and_caches_promotes_module_cache(
         stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
-    )
+    ).error
 
     assert err is None
     assert warnings == []
@@ -32331,7 +32341,7 @@ def test_stage_backend_output_and_caches_refuses_an_evictable_cache_as_required_
         stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
-    )
+    ).error
 
     assert err is not None and "must be build-owned" in err
     assert warnings == []
@@ -32365,7 +32375,7 @@ def test_stage_backend_output_and_caches_preserves_existing_module_cache(
         stdlib_object_cache_key=None,
         function_cache_path=None,
         warnings=warnings,
-    )
+    ).error
 
     assert err is not None and "conflicting content" in err
     assert warnings == []
@@ -32400,7 +32410,7 @@ def test_stage_backend_output_and_caches_preserves_existing_function_cache(
         stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
-    )
+    ).error
 
     assert err is None
     assert len(warnings) == 1 and "conflicting content" in warnings[0]
@@ -32457,7 +32467,7 @@ def test_stage_backend_output_and_caches_skips_output_recopy_when_module_key_is_
         stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
-    )
+    ).error
 
     assert err is None
     assert warnings == []
@@ -32514,7 +32524,7 @@ def test_stage_backend_output_and_caches_skips_state_rewrite_when_synced(
         stdlib_object_cache_key=None,
         function_cache_path=None,
         warnings=warnings,
-    )
+    ).error
 
     assert err is None
     assert warnings == []
@@ -32569,7 +32579,7 @@ def test_stage_backend_output_and_caches_uses_known_sync_state_without_reread(
         output_already_synced=True,
         state_path=state_path,
         state=state,
-    )
+    ).error
 
     assert err is None
     assert warnings == []
@@ -32612,7 +32622,7 @@ def test_stage_backend_output_and_caches_isolates_mutable_output_from_immutable_
         stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
-    )
+    ).error
 
     assert err is None
     assert warnings == []
@@ -32652,7 +32662,7 @@ def test_stage_backend_output_and_caches_without_cache_moves_output(
         stdlib_object_cache_key=None,
         function_cache_path=None,
         warnings=warnings,
-    )
+    ).error
 
     assert err is None
     assert warnings == []
@@ -32674,7 +32684,13 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
     original = BACKEND_CACHE._publish_immutable_backend_cache_artifact
 
     def wrapped(
-        src: Path, dst: Path, *, artifact_contract, warnings: list[str], identity=None
+        src: Path,
+        dst: Path,
+        *,
+        artifact_contract,
+        warnings: list[str],
+        identity=None,
+        emission_origin=None,
     ):
         if dst == function_cache_path:
             raise OSError("link failed")
@@ -32684,6 +32700,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
             artifact_contract=artifact_contract,
             warnings=warnings,
             identity=identity,
+            emission_origin=emission_origin,
         )
 
     monkeypatch.setattr(
@@ -32704,7 +32721,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
         stdlib_object_cache_key=None,
         function_cache_path=function_cache_path,
         warnings=warnings,
-    )
+    ).error
 
     assert err is None
     assert output_artifact.read_bytes() == native_relocatable_object(
@@ -32737,7 +32754,8 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
         warnings=warnings,
     )
 
-    assert ok is True
+    assert ok is not None
+    assert ok.emission_origin is None
     assert warnings == []
     assert output_artifact.read_bytes() == native_relocatable_object(
         symbols=("molt_main",)
@@ -32796,7 +32814,7 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
         lambda path, *, artifact_contract: True,
     )
 
-    ok, cache_hit_tier = cli_backend_cache._try_cached_backend_candidates(
+    hit = cli_backend_cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[("function", candidate)],
         output_artifact=output_artifact,
@@ -32811,8 +32829,8 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
         warnings=warnings,
     )
 
-    assert ok is True
-    assert cache_hit_tier == "function"
+    assert hit is not None and hit.tier == "function"
+    assert hit.emission_origin is None
     assert warnings == []
     skip_module, skip_function = (
         cli_backend_cache._backend_daemon_skip_output_sync_flags(
@@ -32846,7 +32864,7 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_object, "stdlib-key")
     warnings: list[str] = []
 
-    ok, cache_hit_tier = cli_backend_cache._try_cached_backend_candidates(
+    hit = cli_backend_cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[("function", candidate)],
         output_artifact=output_artifact,
@@ -32862,8 +32880,8 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
         warnings=warnings,
     )
 
-    assert ok is True
-    assert cache_hit_tier == "function"
+    assert hit is not None and hit.tier == "function"
+    assert hit.emission_origin is None
     assert warnings == []
     skip_module, skip_function = (
         cli_backend_cache._backend_daemon_skip_output_sync_flags(
@@ -32919,7 +32937,7 @@ def test_try_cached_backend_candidates_preserves_invalid_candidate(
     output_artifact = tmp_path / "dist" / "output.o"
     warnings: list[str] = []
 
-    ok, cache_hit_tier = cli_backend_cache._try_cached_backend_candidates(
+    hit = cli_backend_cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
@@ -32934,8 +32952,7 @@ def test_try_cached_backend_candidates_preserves_invalid_candidate(
         warnings=warnings,
     )
 
-    assert ok is False
-    assert cache_hit_tier is None
+    assert hit is None
     assert candidate.exists()
     assert warnings == [f"Ignoring invalid cache artifact: {candidate}"]
 
@@ -32952,7 +32969,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
     stdlib_object = tmp_path / "cache" / "stdlib_shared_test.o"
     warnings: list[str] = []
 
-    ok, cache_hit_tier = cli_backend_cache._try_cached_backend_candidates(
+    hit = cli_backend_cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
@@ -32967,8 +32984,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
         warnings=warnings,
     )
 
-    assert ok is False
-    assert cache_hit_tier is None
+    assert hit is None
     assert not output_artifact.exists()
 
 
@@ -32993,7 +33009,8 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
         cache_path=candidate,
         warnings=warnings,
     )
-    assert first is True
+    assert first is not None and first.tier == "module"
+    assert first.emission_origin is None
 
     def fail_copy(src: Path, dst: Path, *, expected_sha256=None, observed=None) -> None:
         raise AssertionError(f"unexpected copy {src} -> {dst}")
@@ -33012,7 +33029,8 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
         cache_path=candidate,
         warnings=warnings,
     )
-    assert second is True
+    assert second is not None and second.tier == "module"
+    assert second.emission_origin is None
     assert warnings == []
 
 
@@ -33048,7 +33066,8 @@ def test_materialize_cached_backend_artifact_isolates_mutable_output_from_immuta
         warnings=warnings,
     )
 
-    assert ok is True
+    assert ok is not None
+    assert ok.emission_origin is None
     assert warnings == []
     assert output_artifact.read_bytes() == native_relocatable_object(
         symbols=("molt_main",)
@@ -33080,8 +33099,13 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
     output_stat = output_artifact.stat()
     warnings: list[str] = []
 
+    original_read = BACKEND_CACHE._read_artifact_sync_state
+
     def fail_read(path: Path) -> dict[str, object] | None:
-        raise AssertionError(f"unexpected sync-state read: {path}")
+        if path == state_path:
+            raise AssertionError(f"unexpected output sync-state read: {path}")
+        # Immutable source origin is a distinct receipt required for reuse.
+        return original_read(path)
 
     monkeypatch.setattr(BACKEND_CACHE, "_read_artifact_sync_state", fail_read)
 
@@ -33101,7 +33125,8 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
         output_stat=output_stat,
     )
 
-    assert ok is True
+    assert ok is not None
+    assert ok.emission_origin is None
     assert warnings == []
 
 
@@ -33232,7 +33257,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
     output_artifact = tmp_path / "dist" / "output.o"
     warnings: list[str] = []
 
-    ok, cache_hit_tier = cli_backend_cache._try_cached_backend_candidates(
+    hit = cli_backend_cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=[("module", candidate)],
         output_artifact=output_artifact,
@@ -33249,8 +33274,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
         warnings=warnings,
     )
 
-    assert ok is False
-    assert cache_hit_tier is None
+    assert hit is None
     assert not output_artifact.exists()
 
 
