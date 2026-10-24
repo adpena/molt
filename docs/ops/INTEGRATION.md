@@ -117,7 +117,8 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    the rules that claim an entry it changed (`plan_entities`) and every rule it
    changed ([design](../design/landing_queue.md#selecting-by-plan-entry-not-by-the-plan-file-hf-457)).
    A non-zero gate or source/HEAD drift halts
-   the run **before push**. `--extra-gate` only adds arc-specific gates. There is
+   the run **before push**. `--extra-gate` selects an exact command already declared in this plan with
+   prerequisite custody; it does not admit arbitrary commands. There is
    no gate-skipping or alternate-manifest landing route.
    Prerequisite failures are reported together. Content-resolver and version-query
    failures retain the probe command, directory, actual cause and bounded output; they do not
@@ -704,10 +705,10 @@ with `probe`/python rather than `ls`/`stat`.
 # Plan an integration without mutating (dry-run the whole pipeline):
 python3 tools/molt_dev.py integrate --dry-run
 
-# Integrate with a declared content marker and an arc-specific extra gate:
+# Integrate with a content marker and an extra gate already declared by the plan:
 python3 tools/molt_dev.py integrate \
     --marker "contains:runtime/molt-runtime/src/object/ops.rs::SETATTR" \
-    --extra-gate "python3 -m pytest -q tests/test_some_arc.py"
+    --extra-gate "python tools/perf_methodology.py --check"
 
 # Salvage a split staged/unstaged WIP into one recovery commit:
 python3 tools/molt_dev.py secure-wip -m "in-progress alias-root drop fix"

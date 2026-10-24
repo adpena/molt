@@ -9498,7 +9498,7 @@
       "local.process-environment-consumers.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k batch_suite_trip_uses_submitted_request_custody_before_shutdown tests/test_molt_diff_memory_guard.py",
       "local.process-environment-consumers.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker' tests/test_demo_bench_memory_guard.py",
       "local.public-contract.0": "python tools/public_contract_gate.py --check",
-      "local.public-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_public_contract_gate.py",
+      "local.public-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_public_contract_gate.py tests/tools/test_release_exit_gate.py tests/tools/test_release_criterion_receipt.py tests/tools/test_release_matrix_acceptance.py",
       "local.python-effect-capability-authority.0": "cargo test --locked -p molt-ir --lib python_effects_generated",
       "local.python-effect-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_effects.py",
       "local.python-identity-catalog-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
@@ -11430,6 +11430,7 @@
           "python tools/perf_methodology.py --check"
         ],
         "globs": [
+          "tools/git_identity.py",
           "tools/bench.py",
           "tools/bench_audit.py",
           "tools/bench_reporting.py",
@@ -11655,15 +11656,24 @@
           "tools/legacy_inventory.py",
           "tools/pact_witness_receipt.py",
           "tools/phase_exit_manifest.py",
+          "tools/git_identity.py",
           "tools/release_exit_gate.py",
+          "tools/release_criterion_receipt.py",
+          "tools/release_matrix_acceptance.py",
           "tools/release/release_authority.py",
           "tools/release/release_model.py",
           "tools/public_contract_gate.py",
-          "tests/tools/test_public_contract_gate.py"
+          "tests/tools/test_public_contract_gate.py",
+          "tests/tools/test_release_exit_gate.py",
+          "tests/tools/test_release_criterion_receipt.py",
+          "tests/tools/test_release_matrix_acceptance.py"
         ],
         "name": "public-contract",
         "pytest": [
-          "tests/tools/test_public_contract_gate.py"
+          "tests/tools/test_public_contract_gate.py",
+          "tests/tools/test_release_exit_gate.py",
+          "tests/tools/test_release_criterion_receipt.py",
+          "tests/tools/test_release_matrix_acceptance.py"
         ],
         "toolchains": [
           "python"
@@ -11676,6 +11686,8 @@
         "description": "Installed executable admission, provenance and complete bundle/wheel consumer projections move together.",
         "gates": [],
         "globs": [
+          "tools/git_identity.py",
+          "tools/release/git_source_snapshot.py",
           "src/molt/compiler_distribution.py",
           "src/molt/host_tool_products.py",
           "src/molt/cli/wasm_facts_tool.py",
