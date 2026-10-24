@@ -363,6 +363,9 @@ def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
         "LC_ALL": "C",
         "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_GRAFT_FILE": os.devnull,
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "advice.graftFileDeprecated",
+        "GIT_CONFIG_VALUE_0": "false",
     }
     assert env.rule is rule
 
@@ -375,11 +378,14 @@ def test_immutable_git_environment_preserves_distinct_posix_names(rule):
             "GIT_NO_REPLACE_OBJECTS": "0",
             "Git_Graft_File": "ambient",
             "GIT_GRAFT_FILE": "alternate",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "user.name",
+            "GIT_CONFIG_VALUE_0": "Inherited name",
         },
         rule=rule,
     )
     env = immutable_git_environment(original)
-    assert dict(env) == (
+    expected = (
         {"Git_No_Replace_Objects": "1", "Git_Graft_File": os.devnull}
         if rule is NameRule.WINDOWS
         else {
@@ -389,6 +395,17 @@ def test_immutable_git_environment_preserves_distinct_posix_names(rule):
             "GIT_GRAFT_FILE": os.devnull,
         }
     )
+    expected.update(
+        {
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "user.name",
+            "GIT_CONFIG_VALUE_0": "Inherited name",
+            "GIT_CONFIG_KEY_1": "advice.graftFileDeprecated",
+            "GIT_CONFIG_VALUE_1": "false",
+        }
+    )
+    assert dict(env) == expected
+    assert original["GIT_CONFIG_COUNT"] == "1"
     assert original["Git_No_Replace_Objects"] == (
         "0" if rule is NameRule.WINDOWS else "ambient"
     )

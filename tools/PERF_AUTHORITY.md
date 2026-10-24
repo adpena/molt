@@ -19,6 +19,7 @@ replacement refs and legacy grafts. Performance freshness resolves the current
 `origin/main` rather than retaining a process-lifetime ref or ancestry verdict.
 These checks follow [Git's replacement semantics](https://git-scm.com/docs/git-replace)
 and apply to development/release evidence, with no work in emitted programs.
+The null-device graft source is portable across Git hosts. Its specific deprecation advice is disabled through [Git’s per-process configuration protocol](https://git-scm.com/docs/git-config#Documentation/git-config.txt-GITCONFIGCOUNT), preserving inherited settings and all other diagnostics.
 Historical boards retain their recorded methodology; this correction does not
 authenticate missing compiler/runtime execution identities or full-matrix evidence.
 

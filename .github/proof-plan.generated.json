@@ -9463,6 +9463,7 @@
       "local.frontend-python.1": "python tools/verified_subset.py check",
       "local.frontend-python.2": "python tools/check_dynamic_policy.py",
       "local.generator-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_generator_manifest.py",
+      "local.git-process-policy.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_command_execution.py",
       "local.gpu-runtime.0": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_heap_kinds.py",
@@ -11634,6 +11635,25 @@
       },
       {
         "command_ids": [
+          "local.git-process-policy.pytest"
+        ],
+        "description": "Git process settings retain inherited configuration and native failure semantics.",
+        "gates": [],
+        "globs": [
+          "tools/git_identity.py",
+          "tools/git_transfer.py",
+          "tests/tools/test_command_execution.py"
+        ],
+        "name": "git-process-policy",
+        "pytest": [
+          "tests/tools/test_command_execution.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.public-contract.0",
           "local.public-contract.pytest"
         ],
@@ -12808,6 +12828,9 @@
         "uv"
       ],
       "local.generator-manifest.pytest": [
+        "python"
+      ],
+      "local.git-process-policy.pytest": [
         "python"
       ],
       "local.gpu-runtime.0": [

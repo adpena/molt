@@ -287,6 +287,55 @@ def test_git_transfer_http_bound_keeps_a_tighter_user_value(
     assert _low_speed_git_reads(bounded.env) == expected
 
 
+@pytest.mark.parametrize("count", ["", "0"])
+def test_git_config_append_accepts_git_zero_count_forms(tmp_path, count):
+    from tools.git_identity import add_git_config
+
+    environment = dict(os.environ)
+    environment["GIT_CONFIG_COUNT"] = count
+    accepted = subprocess.run(
+        ["git", "config", "--list"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert accepted.returncode == 0  # Git defines an empty count as zero.
+    add_git_config(environment, "user.name", "Configured name")
+    result = subprocess.run(
+        ["git", "config", "--get", "user.name"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "Configured name"
+
+
+@pytest.mark.parametrize("count", ["-1", "1_0", "invalid"])
+def test_git_config_append_refuses_invalid_inherited_count(tmp_path, count):
+    from tools.git_identity import add_git_config
+
+    environment = dict(os.environ)
+    environment["GIT_CONFIG_COUNT"] = count
+    result = subprocess.run(
+        ["git", "config", "--list"],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0  # Independent Git rejects the same protocol.
+    original = dict(environment)
+    with pytest.raises(ValueError, match="GIT_CONFIG_COUNT"):
+        add_git_config(environment, "user.name", "must not replace settings")
+    assert environment == original
+
+
 def _configured(env) -> dict[str, str]:
     """The ``git -c`` settings an environment carries, last value per key."""
     return {
