@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -7,13 +8,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from molt.cli.atomic_io import _atomic_zip_file
-from molt.cli.extension_manifest import _wheel_record_line, _write_zip_member
+from molt.cli.extension_manifest import _write_zip_member
 from molt.cli.source_extension_input_custody import (
     SourceExtensionInputCustodyError,
     source_extension_manifest_input_rows,
     validate_source_extension_manifest_input_custody,
 )
 from molt.file_hashing import _sha256_bytes, _sha256_file
+from molt.wheel_record import wheel_record_bytes
 
 
 _EMBEDDED_EXTENSION_MANIFEST = "extension_manifest.json"
@@ -114,9 +116,13 @@ def _write_extension_wheel(
     """Write one canonical extension wheel and its complete RECORD authority."""
     canonical_entries = _validated_wheel_entries(entries, record_path=record_path)
     canonical_record_path = _canonical_wheel_path(record_path)
-    record_lines = [_wheel_record_line(path, data) for path, data in canonical_entries]
-    record_lines.append(f"{canonical_record_path},,")
-    record_bytes = ("\n".join(record_lines) + "\n").encode("utf-8")
+    record_bytes = wheel_record_bytes(
+        (
+            (path, hashlib.sha256(data).digest(), len(data))
+            for path, data in canonical_entries
+        ),
+        record_path=canonical_record_path,
+    )
     with _atomic_zip_file(wheel_path) as wheel:
         for path, data in canonical_entries:
             _write_zip_member(wheel, path, data)

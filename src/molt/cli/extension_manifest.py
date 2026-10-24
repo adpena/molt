@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
@@ -448,12 +447,6 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info.date_time = (1980, 1, 1, 0, 0, 0)
     info.compress_type = zipfile.ZIP_DEFLATED
     zf.writestr(info, data)
-
-
-def _wheel_record_line(path: str, data: bytes) -> str:
-    digest = hashlib.sha256(data).digest()
-    encoded = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-    return f"{path},sha256={encoded},{len(data)}"
 
 
 def _coerce_str_list(
