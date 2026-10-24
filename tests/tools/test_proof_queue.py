@@ -1925,7 +1925,8 @@ def test_generator_envelope_preserves_explicit_selected_images_and_launchers():
     members = next(
         p for p in plan.toolchain_policies if p.name == "target-pythons"
     ).data["members"]
-    assert set(members) <= set(envelope["toolchains"])
+    # Unicode generation consumes pinned source tables, not installed target Pythons.
+    assert set(members).isdisjoint(envelope["toolchains"])
     assert (
         command_admission._proof_command_registry()["policy_executables"]["uv"] == "uv"
     )
@@ -12107,6 +12108,77 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(
     assert "queued-ok" not in terminal_log
 
 
+@pytest.mark.parametrize("bad_first", [False, True])
+def test_proof_queue_toml_layout_refusal_preserves_entire_batch_and_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_first: bool
+) -> None:
+    source = tmp_path / "source"
+    (source / "selected").mkdir(parents=True)
+    logs = source / "evidence" / "runs"
+    safe_command = [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "--directory",
+        "selected",
+        "python",
+        "-V",
+    ]
+    # The same evidence root is outside selected/, but inside the second command's
+    # source. A batch must validate each command before persisting any row.
+    specs = [
+        ("safe", safe_command, []),
+        ("bad-layout", [sys.executable, "-c", "pass"], ["safe"]),
+    ]
+    if bad_first:
+        specs.reverse()
+    dsl = tmp_path / "proof.toml"
+    dsl.write_text(
+        "\n".join(
+            f"[[proof]]\nid = {json.dumps(name)}\ncommand = {json.dumps(command)}"
+            f"\ndepends_on = {json.dumps(parents)}\n"
+            for name, command, parents in specs
+        ),
+        encoding="utf-8",
+    )
+    db = tmp_path / "history.sqlite3"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("CREATE TABLE retained_history (value TEXT)")
+        conn.execute("INSERT INTO retained_history VALUES ('original receipt')")
+        conn.commit()
+    before_db = db.read_bytes()
+    before_paths = set(tmp_path.rglob("*"))
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("every TOML command must pass layout preflight before DB access")
+
+    monkeypatch.setattr(state, "_connect", forbidden)
+    with pytest.raises(
+        SystemExit,
+        match="proof 'bad-layout': proof submission refused: .*--logs-root",
+    ):
+        cli.main(
+            [
+                "--db",
+                str(db),
+                "--repo-root",
+                str(source),
+                "--logs-root",
+                str(logs),
+                "submit",
+                str(dsl),
+            ]
+        )
+    assert db.read_bytes() == before_db
+    assert set(tmp_path.rglob("*")) == before_paths
+
+
 def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
     tmp_path: Path,
 ) -> None:
@@ -16640,7 +16712,8 @@ def test_proof_queue_submit_rejects_invalid_memory_guard_poll_env(
                 str(dsl),
             ]
         )
-    assert _rows(db) == []
+    assert not db.exists()
+    assert not logs.exists()
 
 
 @pytest.mark.parametrize(
@@ -16930,11 +17003,20 @@ def test_queue_connection_owners_close_on_failure(
     elif owner == "submit":
         args.dsl = str(tmp_path / "unused.toml")
 
-        class InterruptedSpecs(list):
-            def __iter__(self):
-                fail()
-
-        monkeypatch.setattr(commands, "_load_specs", lambda path: InterruptedSpecs())
+        monkeypatch.setattr(
+            commands,
+            "_load_specs",
+            lambda path: [
+                {
+                    "id": "owner",
+                    "command": [sys.executable, "-c", "pass"],
+                    "depends_on": ["external-parent"],
+                }
+            ],
+        )
+        # Parsing/layout preflight precedes the connection. Fail during the
+        # actual DB-backed dependency check to retain the close-on-error oracle.
+        monkeypatch.setattr(state, "_run_exists", fail)
     elif owner == "run":
         monkeypatch.setattr(scheduling, "_active_running_rows", fail)
     elif owner in {"prune_stale", "notebook"}:

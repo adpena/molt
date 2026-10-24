@@ -10,12 +10,14 @@ import pytest
 from tools.proof_queue_pkg import evidence, runner, scheduling, state
 
 
-def test_queue_submission_refuses_expensive_wasm_below_l1(tmp_path):
+def test_queue_submission_refuses_expensive_wasm_below_l1(tmp_path, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
     args = argparse.Namespace(
         db=str(tmp_path / "queue.db"),
         logs_root=str(tmp_path / "logs"),
         notebooks_root=str(tmp_path / "notebooks"),
-        repo_root=str(tmp_path),
+        repo_root=str(source),
     )
     rc, run_id = runner._queue_one(
         args,
@@ -29,16 +31,19 @@ def test_queue_submission_refuses_expensive_wasm_below_l1(tmp_path):
         initial_notes=["known-bad maturity fixture"],
     )
     assert rc == 2 and run_id is None
+    assert "wasm-browser proof requires L1, lane is L0" in capsys.readouterr().err
 
 
 def test_queue_submission_allows_wasm_at_l1(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
     scheduling.lane_maturity.write_registry(
-        tmp_path,
+        source,
         {
             "witness-lane": {
                 "maturity": "L1",
                 "status": "active",
-                "worktree": str(tmp_path),
+                "worktree": str(source),
             }
         },
     )
@@ -46,7 +51,7 @@ def test_queue_submission_allows_wasm_at_l1(tmp_path):
         db=str(tmp_path / "queue.db"),
         logs_root=str(tmp_path / "logs"),
         notebooks_root=str(tmp_path / "notebooks"),
-        repo_root=str(tmp_path),
+        repo_root=str(source),
     )
     rc, run_id = runner._queue_one(
         args,
@@ -65,13 +70,15 @@ def test_queue_submission_allows_wasm_at_l1(tmp_path):
 def _context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, maturity: str = "L0"
 ) -> tuple[argparse.Namespace, sqlite3.Connection]:
+    source = tmp_path / "source"
+    source.mkdir()
     scheduling.lane_maturity.write_registry(
-        tmp_path,
+        source,
         {
             "child": {
                 "maturity": maturity,
                 "status": "active",
-                "worktree": str(tmp_path),
+                "worktree": str(source),
             }
         },
     )
@@ -79,7 +86,7 @@ def _context(
         db=str(tmp_path / "queue.db"),
         logs_root=str(tmp_path / "logs"),
         notebooks_root=str(tmp_path / "notebooks"),
-        repo_root=str(tmp_path),
+        repo_root=str(source),
     )
     # Projection is independent of maturity; do not generate a notebook for
     # every disposable metadata-only admission observation.
