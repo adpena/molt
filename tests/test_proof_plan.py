@@ -9033,19 +9033,39 @@ def test_executor_empty_selection_does_not_sample_memory(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "path",
+    "path,isolated",
     [
-        "deploy/browser/simd-ops-rs/src/lib.rs",
-        "deploy/browser/compute-engine.js",
-        "deploy/browser/simd-ops.wasm",
-        "tools/build_browser_simd.py",
-        "tests/e2e/test_simd_differential.py",
+        ("deploy/browser/simd-ops-rs/src/lib.rs", True),
+        ("deploy/browser/compute-engine.js", True),
+        ("deploy/browser/simd-ops.wasm", True),
+        ("tools/build_browser_simd.py", True),
+        ("tests/e2e/test_simd_differential.py", True),
+        ("rust-toolchain.toml", False),
+        (".cargo/config.toml", False),
+        ("src/molt/wasm_artifact.py", False),
     ],
 )
-def test_browser_simd_changes_have_a_standalone_source_build_proof(path: str) -> None:
+def test_browser_simd_changes_have_a_standalone_source_build_proof(
+    path: str, isolated: bool
+) -> None:
+    from tools import molt_dev_policy
+
     selected = _classes(path)
     assert selected["browser_simd"]
-    assert not selected["rust"] and not selected["llvm"]
+    if isolated:
+        assert not selected["rust"] and not selected["llvm"]
+    # Exercise the actual local receiver too: CI family selection alone did not
+    # protect local pin/config changes from leaving the shipped module stale.
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == "browser-simd")
+    gates, matched = replace(config, rules=[rule], always=[]).select([path])
+    assert [row.name for row in matched] == ["browser-simd"]
+    (gate,) = gates
+    assert {
+        "tests/tools/test_build_browser_simd.py",
+        "tests/e2e/test_simd_differential.py",
+        "tests/test_browser_compute_backend_semantics.py",
+    } <= set(gate.command)
     commands = {
         command.id: command
         for command in PLAN.commands

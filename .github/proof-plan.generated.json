@@ -915,6 +915,7 @@
       "executor": "github-job",
       "inputs": [
         ".github/workflows/ci.yml",
+        ".cargo/config.toml",
         "rust-toolchain.toml",
         "src/molt/wasm_artifact.py",
         "deploy/browser/compute-engine.js",
@@ -11729,6 +11730,9 @@
         "description": "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer.",
         "gates": [],
         "globs": [
+          ".cargo/config.toml",
+          "rust-toolchain.toml",
+          "src/molt/wasm_artifact.py",
           "deploy/browser/compute-engine.js",
           "deploy/browser/simd-ops-rs/**",
           "deploy/browser/simd-ops.wasm",

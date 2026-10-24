@@ -51,7 +51,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2520 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 35 |
-| `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 12 |
+| `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 342 min | 20280 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 44 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
@@ -414,7 +414,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `public-contract` | 19 | 1 |
 | `installed-compiler-distribution` | 16 | 0 |
 | `edgebox-typescript` | 4 | 1 |
-| `browser-simd` | 11 | 0 |
+| `browser-simd` | 14 | 0 |
 | `rust-clippy-changed` | 8 | 1 |
 | `backend-native` | 9 | 1 |
 | `wasm-facts-host-tool` | 7 | 2 |

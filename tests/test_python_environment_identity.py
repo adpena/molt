@@ -2088,7 +2088,9 @@ def test_capture_authority_preserves_installed_package_and_explicit_source_owner
     assert installed / "package_import_custody.py" not in projected
 
 
-@pytest.mark.parametrize("name", ["default_paths", "windows_process_api"])
+@pytest.mark.parametrize(
+    "name", ["default_paths", "windows_process_api", "flag_strings"]
+)
 def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     tmp_path,
     name,

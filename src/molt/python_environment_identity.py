@@ -230,6 +230,7 @@ def python_capture_authority_paths(
         "backend_daemon_paths",
         "host_capacity",
         "cargo_execution_policy",
+        "flag_strings",
         "process_environment",
         "default_paths",
         "environment_registry",
