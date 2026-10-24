@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use crate::ir::OpIR;
 use crate::tir::dominators::is_simple_exception_transfer_kind;
 use crate::tir::op_kinds_generated::{
-    simpleir_kind_is_suspend, simpleir_kind_is_verifier_label_definition,
-    simpleir_kind_is_verifier_label_reference,
+    simpleir_kind_is_suspend, simpleir_kind_is_terminator,
+    simpleir_kind_is_verifier_label_definition, simpleir_kind_is_verifier_label_reference,
 };
 
 /// Remove dead `label` ops from the linearised op stream.
@@ -59,12 +59,13 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         // carrier state.
         let mut filled_state = FilledState::Open;
         let mut current_block_started_at_live_label = false;
+        let mut open_loops = 0usize;
         let mut keep = vec![true; ops.len()];
 
         for i in 0..ops.len() {
             let kind = ops[i].kind.as_str();
             match kind {
-                "jump" | "ret" | "loop_break" => {
+                kind if simpleir_kind_is_terminator(kind) && kind != "loop_continue" => {
                     if filled_state != FilledState::Open {
                         keep[i] = false;
                     } else {
@@ -92,11 +93,16 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                         current_block_started_at_live_label = true;
                     }
                 }
-                // loop_end resets the filled state only when the current block
-                // is still live, or when it closes the implicit break path of
-                // a structured loop after a textual `loop_continue`.
+                // A retained loop opener owns its lexical closer even when
+                // the final body path returned or jumped away. The loop's
+                // conditional break can still reach the code after it.
                 "loop_end" => {
-                    if filled_state == FilledState::Closed && !current_block_started_at_live_label {
+                    let paired = open_loops != 0;
+                    open_loops = open_loops.saturating_sub(1);
+                    if !paired
+                        && filled_state == FilledState::Closed
+                        && !current_block_started_at_live_label
+                    {
                         keep[i] = false;
                     } else {
                         filled_state = FilledState::Open;
@@ -133,6 +139,7 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                 | "loop_index_start" => {
                     // These are control-flow markers that don't terminate blocks.
                     if kind == "loop_start" {
+                        open_loops += 1;
                         current_block_started_at_live_label = false;
                     }
                 }
@@ -171,46 +178,6 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
             break;
         }
     }
-}
-
-pub(super) fn validate_structured_if_markers(ops: &[OpIR]) -> Result<(), String> {
-    #[derive(Clone, Copy)]
-    struct IfFrame {
-        if_idx: usize,
-        saw_else: bool,
-    }
-
-    let mut stack: Vec<IfFrame> = Vec::new();
-    for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "if" => stack.push(IfFrame {
-                if_idx: idx,
-                saw_else: false,
-            }),
-            "else" => {
-                let Some(frame) = stack.last_mut() else {
-                    return Err(format!("orphan else at op {idx}"));
-                };
-                if frame.saw_else {
-                    return Err(format!(
-                        "duplicate else at op {idx} for if starting at op {}",
-                        frame.if_idx
-                    ));
-                }
-                frame.saw_else = true;
-            }
-            "end_if" => {
-                let Some(_frame) = stack.pop() else {
-                    return Err(format!("orphan end_if at op {idx}"));
-                };
-            }
-            _ => {}
-        }
-    }
-    if let Some(frame) = stack.last() {
-        return Err(format!("unterminated if starting at op {}", frame.if_idx));
-    }
-    Ok(())
 }
 
 /// Validate that every label referenced by jump/br_if/check_exception exists

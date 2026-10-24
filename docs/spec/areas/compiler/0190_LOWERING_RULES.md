@@ -102,6 +102,18 @@ so an overriding continue cannot suppress loop-else. Structured loop markers
 remain balanced even when every body path terminates. No backend-specific
 exception or loop-target fallback is needed.
 
+Shared TIR-to-SimpleIR cleanup owns that preservation: a retained `loop_start`
+keeps its paired `loop_end` independently of executable block completion. The
+generated terminator predicate covers value/void returns and explicit transfers;
+unreachable straight-line body work is removed without removing lexical closure.
+Lowering and full verification use `molt-ir`'s one generated-role structural
+verifier, including mixed if/loop nesting and excluding path-local TRY custody.
+The cleanup adds one scalar loop depth; verification borrows the operation slice
+and uses O(n) work and O(nesting depth) stack space, with no IR clone or emitted
+program overhead. This follows the region/CFG distinction in
+[MLIR SCF](https://mlir.llvm.org/docs/Dialects/SCFDialect/) and the nested control
+grammar of [WebAssembly 3.0](https://webassembly.github.io/spec/core/syntax/instructions.html#control-instructions).
+
 Labeled `TRY_START`/`TRY_END` carry path-local exception-region custody, not
 textual brackets. Every named frontend scope carries its handler in the same
 first operand, including context managers and generator resumption; serialization

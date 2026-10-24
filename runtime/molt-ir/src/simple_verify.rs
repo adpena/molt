@@ -316,7 +316,7 @@ fn verify_completion(function: &FunctionIR, flow: &OpFlow, errors: &mut Vec<Simp
 }
 
 fn verify_control_flow(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
-    verify_block_structure(function, errors);
+    verify_simple_ir_structure(&function.name, &function.ops, errors);
     verify_labels(function, errors);
     if let Err(message) = crate::ir_schema::validate_state_dispatch(&function.ops) {
         errors.push(diagnostic(
@@ -366,16 +366,28 @@ fn verify_function_references(
     }
 }
 
-fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
+/// Check lexical control regions without copying a function or its operations.
+///
+/// Shared lowering and the complete verifier use the same generated region
+/// roles. Path-local TRY custody is deliberately not a lexical region.
+pub fn verify_simple_ir_structure(
+    function_name: &str,
+    ops: &[OpIR],
+    errors: &mut Vec<SimpleIrDiagnostic>,
+) {
     let mut stack: Vec<(&str, usize, bool)> = Vec::new();
-    for (index, op) in function.ops.iter().enumerate() {
+    let mut open_loops = 0usize;
+    for (index, op) in ops.iter().enumerate() {
         if let Some((region, role)) = simpleir_verifier_region_role(&op.kind) {
             match role {
-                SimpleIrVerifierRegionRole::Start => stack.push((region, index, false)),
+                SimpleIrVerifierRegionRole::Start => {
+                    stack.push((region, index, false));
+                    open_loops += usize::from(region == "loop");
+                }
                 SimpleIrVerifierRegionRole::Alternate => match stack.last_mut() {
                     Some((active, _, seen)) if *active == region && !*seen => *seen = true,
                     Some((active, _, true)) if *active == region => errors.push(diagnostic(
-                        &function.name,
+                        function_name,
                         index as isize,
                         "duplicate-control-alternate",
                         format!(
@@ -384,7 +396,7 @@ fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagno
                         ),
                     )),
                     _ => errors.push(diagnostic(
-                        &function.name,
+                        function_name,
                         index as isize,
                         "unbalanced-control-flow",
                         format!("{:?} has no active {:?} region", op.kind, region),
@@ -393,20 +405,19 @@ fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagno
                 SimpleIrVerifierRegionRole::End => match stack.last() {
                     Some((active, _, _)) if *active == region => {
                         stack.pop();
+                        open_loops -= usize::from(region == "loop");
                     }
                     _ => errors.push(diagnostic(
-                        &function.name,
+                        function_name,
                         index as isize,
                         "unbalanced-control-flow",
                         format!("{:?} has no active {:?} region", op.kind, region),
                     )),
                 },
             }
-        } else if simpleir_kind_is_verifier_loop_scoped(&op.kind)
-            && !stack.iter().any(|(region, _, _)| *region == "loop")
-        {
+        } else if simpleir_kind_is_verifier_loop_scoped(&op.kind) && open_loops == 0 {
             errors.push(diagnostic(
-                &function.name,
+                function_name,
                 index as isize,
                 "break-outside-loop",
                 format!("{:?} appears outside a loop region", op.kind),
@@ -415,7 +426,7 @@ fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagno
     }
     for (region, index, _) in stack {
         errors.push(diagnostic(
-            &function.name,
+            function_name,
             index as isize,
             "unbalanced-control-flow",
             format!("region {:?} has no matching end", region),
