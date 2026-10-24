@@ -736,6 +736,15 @@ def _plan(
     )
 
 
+def _with_remaps(root: Path, flags: tuple[str, ...]) -> tuple[str, ...]:
+    # Independent expected policy for this fixture's default root/target layout.
+    return (
+        *flags,
+        f"--remap-path-prefix={root}=/molt/source",
+        f"--remap-path-prefix={root / 'target'}=/molt/build",
+    )
+
+
 def _config(root: Path, text: str) -> Path:
     directory = root / ".cargo"
     directory.mkdir(exist_ok=True)
@@ -855,7 +864,7 @@ def test_cfg_target_plan_uses_rustc_facts_and_pins_selected_tools(
             "linker-flavor=wasm-ld",
             *expected,
         )
-    assert plan.rustflags == expected
+    assert plan.rustflags == _with_remaps(plan_root, expected)
     assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
     assert seen and all(selected == target for selected, _ in seen)
     if target == "wasm32-wasip1":
@@ -977,14 +986,26 @@ def test_cargo_string_lists_merge_file_cli_and_environment_before_cfg_selection(
 
     def metadata(rustc, target, flags, **kwargs):
         probes.append((target, flags))
-        return _metadata(plan_root, "\n".join(("unix", *flags[1::2])))
+        return _metadata(
+            plan_root,
+            "\n".join(
+                (
+                    "unix",
+                    *(
+                        value
+                        for option, value in zip(flags, flags[1:])
+                        if option == "--cfg"
+                    ),
+                )
+            ),
+        )
 
     monkeypatch.setattr(rustc_probes, "rust_target_metadata", metadata)
     plan = _plan(
         plan_root, env=env, args=("--config", f'{scope}.rustflags=["--cfg","cli"]')
     )
-    assert plan.rustflags == expected
-    assert probes == [(None, expected)] * 2
+    assert plan.rustflags == _with_remaps(plan_root, expected)
+    assert probes == [(None, expected), (None, _with_remaps(plan_root, expected))] * 2
     if override is None:
         assert plan.tools["linker"].name == "merged-linker"
     else:
@@ -1008,7 +1029,9 @@ def test_encoded_flags_win_and_transform_is_applied_once(plan_root: Path) -> Non
         rustflags_transform=transform,
     )
     assert seen == [("--cfg", "encoded")]
-    assert plan.rustflags == ("--cfg", "encoded", "--cfg", "molt")
+    assert plan.rustflags == _with_remaps(
+        plan_root, ("--cfg", "encoded", "--cfg", "molt")
+    )
     assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
 
 
@@ -1038,8 +1061,10 @@ def test_rust_cpu_policy_extends_the_flags_cargo_selects(
         plan_root, env=env, rustflags_transform=RustCpuPolicy.NATIVE.rustflags
     )
 
-    assert baseline.rustflags == selected
-    assert native.rustflags == (*selected, "-C", "target-cpu=native")
+    assert baseline.rustflags == _with_remaps(plan_root, selected)
+    assert native.rustflags == _with_remaps(
+        plan_root, (*selected, "-C", "target-cpu=native")
+    )
     for plan in (baseline, native):
         assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(
             plan.rustflags
@@ -1063,7 +1088,7 @@ def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
     search.mkdir()
     original = ("-L", "native=search")
     normalized = ("-L", "native=" + str(search))
-    final_flags = (*normalized, "--cfg", "final_crate")
+    final_flags = (*_with_remaps(plan_root, normalized), "--cfg", "final_crate")
     _config(plan_root, "[target.'cfg(normalized)']\nlinker=\"normalized-linker\"\n")
     probes = []
 
@@ -1084,13 +1109,13 @@ def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
         env={"RUSTFLAGS": "-L native=search", "RUSTC_WRAPPER": "metadata-wrapper"},
         args=("--", "--cfg", "final_crate"),
     )
-    assert plan.rustflags == normalized
+    assert plan.rustflags == _with_remaps(plan_root, normalized)
     assert plan.tools["linker"].name == "normalized-linker"
     # Resource discovery reuses the normalized cfg probe, while retaining a
     # distinct final-crate selection and the unwrapped installed driver.
     questions = [
         (None, original, True),
-        (None, normalized, True),
+        (None, _with_remaps(plan_root, normalized), True),
         (None, (), False),
         (None, final_flags, True),
     ]
@@ -1117,7 +1142,7 @@ def test_actual_host_target_flags_are_resolved_for_native(plan_root: Path) -> No
     plan = _plan(
         plan_root, env={"CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS": "--cfg host"}
     )
-    assert plan.rustflags == ("--cfg", "host")
+    assert plan.rustflags == _with_remaps(plan_root, ("--cfg", "host"))
 
 
 def test_configuration_parse_and_receipt_share_one_generation(plan_root: Path) -> None:
@@ -2217,7 +2242,9 @@ def test_last_codegen_selector_wins_without_opening_shadowed_path(
             )
         },
     )
-    assert plan.rustflags == ("-Z", "codegen-backend=" + str(selected))
+    assert plan.rustflags == _with_remaps(
+        plan_root, ("-Z", "codegen-backend=" + str(selected))
+    )
     assert any(item.identity.path == selected for item in plan.rust_resources.files)
 
 
@@ -2878,6 +2905,8 @@ def test_explicit_freestanding_c_provider_uses_selected_raw_linker(
             "link-self-contained=no",
             "-C",
             "linker-flavor=wasm-ld",
+            f"--remap-path-prefix={plan_root}=/molt/source",
+            f"--remap-path-prefix={plan_root / 'target'}=/molt/build",
         )
         assert plan.environment["CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER"] == str(
             c_abi.linker
@@ -3252,10 +3281,11 @@ def test_codegen_alias_resources_have_one_custody_and_partition(
         if selector == "linker"
         else artifact
     )
-    assert lane == (
+    expected = (
         "-C",
         selector + "=" + ("@" if selector == "link-arg" else "") + str(selected),
     )
+    assert lane == (expected if final else _with_remaps(plan_root, expected))
     if final and selector == "link-arg":
         compile_command, linking = plan.partition_command()
         assert linking == lane and value not in compile_command
@@ -3297,7 +3327,9 @@ def test_runtime_search_operand_cannot_select_a_codegen_tool(plan_root, operand)
     artifact.write_bytes(b"opaque search input")
     flags = ("-L", operand, "--out-dir", operand, "--remap-path-prefix", operand)
     plan = _plan(plan_root, env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)})
-    assert plan.rustflags == ("-L", "all=" + str(directory), *flags[2:])
+    assert plan.rustflags == _with_remaps(
+        plan_root, ("-L", "all=" + str(directory), *flags[2:])
+    )
     assert any(item.identity.path == artifact for item in plan.rust_resources.files)
     assert all(not str(path).endswith("tools/root") for path in plan.tools.values())
     artifact.write_bytes(b"changed opaque input")
@@ -3357,7 +3389,9 @@ def test_codegen_key_aliases_obey_last_selector_without_reading_shadowed_path(
     selected.write_bytes(b"MZbackend")
     flags = ("-gZcodegen_backend=missing.dll", "-Z", "codegen-backend=" + str(selected))
     plan = _plan(plan_root, env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)})
-    assert plan.rustflags == ("-g", "-Z", "codegen-backend=" + str(selected))
+    assert plan.rustflags == _with_remaps(
+        plan_root, ("-g", "-Z", "codegen-backend=" + str(selected))
+    )
     assert any(item.identity.path == selected for item in plan.rust_resources.files)
 
 
@@ -3457,7 +3491,8 @@ def test_metadata_questions_are_fresh_for_each_plan(
     second = _plan(plan_root, env=environment)
     assert first.tools["linker"].name != "changed-linker"
     assert second.tools["linker"].name == "changed-linker"
-    assert observed == [False, False, True, True]
+    # Each plan discovers and qualifies both the selected and remapped vectors.
+    assert observed == [False, False, False, False, True, True, True, True]
 
 
 @pytest.mark.parametrize("phase", ["before_capture", "during_qualification"])
@@ -3473,14 +3508,14 @@ def test_metadata_discovery_must_agree_under_captured_resources(
         nonlocal calls
         calls += 1
         fact = backend.read_text(encoding="utf-8")
-        if calls == (1 if phase == "before_capture" else 2):
+        if calls == (1 if phase == "before_capture" else 3):
             _rewrite_with_restored_mtime(backend, b"new")
         return _metadata(plan_root, fact)
 
     monkeypatch.setattr(rustc_probes, "rust_target_metadata", query)
     with pytest.raises(ValueError, match="changed"):
         _plan(plan_root, env={"RUSTFLAGS": "-C codegen-backend=" + str(backend)})
-    assert calls == 2
+    assert calls == 3
 
 
 def test_provisional_backend_remains_in_plan_custody(
@@ -3528,7 +3563,9 @@ def test_metadata_memo_uses_actual_wrapper_command(
     monkeypatch.setattr(rustc_probes, "rust_target_metadata", query)
     monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
     _plan(plan_root, env={"RUSTC_WRAPPER": "wrapper"} if wrapped else {})
-    assert observed == ([False, True, False, True] if wrapped else [False, False])
+    assert observed == (
+        [False, True, False, True] if wrapped else [False, False, False, False]
+    )
 
 
 @pytest.mark.parametrize("explicit", [False, True])

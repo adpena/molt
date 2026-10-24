@@ -183,9 +183,19 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
 
     monkeypatch.setattr(runtime_cells, "declared_runtime_cells", policy)
     produced = []
+    environment_before = dict(os.environ)
+    cwd_before = Path.cwd()
 
     def producer(request, source_root, output, timeout):
         assert source_root == pinned and timeout == 17
+        # The common Cargo plan owns remapping after flag selection; the
+        # release wrapper must not overwrite Cargo's ambient selection first.
+        assert os.environ.get("CARGO_ENCODED_RUSTFLAGS") == environment_before.get(
+            "CARGO_ENCODED_RUSTFLAGS"
+        )
+        assert os.environ.get("RUSTFLAGS") == environment_before.get("RUSTFLAGS")
+        assert Path(os.environ["CARGO_TARGET_DIR"]) == Path.cwd() / "target"
+        assert Path(os.environ["MOLT_BUILD_STATE_DIR"]) == Path.cwd() / "build-state"
         produced.append(request)
         actual = declared[0] if selection == "wrong-output" else request
         return {
@@ -259,6 +269,8 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
             == inventory
         )
     assert policy_reads == [pinned]
+    assert dict(os.environ) == environment_before
+    assert Path.cwd() == cwd_before
     assert not list(tmp_path.glob(".runtime-cells-*"))
 
 

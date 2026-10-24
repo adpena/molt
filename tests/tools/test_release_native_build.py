@@ -30,6 +30,26 @@ from tools.release.git_source_snapshot import GitSourceFile, GitSourceSnapshot
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 
+@pytest.mark.parametrize("platform", ["linux", "macos", "windows"])
+def test_native_release_rust_remap_keeps_one_encoded_token(tmp_path, platform):
+    work = tmp_path / "work = with spaces"
+    paths = dict.fromkeys(native_build._TOOL_ROLES, tmp_path / "tool")
+    paths["linker_backend"] = tmp_path / "linker-backend"
+    environment = {"SYSTEMROOT": str(tmp_path)}
+    native_build._select_build_tools(
+        environment,
+        paths,
+        work=work,
+        triple="x86_64-pc-windows-msvc" if platform == "windows" else "test-target",
+        platform=platform,
+    )
+    flags = native_build.FlagStringRule.CARGO_ENCODED.decode(
+        environment["CARGO_ENCODED_RUSTFLAGS"]
+    )
+    assert flags[0] == f"--remap-path-prefix={work}=/molt"
+    assert flags[1:3] == ("-C", f"linker={paths['linker']}")
+
+
 def native_image(platform="linux", arch="x86_64"):
     if platform == "windows":
         return bytes(pe_header(machine=0x8664 if arch == "x86_64" else 0xAA64))
