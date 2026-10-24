@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 import hashlib
 import os
+import re
 from pathlib import Path
 from typing import BinaryIO, TypeGuard
 
@@ -22,7 +23,21 @@ def immutable_git_environment(
     env = ProcessEnvironmentBuilder(environment)
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
     env["GIT_GRAFT_FILE"] = os.devnull
+    add_git_config(env, "advice.graftFileDeprecated", "false")
     return env
+
+
+def add_git_config(environment: MutableMapping[str, str], key: str, value: str) -> None:
+    """Append one per-process Git setting, retaining inherited settings."""
+    raw_count = environment.get("GIT_CONFIG_COUNT", "0") or "0"
+    if re.fullmatch(r"[ \t\r\n\v\f]*[+-]?[0-9]+", raw_count) is None:
+        raise ValueError("invalid GIT_CONFIG_COUNT")
+    count = int(raw_count)
+    if count < 0:
+        raise ValueError("GIT_CONFIG_COUNT must be nonnegative")
+    environment[f"GIT_CONFIG_KEY_{count}"] = key
+    environment[f"GIT_CONFIG_VALUE_{count}"] = value
+    environment["GIT_CONFIG_COUNT"] = str(count + 1)
 
 
 def repository_source_paths(

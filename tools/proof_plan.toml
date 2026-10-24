@@ -5696,6 +5696,15 @@ pytest = [
   "tests/tools/test_legacy_inventory.py",
 ]
 
+# Shared Git environment/configuration rules serve transfer and source readers.
+[[rule]]
+name = "git-process-policy"
+toolchains = ["python"]
+description = "Git process settings retain inherited configuration and native failure semantics."
+globs = ["tools/git_identity.py", "tools/git_transfer.py", "tests/tools/test_command_execution.py"]
+gates = []
+pytest = ["tests/tools/test_command_execution.py"]
+
 # --- v1 public stable contract ------------------------------------------------
 [[rule]]
 name = "public-contract"
