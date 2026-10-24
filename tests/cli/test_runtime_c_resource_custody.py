@@ -32,14 +32,20 @@ TARGET = "wasm32-wasip1"
 
 
 def test_cc_command_words_keep_exact_paths_and_do_not_unquote(tmp_path):
-    from molt.cli.runtime_cargo_plan import _tool_path
+    from molt.cli.runtime_tool_selection import runtime_tool_path
 
     executable = tmp_path / "sccache gcc"
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
     assert cargo_c_tool_words(str(executable)) == (str(executable),)
-    assert _tool_path(str(executable), root=tmp_path, env={}, role="cc") == executable
-    assert _tool_path(executable.name, root=tmp_path, env={}, role="cc") == executable
+    assert (
+        runtime_tool_path(str(executable), root=tmp_path, env={}, role="cc")
+        == executable
+    )
+    assert (
+        runtime_tool_path(executable.name, root=tmp_path, env={}, role="cc")
+        == executable
+    )
     validate_sccache_epoch_environment(
         {"SOURCE_DATE_EPOCH": "1", "CC": str(executable)}
     )
@@ -51,10 +57,48 @@ def test_cc_command_words_keep_exact_paths_and_do_not_unquote(tmp_path):
     assert cargo_c_tool_words("sccache\x1cgcc") == ("sccache\x1cgcc",)
     assert cargo_c_tool_words("sccache\x1c") == ("sccache\x1c",)
     with pytest.raises(ValueError, match="compound C commands"):
-        _tool_path(str(executable) + "\x1c", root=tmp_path, env={}, role="cc")
+        runtime_tool_path(str(executable) + "\x1c", root=tmp_path, env={}, role="cc")
     for command in ("sccache clang", '"sccache" gcc', "gcc -flag"):
         with pytest.raises(ValueError, match="compound C commands"):
-            _tool_path(command, root=tmp_path, env={}, role="cc")
+            runtime_tool_path(command, root=tmp_path, env={}, role="cc")
+
+
+@pytest.mark.parametrize("role", ["cc", "cargo"])
+def test_runtime_tool_selection_uses_child_relative_search_path(
+    tmp_path, monkeypatch, role
+):
+    from molt.cli.runtime_tool_selection import (
+        runtime_c_tool_selection,
+        runtime_tool_path,
+    )
+
+    caller, child = tmp_path / "caller", tmp_path / "child"
+    for directory in (caller, child):
+        (directory / "bin").mkdir(parents=True)
+    monkeypatch.chdir(caller)
+    suffix = ".exe" if os.name == "nt" else ""
+    selected = child / "bin" / ("gcc" + suffix)
+    selected.write_bytes(b"child compiler")
+    selected.chmod(0o755)
+    decoy = caller / "bin" / ("gcc" + suffix)
+    decoy.write_bytes(b"caller decoy")
+    decoy.chmod(0o755)
+    # Parent-only preferred cc must not displace the child's fallback gcc.
+    preferred_decoy = caller / "bin" / ("cc" + suffix)
+    preferred_decoy.write_bytes(b"parent preferred decoy")
+    preferred_decoy.chmod(0o755)
+    environment = {"PATH": "bin"}
+    assert runtime_tool_path("gcc", root=child, env=environment, role=role) == selected
+    assert (
+        runtime_c_tool_selection(
+            "cc",
+            root=child,
+            env=environment,
+            target="x86_64-unknown-linux-gnu",
+            host_target="x86_64-unknown-linux-gnu",
+        )
+        == selected
+    )
 
 
 def test_cc_windows_exact_extension_is_selected_before_word_split(tmp_path):
@@ -120,6 +164,7 @@ def test_epoch_selected_c_wrapper_refuses_before_c_compiler_probe(
     tmp_path, monkeypatch, selector, rule, runtime_fixture_root
 ):
     import molt.cli.runtime_cargo_plan as plans
+    import molt.cli.runtime_tool_selection as tool_selection
 
     rustc = runtime_fixture_root.native_executable("rustc-identity")
 
@@ -127,7 +172,7 @@ def test_epoch_selected_c_wrapper_refuses_before_c_compiler_probe(
         assert kwargs["role"] == "rustc", "C tool reached before admission"
         return rustc
 
-    monkeypatch.setattr(plans, "_tool_path", tool_path)
+    monkeypatch.setattr(tool_selection, "runtime_tool_path", tool_path)
     monkeypatch.setattr(plans, "resolve_rustup_proxy", lambda path, **_k: path)
     monkeypatch.setattr(plans, "rust_toolchain_library_environment", lambda *_a: {})
     env = ProcessEnvironmentBuilder(
@@ -153,12 +198,13 @@ def test_epoch_wasi_admits_sdk_projection_before_effective_c_tools(
     tmp_path, monkeypatch, runtime_fixture_root, host_wrapper
 ):
     import molt.cli.runtime_cargo_plan as plans
+    import molt.cli.runtime_tool_selection as tool_selection
     from molt.cli.cargo_execution import _cargo_build_env
     from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
 
     sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
     rustc = runtime_fixture_root.native_executable("rustc-identity")
-    monkeypatch.setattr(plans, "_tool_path", lambda _value, **_k: rustc)
+    monkeypatch.setattr(tool_selection, "runtime_tool_path", lambda _value, **_k: rustc)
     monkeypatch.setattr(plans, "resolve_rustup_proxy", lambda path, **_k: path)
     monkeypatch.setattr(plans, "rust_toolchain_library_environment", lambda *_a: {})
     monkeypatch.setattr(plans, "selected_wasi_sdk_installation", lambda *_a, **_k: sdk)
@@ -198,13 +244,16 @@ def test_epoch_configured_wrapper_refuses_before_compiler_probe(
     tmp_path, monkeypatch, key
 ):
     import molt.cli.runtime_cargo_plan as plans
+    import molt.cli.runtime_tool_selection as tool_selection
 
     (tmp_path / ".cargo").mkdir()
     (tmp_path / ".cargo" / "config.toml").write_text(
         f'[build]\n{key}="sccache"\n', encoding="utf-8"
     )
     monkeypatch.setattr(
-        plans, "_tool_path", lambda *a, **k: pytest.fail("tool probe before admission")
+        tool_selection,
+        "runtime_tool_path",
+        lambda *a, **k: pytest.fail("tool probe before admission"),
     )
     with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
         plans.resolve_runtime_cargo_plan(

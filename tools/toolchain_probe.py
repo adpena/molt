@@ -69,7 +69,7 @@ def run_toolchain_probe(
     from molt.toolchain_identity import find_executable
 
     try:
-        child_environment = cargo_subprocess_environment(argv, environment)[0]
+        child_environment = cargo_subprocess_environment(argv, environment, cwd=cwd)[0]
         command = argv[0]
         if not Path(command).is_absolute() and not any(
             separator in command for separator in "/\\"

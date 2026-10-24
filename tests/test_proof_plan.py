@@ -3647,8 +3647,8 @@ def test_toolchain_probe_environment_rejection_retains_selected_context(
     command = ["selected-tool", "--version"]
     environment = {"SELECTED_POLICY": "refused"}
 
-    def reject(argv, env):
-        assert argv == command and env is environment
+    def reject(argv, env, *, cwd):
+        assert argv == command and env is environment and cwd == tmp_path
         raise ValueError("selected environment refused")
 
     monkeypatch.setattr(toolchain_probe, "cargo_subprocess_environment", reject)

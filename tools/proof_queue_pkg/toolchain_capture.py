@@ -1313,10 +1313,10 @@ def select_cargo_native_units(
     """Resolve declared role/language pairs without compiler probes or hashing."""
     from tools.proof_plan import cargo_native_units
     from molt.cli.runtime_cargo_plan import (
-        _c_tool_environment_names,
         _resolve_c_build_resources,
-        runtime_c_tool_selection,
     )
+    from molt.cargo_execution_policy import cargo_c_tool_environment_names
+    from molt.cli.runtime_tool_selection import runtime_c_tool_selection
 
     requirements = cargo_native_units(
         {
@@ -1369,7 +1369,9 @@ def select_cargo_native_units(
             *("cc" if language == "c" else "cxx" for language in languages),
             "ar",
         ]:
-            names = _c_tool_environment_names(role, target=triple, host_target=host)
+            names = cargo_c_tool_environment_names(
+                role, target=triple, host_target=host
+            )
             selected = next(
                 (selected_env[name] for name in names if selected_env.get(name)), None
             )
@@ -1412,7 +1414,7 @@ def select_cargo_native_units(
             flags = [
                 token
                 for name in reversed(
-                    _c_tool_environment_names(
+                    cargo_c_tool_environment_names(
                         flag_role, target=triple, host_target=host
                     )
                 )
@@ -2114,8 +2116,8 @@ def _cargo_flag_context(
     from molt.cli.runtime_cargo_plan import (
         capture_cargo_configuration_inputs,
         cargo_selected_value,
-        _tool_path,
     )
+    from molt.cli.runtime_tool_selection import runtime_tool_path
     from molt.cli.rustc_probes import rust_probe_command
     from molt.cli.cargo_target_cfg import (
         cargo_target_query_arguments,
@@ -2209,7 +2211,7 @@ def _cargo_flag_context(
             "",
         )
         if value:
-            wrappers[variable] = _tool_path(
+            wrappers[variable] = runtime_tool_path(
                 value, root=cwd, env=configured_env, role=variable
             )
     context = {
@@ -4024,7 +4026,7 @@ def _validate_runtime_gate_rust_selection(
         target = row["selection"]["target"]
         if target in managed:
             projection = managed[target]
-            from molt.cli.runtime_cargo_plan import _c_tool_environment_names
+            from molt.cargo_execution_policy import cargo_c_tool_environment_names
 
             abi = WasiCAbiProjection.decode(projection["c_abi"])
 
@@ -4036,7 +4038,7 @@ def _validate_runtime_gate_rust_selection(
                 expected.extend(
                     token
                     for name in reversed(
-                        _c_tool_environment_names(
+                        cargo_c_tool_environment_names(
                             flags, target=target, host_target=host
                         )
                     )

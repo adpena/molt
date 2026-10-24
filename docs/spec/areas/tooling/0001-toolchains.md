@@ -1310,6 +1310,11 @@ disable incremental development or user-code compilation. Runtime production
 derives the epoch from the immutable requested commit, never ambient wall time
 or a moving `HEAD`.
 
+Before commissioning source-bound release products, finish the immutable
+candidate's selected source gates. Toolchain and input preparation can proceed
+in parallel; a failed source gate must not cause another full product campaign.
+This ordering is a development cost policy, not work for compiled user programs.
+
 Release production selects direct compiler execution through the shared policy,
 including disabling automatic wrapper selection. General Cargo admission must
 refuse an explicitly selected sccache wrapper when `SOURCE_DATE_EPOCH` is present;
@@ -1319,6 +1324,9 @@ selection is checked after target SDK projection in the resolved runtime plan,
 which owns the actual host and target coordinates. Generic raw Cargo
 normalization checks only unambiguous environment selectors; it does not qualify
 arbitrary target-specific or configured C selection without a resolved plan.
+Every execution consumer supplies its child working directory explicitly.
+Relative executable paths and PATH entries use that same coordinate; explicit
+`None` means the inherited process working directory.
 The pinned [sccache compile-request implementation](https://github.com/mozilla/sccache/blob/v0.18.0/src/cmdline.rs#L288-L305)
 removes that variable. Its [preprocessor-cache validation](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/preprocessor_cache.rs#L291-L296)
 also reads the daemon epoch rather than the request epoch. Recording the desired

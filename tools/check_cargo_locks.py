@@ -68,7 +68,7 @@ def stale_lockfiles(root: Path) -> list[str]:
             "--manifest-path",
             str(manifest),
         ]
-        env, _policies = cargo_subprocess_environment(command, None)
+        env, _policies = cargo_subprocess_environment(command, None, cwd=root)
         result = process_guard.run_completed_command(
             command,
             cwd=root,

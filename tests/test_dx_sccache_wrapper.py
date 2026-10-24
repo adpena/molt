@@ -383,7 +383,7 @@ def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
     server_temp = sccache_server_temp_dir(scratch_env)
     assert server_temp is not None and str(server_temp) != scratch
 
-    pinned, applied = normalize_cargo_environment(scratch_env)
+    pinned, applied = normalize_cargo_environment(scratch_env, cwd=None)
     assert applied == (
         SCCACHE_INCREMENTAL_POLICY,
         SCCACHE_SERVER_TEMP_POLICY,
@@ -397,13 +397,13 @@ def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
 
     unconfigured = {**scratch_env}
     del unconfigured["SCCACHE_DIR"]
-    kept, applied = normalize_cargo_environment(unconfigured)
+    kept, applied = normalize_cargo_environment(unconfigured, cwd=None)
     assert applied == (SCCACHE_INCREMENTAL_POLICY,)
     assert kept["TMPDIR"] == scratch
 
     direct = {**scratch_env}
     del direct["RUSTC_WRAPPER"]
-    kept, applied = normalize_cargo_environment(direct)
+    kept, applied = normalize_cargo_environment(direct, cwd=None)
     assert applied == ()
     assert kept["TMPDIR"] == scratch
 

@@ -960,8 +960,8 @@ def zlib_wasi_flags(
     from molt.cli.runtime_cargo_plan import (
         capture_cargo_configuration_inputs,
         cargo_selected_value,
-        _tool_path,
     )
+    from molt.cli.runtime_tool_selection import runtime_tool_path
     from molt.rust_toolchain import resolve_rustup_proxy, rust_flag_spans
     from tools.proof_queue_pkg.toolchain_capture import _cargo_flag_context
 
@@ -978,7 +978,7 @@ def zlib_wasi_flags(
         "rustc",
     )
     rustc = resolve_rustup_proxy(
-        _tool_path(selector, root=ROOT, env=configured_env, role="rustc"),
+        runtime_tool_path(selector, root=ROOT, env=configured_env, role="rustc"),
         role="rustc",
         root=ROOT,
         env=configured_env,

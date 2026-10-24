@@ -251,7 +251,9 @@ def effective_cargo_environment(
     """
     environment = ProcessEnvironmentBuilder(env)
     environment.update(inputs["cargo_inputs"])
-    normalized, _policies = normalize_cargo_environment(environment)
+    normalized, _policies = normalize_cargo_environment(
+        environment, cwd=Path(str(inputs["source_root"])) / "tools" / "proof_supervisor"
+    )
     return ProcessEnvironment(normalized, rule=environment.rule)
 
 

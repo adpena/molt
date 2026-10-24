@@ -4456,7 +4456,9 @@ def _command_environment(
     child_env[PROOF_COMMAND_TIMEOUT_ENV] = str(timeout)
     if "cargo" not in command.toolchains:
         return ProcessEnvironment(child_env), ()
-    return normalize_cargo_environment(child_env)
+    return normalize_cargo_environment(
+        child_env, cwd=ROOT / str(command.data.get("cwd", "."))
+    )
 
 
 def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:

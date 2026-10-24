@@ -214,7 +214,7 @@ def run_cargo_metadata(root: Path) -> dict:
             capture_output=True,
             text=True,
             check=False,
-            env=cargo_subprocess_environment(command, None)[0],
+            env=cargo_subprocess_environment(command, None, cwd=root)[0],
             encoding="utf-8",
         )
     except FileNotFoundError as exc:  # pragma: no cover - environment-specific
