@@ -23,8 +23,12 @@ def _identity_fixture_git(repo: Path, *arguments: str) -> str:
 
 
 def test_release_work_binds_each_ledger_and_recipe_catalog_to_its_commit(
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
+    # Pinned drivers disable replacements for their own custody. This fixture
+    # deliberately enables ordinary replacement reads to establish the attack.
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
     repo = tmp_path / "release"
     repo.mkdir()
     _identity_fixture_git(repo, "init", "--initial-branch=main")
