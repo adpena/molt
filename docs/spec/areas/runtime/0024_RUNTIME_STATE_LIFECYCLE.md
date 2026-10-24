@@ -1094,7 +1094,21 @@ bounded string-binding transitions.
 For Python 3.12/3.13 targets, full collection first determines reachability,
 then demotes reachable atomic tuples, then reachable atomic dictionaries, before
 weakref callbacks or finalizers. Minor collections do not demote dictionaries.
-For Python 3.14 targets, dictionaries remain tracked from allocation to release.
+For Python 3.14 and later targets, dictionaries remain tracked from allocation to release.
+A successful nonempty direct table clone preserves the source's conservative
+membership even when its current entries have become atomic. This is one bulk
+publication fact, not an extra traversal of copied entries; the shared clone
+performs one source membership query and, when tracked, idempotent destination
+admission (constant registry work, no per-entry allocation). Empty construction
+and compacting/itemwise merges keep their existing tracking rules. `dict.copy`,
+empty-target direct merge (`dict`, update and unpacking), and exact-dict
+`copy.copy` share these authorities. Exact-dict shallow copy uses the existing
+copy implementation under its admitted runtime entry, avoiding an intermediate
+entry snapshot and repeated hashing. Subclass hooks retain their dispatch
+precedence and existing distinct storage semantics.
+This follows CPython 3.12.15's [`PyDict_Copy` and `dict_merge`](https://github.com/python/cpython/blob/v3.12.15/Objects/dictobject.c)
+tracking transfers; collection-time demotion and the target policy remain with
+the GC authority.
 Allocation accounting and initialized-payload publication remain distinct from
 current collector membership.
 

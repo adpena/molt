@@ -1244,6 +1244,13 @@ pub(crate) unsafe fn dict_clone_into_empty(
         dict_storage(target).live = dict_len(source);
         dict_storage(target).usable = dict_storage(source).usable;
         dict_storage(target).kind = dict_storage(source).kind;
+        // A bulk clone inherits conservative source membership even when its
+        // current entries are atomic. Mutations do not demote a dict; CPython
+        // preserves that fact in PyDict_Copy and the empty-target merge path.
+        // Empty construction keeps its own target-version tracking policy.
+        if dict_len(source) != 0 && crate::object::gc::gc_is_tracked(source) {
+            crate::object::gc::gc_track_dict(py, target);
+        }
         dict_commit_reset(py, target);
         true
     }
