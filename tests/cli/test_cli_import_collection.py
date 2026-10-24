@@ -22063,6 +22063,14 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     monkeypatch: pytest.MonkeyPatch,
     is_wasm: bool,
 ) -> None:
+    from molt.cli import runtime_wasm_validation
+    from tests.runtime_build_identity_helper import wasm_validator_discovery
+
+    # Backend/cache ordering assumes the WASM validator prerequisite is admitted.
+    discovery = wasm_validator_discovery(tmp_path)
+    monkeypatch.setattr(
+        runtime_wasm_validation, "require_pinned_tool", lambda _name: discovery
+    )
     runtime_state = cli_models._RuntimeArtifactState(runtime_lib=tmp_path / "runtime.a")
     output_artifact = tmp_path / ("output.wasm" if is_wasm else "output.a")
     call_order: list[str] = []

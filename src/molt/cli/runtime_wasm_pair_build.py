@@ -87,11 +87,10 @@ from molt.cli.runtime_wasm_generation import (
 )
 from molt.cli.runtime_wasm_validation import (
     _is_valid_shared_runtime_wasm_artifact,
+    _require_runtime_wasm_validator,
+    _shared_runtime_wasm_validation_error,
     RuntimeWasmAdmissionReport,
     runtime_wasm_generation_admission,
-)
-from molt.wasm_artifact import (
-    inspect_wasm_binary as _inspect_wasm_binary,
 )
 
 
@@ -221,12 +220,12 @@ def _publish_combined_runtime_wasm_target(
             "both runtime crate-type artifacts (expected cdylib and staticlib).",
             build=build,
         )
-    if _inspect_wasm_binary(
-        cdylib
-    ) != "valid" or not _is_valid_shared_runtime_wasm_artifact(cdylib):
+    validation_error = _shared_runtime_wasm_validation_error(cdylib)
+    if validation_error is not None:
         return ctx.fail(
             "combined-cdylib-validation",
-            "Runtime wasm combined build produced an invalid cdylib artifact.",
+            "Runtime wasm combined build produced an invalid cdylib artifact: "
+            + validation_error,
             build=build,
         )
     try:
@@ -298,6 +297,11 @@ def _prepopulate_combined_runtime_wasm_target(
     force_build: bool = False,
 ) -> CargoEnvironmentInputs | None:
     """Populate the exact shared+reloc target pair with one Cargo transaction."""
+    if (
+        _require_runtime_wasm_validator(runtime_state, project_root=project_root)
+        is None
+    ):
+        return None
     if (
         shared_spec.fingerprint is None
         or reloc_spec.fingerprint is None
@@ -959,6 +963,13 @@ def _ensure_runtime_wasm_both(
     bind_for_codegen: bool = False,
 ) -> bool:
     runtime_state.runtime_wasm_build_failure = None
+    # Validator availability is a prerequisite, not an artifact cache miss.
+    # Refuse before source/toolchain identity planning or any Cargo transaction.
+    if (
+        _require_runtime_wasm_validator(runtime_state, project_root=project_root)
+        is None
+    ):
+        return False
     binding = runtime_state.runtime_wasm_codegen_binding
     # Once app layout is emitted, imports are admission obligations, not a new
     # runtime build plan. Recapture current source/toolchain identity using the

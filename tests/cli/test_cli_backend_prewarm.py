@@ -115,6 +115,18 @@ _ENVIRONMENTS: dict[str, dict[str, str]] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def admitted_validator_for_backend_controls(monkeypatch, tmp_path):
+    from molt.cli import runtime_wasm_validation
+    from tests.runtime_build_identity_helper import wasm_validator_discovery
+
+    discovery = wasm_validator_discovery(tmp_path)
+    monkeypatch.setattr(
+        runtime_wasm_validation, "require_pinned_tool", lambda _name: discovery
+    )
+    return discovery
+
+
 def _isolated_molt_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **env: str
 ) -> Path:
@@ -290,6 +302,81 @@ def _build_backend_setup(
         codegen=config.codegen,
         rust_cpu=preamble.rust_cpu,
     )
+
+
+@pytest.mark.parametrize("stage", ["validator-readiness", "combined-cdylib-validation"])
+def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
+    tmp_path, monkeypatch, capsys, stage, admitted_validator_for_backend_controls
+):
+    from types import SimpleNamespace
+    from molt.cli.models import _RuntimeArtifactState
+    from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
+    from molt.tool_releases import ToolReleaseError
+    from molt.cli import runtime_wasm_validation
+
+    _isolated_molt_root(tmp_path, monkeypatch)
+    state = _RuntimeArtifactState()
+    reason = (
+        "wasm-tools is required from attested toolchain custody"
+        if stage == "validator-readiness"
+        else "wasm-tools validate failed: type mismatch in function 7"
+    )
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_initialize_runtime_artifact_state",
+        lambda **_kwargs: state,
+    )
+    asked = []
+
+    def require(name):
+        asked.append(name)
+        assert name == "wasm-tools"
+        if stage == "validator-readiness":
+            raise ToolReleaseError(reason)
+        return admitted_validator_for_backend_controls
+
+    def compiler(*_args, **_kwargs):
+        assert stage != "validator-readiness", (
+            "missing validator must not admit backend Cargo"
+        )
+        return SimpleNamespace(binary=tmp_path / "backend")
+
+    monkeypatch.setattr(runtime_wasm_validation, "require_pinned_tool", require)
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "_stage_runtime_callable_symbols_for_native_codegen",
+        lambda *_args, **_kwargs: ("", None),
+    )
+    monkeypatch.setattr(
+        cli_backend_compile, "_ensure_selected_backend_binary", compiler
+    )
+
+    def refuse(runtime_state, **_kwargs):
+        assert stage != "validator-readiness", (
+            "missing validator must not plan runtime Cargo"
+        )
+        assert (
+            runtime_wasm_validation._require_runtime_wasm_validator(
+                runtime_state, project_root=tmp_path
+            )
+            is admitted_validator_for_backend_controls
+        )
+        return record_runtime_wasm_failure(
+            runtime_state,
+            project_root=tmp_path,
+            stage=stage,
+            summary=reason,
+        )
+
+    monkeypatch.setattr(cli_backend_compile, "_ensure_runtime_wasm_both", refuse)
+    prepared, error = _build_backend_setup(TargetKind.WASM, tmp_path, "cranelift")
+    assert prepared is None and error == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errors"] == [reason]
+    failure = payload["data"]["runtime_wasm_failure"]
+    assert (failure["stage"], failure["summary"]) == (stage, reason)
+    assert failure["evidence_path"] is not None
+    assert asked == ["wasm-tools"]
 
 
 def _fake_backend_toolchain(

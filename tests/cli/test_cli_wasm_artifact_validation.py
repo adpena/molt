@@ -50,10 +50,24 @@ RUNTIME_WASM_BUILD_SUPPORT = importlib.import_module(
     "molt.cli.runtime_wasm_build_support"
 )
 RUNTIME_WASM_FAILURE = importlib.import_module("molt.cli.runtime_wasm_failure")
+RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 WASM_LINK_ARGS = importlib.import_module("molt.cli.wasm_link_args")
 
 _TEST_RUNTIME_FINGERPRINT_HASH = "ab" * 32
+
+
+@pytest.fixture(autouse=True)
+def admitted_validator_for_artifact_controls(monkeypatch, tmp_path):
+    from tests.runtime_build_identity_helper import wasm_validator_discovery
+
+    # Tool installation is outside these artifact/custody controls. Dedicated
+    # readiness controls below replace this boundary with the actual refusal.
+    discovery = wasm_validator_discovery(tmp_path)
+    monkeypatch.setattr(
+        RUNTIME_WASM_VALIDATION, "require_pinned_tool", lambda _name: discovery
+    )
+    return discovery
 
 
 def _valid_wasm_bytes(label: bytes = b"") -> bytes:
@@ -875,7 +889,14 @@ def test_reloc_runtime_publication_preserves_linker_metadata_bytes(
 
 
 @pytest.mark.parametrize(
-    "mode", ["invalid-artifact", "cargo-failure", "missing-target", "timeout"]
+    "mode",
+    [
+        "invalid-artifact",
+        "structural-rejection",
+        "cargo-failure",
+        "missing-target",
+        "timeout",
+    ],
 )
 def test_combined_build_failure_has_no_publication_and_exact_signal(
     validation_specs,
@@ -909,7 +930,9 @@ def test_combined_build_failure_has_no_publication_and_exact_signal(
         runtime = target / "wasm32-wasip1" / shared.profile_dir / "molt_runtime.wasm"
         staticlib = runtime.with_name("libmolt_runtime.a")
         runtime.parent.mkdir(parents=True, exist_ok=True)
-        runtime.write_bytes(b"\x00" * 64)
+        runtime.write_bytes(
+            _valid_wasm_bytes() if mode == "structural-rejection" else b"\x00" * 64
+        )
         staticlib.write_bytes(b"!<arch>\n")
         stdout = json.dumps(
             {
@@ -929,6 +952,12 @@ def test_combined_build_failure_has_no_publication_and_exact_signal(
         ), runtime
 
     monkeypatch.setattr(RUNTIME_WASM_PAIR, "_run_runtime_wasm_cargo_build", build)
+    if mode == "structural-rejection":
+        monkeypatch.setattr(
+            RUNTIME_WASM_VALIDATION,
+            "_validate_wasm_structural",
+            lambda _path: "wasm-tools validate failed: type mismatch in function 7",
+        )
     assert not RUNTIME_WASM_PAIR._prepopulate_combined_runtime_wasm_target(
         runtime_state=state,
         shared_spec=shared,
@@ -949,11 +978,17 @@ def test_combined_build_failure_has_no_publication_and_exact_signal(
             "cargo-failure": "combined-cargo",
             "timeout": "combined-cargo",
             "invalid-artifact": "combined-cdylib-validation",
+            "structural-rejection": "combined-cdylib-validation",
         }[mode]
     )
     assert failure.evidence_path is not None
     evidence = json.loads(failure.evidence_path.read_text(encoding="utf-8"))
     assert evidence["stage"] == failure.stage
+    if mode == "invalid-artifact":
+        assert "artifact is invalid" in failure.summary
+    if mode == "structural-rejection":
+        assert "type mismatch in function 7" in failure.summary
+        assert "type mismatch in function 7" in evidence["summary"]
     if mode == "cargo-failure":
         assert "wasi sysroot authority" in evidence["stderr"]
         assert evidence["returncode"] == 101
@@ -963,6 +998,149 @@ def test_combined_build_failure_has_no_publication_and_exact_signal(
         assert evidence["stdout"] == "partial stdout"
         assert evidence["stderr"] == "partial stderr"
     assert not (root / "molt_runtime.wasm").exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["pair", "combined", "manual"])
+def test_missing_validator_is_a_prerequisite_not_a_cache_miss(
+    validation_specs, monkeypatch, capsys, entrypoint
+):
+    from molt.tool_releases import ToolReleaseError
+
+    root, _target, _state_root, shared, reloc = validation_specs()
+    state = _RuntimeArtifactState()
+    reason = "wasm-tools is required from attested custody; provision wasm-tools"
+    asked = []
+
+    def unavailable(name):
+        asked.append(name)
+        raise ToolReleaseError(reason)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("validator refusal must precede cache, source planning and Cargo")
+
+    monkeypatch.setattr(RUNTIME_WASM_VALIDATION, "require_pinned_tool", unavailable)
+    for name in (
+        "_prepare_runtime_wasm_pair_build",
+        "_current_runtime_target_artifact",
+        "_run_runtime_wasm_cargo_build",
+        "select_installed_wasm_runtime",
+    ):
+        monkeypatch.setattr(RUNTIME_WASM_PAIR, name, forbidden)
+    if entrypoint == "combined":
+        assert (
+            RUNTIME_WASM_PAIR._prepopulate_combined_runtime_wasm_target(
+                runtime_state=state,
+                shared_spec=shared,
+                reloc_spec=reloc,
+                json_output=True,
+                cargo_timeout=5.0,
+                project_root=root,
+                simd_enabled=True,
+                freestanding=False,
+            )
+            is None
+        )
+    elif entrypoint == "pair":
+        assert not RUNTIME_WASM_PAIR._ensure_runtime_wasm_both(
+            state,
+            json_output=True,
+            cargo_profile="dev-fast",
+            cargo_timeout=5.0,
+            project_root=root,
+            simd_enabled=True,
+            freestanding=False,
+        )
+    else:
+        assert (
+            RUNTIME_BUILD._prebuild_runtime_wasm(
+                project_root=root,
+                kind="both",
+                json_output=True,
+                build_profile="dev",
+                cargo_timeout=5.0,
+            )
+            == 1
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["failure"]["stage"] == "validator-readiness"
+        assert payload["failure"]["summary"] == reason
+    assert asked == ["wasm-tools"]
+    if entrypoint != "manual":
+        assert state.runtime_wasm_build_failure is not None
+        assert state.runtime_wasm_build_failure.stage == "validator-readiness"
+        assert state.runtime_wasm_build_failure.summary == reason
+
+
+@pytest.mark.parametrize("entrypoint", ["pair", "combined"])
+def test_validator_discovery_is_request_owned_and_execution_still_reattests(
+    validation_specs, monkeypatch, entrypoint, admitted_validator_for_artifact_controls
+):
+    from molt.tool_releases import ToolReleaseError
+
+    root, _target, _state_root, shared, reloc = validation_specs()
+    state = _RuntimeArtifactState()
+    discovery = admitted_validator_for_artifact_controls
+    asked = []
+
+    def require(name):
+        asked.append(name)
+        assert name == "wasm-tools"
+        return discovery
+
+    monkeypatch.setattr(RUNTIME_WASM_VALIDATION, "require_pinned_tool", require)
+    assert (
+        RUNTIME_WASM_VALIDATION._require_runtime_wasm_validator(
+            state, project_root=root
+        )
+        is discovery
+    )
+    if entrypoint == "pair":
+        monkeypatch.setattr(
+            RUNTIME_WASM_PAIR,
+            "_prepare_runtime_wasm_pair_build",
+            lambda *_args, **_kwargs: None,
+        )
+        assert not RUNTIME_WASM_PAIR._ensure_runtime_wasm_both(
+            state,
+            json_output=True,
+            cargo_profile="dev-fast",
+            cargo_timeout=5.0,
+            project_root=root,
+            simd_enabled=True,
+            freestanding=False,
+        )
+    else:
+        assert (
+            RUNTIME_WASM_PAIR._prepopulate_combined_runtime_wasm_target(
+                runtime_state=state,
+                shared_spec=shared._replace(fingerprint=None),
+                reloc_spec=reloc,
+                json_output=True,
+                cargo_timeout=5.0,
+                project_root=root,
+                simd_enabled=True,
+                freestanding=False,
+            )
+            is None
+        )
+        assert state.runtime_wasm_build_failure.stage == "combined-build-spec"
+    assert state.runtime_wasm_validator is discovery
+    assert asked == ["wasm-tools"]
+
+    def changed(*_args, **_kwargs):
+        raise ToolReleaseError("validator changed after prerequisite discovery")
+
+    monkeypatch.setattr(RUNTIME_WASM_VALIDATION, "run_pinned_tool", changed)
+    assert "validator changed after prerequisite discovery" in (
+        RUNTIME_WASM_VALIDATION._validate_wasm_structural(root / "actual.wasm")
+    )
+    assert (
+        RUNTIME_WASM_VALIDATION._require_runtime_wasm_validator(
+            _RuntimeArtifactState(), project_root=root
+        )
+        is discovery
+    )
+    assert asked == ["wasm-tools", "wasm-tools"]
 
 
 @pytest.mark.parametrize("mismatch", ["feature-shape", "shared-import-abi"])

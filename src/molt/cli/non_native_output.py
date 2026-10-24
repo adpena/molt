@@ -1052,10 +1052,16 @@ def _prepare_non_native_build_result_in_generation(
             if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
                 required_runtime_exports
             ):
+                failure = runtime_state.runtime_wasm_build_failure
                 return None, _fail(
-                    "Atomic runtime WASM pair build failed",
+                    "Atomic runtime WASM pair build failed"
+                    if failure is None
+                    else failure.summary,
                     json_output,
                     command="build",
+                    data=None
+                    if failure is None
+                    else {"runtime_wasm_failure": failure.json_payload()},
                 )
             runtime_wasm = runtime_state.runtime_wasm_selected
             runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected

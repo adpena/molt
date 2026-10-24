@@ -31,6 +31,7 @@ from molt.cli.runtime_identity_schema import (
     runtime_publication_executor_paths,
 )
 from molt.exact_json import canonical_json_sha256
+from molt.tool_releases import ToolDiscovery, tool_release
 from molt.rust_toolchain import cargo_configuration_paths, rust_flag_spans
 from molt.cli.cargo_resource_custody import (
     CargoExecutableCustody,
@@ -56,6 +57,23 @@ from tests.executable_test_support import native_executable_donor
 
 
 RUNTIME_FIXTURE_INPUT = "MOLT_TEST_RUNTIME_INPUT"
+
+
+def wasm_validator_discovery(root: Path) -> ToolDiscovery:
+    """An explicit admitted prerequisite for controls that do not execute tools."""
+    release = tool_release("wasm-tools")
+    prefix = root / "fixture-validator"
+    executable = prefix / "wasm-tools"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    payload = b"validator fixture; not an executable tool"
+    executable.write_bytes(payload)
+    return ToolDiscovery(
+        release=release,
+        prefix=prefix,
+        executable=executable,
+        executable_sha256=hashlib.sha256(payload).hexdigest(),
+        asset=next(iter(release.assets.values())),
+    )
 
 
 def runtime_cargo_environment_inputs(environment=None) -> CargoEnvironmentInputs:

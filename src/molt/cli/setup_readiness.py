@@ -964,7 +964,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         backends = {
             "native": bool(cc_path) and available["native"],
             "llvm": bool(cc_path) and available["llvm"],
-            "wasm": available["wasm"],
+            "wasm": available["wasm"] and bool(wasm_tools_path),
             "linked-wasm": available["wasm"] and bool(wasm_ld_ok and wasm_tools_path),
             "luau": bool(luau_runner_path),
         }
@@ -979,7 +979,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         backends = {
             "native": bool(cargo_path and cc_path and cmake_path and ninja_path),
             "llvm": bool(cargo_path and cc_path and llvm_toolchain),
-            "wasm": bool(cargo_path and wasm_target_ok),
+            "wasm": bool(cargo_path and wasm_target_ok and wasm_tools_path),
             "linked-wasm": bool(
                 cargo_path and wasm_target_ok and wasm_ld_ok and wasm_tools_path
             ),

@@ -380,8 +380,17 @@ def test_installed_native_build_never_plans_cargo(bundle, tmp_path, monkeypatch)
     assert state.native_runtime_build_identity is None
 
 
-def test_installed_wasm_build_never_plans_cargo(bundle, monkeypatch):
+def test_installed_wasm_build_never_plans_cargo(bundle, monkeypatch, tmp_path):
+    from molt.cli import runtime_wasm_validation
+    from tests.runtime_build_identity_helper import wasm_validator_discovery
+
     _forbid_cargo(monkeypatch)
+    # This fixture owns installed-cell selection; validator provisioning has its
+    # own refusal controls, and must not depend on the developer's tool custody.
+    discovery = wasm_validator_discovery(tmp_path)
+    monkeypatch.setattr(
+        runtime_wasm_validation, "require_pinned_tool", lambda *_a, **_k: discovery
+    )
     state = _RuntimeArtifactState()
     assert not runtime_wasm_pair_build._ensure_runtime_wasm_both(
         state,
