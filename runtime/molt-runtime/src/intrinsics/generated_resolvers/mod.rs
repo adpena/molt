@@ -451,493 +451,996 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
 // One sentinel per declared-gated symbol. A build outside a symbol's
 // declared cfg resolves its probe here; a definition that is still
 // present makes the name ambiguous and fails to compile (HF-487).
-#[allow(dead_code, non_upper_case_globals)]
+#[cfg(any(
+    not(all(feature = "sqlite", not(target_arch = "wasm32"))),
+    not(all(feature = "stdlib_net", not(target_os = "windows"))),
+    not(feature = "molt_gpu_primitives"),
+    not(feature = "stdlib_archive"),
+    not(feature = "stdlib_ast"),
+    not(feature = "stdlib_asyncio"),
+    not(feature = "stdlib_compression"),
+    not(feature = "stdlib_dbm"),
+    not(feature = "stdlib_fs_extra"),
+    not(feature = "stdlib_http"),
+    not(feature = "stdlib_logging_ext"),
+    not(feature = "stdlib_regex"),
+    not(feature = "stdlib_select"),
+    not(feature = "stdlib_serialization"),
+    not(feature = "stdlib_text"),
+    not(feature = "stdlib_unicode_names"),
+    not(feature = "stdlib_zoneinfo"),
+    not(target_os = "windows")
+))]
+#[allow(non_upper_case_globals)]
 mod declared_absent {
     pub(super) struct DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_ast"))]
     pub(super) const molt_ast_get_docstring: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_ast"))]
     pub(super) const molt_ast_iter_child_nodes: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_ast"))]
     pub(super) const molt_ast_iter_fields: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_ast"))]
     pub(super) const molt_ast_parse: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_ast"))]
     pub(super) const molt_ast_walk: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_event_clear: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_event_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_event_is_set: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_event_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_event_set_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_fd_watcher_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_fd_watcher_register: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_fd_watcher_unregister: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_cancel_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_cancelled: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_done: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_exception: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_result: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_set_exception_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_future_set_result_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_lock_acquire_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_lock_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_lock_locked: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_lock_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_lock_release_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_empty: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_full: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_get_nowait: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_is_shutdown: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_maxsize: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_put_nowait: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_qsize: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_shutdown: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_task_done: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_queue_unfinished_tasks: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_semaphore_acquire_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_semaphore_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_semaphore_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_semaphore_release_fast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_asyncio"))]
     pub(super) const molt_asyncio_semaphore_value: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_server_accept_loop_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_accept_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_connect_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_recv_into_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_recv_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_recvfrom_into_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_recvfrom_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_sendall_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_sock_sendto_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_socket_reader_read_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_socket_reader_readline_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_stream_reader_read_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_stream_reader_readline_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_stream_send_all_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_tls_client_connect_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_tls_client_from_fd_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_tls_server_from_fd_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_asyncio_tls_server_payload: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_compress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_compressor_compress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_compressor_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_compressor_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_decompress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_decompressor_decompress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_decompressor_eof: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_decompressor_needs_input: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_decompressor_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_decompressor_unused_data: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_file_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_file_open: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_file_read: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_bz2_file_write: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_serialization"))]
     pub(super) const molt_cbor_parse_scalar_obj: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_compression_streams_buffer_size: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_ctypes_coerce_value: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_ctypes_default_value: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_ctypes_require_ffi: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_ctypes_sizeof: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_contains: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_delitem: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_getitem: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_keys: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_open: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_setitem: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_dbm"))]
     pub(super) const molt_dbm_dumb_sync: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_deflate_raw: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_barrier: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_block_dim: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_block_id: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_broadcast_binary_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_buffer_to_list: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_grid_dim: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_interop_decode_bf16_bytes_to_f32: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_interop_decode_f16_bytes_to_f32: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_kernel_launch_python: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_linear_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_linear_split_last_dim_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_linear_squared_relu_gate_interleaved_contiguous: DeclaredAbsent =
         DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_matmul_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_permute_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_binary: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_cast: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_create_tensor: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_create_tensor_raw: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_device: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_dtype: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_expand: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_flip: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_free: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_nbytes: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_numel: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_pad: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_permute: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_read_data_raw: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_realize: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_reduce: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_reduce_all: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_reshape: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_shape: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_shrink: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_ternary: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_unary: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_zeros: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_prim_zeros_dtype: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_repeat_axis_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_rms_norm_last_axis_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_rope_apply_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_softmax_last_axis_contiguous: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_squared_relu_gate_interleaved_contiguous: DeclaredAbsent =
         DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor__tensor_concat_first_dim: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor__tensor_linear_split_last_dim: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor__tensor_scaled_dot_product_attention: DeclaredAbsent =
         DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor__tensor_scatter_rows: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor__tensor_take_rows: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor__zeros: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor_from_buffer: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_tensor_from_parts: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_thread_id: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "molt_gpu_primitives"))]
     pub(super) const molt_gpu_turboquant_attention_packed: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_gzip_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_gzip_open: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_gzip_read: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_entities_codepoint2name: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_entities_html5: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_entities_name2codepoint: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_escape: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_parser_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_parser_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_parser_feed: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_parser_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_html_unescape: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_connection_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_connection_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_connection_getresponse: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_connection_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_connection_new_https: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_connection_putrequest: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_connection_send: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_getheader: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_getheaders: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_getreason: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_getstatus: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_message: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_response_read: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_urlsplit: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_validate_header_name: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_client_validate_header_value: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_cookiejar_clear: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_cookiejar_extract: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_cookiejar_header_for_url: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_cookiejar_len: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_cookiejar_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_cookies_parse: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_cookies_render_morsel: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_contains: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_get: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_get_all: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_items: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_len: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_parse: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_message_set_raw: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_parse_header_pairs: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_date_time_string: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_end_headers: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_handle_one_request: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_send_error: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_send_header: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_send_response: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_send_response_only: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_server_version_string: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_status_constants: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_status_reason: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_http_status_responses: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_archive"))]
     pub(super) const molt_imghdr_test: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_archive"))]
     pub(super) const molt_imghdr_what: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_inflate_raw: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_io_wait: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_io_wait_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(target_os = "windows"))]
     pub(super) const molt_locale_getdefaultlocale: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_add_level_name: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_get_level_name: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_handler_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_handler_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_handler_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_handler_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_handler_set_level: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_level_to_int: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_logger_add_handler: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_logger_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_logger_get_effective_level: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_logger_is_enabled_for: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_logger_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_logger_remove_handler: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_logger_set_level: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_logging_ext"))]
     pub(super) const molt_logging_shutdown: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_check_crc32: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_check_crc64: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_check_none: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_check_sha256: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_compress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_compressor_compress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_compressor_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_compressor_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_decompress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_decompressor_decompress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_decompressor_eof: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_decompressor_needs_input: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_decompressor_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_decompressor_unused_data: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_file_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_file_open: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_file_read: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_file_write: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_format_alone: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_format_auto: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_format_raw: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_format_xz: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_preset_default: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_lzma_preset_extreme: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_serialization"))]
     pub(super) const molt_msgpack_parse_scalar_obj: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_compile: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_escape: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_execute: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_expand_replacement: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_finditer_next: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_group_values: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_pattern_info: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_scanner_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_split: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_sub: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_subject_snapshot: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_regex"))]
     pub(super) const molt_re_subject_view: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_backend_available: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_constants: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_default_selector_kind: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_devpoll: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_epoll: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_fileno: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_poll: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_select: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_events: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_fileno: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_len: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_modify: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_modify_obj: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_poll: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_register: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_register_fd: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_unregister: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_select"))]
     pub(super) const molt_select_selector_unregister_obj: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_accept: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_bind: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_clone: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_connect: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_connect_ex: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_detach: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_fileno: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getaddrinfo: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getblocking: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getfqdn: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_gethostbyaddr: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_gethostbyname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_gethostbyname_ex: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_gethostname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getnameinfo: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getpeername: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getprotobyname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getservbyname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getservbyport: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getsockname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_getsockopt: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_gettimeout: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_has_dualstack_ipv6: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_has_ipv6: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_if_indextoname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_if_nameindex: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_if_nametoindex: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_listen: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_reader_at_eof: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_reader_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_reader_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_reader_read: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_reader_readline: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_reader_readline_limit: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_recv: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_recv_fds: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_recv_into: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_recvfrom: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_recvfrom_into: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_recvmsg: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_recvmsg_into: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_send: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_send_fds: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_sendall: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_sendfile: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_sendmsg: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_sendmsg_afalg: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_sendto: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_sethostname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_setsockopt: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_settimeout: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socket_shutdown: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_socketpair: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_dispatch_begin: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_dispatch_cancel: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_dispatch_poll: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_get_request_poll: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_handle_request: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_register: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_serve_forever: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_shutdown: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_socketserver_unregister: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_arraysize_set: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_commit: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_complete_statement: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_connect: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_cursor: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_cursor_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_cursor_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_description: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_execute: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_executemany: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_executescript: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_fetchall: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_fetchmany: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_fetchone: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_in_transaction: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_lastrowid: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_library_version: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_rollback: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_rowcount: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "sqlite", not(target_arch = "wasm32"))))]
     pub(super) const molt_sqlite3_total_changes: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_socket_cipher: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_socket_do_handshake: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_socket_getpeercert: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_socket_read: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_socket_unwrap: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_socket_version: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_socket_write: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ssl_wrap_socket: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_add: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_extract: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_extractall: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_extractfile: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_getmembers: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_getnames: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_is_tarfile: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_tarfile_open: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_fs_extra"))]
     pub(super) const molt_tempfile_cleanup: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_fs_extra"))]
     pub(super) const molt_tempfile_gettempdir: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_fs_extra"))]
     pub(super) const molt_tempfile_mkdtemp: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_fs_extra"))]
     pub(super) const molt_tempfile_mkstemp: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_bidirectional: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_category: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_combining: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_decimal: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_decomposition: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_digit: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_east_asian_width: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_is_normalized: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_unicode_names"))]
     pub(super) const molt_unicodedata_lookup: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_mirrored: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_unicode_names"))]
     pub(super) const molt_unicodedata_name: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_normalize: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_numeric: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_text"))]
     pub(super) const molt_unicodedata_unidata_version: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_error_content_too_short_init: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_error_httperror_init: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_error_httperror_str: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_error_urlerror_init: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_error_urlerror_str: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_parse_qs: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_parse_qsl: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_quote: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_quote_plus: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_add_handler: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_open: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_opener_init: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_process_http_error: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_request_init: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_close: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_getcode: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_getheader: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_getheaders_list: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_getreason: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_geturl: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_message: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_read: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_read1: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_readable: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_readinto: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_readinto1: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_readline: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_readlines: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_seek: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_seekable: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_tell: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_request_response_writable: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_unquote: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_unquote_plus: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_urldefrag: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_urlencode: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_urljoin: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_urlparse: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_urlsplit: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_urlunparse: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_http"))]
     pub(super) const molt_urllib_urlunsplit: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ws_connect_obj: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
     pub(super) const molt_ws_wait_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_adler32: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_compress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_compressobj_compress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_compressobj_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_compressobj_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_crc32: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_decompress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_decompressobj_decompress: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_decompressobj_eof: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_decompressobj_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_decompressobj_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_decompressobj_unconsumed_tail: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_decompressobj_unused_data: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_def_buf_size: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_def_mem_level: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_max_wbits: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_best_compression: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_best_speed: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_default_compression: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_default_strategy: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_filtered: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_finish: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_full_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_huffman_only: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_no_compression: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_no_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_compression"))]
     pub(super) const molt_zlib_z_sync_flush: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_zoneinfo"))]
     pub(super) const molt_zoneinfo_available_timezones: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_zoneinfo"))]
     pub(super) const molt_zoneinfo_drop: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_zoneinfo"))]
     pub(super) const molt_zoneinfo_dst: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_zoneinfo"))]
     pub(super) const molt_zoneinfo_key: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_zoneinfo"))]
     pub(super) const molt_zoneinfo_new: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_zoneinfo"))]
     pub(super) const molt_zoneinfo_tzname: DeclaredAbsent = DeclaredAbsent;
+    #[cfg(not(feature = "stdlib_zoneinfo"))]
     pub(super) const molt_zoneinfo_utcoffset: DeclaredAbsent = DeclaredAbsent;
 }

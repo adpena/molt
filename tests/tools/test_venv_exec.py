@@ -176,7 +176,8 @@ def test_resolve_command_leaves_non_python_command_intact(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("status", [0, 7])
-def test_wrapped_command_exit_status_propagates(status: int) -> None:
+@pytest.mark.parametrize("borrow", ["argument", "environment"])
+def test_wrapped_command_exit_status_propagates(status: int, borrow: str) -> None:
     # On Windows os.exec* exits the caller with 0 at once; the wrapper must
     # still report the wrapped gate's own status on every platform.
     # --venv borrows the runner's environment, so both interpreter starts
@@ -186,9 +187,10 @@ def test_wrapped_command_exit_status_propagates(status: int) -> None:
         [
             sys.executable,
             *startup,
+            "-I",
+            "-S",
             str(ROOT / "tools" / "venv_exec.py"),
-            "--venv",
-            sys.prefix,
+            *(["--venv", sys.prefix] if borrow == "argument" else []),
             "python",
             *startup,
             "-I",
@@ -200,6 +202,12 @@ def test_wrapped_command_exit_status_propagates(status: int) -> None:
             str(status),
         ],
         cwd=ROOT,
+        env=ProcessEnvironment(os.environ).updated(
+            {
+                "MOLT_VENV": sys.prefix,
+                "UV_PROJECT_ENVIRONMENT": str(ROOT / "not-a-managed-image"),
+            }
+        ),
         timeout=120,
     )
     assert result.returncode == status, result.stderr

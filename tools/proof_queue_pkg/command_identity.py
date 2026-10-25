@@ -38,6 +38,7 @@ from molt.python_environment_identity import (
     validate_python_capture,
     validate_python_environment_location,
 )
+from molt.source_build_environment_schema import DevelopmentEnvironmentAdmission
 from molt.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
 from molt.python_environment_location import (
     SOURCE_BUILD_ENVIRONMENT_MANIFEST,
@@ -473,7 +474,10 @@ def _exact_command(
         selected_venv = env.get("VIRTUAL_ENV")
         if not selected_venv:
             raise ValueError("modeled venv wrapper has no bound environment")
-        argv = venv_exec.resolve_command(argv, venv=Path(selected_venv))
+        managed = not (wrapper.get("venv") or env.get("MOLT_VENV"))
+        argv = venv_exec.resolve_command(
+            argv, venv=Path(selected_venv), managed=managed
+        )
     python = envelope.get("python")
     if isinstance(python, Mapping) and python.get("kind") in {
         "uv",
@@ -634,12 +638,37 @@ def _python_auxiliary_command(
     raise ValueError(f"unknown proof Python envelope kind {kind!r}")
 
 
+def _development_admission(
+    envelope: Mapping[str, object],
+    env: Mapping[str, str],
+    *,
+    source_root: Path,
+) -> DevelopmentEnvironmentAdmission | None:
+    """Recover managed wrapper intent without importing semantic dependencies."""
+    from molt.dx import DxProject
+
+    wrapper = envelope.get("wrapper")
+    if not isinstance(wrapper, Mapping):
+        return None
+    kind = wrapper.get("kind")
+    if kind == "venv" and (wrapper.get("venv") or env.get("MOLT_VENV")):
+        return None
+    if kind not in {"venv", "uv-project"}:
+        return None
+    return DevelopmentEnvironmentAdmission(
+        source_root,
+        str(wrapper["python"]) if kind == "uv-project" else None,
+        DxProject(source_root).dependency_groups(),
+    )
+
+
 def _python_probe_command(
     executable: Path,
     *,
     verifier_bytecode_prefix: Path,
     source_root: Path,
     admit_published_environment: bool,
+    development_admission: DevelopmentEnvironmentAdmission | None = None,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
 ) -> list[str]:
@@ -658,7 +687,9 @@ def _python_probe_command(
                 str(hash_workers),
                 "--admit-virtualenv-bootstrap",
                 *(
-                    ("--admit-published-environment",)
+                    development_admission.probe_arguments()
+                    if development_admission is not None
+                    else ("--admit-published-environment",)
                     if admit_published_environment
                     else ()
                 ),
@@ -805,6 +836,9 @@ def _python_identity(
             verifier_bytecode_prefix=verifier_prefix,
             source_root=source_root,
             admit_published_environment=published_admission,
+            development_admission=_development_admission(
+                envelope, env, source_root=source_root
+            ),
             external_roots=[
                 Path(value) for value in cast(list[str], selected_external_roots)
             ],

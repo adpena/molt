@@ -5,13 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
-from packaging.markers import default_environment
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
 
-from molt.source_build_requirements import realized_build_requirement
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_environment_custody import validate_python_environment_identity
@@ -71,6 +69,28 @@ class _SourceBuildCustody(_SourceBuildAddress):
 
 
 @dataclass(frozen=True)
+class DevelopmentEnvironmentAdmission:
+    """Operation intent carried into the existing selected-image capture."""
+
+    repo_root: Path
+    python: str | None
+    groups: tuple[str, ...]
+
+    def probe_arguments(self) -> tuple[str, ...]:
+        return (
+            "--admit-published-environment",
+            "--development-checkout",
+            str(self.repo_root),
+            *(() if self.python is None else ("--development-python", self.python)),
+            *(
+                value
+                for group in self.groups
+                for value in ("--development-group", group)
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class LockedSourceBuildEnvironment:
     root: Path
     python_executable: Path
@@ -89,6 +109,8 @@ class LockedSourceBuildEnvironment:
 def canonical_source_marker_environment(
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
+    from packaging.markers import default_environment
+
     source = default_environment() if environment is None else environment
     missing = [
         field for field in PYTHON_MARKER_ENVIRONMENT_FIELDS if field not in source
@@ -137,6 +159,8 @@ def _marker_environment_matches_runtime(
 def active_source_build_requirements(
     requirements: Sequence[str], marker_environment: Mapping[str, str]
 ) -> tuple[tuple[str, Requirement], ...]:
+    from packaging.requirements import InvalidRequirement, Requirement
+
     environment = canonical_source_marker_environment(marker_environment)
     active: list[tuple[str, Requirement]] = []
     for raw in requirements:
@@ -159,6 +183,10 @@ def active_source_build_requirements(
 
 
 def source_build_environment_problems(payload: object) -> list[str]:
+    from packaging.utils import canonicalize_name
+
+    from molt.source_build_requirements import realized_build_requirement
+
     expected_fields = {
         "python",
         "requirements",

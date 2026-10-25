@@ -252,22 +252,59 @@ def test_rust_target_is_only_read_from_rust_tool_argv(tmp_path) -> None:
     )
 
 
+def _native_sdk_projection_fixture(tmp_path, monkeypatch, *, llvm_config=None):
+    from molt import llvm_toolchain
+    from tests.test_llvm_toolchain import _native_link_selection_fixture
+
+    # Reuse the owning link-selector fixture's captured driver bytes and real
+    # archive/library paths. Only the compiler's external search query is mocked;
+    # native link selection, image-generation checks and serialization stay real.
+    _selector, selected, system, _capability = _native_link_selection_fixture(
+        tmp_path, monkeypatch
+    )
+    (system / "libstdc++.a").write_bytes(b"selected C++ ABI archive")
+    pin = llvm_toolchain.required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    config = selected.llvm_config if llvm_config is None else llvm_config
+    if llvm_config is not None:
+        config.parent.mkdir(parents=True)
+        config.write_bytes(b"external split-layout configuration")
+    return llvm_toolchain.LlvmPrefixVerification(
+        prefix=selected.prefix,
+        llvm_config=config,
+        version=pin.default_release,
+        host_target=selected.host_target,
+        targets=("AArch64", "WebAssembly"),
+        assets=(),
+        tool_versions=tuple(
+            replace(fact, version=pin.default_release)
+            for fact in selected.tool_versions
+        ),
+        library_facts=(),
+        content_facts=(),
+        content_digest=None,
+        link_closure=selected.link_closure,
+        link_probe=(),
+        release=None,
+    )
+
+
 def test_llvm_family_lanes_project_the_complete_declared_sdk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt import llvm_toolchain
     from tools.proof_queue_pkg import guarded_execution as ge
 
-    prefix = tmp_path / "llvm SDK"
     config = tmp_path / "external config/bin/llvm-config"
+    verification = _native_sdk_projection_fixture(
+        tmp_path / "llvm SDK", monkeypatch, llvm_config=config
+    )
+    prefix = verification.prefix
     ambient = os.pathsep.join(
         [str(tmp_path / "system-llvm/bin"), str(tmp_path / "other")]
     )
     pin = llvm_toolchain.required_llvm_backend_pin(ge.state.ROOT)
     assert pin is not None
-    verification = SimpleNamespace(
-        prefix=prefix, llvm_config=config, version=pin.default_release
-    )
     observed = []
 
     def verify(root, *, environ, cwd):
@@ -302,11 +339,27 @@ def test_llvm_family_lanes_project_the_complete_declared_sdk(
     assert actual[pin.env_var] == str(config.parent.parent)
     assert actual[llvm_toolchain.mlir_sys_prefix_env_var(pin.major)] == str(prefix)
     assert actual[llvm_toolchain.tablegen_prefix_env_var(pin.major)] == str(prefix)
+    import json
+
+    link = json.loads(actual[llvm_toolchain.LLVM_NATIVE_LINK_PLAN_ENV])
+    assert link["llvm_config"] == str(config)
+    assert link["driver"] == str(prefix / "bin/clang++")
+    assert [(row["name"], row["source"]) for row in link["libraries"]] == [
+        ("LLVMCore", "sdk"),
+        ("compression", "system"),
+        ("m", "system"),
+        ("stdc++", "system"),
+    ]
     assert selected == {"PATH": ambient}
     assert ge.project_declared_sdk_environment(
         selected, ["python", "uv"], cwd=tmp_path
     ) == ProcessEnvironment(selected, rule=NameRule.host())
     assert len(observed) == 1
+
+    driver = prefix / "bin/clang++"
+    driver.write_bytes(b"changed after SDK verification")
+    with pytest.raises(llvm_toolchain.LlvmToolchainConfigError, match="driver changed"):
+        ge.project_declared_sdk_environment(selected, ["clang"], cwd=tmp_path)
 
     monkeypatch.setattr(
         llvm_toolchain,
@@ -331,7 +384,8 @@ def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
     installation = llvm_toolchain.load_wasi_sdk_installation(
         ge.state.ROOT, sdk_prefix, verify_tree=False
     )
-    native = tmp_path / "llvm-native"
+    verification = _native_sdk_projection_fixture(tmp_path / "llvm-native", monkeypatch)
+    native = verification.prefix
     ambient = str(tmp_path / "ambient")
     selected = {"PATH": ambient, "WASI_SDK_PATH": str(installation.sdk)}
     pin = llvm_toolchain.required_llvm_backend_pin(ge.state.ROOT)
@@ -344,11 +398,7 @@ def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
         assert root == ge.state.ROOT
         assert environ == {**selected, "MOLT_WASM_LD": str(installation.wasm_ld)}
         observed.append("native")
-        return SimpleNamespace(
-            prefix=native,
-            llvm_config=native / "bin/llvm-config",
-            version=pin.default_release,
-        )
+        return verification
 
     monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", native_sdk)
     if llvm_toolchain.sys.platform == "darwin":
@@ -797,41 +847,79 @@ def test_witness_refuses_environment_redirection_before_setup(
 def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
     tmp_path: Path,
 ) -> None:
-    import hashlib
+    import sys
     from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
-    from tools.proof_queue_pkg import execution_custody
+    from molt.python_environment_location import environment_bytecode_arguments
+    from tools.proof_queue_pkg import execution_custody, process_image_capture
 
     captured = tmp_path / "captured" / "python.exe"
     copied = tmp_path / "uncaptured" / "python.exe"
     for path in (captured, copied):
         path.parent.mkdir()
-        path.write_bytes(b"same-image")
+        # A real interpreter image also supports Windows resource inspection;
+        # neither copied image is executed by this decision-boundary control.
+        shutil.copyfile(
+            Path(getattr(sys, "_base_executable", sys.executable)).resolve(), path
+        )
+        path.chmod(0o755)
+    assert captured.read_bytes() == copied.read_bytes()
     (copied.parent / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
         "{}", encoding="utf-8"
     )
     # The decision primitive needs no listener or running process.
     server = object.__new__(execution_custody.ChildCustodyEventServer)
-    server.policy = {
-        "descendants": "declared-toolchains",
-        "allowed": [
-            {
-                "toolchain": "python",
-                "path": custody_spelling(captured),
-                "sha256": hashlib.sha256(b"same-image").hexdigest(),
+    image = process_image_capture.capture_image("selected-interpreter", captured)
+    server.policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {
+            "python": {
+                "location": {"prefix": str(captured.parent)},
+                "process_images": [image],
             }
-        ],
+        },
+        environment_executables={},
+    )
+    (grant,) = server.policy["allowed"]
+    assert grant["path"] == custody_spelling(captured)
+    assert grant["python_launch"] == "interpreter"
+    assert grant["python_bytecode"] == {
+        "environment_root": str(captured.parent),
+        "pycache_prefix": str(captured.parent / "bytecode"),
     }
-    # The Node hook launches the broker's selection, so an absolute selection
-    # is the image on every host.
-    admitted = server._decide_child({"requested": str(captured)}, "node")
-    assert admitted["admitted"] is True
-    rejected = server._decide_child({"requested": str(copied)}, "node")
+
+    def intent(path):
+        return {
+            "requested": str(path),
+            "argv": [
+                str(path),
+                *environment_bytecode_arguments(captured.parent),
+                "-I",
+                "-c",
+                "pass",
+            ],
+            "python_environment": {
+                "PYTHONPYCACHEPREFIX": None,
+                "PYTHONDONTWRITEBYTECODE": None,
+            },
+            "windows_verbatim_arguments": False,
+        }
+
+    # Node launches the broker's exact selection on every host. A published-
+    # looking sibling with identical bytes still has no captured path grant.
+    admitted = server._decide_child(intent(captured), "node")
+    assert admitted["admitted"] is True, admitted
+    rejected = server._decide_child(intent(copied), "node")
     assert rejected["admitted"] is False
     assert rejected["reason"] == "outside-declared-toolchain-closure"
+    unsafe = intent(captured)
+    unsafe["argv"] = [str(captured), "-I", "-c", "pass"]
+    refused_startup = server._decide_child(unsafe, "node")
+    assert refused_startup["admitted"] is False
+    assert refused_startup["reason"].startswith("python-bytecode-custody:")
     captured.write_bytes(b"changed-image")
-    changed = server._decide_child({"requested": str(captured)}, "node")
+    changed = server._decide_child(intent(captured), "node")
     assert changed["admitted"] is False
 
 

@@ -207,6 +207,7 @@ pub(crate) const PROBE_FLAG: &str = {_rust_str(runner.probe_flag)};
 /// The flag whose value is the start receipt's path.
 pub(crate) const START_RECEIPT_FLAG: &str = {_rust_str(runner.start_receipt_flag)};
 /// The runner's own flag for its one allocator restart (macOS).
+#[cfg(target_os = "macos")]
 pub(crate) const ALLOCATOR_RESTART_FLAG: &str = {_rust_str(runner.allocator_restart_flag)};
 /// What the runner writes to its start receipt right before the program starts.
 pub(crate) const START_RECEIPT: &str = {_rust_str(runner.start_receipt)};

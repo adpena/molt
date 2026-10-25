@@ -1,11 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # molt-ledger-merge-driver v1  (managed by tools/install_git_hooks.py — do not rename this marker)
 # Git merge driver for the v1.0 ledger (.gitattributes: merge=molt-ledger).
 # tools/ledger_merge.py merges findings rows by their ID, so two lanes that add
 # or edit different rows never conflict. Git calls it as: BASE OURS THEIRS.
 # If the driver cannot start, Git's own text merge runs instead, so a broken
 # setup still writes standard conflict markers rather than one side alone.
-set -uo pipefail
+# The installed merge command explicitly invokes POSIX sh. No pipelines run here.
+set -u
 
 base="$1" ours="$2" theirs="$3"
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root=""

@@ -29,6 +29,7 @@ from molt.cli import runtime_identity_schema as RUNTIME_SCHEMA
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     bind_runtime_wasm_specs,
+    publication_executor,
     runtime_cargo_plan,
     runtime_wasi_c_abi_plan,
     runtime_build_identity as make_runtime_build_identity,
@@ -582,7 +583,13 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
             cargo_command=("cargo",),
             requested_target="wasm32-wasip1",
         ),
-        export_link_args=("-C", "link-arg=--export-if-defined=molt_required"),
+        publication=RUNTIME_WASM_BUILD_SUPPORT.runtime_reloc_publication_action(
+            ("-C", "link-arg=--export-if-defined=molt_required"),
+            module_name=output.name,
+            executor=publication_executor(
+                RUNTIME_SCHEMA.RuntimePublicationTransform.RELOC
+            ),
+        ),
     )
 
     cmd = captured["cmd"]
@@ -592,6 +599,9 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
     ]
     assert Path(cmd[cmd.index("-o") + 1]).name != output.name
     assert Path(response_arg[1:]).is_absolute()
+    assert Path(response_arg[1:]).read_text(encoding="utf-8").splitlines() == [
+        "--export-if-defined=molt_required"
+    ]
     assert Path(cmd[cmd.index("-o") + 1]).is_absolute()
     assert Path(cmd[cmd.index("--whole-archive") + 1]).is_absolute()
     assert Path(cmd[cmd.index("--no-whole-archive") + 1]).is_absolute()
@@ -704,21 +714,34 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
             cargo_command=("cargo",),
             requested_target="wasm32-wasip1",
         ),
-        export_link_args=export_link_args,
+        publication=RUNTIME_WASM_BUILD_SUPPORT.runtime_reloc_publication_action(
+            export_link_args,
+            module_name=runtime_wasm.name,
+            executor=publication_executor(
+                RUNTIME_SCHEMA.RuntimePublicationTransform.RELOC
+            ),
+        ),
     )
 
     cmd = captured["cmd"]
     assert cmd[:2] == [str(runtime_wasi_c_abi_plan(runtime_fixture_root).linker), "-r"]
     assert cmd[2].startswith("@")
     response_text = Path(cmd[2].removeprefix("@")).read_text(encoding="utf-8")
-    assert "--export-if-defined=molt_reloc_required_export" in response_text
-    assert "--export-if-defined=molt_reloc_other_export" in response_text
-    assert cmd[3:5] == ["--whole-archive", str(staticlib)]
-    assert "--no-whole-archive" in cmd
+    assert response_text.splitlines() == [
+        "--export-if-defined=molt_reloc_required_export",
+        "--export-if-defined=molt_reloc_other_export",
+    ]
+    assert cmd.count("--whole-archive") == cmd.count("--no-whole-archive") == 1
     no_whole_index = cmd.index("--no-whole-archive")
-    assert cmd[no_whole_index + 1] == str(
-        runtime_wasi_c_abi_plan(runtime_fixture_root).path("libc")
-    )
+    c_abi = runtime_wasi_c_abi_plan(runtime_fixture_root)
+    assert cmd[3 : no_whole_index + 3] == [
+        "--whole-archive",
+        str(staticlib),
+        str(c_abi.path("long_double")),
+        "--no-whole-archive",
+        str(c_abi.path("libc")),
+        str(c_abi.path("compiler_rt")),
+    ]
     assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_WASM_LINK"
 
 

@@ -25,6 +25,15 @@ from molt.process_spawn import forward_command  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 
 
+def _require_managed_selection(env: Mapping[str, str]) -> None:
+    from molt.dx import DxConfigError
+
+    if env.get("MOLT_VENV"):
+        raise DxConfigError(
+            "managed UV execution cannot replace an explicitly borrowed MOLT_VENV"
+        )
+
+
 def project_environment_path(
     *,
     python: str,
@@ -52,6 +61,7 @@ def uv_project_env(
     from molt.dx import DxProject
 
     merged = ProcessEnvironmentBuilder(os.environ if env is None else env)
+    _require_managed_selection(merged)
     merged["MOLT_UV_PROJECT_PURPOSE"] = purpose
     merged["MOLT_UV_PROJECT_PYTHON"] = python
     if explicit:
@@ -64,7 +74,10 @@ def uv_project_env(
     resolved = development_artifact_env(
         repo_root, merged, session_prefix="uv-project-env", create_dirs=create_dirs
     )
-    return DxProject(repo_root).normalized_uv_run_env(resolved, python=python)
+    project = DxProject(repo_root)
+    return project.projected_uv_run_env(
+        resolved, root=project.uv_project_env_dir(resolved)
+    )
 
 
 def _parse_command(command: Sequence[str]) -> list[str]:
@@ -106,10 +119,10 @@ def main(argv: list[str] | None = None) -> int:
     selected = ProcessEnvironmentBuilder(os.environ)
     selected["MOLT_UV_PROJECT_PURPOSE"] = args.purpose
     selected["MOLT_UV_PROJECT_PYTHON"] = args.python
-    if selected.get("MOLT_VENV"):
-        parser.error(
-            "managed UV execution cannot replace an explicitly borrowed MOLT_VENV"
-        )
+    try:
+        _require_managed_selection(selected)
+    except DxConfigError as exc:
+        parser.error(str(exc))
     if args.venv:
         explicit = Path(args.venv).expanduser()
         selected["UV_PROJECT_ENVIRONMENT"] = str(

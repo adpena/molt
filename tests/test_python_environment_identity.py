@@ -70,10 +70,33 @@ def test_published_admission_requires_read_only_environment_capture(
     )
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--development-checkout", "checkout"],
+        ["--admit-published-environment", "--development-python", "3.12"],
+        ["--admit-published-environment", "--development-group", "dev"],
+    ],
+)
+def test_development_admission_requires_complete_operation_intent(
+    monkeypatch, capsys, arguments
+):
+    monkeypatch.setattr(
+        sys, "argv", ["identity", "--capture-active-environment", *arguments]
+    )
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+    assert "development intent requires published admission and a checkout" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("development", [False, True])
 @pytest.mark.parametrize("with_custody", [False, True])
 @pytest.mark.parametrize("verification_fails", [False, True])
 def test_published_admission_keeps_capture_context_until_final_verification(
-    tmp_path, monkeypatch, capsys, with_custody, verification_fails
+    tmp_path, monkeypatch, capsys, with_custody, verification_fails, development
 ):
     from molt import source_build_environment
     from molt import input_report
@@ -105,8 +128,18 @@ def test_published_admission_keeps_capture_context_until_final_verification(
 
     def admit(root, observed):
         assert root == tmp_path and observed is realized
-        assert events == ["context-open", "captured"]
+        assert events == [
+            "context-open",
+            "captured",
+            *(["intent"] if development else []),
+        ]
         events.append("admitted")
+
+    def load(root, *, repo_root, python, groups):
+        assert root == tmp_path and repo_root == tmp_path / "checkout"
+        assert python == "3.14" and groups == ("bench", "dev")
+        assert events == ["context-open", "captured"]
+        events.append("intent")
 
     arguments = [
         "identity",
@@ -114,6 +147,20 @@ def test_published_admission_keeps_capture_context_until_final_verification(
         str(tmp_path),
         "--admit-published-environment",
         *(["--with-custody"] if with_custody else []),
+        *(
+            [
+                "--development-checkout",
+                str(tmp_path / "checkout"),
+                "--development-python",
+                "3.14",
+                "--development-group",
+                "bench",
+                "--development-group",
+                "dev",
+            ]
+            if development
+            else []
+        ),
     ]
     monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
@@ -121,6 +168,7 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
     monkeypatch.setattr(identity, "capture_current_python_environment", capture)
     monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
+    monkeypatch.setattr(source_build_environment, "load_development_environment", load)
     if verification_fails:
         with pytest.raises(
             PythonEnvironmentIdentityError, match="captured input changed"
@@ -133,6 +181,7 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     assert events == [
         "context-open",
         "captured",
+        *(["intent"] if development else []),
         "admitted",
         "verified",
         "context-closed",

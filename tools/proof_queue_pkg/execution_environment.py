@@ -127,7 +127,8 @@ def _wrapper_execution_environment(
 
     if wrapper.get("kind") == "venv":
         venv = venv_exec.resolve_venv(env=inherited, explicit=wrapper.get("venv"))
-        return venv_exec.venv_env(venv=venv, env=inherited)
+        managed = not (wrapper.get("venv") or inherited.get("MOLT_VENV"))
+        return venv_exec.venv_env(venv=venv, env=inherited, managed=managed)
     if wrapper.get("kind") == "uv-project":
         return uv_project_env.uv_project_env(
             python=str(wrapper["python"]),
@@ -550,6 +551,40 @@ def _execution_environment_executable_identities(
     return identities
 
 
+def _python_capture_envelope(
+    envelope: Mapping[str, object], exact: Sequence[str], env: Mapping[str, str]
+) -> tuple[Mapping[str, object], list[str]]:
+    """Select an existing declared Python dependency, never alter payload argv."""
+    if envelope.get("python") is not None:
+        return envelope, list(exact)
+    wrapper = envelope.get("wrapper")
+    executable = sys.executable
+    if isinstance(wrapper, Mapping):
+        from tools.venv_exec import venv_python
+
+        # Wrapper modeling already selected this root from its explicit intent.
+        # Native payloads still depend on that image's admitted environment.
+        root = env.get("VIRTUAL_ENV")
+        if not root:
+            raise ValueError("proof wrapper has no selected Python environment")
+        borrowed = wrapper.get("kind") == "venv" and (
+            wrapper.get("venv") or env.get("MOLT_VENV")
+        )
+        if borrowed:
+            executable = str(venv_python(Path(root)))
+        else:
+            from molt.python_environment_location import environment_python_path
+
+            # Publication seals the lexical image entrypoint. A native payload
+            # requests no Python alias, so capture the publisher's selection.
+            executable = str(environment_python_path(Path(root)))
+    command = [executable, "-c", "raise SystemExit('identity-only')"]
+    selected = admission.envelope_for_command(command)
+    if isinstance(wrapper, Mapping):
+        selected["wrapper"] = dict(wrapper)
+    return selected, command
+
+
 def _capture_toolchains(
     envelope: Mapping[str, object],
     exact: Sequence[str],
@@ -580,20 +615,11 @@ def _capture_toolchains(
     located_python = located_toolchains.get("python")
     if "python" in requested and not isinstance(located_python, Mapping):
         raise ValueError("located Python selection identity is unavailable")
-    proof_python = command_identity._python_identity(
-        envelope,
-        cwd=cwd,
-        env=env,
-        source_root=source_root,
-        selection=cast(Mapping[str, object], located_python),
-        hash_workers=hash_workers,
-    )
-    if proof_python is None and "python" in requested:
-        synthetic_envelope = admission.envelope_for_command(
-            [sys.executable, "-c", "raise SystemExit('identity-only')"]
-        )
+    proof_python = None
+    if "python" in requested:
+        python_envelope, _ = _python_capture_envelope(envelope, exact, env)
         proof_python = command_identity._python_identity(
-            synthetic_envelope,
+            python_envelope,
             cwd=cwd,
             env=env,
             source_root=source_root,
@@ -833,13 +859,7 @@ def _locate_toolchain_watch_roots(
             raise ValueError("source-extension source watch root is not a directory")
         roots.append(source)
     if "python" in requested:
-        python_envelope = envelope
-        python_exact = list(exact)
-        if envelope.get("python") is None:
-            python_envelope = admission.envelope_for_command(
-                [sys.executable, "-c", "raise SystemExit('location-only')"]
-            )
-            python_exact = [sys.executable, "-c", "raise SystemExit('location-only')"]
+        python_envelope, python_exact = _python_capture_envelope(envelope, exact, env)
         with python_identity_verifier_prefix() as verifier_prefix:
             command = command_identity._python_auxiliary_command(
                 python_envelope,

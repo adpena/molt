@@ -8,8 +8,10 @@
 
 common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
 main_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)" || return 1
-case "$OSTYPE" in
-  msys*|cygwin*)
+# POSIX sh need not define Bash's OSTYPE, including under a caller's set -u.
+# Windows also identifies its native environment through OS.
+case "${OSTYPE-}:${OS-}" in
+  msys*:*|cygwin*:*|*:Windows_NT)
     python_root="$(cygpath -m "$repo_root")" || return 1
     export PYTHONPATH="$python_root/src;$python_root"
     vpy="$main_root/.venv/Scripts/python.exe"

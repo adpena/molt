@@ -428,20 +428,112 @@ def test_gated_core_symbols_carry_compile_time_absence_probes() -> None:
     )
     index = (resolvers / "mod.rs").read_text(encoding="utf-8")
     assert "mod declared_absent {" in index
+    assert "allow(dead_code" not in index
     # A marker type, so a probe binds no unit value (clippy::let_unit_value).
     assert "    pub(super) struct DeclaredAbsent;\n" in index
     assert (
+        '    #[cfg(not(feature = "stdlib_ast"))]\n'
         "    pub(super) const molt_ast_parse: DeclaredAbsent = DeclaredAbsent;\n"
         in index
     )
     assert "molt_compile_builtin" not in index
     assert (
+        '    #[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]\n'
         "    pub(super) const molt_socketpair: DeclaredAbsent = DeclaredAbsent;\n"
         in index
     )
     # Leaf crates are optional dependencies: dropping the feature drops the
     # crate, so their symbols need no probe.
     assert "molt_math_sqrt" not in index
+
+
+@pytest.mark.parametrize(
+    ("features", "definition", "diagnostic"),
+    [
+        ((), "declared", None),
+        (("stdlib_ast",), "declared", None),
+        (("stdlib_net",), "declared", None),
+        (("stdlib_ast", "stdlib_net"), "declared", None),
+        ((), "leaked", "ambiguous"),
+        (("stdlib_ast",), "missing", "cannot find value"),
+    ],
+)
+def test_absence_sentinels_have_exact_cfg_and_reject_surviving_definitions(
+    tmp_path, monkeypatch, features, definition, diagnostic
+) -> None:
+    from collections import OrderedDict
+    import shutil
+
+    from tests.process_guard_common import run_guarded_test_process
+    from tools.wasm_abi_gen.intrinsic_availability import (
+        intrinsic_availability_from_entries,
+    )
+
+    rustc = shutil.which("rustc")
+    assert rustc is not None, "owning intrinsic-registry proof requires rustc"
+    entries = parse_intrinsic_manifest(
+        '# cfg: feature = "stdlib_ast"\n'
+        "def molt_probe_a() -> Any: ...\n"
+        '# cfg: feature = "stdlib_net"\n'
+        "def molt_probe_b() -> Any: ...\n"
+    )
+    monkeypatch.setattr(
+        gen_intrinsics,
+        "_RUNTIME_AVAILABILITY",
+        intrinsic_availability_from_entries(entries),
+    )
+    sources, _owned = gen_intrinsics._render_resolver_modules(
+        OrderedDict([("fixture_probe", [entry.symbol for entry in entries])])
+    )
+    directory = tmp_path / "resolvers"
+    directory.mkdir()
+    for path, content in sources.items():
+        assert path.parent == gen_intrinsics.OUT_RS_RESOLVERS_DIR
+        (directory / path.name).write_text(content, encoding="utf-8")
+
+    # Real rustc distinguishes both complementary availability and the critical
+    # leaked-definition ambiguity. No wildcard dead-code allowance is present.
+    source = (
+        "pub mod builtins { pub mod functions {\n"
+        "pub fn runtime_fn_addr(_: &str, ptr: *const ()) -> u64 { ptr as u64 }\n"
+        "} }\n"
+        '#[path = "resolvers/mod.rs"] mod resolvers;\n'
+        "pub fn lookup(name: &str) -> Option<u64> { resolvers::resolve_symbol(name) }\n"
+        '#[cfg(feature = "stdlib_net")] pub fn molt_probe_b() {}\n'
+    )
+    if definition != "missing":
+        if definition != "leaked":
+            source += '#[cfg(feature = "stdlib_ast")]\n'
+        source += "pub fn molt_probe_a() {}\n"
+    unit = tmp_path / "probe.rs"
+    unit.write_text(source, encoding="utf-8")
+    result = run_guarded_test_process(
+        [
+            rustc,
+            "--edition=2021",
+            "--crate-type=lib",
+            "--emit=metadata",
+            "-Dwarnings",
+            *(
+                argument
+                for feature in features
+                for argument in ("--cfg", f'feature="{feature}"')
+            ),
+            str(unit),
+            "-o",
+            str(tmp_path / "probe.rmeta"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if diagnostic is None:
+        assert result.returncode == 0, (result.stdout, result.stderr)
+    else:
+        assert result.returncode != 0
+        assert diagnostic in result.stderr
+        assert "molt_probe_a" in result.stderr
 
 
 def test_intrinsic_symbol_table_is_generated_from_manifest() -> None:

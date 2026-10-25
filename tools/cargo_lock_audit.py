@@ -51,56 +51,85 @@ def _run_cargo(
     )
 
 
-def deny_workspace(
-    workspace: PurePosixPath, *, fetch: bool, run: Runner = _run_cargo
-) -> tuple[int, dict[str, set[str]], list[str]]:
-    """Run `cargo deny check` on one workspace.
-
-    Returns its exit code, the unused shared-config entries by lint code, and
-    the rendered errors.
-    """
-    command = [
+def _deny_command(workspace: PurePosixPath) -> list[str]:
+    # cargo-deny 0.20 moved --config from check to the root command.
+    return [
         "cargo",
         "deny",
         "--format",
         "json",
         "--manifest-path",
         str(workspace / "Cargo.toml"),
-        # Audit the committed lockfile: a stale one fails instead of being
-        # rewritten by cargo metadata.
         "--locked",
-        "check",
         "--config",
         "deny.toml",
     ]
-    if not fetch:
-        # One advisory database snapshot for every workspace in this run.
-        command.append("--disable-fetch")
-    proc = run(command, capture=True)
+
+
+def _deny_result(
+    proc: subprocess.CompletedProcess[str],
+) -> tuple[int, dict[str, set[str]], list[str]]:
     unused: dict[str, set[str]] = {code: set() for code in UNUSED_ENTRY_CODES}
     errors: list[str] = []
-    for line in (proc.stdout + proc.stderr).splitlines():
-        if not line.startswith("{"):
-            continue
-        record = json.loads(line)
-        if record.get("type") != "diagnostic":
-            continue
-        fields = record["fields"]
-        code = fields.get("code")
-        if code in unused:
-            unused[code].add(fields["labels"][0]["span"])
-        elif fields.get("severity") == "error":
-            errors.append(f"{code}: {fields.get('message')}")
+    # Keep stream boundaries: stdout need not end with a newline before stderr.
+    for output in (proc.stdout, proc.stderr):
+        for line in output.splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                if proc.returncode and line.strip():
+                    errors.append(line)
+                continue
+            if not isinstance(record, dict):
+                if proc.returncode:
+                    errors.append(line)
+                continue
+            fields = record.get("fields", {})
+            if record.get("type") == "diagnostic":
+                code = fields.get("code")
+                if code in unused:
+                    unused[code].add(fields["labels"][0]["span"])
+                elif fields.get("severity") == "error":
+                    errors.append(f"{code}: {fields.get('message')}")
+                    # Advisory identity, source URL and safe upgrade ranges
+                    # live in notes, outside the short diagnostic title.
+                    errors.extend(fields.get("notes", []))
+            elif record.get("type") == "log" and fields.get("level") == "ERROR":
+                errors.append(str(fields.get("message")))
+            elif proc.returncode:
+                errors.append(line)
     return proc.returncode, unused, errors
 
 
+def deny_workspace(
+    workspace: PurePosixPath, *, run: Runner = _run_cargo
+) -> tuple[int, dict[str, set[str]], list[str]]:
+    """Check a prepared workspace against the run's shared offline snapshot."""
+    return _deny_result(
+        run([*_deny_command(workspace), "--offline", "check"], capture=True)
+    )
+
+
 def run_deny(workspaces: Sequence[PurePosixPath], run: Runner = _run_cargo) -> int:
+    # In 0.20, --offline also disables crate downloads. Prepare every locked
+    # workspace first; fetch the shared advisory/replacement data only once.
+    # A preparation failure cannot admit checks against stale shared data.
+    for index, workspace in enumerate(workspaces):
+        proc = run(
+            [*_deny_command(workspace), "fetch", "all" if index == 0 else "index"],
+            capture=True,
+        )
+        returncode, _, errors = _deny_result(proc)
+        status = "ok" if returncode == 0 else f"FAILED (exit {returncode})"
+        print(f"cargo deny fetch {workspace}: {status}", flush=True)
+        for error in errors:
+            print(f"  {error}", flush=True)
+        if returncode:
+            return 1
     failed = False
     unused_everywhere: dict[str, set[str]] | None = None
-    for index, workspace in enumerate(workspaces):
-        returncode, unused, errors = deny_workspace(
-            workspace, fetch=index == 0, run=run
-        )
+    for workspace in workspaces:
+        returncode, unused, errors = deny_workspace(workspace, run=run)
         status = "ok" if returncode == 0 else f"FAILED (exit {returncode})"
         print(f"cargo deny {workspace}: {status}", flush=True)
         for error in errors:

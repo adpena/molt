@@ -2594,8 +2594,10 @@ def test_full_python_capture_rejects_changed_selection_before_launch(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("development", [False, True])
 def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_bytes(
     tmp_path: Path,
+    development: bool,
 ) -> None:
     """Exercise the real stdlib-only caller and a real offline published image."""
     from importlib import metadata
@@ -2621,46 +2623,88 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     package_lock = locked[0]
     source = tmp_path / "recipe"
     source.mkdir()
-    (source / "pyproject.toml").write_text(
-        "[project]\nname='published-capture-control'\nversion='1.0'\n"
-        "requires-python='>=3.12'\n"
-        f"dependencies=['packaging=={distribution.version}']\n",
-        encoding="utf-8",
-    )
-    (source / "uv.lock").write_text(
-        "version=1\nrevision=1\nrequires-python='>=3.12'\n"
-        "[[package]]\nname='published-capture-control'\nversion='1.0'\n"
-        "source={virtual='.'}\ndependencies=[{name='packaging'}]\n"
-        "[[package]]\nname='packaging'\n"
-        f"version={json.dumps(distribution.version)}\n"
-        f"source={{registry={json.dumps(package_lock['source']['registry'])}}}\n"
-        "wheels=[\n"
-        + "".join(
-            "{url="
-            + json.dumps(wheel["url"])
-            + ",hash="
-            + json.dumps(wheel["hash"])
-            + f",size={wheel['size']}}},\n"
-            for wheel in package_lock["wheels"]
+    if development:
+        from tests.integration_driver_fixture import clone_file
+        from tools.git_identity import repository_source_paths
+
+        # Real command admission validates the complete proof registry: test
+        # paths, workflow topology, setup evidence and tool metadata as well as
+        # the reader modules. Copy current Git-admitted source bytes, retaining
+        # WIP and symlinks but excluding ignored artifacts and Git control state.
+        def read_git(cwd: Path, arguments: list[str]) -> bytes:
+            return check_output_custody_subject_process(["git", *arguments], cwd=cwd)
+
+        for original in repository_source_paths(
+            state.ROOT, run_git=read_git, include_untracked=True
+        ):
+            destination = source / original.relative_to(state.ROOT)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if original.is_symlink():
+                destination.symlink_to(os.readlink(original))
+            else:
+                clone_file(original, destination)
+    reader_root = source if development else state.ROOT
+    if not development:
+        (source / "pyproject.toml").write_text(
+            "[project]\nname='published-capture-control'\nversion='1.0'\n"
+            "requires-python='>=3.12'\n"
+            f"dependencies=['packaging=={distribution.version}']\n"
+            "[dependency-groups]\n[tool.molt.dx]\ndependency_groups=[]\n",
+            encoding="utf-8",
         )
-        + "]\n",
-        encoding="utf-8",
-    )
+        (source / "uv.lock").write_text(
+            "version=1\nrevision=1\nrequires-python='>=3.12'\n"
+            "[[package]]\nname='published-capture-control'\nversion='1.0'\n"
+            f"source={{{'editable' if development else 'virtual'}='.'}}\n"
+            "dependencies=[{name='packaging'}]\n"
+            "[[package]]\nname='packaging'\n"
+            f"version={json.dumps(distribution.version)}\n"
+            f"source={{registry={json.dumps(package_lock['source']['registry'])}}}\n"
+            "wheels=[\n"
+            + "".join(
+                "{url="
+                + json.dumps(wheel["url"])
+                + ",hash="
+                + json.dumps(wheel["hash"])
+                + f",size={wheel['size']}}},\n"
+                for wheel in package_lock["wheels"]
+            )
+            + "]\n",
+            encoding="utf-8",
+        )
     runtime_capture = publisher._python_identity()
     runtime = runtime_capture["runtime"]
+    if not development:
+        (source / ".python-version").write_text(
+            str(runtime["version"]) + "\n", encoding="utf-8"
+        )
+    from molt.dx import DxProject
+
+    if development:
+        for filename in ("pyproject.toml", "uv.lock", ".python-version"):
+            assert (source / filename).read_bytes() == (
+                state.ROOT / filename
+            ).read_bytes()
+    groups = DxProject(source).dependency_groups() if development else ()
+    requirements = tuple(
+        requirement
+        for group in groups
+        for requirement in publisher._declared_dependency_group(source, group)
+    )
+    binding = publisher._editable_binding(source) if development else None
     closure = selected_uv_lock_group_closure(
         source,
         None,
-        (),
+        requirements,
         wheel_target=runtime_capture["wheel_target"],
         marker_environment=image_schema.canonical_source_marker_environment(),
-        dependency_groups=(),
+        dependency_groups=groups,
     )
     recipe = {
         "schema_version": image_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
-        "dependency_groups": [],
-        "dependency_group_requirements": [],
-        "editable_binding": None,
+        "dependency_groups": list(groups),
+        "dependency_group_requirements": list(requirements),
+        "editable_binding": binding,
         "bytecode_policy": image_schema.ORDINARY_BYTECODE_POLICY,
         "lock_closure": closure,
         "python_runtime": runtime,
@@ -2670,24 +2714,112 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
             "sha256": "a" * 64,
         },
     }
-    root = tmp_path / "published" / canonical_json_sha256(recipe)
+    from molt.dx import checkout_component
+
+    root = (
+        tmp_path / "build-environments" / "development" / checkout_component(source)
+        if development
+        else tmp_path / "published"
+    ) / canonical_json_sha256(recipe)
     executable = create_test_venv(root)
     site = root / (
         "Lib/site-packages"
         if os.name == "nt"
         else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
     )
-    metadata_root = next(
-        Path(distribution.locate_file(path)).parent
-        for path in distribution.files
-        if path.name == "METADATA" and path.parent.name.endswith(".dist-info")
-    )
-    for selected in (Path(packaging.__file__).parent, metadata_root):
-        shutil.copytree(
-            selected,
-            site / selected.name,
-            ignore=shutil.ignore_patterns("__pycache__"),
+    if not development:
+        metadata_root = next(
+            Path(distribution.locate_file(path)).parent
+            for path in distribution.files
+            if path.name == "METADATA" and path.parent.name.endswith(".dist-info")
         )
+        for selected in (Path(packaging.__file__).parent, metadata_root):
+            shutil.copytree(
+                selected,
+                site / selected.name,
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+    else:
+        import csv
+        import io
+
+        from packaging.utils import canonicalize_name
+
+        assert binding is not None
+        # Keep genuine project/lock/workflow evidence coherent with the full
+        # registry. Reuse the selected interpreter's locked installed bytes,
+        # including native wheels and console scripts, without an installer.
+        donor_root = Path(sys.prefix).resolve()
+        donor_site = Path(packaging.__file__).resolve().parent.parent
+        installed = {}
+        for candidate in metadata.distributions(path=[str(donor_site)]):
+            name = canonicalize_name(candidate.metadata["Name"])
+            assert name not in installed, f"duplicate installed donor: {name}"
+            installed[name] = candidate
+        expected = {row["name"]: row["version"] for row in closure["packages"]}
+        expected[binding["project"]] = binding["version"]
+        for name, version in expected.items():
+            selected = installed[name]
+            assert selected.version == version, f"donor differs from lock: {name}"
+            assert selected.files, f"donor has no RECORD inventory: {name}"
+            for entry in selected.files:
+                original = Path(os.path.abspath(selected.locate_file(entry)))
+                destination = root / original.relative_to(donor_root)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if original.is_symlink():
+                    destination.symlink_to(os.readlink(original))
+                else:
+                    clone_file(original, destination)
+
+        # Rebind the real editable installation to B. Preserve every installed
+        # file and WHEEL claim; only the source URL/.pth and their RECORD hashes
+        # change. Every other donor byte still faces the original RECORD check.
+        project_distribution = installed[binding["project"]]
+        project_files = project_distribution.files
+        assert project_files is not None
+        metadata_entries = [
+            entry
+            for entry in project_files
+            if entry.name == "METADATA" and entry.parent.name.endswith(".dist-info")
+        ]
+        assert len(metadata_entries) == 1
+        project_metadata = site / metadata_entries[0].parent
+        declarations = [entry for entry in project_files if entry.suffix == ".pth"]
+        assert len(declarations) == 1
+        declaration = site / declarations[0]
+        assert declaration.read_text(encoding="utf-8").strip() == str(
+            state.ROOT / "src"
+        )
+        direct_url = project_metadata / "direct_url.json"
+        declared = json.loads(direct_url.read_text(encoding="utf-8"))
+        assert declared == {"url": state.ROOT.as_uri(), "dir_info": {"editable": True}}
+        declaration.chmod(declaration.stat().st_mode | 0o200)
+        declaration.write_text(str(source / "src") + "\n", encoding="utf-8")
+        direct_url.chmod(direct_url.stat().st_mode | 0o200)
+        direct_url.write_text(
+            json.dumps({"url": source.as_uri(), "dir_info": {"editable": True}}),
+            encoding="utf-8",
+        )
+        record = project_metadata / "RECORD"
+        rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf-8"))))
+        rebound = {
+            declaration.relative_to(site).as_posix(),
+            direct_url.relative_to(site).as_posix(),
+        }
+        updated = set()
+        for row in rows:
+            if row[0] in rebound:
+                data = (site / row[0]).read_bytes()
+                row[1] = "sha256=" + base64.urlsafe_b64encode(
+                    hashlib.sha256(data).digest()
+                ).rstrip(b"=").decode("ascii")
+                row[2] = str(len(data))
+                updated.add(row[0])
+        assert updated == rebound
+        stream = io.StringIO(newline="")
+        csv.writer(stream).writerows(rows)
+        record.chmod(record.stat().st_mode | 0o200)
+        record.write_text(stream.getvalue(), encoding="utf-8")
     custody = {"environment_id": root.name, **recipe}
     provisional = environment_provisioning_record_path(root)
     provisional.parent.mkdir(parents=True)
@@ -2696,9 +2828,17 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     )
     # Compile through the real unpublished-image owner, then capture and attest
     # the actual bytes. The full capture's runtime must retain recipe identity.
-    publisher._publish_environment_bytecode(executable, root, external_root=state.ROOT)
+    publisher._publish_environment_bytecode(
+        executable,
+        root,
+        external_root=reader_root,
+        source_root=source if development else None,
+    )
     realized = publisher._probe_environment_identity(
-        executable, root, external_root=state.ROOT
+        executable,
+        root,
+        external_root=reader_root,
+        source_root=source if development else None,
     )
     assert realized["runtime"] == runtime
     manifest = publisher._attested_environment(custody, realized)
@@ -2707,29 +2847,72 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     manifest_path.write_bytes(manifest_bytes)
     provisional.unlink()
 
+    wrapper_command = (
+        [
+            sys.executable,
+            str(source / "tools/uv_project_env.py"),
+            "--python",
+            str(runtime["version"]),
+            "--venv",
+            str(root),
+            "--",
+            str(executable),
+            "-c",
+            "pass",
+        ]
+        if development
+        else [str(executable), "-c", "pass"]
+    )
+    expected_distributions = sorted(
+        [row["name"] for row in closure["packages"]]
+        + ([binding["project"]] if binding is not None else [])
+    )
     driver = tmp_path / "isolated_queue_reader.py"
     driver.write_text(
         "import json,os,sys\nfrom pathlib import Path\n"
-        f"sys.path.insert(0,{str(state.ROOT)!r})\n"
+        f"sys.path.insert(0,{str(reader_root)!r})\n"
         "from tools.import_file import bind_repository_imports\n"
-        f"bind_repository_imports({str(Path(guarded_execution.__file__))!r})\n"
+        f"bind_repository_imports({str(reader_root / 'tools/proof_queue_pkg/guarded_execution.py')!r})\n"
         "from tools.proof_queue_pkg import command_admission,command_identity,execution_environment,state\n"
         "assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n"
-        f"command=[{str(executable)!r},'-c','pass']\n"
+        f"command={wrapper_command!r}\n"
+        f"if {development!r} and len(sys.argv)>1:\n"
+        "    if sys.argv[1]=='native': command[command.index('--')+1:]=['git','status','--short']\n"
+        "    else: command[command.index('--python')+1]=sys.argv[1]\n"
         "envelope=command_admission.envelope_for_command(command)\n"
+        "from tools.proof_queue_pkg import execution_custody\n"
+        "execution_custody.require_enforceable_process_closure(envelope)\n"
+        "environment=execution_environment._wrapper_execution_environment(envelope,os.environ)\n"
+        "assert not any(n=='packaging' or n.startswith('packaging.') for n in sys.modules)\n"
+        "command=envelope['argv']\n"
+        # The native envelope must declare its real Python dependency. Exercise
+        # that dependency's image locator/capture here; native process-image
+        # inventory and execution belong to the native-supervisor proof cells.
+        "if len(sys.argv)>1 and sys.argv[1]=='native':\n"
+        "    assert envelope.get('python') is None and 'python' in envelope['toolchains']\n"
+        "    payload=list(command)\n"
+        "    original=envelope\n"
+        "    envelope,command=execution_environment._python_capture_envelope(envelope,command,environment)\n"
+        f"    assert command[0]=={str(executable)!r}\n"
+        "    assert original['argv']==payload\n"
         "_,selections,_,_=execution_environment._locate_toolchain_watch_roots("
-        "envelope,command,cwd=state.ROOT,env=os.environ,"
+        "envelope,command,cwd=state.ROOT,env=environment,"
         f"supervisor_binary=Path({str(executable)!r}))\n"
         "assert 'packaging.requirements' not in sys.modules\n"
-        "captured=command_identity._python_identity(envelope,cwd=state.ROOT,"
-        "env=os.environ,source_root=state.ROOT,selection=selections['python'],hash_workers=1)\n"
+        "captured,_=execution_environment._capture_toolchains(envelope,command,cwd=state.ROOT,"
+        "env=environment,source_root=state.ROOT,located_toolchains=selections,hash_workers=1)\n"
         "assert 'packaging.requirements' not in sys.modules\n"
-        "assert [row['name'] for row in captured['environment']['distributions']]==['packaging']\n"
+        f"assert [row['name'] for row in captured['environment']['distributions']]=={expected_distributions!r}\n"
         "print(json.dumps({'runtime':captured['environment']['runtime']['runtime_closure_sha256']}))\n",
         encoding="utf-8",
     )
 
-    def read():
+    environment = dict(os.environ)
+    environment.pop("MOLT_VENV", None)
+    environment["MOLT_EXT_ROOT"] = str(tmp_path)
+    environment["UV_PROJECT_ENVIRONMENT"] = str(root)
+
+    def read(*arguments):
         with python_environment_identity.python_identity_verifier_prefix() as prefix:
             return run_custody_subject_process(
                 [
@@ -2739,9 +2922,10 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
                     ),
                     "-S",
                     str(driver),
+                    *arguments,
                 ],
                 cwd=tmp_path,
-                env=os.environ,
+                env=environment,
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -2751,10 +2935,114 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     accepted = read()
     assert accepted.returncode == 0, accepted.stderr
     assert json.loads(accepted.stdout) == {"runtime": runtime["runtime_closure_sha256"]}
+
+    def direct_wrapper():
+        with python_environment_identity.python_identity_verifier_prefix() as prefix:
+            return run_custody_subject_process(
+                [
+                    sys.executable,
+                    *python_environment_identity.python_identity_verifier_arguments(
+                        prefix
+                    ),
+                    "-S",
+                    str(source / "tools/venv_exec.py"),
+                    "--",
+                    "python",
+                    "-I",
+                    "-c",
+                    "import json,sys; print(json.dumps([sys.prefix,sys.dont_write_bytecode,sys.pycache_prefix]))",
+                ],
+                cwd=tmp_path,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+
+    if development:
+        # A controller imported from checkout A explicitly admits image B
+        # through B's selected reader, with a separate external-source grant.
+        assert (
+            publisher.admit_development_environment(
+                root, repo_root=source, groups=groups
+            )
+            == root
+        )
+        from tests.python_environment_test_support import copy_python_capture_authority
+
+        foreign = tmp_path / "foreign-reader"
+        copy_python_capture_authority(foreign)
+        selected_reader = source / "src/molt/python_environment_identity.py"
+        foreign_reader = foreign / "src/molt/python_environment_identity.py"
+        assert selected_reader.read_bytes() == foreign_reader.read_bytes()
+        original_declaration = declaration.read_bytes()
+        declaration.write_text(str(foreign / "src") + "\n", encoding="utf-8")
+        with pytest.raises(
+            image_schema.SourceBuildEnvironmentError,
+            match="package source admission failed",
+        ) as refused_home:
+            publisher.admit_development_environment(
+                root, repo_root=source, groups=groups
+            )
+        assert str(source / "src/molt") in str(refused_home.value)
+        assert str(foreign / "src/molt") in str(refused_home.value)
+        declaration.write_bytes(original_declaration)
+        selected_reader_bytes = selected_reader.read_bytes()
+        selected_reader.unlink()
+        try:
+            with pytest.raises(FileNotFoundError) as missing_reader:
+                publisher.admit_development_environment(
+                    root, repo_root=source, groups=groups
+                )
+            assert str(selected_reader) in str(missing_reader.value)
+        finally:
+            selected_reader.write_bytes(selected_reader_bytes)
+        native = read("native")
+        assert native.returncode == 0, native.stderr
+        assert json.loads(native.stdout) == {
+            "runtime": runtime["runtime_closure_sha256"]
+        }
+        launched = direct_wrapper()
+        assert launched.returncode == 0, launched.stderr
+        assert json.loads(launched.stdout) == [str(root), True, str(root / "bytecode")]
+        refused = read("99.0")
+        assert refused.returncode != 0 and not refused.stdout
+        assert "different requested Python" in refused.stderr
+        project_path = source / "pyproject.toml"
+        original_project = project_path.read_bytes()
+        assert groups
+        changed_project = re.sub(
+            rb"(?m)^dependency_groups\s*=\s*\[[^\n]*\]",
+            b"dependency_groups = []",
+            original_project,
+            count=1,
+        )
+        assert changed_project != original_project
+        project_path.write_bytes(changed_project)
+        refused = read()
+        assert refused.returncode != 0 and not refused.stdout
+        assert "different requested groups" in refused.stderr
+        project_path.write_bytes(original_project)
+        lock_path = source / "uv.lock"
+        original_lock = lock_path.read_bytes()
+        lock_path.write_bytes(original_lock.replace(b">=3.12", b">=99"))
+        refused = direct_wrapper()
+        assert refused.returncode != 0 and not refused.stdout
+        assert (
+            "selected Python does not satisfy uv.lock requires-python" in refused.stderr
+        )
+        lock_path.write_bytes(original_lock)
+
     # This receipt mutation is excluded from the image's ordinary byte scan.
     # It must reach the canonical published-image check in the capture child.
     changed = copy.deepcopy(manifest)
-    changed["realized_environment"]["distributions"][0]["version"] = "0.0"
+    if development:
+        projected = changed["realized_image"]["image"]
+        projected["tree"]["file_nodes"][0]["sha256"] = "0" * 64
+        changed["realized_image"]["image_sha256"] = canonical_json_sha256(projected)
+    else:
+        changed["realized_environment"]["distributions"][0]["version"] = "0.0"
     manifest_path.write_text(json.dumps(changed), encoding="utf-8")
     refused = read()
     assert refused.returncode != 0
