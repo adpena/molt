@@ -2190,7 +2190,9 @@ def test_operation_inventory_is_shared_across_seeds_and_premise_rounds(
         tmp_path / name for name in ("left.py", "right.py", "speculative.py")
     )
     for seed in (left, right):
-        seed.write_text("__package__ = unknown\nfrom .missing import value\n")
+        seed.write_text(
+            "__package__ = unknown\nfrom .missing import value\n", encoding="utf-8"
+        )
     # Covered bytes must not acquire speculative analysis or syntax errors.
     speculative.write_bytes(b"this is not valid python (\n")
     inventories = []
@@ -2232,13 +2234,13 @@ def test_operation_keeps_alias_and_policy_analysis_contexts(
 ) -> None:
     package = tmp_path / "tools" / "pkg"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("", encoding="utf-8")
     left, right = tmp_path / "left.py", tmp_path / "right.py"
-    left.write_text("import pkg.helper\n")
-    right.write_text("import tools.pkg.helper\n")
+    left.write_text("import pkg.helper\n", encoding="utf-8")
+    right.write_text("import tools.pkg.helper\n", encoding="utf-8")
     helper, child = package / "helper.py", package / "child.py"
-    helper.write_text("if False:\n    from . import child\n")
-    child.write_text("VALUE = 1\n")
+    helper.write_text("if False:\n    from . import child\n", encoding="utf-8")
+    child.write_text("VALUE = 1\n", encoding="utf-8")
     captures, contexts = [], []
     capture = graph.LocalPythonModuleResolver.capture_source
     analyze = graph.analyze_local_imports
@@ -2281,13 +2283,14 @@ def test_operation_queries_converge_independent_writer_premises(
         tmp_path / name
         for name in ("clean.py", "dirty.py", "reader.py", "writer.py", "selected.py")
     )
-    clean.write_text("import reader\n")
-    dirty.write_text("import writer\nimport reader\n")
+    clean.write_text("import reader\n", encoding="utf-8")
+    dirty.write_text("import writer\nimport reader\n", encoding="utf-8")
     reader.write_text(
-        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import selected\n"
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import selected\n",
+        encoding="utf-8",
     )
-    writer.write_text("import typing\ntyping.TYPE_CHECKING = True\n")
-    selected.write_text("VALUE = 1\n")
+    writer.write_text("import typing\ntyping.TYPE_CHECKING = True\n", encoding="utf-8")
+    selected.write_text("VALUE = 1\n", encoding="utf-8")
     order = (dirty, clean) if writer_first else (clean, dirty)
     with graph.local_python_import_graph_transaction():
         results = {seed: _eager_closure(tmp_path, seed) for seed in order}
@@ -2350,7 +2353,7 @@ def test_operation_domain_separates_root_order_and_cache_destination(
     first.mkdir(parents=True)
     second.mkdir()
     seed = first / "entry.py"
-    seed.write_text("import helper\n")
+    seed.write_text("import helper\n", encoding="utf-8")
     left, right = first / "helper.py", second / "helper.py"
     left.write_bytes(b"VALUE = 'left'\n")
     right.write_bytes(b"VALUE = 'right'\n")
@@ -2388,16 +2391,17 @@ def test_operation_manifest_contract_changes_select_a_new_domain(
     seed, first, later = (
         tmp_path / name for name in ("entry.py", "first.py", "later.py")
     )
-    seed.write_text("__import__(name)\n")
-    first.write_text("VALUE = 1\n")
-    later.write_text("VALUE = 2\n")
+    seed.write_text("__import__(name)\n", encoding="utf-8")
+    first.write_text("VALUE = 1\n", encoding="utf-8")
+    later.write_text("VALUE = 2\n", encoding="utf-8")
     manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
     manifest.parent.mkdir(parents=True)
 
     def write_manifest(target, count=1):
         manifest.write_text(
             "schema_version = 1\n[[source]]\npath = 'entry.py'\n"
-            f"nonliteral_calls = {count}\nmodules = ['{target}']\n"
+            f"nonliteral_calls = {count}\nmodules = ['{target}']\n",
+            encoding="utf-8",
         )
 
     write_manifest("first")
@@ -2430,9 +2434,9 @@ def test_failed_query_cannot_publish_tentative_rows_through_its_sibling(
         for name in ("good.py", "sibling.py", "bad.py", "failure.py", "shared.py")
     )
     for seed in (good, sibling):
-        seed.write_text("import shared\n")
-    bad.write_text("import failure\n")
-    failure.write_text("__import__(unknown)\n")
+        seed.write_text("import shared\n", encoding="utf-8")
+    bad.write_text("import failure\n", encoding="utf-8")
+    failure.write_text("__import__(unknown)\n", encoding="utf-8")
     shared.write_bytes(b"VALUE = 1\n")
     with graph.local_python_import_graph_transaction():
         good_result = local_python_import_closure(tmp_path, (good,))
@@ -2453,15 +2457,15 @@ def test_new_query_validates_the_shared_negative_topology_facts(tmp_path: Path) 
 
     package = tmp_path / "pkg"
     package.mkdir()
-    (package / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("", encoding="utf-8")
     left, right = tmp_path / "left.py", tmp_path / "right.py"
     for seed in (left, right):
-        seed.write_text("from pkg import missing\n")
+        seed.write_text("from pkg import missing\n", encoding="utf-8")
     with graph.local_python_import_graph_transaction():
         first = local_python_import_closure(tmp_path, (left,))
         cache = graph.python_source_closure_cache_path(tmp_path)
         accepted = cache.read_bytes()
-        (package / "missing.py").write_text("VALUE = 1\n")
+        (package / "missing.py").write_text("VALUE = 1\n", encoding="utf-8")
         with pytest.raises(PythonImportTopologyChangedError):
             local_python_import_closure(tmp_path, (right,))
         assert cache.read_bytes() == accepted
@@ -2480,7 +2484,7 @@ def test_parallel_explicit_operations_do_not_share_domain_captures(
         tmp_path / name for name in ("left.py", "right.py", "helper.py")
     )
     for seed in (left, right):
-        seed.write_text("import helper\n")
+        seed.write_text("import helper\n", encoding="utf-8")
     helper.write_bytes(b"VALUE = 1\n")
     captures = []
     capture = graph.LocalPythonModuleResolver.capture_source
@@ -2520,12 +2524,14 @@ def test_operation_inventory_keeps_policy_prefix_and_project_ownership(
     package = project / "pkg"
     package.mkdir(parents=True)
     seed = project / "entry.py"
-    seed.write_text("__package__ = unknown\nfrom .missing import value\n")
+    seed.write_text(
+        "__package__ = unknown\nfrom .missing import value\n", encoding="utf-8"
+    )
     initializer, helper = package / "__init__.py", package / "helper.py"
-    initializer.write_text("")
-    helper.write_text("VALUE = 1\n")
+    initializer.write_text("", encoding="utf-8")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
     outsider = project / "outsider.py"
-    outsider.write_text("VALUE = 2\n")
+    outsider.write_text("VALUE = 2\n", encoding="utf-8")
     restricted = PythonImportPolicy(
         module_level_only=False,
         include_parent_packages=True,
@@ -2537,9 +2543,9 @@ def test_operation_inventory_keeps_policy_prefix_and_project_ownership(
     other = tmp_path / "other"
     other.mkdir()
     other_seed = other / "entry.py"
-    other_seed.write_text("import foreign\n")
+    other_seed.write_text("import foreign\n", encoding="utf-8")
     foreign = other / "foreign.py"
-    foreign.write_text("VALUE = 3\n")
+    foreign.write_text("VALUE = 3\n", encoding="utf-8")
     with graph.local_python_import_graph_transaction():
         complete = local_python_import_closure(project, (seed,))
         scoped = local_python_import_closure(project, (seed,), policy=restricted)
@@ -2560,8 +2566,8 @@ def test_operation_releases_raw_captures_without_retaining_analysis_trees(
         tmp_path / name for name in ("left.py", "right.py", "helper.py")
     )
     for seed in (left, right):
-        seed.write_text("import helper\n")
-    helper.write_text("VALUE = 1\n")
+        seed.write_text("import helper\n", encoding="utf-8")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
     captures = []
     capture = graph.LocalPythonModuleResolver.capture_source
 
@@ -2591,8 +2597,8 @@ def test_operation_releases_raw_captures_without_retaining_analysis_trees(
 
 def test_new_query_does_not_hide_a_removed_explicit_seed(tmp_path: Path) -> None:
     left, right = tmp_path / "left.py", tmp_path / "right.py"
-    left.write_text("VALUE = 1\n")
-    right.write_text("VALUE = 2\n")
+    left.write_text("VALUE = 1\n", encoding="utf-8")
+    right.write_text("VALUE = 2\n", encoding="utf-8")
     with graph.local_python_import_graph_transaction():
         local_python_import_closure(tmp_path, (left,))
         left.unlink()
