@@ -246,8 +246,13 @@ suppress a lost source generation.
 One operation-local import topology starts at entry/root selection and remains
 with the graph resolver and frontend catalog. Positive and negative lookups,
 exact-case names, selected namespace portions and package-child inventories
-retain their original observations. CLI and tooling share the segmented resolver:
-a regular parent package or module shadows later namespace portions, following
+retain their original observations. The resolver validates a name before admitting
+its result or derived prefixes to its operation-local cache. Exact hits, including
+recorded misses, reuse that validation under the same resolver lock; uncached
+names are validated before any cached-prefix shortcut. This does not replace the
+operation's topology fence or extend cache lifetime. CLI and tooling share the
+segmented resolver: a regular parent package or module shadows later namespace
+portions, following
 [CPython's PathFinder](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap_external.py).
 Relative selectors are anchored without collapsing `..` before symlink traversal.
 Directory tokens avoid unnecessary repeated enumeration; changed, racy and
