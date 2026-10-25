@@ -2659,9 +2659,14 @@ mod tests {
                 &[(b"__typing_subst__", MoltObject::none().bits())],
             );
             let parameter = unsafe { test_instance_bits(py, class) };
-            let origin =
-                GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(crate::builtin_classes(py).list);
-            let argument = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(parameter);
+            // The transaction and live GIL entry keep both borrowed runtime
+            // handles valid while the bridge creates their independent C owners.
+            let (origin, argument) = unsafe {
+                (
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(crate::builtin_classes(py).list),
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(parameter),
+                )
+            };
             assert!(!origin.is_null() && !argument.is_null());
             unsafe {
                 let alias = object::Py_GenericAlias(origin, argument);
