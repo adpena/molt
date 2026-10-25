@@ -273,7 +273,7 @@ def executable_search_directories(
 _ERROR_UNTRUSTED_MOUNT_POINT = 448
 
 
-def _searchable_executable(candidate: Path) -> bool:
+def is_searchable_executable(candidate: Path) -> bool:
     """Whether the OS executable search could select ``candidate``.
 
     The OS search skips a directory it cannot traverse and goes on: execvp
@@ -318,7 +318,7 @@ def executable_candidates(
             input_report.report_directory(directory)
         for name in names:
             candidate = directory / name
-            if _searchable_executable(candidate):
+            if is_searchable_executable(candidate):
                 selected = lexical_executable_path(candidate)
                 if recording:
                     input_report.report_data_file(selected)
