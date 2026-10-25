@@ -318,6 +318,21 @@ byte identity directly without a redundant Git query; uncaptured backend/runtime
 trees retain the clean-pathspec shortcut. Receipts retain neither source bytes
 nor ASTs and may be reused only within the explicit immutable tooling operation.
 
+The existing tooling graph transaction owns source domains distinguished by
+project root, ordered search roots, admitted source roots, cache destination and
+manifest bytes. Queries in one domain share the resolver's topology observations,
+captured raw bytes, lexical relative-path keys, package-child facts and
+policy-specific source inventories. Each seed set and import policy retains its
+own receipt and converges its own namespace-writer premise; a sibling query's
+writers or reached modules cannot become its authority. Failed queries do not
+publish tentative analysis rows through later successful queries. Analysis misses
+still use temporary AST views, so retaining raw bytes until transaction exit does
+not retain parsed trees. Every new query validates its shared topology before
+returning a receipt; an already completed query remains frozen for that operation.
+A new operation, including an explicitly fresh nested transaction, captures live
+bytes and topology again. No filesystem observation survives through a global or
+persistent source-domain cache. Application-source content fences remain separate.
+
 Path admission belongs to discovery: missing candidates stop at the filesystem
 probe; existing candidates retain their kind and resolve symlinks before search
 root containment is checked. Downstream projections do not repeat that

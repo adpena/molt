@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
 import sys
+import warnings
 
 import pytest
 
@@ -14,6 +16,159 @@ from tools import scan_records
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AUDIT_TOOL = REPO_ROOT / "tools" / "check_subprocess_guard_coverage.py"
+
+
+@pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf"])
+def test_shared_observation_keeps_raw_alias_bom_and_newline_semantics(prefix):
+    data = prefix + (
+        b"import subprocess as child\r\n"
+        b"def launch():\r\n"
+        b"    child.run(['echo', 'fixture'])\r\n"
+    )
+    observation = check_subprocess_guard_coverage.PythonSourceObservation(
+        data, "tools/fixture.py"
+    )
+    calls = check_subprocess_guard_coverage.scan_observation(
+        observation, "tools/fixture.py"
+    )
+    assert [(call.path, call.line, call.qualname, call.method) for call in calls] == [
+        ("tools/fixture.py", 3, "launch", "run")
+    ]
+    assert calls[0].source == "child.run(['echo', 'fixture'])"
+    if prefix:
+        # The direct-test UTF-8 parser previously rejected a BOM even though
+        # the raw scanner explicitly accepts UTF-8-sig. Sharing cannot erase it.
+        with pytest.raises(SyntaxError):
+            observation.tree()
+    else:
+        assert isinstance(observation.tree(), ast.Module)
+
+
+def test_observation_reuses_only_its_own_bytes_and_reports_parse_errors():
+    first = check_subprocess_guard_coverage.PythonSourceObservation(
+        b"import subprocess\nsubprocess.run(['echo'])\n", "tools/item.py"
+    )
+    assert (
+        len(check_subprocess_guard_coverage.scan_observation(first, "tools/item.py"))
+        == 1
+    )
+    changed = check_subprocess_guard_coverage.PythonSourceObservation(
+        b"pass\n", "tools/item.py"
+    )
+    assert (
+        check_subprocess_guard_coverage.scan_observation(changed, "tools/item.py") == ()
+    )
+    broken = check_subprocess_guard_coverage.PythonSourceObservation(
+        b"def broken(:\n", "tools/item.py"
+    )
+    with pytest.raises(SyntaxError):
+        check_subprocess_guard_coverage.scan_observation(broken, "tools/item.py")
+    with pytest.raises(SyntaxError):
+        broken.tree()
+
+
+@pytest.mark.parametrize("action", ["error", "default", "ignore"])
+@pytest.mark.parametrize("raw_first", [False, True])
+def test_warning_bearing_observation_preserves_parser_policy_and_order(
+    action, raw_first
+):
+    # Invalid escapes warn during AST parsing on supported Python 3.12+.
+    # Keep the literal source byte independent of the observation/parser code.
+    source = b"import subprocess\n" + rb"value = '\q'" + b"\nsubprocess.run(['echo'])\n"
+    filename = "tests/warning_policy.py"
+    observation = check_subprocess_guard_coverage.PythonSourceObservation(
+        source, filename
+    )
+
+    def raw():
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter(action, SyntaxWarning)
+            calls = check_subprocess_guard_coverage.scan_observation(
+                observation, filename
+            )
+        assert caught == []
+        assert [(call.path, call.line, call.method) for call in calls] == [
+            (filename, 3, "run")
+        ]
+
+    def direct():
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter(action, SyntaxWarning)
+            if action == "error":
+                with pytest.raises(SyntaxError, match="invalid escape sequence") as exc:
+                    observation.tree()
+                assert exc.type is SyntaxError
+                assert exc.value.filename == filename
+                assert exc.value.lineno == 2
+            else:
+                assert isinstance(observation.tree(), ast.Module)
+        if action == "default":
+            assert len(caught) == 1
+            assert caught[0].category is SyntaxWarning
+            assert "invalid escape sequence" in str(caught[0].message)
+            assert caught[0].filename == filename
+            assert caught[0].lineno == 2
+        else:
+            assert caught == []
+
+    if raw_first:
+        raw()
+        direct()
+    else:
+        direct()
+        raw()
+
+
+def test_warning_bearing_observation_rechecks_policy_and_filename():
+    observation = check_subprocess_guard_coverage.PythonSourceObservation(
+        rb"value = '\q'" + b"\n", "tests/original.py"
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("ignore", SyntaxWarning)
+        assert isinstance(observation.tree(), ast.Module)
+        warnings.simplefilter("error", SyntaxWarning)
+        with pytest.raises(SyntaxError, match="invalid escape sequence") as exc:
+            observation.tree()
+        assert exc.value.filename == "tests/original.py"
+        assert exc.value.lineno == 1
+        with pytest.raises(SyntaxError, match="invalid escape sequence") as renamed:
+            observation.tree(filename="tests/renamed.py")
+        assert renamed.value.filename == "tests/renamed.py"
+        warnings.simplefilter("default", SyntaxWarning)
+        assert isinstance(observation.tree(), ast.Module)
+    assert len(caught) == 1
+    assert caught[0].category is SyntaxWarning
+    assert caught[0].filename == "tests/original.py"
+    assert caught[0].lineno == 1
+
+
+def test_warning_free_observation_shares_parse_across_policy_changes(monkeypatch):
+    observation = check_subprocess_guard_coverage.PythonSourceObservation(
+        b"value = 1\n", "tests/ordinary.py"
+    )
+    parses = []
+    parse = ast.parse
+
+    def observe(source, filename="<unknown>", *args, **kwargs):
+        parses.append(filename)
+        return parse(source, filename, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", observe)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("ignore", SyntaxWarning)
+        original = observation.tree()
+        warnings.simplefilter("error", SyntaxWarning)
+        assert observation.tree() is original
+        assert (
+            check_subprocess_guard_coverage.scan_observation(
+                observation, "tests/ordinary.py"
+            )
+            == ()
+        )
+        warnings.simplefilter("default", SyntaxWarning)
+        assert observation.tree() is original
+    assert caught == []
+    assert parses == ["tests/ordinary.py"]
 
 
 def test_current_repo_subprocess_guard_coverage_is_clean() -> None:

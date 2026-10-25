@@ -8,7 +8,7 @@ import os
 from collections.abc import Iterable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Lock
 from types import MappingProxyType
@@ -58,12 +58,17 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
 _GRAPH_CACHE_SCHEMA_VERSION = 21
-_GraphQuery = tuple[
-    Path, tuple[Path, ...], tuple[Path, ...], tuple[Path, ...], PythonImportPolicy
+_GraphDomainKey = tuple[
+    Path,
+    tuple[Path, ...],
+    tuple[Path, ...],
+    Path,
+    tuple[Path, bytes] | None,
 ]
+_GraphQuery = tuple[tuple[Path, ...], PythonImportPolicy]
 _ImportManifest = tuple[Path, bytes, dict[str, object]]
-_GRAPH_TRANSACTION: ContextVar[dict[_GraphQuery, LocalPythonSourceClosure] | None] = (
-    ContextVar("_GRAPH_TRANSACTION", default=None)
+_GRAPH_TRANSACTION: ContextVar[_GraphTransaction | None] = ContextVar(
+    "_GRAPH_TRANSACTION", default=None
 )
 
 
@@ -89,13 +94,88 @@ class LocalPythonSourceClosure:
         )
 
 
+@dataclass(frozen=True)
+class _CoveredSourceDomain:
+    paths: frozenset[Path]
+    topology_digest: str
+
+
+@dataclass
+class _GraphDomain:
+    """Physical inputs shared by query projections in one immutable operation.
+
+    The resolver owns canonical paths and filesystem facts. Relative keys here
+    are lexical projections of those paths, not a second resolution cache.
+    Raw captures retain no parsed ASTs; each analysis miss uses a temporary view.
+    """
+
+    root: Path
+    resolver: LocalPythonModuleResolver
+    persisted_entries: dict[str, dict[str, object]]
+    entries: dict[str, dict[str, object]]
+    cache_pruned: bool
+    snapshots: dict[Path, PythonSourceSnapshot] = field(default_factory=dict)
+    relative_keys: dict[Path, str] = field(default_factory=dict)
+    package_children: dict[Path, frozenset[str]] = field(default_factory=dict)
+    inventories: dict[tuple[str | None, bool], _CoveredSourceDomain] = field(
+        default_factory=dict
+    )
+    receipts: dict[_GraphQuery, LocalPythonSourceClosure] = field(default_factory=dict)
+
+    def capture(self, path: Path) -> PythonSourceSnapshot:
+        if path not in self.snapshots:
+            self.snapshots[path] = self.resolver.capture_source(path)
+        return self.snapshots[path]
+
+    def relative_key(self, path: Path) -> str:
+        if path not in self.relative_keys:
+            self.relative_keys[path] = _relative_cache_key(self.root, path)
+        return self.relative_keys[path]
+
+    def inventory(self, policy: PythonImportPolicy) -> _CoveredSourceDomain:
+        key = (policy.allowed_prefix, policy.include_parent_packages)
+        covered = self.inventories.get(key)
+        if covered is not None:
+            return covered
+        inventory = self.resolver.source_inventory(
+            allowed_prefix=policy.allowed_prefix,
+            include_parent_packages=policy.include_parent_packages,
+        )
+        paths = tuple(dict.fromkeys(item.path for item in inventory.sources))
+        for path in paths:
+            self.capture(path)
+        topology = {
+            "roots": [self.relative_key(path) for path in self.resolver.search_roots],
+            "sources": [
+                [item.name, self.relative_key(item.path)] for item in inventory.sources
+            ],
+            "packages": [
+                [name, [self.relative_key(path) for path in locations]]
+                for name, locations in inventory.packages
+            ],
+        }
+        covered = _CoveredSourceDomain(
+            frozenset(paths),
+            hashlib.sha256(
+                json.dumps(topology, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        )
+        self.inventories[key] = covered
+        return covered
+
+
+@dataclass
+class _GraphTransaction:
+    domains: dict[_GraphDomainKey, _GraphDomain] = field(default_factory=dict)
+
+
 @contextmanager
 def local_python_import_graph_transaction(*, fresh: bool = False) -> Generator[None]:
-    """Reuse immutable tooling closure queries only within one build command."""
+    """Share immutable tooling inputs and separate queries within one command."""
     if not fresh and _GRAPH_TRANSACTION.get() is not None:
         yield
         return
-    previous_context = _GRAPH_TRANSACTION.set({})
+    previous_context = _GRAPH_TRANSACTION.set(_GraphTransaction())
     try:
         yield
     finally:
@@ -541,32 +621,51 @@ def local_python_import_closure(
     seed_paths = tuple(sorted({seed.resolve() for seed in seeds}))
     if any(not path.is_relative_to(root) for path in (*roots, *seed_paths)):
         raise ValueError(f"Python tooling source is outside project root: {root}")
-    query = (root, seed_paths, roots, source_roots, policy)
+    query = (seed_paths, policy)
+    # Cache placement and manifest contracts cannot share an operation receipt
+    # accidentally. Source-byte and topology reuse ends with this transaction.
+    domain_key = (
+        root,
+        roots,
+        source_roots,
+        python_source_closure_cache_path(root),
+        (manifest_record[0], manifest_record[1])
+        if manifest_record is not None
+        else None,
+    )
     transaction = _GRAPH_TRANSACTION.get()
-    if transaction is not None and query in transaction:
-        return transaction[query]
-    resolver = LocalPythonModuleResolver(roots, source_roots=source_roots)
-    snapshots: dict[Path, PythonSourceSnapshot] = {}
-
-    def capture(path: Path) -> PythonSourceSnapshot:
-        if path not in snapshots:
-            snapshots[path] = resolver.capture_source(path)
-        return snapshots[path]
+    domain = transaction.domains.get(domain_key) if transaction is not None else None
+    if domain is None:
+        resolver = LocalPythonModuleResolver(roots, source_roots=source_roots)
+        persisted_entries, cache_pruned = _read_graph_cache(root)
+        domain = _GraphDomain(
+            root,
+            resolver,
+            persisted_entries,
+            _with_process_graph_entries(root, persisted_entries),
+            cache_pruned,
+        )
+        if transaction is not None:
+            transaction.domains[domain_key] = domain
+    if query in domain.receipts:
+        return domain.receipts[query]
+    resolver = domain.resolver
+    snapshots = domain.snapshots
+    capture = domain.capture
 
     manifest, dynamic_import_overrides = (
         _read_dynamic_import_manifest(manifest_record, root, resolver)
         if not policy.module_level_only
         else (None, {})
     )
-    persisted_entries, cache_pruned = _read_graph_cache(root)
-    cached_entries = _with_process_graph_entries(root, persisted_entries)
     analysis_digest = hashlib.sha256(
         json.dumps(local_import_analysis_identity(), sort_keys=True).encode("utf-8")
     ).hexdigest()
     # Keep records from sibling policies/seeds. Each source/module/policy variant
     # replaces its byte generation; aliases share a snapshot, never an execution
     # context. Merging next_entries below retains every alias seen in this walk.
-    next_entries = dict(cached_entries)
+    # Failed queries never publish their tentative rows through a later query.
+    next_entries = dict(domain.entries)
     seed_sources: list[LocalPythonModuleSource] = []
     for seed in seed_paths:
         for path in seed.rglob("*.py") if seed.is_dir() else (seed,):
@@ -575,7 +674,7 @@ def local_python_import_closure(
             seed_sources.append(
                 LocalPythonModuleSource(resolver.module_identity(path)[0], path)
             )
-    package_children: dict[Path, frozenset[str]] = {}
+    package_children = domain.package_children
 
     # Content-keyed, so one summary serves every premise round.
     writes_by_source: dict[
@@ -611,7 +710,7 @@ def local_python_import_closure(
                 premise = graph_writes.premise(
                     source, package_children.get(source, frozenset())
                 )
-                cache_key = _relative_cache_key(root, source)
+                cache_key = domain.relative_key(source)
                 snapshot = capture(source)
                 policy_digest = _analysis_policy_digest(
                     module, is_package, policy, premise
@@ -675,37 +774,14 @@ def local_python_import_closure(
                     policy,
                 )
                 if analysis.relative_source_obligations and not topology_digest:
-                    inventory = resolver.source_inventory(
-                        allowed_prefix=policy.allowed_prefix,
-                        include_parent_packages=policy.include_parent_packages,
-                    )
                     # Inventory members are byte dependencies, not executable
                     # graph requests. Complete coverage requires no recursive
                     # AST analysis of these speculative owners. Ordinary reached
                     # sources still follow their graph and validate all exact
                     # manifest obligations.
-                    for item in inventory.sources:
-                        capture(item.path)
-                        covered_sources.add(item.path)
-                    topology = {
-                        "roots": [_relative_cache_key(root, path) for path in roots],
-                        "sources": [
-                            [item.name, _relative_cache_key(root, item.path)]
-                            for item in inventory.sources
-                        ],
-                        "packages": [
-                            [
-                                name,
-                                [_relative_cache_key(root, path) for path in locations],
-                            ]
-                            for name, locations in inventory.packages
-                        ],
-                    }
-                    topology_digest = hashlib.sha256(
-                        json.dumps(
-                            topology, sort_keys=True, separators=(",", ":")
-                        ).encode()
-                    ).hexdigest()
+                    covered = domain.inventory(policy)
+                    covered_sources.update(covered.paths)
+                    topology_digest = covered.topology_digest
             except ValueError as exc:
                 raise ValueError(
                     f"cannot derive Python tooling import closure for {source}: {exc}"
@@ -737,9 +813,12 @@ def local_python_import_closure(
         graph_writes = found
     resolver.import_topology.validate()
     reached = {module_source.path for module_source in visited}
-    if cache_pruned or next_entries != persisted_entries:
+    if domain.cache_pruned or next_entries != domain.persisted_entries:
         _write_graph_cache(root, next_entries)
     _remember_process_graph_entries(root, next_entries)
+    domain.entries = next_entries
+    domain.persisted_entries = next_entries
+    domain.cache_pruned = False
     content_by_path = {
         path: snapshots[path].content for path in reached | covered_sources
     }
@@ -755,7 +834,7 @@ def local_python_import_closure(
     source_bytes = 0
     for path in paths:
         content = content_by_path[path]
-        digest.update(_relative_cache_key(root, path).encode("utf-8"))
+        digest.update(domain.relative_key(path).encode("utf-8"))
         digest.update(b"\0")
         digest.update(content)
         digest.update(b"\0")
@@ -769,5 +848,5 @@ def local_python_import_closure(
         paths, hashes, digest.hexdigest(), source_bytes, topology_digest
     )
     if transaction is not None:
-        transaction[query] = result
+        domain.receipts[query] = result
     return result

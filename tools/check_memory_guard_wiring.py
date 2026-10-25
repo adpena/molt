@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import sys
+import unicodedata
 from typing import Sequence
 
 
@@ -58,6 +59,12 @@ class MissingDirectTestGuard:
 
 
 @dataclass(frozen=True, slots=True)
+class MinimalGuardEnvironment:
+    path: str
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryGuardWiringAudit:
     python_contracts: int
     shell_contracts: int
@@ -68,6 +75,7 @@ class MemoryGuardWiringAudit:
     required_sentinel_missing: tuple[str, ...]
     sentinel_drift: tuple[SentinelTokenDrift, ...]
     direct_test_guard_missing: tuple[MissingDirectTestGuard, ...]
+    minimal_guard_environments: tuple[MinimalGuardEnvironment, ...]
     subprocess_guard_scanned_files: int
     subprocess_guard_raw_call_count: int
     subprocess_guard_unexpected: tuple[
@@ -88,6 +96,7 @@ class MemoryGuardWiringAudit:
             and not self.required_sentinel_missing
             and not self.sentinel_drift
             and not self.direct_test_guard_missing
+            and not self.minimal_guard_environments
             and not self.subprocess_guard_unexpected
             and not self.subprocess_guard_stale_allowlist
             and not self.subprocess_guard_expanded_allowlist
@@ -691,50 +700,151 @@ def _main_guard_line(tree: ast.Module) -> int | None:
     return None
 
 
-def _audit_direct_executable_test_guards(
-    root: Path,
-) -> tuple[MissingDirectTestGuard, ...]:
-    tests_root = root / "tests"
-    if not tests_root.exists():
-        return ()
+# Calls whose literal environment must carry the caller's test custody.
+GUARD_LAUNCHERS = frozenset(
+    {
+        "run_guarded",
+        "guarded_completed_process",
+        "guarded_completed_process_to_tempfiles",
+        "run_guarded_test_process",
+        "check_output_guarded_test_process",
+    }
+)
 
-    missing: list[MissingDirectTestGuard] = []
-    for path in sorted(tests_root.rglob("*.py")):
-        relative = path.relative_to(root)
-        relative_text = relative.as_posix()
-        if any(part in DIRECT_TEST_SCRIPT_EXCLUDED_PARTS for part in relative.parts):
+
+def minimal_guard_environment_lines(
+    source: check_subprocess_guard_coverage.PythonSourceObservation,
+) -> tuple[int, ...]:
+    """Literal guard environments lacking custody, using Python's name spelling.
+
+    Non-launcher program fixtures may use newer syntax than this host. Keep
+    them outside this AST rule; normalize spelling just as Python does for
+    identifiers so a full-width launcher cannot evade the rule.
+    """
+    normalized = unicodedata.normalize("NFKC", source.text)
+    if not any(name in normalized for name in GUARD_LAUNCHERS):
+        return ()
+    lines: list[int] = []
+    for node in ast.walk(source.tree()):
+        if not isinstance(node, ast.Call):
             continue
-        try:
-            text = path.read_text(encoding="utf-8")
-            tree = ast.parse(text, filename=relative_text)
-        except (OSError, SyntaxError) as exc:
-            missing.append(
-                MissingDirectTestGuard(
-                    relative_text,
-                    0,
-                    f"could not parse direct-executable test candidate: {exc}",
-                )
-            )
+        name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+        if name not in GUARD_LAUNCHERS:
             continue
-        line = _main_guard_line(tree)
-        if line is None:
-            continue
-        guard_path = path.parent / "sitecustomize.py"
-        try:
-            guard_text = guard_path.read_text(encoding="utf-8")
-        except OSError:
-            guard_text = ""
-        if DIRECT_TEST_SITECUSTOMIZE_TOKEN in guard_text:
-            continue
-        missing.append(
-            MissingDirectTestGuard(
-                relative_text,
-                line,
-                "direct-executable tests require a path-local sitecustomize.py "
-                "that imports the shared test memory-guard bootstrap",
-            )
+        for keyword in node.keywords:
+            value = keyword.value
+            if keyword.arg != "env" or not isinstance(value, ast.Dict):
+                continue
+            spreads = [
+                ast.unparse(v) for k, v in zip(value.keys, value.values) if k is None
+            ]
+            keys = [ast.unparse(k) for k in value.keys if k is not None]
+            if not spreads and not any("STATE_ROOT" in key for key in keys):
+                lines.append(node.lineno)
+    return tuple(lines)
+
+
+def _direct_test_guard(
+    root: Path,
+    path: Path,
+    source: check_subprocess_guard_coverage.PythonSourceObservation,
+) -> MissingDirectTestGuard | None:
+    relative = path.relative_to(root)
+    if any(part in DIRECT_TEST_SCRIPT_EXCLUDED_PARTS for part in relative.parts):
+        return None
+    try:
+        line = _main_guard_line(source.tree())
+    except SyntaxError as exc:
+        return MissingDirectTestGuard(
+            relative.as_posix(),
+            0,
+            f"could not parse direct-executable test candidate: {exc}",
         )
-    return tuple(missing)
+    if line is None:
+        return None
+    return MissingDirectTestGuard(
+        relative.as_posix(),
+        line,
+        "direct-executable tests require a path-local sitecustomize.py "
+        "that imports the shared test memory-guard bootstrap",
+    )
+
+
+def _audit_source_rules(
+    root: Path,
+    *,
+    subprocess_guard_audit: check_subprocess_guard_coverage.SubprocessGuardAudit | None,
+) -> tuple[
+    check_subprocess_guard_coverage.SubprocessGuardAudit,
+    tuple[MissingDirectTestGuard, ...],
+    tuple[MinimalGuardEnvironment, ...],
+]:
+    """One fresh inventory and one source observation per selected file.
+
+    Keep each rule's existing filesystem scope. Only compact paths/findings
+    survive a streaming step; source text and ASTs never survive this call.
+    Library calls deliberately do not open persistent scanner records.
+    """
+    raw = check_subprocess_guard_coverage
+    targets, text_targets, allowlist = raw._audit_scope(
+        _subprocess_guard_targets(root), root=root
+    )
+    raw_order = (
+        tuple(raw._iter_python_files(targets, root=root))
+        if subprocess_guard_audit is None
+        else ()
+    )
+    raw_paths = set(raw_order)
+    test_paths = set((root / "tests").rglob("*.py"))
+    paths = sorted(raw_paths | test_paths)
+    calls_by_path: dict[
+        Path, tuple[check_subprocess_guard_coverage.RawSubprocessCall, ...]
+    ] = {}
+    direct_candidates: list[MissingDirectTestGuard] = []
+    minimal: list[MinimalGuardEnvironment] = []
+    guarded_directories: set[Path] = set()
+    # Existing sitecustomize.py files are already in the complete tests
+    # inventory. Record their compact token fact during that same observation.
+    guard_paths = {path.parent / "sitecustomize.py" for path in test_paths}
+    for path in paths:
+        relative = path.relative_to(root).as_posix()
+        # The former minimal-env census read every test source strictly too;
+        # a vanished/unreadable admitted source must not become a clean audit.
+        data = path.read_bytes()
+        source = raw.PythonSourceObservation(data, relative)
+        if path in guard_paths:
+            if DIRECT_TEST_SITECUSTOMIZE_TOKEN in source.text:
+                guarded_directories.add(path.parent)
+        if path in raw_paths:
+            calls_by_path[path] = raw.scan_observation(
+                source, raw._normalize_path(path, root=root)
+            )
+        if path in test_paths:
+            candidate = _direct_test_guard(root, path, source)
+            if candidate is not None:
+                direct_candidates.append(candidate)
+            minimal.extend(
+                MinimalGuardEnvironment(relative, line)
+                for line in minimal_guard_environment_lines(source)
+            )
+    # A later-sorted sitecustomize is just as authoritative as an earlier one.
+    direct = tuple(
+        item
+        for item in direct_candidates
+        if item.line == 0 or (root / item.path).parent not in guarded_directories
+    )
+    if subprocess_guard_audit is None:
+        # Preserve the raw audit's target order and its allowance multiplicity.
+        calls = [call for path in raw_order for call in calls_by_path[path]]
+        text_paths = tuple(raw._iter_text_files(text_targets, root=root))
+        for path in text_paths:
+            calls.extend(raw._scan_text_file(path, root=root))
+        subprocess_guard_audit = raw.audit_calls(
+            calls,
+            scanned_files=len(raw_paths) + len(text_paths),
+            allowlist=allowlist,
+        )
+    return subprocess_guard_audit, direct, tuple(minimal)
 
 
 def audit_repo(
@@ -778,15 +888,9 @@ def audit_repo(
             drift.append(SentinelTokenDrift(token, "scanner_not_in_process_sentinel"))
         for token in sorted(sentinel_set - scanned_set):
             drift.append(SentinelTokenDrift(token, "process_sentinel_not_in_scanner"))
-    subprocess_audit = (
-        subprocess_guard_audit
-        if subprocess_guard_audit is not None
-        else check_subprocess_guard_coverage.audit_paths(
-            _subprocess_guard_targets(root),
-            root=root,
-        )
+    subprocess_audit, direct_test_guard_missing, minimal_guard_environments = (
+        _audit_source_rules(root, subprocess_guard_audit=subprocess_guard_audit)
     )
-    direct_test_guard_missing = _audit_direct_executable_test_guards(root)
 
     return MemoryGuardWiringAudit(
         python_contracts=len(python_contracts),
@@ -798,6 +902,7 @@ def audit_repo(
         required_sentinel_missing=required_missing,
         sentinel_drift=tuple(drift),
         direct_test_guard_missing=direct_test_guard_missing,
+        minimal_guard_environments=minimal_guard_environments,
         subprocess_guard_scanned_files=subprocess_audit.scanned_files,
         subprocess_guard_raw_call_count=len(subprocess_audit.raw_calls),
         subprocess_guard_unexpected=subprocess_audit.unexpected,
@@ -819,6 +924,9 @@ def _audit_to_dict(audit: MemoryGuardWiringAudit) -> dict[str, object]:
         "sentinel_drift": [asdict(item) for item in audit.sentinel_drift],
         "direct_test_guard_missing": [
             asdict(item) for item in audit.direct_test_guard_missing
+        ],
+        "minimal_guard_environments": [
+            asdict(item) for item in audit.minimal_guard_environments
         ],
         "subprocess_guard": {
             "ok": (
@@ -874,6 +982,13 @@ def _format_text(audit: MemoryGuardWiringAudit) -> str:
         lines.append("Direct-executable test scripts missing startup guard:")
         for item in audit.direct_test_guard_missing:
             lines.append(f"- {item.path}:{item.line} {item.reason}")
+    if audit.minimal_guard_environments:
+        lines.append("Literal test guard environments missing custody:")
+        for item in audit.minimal_guard_environments:
+            lines.append(
+                f"- {item.path}:{item.line} "
+                "spread guard_custody_env() into the environment"
+            )
     if audit.subprocess_guard_unexpected:
         lines.append("Unexpected raw subprocess calls:")
         for item in audit.subprocess_guard_unexpected:
