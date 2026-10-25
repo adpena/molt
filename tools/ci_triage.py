@@ -14,6 +14,11 @@ Usage:
     python3 tools/ci_triage.py RUN_ID
     python3 tools/ci_triage.py --branch verify/train-32
     python3 tools/ci_triage.py RUN_ID --compare none --json
+    python3 tools/ci_triage.py RUN_ID --verify
+
+Exit status: 0 completed successful CI (and verified coverage with --verify),
+1 failed CI/proofs, 2 unavailable verification, 3 unfinished CI. NEW/main
+classification does not turn a known failure into success.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ import json
 import re
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -237,7 +242,7 @@ def render(run: dict[str, Any], items: list[Classified], pending: list[str]) -> 
 
 def _gh_json(args: list[str]) -> Any:
     output = _COMMANDS.check_output(
-        ["gh", *args], text=True, encoding="utf-8", timeout=120
+        ["gh", *args], cwd=ROOT, text=True, encoding="utf-8", timeout=120
     )
     return json.loads(output)
 
@@ -255,6 +260,7 @@ def _job_log(job_id: int) -> str:
             "--allow-escape-sequences",
         ],
         text=True,
+        cwd=ROOT,
         encoding="utf-8",
         errors="replace",
         timeout=300,
@@ -271,7 +277,7 @@ def _run(run_id: int) -> dict[str, Any]:
             "view",
             str(run_id),
             "--json",
-            "databaseId,headBranch,headSha,status,conclusion,workflowName,jobs",
+            "databaseId,headBranch,headSha,status,conclusion,workflowName,jobs,event,attempt,url",
         ]
     )
 
@@ -286,11 +292,15 @@ def _failed_reports(run: dict[str, Any]) -> tuple[list[JobReport], list[str]]:
     return reports, pending
 
 
-def _latest_run(branch: str, workflow: str, completed: bool) -> int | None:
+def _latest_run(
+    branch: str, workflow: str, completed: bool, *, exclude_run_id: int | None = None
+) -> int | None:
     args = ["run", "list", "--branch", branch, "--workflow", workflow, "--limit", "10"]
     runs = _gh_json([*args, "--json", "databaseId,status"])
     for run in runs:
-        if not completed or run["status"] == "completed":
+        if run["databaseId"] != exclude_run_id and (
+            not completed or run["status"] == "completed"
+        ):
             return int(run["databaseId"])
     return None
 
@@ -306,6 +316,12 @@ def main(argv: list[str] | None = None) -> int:
         help="baseline: 'main' (newest completed main run), a run ID, or 'none'",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="retrieve and verify selected proof coverage for this exact committed "
+        "source (requires a completed successful CI run with selection artifact)",
+    )
     args = parser.parse_args(argv)
     run_id = args.run_id
     if run_id is None:
@@ -317,28 +333,71 @@ def main(argv: list[str] | None = None) -> int:
     run = _run(run_id)
     reports, pending = _failed_reports(run)
     baseline = None
+    baseline_run = None
     if args.compare != "none":
         base_id = (
-            _latest_run("main", args.workflow, completed=True)
+            _latest_run("main", args.workflow, completed=True, exclude_run_id=run_id)
             if args.compare == "main"
             else int(args.compare)
         )
         if base_id is not None and base_id != run_id:
-            baseline, _ = _failed_reports(_run(base_id))
+            baseline_run = _run(base_id)
+            baseline, _ = _failed_reports(baseline_run)
     ledger = LEDGER.read_text(encoding="utf-8") if LEDGER.is_file() else ""
     items = classify(reports, baseline, open_ledger_rows(ledger))
+    verification = None
+    if args.verify:
+        from tools.ci_proof_evidence import verify_run
+
+        verification = verify_run(
+            run, repo_root=ROOT, commands=_COMMANDS, read_run=_run
+        )
     if args.json:
         payload = {
             "run": {
-                key: run.get(key) for key in ("databaseId", "headBranch", "headSha")
+                key: run.get(key)
+                for key in (
+                    "databaseId",
+                    "headBranch",
+                    "headSha",
+                    "status",
+                    "conclusion",
+                    "event",
+                    "attempt",
+                    "url",
+                )
             },
             "pending": pending,
+            "baseline": None
+            if baseline_run is None
+            else {
+                key: baseline_run.get(key)
+                for key in ("databaseId", "headSha", "conclusion", "url")
+            },
             "failures": [item.__dict__ for item in items],
+            "verification": None if verification is None else asdict(verification),
         }
         print(json.dumps(payload, indent=2))
     else:
         print(render(run, items, pending))
-    return 1 if any(item.new for item in items) else 0
+        if baseline_run is not None:
+            print(
+                f"  baseline: run {baseline_run['databaseId']} "
+                f"{baseline_run.get('headSha')}"
+            )
+        if verification is not None:
+            print(f"  proof coverage: {verification.status} ({verification.scope})")
+            if verification.evidence_dir:
+                print(f"  evidence: {verification.evidence_dir}")
+            for error in verification.errors:
+                print(f"  {error}")
+    if run.get("status") != "completed" or pending:
+        return 3
+    if run.get("conclusion") != "success" or items:
+        return 1
+    if verification is not None and verification.status != "verified":
+        return 2 if verification.status == "unavailable" else 1
+    return 0
 
 
 if __name__ == "__main__":

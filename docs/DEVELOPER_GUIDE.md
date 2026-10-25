@@ -2,6 +2,56 @@
 
 Welcome to the Molt codebase. This guide is designed to help you understand the architecture, navigation, and philosophy of the project.
 
+## Follow a change through CI
+
+Before designing or repairing a subsystem, find its canonical owner, relevant
+history, handoffs and preserved work. Reuse or reconcile an existing solution
+before adding another one. Research the relevant compiler/runtime prior art
+before changing the design, and keep the measured reason for a deviation in
+the owning design document.
+
+The [integration driver](ops/INTEGRATION.md) owns landing and retirement;
+`tools/proof_plan.toml` owns proof selection. To inspect a hosted run:
+
+```bash
+uv run --python 3.12 python tools/ci_triage.py RUN_ID
+```
+
+The report includes the source, CI lifecycle, failures, comparison with main,
+and matching open findings. A known failure still exits unsuccessfully. Exit
+codes are `0` for completed successful CI, `1` for failures, `2` for unavailable
+verification, and `3` for unfinished CI. Ordinary triage does not establish
+proof coverage.
+
+From the exact clean committed checkout that CI tested, retrieve and verify
+the complete selected proof coverage:
+
+```bash
+uv run --python 3.12 python tools/ci_triage.py RUN_ID --verify
+```
+
+This downloads the classifier's source-bound selection and executable receipt
+artifacts, checks their GitHub digests with the shared strict archive reader,
+and invokes the canonical receipt verifier. Missing, ambiguous, failed or
+incomplete evidence cannot pass. The command retains the downloads and prints
+their location; it never changes the checkout or starts another CI run. Pull
+requests require the tested merge checkout recorded by the classifier.
+
+Coverage can reuse unique successful receipts from earlier attempts with the
+same source, authority, commands and admitted toolchains. It is not a claim
+that every proof ran afresh in this attempt. A current-attempt selection is
+required: older runs and partial reruns that retained an older classifier
+report verification unavailable. CI's existing aggregate verdict remains
+unchanged. Coverage is a source proof, not installed-release acceptance; the
+release matrix retains its own requirements.
+
+Every proof job exports the existing guard incidents and current-test records
+through the shared diagnostics action. Use those records to attribute a
+timeout before rerunning it. Per-test profiling remains available through
+`tools/pytest_profile.py`; session-end profiles alone cannot diagnose abrupt
+termination. See [performance authority](../tools/PERF_AUTHORITY.md) for
+performance claims and [operations](OPERATIONS.md) for build diagnostics.
+
 ## What is Molt?
 
 Molt is a research-grade project to compile a **verified per-application subset of Python** into **small, fast native binaries**. It is not just a compiler; it is a systems engineering platform that treats Python as a specification for high-performance native code.

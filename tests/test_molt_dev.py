@@ -5135,26 +5135,148 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     assert verdict["status"] == "done" and verdict["rc"] == 0
 
 
+@pytest.mark.parametrize(
+    "explicit_root", [False, True], ids=["default-root", "explicit-root"]
+)
 def test_detached_run_prints_a_verify_command_that_finds_its_state(
-    drv, tmp_path, capsys
+    drv, tmp_path, capsys, monkeypatch, explicit_root
 ):
-    # The landing queue starts its runners under --state-dir; the printed
-    # next step once omitted it and looked in the system temp directory.
-    state_root = tmp_path / "runners"
-    command = [sys.executable, "-c", "pass"]
-    assert drv.cmd_detached_run(_dr_ns(drv, "hinted", state_root, command)) == 0
-    printed = capsys.readouterr().err  # status lines go to stderr
-    from tools.molt_dev_detached import verify_command
+    import tempfile
 
-    argv = verify_command("hinted", str(state_root), 0)
-    assert (
-        "      " + shlex.join(verify_command("hinted", str(state_root), 30)) in printed
+    from tools import molt_dev_detached as detached
+
+    launch_temp = tmp_path / "launch temporary é"
+    verify_temp = tmp_path / "later temporary é"
+    unrelated_cwd = tmp_path / "unrelated cwd"
+    for directory in (launch_temp, verify_temp, unrelated_cwd):
+        directory.mkdir()
+    launch_temp = launch_temp.resolve()
+    verify_temp = verify_temp.resolve()
+    # Observe a different default only in this test's detached module. Do not
+    # change process-wide tempfile state used by guard/sentinel threads.
+    install_thread_module_view(
+        monkeypatch,
+        "tempfile",
+        tempfile,
+        detached,
+        gettempdir=lambda: str(launch_temp),
     )
-    _wait_done(drv, capsys, "hinted", state_root)
-    # Run exactly what a person would paste, from an unrelated directory.
-    completed = run_guarded_test_process(argv, cwd=tmp_path, timeout=120)
-    assert completed.returncode == drv.EXIT_OK, completed.stderr
-    assert "no state" not in completed.stderr
+    state_root = launch_temp / (
+        "explicit runners" if explicit_root else "molt_dev_detached"
+    )
+    marker = tmp_path / "payload ran once"
+    command = [
+        sys.executable,
+        "-c",
+        "from pathlib import Path\n"
+        f"with Path({str(marker)!r}).open('x', encoding='utf-8') as stream:\n"
+        "    stream.write('ran once\\n')\n",
+    ]
+    options = [
+        "detached-run",
+        "--name",
+        "hinted",
+        "--json",
+        "--verify-min-age-hint",
+        "0",
+    ]
+    if explicit_root:
+        options.extend(("--state-dir", str(state_root)))
+    args = drv.build_parser().parse_args([*options, "--", *command])
+    assert drv.cmd_detached_run(args) == 0
+    printed = capsys.readouterr()
+    launched = json.loads(printed.out)
+    state = state_root / "hinted"
+    argv = launched["verify_argv"]
+    expected_prefix = [
+        sys.executable,
+        *(["-I"] if sys.flags.isolated else []),
+        str(SCRIPT_PATH),
+    ]
+    assert argv == [
+        *expected_prefix,
+        "detached-verify",
+        "--name",
+        "hinted",
+        "--state-dir",
+        str(state_root),
+        "--min-age-s",
+        "0",
+    ]
+    assert Path(argv[0]).is_absolute() and SCRIPT_PATH.is_absolute()
+    assert launched["name"] == "hinted" and launched["state_dir"] == str(state)
+    assert type(launched["pid"]) is int and launched["pid"] > 0
+    # The human projection and machine handoff carry the same coordinates.
+    if os.name == "nt":
+        assert "JSON argument array; launch without a shell" in printed.err
+        assert "      " + json.dumps(argv) in printed.err
+    else:
+        assert "POSIX shell command:" in printed.err
+        assert "      " + shlex.join(argv) in printed.err
+    assert _wait_done(drv, capsys, "hinted", state_root)["rc"] == 0
+    pid_before = (state / "pid").read_bytes()
+    command_before = (state / "cmd.json").read_bytes()
+    assert int(pid_before) == launched["pid"]
+    assert marker.read_text(encoding="utf-8") == "ran once\n"
+    verify_env = dict(os.environ)
+    verify_env.update(
+        TMPDIR=str(verify_temp),
+        TMP=str(verify_temp),
+        TEMP=str(verify_temp),
+        MOLT_PRESERVE_AMBIENT_TMPDIR="1",
+    )
+    # A fresh verifier with the default lookup cannot see the first process's
+    # state. This independent negative proves the different environment is real.
+    root_index = argv.index("--state-dir")
+    missing_root = run_guarded_test_process(
+        [*argv[:root_index], *argv[root_index + 2 :]],
+        cwd=unrelated_cwd,
+        env=verify_env,
+        timeout=120,
+    )
+    assert missing_root.returncode != drv.EXIT_OK
+    assert "no state" in missing_root.stderr
+    assert str(verify_temp / "molt_dev_detached" / "hinted") in missing_root.stderr
+    # Execute the actual returned argv unchanged, from the other environment
+    # and cwd. Verification observes the original run; it must never relaunch it.
+    completed = run_guarded_test_process(
+        argv, cwd=unrelated_cwd, env=verify_env, timeout=120
+    )
+    assert completed.returncode == drv.EXIT_OK, completed.stdout + completed.stderr
+    assert "DONE rc=0" in completed.stderr
+    assert (state / "pid").read_bytes() == pid_before
+    assert (state / "cmd.json").read_bytes() == command_before
+    assert marker.read_text(encoding="utf-8") == "ran once\n"
+
+
+@pytest.mark.parametrize(("isolated", "expected_flags"), [(0, []), (1, ["-I"])])
+def test_detached_verify_argv_preserves_interpreter_isolation(
+    tmp_path, monkeypatch, isolated, expected_flags
+):
+    from types import SimpleNamespace
+
+    from tools import molt_dev_detached as detached
+
+    install_thread_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        detached,
+        flags=SimpleNamespace(isolated=isolated),
+    )
+    state_root = tmp_path / "state root"
+    assert detached.verify_command("retained", state_root, 31) == [
+        sys.executable,
+        *expected_flags,
+        str(SCRIPT_PATH),
+        "detached-verify",
+        "--name",
+        "retained",
+        "--state-dir",
+        str(state_root),
+        "--min-age-s",
+        "31",
+    ]
 
 
 def test_detached_runner_never_forks_the_live_python_process(drv):

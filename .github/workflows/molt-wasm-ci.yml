@@ -81,16 +81,17 @@ jobs:
           profile: full
           wasi: "true"
 
-      - name: Resolve build-control evidence custody
-        id: build-control
-        shell: bash
-        run: |
-          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
-
       - name: Execute WASM, Luau, and parity partitions
         env:
           MOLT_WASM_OPT: ${{ steps.binaryen.outputs.wasm_opt }}
         run: python3 tools/proof_plan.py --run-family wasm --receipt proof-receipts/wasm.json
+
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-wasm-build
 
       - name: Upload WASM receipt
         if: always() && hashFiles('proof-receipts/wasm.json') != ''
@@ -116,10 +117,6 @@ jobs:
             proof-receipts/wasm.json
             ${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/differential/runtime-import/', steps.build-control.outputs.proof_scratch_root) || '' }}
             proof-receipts/evidence/split-runtime/
-            ${{ steps.build-control.outputs.profile_log }}
-            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
-            ${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}
-            ${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}
           if-no-files-found: warn
           include-hidden-files: true
 

@@ -727,6 +727,11 @@ def command_profile_log_path(
     return harness_guard_artifact_dir(root, source) / "commands.jsonl"
 
 
+def command_profile_incident_dir(profile_log: Path) -> Path:
+    """The retained incident directory beside the selected command profile."""
+    return profile_log.parent / "incidents"
+
+
 def _max_bytes_from_mb(value: float | None) -> int | None:
     if value is None:
         return None
@@ -1063,7 +1068,7 @@ def _append_guarded_command_profile(
     if not name_incident or not isinstance(repro, Mapping):
         return path, None, None
     try:
-        incident = _write_incident_record(path.parent / "incidents", payload)
+        incident = _write_incident_record(command_profile_incident_dir(path), payload)
     except OSError as exc:
         return (
             path,

@@ -3167,6 +3167,9 @@ _EVENT_TIERS = {
     "workflow_call": "main",
     "schedule": SCHEDULED_TIER,
 }
+FULL_SELECTION_EVENTS = frozenset(
+    {"merge_group", "schedule", "workflow_dispatch", "workflow_call"}
+)
 
 
 def active_tier(environ: Mapping[str, str] | None = None) -> str | None:
@@ -3205,12 +3208,7 @@ def selection_for_event(
             base = before or str(payload.get("before", ""))
             head = after or str(payload.get("after", "")) or "HEAD"
             return plan.select(_diff_paths(base, head))
-        if event_name in {
-            "merge_group",
-            "schedule",
-            "workflow_dispatch",
-            "workflow_call",
-        }:
+        if event_name in FULL_SELECTION_EVENTS:
             return plan.all_selected(
                 reason=f"{event_name}: full proof plan", fail_closed=False
             )

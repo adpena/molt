@@ -36,6 +36,13 @@ jobs:
       - name: Build proofs and check Lean sorry baseline
         run: python3 tools/proof_plan.py --run-command formal.lean.sorry-baseline --receipt proof-receipts/formal-lean.json
 
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-formal-lean
+
       - name: Upload Lean proof receipt
         if: always() && hashFiles('proof-receipts/formal-lean.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -86,6 +93,13 @@ jobs:
       - name: Verify all models
         run: python3 tools/proof_plan.py --run-command formal.quint.models --receipt proof-receipts/formal-quint.json
 
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-formal-quint
+
       - name: Upload Quint proof receipt
         if: always() && hashFiles('proof-receipts/formal-quint.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -110,6 +124,13 @@ jobs:
 
       - name: Check comprehensive source correspondence
         run: python3 tools/proof_plan.py --run-command formal.correspondence --receipt proof-receipts/formal-correspondence.json
+
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-formal-correspondence
 
       - name: Upload correspondence receipt
         if: always() && hashFiles('proof-receipts/formal-correspondence.json') != ''
