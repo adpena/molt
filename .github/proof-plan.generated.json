@@ -5295,6 +5295,8 @@
         "-m",
         "pytest",
         "-q",
+        "-n",
+        "auto",
         "-m",
         "not slow"
       ],
@@ -5315,6 +5317,7 @@
         "tests/test_python_runtime_identity.py",
         "tests/tools/test_toolchain_capture.py"
       ],
+      "pytest_worker_memory_gb": 1.75,
       "resource_class": "python-tests",
       "tiers": [
         "pre-push",
@@ -5337,6 +5340,8 @@
         "-m",
         "pytest",
         "-q",
+        "-n",
+        "auto",
         "-m",
         "not slow"
       ],
@@ -5357,6 +5362,7 @@
         "tests/test_python_runtime_identity.py",
         "tests/tools/test_toolchain_capture.py"
       ],
+      "pytest_worker_memory_gb": 1.75,
       "resource_class": "python-tests",
       "tiers": [
         "pre-push",
@@ -9528,8 +9534,8 @@
       "local.python-source-dependencies.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_python_namespace_graph.py tests/cli/test_cli_python_source_closure.py tests/cli/test_cli_python_import_authority.py tests/cli/test_cli_lowering_cache_tooling_scope.py tests/cli/test_source_pure_import_requests.py",
       "local.release-work-state.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_agent_coordination.py tests/tools/test_release_outcomes.py",
       "local.repository-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_encoding_gate.py tests/tools/test_signed_ratio.py tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_environment_registry.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_structural_audit_records.py tests/test_structural_audit.py tests/test_generator_manifest.py tests/test_gen_stringprep_tables.py",
-      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_cargo_search_path.py tests/cli/test_product_store.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py tests/test_toolchain_facts.py tests/tools/test_tool_identity_reuse.py",
-      "local.runtime-cargo-input-custody.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy' tests/tools/test_toolchain_capture.py tests/tools/test_cargo_bindgen_toolchain.py tests/tools/test_proof_queue_execution_custody_p0.py tests/test_platform_toolchain.py",
+      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_cargo_search_path.py tests/cli/test_product_store.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py tests/test_toolchain_facts.py tests/tools/test_tool_identity_reuse.py",
+      "local.runtime-cargo-input-custody.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 -k 'rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy' tests/tools/test_toolchain_capture.py tests/tools/test_cargo_bindgen_toolchain.py tests/tools/test_proof_queue_execution_custody_p0.py tests/test_platform_toolchain.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
       "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-lang-obj-model -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
