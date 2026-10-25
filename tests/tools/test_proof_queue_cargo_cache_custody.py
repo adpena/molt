@@ -252,7 +252,11 @@ def test_queue_environment_preserves_scratch_custody_without_admitting_secrets(
         assert authority["variables"]["MOLT_MEMORY_GUARD_TOKEN"]["redacted"] is True
     finally:
         scratch.finish_guard_scratch(
-            lease, closed=True, success=True, evidence={"authority": "fixture"}
+            lease,
+            closed=True,
+            success=True,
+            evidence={"authority": "fixture"},
+            timings=scratch.ScratchFinalizationTimings(),
         )
 
 
