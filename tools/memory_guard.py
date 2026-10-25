@@ -1057,6 +1057,7 @@ def run_guarded(
         if scratch_lease is None or scratch_finalized:
             return scratch_cleanup_error
         scratch_finalized = True
+        timings = _temporary_artifacts.ScratchFinalizationTimings()
         finalize_started = time.perf_counter()
         try:
             outcome = _temporary_artifacts.finish_guard_scratch(
@@ -1064,6 +1065,7 @@ def run_guarded(
                 closed=closed,
                 success=success,
                 evidence=evidence,
+                timings=timings,
             )
             temporary_artifacts = {
                 **dict(outcome),
@@ -1089,7 +1091,10 @@ def run_guarded(
             # finish_guard_scratch owns the normal release. Keep this idempotent
             # fallback for every partial/exceptional terminalization path.
             try:
-                scratch_lease.release()
+                with timings.measure(
+                    _temporary_artifacts.ScratchFinalizationPhase.LEASE_RELEASE
+                ):
+                    scratch_lease.release()
             except BaseException as exc:
                 release_error = f"{type(exc).__name__}: {exc}"
                 scratch_cleanup_error = (
@@ -1104,6 +1109,7 @@ def run_guarded(
                     "closure": dict(evidence),
                 }
         assert temporary_artifacts is not None
+        temporary_artifacts["finalize_phase_elapsed_s"] = timings.json_payload()
         cast(dict[str, object], temporary_artifacts)["finalize_elapsed_s"] = max(
             0.0, time.perf_counter() - finalize_started
         )

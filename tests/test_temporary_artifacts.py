@@ -11,7 +11,11 @@ import pytest
 from molt import file_locks, file_publication
 from molt import temporary_artifacts as scratch
 from molt.exact_json import canonical_json_sha256, read_exact, write_exact
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import (
+    current_thread_only,
+    install_module_view,
+    install_thread_module_view,
+)
 
 
 def _lease(root: Path, number: int = 1):
@@ -30,12 +34,13 @@ def _read(path: Path):
     return read_exact(path, max_bytes=65536, label="test scratch receipt")
 
 
-def _finish(lease, *, success=True, closed=True, **kwargs):
+def _finish(lease, *, success=True, closed=True, timings=None, **kwargs):
     return scratch.finish_guard_scratch(
         lease,
         success=success,
         closed=closed,
         evidence={"authority": "fixture", "child_returncode": 0 if success else 1},
+        timings=scratch.ScratchFinalizationTimings() if timings is None else timings,
         **kwargs,
     )
 
@@ -1769,3 +1774,184 @@ def test_owned_temporary_directory_explicit_retention_and_later_cleanup(tmp_path
     path = another.retain()
     another.cleanup()
     assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    "failure_phase",
+    [
+        None,
+        "terminal_publication",
+        "payload_reclamation",
+        "receipt_removal",
+        "retention_sweep",
+        "lease_release",
+    ],
+)
+def test_scratch_finalization_times_real_phase_boundaries_on_failure(
+    tmp_path, monkeypatch, failure_phase
+):
+    import time
+
+    now = [100.0]
+    events = []
+    failure = RuntimeError("injected finalization boundary")
+    original_lease = scratch.GuardScratchLease
+
+    class TimedLease(scratch.GuardScratchLease):
+        def release(self):
+            events.append("lease_release")
+            try:
+                super().release()
+                if failure_phase == "lease_release":
+                    raise failure
+            finally:
+                now[0] += 11.0
+
+    # Substitute only the module constructor seam, never the shared class.
+    monkeypatch.setattr(
+        scratch, "GuardScratchLease", current_thread_only(TimedLease, original_lease)
+    )
+    lease, _ = _lease(tmp_path)
+    install_thread_module_view(
+        monkeypatch, "time", time, scratch, perf_counter=lambda: now[0]
+    )
+
+    def timed(operation, label, cost):
+        def run(*args, **kwargs):
+            events.append(label)
+            try:
+                if failure_phase == label:
+                    raise failure
+                return operation(*args, **kwargs)
+            finally:
+                now[0] += cost
+
+        return current_thread_only(run, operation)
+
+    for name, label, cost in (
+        ("_retire_locked", "terminal_publication", 2.0),
+        ("_reclaim_locked", "payload_reclamation", 3.0),
+        ("_remove_reclaimed_generation", "receipt_removal", 5.0),
+        ("reclaim_terminal_scratch", "retention_sweep", 7.0),
+    ):
+        monkeypatch.setattr(scratch, name, timed(getattr(scratch, name), label, cost))
+    original_owner = scratch._owner
+    admission_reads = []
+
+    def admitted_owner(generation):
+        first_read = not admission_reads
+        admission_reads.append(generation)
+        try:
+            return original_owner(generation)
+        finally:
+            # Only the initial real owner admission costs time. Later final-state
+            # and error-receipt reads must not be charged to that boundary again.
+            if first_read:
+                now[0] += 13.0
+
+    monkeypatch.setattr(
+        scratch, "_owner", current_thread_only(admitted_owner, original_owner)
+    )
+    timings = scratch.ScratchFinalizationTimings()
+    expected = {
+        "terminal_publication": 15.0,
+        "payload_reclamation": None,
+        "receipt_removal": None,
+        "retention_sweep": None,
+        "lease_release": 11.0,
+    }
+    expected_events = ["terminal_publication"]
+    if failure_phase != "terminal_publication":
+        expected["payload_reclamation"] = 3.0
+        expected_events.append("payload_reclamation")
+    expected_events.append("lease_release")
+    if failure_phase not in {
+        "terminal_publication",
+        "payload_reclamation",
+        "lease_release",
+    }:
+        expected["receipt_removal"] = 5.0
+        expected_events.append("receipt_removal")
+        if failure_phase != "receipt_removal":
+            expected["retention_sweep"] = 7.0
+            expected_events.append("retention_sweep")
+    try:
+        if failure_phase is None:
+            outcome = _finish(lease, timings=timings)
+            assert outcome["state"] == "reclaimed"
+            assert outcome["receipt"] is None
+            assert outcome["retention"]["errors"] == []
+        else:
+            with pytest.raises(RuntimeError) as caught:
+                _finish(lease, timings=timings)
+            assert caught.value is failure
+        assert admission_reads[0] == lease.generation
+        assert timings.json_payload() == expected
+        assert events == expected_events
+        assert lease.lock is None
+        # Failed admission retains the original payload; failure after retirement
+        # retains its moved payload. Later failures never resurrect deleted data.
+        assert lease.target.exists() is (failure_phase == "terminal_publication")
+        assert (lease.generation / "payload").exists() is (
+            failure_phase == "payload_reclamation"
+        )
+        assert "finalize_phase_elapsed_s" not in lease.owner
+        for name in ("owner.json", "terminal.json"):
+            receipt = lease.generation / name
+            if receipt.exists():
+                assert "finalize_phase_elapsed_s" not in _read(receipt)
+                assert "timings" not in _read(receipt)
+    finally:
+        original_lease.release(lease)
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_scratch_finalization_distinguishes_unentered_and_zero_cost_phases(
+    tmp_path, monkeypatch, closed
+):
+    import time
+
+    lease, _ = _lease(tmp_path)
+    install_thread_module_view(
+        monkeypatch, "time", time, scratch, perf_counter=lambda: 42.0
+    )
+    timings = scratch.ScratchFinalizationTimings()
+    outcome = _finish(lease, closed=closed, success=False, timings=timings)
+    assert outcome["state"] == ("retained" if closed else "indeterminate")
+    assert timings.json_payload() == {
+        "terminal_publication": 0.0,
+        "payload_reclamation": None,
+        "receipt_removal": None,
+        "retention_sweep": 0.0 if closed else None,
+        "lease_release": 0.0,
+    }
+    assert lease.target.exists() is (not closed)
+    assert (lease.generation / "payload").exists() is closed
+
+
+def test_scratch_release_timing_adds_sequential_attempts_without_hiding_failure(
+    monkeypatch,
+):
+    import time
+
+    now = [10.0]
+    install_thread_module_view(
+        monkeypatch, "time", time, scratch, perf_counter=lambda: now[0]
+    )
+    timings = scratch.ScratchFinalizationTimings()
+    phase = scratch.ScratchFinalizationPhase.LEASE_RELEASE
+    with timings.measure(phase):
+        now[0] += 2.0
+    failure = OSError("release failed")
+    with pytest.raises(OSError) as caught:
+        with timings.measure(phase):
+            now[0] += 3.0
+            raise failure
+    assert caught.value is failure
+    assert timings.json_payload() == {
+        "terminal_publication": None,
+        "payload_reclamation": None,
+        "receipt_removal": None,
+        "retention_sweep": None,
+        "lease_release": 5.0,
+    }

@@ -1152,6 +1152,14 @@ def test_guarded_completed_process_writes_command_profile(
         "state": "cleanup_failed",
         "path": str(tmp_path / "guard-scratch"),
         "error": "fixture cleanup failure",
+        "finalize_elapsed_s": 0.125,
+        "finalize_phase_elapsed_s": {
+            "terminal_publication": 0.01,
+            "payload_reclamation": 0.08,
+            "receipt_removal": None,
+            "retention_sweep": None,
+            "lease_release": 0.005,
+        },
     }
 
     def fake_run_guarded(command, **kwargs):
@@ -2540,6 +2548,14 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
     temporary_artifacts = {
         "state": "retained",
         "path": str(tmp_path / "guard-scratch"),
+        "finalize_elapsed_s": 0.125,
+        "finalize_phase_elapsed_s": {
+            "terminal_publication": 0.01,
+            "payload_reclamation": None,
+            "receipt_removal": None,
+            "retention_sweep": 0.08,
+            "lease_release": 0.005,
+        },
     }
     target = tmp_path / "target"
     quarantine = target / ".molt_state" / "quarantine" / "cargo_incremental" / "q"

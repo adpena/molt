@@ -785,6 +785,46 @@ Cargo-incremental quarantine receipt names a directory that survives the run,
 and artifact, cache-entry and release publications are outputs other
 processes trust. Neither runs on a successful guarded command.
 
+
+#### Scratch finalization phase diagnostics
+
+The terminal guard's `temporary_artifacts.finalize_elapsed_s` measures the
+complete scratch finalizer, including error handling and lease release.
+`temporary_artifacts.finalize_phase_elapsed_s` adds five fixed wall-time fields
+from `molt.temporary_artifacts.ScratchFinalizationTimings`:
+
+- `terminal_publication`: exact owner/payload admission and terminal publication,
+  indexing and retirement; an indeterminate owner publication is included.
+- `payload_reclamation`: this successful owner's receipt validation, payload
+  deletion and resulting owner publication.
+- `receipt_removal`: this reclaimed owner's receipt-directory removal.
+- `retention_sweep`: the entire indexed retention operation, including any other
+  payload or receipt reclamation it performs.
+- `lease_release`: actual normal and fallback release invocations, added without
+  overlapping another measured phase. An idempotent fallback is still timed.
+
+A null field means the phase was never entered; zero means it was entered but
+no positive interval was observed. A `finally` boundary records failed phases
+without converting or suppressing their exceptions. These fields are diagnostic
+wall time, not CPU time or acceptance evidence. They are disjoint, but need not
+sum to the total: lock-operation admission, final state reads and exceptional
+receipt publication remain in the total. The accumulator is explicit and local
+to one finalization. No timer, phase field or digest enters the scratch owner or
+terminal deletion-authority receipts. Guard summaries, terminal markers and
+harness profile events preserve the diagnostic mapping through their existing
+`temporary_artifacts` projection.
+
+Each entered phase adds two `perf_counter` calls and one bounded scalar update;
+a normal successful guard finalizer enters five phases plus its idempotent
+release fallback (twelve clock reads). Storage stays at five nullable scalars.
+There is no extra filesystem scan, syscall to inspect a process, retained tree,
+new process, durability barrier or changed retention/custody decision. Use the
+next required operation's terminal summary to distinguish payload deletion from
+publication or retention cost before selecting a repair. Preserve command,
+source/image and child identity; concurrent guard CPU measurements and native
+samples of a different supervising PID do not attribute these phases.
+
+
 ### 2.8 One product store per host (HF-390)
 
 Each checkout used to select its Rust products (the native runtime archive per
