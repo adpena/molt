@@ -652,6 +652,18 @@ def test_committed_gate_manifest_selects_codec_table_registry():
         == 1
     )
 
+    gates, matched = cfg.select(["config/codec_aliases.toml"])
+    gates = [gate.command for gate in gates]
+    assert "codec-tables" in {r.name for r in matched}
+    assert gates.count("python tools/generators.py check") == 1
+    assert (
+        sum(
+            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
+            for gate in gates
+        )
+        == 1
+    )
+
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet():
     cfg = GateConfig.load(COMMITTED_GATES)

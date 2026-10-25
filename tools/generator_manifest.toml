@@ -425,7 +425,7 @@ outputs = [
   "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
   "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
 ]
-source = "runtime/molt-stdlib-text/src/codec_registry.rs + tools/generator_io.py"
+source = "runtime/molt-stdlib-text/src/codec_registry.rs + config/codec_aliases.toml + src/molt/stdlib/encodings/*.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_codecs.py --check"
 toolchains = ["rustfmt"]

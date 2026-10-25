@@ -10198,6 +10198,7 @@
         "gates": [],
         "globs": [
           "tools/gen_codecs.py",
+          "config/codec_aliases.toml",
           "runtime/molt-runtime/src/object/ops_encoding.rs",
           "runtime/molt-stdlib-text/src/codec_registry.rs",
           "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
