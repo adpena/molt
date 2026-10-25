@@ -14,7 +14,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 | File | Matches | Classification | First match |
 |---|---:|---|---|
-| `src/molt/_environment_registry.py` | 2 | scattered-assumption | `3.12` |
+| `src/molt/_environment_registry.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/_host_capabilities_generated.py` | 3 | operational-tooling | `3.12` |
 | `src/molt/_python_release_generated.py` | 4 | scattered-assumption | `3.12` |
 | `src/molt/cache_eviction.py` | 1 | scattered-assumption | `3.12` |
@@ -36,7 +36,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/compiler_analysis/python_lexical_scope.py` | 2 | authority-routed | `3.12` |
 | `src/molt/compiler_analysis/python_syntax.py` | 1 | authority-routed | `3.15` |
 | `src/molt/debug/contracts.py` | 2 | operational-tooling | `sys.version_info` |
-| `src/molt/environment_registry.toml` | 2 | scattered-assumption | `3.12` |
+| `src/molt/environment_registry.toml` | 1 | scattered-assumption | `3.12` |
 | `src/molt/file_locks.py` | 3 | scattered-assumption | `3.12` |
 | `src/molt/frontend/_types.py` | 2 | authority-routed | `3.13` |
 | `src/molt/frontend/lowering/analysis_patterns.py` | 1 | scattered-assumption | `3.13` |
