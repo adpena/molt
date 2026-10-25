@@ -365,6 +365,18 @@ marks them usable. Prefer:
 uv run --python 3.12 python tools/agent_coordination.py <command>
 ```
 
+Environment reporting uses the canonical executable search over its captured
+PATH, PATHEXT and current-directory policy. An absent or empty PATH disables
+implicit search; empty components of a nonempty PATH name the current directory.
+Windows environment names and executable suffix ordering follow the same rules
+as toolchain selection, including `NoDefaultCurrentDirectoryInExePath`. An
+untraversable candidate (permission denial or Windows error 448) is unavailable;
+other I/O errors still propagate. Fixed Git Bash locations use the same candidate
+predicate without extending those exact paths with further suffixes. Discovery
+does not verify interpreter identity or authorize a launch: selected commands
+still pass their normal executable and process-custody admission. An explicit
+`PYTHON` remains a user recommendation, not verified capability evidence.
+
 When a POSIX wrapper is useful on Windows, use the `usable_bash` reported by
 `tools/agent_coordination.py env` rather than the first `bash` on `PATH`.
 
