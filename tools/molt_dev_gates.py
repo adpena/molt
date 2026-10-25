@@ -17,6 +17,8 @@ tail.
 
 from __future__ import annotations
 
+from tools.molt_dev_policy import GateEnvironment
+
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 import datetime as dt
@@ -36,7 +38,6 @@ from tools.memory_guard_core.reporting import NAMED_RECORD_MIN_AGE_S
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityProbe
-    from molt.process_environment import ProcessEnvironment
 
 # Local always gates share the repository-policy resource class with their CI
 # commands; a policy without that class admits up to the executor ceiling.
@@ -168,7 +169,7 @@ class GateRuntime:
     """What one landing's gates run against; integrate builds it once."""
 
     repo: Path
-    environments: Mapping[tuple[str, ...], ProcessEnvironment]
+    environments: Mapping[tuple[str, ...], GateEnvironment]
     cargo_outputs: Mapping[tuple[str, ...], tuple[Path, ...]]
     capacity_requirements: Mapping[tuple[str, ...], int]
     progress: Progress
@@ -252,7 +253,7 @@ def concurrent_gate_limit() -> int:
 
 def admit_selected_output_capacity(
     outputs: dict[tuple[str, ...], tuple[Path, ...]],
-    environments: dict[tuple[str, ...], ProcessEnvironment],
+    environments: dict[tuple[str, ...], GateEnvironment],
 ) -> dict[tuple[str, ...], int]:
     """Check current volumes before any gate, without forecasting growth."""
     from molt.disk_capacity import minimum_headroom_bytes, require_build_capacity
@@ -260,7 +261,7 @@ def admit_selected_output_capacity(
     requirements = {}
     observed: set[tuple[tuple[Path, ...], int]] = set()
     for tools, paths in outputs.items():
-        environment = environments[tools]
+        environment = environments[tools].environment
         required = minimum_headroom_bytes(environment)
         requirements[tools] = required
         key = (paths, required)
@@ -615,7 +616,7 @@ def _run_executor_block(
         toolchains: (
             environment
             if memory_slice is None
-            else environment.updated(
+            else environment.overlay(
                 {host_capacity.MEMORY_SLICE_ENV: str(memory_slice)}
             )
         )

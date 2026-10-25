@@ -193,9 +193,14 @@ A checkout's inputs come from its lock files, on demand, as `uv run` does.
   from the shared caches. `gen_browser_asset_graph.py` stops asking a person
   to run a bootstrap script. `lane start` provisions the default prerequisites. Optional registered inputs,
   such as the Edgebox TypeScript tree, are provisioned only when explicitly
-  selected. Status and queue setup share the default selection; retirement
-  recognizes all registered inputs so an explicitly provisioned tree keeps its
-  custody.
+  selected. Status and lane start share the default selection. Queue gate
+  preparation follows the selected proof toolchain closures instead: only an
+  environment-role prerequisite requests a source development image, and
+  non-Python inputs are provisioned only when selected. Preparation binds tool
+  identity to the selected interpreter before execution; every launch still
+  checks the image. Explicit selectors remain fail-closed even for generic
+  shell gates. Retirement recognizes all registered inputs so an explicitly
+  provisioned tree keeps its custody.
 - **Editable-source custody.** The uv stamp also binds its resolved checkout.
   A current editable environment rechecks its exact PEP 610 metadata path; a
   foreign checkout is refused, even with identical lock bytes. Cold

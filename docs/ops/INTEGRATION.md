@@ -482,10 +482,15 @@ bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
    manual merge resolutions, including through the final citation amendment.
    A conflicting lane is aborted back to the preceding candidate and leaves the
    batch with result `conflict`; inability to restore that candidate stops the runner.
-2. Provision the sandbox's declared checkout-scoped inputs (its development
-   image and the Acorn tree) through `molt.checkout_provisioning`.
-   Run `integrate` on the sandbox, waiting for the repository integration lock
-   held by any other integrator. The union of the batch's selected gates runs
+2. Run `integrate` on the sandbox, waiting for the repository integration lock
+   held by any other integrator. Its selected toolchain closures prepare only
+   the inputs they require from the candidate's locks. A source-Python
+   environment role selects the sandbox's development image before tool
+   fingerprinting; selected non-Python checkout inputs use the same canonical
+   provisioning authority. Gates without that role and without an explicit
+   environment selector do not create an image. Explicit selectors still
+   validate before any gate. Each launch revalidates its prepared image; the
+   plan is not permission to reuse stale physical admission. The union of the batch's selected gates runs
    once; change citations resolve across the batch.
 3. On publication the runner refreshes shared hooks from published main and
    retires each managed lane. Only completed retirement records `landed` with
