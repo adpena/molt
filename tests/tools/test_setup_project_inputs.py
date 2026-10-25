@@ -10,6 +10,7 @@ import tomllib
 import pytest
 
 from molt import tool_releases
+from molt.python_environment_identity import python_identity_verifier_arguments
 
 from tests.process_guard_common import run_guarded_test_process
 
@@ -198,24 +199,40 @@ def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
     (compile_event,) = [event for event in events if event.startswith("compileall:")]
     options = compile_event.split(":")[2].split()
     source_root = Path(sysconfig.get_path("stdlib"))
-    module = tmp_path / "stdlib" / "_strptime.py"
-    module.parent.mkdir()
-    module.write_bytes((source_root / "_strptime.py").read_bytes())
+    source = (source_root / "_strptime.py").read_bytes()
+    active = tmp_path / "active"
+    module = active / "stdlib" / "_strptime.py"
     compiled: list[dict[str, bytes]] = []
     for install_time in (1_700_000_000, 1_800_000_000):
+        assert not active.exists()
+        module.parent.mkdir(parents=True)
+        module.write_bytes(source)
         os.utime(module, (install_time, install_time))
-        cache = module.parent / "__pycache__"
-        if cache.exists():
-            cache.rename(tmp_path / f"cache-{install_time}")
+        # Compileall's parallel workers need not inherit the parent's cache
+        # prefix. Give every explicit output one fresh test-owned tree while
+        # keeping the source path stable for the independent bytecode oracle.
+        cache = active / "imports"
+        cache.mkdir()
         completed = run_guarded_test_process(
-            [sys.executable, "-I", "-m", "compileall", *options, str(module.parent)],
+            [
+                sys.executable,
+                *python_identity_verifier_arguments(cache),
+                "-m",
+                "compileall",
+                *options,
+                str(module.parent),
+            ],
             prefix="MOLT_SETUP_PYTHON_BYTECODE_TEST",
             capture_output=True,
             text=True,
             check=False,
         )
         assert completed.returncode == 0, completed.stderr
-        compiled.append({path.name: path.read_bytes() for path in cache.iterdir()})
+        bytecode = tuple(active.rglob("*.pyc"))
+        assert all(path.name.startswith(f"{module.stem}.") for path in bytecode)
+        compiled.append({path.name: path.read_bytes() for path in bytecode})
+        assert len(bytecode) == 3
+        active.rename(tmp_path / f"cache-{install_time}")
     assert len(compiled[0]) == 3
     assert compiled[0] == compiled[1]
 
