@@ -228,6 +228,17 @@ def lock_closure_manifest(
     return python_environment_identity.validate_uv_lock_group_closure(closure)
 
 
+def copy_python_capture_authority(source_root: Path) -> None:
+    """Give a disposable checkout the actual selected reader implementation."""
+    sources = python_environment_identity.python_capture_authority_paths()
+    destinations = python_environment_identity.python_capture_authority_paths(
+        source_root=source_root
+    )
+    for source, destination in zip(sources, destinations, strict=True):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
 def create_test_venv(environment: Path) -> Path:
     """Create a runnable venv the way the platform's own tooling does.
 

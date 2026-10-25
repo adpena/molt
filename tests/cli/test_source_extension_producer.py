@@ -4209,3 +4209,88 @@ def test_source_build_environment_refuses_input_rewrite_with_restored_bytes_and_
         )
     assert not spec[2].exists()
     assert build_environment.environment_provisioning_record_path(spec[0]).is_file()
+
+
+@pytest.mark.parametrize("changed_at", ["sync", "bytecode", "capture"])
+def test_editable_publication_refuses_selected_reader_rewrite(
+    tmp_path, monkeypatch, changed_at
+):
+    from tests.python_environment_test_support import copy_python_capture_authority
+
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    selected = tmp_path / "selected"
+    copy_python_capture_authority(selected)
+    (selected / "README.md").write_text("selected project metadata\n", encoding="utf-8")
+    spec[3]["editable_binding"] = build_environment._editable_binding(selected)
+    reader = selected / "src/molt/python_environment_custody.py"
+    original = reader.read_bytes()
+    before = reader.stat()
+    stages = []
+
+    def observe(stage):
+        stages.append(stage)
+        if changed_at == stage:
+            # Even restored bytes and mtime are a different captured generation.
+            reader.write_bytes(original + b"\n# intermediate reader change\n")
+            reader.write_bytes(original)
+            os.utime(reader, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    def sync(argv, **kwargs):
+        spec[1].parent.mkdir(parents=True)
+        spec[1].write_bytes(b"synthetic interpreter, never executed")
+        observe("sync")
+        return subprocess.CompletedProcess(argv, 0)
+
+    def publish(python, root, *, external_root, source_root):
+        assert (python, root) == (spec[1], spec[0])
+        assert external_root == source_root == selected
+        observe("bytecode")
+
+    def capture(python, root, *, external_root, source_root):
+        assert (python, root) == (spec[1], spec[0])
+        assert external_root == source_root == selected
+        observe("capture")
+        return _realized_environment_manifest(
+            spec[3]["python_runtime"], [("ninja", "1.13.0")]
+        )
+
+    monkeypatch.setattr(build_environment, "_run_uv_sync", sync)
+    monkeypatch.setattr(build_environment, "_publish_environment_bytecode", publish)
+    monkeypatch.setattr(build_environment, "_probe_environment_identity", capture)
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="recipe inputs changed during publication",
+    ):
+        build_environment._provision_source_build_environment(
+            selected, spec, environ={}
+        )
+    assert stages == ["sync", "bytecode", "capture"][: stages.index(changed_at) + 1]
+    assert not spec[2].exists()
+    assert build_environment.environment_provisioning_record_path(spec[0]).is_file()
+
+
+def test_editable_publication_refuses_missing_selected_reader_without_fallback(
+    tmp_path, monkeypatch
+):
+    from tests.python_environment_test_support import copy_python_capture_authority
+
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    selected = tmp_path / "selected"
+    copy_python_capture_authority(selected)
+    (selected / "README.md").write_text("selected project metadata\n", encoding="utf-8")
+    spec[3]["editable_binding"] = build_environment._editable_binding(selected)
+    (selected / "src/molt/python_environment_identity.py").unlink()
+    monkeypatch.setattr(
+        build_environment,
+        "_run_uv_sync",
+        lambda *_args, **_kwargs: pytest.fail("missing reader must precede sync"),
+    )
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="selected editable Python capture authority is missing",
+    ):
+        build_environment._provision_source_build_environment(
+            selected, spec, environ={}
+        )
+    assert not spec[0].exists()
+    assert not build_environment.environment_provisioning_record_path(spec[0]).exists()

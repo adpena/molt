@@ -349,12 +349,19 @@ def _source_build_custody_root(repo_root: Path) -> Path:
 
 
 def _probe_environment_identity(
-    python_executable: Path, root: Path, *, external_root: Path | None = None
+    python_executable: Path,
+    root: Path,
+    *,
+    external_root: Path | None = None,
+    source_root: Path | None = None,
 ) -> dict[str, object]:
     """Capture the selected environment through the shared content authority."""
 
     return _probe_source_build_python(
-        python_executable, root=root, external_root=external_root
+        python_executable,
+        root=root,
+        external_root=external_root,
+        source_root=source_root,
     )
 
 
@@ -363,6 +370,7 @@ def _probe_source_build_python(
     *,
     root: Path | None = None,
     external_root: Path | None = None,
+    source_root: Path | None = None,
     publish_bytecode: bool = False,
     verifier_bytecode_prefix: Path | None = None,
     capture_wheel_target: bool = False,
@@ -406,6 +414,7 @@ def _probe_source_build_python(
                 probe_arguments,
                 no_site=root is None,
                 verifier_bytecode_prefix=verifier_prefix,
+                source_root=source_root,
             ),
         ]
         result = process_guard.run_completed_command(
@@ -676,10 +685,18 @@ def _validate_recipe_inputs(repo_root: Path, custody: Mapping[str, object]) -> N
 
 
 def _publish_environment_bytecode(
-    python_executable: Path, root: Path, *, external_root: Path | None = None
+    python_executable: Path,
+    root: Path,
+    *,
+    external_root: Path | None = None,
+    source_root: Path | None = None,
 ) -> None:
     _probe_source_build_python(
-        python_executable, root=root, external_root=external_root, publish_bytecode=True
+        python_executable,
+        root=root,
+        external_root=external_root,
+        source_root=source_root,
+        publish_bytecode=True,
     )
 
 
@@ -693,13 +710,31 @@ def _provision_source_build_environment(
     root, python_executable, manifest_path, custody, uv = spec
     binding = custody.get("editable_binding")
     external_root = Path(str(binding["source_root"])) if binding is not None else None
+    # Publication's reader belongs to the selected editable checkout. The
+    # operational controller can be another immutable source generation.
+    # External-root admission alone never selects executable probe code.
+    source_root = external_root if binding is not None else None
+    reader_inputs = (
+        python_environment_identity.python_capture_authority_paths(
+            source_root=source_root
+        )
+        if source_root is not None
+        else ()
+    )
 
     def capture() -> dict[str, object]:
+        verify_inputs()
         if external_root is None:
-            return _probe_environment_identity(python_executable, root)
-        return _probe_environment_identity(
-            python_executable, root, external_root=external_root
-        )
+            realized = _probe_environment_identity(python_executable, root)
+        else:
+            realized = _probe_environment_identity(
+                python_executable,
+                root,
+                external_root=external_root,
+                source_root=source_root,
+            )
+        verify_inputs()
+        return realized
 
     lock_path = root.parent / ".locks" / f"{root.name}.lock"
     provisioning_path = environment_provisioning_record_path(root)
@@ -713,6 +748,7 @@ def _provision_source_build_environment(
             dict.fromkeys(
                 (
                     *input_paths,
+                    *reader_inputs,
                     *(
                         repo_root / name
                         for name in cast(Mapping[str, str], binding["metadata_inputs"])
@@ -720,8 +756,14 @@ def _provision_source_build_environment(
                 )
             )
         )
-    input_context = PythonFileCaptureContext()
     absent_inputs = {path for path in input_paths if not path.exists()}
+    missing_authority = absent_inputs.intersection(reader_inputs)
+    if missing_authority:
+        raise _schema.SourceBuildEnvironmentError(
+            "selected editable Python capture authority is missing: "
+            + ", ".join(str(path) for path in sorted(missing_authority))
+        )
+    input_context = PythonFileCaptureContext()
     for path in input_paths:
         if path not in absent_inputs:
             input_context.bind(
@@ -733,7 +775,6 @@ def _provision_source_build_environment(
             raise _schema.SourceBuildEnvironmentError(
                 "environment recipe inputs changed during publication"
             )
-        _validate_recipe_inputs(repo_root, custody)
         try:
             input_context.verify()
         except (OSError, ValueError) as exc:
@@ -751,6 +792,7 @@ def _provision_source_build_environment(
     )
     try:
         _validate_recipe_inputs(repo_root, custody)
+        verify_inputs()
         existing = _read_attestation(manifest_path)
         provisioning = _read_attestation(provisioning_path)
         expected_provisioning = _provisioning_record(custody)
@@ -773,6 +815,7 @@ def _provision_source_build_environment(
                 realized = capture()
                 expected_attestation = _attested_environment(custody, realized)
                 if existing == expected_attestation:
+                    _validate_recipe_inputs(repo_root, custody)
                     verify_inputs()
                     if provisioning is not None:
                         if provisioning != expected_provisioning:
@@ -862,11 +905,16 @@ def _provision_source_build_environment(
             raise _schema.SourceBuildEnvironmentError(
                 f"uv sync did not create source-build Python: {python_executable}"
             )
+        verify_inputs()
         _publish_environment_bytecode(
-            python_executable, root, external_root=external_root
+            python_executable,
+            root,
+            external_root=external_root,
+            source_root=source_root,
         )
         realized = capture()
         manifest = _attested_environment(custody, realized)
+        _validate_recipe_inputs(repo_root, custody)
         verify_inputs()
         _atomic_write_json(
             manifest_path,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -12,10 +13,90 @@ import pytest
 from molt.cli import source_build_environment as authority
 from molt.cli import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import (
+    copy_python_capture_authority,
+    create_test_venv,
     runtime_identity_manifest,
     wheel_target_manifest,
 )
 from tests.process_guard_common import install_module_view
+
+
+@pytest.mark.slow
+def test_cross_checkout_probe_admits_selected_editable_reader_and_refuses_foreign_home(
+    tmp_path,
+):
+    from molt import python_environment_identity as identity
+    from molt.python_environment_location import _site_roots
+
+    selected = tmp_path / "selected"
+    copy_python_capture_authority(selected)
+    foreign = tmp_path / "foreign"
+    shutil.copytree(selected, foreign)
+    # All three reader implementations are byte-identical. Only their selected
+    # package homes differ; content equality cannot admit a foreign package.
+    source = Path(identity.__file__)
+    for checkout in (selected, foreign):
+        assert (checkout / "src/molt/python_environment_identity.py").read_bytes() == (
+            source.read_bytes()
+        )
+    root = tmp_path / "environment"
+    executable = create_test_venv(root)
+    (site,) = _site_roots(root)
+    metadata = site / "molt_probe_fixture-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: molt-probe-fixture\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (metadata / "WHEEL").write_text(
+        "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        encoding="utf-8",
+    )
+    direct_url = metadata / "direct_url.json"
+    direct_url.write_text(
+        json.dumps({"url": selected.as_uri(), "dir_info": {"editable": True}}),
+        encoding="utf-8",
+    )
+    declaration = site / "molt_probe_fixture.pth"
+    declaration.write_text(str(selected / "src") + "\n", encoding="utf-8")
+    (metadata / "RECORD").write_text(
+        "".join(
+            f"{path},,\n"
+            for path in (
+                declaration.name,
+                *(
+                    f"{metadata.name}/{name}"
+                    for name in ("METADATA", "WHEEL", "direct_url.json", "RECORD")
+                ),
+            )
+        ),
+        encoding="utf-8",
+    )
+    # A .pth directory loads its genuine sitecustomize before the probe. The
+    # old controller-bound launch must therefore refuse B before capture.
+    with pytest.raises(
+        authority_schema.SourceBuildEnvironmentError,
+        match="package source admission failed",
+    ):
+        authority._probe_environment_identity(executable, root, external_root=selected)
+    captured = authority._probe_environment_identity(
+        executable, root, external_root=selected, source_root=selected
+    )
+    assert captured["external_roots"] == [
+        {"id": "external-root-0", "path": str(selected.resolve())}
+    ]
+    assert [row["name"] for row in captured["distributions"]] == ["molt-probe-fixture"]
+    assert not list(selected.rglob("__pycache__"))
+    declaration.write_text(str(foreign / "src") + "\n", encoding="utf-8")
+    with pytest.raises(
+        authority_schema.SourceBuildEnvironmentError,
+        match="package source admission failed",
+    ) as caught:
+        authority._probe_environment_identity(
+            executable, root, external_root=foreign, source_root=selected
+        )
+    assert str(foreign / "src/molt") in str(caught.value)
+    assert str(selected / "src/molt") in str(caught.value)
 
 
 @pytest.mark.parametrize("failure", [None, "resolve", "identity", "runtime", "markers"])

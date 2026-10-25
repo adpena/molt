@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 import py_compile
 import stat
-import shutil
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -29,6 +28,7 @@ from molt import python_file_node_custody as files
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from tests.python_environment_test_support import (
+    copy_python_capture_authority,
     environment_location_manifest,
     runtime_identity_manifest,
 )
@@ -290,12 +290,8 @@ def test_editable_file_uri_rejects_nonlocal_authority(url):
 @pytest.mark.slow
 def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkeypatch):
     """Exercise real imports without relying on isolation-ignored environment flags."""
-    source_root = Path(identity.__file__).resolve().parents[2]
     disposable = tmp_path / "source"
-    for source in identity.python_capture_authority_paths():
-        destination = disposable / source.relative_to(source_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+    copy_python_capture_authority(disposable)
     copied_authority = disposable / "src" / "molt" / "python_environment_identity.py"
     monkeypatch.setattr(identity, "__file__", str(copied_authority))
 
@@ -2468,6 +2464,32 @@ def test_capture_authority_preserves_installed_package_and_explicit_source_owner
     assert selected / "src/molt/python_environment_identity.py" in projected
     assert selected / "src/molt/package_import_custody.py" in projected
     assert installed / "package_import_custody.py" not in projected
+
+
+def test_probe_reader_selection_uses_explicit_source_without_ambient_fallback(
+    tmp_path, monkeypatch
+):
+    selected = tmp_path / "selected"
+    script = selected / "src/molt/python_environment_identity.py"
+    script.parent.mkdir(parents=True)
+    script.write_bytes(Path(identity.__file__).read_bytes())
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path / "unrelated"))
+    with identity.python_identity_verifier_prefix() as prefix:
+        arguments = identity.python_identity_probe_arguments(
+            ("--capture-runtime",),
+            verifier_bytecode_prefix=prefix,
+            source_root=selected,
+        )
+        assert str(script.resolve()) in arguments
+        assert str(Path(identity.__file__).resolve()) not in arguments
+        assert script in identity.python_capture_authority_paths(source_root=selected)
+        script.unlink()
+        with pytest.raises(FileNotFoundError):
+            identity.python_identity_probe_arguments(
+                ("--capture-runtime",),
+                verifier_bytecode_prefix=prefix,
+                source_root=selected,
+            )
 
 
 @pytest.mark.parametrize(
