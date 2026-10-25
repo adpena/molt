@@ -1152,30 +1152,42 @@ def test_cli_bench_outer_process_uses_bench_memory_guard(
 
 
 def test_cli_pytest_uses_shared_uv_project_python_authority(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from molt.dx import DxProject
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    image = materialize_development_environment(
+        ROOT,
+        tmp_path / "artifacts",
+        groups=DxProject(ROOT).dependency_groups(),
+        runnable=True,
+    )
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
     calls: list[dict[str, object]] = []
 
     def fake_run_command(cmd: list[str], **kwargs: object) -> int:
         calls.append({"cmd": cmd, **kwargs})
         return 0
 
-    monkeypatch.setattr(
-        quality_commands, "compiler_source_root", lambda: ROOT, raising=True
-    )
-    monkeypatch.setattr(
-        quality_commands, "_run_command", fake_run_command, raising=True
-    )
-
+    monkeypatch.setattr(quality_commands, "compiler_source_root", lambda: ROOT)
+    monkeypatch.setattr(quality_commands, "_run_command", fake_run_command)
     assert quality_commands.test("pytest", None, None, []) == 0
     assert calls[0]["cmd"] == [
-        "uv",
-        "run",
-        "--python",
-        quality_commands.DEFAULT_UV_PROJECT_PYTHON,
+        str(image.python_executable),
+        "-B",
+        "-X",
+        f"pycache_prefix={image.root / 'bytecode'}",
+        "-m",
         "pytest",
         "-q",
     ]
+    assert calls[0]["env"]["UV_PROJECT_ENVIRONMENT"] == str(image.root)
+    assert calls[0]["env"]["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
     assert calls[0]["memory_guard_prefix"] == "MOLT_TEST_SUITE"
 
 
@@ -1354,51 +1366,56 @@ def test_tools_dev_validate_delegates_to_canonical_cli(
     assert "validate" in res.stdout.lower() or "validate" in res.stderr.lower()
 
 
-def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_lint_uses_shared_dx_planner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from molt.dx import DxProject
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    image = materialize_development_environment(
+        ROOT,
+        tmp_path / "artifacts",
+        groups=DxProject(ROOT).dependency_groups(),
+        runnable=True,
+    )
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    # Command data is this test's input; DX parsing, image loading and launch
+    # assembly retain their real owners.
+    monkeypatch.setattr(
+        DxProject,
+        "commands",
+        lambda self: {"lint": "{project_python} -I -m ruff check ."},
+    )
     calls: list[list[str]] = []
-
-    class FakeDxProject:
-        def __init__(self, root: Path) -> None:
-            self.root = root
-
-        def canonical_env(self) -> dict[str, str]:
-            return {"PATH": "", "PYTHONPATH": str(ROOT / "src")}
-
-        def require_project_python(self, context: str, env: dict[str, str]) -> Path:
-            assert context == "lint"
-            assert env["PYTHONPATH"] == str(ROOT / "src")
-            return ROOT / ".venv" / "bin" / "python3"
-
-        def commands(self) -> dict[str, object]:
-            return {"lint": "python3 -m ruff check ."}
-
-        def split_command_sequence(
-            self,
-            command: object,
-            name: str,
-            *,
-            env: dict[str, str],
-        ) -> list[list[str]]:
-            assert command == "python3 -m ruff check ."
-            assert name == "lint"
-            assert env["PYTHONPATH"] == str(ROOT / "src")
-            return [["python3", "-m", "ruff", "check", "."]]
 
     def fake_run_completed(cmd, **kwargs):
         calls.append(list(cmd))
-        assert cmd != [sys.executable, "tools/dev.py", "lint"]
         assert kwargs["cwd"] == ROOT
         assert kwargs["capture_output"] is False
         assert kwargs["memory_guard_prefix"] == "MOLT_CLI"
+        assert kwargs["env"]["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(quality_commands, "DxProject", FakeDxProject, raising=True)
-    monkeypatch.setattr(
-        quality_commands, "_run_completed_command", fake_run_completed, raising=True
-    )
-
+    monkeypatch.setattr(quality_commands, "compiler_source_root", lambda: ROOT)
+    monkeypatch.setattr(quality_commands, "_run_completed_command", fake_run_completed)
     assert quality_commands.lint(json_output=False, verbose=False) == 0
-    assert calls == [["python3", "-m", "ruff", "check", "."]]
+    assert calls == [
+        [
+            str(image.python_executable),
+            "-B",
+            "-X",
+            f"pycache_prefix={image.root / 'bytecode'}",
+            "-I",
+            "-m",
+            "ruff",
+            "check",
+            ".",
+        ]
+    ]
 
 
 @pytest.mark.parametrize("failure", [False, True])

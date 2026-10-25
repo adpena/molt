@@ -205,7 +205,13 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
     launch, updates = command_admission._supervised_execution_command(
         envelope,
         exact,
-        {"python": {"executable": exact[0], "base_executable": sys._base_executable}},
+        {
+            "python": {
+                "executable": exact[0],
+                "base_executable": sys._base_executable,
+                "location": {"prefix": sys.prefix},
+            }
+        },
         environment=environment,
         cwd=tmp_path,
     )
@@ -213,7 +219,7 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
         **environment,
         **updates,
         "MOLT_PROOF_CHILD_CUSTODY_JSON": json.dumps(
-            {"schema": "molt.proof-child-custody.v1"}
+            {"schema": "molt.proof-child-custody.v2"}
         ),
         "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT": endpoint,
         "MOLT_PROOF_CHILD_CUSTODY_TOKEN": "test-only-token",
@@ -359,12 +365,26 @@ def test_wrapped_node_keeps_node_payload_custody():
     "spelling", [["tools/uv_project_env.py"], ["-m", "tools.uv_project_env"]]
 )
 def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
-    spelling, tmp_path
+    spelling, tmp_path, monkeypatch
 ):
+    from functools import partial
     import os
+    from tools import uv_project_env
     from tools.proof_queue_pkg import execution_environment
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
 
-    explicit = tmp_path / "uv-environment"
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    image = materialize_development_environment(root, artifacts, python="3.14")
+    explicit = image.root
+    # Keep wrapper parsing, selection and recipe checks real; only bind the
+    # wrapper's checkout boundary to this test's project.
+    monkeypatch.setattr(
+        uv_project_env,
+        "uv_project_env",
+        partial(uv_project_env.uv_project_env, repo_root=root),
+    )
     command = [
         "python",
         *spelling,
@@ -385,11 +405,14 @@ def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
         envelope,
         {
             **os.environ,
-            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+            "MOLT_EXT_ROOT": str(artifacts),
         },
     )
     assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit.resolve())
     assert env["MOLT_UV_PROJECT_PYTHON"] == "3.14"
+    assert env["UV_NO_SYNC"] == "1"
+    assert env["PYTHONPYCACHEPREFIX"] == str(image.bytecode_prefix)
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     assert envelope["python"]["kind"] == "direct"
     assert (
         "version" not in envelope["python"]

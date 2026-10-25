@@ -24,11 +24,8 @@ import pytest
 from molt.exact_json import canonical_json_sha256
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.process_environment import ProcessEnvironment
-from molt.python_environment_location import (
-    PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-    validate_python_environment_location,
-)
 from tests.python_environment_test_support import (
+    environment_location_manifest,
     realized_environment_manifest,
     runtime_identity_manifest,
 )
@@ -216,20 +213,14 @@ def synthetic_python_toolchain(directory: Path) -> dict[str, object]:
     executable.write_bytes(b"synthetic interpreter image; never executed\n")
     executable = executable.resolve(strict=True)
     environment = realized_environment_manifest(runtime_identity_manifest(), [])
-    location_material = {
-        "schema": PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-        "prefix": str(prefix.resolve()),
-        "selected_executable": str(executable),
-        "base_executable": str(executable),
-        "roots": [str(prefix.resolve())],
-        "external_roots": [],
-        "file_paths": [str(executable)],
-    }
-    location = validate_python_environment_location(
-        {
-            **location_material,
-            "identity_sha256": canonical_json_sha256(location_material),
-        }
+    location = environment_location_manifest(
+        prefix=prefix.resolve(),
+        selected_executable=executable,
+        base_executable=executable,
+        base_executable_selector=executable,
+        roots=[prefix.resolve()],
+        external_roots=[],
+        file_paths=[executable],
     )
     image = process_image_capture.capture_image("python", executable)
     material = {

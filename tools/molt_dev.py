@@ -516,47 +516,35 @@ def _integration_lock_path(repo: Path) -> Path:
 
 
 def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
-    """Use the shared explicit selectors, then the checkout or main-worktree venv.
-
-    An existing or explicitly selected environment is returned even when broken:
-    validation must diagnose it rather than silently choose another interpreter.
-    Only an absent automatic checkout default permits main-worktree discovery.
-    In a checkout that declares a uv project (``uv.lock``), its own
-    environment (``UV_PROJECT_ENVIRONMENT``, else an existing ``.venv``) is
-    first ensured from the lock, as ``uv run`` syncs before it runs: a missing
-    one is built and an unstamped one is confirmed by ``uv sync --frozen``
-    (`molt.checkout_provisioning`). A memory-guarded child inherits dx's
-    default ``UV_PROJECT_ENVIRONMENT`` even where that managed environment was
-    never built. An explicit ``MOLT_VENV`` and a borrowed main-worktree
-    environment are used as they are.
-    """
-    selected = venv_exec.resolve_venv(repo_root=repo, env=env)
-    own = repo / ".venv"
+    """Select one exact managed generation or an explicit external borrower."""
     if env.get("MOLT_VENV"):
-        return selected
-    if (
-        env.get("UV_PROJECT_ENVIRONMENT", "").strip()
-        or own.exists()
-        or own.is_symlink()
-    ):
-        from molt import checkout_provisioning
+        return venv_exec.resolve_venv(repo_root=repo, env=env)
+    from molt import checkout_provisioning
+    from molt.dx import DxConfigError, DxProject
+    from molt.cli.source_build_environment import load_development_environment
+    from molt.cli.source_build_environment_schema import SourceBuildEnvironmentError
 
-        project = checkout_provisioning.checkout_input(
+    try:
+        if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
+            selected = venv_exec.resolve_venv(repo_root=repo, env=env)
+            return load_development_environment(
+                selected, repo_root=repo, groups=DxProject(repo).dependency_groups()
+            ).root
+        spec = checkout_provisioning.checkout_input(
             "uv-environment", repo, env, guard_source_root=_COMMANDS.repo_root
         )
-        if checkout_provisioning.declares(project):
-            try:
-                checkout_provisioning.ensure_input(project)
-            except checkout_provisioning.ProvisioningError as exc:
-                raise DriverError(str(exc)) from exc
-        return selected
-    common = _git_common_directory(repo)
-    if common is not None:
-        main_repo = common.parent
-        candidate = main_repo / ".venv"
-        if candidate.exists() or candidate.is_symlink():
-            return venv_exec.resolve_venv(repo_root=main_repo, env=env)
-    return None
+        if not checkout_provisioning.declares(spec):
+            return None
+        return checkout_provisioning.ensure_input(spec).environment_root
+    except (
+        checkout_provisioning.ProvisioningError,
+        DxConfigError,
+        SourceBuildEnvironmentError,
+        venv_exec.VenvExecError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise DriverError(f"managed development image refused: {exc}") from exc
 
 
 def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) -> int:
@@ -585,7 +573,22 @@ def run_captured_gate(
 ) -> GateOutcome:
     """Run one landing gate in ``run_gate``'s environment, writing its streams
     to ``streams`` while it runs, under the executor's cancellation."""
-    cmd, env = _gate_environment(cmd, repo, env)
+    try:
+        cmd, env = _gate_environment(cmd, repo, env)
+    except BaseException as error:
+        # The guard exclusively creates streams for admitted gates. A refusal
+        # before that handoff still needs the empty evidence paths its event
+        # publishes, without replacing its original admission failure.
+        if streams is not None:
+            for path in streams:
+                try:
+                    with path.open("x", encoding="utf-8"):
+                        pass
+                except OSError as output_error:
+                    error.add_note(
+                        f"cannot create refused gate stream {path}: {output_error}"
+                    )
+        raise
     return GateOutcome(
         *_run_captured_gate(
             cmd,
@@ -602,45 +605,104 @@ def run_captured_gate(
 def _gate_environment(
     cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment
 ) -> tuple[str | tuple[str, ...], ProcessEnvironment]:
+    shell_syntax = False
     if isinstance(cmd, str):
         try:
-            words = shlex.split(cmd, posix=os.name != "nt")
+            if os.name == "nt":
+                from molt.backend_daemon_custody import _split_windows_command
+
+                words = list(_split_windows_command(cmd))
+                shell_syntax = any(character in cmd for character in "&|<>^%!")
+            else:
+                lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>()")
+                lexer.whitespace_split = True
+                words = list(lexer)
+                shell_syntax = any(
+                    word and set(word) <= set(";&|<>()") for word in words
+                ) or any(character in cmd for character in "$`\n")
         except ValueError:
-            # The shell owns syntax errors; environment admission must not replace
-            # its error status with a parser-specific exception.
+            # The shell owns syntax errors; do not replace their exit status.
             words = []
+            shell_syntax = True
     else:
-        words = cmd
+        words = list(cmd)
     head = words[0].lower() if words else ""
-    if os.name == "nt" and len(head) >= 2 and head[0] == head[-1] == '"':
-        head = head[1:-1]
-    python_gate = head in {"python", "python3", "python.exe", "python3.exe"}
-    venv = _resolve_repo_venv(repo, env)
-    if venv is None and python_gate:
-        venv = venv_exec.resolve_venv(repo_root=repo, env=env)
-    if venv is not None:
-        try:
-            venv_exec.venv_python(venv)
-            if python_gate:
-                alias = (
-                    head + ".exe"
-                    if os.name == "nt" and not head.endswith(".exe")
-                    else head
+    from tools.proof_command_argv import is_python_command
+
+    python_gate = is_python_command(head)
+    shell_python = []
+    if shell_syntax:
+        # Inspect literal command heads without rewriting shell text. Dynamic
+        # shell expansion remains the shell's responsibility; direct isolated
+        # Python arms need structured argv so startup policy is explicit.
+        starts = (
+            index
+            for index in range(len(words))
+            if index == 0 or words[index - 1] in {";", "&&", "||", "|", "("}
+        )
+        for index in starts:
+            if is_python_command(words[index]):
+                end = next(
+                    (
+                        offset
+                        for offset in range(index + 1, len(words))
+                        if words[offset] in {";", "&&", "||", "|", ")"}
+                    ),
+                    len(words),
                 )
-                executable = venv_exec.venv_bin_dir(venv) / alias
-                if not executable.is_file() or not os.access(executable, os.X_OK):
-                    raise venv_exec.VenvExecError(
-                        f"virtualenv command {head!r} not executable under "
-                        f"{venv_exec.venv_bin_dir(venv)}; use the project Python alias"
-                    )
-                if not isinstance(cmd, str):
-                    # Windows direct spawn does not resolve Python using child PATH.
-                    cmd = (os.fspath(executable), *cmd[1:])
-            env = venv_exec.venv_env(venv=venv, env=env).updated(
-                {"MOLT_VENV": str(venv)}
+                shell_python.append(words[index:end])
+    venv = _resolve_repo_venv(repo, env)
+    if venv is None:
+        if python_gate or shell_python:
+            raise DriverError(
+                "development image not selected; run "
+                "`python -m molt.checkout_provisioning ensure uv-environment`"
             )
-        except venv_exec.VenvExecError as exc:
-            raise DriverError(str(exc)) from exc
+        return cmd, env
+    managed = not bool(env.get("MOLT_VENV"))
+    try:
+        venv_exec.venv_python(venv)
+        env = venv_exec.venv_env(venv=venv, env=env, managed=managed)
+        if managed and shell_python:
+            from molt.python_interpreter import (
+                parse_python_invocation,
+                python_environment_options,
+            )
+            from tools.proof_command_argv import (
+                validate_python_environment_command,
+            )
+
+            if any(
+                python_environment_options(parse_python_invocation(arm))[0]
+                for arm in shell_python
+            ):
+                raise DriverError(
+                    "isolated Python in a compound shell gate requires structured argv"
+                )
+            for arm in shell_python:
+                validate_python_environment_command(
+                    arm, environment_root=venv, environment=env
+                )
+        if python_gate:
+            alias = Path(head).name
+            if os.name == "nt" and not alias.endswith(".exe"):
+                alias += ".exe"
+            executable = venv_exec.venv_bin_dir(venv) / alias
+            if not executable.is_file() or not os.access(executable, os.X_OK):
+                raise venv_exec.VenvExecError(
+                    f"virtualenv command {Path(head).name!r} not executable under "
+                    f"{venv_exec.venv_bin_dir(venv)}; use the project Python alias"
+                )
+            if not (isinstance(cmd, str) and shell_syntax):
+                cmd = tuple(
+                    venv_exec.resolve_command(words, venv=venv, managed=managed)
+                )
+        # An external borrower keeps its explicit contract. Managed roots stay
+        # selected as UV images rather than being relabeled as borrowed venvs.
+        if not managed:
+            env = env.updated({"MOLT_VENV": str(venv)})
+    except (venv_exec.VenvExecError, ValueError) as exc:
+        raise DriverError(str(exc)) from exc
     return cmd, env
 
 

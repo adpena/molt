@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,150 @@ from molt import python_interpreter
 from molt import toolchain_identity
 from tests import molt_diff
 from tests.process_guard_common import install_module_view
+
+
+@pytest.mark.parametrize("mode", ["current", "uv", "path-candidates"])
+def test_verifier_resolution_fences_every_early_candidate(tmp_path, monkeypatch, mode):
+    prefix = tmp_path / "verifier"
+    prefix.mkdir()
+    target = python_interpreter.parse_target_python_version(
+        f"{sys.version_info.major}.{sys.version_info.minor}"
+    )
+    calls = []
+    monkeypatch.setattr(
+        toolchain_identity,
+        "find_executable",
+        lambda *_args, **_kwargs: Path("uv") if mode == "uv" else None,
+    )
+    monkeypatch.setattr(
+        python_interpreter,
+        "target_python_command_candidates",
+        lambda *_args, **_kwargs: [["first-candidate"], ["second-candidate"]],
+    )
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if command[0] == "uv":
+            assert command == ["uv", "python", "find", target.short]
+            return "selected-python\n", "", 0
+        # Assert before returning any candidate identity, including failed ones.
+        assert command[1:7] == [
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-S",
+            "-c",
+        ]
+        if command[0] == "first-candidate":
+            return "", "independent unavailable candidate", 127
+        return (
+            json.dumps(
+                {
+                    "implementation": "CPython",
+                    "version": target.short + ".1",
+                    "executable": str(tmp_path / "selected-python"),
+                }
+            ),
+            "",
+            0,
+        )
+
+    monkeypatch.setattr(python_interpreter, "_run_command", run)
+    selected = python_interpreter.resolve_target_python_command(
+        target,
+        prefer_current=mode == "current",
+        prefer_uv=mode == "uv",
+        verifier_bytecode_prefix=prefix,
+    )
+    expected = {
+        "current": (sys.executable,),
+        "uv": ("selected-python",),
+        "path-candidates": ("second-candidate",),
+    }[mode]
+    assert selected == expected
+    assert len(calls) == (1 if mode == "current" else 2)
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["3.14", "path", "py -3.14", "py -V:Vendor/3.14", "py -3.14 -X dev"],
+)
+def test_verifier_selector_preserves_command_transport(tmp_path, monkeypatch, selector):
+    prefix = tmp_path / "verifier"
+    prefix.mkdir()
+    executable = tmp_path / "selected Python.exe"
+    executable.write_bytes(b"never executed")
+    if selector == "path":
+        selector = str(executable)
+    calls = []
+    monkeypatch.setattr(toolchain_identity, "find_executable", lambda *_a, **_kw: None)
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        assert command[-7:-1] == [
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-S",
+            "-c",
+        ]
+        return (
+            json.dumps(
+                {
+                    "implementation": "CPython",
+                    "version": "3.14.1",
+                    "executable": str(executable),
+                }
+            ),
+            "",
+            0,
+        )
+
+    monkeypatch.setattr(python_interpreter, "_run_command", run)
+    command = python_interpreter.resolve_python_selector(
+        selector, verifier_bytecode_prefix=prefix
+    )
+    selected = python_interpreter.probe_python_command(
+        command, verifier_bytecode_prefix=prefix
+    )
+    assert selected.command == command
+    assert calls[-1][:-7] == list(command)
+    if selector.startswith("py "):
+        assert command == tuple(selector.split())
+    elif selector == str(executable):
+        assert command == (str(executable),)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ("-c", "raise SystemExit(0)"),
+        ("-Imjson",),
+        ("script.py",),
+        ("--",),
+        ("-X",),
+        ("-X", "pycache_prefix=foreign"),
+        ("-IXpycache_prefix=foreign",),
+    ],
+)
+def test_verifier_probe_refuses_prior_payload_or_cache_policy(
+    tmp_path, monkeypatch, options
+):
+    prefix = tmp_path / "verifier"
+    prefix.mkdir()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("rejected command must not execute")
+
+    monkeypatch.setattr(python_interpreter, "_run_command", forbidden)
+    with pytest.raises(
+        python_interpreter.PythonInterpreterError, match="verifier Python"
+    ):
+        python_interpreter.probe_python_command(
+            ("py", "-3.14", *options), verifier_bytecode_prefix=prefix
+        )
 
 
 @pytest.mark.parametrize(

@@ -2019,14 +2019,20 @@ class _CaptureSession:
         self.verify = None
         self.respond_to_verify = True
         self.wait_timeouts = []
+        self.verifier_prefixes = []
+        self.cancellation_requests = 0
 
     def poll(self):
         return self.returncode
+
+    def request_cancel(self):
+        self.cancellation_requests += 1
 
     def wait(self, timeout=None):
         # The guarded command's own wait: closure follows the child's exit.
         self.wait_timeouts.append(timeout)
         assert self.closed
+        assert self.verifier_prefixes[0].is_dir()
         self.returncode = self.returncode or 0
         self.terminal = True
         return self.returncode
@@ -2041,14 +2047,27 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
     session = _CaptureSession(runtime_receipt)
     calls = []
 
+    def live_empty_prefix(command):
+        option = command[command.index("-X") + 1]
+        assert option.startswith("pycache_prefix=")
+        prefix = Path(option.split("=", 1)[1])
+        assert prefix.is_dir() and not prefix.is_symlink()
+        assert list(prefix.iterdir()) == []
+        assert prefix not in session.verifier_prefixes
+        session.verifier_prefixes.append(prefix)
+        return prefix
+
     class Executor:
         def start_guarded(self, command, **kwargs):
+            live_empty_prefix(command)
             calls.append((command, kwargs))
             return session
 
         def run(self, command, **kwargs):
             from types import SimpleNamespace
 
+            assert session.verifier_prefixes[0].is_dir()
+            live_empty_prefix(command)
             session.fresh_calls.append((command, kwargs))
             return SimpleNamespace(stdout=json.dumps(session.fresh_selection))
 
@@ -2069,9 +2088,13 @@ def test_python_admission_uses_exact_isolated_facade(python_session, runtime_rec
     }
     with admission.BuildPythonAdmission() as owner:
         first = owner.capture(environment)
+        assert session.verifier_prefixes[0].is_dir()
         first["runtime"]["version"] = "caller mutation"
         second = owner.capture(environment)
+        assert session.verifier_prefixes[0].is_dir()
+        assert not session.verifier_prefixes[1].exists()
     assert session.closed
+    assert all(not prefix.exists() for prefix in session.verifier_prefixes)
     assert session.verifications == 1
     assert len(session.fresh_calls) == 1
     assert session.fresh_calls[0][0][-1] == "--runtime-selection"
@@ -2085,6 +2108,8 @@ def test_python_admission_uses_exact_isolated_facade(python_session, runtime_rec
         str(selected),
         "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={session.verifier_prefixes[0]}",
         "-S",
         str(
             Path(identity.__file__).resolve().parents[1]
@@ -2356,6 +2381,7 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
     admission, selected, session, _calls = python_session
     owner = admission.BuildPythonAdmission()
     owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    verifier_prefix = session.verifier_prefixes[0]
     original_stdout = session.stdout
 
     def blocked_wait(*args, **kwargs):
@@ -2373,6 +2399,7 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
     assert caught.value is primary
     assert owner._process is session
     assert not owner.terminal
+    assert verifier_prefix.is_dir()
     assert owner.cleanup_failure.admission is owner
     assert "guardian still owns live child" in primary.__notes__[0]
     assert json.loads(capsys.readouterr().err)["kind"] == "build-python-cleanup-failure"
@@ -2386,6 +2413,227 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
     monkeypatch.setattr(session, "wait", terminal_wait)
     owner.close()
     assert owner.terminal
+    assert not verifier_prefix.exists()
+
+
+def test_build_python_verifier_prefix_outlives_response_reader(
+    python_session, monkeypatch
+):
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    verifier_prefix = session.verifier_prefixes[0]
+    reader = owner._reader
+    assert reader is not None
+
+    class ReaderClosure:
+        complete = False
+
+        def join(self, *, timeout):
+            assert verifier_prefix.is_dir()
+            reader.join(timeout=timeout)
+
+        def is_alive(self):
+            return not self.complete or reader.is_alive()
+
+    closure = ReaderClosure()
+    monkeypatch.setattr(owner, "_reader", closure)
+    try:
+        with pytest.raises(
+            admission.BuildPythonCleanupError, match="reader remains live"
+        ):
+            owner.close()
+        assert session.terminal and not owner.terminal
+        assert verifier_prefix.is_dir()
+    finally:
+        closure.complete = True
+        owner.close()
+    assert owner.terminal and not verifier_prefix.exists()
+
+
+def test_build_python_verifier_prefix_cleanup_retains_exact_owner_for_retry(
+    python_session, monkeypatch, capsys
+):
+    from molt import temporary_artifacts
+
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    allocation = owner._verifier_prefix_owner
+    assert isinstance(allocation, temporary_artifacts.OwnedTemporaryDirectory)
+    allocation_path = Path(allocation.name)
+    verifier_prefix = session.verifier_prefixes[0]
+    assert allocation_path.resolve(strict=True) == verifier_prefix
+    delete = temporary_artifacts.delete_path
+    attempts = []
+
+    def fail_first_deletion(path):
+        if path == allocation_path:
+            attempts.append(path)
+            if len(attempts) == 1:
+                return False, "independent temporary deletion failure"
+        return delete(path)
+
+    monkeypatch.setattr(temporary_artifacts, "delete_path", fail_first_deletion)
+    primary = LookupError("primary operation failed")
+    try:
+        with pytest.raises(LookupError) as caught:
+            with owner:
+                raise primary
+        assert caught.value is primary
+        assert owner.terminal and verifier_prefix.is_dir()
+        assert owner._verifier_prefix_owner is allocation
+        assert "independent temporary deletion failure" in primary.__notes__[0]
+        diagnostic = json.loads(capsys.readouterr().err)
+        assert diagnostic["kind"] == "build-python-cleanup-failure"
+        owner.close()
+        assert len(attempts) == 2
+        assert owner._verifier_prefix_owner is None
+        assert not verifier_prefix.exists()
+    finally:
+        monkeypatch.setattr(temporary_artifacts, "delete_path", delete)
+        owner.close()
+
+
+@pytest.mark.parametrize("fault", ["oversized", "missing-newline", "queue-full"])
+def test_build_python_failed_reader_cancels_before_guardian_wait(
+    python_session, monkeypatch, fault
+):
+    import threading
+
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    session.lines.get_nowait()
+    if fault == "oversized":
+        monkeypatch.setattr(admission, "_RESPONSE_LIMIT", 128)
+        session.lines.put("x" * 129 + "\n")
+    elif fault == "missing-newline":
+        session.lines.put("unterminated output")
+    else:
+        for _ in range(4):
+            session.lines.put("{}\n")
+    cancelled = threading.Event()
+    order = []
+    request_cancel = session.request_cancel
+    wait = session.wait
+    get_response = owner._responses.get
+
+    def cancel():
+        order.append("cancel")
+        request_cancel()
+        cancelled.set()
+
+    def guardian_wait(*args, **kwargs):
+        # An undrained verbose child cannot prove closure until its guardian
+        # cancels it. Fail immediately rather than simulating an unbounded wait.
+        assert cancelled.is_set()
+        order.append("wait")
+        return wait(*args, **kwargs)
+
+    def await_reader_failure(*, timeout):
+        # Let the real response thread hit the independent stream/queue fault
+        # before the parent consumes anything, making queue-full deterministic.
+        assert cancelled.wait(2), "failed reader did not request guard cancellation"
+        return get_response(timeout=timeout)
+
+    monkeypatch.setattr(session, "request_cancel", cancel)
+    monkeypatch.setattr(session, "wait", guardian_wait)
+    monkeypatch.setattr(owner._responses, "get", await_reader_failure)
+    with pytest.raises(ValueError, match="identity probe failed|unsolicited output"):
+        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    assert order.index("cancel") < order.index("wait")
+    assert owner.terminal
+    assert not session.verifier_prefixes[0].exists()
+
+
+def test_build_python_unstarted_reader_preserves_primary_and_retries(
+    python_session, monkeypatch, capsys
+):
+    import threading
+
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    start = threading.Thread.start
+    primary = RuntimeError("independent reader start failure")
+
+    def refuse_reader_start(thread):
+        if thread.name == "build-python-admission-response":
+            raise primary
+        return start(thread)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", refuse_reader_start)
+        with pytest.raises(RuntimeError) as caught:
+            owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    assert caught.value is primary
+    assert session.cancellation_requests == 1
+    assert session.terminal and not owner.terminal
+    prefix = session.verifier_prefixes[0]
+    assert prefix.is_dir()
+    assert owner._reader is not None and owner._reader.ident is None
+    assert owner.cleanup_failure.admission is owner
+    assert "cannot join thread before it is started" in primary.__notes__[0]
+    assert owner.cleanup_failure.verifier_prefix in primary.__notes__[0]
+    assert Path(owner.cleanup_failure.verifier_prefix).resolve(strict=True) == prefix
+    assert json.loads(capsys.readouterr().err)["kind"] == "build-python-cleanup-failure"
+    # The retained real Thread can complete after its startup fault is removed.
+    # The session does not start a duplicate reader on its own.
+    owner._reader.start()
+    owner._reader.join(timeout=5)
+    assert not owner._reader.is_alive()
+    owner.close()
+    assert owner.terminal and not prefix.exists()
+
+
+def test_build_python_unresolved_prefix_survives_owner_collection(
+    python_session, monkeypatch
+):
+    import gc
+    import weakref
+    from molt import temporary_artifacts
+
+    admission, selected, session, _calls = python_session
+
+    def fail_guardian_wait(*args, **kwargs):
+        raise RuntimeError("guardian closure remains unproved")
+
+    monkeypatch.setattr(session, "wait", fail_guardian_wait)
+
+    def abandoned_session():
+        owner = admission.BuildPythonAdmission()
+        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+        allocation = owner._verifier_prefix_owner
+        assert allocation is not None
+        # Preserve the original cleanup function and allocation identity solely
+        # for test teardown; no strong reference keeps the owner alive.
+        cleanup = temporary_artifacts._cleanup_temporary_directory
+        target = Path(allocation.name)
+        allocation_identity = dict(allocation._identity)
+        with pytest.raises(admission.BuildPythonCleanupError) as raised:
+            owner.close()
+        assert str(target) in str(raised.value)
+        owner._reader.join(timeout=5)
+        assert not owner._reader.is_alive()
+        return (
+            weakref.ref(owner),
+            weakref.ref(allocation),
+            target,
+            cleanup,
+            allocation_identity,
+        )
+
+    owner_ref, allocation_ref, target, cleanup, allocation_identity = (
+        abandoned_session()
+    )
+    try:
+        gc.collect()
+        assert owner_ref() is None and allocation_ref() is None
+        assert not session.terminal
+        assert target.is_dir()
+    finally:
+        # The synthetic session has no real child. Retire with the captured
+        # allocation identity, never one reconstructed from the surviving path.
+        cleanup(target, allocation_identity)
 
 
 def test_build_python_close_waits_for_the_helper_exit_without_a_deadline(

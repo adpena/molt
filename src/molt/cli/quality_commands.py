@@ -11,7 +11,7 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Callable
 from molt.source_root import compiler_source_root
-from molt.dx import DEFAULT_UV_PROJECT_PYTHON, DxConfigError, DxProject
+from molt.dx import DxConfigError, DxProject
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _run_completed_command,
@@ -143,16 +143,32 @@ def lint(json_output: bool = False, verbose: bool = False) -> int:
     root_error = _require_molt_root(root, json_output, "lint")
     if root_error is not None:
         return root_error
+    from molt.process_guard import load_harness_memory_guard
+
+    # Installed Molt does not ship tools.*. Bind the selected compiler's tool
+    # namespace through the same guard owner used by these subprocesses.
+    load_harness_memory_guard(root, guard_source_root=root)
+    from tools.venv_exec import VenvExecError, resolve_command
+
     project = DxProject(root)
     try:
         env = project.canonical_env()
+        if env.get("MOLT_VENV"):
+            raise DxConfigError(
+                "managed lint execution cannot replace an explicitly borrowed MOLT_VENV"
+            )
+        env = project.normalized_uv_run_env(env, python=None)
         project.require_project_python("lint", env)
         commands = project.split_command_sequence(
             project.commands().get("lint"),
             "lint",
             env=env,
         )
-    except DxConfigError as exc:
+        selected = project.uv_project_env_dir(env)
+        commands = [
+            resolve_command(cmd, venv=selected, managed=True) for cmd in commands
+        ]
+    except (DxConfigError, VenvExecError, ValueError) as exc:
         if json_output:
             _emit_json(
                 _json_payload("lint", "error", errors=[str(exc)]),
@@ -222,11 +238,40 @@ def test(
     env = _base_env(root, molt_root=root)
     if trusted:
         env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
-    environment = ProcessEnvironment(env)
+    from molt.checkout_provisioning import ProvisioningError, ensure
+    from molt.python_environment_location import environment_bytecode_arguments
+
+    try:
+        if env.get("MOLT_VENV"):
+            raise ProvisioningError(
+                "managed test execution cannot replace an explicitly borrowed MOLT_VENV"
+            )
+        selected = ensure("uv-environment", root, env)
+        assert selected.environment_root is not None
+        project = DxProject(root)
+        environment = project.normalized_uv_run_env(
+            ProcessEnvironment(env).updated(
+                {"UV_PROJECT_ENVIRONMENT": str(selected.environment_root)}
+            ),
+            python=None,
+        )
+        project_python = str(project.project_python(environment))
+    except (ProvisioningError, DxConfigError) as exc:
+        if json_output:
+            _emit_json(
+                _json_payload("test", "error", errors=[str(exc)]), json_output=True
+            )
+        else:
+            print(f"test: {exc}", file=sys.stderr)
+        return 2
+    python_command = [
+        project_python,
+        *environment_bytecode_arguments(selected.environment_root),
+    ]
     if suite == "dev":
-        cmd = [sys.executable, "tools/dev.py", "test"]
+        cmd = [*python_command, "tools/dev.py", "test"]
     elif suite == "diff":
-        cmd = [sys.executable, "tests/molt_diff.py"]
+        cmd = [*python_command, "tests/molt_diff.py"]
         if python_version:
             cmd.extend(["--python-version", python_version])
         if build_profile is not None:
@@ -235,10 +280,8 @@ def test(
             cmd.append(file_path)
     else:
         cmd = [
-            "uv",
-            "run",
-            "--python",
-            DEFAULT_UV_PROJECT_PYTHON,
+            *python_command,
+            "-m",
             "pytest",
             "-q",
         ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -17,6 +18,154 @@ from molt.target_python import TargetPythonVersion, _parse_target_python_version
 
 class PythonInterpreterError(RuntimeError):
     """Raised when a requested CPython interpreter cannot be proven."""
+
+
+PYTHON_LAUNCHER_NAMES = frozenset({"py", "py.exe"})
+PYTHON_LAUNCHER_SELECTOR = re.compile(
+    r"(?:-\d+(?:\.\d+)?(?:-(?:32|64))?|-V:[^\s/:]+(?:/[^\s/:]+)?)",
+    re.IGNORECASE,
+)
+_PYTHON_FLAG_CHARACTERS = frozenset("bBdEhiIOPqRsStuvVx?")
+_PYTHON_TERMINAL_OPTIONS = frozenset(
+    {"-h", "-?", "--help", "--help-all", "--help-env", "--help-xoptions", "--version"}
+)
+
+
+@dataclass(frozen=True)
+class PythonInvocation:
+    """Canonical CPython command-line split at the payload boundary.
+
+    Interpreter options remain interpreter options when the payload is routed
+    through the custody bootstrap. Payload arguments are never reparsed, so
+    values beginning with ``-`` retain their ordinary ``sys.argv`` meaning.
+    """
+
+    interpreter_options: tuple[str, ...]
+    mode: str
+    target: str | None
+    arguments: tuple[str, ...]
+
+
+def parse_python_invocation(argv: Sequence[str]) -> PythonInvocation:
+    """Split the CPython prefix, including grouped argument-taking options.
+
+    c/m stop parsing; W/X consume their token remainder or the next argument.
+    This follows CPython 3.12's getopt and initialization boundary.
+    """
+    if not argv:
+        raise ValueError("Python invocation has no interpreter")
+    values = [str(value) for value in argv]
+    options: list[str] = []
+    version = False
+
+    def payload(
+        mode: str, target: str | None, arguments: Sequence[str]
+    ) -> PythonInvocation:
+        if version:
+            return PythonInvocation(tuple(values[1:]), "terminal", None, ())
+        return PythonInvocation(tuple(options), mode, target, tuple(arguments))
+
+    index = 1
+    while index < len(values):
+        value = values[index]
+        if value == "--":
+            index += 1
+            break
+        if value == "-":
+            return payload("stdin", None, values[index + 1 :])
+        if not value.startswith("-"):
+            break
+        if value in _PYTHON_TERMINAL_OPTIONS:
+            if value == "--version":
+                version = True
+                options.append(value)
+                index += 1
+                continue
+            return PythonInvocation(tuple(values[1:]), "terminal", None, ())
+        if value == "--check-hash-based-pycs":
+            if index + 1 >= len(values):
+                raise ValueError("Python --check-hash-based-pycs requires a value")
+            option_value = values[index + 1]
+            if option_value not in {"always", "default", "never"}:
+                raise ValueError(
+                    "Python --check-hash-based-pycs requires always, default, or never"
+                )
+            options.extend((value, option_value))
+            index += 2
+            continue
+        if value.startswith("--"):
+            raise ValueError(f"unsupported Python interpreter option {value!r}")
+        for offset, character in enumerate(value[1:], 1):
+            if character in "cmWX":
+                if offset > 1:
+                    options.append(value[:offset])
+                attached = value[offset + 1 :]
+                if attached:
+                    option_value = attached
+                else:
+                    index += 1
+                    if index >= len(values):
+                        label = {
+                            "c": "a command",
+                            "m": "a module",
+                            "W": "a value",
+                            "X": "a value",
+                        }[character]
+                        raise ValueError(f"Python -{character} requires {label}")
+                    option_value = values[index]
+                if character in "cm":
+                    if character == "m" and not option_value:
+                        raise ValueError("Python -m requires a non-empty module")
+                    return payload(
+                        "command" if character == "c" else "module",
+                        option_value,
+                        values[index + 1 :],
+                    )
+                options.extend(
+                    ("-" + character + attached,)
+                    if attached
+                    else ("-" + character, option_value)
+                )
+                break
+            if character not in _PYTHON_FLAG_CHARACTERS:
+                raise ValueError(f"unsupported Python interpreter option {value!r}")
+            if character in "h?":
+                return PythonInvocation(tuple(values[1:]), "terminal", None, ())
+            if character == "V":
+                version = True
+        else:
+            options.append(value)
+        index += 1
+    if index < len(values):
+        if values[index] == "-":
+            return payload("stdin", None, values[index + 1 :])
+        return payload("script", values[index], values[index + 1 :])
+    return payload("stdin", None, ())
+
+
+def python_environment_options(
+    invocation: PythonInvocation,
+) -> tuple[bool, bool, tuple[str, ...]]:
+    """Project startup environment isolation, no-write and cache-prefix options."""
+    ignored_environment = False
+    no_bytecode = False
+    prefixes = []
+    options = iter(invocation.interpreter_options)
+    for option in options:
+        if option == "--check-hash-based-pycs":
+            next(options)
+        elif option == "-W":
+            next(options)
+        elif option.startswith("-W"):
+            continue
+        elif option.startswith("-X"):
+            value = next(options) if option == "-X" else option[2:]
+            if value.split("=", 1)[0] == "pycache_prefix":
+                prefixes.append(value.split("=", 1)[1] if "=" in value else "")
+        elif option.startswith("-") and not option.startswith("--"):
+            ignored_environment |= any(flag in option[1:] for flag in "IE")
+            no_bytecode |= "B" in option[1:]
+    return ignored_environment, no_bytecode, tuple(prefixes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +291,50 @@ def _run_command(
     return result.stdout, result.stderr, result.returncode
 
 
+def _verifier_python_command(
+    command: tuple[str, ...], verifier_bytecode_prefix: Path
+) -> tuple[str, ...]:
+    """Fence probe imports without changing the selected launcher's command.
+
+    The canonical parser proves the original command has no earlier payload or
+    incomplete option that could swallow the appended policy. Prior cache-prefix
+    options are refused rather than relying on CPython's duplicate-option order.
+    """
+    from molt.python_environment_identity import python_identity_verifier_arguments
+
+    basename = command[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    option_start = 1
+    if (
+        basename in PYTHON_LAUNCHER_NAMES
+        and len(command) > 1
+        and PYTHON_LAUNCHER_SELECTOR.fullmatch(command[1]) is not None
+    ):
+        option_start = 2
+    try:
+        invocation = parse_python_invocation(
+            [command[0], *command[option_start:], "-c", _IDENTITY_PROBE]
+        )
+    except ValueError as exc:
+        raise PythonInterpreterError(f"invalid verifier Python options: {exc}") from exc
+    if (
+        invocation.mode != "command"
+        or invocation.target != _IDENTITY_PROBE
+        or invocation.arguments
+    ):
+        raise PythonInterpreterError(
+            "verifier Python command must contain only launcher/interpreter options"
+        )
+    if python_environment_options(invocation)[2]:
+        raise PythonInterpreterError(
+            "verifier Python command cannot preselect a bytecode prefix"
+        )
+    return (
+        *command,
+        *python_identity_verifier_arguments(verifier_bytecode_prefix),
+        "-S",
+    )
+
+
 def probe_python_command(
     command: Sequence[str],
     *,
@@ -149,6 +342,7 @@ def probe_python_command(
     cwd: Path | None = None,
     timeout: float = 10.0,
     probe_timeout: Callable[[float], float] | None = None,
+    verifier_bytecode_prefix: Path | None = None,
 ) -> PythonInterpreter:
     """Run one identity probe and require a real CPython interpreter."""
 
@@ -158,8 +352,11 @@ def probe_python_command(
     probe_env = dict(os.environ if env is None else env)
     probe_env["PYTHONHASHSEED"] = "0"
     probe_cwd = Path.cwd() if cwd is None else cwd
+    probe_command = normalized
+    if verifier_bytecode_prefix is not None:
+        probe_command = _verifier_python_command(normalized, verifier_bytecode_prefix)
     stdout, stderr, rc = _run_command(
-        [*normalized, "-c", _IDENTITY_PROBE],
+        [*probe_command, "-c", _IDENTITY_PROBE],
         timeout=timeout if probe_timeout is None else probe_timeout(timeout),
         env=probe_env,
         cwd=probe_cwd,
@@ -197,9 +394,16 @@ def verify_target_python_command(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     timeout: float = 10.0,
+    verifier_bytecode_prefix: Path | None = None,
 ) -> tuple[bool, str]:
     try:
-        interpreter = probe_python_command(command, env=env, cwd=cwd, timeout=timeout)
+        interpreter = probe_python_command(
+            command,
+            env=env,
+            cwd=cwd,
+            timeout=timeout,
+            verifier_bytecode_prefix=verifier_bytecode_prefix,
+        )
     except PythonInterpreterError as exc:
         return False, str(exc)
     if interpreter.major_minor != target_python.short:
@@ -241,6 +445,7 @@ def resolve_target_python(
     prefer_current: bool = False,
     prefer_uv: bool = True,
     probe_timeout: Callable[[float], float] | None = None,
+    verifier_bytecode_prefix: Path | None = None,
 ) -> PythonInterpreter:
     """Resolve and identity-probe an exact supported CPython minor once."""
 
@@ -260,6 +465,7 @@ def resolve_target_python(
                 env=probe_env,
                 cwd=probe_cwd,
                 probe_timeout=probe_timeout,
+                verifier_bytecode_prefix=verifier_bytecode_prefix,
             )
         except PythonInterpreterError as exc:
             failures.append(f"{sys.executable}: {exc}")
@@ -283,6 +489,7 @@ def resolve_target_python(
                         env=probe_env,
                         cwd=probe_cwd,
                         probe_timeout=probe_timeout,
+                        verifier_bytecode_prefix=verifier_bytecode_prefix,
                     )
                 except PythonInterpreterError as exc:
                     failures.append(f"{format_python_command(candidate)}: {exc}")
@@ -301,7 +508,11 @@ def resolve_target_python(
     ):
         try:
             interpreter = probe_python_command(
-                candidate, env=probe_env, cwd=probe_cwd, probe_timeout=probe_timeout
+                candidate,
+                env=probe_env,
+                cwd=probe_cwd,
+                probe_timeout=probe_timeout,
+                verifier_bytecode_prefix=verifier_bytecode_prefix,
             )
         except PythonInterpreterError as exc:
             failures.append(f"{format_python_command(candidate)}: {exc}")
@@ -326,6 +537,7 @@ def resolve_target_python_command(
     prefer_current: bool = False,
     prefer_uv: bool = True,
     probe_timeout: Callable[[float], float] | None = None,
+    verifier_bytecode_prefix: Path | None = None,
 ) -> tuple[str, ...]:
     """Resolve an exact supported CPython minor and return its launch command."""
 
@@ -337,6 +549,7 @@ def resolve_target_python_command(
         prefer_current=prefer_current,
         prefer_uv=prefer_uv,
         probe_timeout=probe_timeout,
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
     ).command
 
 
@@ -346,6 +559,7 @@ def resolve_python_selector(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     probe_timeout: Callable[[float], float] | None = None,
+    verifier_bytecode_prefix: Path | None = None,
 ) -> tuple[str, ...]:
     """Resolve a CLI selector: default interpreter, exact version, path, or command."""
 
@@ -354,7 +568,12 @@ def resolve_python_selector(
     if _looks_like_version_selector(selector):
         target = parse_target_python_version(selector)
         return resolve_target_python_command(
-            target, env=env, cwd=cwd, prefer_current=True, probe_timeout=probe_timeout
+            target,
+            env=env,
+            cwd=cwd,
+            prefer_current=True,
+            probe_timeout=probe_timeout,
+            verifier_bytecode_prefix=verifier_bytecode_prefix,
         )
     return explicit_python_command(selector)
 

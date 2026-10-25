@@ -43,6 +43,7 @@ from molt import disk_capacity  # noqa: E402
 from molt.exact_json import read_exact  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
+from molt.python_interpreter import parse_python_invocation  # noqa: E402
 from tools import proof_command_argv, proof_plan, proof_receipts  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
     command_admission as admission,
@@ -158,8 +159,6 @@ def _supervisor_build_environment(
         custody_cas._canonical_root(temporary, create=True)
         for name in ("TMPDIR", "TMP", "TEMP"):
             build_env[name] = str(temporary)
-        if "PYTHONPYCACHEPREFIX" in build_env:
-            build_env["PYTHONPYCACHEPREFIX"] = str(temporary / "pycache")
     if os.name != "nt" and external_placement:
         wrappers = (
             build_env.get(name, "")
@@ -381,9 +380,6 @@ def execute_guarded_request(request_path: Path) -> int:
                 )
             for name in cargo_output_environment.TEMPORARY_VARIABLE_NAMES:
                 inherited_env[name] = str(output_layout.temporary)
-            inherited_env["PYTHONPYCACHEPREFIX"] = str(
-                output_layout.temporary / "pycache"
-            )
         requested_cargo_target = inherited_env.get("CARGO_TARGET_DIR")
         applied_cargo_policies: tuple[str, ...] = ()
         if "cargo" in envelope.get("toolchains", []):
@@ -562,7 +558,7 @@ def execute_guarded_request(request_path: Path) -> int:
             output_layout.validate(protected_roots=located_roots)
         python_authority = envelope.get("python")
         python_has_payload = isinstance(python_authority, Mapping) and (
-            proof_command_argv.parse_python_invocation(
+            parse_python_invocation(
                 admission._python_invocation_argv(
                     [str(value) for value in envelope["argv"]], python_authority
                 )

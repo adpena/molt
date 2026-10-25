@@ -165,6 +165,7 @@ tier_c = ["numpy", "pandas", "scipy", "tensorflow", "torch"]
 native_wheels = ["cbor2", "cryptography", "msgpack"]
 
 [tool.molt.dx]
+dependency_groups = ["dev", "bench"]
 python = "3.12"
 cargo_profile = "release-fast"
 backend_package = "molt-backend"
@@ -182,7 +183,7 @@ UV_CACHE_DIR = "{artifact_root}/.uv-cache"
 PYTHONPATH = "{root}/src"
 
 [tool.molt.dx.commands]
-install = "uv sync --group dev --group bench --python 3.12"
+install = "python -m molt.checkout_provisioning ensure uv-environment"
 clippy-backend = "cargo clippy -p molt-backend --features native-backend -- -D warnings"
 clippy-tir = "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings"
 clippy = [

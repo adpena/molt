@@ -58,6 +58,10 @@ from molt.source_root import PACKAGED_DISTRIBUTION_PATH  # noqa: E402
 from molt.exact_json import canonical_json_sha256, loads_exact  # noqa: E402
 from molt.file_publication import durable_remove_path  # noqa: E402
 from molt.python_interpreter import probe_python_command  # noqa: E402
+from molt.python_environment_identity import (  # noqa: E402
+    python_identity_verifier_arguments,
+    python_identity_verifier_prefix,
+)
 from molt.rust_toolchain import rust_channel  # noqa: E402
 from molt.toolchain_identity import (  # noqa: E402
     executable_candidates,
@@ -168,17 +172,19 @@ def _capture_python_execution(
     target: dict[str, object],
     reference_python: str,
 ) -> dict[str, object]:
-    interpreter = probe_python_command((str(python), "-I", "-B"), env=env, cwd=cwd)
-    result = _COMMANDS.run(
-        [str(python), "-I", "-B", "-c", _HOST_PROBE],
-        env=env,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-        encoding="utf-8",
-    )
+    with python_identity_verifier_prefix() as verifier_prefix:
+        command = [str(python), *python_identity_verifier_arguments(verifier_prefix)]
+        interpreter = probe_python_command(tuple(command), env=env, cwd=cwd)
+        result = _COMMANDS.run(
+            [*command, "-c", _HOST_PROBE],
+            env=env,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+            encoding="utf-8",
+        )
     observed = loads_exact(result.stdout)
     if (
         not isinstance(observed, dict)
@@ -210,19 +216,20 @@ def _capture_python_execution(
 
 
 def _absent_probe(python: Path, *, env: ProcessEnvironment, cwd: Path) -> None:
-    _COMMANDS.run(
-        [
-            str(python),
-            "-I",
-            "-c",
-            "import importlib.util; assert importlib.util.find_spec('molt') is None",
-        ],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        timeout=30,
-        check=True,
-    )
+    with python_identity_verifier_prefix() as verifier_prefix:
+        _COMMANDS.run(
+            [
+                str(python),
+                *python_identity_verifier_arguments(verifier_prefix),
+                "-c",
+                "import importlib.util; assert importlib.util.find_spec('molt') is None",
+            ],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
 
 
 def _consumer_environment(root: Path) -> ProcessEnvironment:
@@ -440,21 +447,25 @@ def _compilation_captures(
         toolchain_capture,
     )
 
-    python_captures = [
-        validate_python_capture(
-            command_identity._parse_json_output(
-                command_identity._run_captured(
-                    command_identity._python_probe_command(
-                        interpreter, source_root=compiler.source_root
-                    ),
-                    cwd=cwd,
-                    env=env,
-                ),
-                purpose="installed compilation frontend capture",
+    python_captures = []
+    for interpreter in dict.fromkeys(interpreters):
+        with python_identity_verifier_prefix() as verifier_prefix:
+            python_captures.append(
+                validate_python_capture(
+                    command_identity._parse_json_output(
+                        command_identity._run_captured(
+                            command_identity._python_probe_command(
+                                interpreter,
+                                verifier_bytecode_prefix=verifier_prefix,
+                                source_root=compiler.source_root,
+                            ),
+                            cwd=cwd,
+                            env=env,
+                        ),
+                        purpose="installed compilation frontend capture",
+                    )
+                )
             )
-        )
-        for interpreter in dict.fromkeys(interpreters)
-    ]
     captured: dict[str, Any] = {}
     for tool in dict.fromkeys(tools):
         exact = [str(tool), "--version"]
@@ -504,16 +515,23 @@ def _installed_frontend_python(
         "home,identity=m['_release_inputs'](root); "
         "print(json.dumps(str(home/'environments'/identity/'bin'/'python')))"
     )
-    result = _COMMANDS.run(
-        [str(python), "-I", "-B", "-c", code, str(compiler.source_root.parent)],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        check=True,
-    )
+    with python_identity_verifier_prefix() as verifier_prefix:
+        result = _COMMANDS.run(
+            [
+                str(python),
+                *python_identity_verifier_arguments(verifier_prefix),
+                "-c",
+                code,
+                str(compiler.source_root.parent),
+            ],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=True,
+        )
     value = loads_exact(result.stdout)
     if (
         not isinstance(value, str)

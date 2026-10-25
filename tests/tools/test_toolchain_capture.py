@@ -22,6 +22,7 @@ from tests.executable_test_support import (
 import pytest
 
 from tests.process_guard_common import install_module_view, run_isolated_python_probe
+from tests.python_environment_test_support import environment_location_manifest
 
 from molt import file_publication
 from molt.exact_json import canonical_json_sha256
@@ -53,7 +54,15 @@ def _identity(path: Path, *, rows: int = 1) -> dict[str, object]:
             "schema": "molt.proof-python-toolchain.v3",
             "identity_kind": "executable",
             "identity_sha256": "c" * 64,
-            "location": {"selected_executable": str(path)},
+            "location": environment_location_manifest(
+                prefix=path.parent,
+                selected_executable=path,
+                base_executable=path,
+                base_executable_selector=path,
+                roots=[path.parent],
+                external_roots=[],
+                file_paths=[path],
+            ),
             "environment": {
                 "implementation": "cpython",
                 "version": "3.12.test",
@@ -207,6 +216,7 @@ def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
     assert summary["environment"]["distributions"] == []  # type: ignore[index]
     assert summary["environment"]["distribution_count"] == 1  # type: ignore[index]
     assert summary["version"] == "3.12.test"  # type: ignore[index]
+    assert summary["location"]["base_executable_selector"] == str(owned)  # type: ignore[index]
     assert (
         toolchain_capture.verify_capture(
             reference, workers=2, cas_root=tmp_path / "cas"

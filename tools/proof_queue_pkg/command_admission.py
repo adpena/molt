@@ -15,12 +15,15 @@ from molt.compilation_target import target_name
 from molt.compilation_target import admit_target
 from molt.exact_json import canonical_json_bytes
 from molt.rust_toolchain import rust_flag_spans
+from molt.python_interpreter import (
+    PYTHON_LAUNCHER_NAMES,
+    PYTHON_LAUNCHER_SELECTOR,
+    PythonInvocation,
+    parse_python_invocation,
+)
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
 from tools.proof_command_argv import (
-    PythonInvocation,
-    _PY_LAUNCHERS,
-    _PY_SELECTOR,
     _PYTHON_COMMAND,
     _PYTHON_CONSOLE_MODULES,
     _PYTHON_CONSOLE_SCRIPTS,
@@ -31,7 +34,7 @@ from tools.proof_command_argv import (
     _normalized_entrypoint_target,
     _uv_option_values,
     _uv_prefix_and_payload,
-    parse_python_invocation,
+    python_environment_command,
     pytest_run_selections,
 )
 from tools.proof_queue_pkg import cargo_output_layout
@@ -1162,11 +1165,11 @@ def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
         return None
     first = _basename(payload[0])
     selector = (
-        first in _PY_LAUNCHERS
+        first in PYTHON_LAUNCHER_NAMES
         and len(payload) > 1
-        and _PY_SELECTOR.fullmatch(payload[1]) is not None
+        and PYTHON_LAUNCHER_SELECTOR.fullmatch(payload[1]) is not None
     )
-    if not (_PYTHON_COMMAND.fullmatch(first) or first in _PY_LAUNCHERS):
+    if not (_PYTHON_COMMAND.fullmatch(first) or first in PYTHON_LAUNCHER_NAMES):
         return None
     invocation = parse_python_invocation(
         [payload[0], *payload[2:]] if selector else payload
@@ -1609,6 +1612,7 @@ def _python_bootstrap_command(
     envelope: Mapping[str, object],
     exact: Sequence[str],
     *,
+    environment_root: Path,
     supervised_executable: str | None = None,
 ) -> list[str]:
     """Route Python payload execution through the absolute custody authority."""
@@ -1642,21 +1646,19 @@ def _python_bootstrap_command(
         return exact_values
     bootstrap = _PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True)
     skip_first_line = _interpreter_flag_present(invocation.interpreter_options, "x")
-    # PYTHONDONTWRITEBYTECODE is a queue-owned canonical input, but -E and -I
-    # make the interpreter ignore it while site still imports the repository
-    # startup adapter from custody-inventoried source. -B is the same policy
-    # as an interpreter option, so no admitted payload can drop it.
     interpreter_options = list(invocation.interpreter_options)
-    if not _interpreter_flag_present(interpreter_options, "B"):
-        interpreter_options.insert(0, "-B")
     arguments = list(invocation.arguments)
     payload = [str(bootstrap), invocation.mode, "1" if skip_first_line else "0"]
     if invocation.target is not None:
         payload.append(invocation.target)
     payload.extend(arguments)
-    if supervised_executable is not None:
-        return [supervised_executable, *interpreter_options, *payload]
-    return [*outer, *interpreter_options, *payload]
+    controlled = python_environment_command(
+        [supervised_executable or invocation_argv[0], *interpreter_options, *payload],
+        environment_root=environment_root,
+    )
+    return (
+        controlled if supervised_executable is not None else [*outer, *controlled[1:]]
+    )
 
 
 def _interpreter_flag_present(options: Sequence[str], flag: str) -> bool:
@@ -1697,11 +1699,26 @@ def _supervised_execution_command(
     ``sys.executable`` and ordinary venv discovery while making the kernel root
     the process that actually executes user code.
     """
-    if os.name != "nt" or not isinstance(envelope.get("python"), Mapping):
-        return _python_bootstrap_command(envelope, exact), {}
+    if not isinstance(envelope.get("python"), Mapping):
+        return [str(value) for value in exact], {}
     python = located_toolchains.get("python")
     if not isinstance(python, Mapping):
         raise ValueError("proof Python execution has no located runtime")
+    location = python.get("location")
+    root_raw = location.get("prefix") if isinstance(location, Mapping) else None
+    if not isinstance(root_raw, str) or not Path(root_raw).is_absolute():
+        raise ValueError("proof Python execution has no captured environment prefix")
+    environment_root = Path(root_raw)
+    from molt.python_environment_location import environment_bytecode_prefix
+
+    selected_environment = {
+        "PYTHONPYCACHEPREFIX": str(environment_bytecode_prefix(environment_root)),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if os.name != "nt":
+        return _python_bootstrap_command(
+            envelope, exact, environment_root=environment_root
+        ), selected_environment
     selected_raw = python.get("executable")
     base_raw = python.get("base_executable")
     if not isinstance(selected_raw, str) or not isinstance(base_raw, str):
@@ -1710,11 +1727,17 @@ def _supervised_execution_command(
     base = Path(base_raw).resolve(strict=True)
     if os.path.normcase(str(selected)) == os.path.normcase(str(base)):
         return _python_bootstrap_command(
-            envelope, exact, supervised_executable=str(base)
-        ), {}
+            envelope,
+            exact,
+            environment_root=environment_root,
+            supervised_executable=str(base),
+        ), selected_environment
     return _python_bootstrap_command(
-        envelope, exact, supervised_executable=str(base)
-    ), {"__PYVENV_LAUNCHER__": str(selected)}
+        envelope,
+        exact,
+        environment_root=environment_root,
+        supervised_executable=str(base),
+    ), {**selected_environment, "__PYVENV_LAUNCHER__": str(selected)}
 
 
 def _envelope_for_command(
@@ -1768,9 +1791,9 @@ def _envelope_for_command(
             )
     elif _PYTHON_COMMAND.fullmatch(first):
         python = {"kind": "direct", "executable": argv[0]}
-    elif first in _PY_LAUNCHERS:
+    elif first in PYTHON_LAUNCHER_NAMES:
         selector: str | None = None
-        if len(argv) > 1 and _PY_SELECTOR.fullmatch(argv[1]):
+        if len(argv) > 1 and PYTHON_LAUNCHER_SELECTOR.fullmatch(argv[1]):
             selector = argv[1]
         python = {"kind": "py-launcher", "launcher": argv[0], "selector": selector}
     elif first in _PYTHON_CONSOLE_SCRIPTS:
