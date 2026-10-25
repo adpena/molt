@@ -414,6 +414,13 @@ input verification; the guardian remains isolated from site packages. Guardian
 startup and prefix lifetime follow the same fresh-namespace rule through
 [existing command and run custody](../agent/PROOF_QUEUE.md).
 
+When a controller provisions another editable checkout, publication selects
+that checkout's reader and binds its source files before launch. The
+existing input custody verifies their generations through publication, and the
+selected process proves that its loaded package belongs to the same checkout.
+The additional cost is one hash pass over the reader's source files, followed
+by metadata checks.
+
 Other checkout inputs keep their existing protocols: current stamps read the
 declared locks; stale inputs run a guarded provisioner under the checkout lock
 and publish a stamp only after success. Toolchain admission ensures a selected
