@@ -26,6 +26,1120 @@ from tools.proof_queue_pkg import (
 )
 
 
+def _run_windows_raw_python_subject(command_line, *, executable, tmp_path, **kwargs):
+    """Observe raw CreateProcess syntax inside the existing typed subject.
+
+    The suspended-image oracle below uses this same Windows Popen boundary.
+    A fresh driver prefix keeps the observation process out of the foreign
+    cache namespace deliberately assigned to the actual raw child.
+    """
+    import tempfile
+
+    program = (
+        "import subprocess,sys;"
+        "child=subprocess.run(sys.argv[1],executable=sys.argv[2],"
+        "stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15);"
+        "sys.stdout.buffer.write(child.stdout);sys.stderr.buffer.write(child.stderr);"
+        "sys.exit(child.returncode)"
+    )
+    with tempfile.TemporaryDirectory(dir=tmp_path, prefix="raw-driver-") as prefix:
+        return run_custody_subject_process(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-X",
+                f"pycache_prefix={prefix}",
+                "-c",
+                program,
+                command_line,
+                str(executable),
+            ],
+            **kwargs,
+        )
+
+
+def _python_base_process_images():
+    from tools.proof_queue_pkg import process_image_capture
+
+    # uv's Python trampoline preserves its absolute embedded base selector.
+    # A managed-Python directory junction and its physical image are distinct
+    # captured coordinates, even though they currently name the same bytes.
+    base = Path(os.path.abspath(sys._base_executable))
+    images = [process_image_capture.capture_image("base-interpreter", base)]
+    if execution_custody._norm(base) != images[0]["path"]:
+        images.append(
+            process_image_capture.capture_image(
+                "interpreter-alias:base-selector", base, preserve_path=True
+            )
+        )
+    return images
+
+
+@pytest.mark.parametrize("runtime", ["python", "node"])
+@pytest.mark.parametrize(
+    ("interpreter_role", "alias_form"),
+    [
+        ("selected-interpreter", "selected"),
+        ("interpreter-alias:python3.12", "copy"),
+        pytest.param(
+            "interpreter-alias:python3.12",
+            "symlink",
+            marks=pytest.mark.skipif(
+                os.name != "nt", reason="actual Windows symlink alias subject"
+            ),
+        ),
+    ],
+)
+def test_python_child_bytecode_namespace_is_bound_before_launch(
+    tmp_path, runtime, interpreter_role, alias_form
+):
+    import shutil
+    from molt.python_environment_location import environment_bytecode_prefix
+    from tools.proof_command_argv import python_environment_command
+    from tools.proof_queue_pkg import process_image_capture
+
+    node = shutil.which("node") if runtime == "node" else None
+    if runtime == "node" and node is None:
+        pytest.skip("node is unavailable")
+    selected = tmp_path / "selected-image"
+    prefix = environment_bytecode_prefix(selected)
+    prefix.mkdir(parents=True)
+    child_executable = sys.executable
+    if interpreter_role.startswith("interpreter-alias:"):
+        if os.name == "nt":
+            import venv
+
+            # The genuine venv redirector preserves CPython's DLL/home setup
+            # while its copied lexical alias exercises the actual image grant.
+            venv.EnvBuilder(with_pip=False).create(selected)
+            alias = selected / "Scripts" / "python3.12.exe"
+            if alias_form == "symlink":
+                try:
+                    alias.symlink_to(selected / "Scripts" / "python.exe")
+                except OSError as exc:
+                    if exc.winerror == 1314:
+                        pytest.skip(
+                            "Windows host lacks symbolic-link creation privilege"
+                        )
+                    raise
+            else:
+                shutil.copyfile(selected / "Scripts" / "python.exe", alias)
+        else:
+            alias = selected / "python3.12"
+            alias.symlink_to(Path(sys.executable).resolve(strict=True))
+        child_executable = str(alias)
+    foreign = tmp_path / "foreign-cache"
+    source = tmp_path / "cache_probe.py"
+    source.write_text("VALUE = 111\n", encoding="utf-8")
+    stamp = source.stat()
+    original = source.read_bytes()
+    # CPython itself writes two executable, same-header wrong-code caches.
+    # Both namespaces must remain untouched and unread by admitted children.
+    source.write_text("VALUE = 999\n", encoding="utf-8")
+    os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    caches = []
+    for namespace in (None, str(foreign)):
+        compiled = run_custody_subject_process(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                "-B",
+                "-X",
+                f"pycache_prefix={namespace or ''}",
+                "-c",
+                "import py_compile;print(py_compile.compile("
+                f"{str(source)!r},doraise=True,invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        assert compiled.returncode == 0, compiled.stderr
+        cache = Path(compiled.stdout.strip())
+        caches.append((cache, cache.read_bytes()))
+    source.write_bytes(original)
+    os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    program = (
+        "import json,sys;"
+        f"sys.path.insert(0,{str(tmp_path)!r});"
+        "import cache_probe;print(json.dumps([sys.pycache_prefix,"
+        "sys.dont_write_bytecode,cache_probe.VALUE]))"
+    )
+    # Independent live CPython control proves each retained cache executes.
+    for namespace in ("", str(foreign)):
+        ordinary = run_custody_subject_process(
+            [sys.executable, "-B", "-X", f"pycache_prefix={namespace}", "-c", program],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+            check=False,
+        )
+        assert ordinary.returncode == 0, ordinary.stderr
+        assert json.loads(ordinary.stdout)[2] == 999
+
+    captured = process_image_capture.capture_image(
+        interpreter_role, Path(child_executable), preserve_path=True
+    )
+    images = [captured, *_python_base_process_images()]
+    policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {
+            "python": {
+                "location": {"prefix": str(selected)},
+                "process_images": images,
+            }
+        },
+        environment_executables={},
+    )
+    selected_grant = next(
+        row
+        for row in policy["allowed"]
+        if row["path"] == execution_custody._norm(child_executable)
+    )
+    assert selected_grant["python_bytecode"] == {
+        "environment_root": str(selected),
+        "pycache_prefix": str(prefix),
+    }
+    assert selected_grant["python_launch"] == "interpreter"
+    # A second exact executable grant must not bypass interpreter custody.
+    policy["allowed"].insert(
+        0,
+        {
+            "toolchain": "generic-tool",
+            "path": selected_grant["path"],
+            "sha256": selected_grant["sha256"],
+        },
+    )
+    cases = [
+        {
+            "name": "environment",
+            "argv": [child_executable, "-c", program],
+            "allow": True,
+        },
+        *(
+            {
+                "name": flag,
+                "argv": python_environment_command(
+                    [child_executable, flag, "-c", program], environment_root=selected
+                ),
+                "allow": True,
+            }
+            for flag in ("-I", "-E")
+        ),
+        {
+            "name": "conflict",
+            "argv": [
+                child_executable,
+                "-B",
+                "-X",
+                f"pycache_prefix={foreign}",
+                "-c",
+                program,
+            ],
+            "allow": False,
+        },
+        {
+            "name": "duplicate",
+            "argv": [
+                child_executable,
+                "-B",
+                "-X",
+                f"pycache_prefix={prefix}",
+                "-X",
+                f"pycache_prefix={prefix}",
+                "-c",
+                program,
+            ],
+            "allow": False,
+        },
+        {
+            "name": "ignored-environment",
+            "argv": [child_executable, "-I", "-c", program],
+            "allow": False,
+        },
+        {
+            "name": "writes-enabled",
+            "argv": [
+                child_executable,
+                "-E",
+                "-X",
+                f"pycache_prefix={prefix}",
+                "-c",
+                program,
+            ],
+            "allow": False,
+        },
+        {
+            "name": "terminal",
+            "argv": [child_executable, "--help", "-X", f"pycache_prefix={foreign}"],
+            "allow": True,
+        },
+    ]
+    environment = {
+        **os.environ,
+        "PYTHONPYCACHEPREFIX": str(prefix),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    server = execution_custody.ChildCustodyEventServer(runtime, policy)
+    environment.update(
+        {execution_custody.CHILD_POLICY_ENV: json.dumps(policy), **server.environment()}
+    )
+    if runtime == "python":
+        cases.append(
+            {
+                "name": "native-environment",
+                "argv": [child_executable, "-c", program],
+                "allow": False,
+                "putenv": str(foreign),
+            }
+        )
+        payload = (
+            "import json,os,subprocess\n"
+            f"cases={cases!r}\n"
+            "rows=[]\n"
+            "for case in cases:\n"
+            " if 'putenv' in case: os.putenv('PYTHONPYCACHEPREFIX',case['putenv'])\n"
+            " try:\n"
+            "  r=subprocess.run(case['argv'],capture_output=True,text=True,timeout=15)\n"
+            "  rows.append({'name':case['name'],'allowed':True,'rc':r.returncode,'stdout':r.stdout})\n"
+            " except PermissionError:\n"
+            "  rows.append({'name':case['name'],'allowed':False})\n"
+            " finally:\n"
+            "  if 'putenv' in case: os.putenv('PYTHONPYCACHEPREFIX',os.environ['PYTHONPYCACHEPREFIX'])\n"
+            "print(json.dumps(rows))"
+        )
+        bootstrap = Path(execution_custody.__file__).with_name(
+            "python_custody_bootstrap.py"
+        )
+        argv = [sys.executable, str(bootstrap), "command", "0", payload]
+    else:
+        environment["NODE_OPTIONS"] = execution_custody.node_bootstrap_options()
+        payload = (
+            "const cp=require('child_process');const rows=[];"
+            f"const cases={json.dumps(cases)};"
+            "for(const c of cases){try{const r=cp.spawnSync(c.argv[0],c.argv.slice(1),{encoding:'utf8',timeout:15000});"
+            "rows.push({name:c.name,allowed:true,rc:r.status,stdout:r.stdout});}"
+            "catch(e){if(!String(e).includes('python-bytecode-custody:'))throw e;"
+            "rows.push({name:c.name,allowed:false});}}console.log(JSON.stringify(rows));"
+        )
+        argv = [node, "-e", payload]
+    with server:
+        completed = run_custody_subject_process(
+            argv,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    assert [(r["name"], r["allowed"]) for r in observed] == [
+        (r["name"], r["allow"]) for r in cases
+    ]
+    for row in observed:
+        if row["allowed"]:
+            assert row["rc"] == 0, row
+            if row["name"] != "terminal":
+                assert json.loads(row["stdout"]) == [str(prefix), True, 111]
+    receipt = server.receipt()
+    assert receipt["broker_complete"] is True, receipt
+    decisions = [
+        row for row in receipt["events"] if row.get("event") == "child-process"
+    ]
+    assert [row["admitted"] for row in decisions] == [row["allow"] for row in cases]
+    assert all(
+        row["reason"].startswith("python-bytecode-custody:")
+        for row in decisions
+        if not row["admitted"]
+    )
+    assert all(cache.read_bytes() == data for cache, data in caches)
+    assert source.read_bytes() == original
+
+
+def test_python_child_policy_rejects_unknown_launch_roles(tmp_path):
+    from tools.proof_queue_pkg import process_image_capture
+
+    captured = process_image_capture.capture_image(
+        "unproven-python-launch", Path(sys.executable), preserve_path=True
+    )
+    with pytest.raises(ValueError, match="unknown launch role"):
+        execution_custody.child_policy(
+            {"process_closure": {"descendants": "declared-toolchains"}},
+            {
+                "python": {
+                    "location": {"prefix": str(tmp_path)},
+                    "process_images": [captured],
+                }
+            },
+            environment_executables={},
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX kernel shebang image boundary")
+def test_python_console_shebang_uses_explicit_interpreter_custody(tmp_path):
+    from molt.python_environment_location import environment_bytecode_prefix
+    from tools.proof_command_argv import python_environment_command
+    from tools.proof_queue_pkg import process_image_capture
+
+    marker = tmp_path / "executed"
+    launcher = tmp_path / "console-probe"
+    launcher.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    # The same genuine source executes through both ordinary kernel shebang
+    # launch and the explicit interpreter boundary used by proof consumers.
+    ordinary = run_custody_subject_process([launcher], timeout=20, check=False)
+    assert ordinary.returncode == 0
+    assert marker.read_text(encoding="utf-8") == "ran"
+    marker.unlink()
+    images = [
+        process_image_capture.capture_image(
+            "selected-interpreter", Path(sys.executable), preserve_path=True
+        ),
+        process_image_capture.capture_image(
+            "console-script:probe", launcher, preserve_path=True
+        ),
+        process_image_capture.capture_image(
+            "distribution-executable:probe", launcher, preserve_path=True
+        ),
+    ]
+    policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {"python": {"location": {"prefix": str(tmp_path)}, "process_images": images}},
+        environment_executables={},
+    )
+    grants = [row for row in policy["allowed"] if row["path"] == str(launcher)]
+    assert {row["python_launch"] for row in grants} == {"console-script", "native"}
+    assert next(row for row in grants if row["python_launch"] == "console-script")[
+        "python_bytecode"
+    ] == {
+        "environment_root": str(tmp_path),
+        "pycache_prefix": str(environment_bytecode_prefix(tmp_path)),
+    }
+    commands = [
+        [str(launcher)],
+        python_environment_command(
+            [sys.executable, str(launcher)], environment_root=tmp_path
+        ),
+    ]
+    payload = (
+        "import subprocess\n"
+        f"commands={commands!r}\n"
+        "for command in commands:\n"
+        " try: subprocess.run(command,check=True); print('admitted')\n"
+        " except PermissionError: print('refused')\n"
+    )
+    server = execution_custody.ChildCustodyEventServer("python", policy)
+    environment = {
+        **os.environ,
+        "PYTHONPYCACHEPREFIX": str(environment_bytecode_prefix(tmp_path)),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        execution_custody.CHILD_POLICY_ENV: json.dumps(policy),
+        **server.environment(),
+    }
+    bootstrap = Path(execution_custody.__file__).with_name(
+        "python_custody_bootstrap.py"
+    )
+    with server:
+        completed = run_custody_subject_process(
+            [sys.executable, bootstrap, "command", "0", payload],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == ["refused", "admitted"]
+    assert marker.read_text(encoding="utf-8") == "ran"
+    decisions = [
+        row for row in server.receipt()["events"] if row.get("event") == "child-process"
+    ]
+    assert [row["admitted"] for row in decisions] == [False, True]
+    assert decisions[0]["reason"] == "implicit-interpreter"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual Windows CPython CRT argv")
+@pytest.mark.parametrize("tail", ['a"b"" c d', r'"ab\"c" "\\" d', '"" "unterminated'])
+def test_windows_python_crt_decoder_matches_actual_child(tmp_path, tail):
+    import subprocess
+    from tools.proof_command_argv import split_windows_python_command_line
+
+    program = "import json,sys;print(json.dumps(sys.orig_argv))"
+    executable = Path(sys._base_executable).resolve(strict=True)
+    command = (
+        subprocess.list2cmdline(
+            [
+                str(executable),
+                "-I",
+                "-B",
+                "-X",
+                f"pycache_prefix={tmp_path / 'empty'}",
+                "-c",
+                program,
+            ]
+        )
+        + " "
+        + tail
+    )
+    actual = _run_windows_raw_python_subject(
+        command,
+        executable=executable,
+        tmp_path=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert actual.returncode == 0, actual.stderr
+    assert json.loads(actual.stdout) == list(split_windows_python_command_line(command))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual Windows CPython startup options")
+def test_windows_python_doubled_quote_warning_cannot_grant_hidden_flags(tmp_path):
+    import subprocess
+    from tools.proof_queue_pkg import process_image_capture
+    from tools.proof_command_argv import split_windows_python_command_line
+    from molt.python_environment_location import environment_bytecode_prefix
+
+    prefix = str(environment_bytecode_prefix(tmp_path))
+    foreign = str(tmp_path / "foreign")
+    program = "import json,sys;print(json.dumps([sys.orig_argv,sys.pycache_prefix,sys.dont_write_bytecode]))"
+    executable = Path(sys._base_executable).resolve(strict=True)
+    command = (
+        subprocess.list2cmdline([str(executable)])
+        + f' -W"x"" -B -Xpycache_prefix={prefix} " -c '
+        + subprocess.list2cmdline([program])
+    )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"}
+    }
+    environment["PYTHONPYCACHEPREFIX"] = foreign
+    actual = _run_windows_raw_python_subject(
+        command,
+        executable=executable,
+        tmp_path=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert actual.returncode == 0, actual.stderr
+    observed_argv, observed_prefix, observed_readonly = json.loads(actual.stdout)
+    assert observed_argv == list(split_windows_python_command_line(command))
+    assert (observed_prefix, observed_readonly) == (foreign, False)
+    policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {
+            "python": {
+                "location": {"prefix": str(tmp_path)},
+                "process_images": [
+                    process_image_capture.capture_image(
+                        "selected-interpreter", executable, preserve_path=True
+                    )
+                ],
+            }
+        },
+        environment_executables={},
+    )
+    policy["allowed"].insert(
+        0,
+        {
+            "toolchain": "generic",
+            "path": policy["allowed"][0]["path"],
+            "sha256": policy["allowed"][0]["sha256"],
+        },
+    )
+    facts = python_child_custody._windows_caller_facts(
+        python_child_custody._native_environment_reader()
+    )()
+    intent = {
+        **facts,
+        "application_name": str(executable),
+        "command_line": command,
+        "python_environment": {
+            "PYTHONPYCACHEPREFIX": foreign,
+            "PYTHONDONTWRITEBYTECODE": None,
+        },
+    }
+    with execution_custody.ChildCustodyEventServer(None, policy) as server:
+        decision = server._decide_child(intent, "python")
+    assert decision["admitted"] is False
+    assert decision["reason"].startswith("python-bytecode-custody:")
+
+
+def test_python_console_startup_is_image_bound_and_payload_flags_cannot_weaken_it(
+    tmp_path, monkeypatch
+):
+    import io
+    import zipfile
+    from molt.python_environment_location import environment_bytecode_prefix
+
+    interpreter = tmp_path / "python.exe"
+    interpreter.write_bytes(b"captured interpreter")
+    launcher = tmp_path / "probe.exe"
+    with io.BytesIO() as archive_bytes:
+        with zipfile.ZipFile(archive_bytes, "w") as archive:
+            archive.writestr("__main__.py", "print('console payload')\n")
+        launcher.write_bytes(
+            b"MZfixture" + f'#!"{interpreter}"\n'.encode() + archive_bytes.getvalue()
+        )
+    launcher.chmod(0o755)
+    digest = hashlib.sha256(launcher.read_bytes()).hexdigest()
+    # PE resource lookup is the independent platform service outside this
+    # portable ZIP/shebang control. Real Windows launcher execution is below.
+    monkeypatch.setattr(
+        execution_custody, "_windows_uv_launcher_metadata", lambda path: None
+    )
+    startup, transport = execution_custody._windows_python_console_startup(
+        launcher, {str(interpreter)}, sha256=digest
+    )
+    assert startup == [str(interpreter), str(launcher)]
+    assert transport == "unicode"
+    with pytest.raises(ValueError, match="outside capture"):
+        execution_custody._windows_python_console_startup(
+            launcher, set(), sha256=digest
+        )
+    with pytest.raises(ValueError, match="differs from its captured image"):
+        execution_custody._windows_python_console_startup(
+            launcher, {str(interpreter)}, sha256="0" * 64
+        )
+    authority = {
+        "toolchain": "python",
+        "python_launch": "console-script",
+        "path": execution_custody._norm(launcher),
+        "sha256": digest,
+        "python_bytecode": {
+            "environment_root": str(tmp_path),
+            "pycache_prefix": str(environment_bytecode_prefix(tmp_path)),
+        },
+        "python_startup_argv": startup,
+        "python_windows_transport": transport,
+    }
+    policy = {
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
+        "descendants": "declared-toolchains",
+        "allowed": [
+            {"toolchain": "generic", "path": authority["path"], "sha256": digest},
+            {
+                "toolchain": "python",
+                "python_launch": "native",
+                "path": authority["path"],
+                "sha256": digest,
+                "python_bytecode": None,
+            },
+            authority,
+        ],
+    }
+    intent = {
+        "requested": str(launcher),
+        "argv": [
+            str(launcher),
+            "--help",
+            "-B",
+            "-X",
+            f"pycache_prefix={environment_bytecode_prefix(tmp_path)}",
+        ],
+        "python_environment": {
+            "PYTHONPYCACHEPREFIX": str(tmp_path / "foreign"),
+            "PYTHONDONTWRITEBYTECODE": None,
+        },
+        "windows_verbatim_arguments": False,
+    }
+    with execution_custody.ChildCustodyEventServer(None, policy) as server:
+        refused = server._decide_child(intent, "node")
+        assert refused["admitted"] is False
+        assert refused["reason"].startswith("python-bytecode-custody:")
+        safe = {
+            "PYTHONPYCACHEPREFIX": str(environment_bytecode_prefix(tmp_path)),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        assert (
+            server._decide_child({**intent, "python_environment": safe}, "node")[
+                "admitted"
+            ]
+            is True
+        )
+        authority["python_startup_argv"] = [str(interpreter), "-I", str(launcher)]
+        assert (
+            server._decide_child({**intent, "python_environment": safe}, "node")[
+                "admitted"
+            ]
+            is False
+        )
+    assert hashlib.sha256(launcher.read_bytes()).hexdigest() == digest
+
+
+@pytest.mark.parametrize(
+    "declaration,expected", [("UTF-8", True), ("Legacy", False), ("", False)]
+)
+def test_python_console_codepage_comes_from_launcher_manifest(declaration, expected):
+    # This is the Windows application-manifest declaration, independent of the
+    # broker process's own GetACP value or environment.
+    raw = (
+        '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:v3="urn:schemas-microsoft-com:asm.v3">'
+        "<v3:application><v3:windowsSettings>"
+        f'<activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">{declaration}</activeCodePage>'
+        "</v3:windowsSettings></v3:application></assembly>"
+    ).encode()
+    assert execution_custody._windows_console_manifest_uses_utf8(raw) is expected
+    assert not execution_custody._windows_console_manifest_uses_utf8(None)
+    assert not execution_custody._windows_console_manifest_uses_utf8(
+        b"<!DOCTYPE assembly><assembly/>"
+    )
+
+
+def test_python_console_rejects_zip64_before_constructing_zipfile(monkeypatch):
+    import io
+    import zipfile
+
+    classic = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 1, 1, 57, 40, 0)
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, 10, 1)
+    malformed = io.BytesIO(b"MZ" + b"x" * 64 + locator + classic)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ZIP64 must be refused before ZipFile reads its directory")
+
+    monkeypatch.setattr(zipfile, "ZipFile", forbidden)
+    with pytest.raises(ValueError, match="ZIP64 metadata"):
+        execution_custody._distlib_python_console_prefix(malformed)
+
+
+@pytest.mark.parametrize("layout", ["negative-offset", "unindexed-prefix"])
+def test_python_console_requires_the_actual_classic_archive_base(layout):
+    import io
+    import zipfile
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as writer:
+        writer.writestr("__main__.py", "print('source')\n")
+    zipped = bytearray(archive.getvalue())
+    central = zipped.index(b"PK\x01\x02")
+    end = len(zipped) - 22
+    if layout == "negative-offset":
+        # CPython adjusts header_offset by its inferred concatenation prefix.
+        # This classic offset pushes that adjusted header below zero.
+        struct.pack_into("<L", zipped, end + 16, 1024 * 1024)
+        leading = b""
+    else:
+        # The native distlib launcher sees the original archive-base shebang;
+        # a separately indexed second local entry must not select a fake one.
+        leading = b"unindexed-local-block\n#!C:\\foreign\\python.exe -B\n"
+        struct.pack_into("<L", zipped, central + 42, len(leading))
+        original_directory = struct.unpack_from("<L", zipped, end + 16)[0]
+        struct.pack_into("<L", zipped, end + 16, original_directory + len(leading))
+    raw = (
+        b"MZ"
+        + b"x" * (300 * 1024)
+        + b"#!C:\\selected\\python.exe\n"
+        + leading
+        + bytes(zipped)
+    )
+
+    class BoundedReader(io.BytesIO):
+        def read(self, count=-1):
+            remaining = len(raw) - self.tell()
+            assert (
+                remaining if count < 0 else min(count, remaining)
+            ) <= 46 + 3 * 65535, "decoder attempted an unbounded image read"
+            return super().read(count)
+
+    with pytest.raises(ValueError, match="invalid archive offset"):
+        execution_custody._distlib_python_console_prefix(BoundedReader(raw))
+
+
+def test_python_interpreter_unicode_transport_is_image_bound(tmp_path, monkeypatch):
+    interpreter = tmp_path / "python.exe"
+    interpreter.write_bytes(b"captured image")
+    digest = hashlib.sha256(interpreter.read_bytes()).hexdigest()
+    metadata = {"kind": "python", "interpreter": str(interpreter), "utf8": False}
+    monkeypatch.setattr(
+        execution_custody, "_windows_uv_launcher_metadata", lambda path: metadata
+    )
+    interpreters = {execution_custody._norm(interpreter)}
+    assert (
+        execution_custody._windows_python_interpreter_transport(
+            interpreter, interpreters, sha256=digest
+        )
+        == "ascii"
+    )
+    unicode_interpreter = tmp_path / "漢字.exe"
+    unicode_interpreter.write_bytes(b"captured target")
+    metadata["interpreter"] = str(unicode_interpreter)
+    with pytest.raises(ValueError, match="captured UTF-8 manifest"):
+        execution_custody._windows_python_interpreter_transport(
+            interpreter,
+            {*interpreters, execution_custody._norm(unicode_interpreter)},
+            sha256=digest,
+        )
+    metadata["interpreter"] = str(interpreter)
+    authority = {
+        "toolchain": "python",
+        "python_launch": "interpreter",
+        "python_windows_transport": "ascii",
+        "python_bytecode": {
+            "environment_root": str(tmp_path),
+            "pycache_prefix": str(tmp_path / "bytecode"),
+        },
+    }
+    intent = {
+        "command_line": f'python.exe -B -X pycache_prefix={tmp_path / "bytecode"} -c "print(1)"',
+        "python_environment": {
+            "PYTHONPYCACHEPREFIX": None,
+            "PYTHONDONTWRITEBYTECODE": None,
+        },
+    }
+    execution_custody._validate_python_child_launch(authority, intent, windows=True)
+    with pytest.raises(ValueError, match="unproven Unicode transport"):
+        execution_custody._validate_python_child_launch(
+            authority,
+            {**intent, "command_line": intent["command_line"] + " 漢字"},
+            windows=True,
+        )
+    metadata["utf8"] = True
+    assert (
+        execution_custody._windows_python_interpreter_transport(
+            interpreter, interpreters, sha256=digest
+        )
+        == "unicode"
+    )
+    with pytest.raises(ValueError, match="differs from its captured image"):
+        execution_custody._windows_python_interpreter_transport(
+            interpreter, interpreters, sha256="0" * 64
+        )
+
+
+@pytest.mark.parametrize("retarget", [False, True])
+def test_python_launcher_transport_preserves_alias_generation(
+    tmp_path, monkeypatch, retarget
+):
+    original = tmp_path / "original.exe"
+    other = tmp_path / "other.exe"
+    data = b"same captured executable bytes"
+    original.write_bytes(data)
+    other.write_bytes(data)
+    alias = tmp_path / "python-alias.exe"
+    try:
+        alias.symlink_to(original)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows host lacks symbolic-link creation privilege")
+        raise
+
+    def metadata(entrypoint):
+        assert entrypoint == alias
+        if retarget:
+            alias.unlink()
+            alias.symlink_to(other)
+        return None
+
+    monkeypatch.setattr(execution_custody, "_windows_uv_launcher_metadata", metadata)
+
+    def capture():
+        return execution_custody._windows_python_interpreter_transport(
+            alias,
+            {execution_custody._norm(alias)},
+            sha256=hashlib.sha256(data).hexdigest(),
+        )
+
+    if retarget:
+        with pytest.raises(ValueError, match="entrypoint changed"):
+            capture()
+    else:
+        assert capture() == "unicode"
+    assert original.read_bytes() == other.read_bytes() == data
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="actual Windows Python forwarding launchers"
+)
+@pytest.mark.parametrize("family", ["uv", "cpython-venv"])
+def test_windows_python_forwarder_cannot_remove_observed_startup_options(
+    tmp_path, family
+):
+    import shutil
+    import venv
+    from tools.proof_queue_pkg import process_image_capture
+    from tools.proof_command_argv import (
+        split_windows_python_command_line,
+        validate_python_environment_command,
+    )
+
+    image = tmp_path / "image"
+    if family == "uv":
+        uv = shutil.which("uv")
+        assert uv is not None, (
+            "the Windows uv-proxy proof requires the declared uv tool"
+        )
+        created = run_custody_subject_process(
+            [
+                uv,
+                "venv",
+                "--offline",
+                "--no-config",
+                "--python",
+                sys._base_executable,
+                str(image),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert created.returncode == 0, created.stderr
+    else:
+        venv.EnvBuilder(with_pip=False).create(image)
+    proxy = image / "Scripts" / "python.exe"
+    metadata = execution_custody._windows_uv_launcher_metadata(proxy)
+    assert (
+        (metadata is not None and metadata["kind"] == "python")
+        if family == "uv"
+        else metadata is None
+    )
+    images = [
+        process_image_capture.capture_image(
+            "selected-interpreter", proxy, preserve_path=True
+        ),
+        *_python_base_process_images(),
+    ]
+    # A pure ASCII namespace projection makes the raw counterexamples exact
+    # regardless of spaces/nonASCII in the real disposable launcher location.
+    # No child is run with this namespace: the ordinary control uses foreign.
+    policy_root = Path(tmp_path.anchor) / "molt-custody-selected"
+    policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {
+            "python": {
+                "location": {"prefix": str(policy_root)},
+                "process_images": images,
+            }
+        },
+        environment_executables={},
+    )
+    expected = str(policy_root / "bytecode")
+    program = "print(__import__('json').dumps([__import__('sys').orig_argv,__import__('sys').pycache_prefix,__import__('sys').dont_write_bytecode]))"
+    command = (
+        f'"fake\\" -B -X pycache_prefix={expected} -c "dummy -c {program}"'
+        if family == "uv"
+        else f'"fake"-c{program} -B -X pycache_prefix={expected} -c dummy'
+    )
+    foreign = str(tmp_path / "foreign")
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"}
+    }
+    environment["PYTHONPYCACHEPREFIX"] = foreign
+    # The old CRT-only admission really sees apparently safe startup flags;
+    # refusal must follow from forwarding, not a malformed cache-prefix fixture.
+    validate_python_environment_command(
+        split_windows_python_command_line(command),
+        environment_root=policy_root,
+        environment={"PYTHONPYCACHEPREFIX": foreign},
+    )
+    ordinary = _run_windows_raw_python_subject(
+        command,
+        executable=str(proxy),
+        tmp_path=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert ordinary.returncode == 0, ordinary.stderr
+    actual_argv, actual_prefix, actual_readonly = json.loads(ordinary.stdout)
+    assert actual_argv[1].startswith("-c")
+    assert (actual_prefix, actual_readonly) == (foreign, False)
+    facts = python_child_custody._windows_caller_facts(
+        python_child_custody._native_environment_reader()
+    )()
+    intent = {
+        **facts,
+        "application_name": str(proxy),
+        "command_line": command,
+        "python_environment": {
+            "PYTHONPYCACHEPREFIX": foreign,
+            "PYTHONDONTWRITEBYTECODE": None,
+        },
+    }
+    with execution_custody.ChildCustodyEventServer(None, policy) as server:
+        decision = server._decide_child(intent, "python")
+    assert decision["admitted"] is False
+    assert "ambiguous forwarding" in decision["reason"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual Windows distlib console launcher")
+@pytest.mark.parametrize("runtime", ["python", "node"])
+def test_windows_python_console_launcher_honors_captured_startup(tmp_path, runtime):
+    import shutil
+    from distlib.scripts import ScriptMaker
+    from molt.python_environment_location import environment_bytecode_prefix
+    from tools.proof_queue_pkg import process_image_capture
+
+    node = shutil.which("node") if runtime == "node" else None
+    if runtime == "node" and node is None:
+        pytest.skip("node is unavailable")
+    prefix = str(environment_bytecode_prefix(tmp_path))
+    payload_args = ["--help", "-I", "-B", "-X", "pycache_prefix=payload"]
+    maker = ScriptMaker(None, str(tmp_path / "Scripts"))
+    maker.executable = sys.executable
+    maker.variants = {""}
+    maker.script_template = "import json,sys\nprint(json.dumps([sys.pycache_prefix,sys.dont_write_bytecode,sys.argv[1:]]))\n"
+    launchers = {}
+    for name, options in (
+        ("ordinary", []),
+        ("isolated", ["-I"]),
+        ("explicit", ["-I", "-B", "-X", f"pycache_prefix={prefix}"]),
+    ):
+        files = maker.make(
+            f"{name} = unused:main", options={"interpreter_args": options}
+        )
+        assert len(files) == 1
+        launchers[name] = files[0]
+    foreign = str(tmp_path / "foreign")
+    unsafe_environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"}
+    }
+    unsafe_environment["PYTHONPYCACHEPREFIX"] = foreign
+    ordinary = run_custody_subject_process(
+        [launchers["ordinary"], *payload_args],
+        env=unsafe_environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert ordinary.returncode == 0, ordinary.stderr
+    assert json.loads(ordinary.stdout) == [foreign, False, payload_args]
+    retained = {
+        path: path.read_bytes() for path in Path(foreign).rglob("*") if path.is_file()
+    }
+    images = [
+        process_image_capture.capture_image(
+            "selected-interpreter", Path(sys.executable), preserve_path=True
+        ),
+        *_python_base_process_images(),
+    ]
+    images.extend(
+        process_image_capture.capture_image(
+            f"console-script:{name}", Path(path), preserve_path=True
+        )
+        for name, path in launchers.items()
+    )
+    policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {"python": {"location": {"prefix": str(tmp_path)}, "process_images": images}},
+        environment_executables={},
+    )
+    policy["allowed"][:0] = [
+        {"toolchain": "generic", "path": row["path"], "sha256": row["sha256"]}
+        for row in policy["allowed"]
+    ]
+    safe = {"PYTHONPYCACHEPREFIX": prefix, "PYTHONDONTWRITEBYTECODE": "1"}
+    cases = [
+        {
+            "name": "ordinary",
+            "argv": [launchers["ordinary"], *payload_args],
+            "env": safe,
+            "allow": True,
+        },
+        {
+            "name": "foreign",
+            "argv": [launchers["ordinary"], *payload_args],
+            "env": {**safe, "PYTHONPYCACHEPREFIX": foreign},
+            "allow": False,
+        },
+        {
+            "name": "writes",
+            "argv": [launchers["ordinary"], *payload_args],
+            "env": {**safe, "PYTHONDONTWRITEBYTECODE": None},
+            "allow": False,
+        },
+        {
+            "name": "ignored",
+            "argv": [launchers["isolated"], *payload_args],
+            "env": safe,
+            "allow": False,
+        },
+        {
+            "name": "explicit",
+            "argv": [launchers["explicit"], *payload_args],
+            "env": {"PYTHONPYCACHEPREFIX": foreign, "PYTHONDONTWRITEBYTECODE": None},
+            "allow": True,
+        },
+    ]
+    server = execution_custody.ChildCustodyEventServer(runtime, policy)
+    environment = {
+        **os.environ,
+        **safe,
+        execution_custody.CHILD_POLICY_ENV: json.dumps(policy),
+        **server.environment(),
+    }
+    if runtime == "python":
+        payload = (
+            "import json,os,subprocess\nrows=[]\n"
+            f"for case in {cases!r}:\n"
+            " env=dict(os.environ)\n"
+            " for key,value in case['env'].items():\n"
+            "  if value is None: env.pop(key,None)\n"
+            "  else: env[key]=value\n"
+            " try:\n"
+            "  result=subprocess.run(case['argv'],env=env,capture_output=True,text=True,timeout=15)\n"
+            "  rows.append([case['name'],True,result.returncode,result.stdout])\n"
+            " except PermissionError: rows.append([case['name'],False])\n"
+            "print(json.dumps(rows))"
+        )
+        bootstrap = Path(execution_custody.__file__).with_name(
+            "python_custody_bootstrap.py"
+        )
+        argv = [sys.executable, bootstrap, "command", "0", payload]
+    else:
+        environment["NODE_OPTIONS"] = execution_custody.node_bootstrap_options()
+        payload = (
+            "const cp=require('child_process'),rows=[];"
+            f"for(const c of {json.dumps(cases)}){{const env={{...process.env}};"
+            "for(const [k,v] of Object.entries(c.env)){if(v===null)delete env[k];else env[k]=v;}"
+            "try{const r=cp.spawnSync(c.argv[0],c.argv.slice(1),{env,encoding:'utf8',timeout:15000});"
+            "rows.push([c.name,true,r.status,r.stdout]);}catch(e){if(!String(e).includes('python-bytecode-custody:'))throw e;rows.push([c.name,false]);}}"
+            "console.log(JSON.stringify(rows));"
+        )
+        argv = [node, "-e", payload]
+    with server:
+        completed = run_custody_subject_process(
+            argv,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    assert completed.returncode == 0, completed.stderr
+    rows = json.loads(completed.stdout)
+    assert [(row[0], row[1]) for row in rows] == [
+        (case["name"], case["allow"]) for case in cases
+    ]
+    for row in rows:
+        if row[1]:
+            assert row[2] == 0, row
+            assert json.loads(row[3]) == [prefix, True, payload_args]
+    assert server.receipt()["broker_complete"] is True
+    assert all(path.read_bytes() == data for path, data in retained.items())
+
+
 @pytest.mark.skipif(os.name == "nt", reason="CPython POSIX exec-path contract")
 @pytest.mark.parametrize(
     "selection",
@@ -46,6 +1160,10 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
     # Use real native interpreter aliases: the independent ordinary CPython
     # launch is the oracle, and the broker sees the actual bootstrap hook.
     image = Path(sys.executable).resolve(strict=True)
+    from molt.python_environment_location import environment_bytecode_prefix
+    from tools.proof_command_argv import python_environment_command
+
+    environment_root = tmp_path / "selected-image"
     name = "molt-custody-child-" + tmp_path.name
     parent_bin = tmp_path / "parent-bin"
     child_cwd = tmp_path / "child-cwd"
@@ -62,11 +1180,14 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
         "bytes-empty": {b"PATH": b""},
         "bytes-lowercase": {b"path": os.fsencode(parent_bin)},
     }[selection]
+    child_argv = python_environment_command(
+        [name, "-I", "-S", "-c", "print('selected-native-child')"],
+        environment_root=environment_root,
+    )
     payload = (
         "import json, subprocess\n"
         "try:\n"
-        f" result = subprocess.run([{name!r}, '-I', '-S', '-c', "
-        "\"print('selected-native-child')\"], "
+        f" result = subprocess.run({child_argv!r}, "
         f"env={child_environment!r}, cwd={str(child_cwd)!r}, "
         "capture_output=True, text=True, timeout=10)\n"
         " print(json.dumps({'returncode': result.returncode, 'stdout': result.stdout}))\n"
@@ -101,8 +1222,15 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
         "allowed": [
             {
                 "toolchain": "python",
+                "python_launch": "interpreter",
                 "path": execution_custody._norm(directory / name),
                 "sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+                "python_bytecode": {
+                    "environment_root": str(environment_root),
+                    "pycache_prefix": str(
+                        environment_bytecode_prefix(environment_root)
+                    ),
+                },
             }
             for directory in (parent_bin, child_cwd, child_cwd / "bin")
         ],
@@ -427,6 +1555,7 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
     # Windows itself names the image, and once under the real hook and broker.
     # A suspended child never runs, and the kernel reports its mapped image.
     import shutil
+    from molt.python_environment_location import environment_bytecode_prefix
 
     source = Path(sys.executable).resolve(strict=True)
     directory = {
@@ -477,7 +1606,11 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
     def case(name, args, real, *, expect="admit", decoys=(), allow=None, **launch):
         return {
             "id": name,
-            "args": args,
+            # These children are suspended for the image oracle; terminal
+            # argv also preserves no-payload semantics if ever resumed.
+            "args": [args[0], "--version", *args[1:]]
+            if isinstance(args, list)
+            else args,
             "executable": launch.get("executable"),
             "env": launch.get("env"),
             "cwd": str(launch["cwd"]) if "cwd" in launch else None,
@@ -579,7 +1712,7 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
             [str(spaced := image("spaced dir", "hf137i.exe")), "x"],
             spaced,
         ),
-        case("string-command", "hf137j --flag", image("caller-path", "hf137j.exe")),
+        case("string-command", "hf137j --version", image("caller-path", "hf137j.exe")),
         case(
             "dot-relative",
             [".\\hf137m.exe"],
@@ -620,8 +1753,14 @@ def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
         "allowed": [
             {
                 "toolchain": "python",
+                "python_launch": "interpreter",
                 "path": execution_custody._norm(path),
+                "python_windows_transport": "unicode",
                 "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                "python_bytecode": {
+                    "environment_root": str(tmp_path),
+                    "pycache_prefix": str(environment_bytecode_prefix(tmp_path)),
+                },
             }
             for path in sorted({path for row in cases for path in row["allow"]})
         ],
@@ -1444,7 +2583,10 @@ def test_vanished_watch_entries_keep_their_own_key(tmp_path, monkeypatch):
     assert spec.owns(tmp_path / "PYPROJ~1.TOM")
 
 
-def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
+@pytest.mark.parametrize("identity_kind", ["image", "python-location"])
+def test_watch_custody_retains_ancestor_alias_and_deleted_entry(
+    tmp_path, identity_kind
+):
     source = tmp_path / "source"
     source.mkdir()
     target = tmp_path / "target"
@@ -1457,10 +2599,25 @@ def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
     except OSError as exc:
         pytest.skip(f"directory symlink capability unavailable: {exc}")
     selected = alias / "tool"
+    identity: dict[str, object] = {"path": str(selected)}
+    if identity_kind == "python-location":
+        from tests.python_environment_test_support import environment_location_manifest
+
+        # Pre-arm locator custody must retain the lexical base selector even
+        # before full capture has projected its interpreter-alias image row.
+        identity = environment_location_manifest(
+            prefix=target,
+            selected_executable=tool,
+            base_executable=tool,
+            base_executable_selector=selected,
+            roots=[target],
+            external_roots=[],
+            file_paths=[tool],
+        )
     specs = execution_custody.watch_specs(
         source_root=source,
         tracked_paths=[],
-        identities=[{"path": str(selected)}],
+        identities=[identity],
         broad_roots=[],
     )
     assert any(spec.owns(tool) for spec in specs if spec.root == target)

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.dx import control_state_dir
+from molt.temporary_artifacts import new_temporary_directory
 from tools import harness_memory_guard
 from tools.memory_guard_core.cli_contract import guardian_argv
 from tests import process_guard_common
@@ -62,7 +63,15 @@ def guarded_cli_test_popen(
     summary_dir = control_state_dir(ROOT, "cli-test-memory-guard", run_env)
     summary_dir.mkdir(parents=True, exist_ok=True)
     summary_path = summary_dir / f"interactive-{os.getpid()}-{uuid.uuid4().hex}.json"
-    guard_argv = guardian_argv(sys.executable, ROOT / "tools" / "memory_guard.py") + [
+    # The returned Popen outlives this frame. Its existing summary custody
+    # retains the startup directory through failed close and caller cleanup.
+    guard_argv = guardian_argv(
+        sys.executable,
+        ROOT / "tools" / "memory_guard.py",
+        verifier_bytecode_prefix=new_temporary_directory(
+            summary_dir, prefix="interactive-guardian-bytecode-"
+        ),
+    ) + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",

@@ -22,7 +22,11 @@ from typing import Any, BinaryIO, Iterable, Mapping, Sequence, cast
 
 from molt import file_publication
 from molt.process_environment import ProcessEnvironment
-from molt.toolchain_identity import executable_environment_value, find_executable
+from molt.toolchain_identity import (
+    executable_environment_value,
+    find_executable,
+    stable_executable_probe,
+)
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
 from molt.python_environment_identity import (
@@ -30,10 +34,16 @@ from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
     python_environment_executable_files,
     python_identity_probe_arguments,
+    python_identity_verifier_prefix,
     validate_python_capture,
     validate_python_environment_location,
 )
 from molt.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
+from molt.python_environment_location import (
+    SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+)
+from molt.python_capture import captured_file_for_node
+from molt.python_runtime_identity import runtime_explicit_file_node
 from molt.cargo_execution_policy import cargo_native_dependency_environment_name
 from tools import proof_command_argv, proof_plan
 from tools.proof_queue_pkg import command_admission as admission
@@ -594,13 +604,16 @@ def _python_auxiliary_command(
     exact: Sequence[str],
     *,
     arguments: Sequence[str],
+    verifier_bytecode_prefix: Path,
     no_site: bool = False,
 ) -> list[str] | None:
     python = envelope.get("python")
     if not isinstance(python, Mapping):
         return None
     kind = python.get("kind")
-    probe = python_identity_probe_arguments(arguments, no_site=no_site)
+    probe = python_identity_probe_arguments(
+        arguments, no_site=no_site, verifier_bytecode_prefix=verifier_bytecode_prefix
+    )
     if kind == "direct":
         return [exact[0], *probe]
     if kind == "py-launcher":
@@ -624,7 +637,9 @@ def _python_auxiliary_command(
 def _python_probe_command(
     executable: Path,
     *,
+    verifier_bytecode_prefix: Path,
     source_root: Path,
+    admit_published_environment: bool,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
 ) -> list[str]:
@@ -643,11 +658,17 @@ def _python_probe_command(
                 str(hash_workers),
                 "--admit-virtualenv-bootstrap",
                 *(
+                    ("--admit-published-environment",)
+                    if admit_published_environment
+                    else ()
+                ),
+                *(
                     value
                     for root in admitted_roots
                     for value in ("--admit-external-root", str(root))
                 ),
-            )
+            ),
+            verifier_bytecode_prefix=verifier_bytecode_prefix,
         ),
     ]
 
@@ -675,33 +696,51 @@ def python_selection(location: Mapping[str, object]) -> dict[str, object]:
     The locator keeps the reported launcher coordinate in its hashed receipt.
     Selection names the launcher by its custody coordinate (on Windows the
     actual directory entry with a lower-case drive) without resolving role
-    aliases, and resolves the base image and prefix. The producer and the
-    pre-launch check share this rule, so their spellings cannot drift.
+    aliases, and resolves the base image and prefix. The base selector retains
+    its separate lexical coordinate and must name that physical generation.
+    The producer and pre-launch check share this rule, so their spellings cannot drift.
     """
     executable_raw = location.get("selected_executable")
     base_executable_raw = location.get("base_executable")
+    base_selector_raw = location.get("base_executable_selector")
     prefix_raw = location.get("prefix")
     if not all(
         isinstance(value, str) and value
-        for value in (executable_raw, base_executable_raw, prefix_raw)
+        for value in (
+            executable_raw,
+            base_executable_raw,
+            base_selector_raw,
+            prefix_raw,
+        )
     ):
         raise ValueError("proof Python location has no executable chain")
     executable = process_image_capture.custody_file(Path(str(executable_raw)))
     if executable is None:
         raise ValueError("proof Python location has no selected executable")
-    base_executable = process_image_capture.custody_path(
-        Path(str(base_executable_raw))
-    ).resolve(strict=True)
+    base_coordinate = process_image_capture.custody_path(Path(str(base_executable_raw)))
+    base_executable = base_coordinate.resolve(strict=True)
+    if process_image_capture._image_path_key(base_coordinate) != (
+        process_image_capture._image_path_key(base_executable)
+    ):
+        raise ValueError("proof Python location base image is not physical")
     prefix = Path(str(prefix_raw)).resolve(strict=True)
     if not prefix.is_dir():
         raise ValueError("proof Python location has no environment prefix")
-    return {
-        "executable": str(executable),
-        "executable_sha256": _hash_file(executable),
-        "base_executable": str(base_executable),
-        "base_executable_sha256": _hash_file(base_executable),
-        "prefix": str(prefix),
-    }
+    with stable_executable_probe(
+        Path(str(base_selector_raw)), label="proof Python base selector"
+    ) as (selector, content):
+        if content.path != base_executable:
+            raise ValueError(
+                "proof Python base selector differs from its physical base"
+            )
+        return {
+            "executable": str(executable),
+            "executable_sha256": _hash_file(executable),
+            "base_executable": str(base_executable),
+            "base_executable_selector": str(selector),
+            "base_executable_sha256": content.sha256,
+            "prefix": str(prefix),
+        }
 
 
 def _python_identity(
@@ -723,6 +762,7 @@ def _python_identity(
         raise ValueError(f"proof Python location identity is invalid: {exc}") from exc
     if set(selection) != {
         "base_executable",
+        "base_executable_selector",
         "base_executable_sha256",
         "executable",
         "executable_sha256",
@@ -745,27 +785,40 @@ def _python_identity(
     if any(selection.get(key) != value for key, value in expected.items()):
         raise ValueError("proof Python selection differs from its location receipt")
     executable_raw = str(expected["executable"])
+    prefix = Path(str(location["prefix"]))
+    from molt.checkout_state import checkout_state_kind_of
+
+    managed = (
+        len(prefix.parents) > 3
+        and checkout_state_kind_of(prefix, prefix.parents[3]) == "python-environment"
+    )
+    published_admission = (
+        managed or (prefix / SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists()
+    )
     # Selection ran the exact uv/py launcher before arming. Repeating uv run
     # here can sync or close its writable environment lock before full capture
     # has admitted that lock. Preserve the lexical venv launcher (not its base
     # image), isolated no-write suffix, admitted environment and effective cwd.
-    command = _python_probe_command(
-        Path(executable_raw),
-        source_root=source_root,
-        external_roots=[
-            Path(value) for value in cast(list[str], selected_external_roots)
-        ],
-        hash_workers=hash_workers,
-    )
-    payload = _parse_json_output(
-        _run_captured(
-            command,
-            cwd=admission._execution_source_paths(envelope, cwd=cwd),
-            env=env,
-            timeout=120.0,
-        ),
-        purpose="proof Python identity probe",
-    )
+    with python_identity_verifier_prefix() as verifier_prefix:
+        command = _python_probe_command(
+            Path(executable_raw),
+            verifier_bytecode_prefix=verifier_prefix,
+            source_root=source_root,
+            admit_published_environment=published_admission,
+            external_roots=[
+                Path(value) for value in cast(list[str], selected_external_roots)
+            ],
+            hash_workers=hash_workers,
+        )
+        payload = _parse_json_output(
+            _run_captured(
+                command,
+                cwd=admission._execution_source_paths(envelope, cwd=cwd),
+                env=env,
+                timeout=120.0,
+            ),
+            purpose="proof Python identity probe",
+        )
     try:
         capture = validate_python_capture(payload)
         environment = cast(Mapping[str, object], capture["identity"])
@@ -774,7 +827,7 @@ def _python_identity(
     source_root = source_root.resolve(strict=True)
     try:
         process_images = _python_process_images(
-            environment, location, source_root=source_root
+            environment, location, source_root=source_root, capture=capture
         )
     except PythonEnvironmentIdentityError as exc:
         raise ValueError(f"proof Python launcher closure is invalid: {exc}") from exc
@@ -810,14 +863,25 @@ def _python_process_images(
     location: Mapping[str, object],
     *,
     source_root: Path,
+    capture: Mapping[str, object],
 ) -> list[dict[str, object]]:
     prefix = Path(str(location["prefix"]))
     selected = str(location["selected_executable"])
     base = str(location["base_executable"])
+    runtime = cast(Mapping[str, object], environment["runtime"])
+    node = runtime_explicit_file_node(runtime, "base-executable")
+    if node is None:
+        raise ValueError("proof Python runtime has no captured base node")
+    captured_base = captured_file_for_node(capture, node)
+    if process_image_capture._image_path_key(Path(str(captured_base["path"]))) != (
+        process_image_capture._image_path_key(Path(base))
+    ):
+        raise ValueError("proof Python physical base differs from runtime node custody")
     launchers = python_environment_executable_files(
         environment,
         prefix,
         base_executable=Path(base),
+        base_executable_selector=Path(str(location["base_executable_selector"])),
     )
     process_images = process_image_capture.canonical_images(
         [
@@ -2085,7 +2149,7 @@ def _validate_toolchain_identity(
         ):
             raise ValueError("python identity source root is invalid")
         expected_images = _python_process_images(
-            environment, location, source_root=source_root
+            environment, location, source_root=source_root, capture=capture
         )
         if identity.get("process_images") != expected_images:
             raise ValueError("python process images differ from environment closure")
@@ -2347,6 +2411,7 @@ CANONICAL_EXECUTION_ENV = {
 }
 _QUEUE_CUSTODY_ENV_NAMES = frozenset(
     {
+        "PYTHONPYCACHEPREFIX",
         "MOLT_MEMORY_GUARD_STATE_ROOT",
         "MOLT_MEMORY_GUARD_ACTIVE",
         "MOLT_MEMORY_GUARD_PID",

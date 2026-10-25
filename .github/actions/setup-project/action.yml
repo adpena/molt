@@ -42,8 +42,8 @@ inputs:
     default: "false"
   target-pythons:
     description: >-
-      Install every supported target CPython line (molt.target_python) during
-      setup; requires sync, because the authority imports project dependencies
+      Install every supported target CPython line (molt.target_python_policy)
+      during setup; requires the synchronized repository environment
     default: "false"
   sync:
     description: Synchronize project dependencies with uv
@@ -298,5 +298,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        read -r -a versions <<< "$(uv run --no-sync python3 -c 'from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; print(" ".join(versions))')"
+        catalog=$(uv run --no-sync python3 -c 'from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; print(" ".join(versions))') || exit "$?"
+        if [[ -z "$catalog" ]]; then
+          echo "supported target CPython catalog is empty" >&2
+          exit 2
+        fi
+        read -r -a versions <<< "$catalog"
         UV_PYTHON_DOWNLOADS=manual uv python install "${versions[@]}"

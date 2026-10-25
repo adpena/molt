@@ -312,13 +312,43 @@ execution claims still require replayable target/version/OS/architecture receipt
 `molt.python_environment_identity` is the shared isolated probe for runtime builds,
 source-build provisioning and proof execution. Its runtime/environment validators
 own portable file-node, import-root, distribution and loaded-native-dependency
-identity. Source-build recipe schema 5 binds the selected uv-lock group closure,
+identity. Source-build recipe schema 7 binds the selected uv-lock group closure,
 CPython runtime closure and realized environment. The lock closure includes root
 project dependencies as well as the selected group, matching uv's actual sync
 semantics. Marker-selected dependency and extras activation use a least fixed
 point; receipt validation rejects unreachable packages and ungrounded extras.
 Unrelated lock groups do not change that recipe. The runtime-build outer v2
 schema is unchanged by this cut.
+
+Lock closure v4 carries an ordered wheel target bound to the selected runtime's
+content digest. The protected runtime probe executes the caller's captured
+`packaging` tag sources in that interpreter, with no site-path import or package
+installation into the selected base. The source bytes are read and verified by
+the existing capture context; a private package namespace confines relative
+imports to that declared source closure. Runtime capture precedes tag evaluation,
+and the retained runtime fences remain active through evaluation. The core
+runtime identity remains v7. Readers use the recorded target rather than their
+own interpreter's tags; live admission requires the same runtime digest.
+
+This follows [packaging's `sys_tags` authority](https://packaging.pypa.io/en/stable/tags.html),
+which derives interpreter, ABI, OS and architecture compatibility from the
+running interpreter, including free-threaded ABI and platform policy. Molt does
+not recreate those rules from a requested version string. CPython's
+[sysconfig authority](https://docs.python.org/3/library/sysconfig.html) owns the
+underlying build configuration. Wheel ranking follows
+[uv 0.13.5's locked-wheel selection](https://github.com/astral-sh/uv/blob/0.13.5/crates/uv-lock/src/lock/mod.rs):
+tag priority, greatest build tag, then first lock entry on an exact tie.
+
+Environment closure v7 captures installed `WHEEL` Tag and Build fields through
+the same bound file nodes as RECORD and the environment tree. Admission compares
+the build to the selected filename and requires its nonempty tag set to be
+contained in the filename's expanded tags and intersect the runtime target. Some
+upstream wheels record a narrower set than their compressed filename. This uses the
+[wheel format](https://packaging.python.org/en/latest/specifications/binary-distribution-format/).
+The lock retains archive SHA-256 provenance; installed bytes retain RECORD/tree
+custody. Equal package names and versions alone cannot admit a different wheel.
+The tag source is evaluated once per recipe capture, adding bounded source reads
+and tag serialization but no additional interpreter process or guest overhead.
 
 The path-only locator runs before proof watches are armed. Native files outside
 environment roots receive exact-file watches, never broad system-directory watches.

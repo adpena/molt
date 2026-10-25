@@ -822,9 +822,10 @@ def _checkout_state(ext: Path, checkout: Path) -> dict[str, Path]:
         "cargo-target": dx.cargo_target_dir_for_artifact_root(
             ext, None, source_root=checkout
         ),
-        "uv-environment": dx.stable_uv_project_env_dir(
-            ext, purpose="dx", python="3.12", source_root=checkout
-        ),
+        # Retired mutable layout remains covered by the retirement authority.
+        "uv-environment": ext
+        / "uv-project-envs"
+        / (f"dx__py3.12__src-{dx.checkout_component(checkout)}"),
         "pytest-cache": checkout_state.checkout_scratch_state_dir(
             "pytest-cache", checkout, env
         ),
@@ -856,9 +857,15 @@ def _checkout_family(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
 
 def _last_used(roots, seconds_ago: float, now: float) -> None:
     """Age ordinary fixture-owned roots and their direct activity entries."""
+    from molt import checkout_state
+
     stamp = now - seconds_ago
     for root in roots:
-        for path in (*root.iterdir(), root):
+        metadata = checkout_state._state_metadata_root(root)
+        paths = [*root.iterdir(), root]
+        if metadata != root and metadata.is_dir():
+            paths.extend((*metadata.iterdir(), metadata))
+        for path in paths:
             os.utime(path, (stamp, stamp))
 
 
@@ -1869,7 +1876,9 @@ def test_checkout_session_foreign_record_and_name_do_not_grant_orphan_custody(tm
 
 
 @pytest.mark.parametrize("operation", ["gc", "pressure", "retirement"])
-@pytest.mark.parametrize("selected", ["session", "control", "uv-environment"])
+@pytest.mark.parametrize(
+    "selected", ["session", "control", "uv-environment", "python-environment"]
+)
 def test_managed_shared_use_retains_idle_root_through_actual_operation(
     tmp_path, operation, selected
 ):
@@ -1882,11 +1891,36 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
     roots = _checkout_state(ext, source)
     checkout_state.stamp_checkout_state(source, env)
     child, control = _session(ext, source, "long-reader")
+    if selected == "python-environment":
+        image = (
+            ext
+            / "build-environments"
+            / "development"
+            / dx.checkout_component(source)
+            / ("a" * 64)
+        )
+        image.mkdir(parents=True)
+        (image / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+        (image / "payload.bin").write_bytes(b"immutable generation")
+        checkout_state.record_checkout_owner(
+            image, owner=source, kind="python-environment"
+        )
+        roots[selected] = image
     chosen = {
         "session": child,
         "control": control,
         "uv-environment": roots["uv-environment"],
+        **(
+            {"python-environment": roots[selected]}
+            if selected == "python-environment"
+            else {}
+        ),
     }[selected]
+    image_bytes = {
+        path.relative_to(chosen): path.read_bytes()
+        for path in chosen.rglob("*")
+        if path.is_file()
+    }
     owner = checkout_state.bound_checkout_owner(chosen, ext)
     now = time.time()
     with checkout_state.checkout_state_use(((chosen, owner),)):
@@ -1910,6 +1944,13 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
         assert str(chosen.resolve()) not in _reclaimed(result)
         if selected in ("session", "control"):
             assert roots["cargo-target"].is_dir()
+        if selected == "python-environment":
+            assert checkout_state.read_checkout_owner(chosen) == owner
+            assert {
+                path.relative_to(chosen): path.read_bytes()
+                for path in chosen.rglob("*")
+                if path.is_file()
+            } == image_bytes
     # Ordinary eviction is allowed again once use ends and policy ages it.
     _last_used(
         [root for root in (*roots.values(), child, control) if root.exists()],
@@ -1919,6 +1960,8 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
     reclaimed = {Path(path) for path in _reclaimed(_gc(ext, env, now))}
     assert not chosen.exists()
     assert any(path == chosen or path in chosen.parents for path in reclaimed)
+    if selected == "python-environment":
+        assert not checkout_state._state_metadata_root(chosen).exists()
 
 
 @pytest.mark.parametrize("operation", ["gc", "pressure"])

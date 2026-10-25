@@ -23,8 +23,8 @@ from molt.python_file_node_custody import VerifiedTreeFile, _semantic_access
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.exact_json import canonical_json_sha256
 from molt.cli import entrypoint_dispatch, entrypoint_parser
-from molt.cli import source_build_environment as build_environment
-from molt.cli import source_build_environment_schema as build_environment_schema
+from molt import source_build_environment as build_environment
+from molt import source_build_environment_schema as build_environment_schema
 from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
 from molt.cli import source_extension_set_validation_sidecars as sidecar_validation
@@ -77,6 +77,7 @@ from molt.cli.source_extension_toolchain import (
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from tests.cli.test_cli_extension_commands import _wasm_exporting_i64_unary_symbol
 from tests.python_environment_test_support import (
+    wheel_target_manifest,
     build_environment_manifest as _build_environment_manifest,
     lock_closure_manifest as _lock_closure_manifest,
     realized_environment_manifest as _realized_environment_manifest,
@@ -1328,6 +1329,16 @@ def _locked_environment_spec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, Path, Path, dict[str, object], Path]:
+    # Publication state-machine tests supply synthetic captured bytes. The real
+    # bytecode producer has independent source/loader controls in identity tests.
+    monkeypatch.setattr(
+        build_environment,
+        "_publish_environment_bytecode",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        build_environment, "_validate_recipe_inputs", lambda *_args, **_kwargs: None
+    )
     root = tmp_path / "custody/environment"
     monkeypatch.setattr(
         build_environment, "_source_build_custody_root", lambda _repo: root.parent
@@ -1353,7 +1364,9 @@ def _locked_environment_spec(
 def test_source_build_environment_rejects_resealed_float_schema_version() -> None:
     payload = _build_environment_manifest(["ninja==1.13.0"])
     custody = payload["custody"]
-    custody["schema_version"] = 5.0
+    custody["schema_version"] = float(
+        build_environment_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
+    )
     custody["environment_id"] = canonical_json_sha256(
         {
             key: value
@@ -1386,7 +1399,10 @@ def test_source_build_environment_address_is_worktree_neutral(
     monkeypatch.setattr(
         build_environment,
         "_python_identity",
-        _runtime_identity_manifest,
+        lambda: {
+            "runtime": _runtime_identity_manifest(),
+            "wheel_target": wheel_target_manifest(),
+        },
     )
     lock_closure = _lock_closure_manifest(
         ["ninja==1.13.0"],
@@ -1417,7 +1433,10 @@ def test_source_build_environment_address_is_worktree_neutral(
     assert first_spec[:4] == second_spec[:4]
     assert "worktrees" not in str(first_spec[0])
     custody = first_spec[3]
-    assert custody["schema_version"] == 5
+    assert (
+        custody["schema_version"]
+        == build_environment_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
+    )
     address_payload = {key: custody[key] for key in custody if key != "environment_id"}
     assert custody["environment_id"] == canonical_json_sha256(address_payload)
     old_address_payload = dict(address_payload)
@@ -1447,10 +1466,47 @@ def test_source_build_environment_failed_sync_leaves_only_provisional_record(
         )
 
     assert not spec[2].exists()
-    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    provisioning_path = build_environment.environment_provisioning_record_path(spec[0])
     assert json.loads(provisioning_path.read_text(encoding="utf-8")) == (
         build_environment._provisioning_record(spec[3])
     )
+
+
+def test_source_build_environment_keeps_provisional_record_when_deletion_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    spec[0].mkdir(parents=True)
+    partial = spec[0] / "partial-input"
+    partial.write_bytes(b"retained unpublished evidence")
+    provisional = build_environment.environment_provisioning_record_path(spec[0])
+    provisional.parent.mkdir(parents=True)
+    provisional.write_text(
+        json.dumps(build_environment._provisioning_record(spec[3])), encoding="utf-8"
+    )
+    before = (partial.read_bytes(), provisional.read_bytes())
+    deleted = []
+
+    def refuse(path):
+        deleted.append(path)
+        return False, "independent deletion refusal"
+
+    monkeypatch.setattr(build_environment, "delete_path", refuse)
+    monkeypatch.setattr(
+        build_environment,
+        "_run_uv_sync",
+        lambda *_args, **_kwargs: pytest.fail("failed recovery must not start sync"),
+    )
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="cannot recover unpublished.*independent deletion refusal",
+    ):
+        build_environment._provision_source_build_environment(
+            tmp_path, spec, environ={}
+        )
+    assert deleted == [spec[0]]
+    assert (partial.read_bytes(), provisional.read_bytes()) == before
+    assert not spec[2].exists()
 
 
 def test_source_build_environment_recovers_exact_provisional_record(
@@ -1502,7 +1558,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
         **spec[3],
         "realized_environment": realized,
     }
-    assert not build_environment._provisioning_record_path(spec[0]).exists()
+    assert not build_environment.environment_provisioning_record_path(spec[0]).exists()
 
 
 @pytest.mark.parametrize(
@@ -1527,13 +1583,28 @@ def test_source_build_environment_rejects_foreign_unattested_root(
         lambda *_args, **_kwargs: pytest.fail("foreign root must never be mutated"),
     )
 
+    before = {
+        path.relative_to(spec[0]): path.read_bytes()
+        for path in spec[0].rglob("*")
+        if path.is_file()
+    }
     with pytest.raises(
         build_environment_schema.SourceBuildEnvironmentError,
-        match="exact attestation or sibling provisioning record",
+        match=(
+            "exact attestation or sibling provisioning record"
+            if foreign_payload is None
+            else "published immutable environment failed admission and cannot be reprovisioned"
+        ),
     ):
         build_environment.source_build_environment(
             tmp_path, "source-build-numpy", provision=True
         )
+    assert spec[0].is_dir()
+    assert {
+        path.relative_to(spec[0]): path.read_bytes()
+        for path in spec[0].rglob("*")
+        if path.is_file()
+    } == before
 
 
 @pytest.mark.parametrize(
@@ -1546,7 +1617,7 @@ def test_source_build_environment_rejects_foreign_sibling_record(
     foreign_payload: object,
 ) -> None:
     spec = _locked_environment_spec(tmp_path, monkeypatch)
-    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    provisioning_path = build_environment.environment_provisioning_record_path(spec[0])
     provisioning_path.parent.mkdir(parents=True)
     provisioning_path.write_text(json.dumps(foreign_payload), encoding="utf-8")
     monkeypatch.setattr(
@@ -1566,7 +1637,7 @@ def test_source_build_environment_rejects_malformed_sibling_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec = _locked_environment_spec(tmp_path, monkeypatch)
-    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    provisioning_path = build_environment.environment_provisioning_record_path(spec[0])
     provisioning_path.parent.mkdir(parents=True)
     provisioning_path.write_text("{not-json", encoding="utf-8")
     monkeypatch.setattr(
@@ -1595,6 +1666,13 @@ def test_distribution_probe_sanitizes_python_import_authority(
     def run(argv, **kwargs):
         observed["argv"] = argv
         observed["env"] = kwargs["env"]
+        assert argv[:4] == [str(Path(sys.executable)), "-B", "-I", "-X"]
+        assert argv[4].startswith("pycache_prefix=")
+        prefix = Path(argv[4].removeprefix("pycache_prefix="))
+        assert prefix.is_absolute() and prefix.is_dir()
+        assert not list(prefix.iterdir())
+        assert prefix != Path(sys.prefix) / "bytecode"
+        observed["verifier_prefix"] = prefix
         return subprocess.CompletedProcess(
             argv, 0, stdout=json.dumps(realized), stderr=""
         )
@@ -1615,12 +1693,15 @@ def test_distribution_probe_sanitizes_python_import_authority(
         str(Path(sys.executable)),
         "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={observed['verifier_prefix']}",
         str(Path(python_environment_identity.__file__).resolve()),
         "--capture-environment",
         str(Path(sys.prefix).resolve()),
         "--admit-virtualenv-bootstrap",
     ]
     assert observed["argv"] == expected_argv
+    assert not observed["verifier_prefix"].exists()
     environment = observed["env"]
     assert isinstance(environment, ProcessEnvironment)
     assert environment.rule is NameRule.host()
@@ -1643,7 +1724,7 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
         json.dumps({**spec[3], "realized_environment": realized}),
         encoding="utf-8",
     )
-    provisioning_path = build_environment._provisioning_record_path(spec[0])
+    provisioning_path = build_environment.environment_provisioning_record_path(spec[0])
     provisioning_path.parent.mkdir(parents=True)
     provisioning_path.write_text(
         json.dumps(build_environment._provisioning_record(spec[3])),
@@ -1733,11 +1814,9 @@ def test_concurrent_source_build_provision_runs_one_sync(
         str(Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()),
         "--frozen",
         "--no-default-groups",
-        "--no-dev",
         "--group",
         "source-build-numpy",
         "--no-install-project",
-        "--compile-bytecode",
     )
     assert json.loads(spec[2].read_text(encoding="utf-8")) == {
         **spec[3],
@@ -1746,6 +1825,74 @@ def test_concurrent_source_build_provision_runs_one_sync(
     launcher = spec[1].parent / ("cython.exe" if os.name == "nt" else "cython")
     assert launcher.read_text(encoding="utf-8") == f"#!{spec[1]}\n"
     assert ".provision-" not in launcher.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("exclude_requested_dev", [False, True])
+def test_requested_dev_group_reaches_publication_without_exclusion(
+    tmp_path, monkeypatch, exclude_requested_dev
+):
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    custody = spec[3]
+    custody["dependency_groups"] = ["bench", "dev"]
+    closure = custody["lock_closure"]
+    closure["dependency_groups"] = ["bench", "dev"]
+    closure["closure_sha256"] = canonical_json_sha256(
+        {key: value for key, value in closure.items() if key != "closure_sha256"}
+    )
+    custody["environment_id"] = canonical_json_sha256(
+        {key: value for key, value in custody.items() if key != "environment_id"}
+    )
+    installed = []
+
+    def sync(argv, **kwargs):
+        # Independent uv rule: exclusions beat explicit inclusions. This
+        # fixture's dev group owns ninja; its unrequested default owns packaging.
+        # The actual attestation below must reject either the missing requested
+        # package or an accidentally enabled default, not just inspect argv.
+        command = [*argv, *(["--no-dev"] if exclude_requested_dev else [])]
+        groups = {
+            command[index + 1]
+            for index, value in enumerate(command[:-1])
+            if value == "--group"
+        }
+        if "--no-dev" in command:
+            groups.discard("dev")
+        if "dev" in groups:
+            installed.append(("ninja", "1.13.0"))
+        if "--no-default-groups" not in command:
+            installed.append(("packaging", "26.2"))
+        spec[1].parent.mkdir(parents=True)
+        spec[1].write_bytes(b"synthetic interpreter, never executed")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(build_environment, "_run_uv_sync", sync)
+    monkeypatch.setattr(
+        build_environment,
+        "_probe_environment_identity",
+        lambda *_args: _realized_environment_manifest(
+            custody["python_runtime"], installed
+        ),
+    )
+    if exclude_requested_dev:
+        with pytest.raises(
+            build_environment_schema.SourceBuildEnvironmentError,
+            match="differs from its selected lock",
+        ):
+            build_environment._provision_source_build_environment(
+                tmp_path, spec, environ={}
+            )
+        assert not spec[2].exists()
+        assert build_environment.environment_provisioning_record_path(spec[0]).is_file()
+    else:
+        result = build_environment._provision_source_build_environment(
+            tmp_path, spec, environ={}
+        )
+        assert result.provisioned
+        assert installed == [("ninja", "1.13.0")]
+        assert json.loads(spec[2].read_text(encoding="utf-8"))["dependency_groups"] == [
+            "bench",
+            "dev",
+        ]
 
 
 def test_source_build_provision_rejects_group_resolution_before_publication(
@@ -1784,7 +1931,9 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
 
     assert not spec[2].exists()
     assert json.loads(
-        build_environment._provisioning_record_path(spec[0]).read_text(encoding="utf-8")
+        build_environment.environment_provisioning_record_path(spec[0]).read_text(
+            encoding="utf-8"
+        )
     ) == (build_environment._provisioning_record(spec[3]))
 
 
@@ -1961,7 +2110,7 @@ def test_active_namespace_different_group_remains_a_distinct_inactive_selection(
 ) -> None:
     payload, active_root, probes = active_source_namespace_case
     other_lock = json.loads(json.dumps(payload["custody"]["lock_closure"]))
-    other_lock["dependency_group"] = "source-build-scipy"
+    other_lock["dependency_groups"] = ["source-build-scipy"]
     other_lock["closure_sha256"] = canonical_json_sha256(
         {key: value for key, value in other_lock.items() if key != "closure_sha256"}
     )
@@ -1973,7 +2122,7 @@ def test_active_namespace_different_group_remains_a_distinct_inactive_selection(
     result = build_environment.source_build_environment(tmp_path, "source-build-scipy")
     assert result.active is False
     assert result.root != active_root
-    assert result.custody["dependency_group"] == "source-build-scipy"
+    assert result.custody["dependency_groups"] == ["source-build-scipy"]
     assert probes == [(Path(build_environment.sys.executable), active_root)]
 
 
@@ -4028,3 +4177,157 @@ def test_native_sdk_locations_are_neutral_for_target_and_generator_commands(
     assert "@llvm-sdk" in str(canonical["toolchain"]["commands"])
     assert "@build-llvm-sdk" in str(canonical["build_toolchain"]["commands"])
     assert str(tmp_path) not in str(canonical)
+
+
+def test_published_invalid_image_is_not_recovered_as_provisional(tmp_path, monkeypatch):
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    spec[0].mkdir(parents=True)
+    spec[2].write_text("{}", encoding="utf-8")
+    provisional = build_environment.environment_provisioning_record_path(spec[0])
+    provisional.parent.mkdir(parents=True)
+    provisional.write_text(
+        json.dumps(build_environment._provisioning_record(spec[3])), encoding="utf-8"
+    )
+    before = (spec[2].read_bytes(), provisional.read_bytes())
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "_run_uv_sync",
+        lambda *_args, **_kwargs: pytest.fail(
+            "published image must never be rewritten"
+        ),
+    )
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="published immutable environment failed admission",
+    ):
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
+        )
+    assert (spec[2].read_bytes(), provisional.read_bytes()) == before
+
+
+def test_source_build_environment_refuses_input_rewrite_with_restored_bytes_and_mtime(
+    tmp_path, monkeypatch
+):
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    declared = tmp_path / "pyproject.toml"
+    declared.write_bytes(b"original input bytes")
+    before = declared.stat()
+    realized = _realized_environment_manifest(
+        spec[3]["python_runtime"], [("ninja", "1.13.0")]
+    )
+    monkeypatch.setattr(
+        build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
+    )
+    monkeypatch.setattr(
+        build_environment,
+        "_probe_environment_identity",
+        lambda *_args, **_kwargs: realized,
+    )
+
+    def sync(argv, **kwargs):
+        spec[1].parent.mkdir(parents=True)
+        spec[1].write_bytes(b"synthetic interpreter, never executed")
+        declared.write_bytes(b"intermediate replacement")
+        declared.write_bytes(b"original input bytes")
+        os.utime(declared, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(build_environment, "_run_uv_sync", sync)
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="recipe inputs changed during publication",
+    ):
+        build_environment.source_build_environment(
+            tmp_path, "source-build-numpy", provision=True
+        )
+    assert not spec[2].exists()
+    assert build_environment.environment_provisioning_record_path(spec[0]).is_file()
+
+
+@pytest.mark.parametrize("changed_at", ["sync", "bytecode", "capture"])
+def test_editable_publication_refuses_selected_reader_rewrite(
+    tmp_path, monkeypatch, changed_at
+):
+    from tests.python_environment_test_support import copy_python_capture_authority
+
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    selected = tmp_path / "selected"
+    copy_python_capture_authority(selected)
+    (selected / "README.md").write_text("selected project metadata\n", encoding="utf-8")
+    spec[3]["editable_binding"] = build_environment._editable_binding(selected)
+    reader = selected / "src/molt/python_environment_custody.py"
+    original = reader.read_bytes()
+    before = reader.stat()
+    stages = []
+
+    def observe(stage):
+        stages.append(stage)
+        if changed_at == stage:
+            # Even restored bytes and mtime are a different captured generation.
+            reader.write_bytes(original + b"\n# intermediate reader change\n")
+            reader.write_bytes(original)
+            os.utime(reader, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    def sync(argv, **kwargs):
+        spec[1].parent.mkdir(parents=True)
+        spec[1].write_bytes(b"synthetic interpreter, never executed")
+        observe("sync")
+        return subprocess.CompletedProcess(argv, 0)
+
+    def publish(python, root, *, external_root, source_root):
+        assert (python, root) == (spec[1], spec[0])
+        assert external_root == source_root == selected
+        observe("bytecode")
+
+    def capture(python, root, *, external_root, source_root):
+        assert (python, root) == (spec[1], spec[0])
+        assert external_root == source_root == selected
+        observe("capture")
+        return _realized_environment_manifest(
+            spec[3]["python_runtime"], [("ninja", "1.13.0")]
+        )
+
+    monkeypatch.setattr(build_environment, "_run_uv_sync", sync)
+    monkeypatch.setattr(build_environment, "_publish_environment_bytecode", publish)
+    monkeypatch.setattr(build_environment, "_probe_environment_identity", capture)
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="recipe inputs changed during publication",
+    ):
+        build_environment._provision_source_build_environment(
+            selected, spec, environ={}
+        )
+    assert stages == ["sync", "bytecode", "capture"][: stages.index(changed_at) + 1]
+    assert not spec[2].exists()
+    assert build_environment.environment_provisioning_record_path(spec[0]).is_file()
+
+
+def test_editable_publication_refuses_missing_selected_reader_without_fallback(
+    tmp_path, monkeypatch
+):
+    from tests.python_environment_test_support import copy_python_capture_authority
+
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    selected = tmp_path / "selected"
+    copy_python_capture_authority(selected)
+    (selected / "README.md").write_text("selected project metadata\n", encoding="utf-8")
+    spec[3]["editable_binding"] = build_environment._editable_binding(selected)
+    (selected / "src/molt/python_environment_identity.py").unlink()
+    monkeypatch.setattr(
+        build_environment,
+        "_run_uv_sync",
+        lambda *_args, **_kwargs: pytest.fail("missing reader must precede sync"),
+    )
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="selected editable Python capture authority is missing",
+    ):
+        build_environment._provision_source_build_environment(
+            selected, spec, environ={}
+        )
+    assert not spec[0].exists()
+    assert not build_environment.environment_provisioning_record_path(spec[0]).exists()

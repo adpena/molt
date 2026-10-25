@@ -39,6 +39,12 @@ POSIX shells without activating a virtual environment:
 uv sync --group dev --python 3.12
 ```
 
+This creates the source bootstrap environment. Run it without a
+`UV_PROJECT_ENVIRONMENT` that selects a managed image. Managed development and
+proof commands select immutable generations, with the project's default `dev`
+and `bench` groups; see [checkout provisioning](ops/INTEGRATION.md#checkout-provisioning)
+for selection, explicit external environments and updates.
+
 ## Verify The Toolchain
 
 ```bash
@@ -166,8 +172,10 @@ uv run --python 3.12 python -m molt.cli run examples/hello.py
 - WASM linked builds need the [WASM toolchain](spec/areas/tooling/0001-toolchains.md).
   `molt run --target wasm` uses the bundled linked-module runner on Node.js,
   not Wasmtime. A native build does not verify the WASM cell.
-- After changing `pyproject.toml` or dependency groups, rerun `uv sync` so the
-  editable `molt` install in `.venv` stays current.
+- After changing `pyproject.toml` or dependency groups, update a source bootstrap
+  with `uv sync`. For a managed development image, use
+  [checkout provisioning](ops/INTEGRATION.md#checkout-provisioning) to select a
+  new generation; never sync or repair the published image in place.
 
 ## Where To Go Next
 

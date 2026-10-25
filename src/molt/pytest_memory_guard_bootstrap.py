@@ -916,6 +916,7 @@ def outer_guard_argv(
     args: Sequence[str] | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    verifier_bytecode_prefix: Path,
 ) -> list[str]:
     from tools import harness_memory_guard
     from tools.memory_guard_core.cli_contract import guardian_argv
@@ -925,7 +926,11 @@ def outer_guard_argv(
     summary_path = _pytest_custody_artifact_path(
         ROOT, "pytest", "outer-guard", environ=environ
     )
-    return guardian_argv(sys.executable, SOURCE_ROOT / "tools" / "memory_guard.py") + [
+    return guardian_argv(
+        sys.executable,
+        SOURCE_ROOT / "tools" / "memory_guard.py",
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
+    ) + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -996,6 +1001,7 @@ def repo_test_module_outer_guard_argv(
     args: Sequence[str] | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    verifier_bytecode_prefix: Path,
 ) -> list[str]:
     from tools import harness_memory_guard
     from tools.memory_guard_core.cli_contract import guardian_argv
@@ -1005,7 +1011,11 @@ def repo_test_module_outer_guard_argv(
     summary_path = _pytest_custody_artifact_path(
         ROOT, "test-module", "outer-guard", environ=environ
     )
-    return guardian_argv(sys.executable, SOURCE_ROOT / "tools" / "memory_guard.py") + [
+    return guardian_argv(
+        sys.executable,
+        SOURCE_ROOT / "tools" / "memory_guard.py",
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
+    ) + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -1044,7 +1054,16 @@ def ensure_repo_test_module_memory_guard(
     env = ProcessEnvironmentBuilder(run_context_test_env(source))
     outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
     module_name, module_args = invocation
-    argv = repo_test_module_outer_guard_argv(module_name, module_args, environ=env)
+    from molt.temporary_artifacts import new_temporary_directory
+
+    argv = repo_test_module_outer_guard_argv(
+        module_name,
+        module_args,
+        environ=env,
+        verifier_bytecode_prefix=new_temporary_directory(
+            outer_guard_summary_dir(env), prefix="module-guardian-bytecode-"
+        ),
+    )
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
     handoff_to_outer_guard(argv, ProcessEnvironment(env))
     raise RuntimeError("failed to re-exec repo test module under tools/memory_guard.py")
@@ -1055,6 +1074,7 @@ def repo_test_script_outer_guard_argv(
     args: Sequence[str] | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    verifier_bytecode_prefix: Path,
 ) -> list[str]:
     from tools import harness_memory_guard
     from tools.memory_guard_core.cli_contract import guardian_argv
@@ -1064,7 +1084,11 @@ def repo_test_script_outer_guard_argv(
     summary_path = _pytest_custody_artifact_path(
         ROOT, "test-script", "outer-guard", environ=environ
     )
-    return guardian_argv(sys.executable, SOURCE_ROOT / "tools" / "memory_guard.py") + [
+    return guardian_argv(
+        sys.executable,
+        SOURCE_ROOT / "tools" / "memory_guard.py",
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
+    ) + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -1102,7 +1126,16 @@ def ensure_repo_test_script_memory_guard(
     env = ProcessEnvironmentBuilder(run_context_test_env(source))
     outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
     script_path, script_args = invocation
-    argv = repo_test_script_outer_guard_argv(script_path, script_args, environ=env)
+    from molt.temporary_artifacts import new_temporary_directory
+
+    argv = repo_test_script_outer_guard_argv(
+        script_path,
+        script_args,
+        environ=env,
+        verifier_bytecode_prefix=new_temporary_directory(
+            outer_guard_summary_dir(env), prefix="script-guardian-bytecode-"
+        ),
+    )
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
     handoff_to_outer_guard(argv, ProcessEnvironment(env))
     raise RuntimeError("failed to re-exec repo test script under tools/memory_guard.py")
@@ -1215,7 +1248,17 @@ def ensure_pytest_memory_guard(
         )
     env = ProcessEnvironmentBuilder(run_context_test_env(source))
     outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
-    argv = outer_guard_argv(args, environ=env)
+    from molt.temporary_artifacts import new_temporary_directory
+
+    # The POSIX handoff execs this process; custody evidence, not frame cleanup,
+    # retains the empty namespace until the outer guard has finished.
+    argv = outer_guard_argv(
+        args,
+        environ=env,
+        verifier_bytecode_prefix=new_temporary_directory(
+            outer_guard_summary_dir(env), prefix="pytest-guardian-bytecode-"
+        ),
+    )
     env[PYTEST_OUTER_GUARD_REEXEC_ENV] = "1"
     env[PYTEST_CURRENT_TEST_FILE_ENV] = str(
         canonical_pytest_current_test_file_path(

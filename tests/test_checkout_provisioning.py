@@ -20,7 +20,7 @@ from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
 from tests.process_guard_common import run_guarded_test_process
 from tests.test_molt_dev import _commit_file, _git, _init_repo, kept_gate_stdout
-from tools.molt_dev_common import _run_fast_captured_command
+from tests.python_environment_test_support import materialize_development_environment
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "tools" / "molt_dev.py"
@@ -480,199 +480,228 @@ def test_declared_inputs_name_their_locks_and_trees(tmp_path: Path) -> None:
     )
 
     uv = cp.checkout_input("uv-environment", tmp_path, environ)
-    assert isinstance(uv, cp.LockedTree)
-    assert (uv.tool, uv.arguments) == ("uv", ("sync", "--frozen"))
-    assert uv.tree == tmp_path.resolve() / ".venv"
-    # uv's own rule: UV_PROJECT_ENVIRONMENT, relative to the project.
+    assert isinstance(uv, cp.DevelopmentEnvironment)
+    assert uv.lock_files == ("uv.lock", "pyproject.toml", ".python-version")
+    # Explicit UV selection names a published image, never an install destination.
     named = cp.checkout_input(
         "uv-environment", tmp_path, {**environ, "UV_PROJECT_ENVIRONMENT": "envs/a"}
     )
-    assert named.tree == tmp_path.resolve() / "envs" / "a"
+    assert named.environment["UV_PROJECT_ENVIRONMENT"] == "envs/a"
     assert not cp.declares(uv)
     (tmp_path / "uv.lock").write_text("", encoding="utf-8")
     assert cp.declares(uv)
 
 
-def _uv_project(root: Path, *, editable: bool = False) -> None:
+@pytest.mark.parametrize("editable", [False, True], ids=["unpublished", "published"])
+@pytest.mark.parametrize("named", [False, True], ids=["projected", "explicit"])
+def test_uv_environment_selects_published_images_and_refuses_mutable_roots(
+    tmp_path: Path, named: bool, editable: bool
+) -> None:
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    _init_repo(root)
+    (root / "README.md").write_text("declared editable metadata\n", encoding="utf-8")
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "fixture"\nversion = "0"\nrequires-python = ">=3.12"\n'
-        "dependencies = []\n",
+        "[project]\nname='selector-fixture'\nversion='1.0'\n"
+        "requires-python='>=3.12'\ndependencies=[]\nreadme='README.md'\n"
+        "[dependency-groups]\n[tool.molt.dx]\ndependency_groups=[]\n",
         encoding="utf-8",
     )
-    if editable:
-        with (root / "pyproject.toml").open("a", encoding="utf-8") as project:
-            project.write(
-                '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n'
+    image = materialize_development_environment(root, artifacts, select=True)
+    environ = (
+        ProcessEnvironment(os.environ)
+        .without(
+            (
+                "MOLT_VENV",
+                "UV_PROJECT_ENVIRONMENT",
+                "VIRTUAL_ENV",
+                "MOLT_UV_PROJECT_PYTHON",
+                "MOLT_UV_PROJECT_PURPOSE",
             )
-        (root / "fixture.py").write_text("VALUE = 'owner'\n", encoding="utf-8")
-    (root / ".python-version").write_text("3.12\n", encoding="utf-8")
-    uv = os.environ.get("UV") or shutil.which("uv")
-    assert uv, "the uv environment input requires uv"
-    locked = _run_fast_captured_command([uv, "lock", "--offline", "--quiet"], cwd=root)
-    assert locked.returncode == 0, locked.stderr
-
-
-@pytest.mark.parametrize("editable", [False, True], ids=["manual", "editable"])
-@pytest.mark.parametrize("named", [False, True], ids=["dot-venv", "named"])
-def test_uv_environment_builds_the_selected_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: bool, editable: bool
-) -> None:
-    root = tmp_path / "project"
-    _init_repo(root)
-    _uv_project(root, editable=editable)
-    # The memory guard installs dx's defaults (environment, cache) into each
-    # child; keep them private, so a misdirected sync stays visible.
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-    environ = dict(os.environ)
-    environ.pop("VIRTUAL_ENV", None)
-    environ.pop("UV_PROJECT_ENVIRONMENT", None)
-    selected = root / ".venv"
-    if named:
-        selected = tmp_path / "managed env"
-        environ["UV_PROJECT_ENVIRONMENT"] = str(selected)
-
-    first = cp.ensure("uv-environment", root, environ)
-    assert first.provisioned
-    assert (selected / "pyvenv.cfg").is_file()
-    assert (selected / cp.STAMP_NAME).is_file()
-    if named:
-        assert not (root / ".venv").exists(), "uv's rule selected the named one"
-    # Neither dx default reached uv: not its environment, not its cache.
-    assert not (tmp_path / "artifacts" / "uv-project-envs").exists()
-    assert not (tmp_path / "artifacts" / ".uv-cache").exists()
-    assert not cp.ensure("uv-environment", root, environ).provisioned
-
-    if not editable:
-        # A stamp is freshness evidence, not an ownership registry. A manual
-        # environment with no editable project remains usable from another
-        # checkout; the real installed metadata decides cold admission.
-        other = tmp_path / "manual-other"
-        _init_repo(other)
-        for name in ("pyproject.toml", "uv.lock", ".python-version"):
-            shutil.copyfile(root / name, other / name)
-        shared = {**environ, "UV_PROJECT_ENVIRONMENT": str(selected)}
-        assert cp.ensure("uv-environment", other, shared).provisioned
-        assert not cp.ensure("uv-environment", other, shared).provisioned
-        return
-    # Read the real installed PEP 610 record independently of the provisioner.
-    records = list(selected.glob("**/fixture-*.dist-info/direct_url.json"))
-    assert len(records) == 1
-    metadata = records[0]
-    installed = metadata.read_bytes()
-    assert json.loads(installed)["url"] == root.as_uri()
-    # A shipped module invoked outside a checkout cannot import tools. Use its
-    # actual UV-created launcher and no-site probe without exposing tools at all.
-    import packaging
-
-    isolated = run_guarded_test_process(
-        [
-            sys.executable,
-            "-I",
-            "-S",
-            "-c",
-            "import sys, importlib.util\n"
-            "sys.path[:0] = sys.argv[1:3]\n"
-            "assert importlib.util.find_spec('tools') is None\n"
-            "from molt import checkout_provisioning as cp\n"
-            "from pathlib import Path\n"
-            "spec = cp.checkout_input('uv-environment', Path(sys.argv[3]), "
-            "{'UV_PROJECT_ENVIRONMENT': sys.argv[4]})\n"
-            "assert cp._uv_editable_project(spec) is not None\n",
-            str(Path(cp.__file__).resolve().parents[1]),
-            str(Path(packaging.__file__).resolve().parents[1]),
-            str(root),
-            str(selected),
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
+        )
+        .updated({"MOLT_EXT_ROOT": str(artifacts)})
     )
-    assert isolated.returncode == 0, isolated.stderr
-    stamp = (selected / cp.STAMP_NAME).read_bytes()
+    if not editable:
+        old = root / ".venv"
+        old.mkdir()
+        (old / "pyvenv.cfg").write_text(
+            "home = old mutable environment\n", encoding="utf-8"
+        )
+        before = (old / "pyvenv.cfg").read_bytes()
+        with pytest.raises(cp.ProvisioningError):
+            cp.ensure(
+                "uv-environment",
+                root,
+                environ.updated({"UV_PROJECT_ENVIRONMENT": str(old)}),
+            )
+        assert (old / "pyvenv.cfg").read_bytes() == before
+        assert not (old / cp.STAMP_NAME).exists()
+        return
+    if named:
+        environ = environ.updated({"UV_PROJECT_ENVIRONMENT": str(image.root)})
+    before = {
+        path.relative_to(image.root): path.read_bytes()
+        for path in image.root.rglob("*")
+        if path.is_file()
+    }
+    selected = cp.ensure("uv-environment", root, environ)
+    assert not selected.provisioned and selected.environment_root == image.root
+    assert (
+        cp.input_state(cp.checkout_input("uv-environment", root, environ)) == "current"
+    )
+    assert not (image.root / cp.STAMP_NAME).exists(), "selection metadata is external"
+    assert not (root / ".venv").exists()
+    for name in ("uv.lock", "README.md"):
+        metadata = root / name
+        original = metadata.read_bytes()
+        changed = (
+            original.replace(b"requires-python='>=3.12'", b"requires-python='>=99'")
+            if name == "uv.lock"
+            else original + b"\n"
+        )
+        assert changed != original
+        metadata.write_bytes(changed)
+        spec = cp.checkout_input("uv-environment", root, environ)
+        if named:
+            with pytest.raises(cp.ProvisioningError):
+                cp.input_state(spec)
+        else:
+            assert cp.input_state(spec) == "absent", (
+                f"{name} must invalidate the old selection"
+            )
+        metadata.write_bytes(original)
     other = tmp_path / "other"
     _init_repo(other)
-    for name in ("pyproject.toml", "uv.lock", ".python-version", "fixture.py"):
+    for name in ("pyproject.toml", "uv.lock", ".python-version"):
         shutil.copyfile(root / name, other / name)
-    shared = {**environ, "UV_PROJECT_ENVIRONMENT": str(selected)}
-    other_spec = cp.checkout_input("uv-environment", other, shared)
-    own_spec = cp.checkout_input("uv-environment", root, shared)
-    assert cp.input_state(other_spec) == "stale", (
-        "equal locks cannot transfer an editable source"
-    )
-    with pytest.raises(cp.ProvisioningError, match="MOLT_VENV.*read-only"):
-        cp.ensure_input(other_spec)
-    assert metadata.read_bytes() == installed
-    assert (selected / cp.STAMP_NAME).read_bytes() == stamp
+    with pytest.raises(cp.ProvisioningError, match="checkout generation namespace"):
+        cp.ensure(
+            "uv-environment",
+            other,
+            environ.updated({"UV_PROJECT_ENVIRONMENT": str(image.root)}),
+        )
     from tools.molt_dev import _resolve_repo_venv
 
-    # Explicit borrowing is a read-only contract even for this foreign source.
-    borrowed = ProcessEnvironment({**shared, "MOLT_VENV": str(selected)})
-    assert _resolve_repo_venv(other, borrowed) == selected.resolve()
-    assert metadata.read_bytes() == installed
-    assert (selected / cp.STAMP_NAME).read_bytes() == stamp
-    # An unstamped legacy environment must be inspected, not blindly rewritten.
-    (selected / cp.STAMP_NAME).unlink()
-    with pytest.raises(cp.ProvisioningError, match="MOLT_VENV.*read-only"):
-        cp.ensure_input(other_spec)
-    assert metadata.read_bytes() == installed
-    assert not (selected / cp.STAMP_NAME).exists()
-    assert cp.ensure_input(own_spec).provisioned
-    # The warm path must inspect actual metadata, not trust a matching stamp.
-    foreign = {"url": other.as_uri(), "dir_info": {"editable": True}}
-    metadata.write_text(json.dumps(foreign), encoding="utf-8")
-    assert cp.input_state(own_spec) == "stale"
-    with pytest.raises(cp.ProvisioningError, match="MOLT_VENV.*read-only"):
-        cp.ensure_input(own_spec)
-    assert json.loads(metadata.read_bytes()) == foreign
-    metadata.write_bytes(installed)
-    assert not cp.ensure_input(own_spec).provisioned
-    # A malformed editable authority is not a manual environment. Exercise
-    # actual installed metadata on both stamped and unstamped cold paths;
-    # refusal must precede sync or any stamp/metadata mutation.
-    stamp_path = selected / cp.STAMP_NAME
-    current_stamp = stamp_path.read_bytes()
-    for dir_info in (
-        {"editable": True, "extra": "unsupported"},
-        {"editable": 1},
-        {"editable": 0},
-        {"editable": None},
-        {"editable": "false"},
-        None,
-    ):
-        altered = json.dumps({"url": other.as_uri(), "dir_info": dir_info}).encode()
-        for stamped in (True, False):
-            metadata.write_bytes(altered)
-            if stamped:
-                stamp_path.write_bytes(current_stamp)
-            else:
-                stamp_path.unlink(missing_ok=True)
-            with pytest.raises(cp.ProvisioningError):
-                cp.ensure_input(own_spec)
-            assert metadata.read_bytes() == altered
-            if stamped:
-                assert stamp_path.read_bytes() == current_stamp
-            else:
-                assert not stamp_path.exists()
-    # PEP 610 explicitly defines absent and boolean-false editable markers as
-    # noneditable. Inspect these real records without syncing the fixture.
-    for dir_info in ({}, {"editable": False}):
-        manual = json.dumps({"url": other.as_uri(), "dir_info": dir_info}).encode()
-        metadata.write_bytes(manual)
-        assert cp._uv_editable_project(own_spec) is None
-        assert metadata.read_bytes() == manual
-        assert not stamp_path.exists()
-    metadata.write_bytes(installed)
-    stamp_path.write_bytes(current_stamp)
-    assert not cp.ensure_input(own_spec).provisioned
+    assert (
+        _resolve_repo_venv(other, environ.updated({"MOLT_VENV": str(image.root)}))
+        == image.root
+    )
+    assert {
+        path.relative_to(image.root): path.read_bytes()
+        for path in image.root.rglob("*")
+        if path.is_file()
+    } == before
+    manifest = image.manifest_path.read_bytes()
+    altered = json.loads(manifest)
+    altered["environment_id"] = "0" * 64
+    image.manifest_path.write_text(json.dumps(altered), encoding="utf-8")
+    corrupt = image.manifest_path.read_bytes()
+    with pytest.raises(cp.ProvisioningError, match="address/recipe"):
+        cp.ensure("uv-environment", root, environ)
+    assert image.manifest_path.read_bytes() == corrupt, (
+        "published corruption is never repaired"
+    )
+    image.manifest_path.write_bytes(manifest)
 
 
-def test_integrate_child_builds_a_missing_inherited_uv_environment(
+@pytest.mark.parametrize("record_kind", ["absent", "malformed", "dangling-link"])
+def test_development_selection_distinguishes_new_intent_from_invalid_record(
+    tmp_path: Path,
+    record_kind: str,
+) -> None:
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    _init_repo(root)
+    image = materialize_development_environment(root, artifacts, select=True)
+    environ = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifacts)})
+    spec = cp.checkout_input("uv-environment", root, environ)
+    assert isinstance(spec, cp.DevelopmentEnvironment)
+    selection = cp._development_selection_path(spec, cp._development_intent(spec))
+    selection.unlink()
+    if record_kind == "malformed":
+        selection.write_text("{not JSON}", encoding="utf-8")
+    elif record_kind == "dangling-link":
+        try:
+            selection.symlink_to(tmp_path / "absent-target")
+        except OSError:
+            pytest.skip("file symlinks unavailable")
+    image_bytes = image.manifest_path.read_bytes()
+    if record_kind == "absent":
+        assert cp.selected_development_environment(root, environ) is None
+        assert not selection.exists()
+    else:
+        with pytest.raises(cp.ProvisioningError, match="invalid selection"):
+            cp.selected_development_environment(root, environ)
+    assert image.manifest_path.read_bytes() == image_bytes
+
+
+def test_development_contract_upgrade_selects_new_intent_without_repairing_old_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import source_build_environment as publisher
+    from molt import source_build_environment_schema as schema
+
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    _init_repo(root)
+    old = materialize_development_environment(root, artifacts, select=True)
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifacts)})
+    spec = cp.checkout_input("uv-environment", root, environment)
+    assert isinstance(spec, cp.DevelopmentEnvironment)
+    old_stamp = cp._development_selection_path(spec, cp._development_intent(spec))
+    old_stamp_bytes = old_stamp.read_bytes()
+    old_manifest_bytes = old.manifest_path.read_bytes()
+
+    monkeypatch.setattr(
+        schema,
+        "SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION",
+        schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION + 1,
+    )
+    new_stamp = cp._development_selection_path(spec, cp._development_intent(spec))
+    assert new_stamp != old_stamp and not new_stamp.exists()
+    new = materialize_development_environment(root, artifacts)
+    assert new.root != old.root
+    calls = []
+
+    def publish(checkout, *, provision, **options):
+        assert checkout == root.resolve() and provision is True
+        assert not options["environ"].get("UV_PROJECT_ENVIRONMENT")
+        calls.append(checkout)
+        return new
+
+    load = publisher.load_development_environment
+    loaded = []
+
+    def track_load(path, **options):
+        loaded.append(path)
+        return load(path, **options)
+
+    monkeypatch.setattr(publisher, "development_environment", publish)
+    monkeypatch.setattr(publisher, "load_development_environment", track_load)
+    assert cp.ensure("uv-environment", root, environment).environment_root == new.root
+    assert old.root not in loaded
+    assert new_stamp.is_file()
+    assert cp.ensure("uv-environment", root, environment).environment_root == new.root
+    assert calls == [root.resolve()] and loaded == [new.root]
+
+    # An exact caller selection is never converted into default intent or
+    # an installation request, even when its producer contract is retired.
+    with pytest.raises(cp.ProvisioningError):
+        cp.ensure(
+            "uv-environment",
+            root,
+            environment.updated({"UV_PROJECT_ENVIRONMENT": str(old.root)}),
+        )
+    assert calls == [root.resolve()]
+    assert loaded == [new.root, old.root]
+    assert old_stamp.read_bytes() == old_stamp_bytes
+    assert old.manifest_path.read_bytes() == old_manifest_bytes
+
+
+def test_integrate_child_refuses_a_missing_inherited_uv_environment(
     tmp_path: Path,
 ) -> None:
     """A guarded child inherits an UV_PROJECT_ENVIRONMENT nobody built."""
     seed = tmp_path / "seed"
     _init_repo(seed)
-    _uv_project(seed)
+    materialize_development_environment(seed, tmp_path / "fixture-images")
     gate = "python -c \"import sys; print('gate-prefix=' + sys.prefix)\""
     (seed / "tools").mkdir()
     (seed / "tools/proof_plan.toml").write_text(
@@ -708,10 +737,12 @@ def test_integrate_child_builds_a_missing_inherited_uv_environment(
         env=ProcessEnvironment(env),
         timeout=300,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert kept_gate_stdout(result.stdout) == [f"gate-prefix={managed.resolve()}\n"]
-    assert (managed / "pyvenv.cfg").is_file()
-    assert (managed / cp.STAMP_NAME).is_file()
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "managed development image refused" in result.stdout + result.stderr
+    assert kept_gate_stdout(result.stdout) == [""]
+    assert not managed.exists(), (
+        "an exact unpublished request must not become an install destination"
+    )
 
 
 def _acorn_policy(**extra) -> dict:

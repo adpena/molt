@@ -9188,7 +9188,16 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
     assert isinstance(worker_argv, list)
     assert worker_argv[:4] == [
         sys.executable,
+        "-B",
         "-I",
+        "-X",
+    ]
+    assert worker_argv[4].startswith("pycache_prefix=")
+    verifier = Path(worker_argv[4].split("=", 1)[1])
+    # A successful exec never returns through its allocating Python frame.
+    # The modeled handoff must therefore retain the namespace, too.
+    assert verifier.is_dir() and not list(verifier.iterdir())
+    assert worker_argv[5:7] == [
         "-S",
         str(Path(memory_guard.__file__).resolve()),
     ]

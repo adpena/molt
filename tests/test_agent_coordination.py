@@ -1127,14 +1127,20 @@ def test_codex_stall_launch_uses_memory_guard_by_default(tmp_path: Path) -> None
         ]
     )
 
+    verifier = tmp_path / "verifier"
+    verifier.mkdir()
     launch = agent_coordination.codex_stall_launch_command(
         args,
         ["python", "-c", "pass"],
+        verifier_bytecode_prefix=verifier,
     )
 
-    assert launch[:4] == [
+    assert launch[:7] == [
         sys.executable,
+        "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={verifier}",
         "-S",
         str(tmp_path / "tools" / "memory_guard.py"),
     ]
