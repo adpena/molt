@@ -29539,15 +29539,16 @@ def test_compare_uses_build_profile_flag_for_nested_build(
         del kwargs
         seen_cmds.append(list(cmd))
         if len(seen_cmds) == 1:
-            return _TimedResult(0, "ok\n", "", 0.01)
+            return _TimedResult(0, "ok\n", "", 0.01, descendants_closed=True)
         if len(seen_cmds) == 2:
             return _TimedResult(
                 0,
                 json.dumps({"data": {"output": str(built_binary)}}),
                 "",
                 0.02,
+                descendants_closed=True,
             )
-        return _TimedResult(0, "ok\n", "", 0.01)
+        return _TimedResult(0, "ok\n", "", 0.01, descendants_closed=True)
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
@@ -29556,10 +29557,23 @@ def test_compare_uses_build_profile_flag_for_nested_build(
         "resolve_python_selector",
         lambda exe, **_kwargs: ("python3",),
     )
+    from molt.python_interpreter import PythonInterpreter
+    from molt.python_environment_location import _active_environment_prefix
+
+    monkeypatch.setattr(
+        cli_commands,
+        "probe_python_command",
+        lambda command, **kwargs: PythonInterpreter(
+            tuple(command), "oracle-python", "3.12.15", "CPython"
+        ),
+    )
     monkeypatch.setattr(
         cli_commands, "_resolve_binary_output", lambda output: built_binary
     )
     monkeypatch.setattr(cli_commands, "_run_command_timed", fake_run_command_timed)
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", fake_run_command_timed)
 
     rc = cli_commands.compare(
         str(entry),
@@ -29572,6 +29586,9 @@ def test_compare_uses_build_profile_flag_for_nested_build(
     assert rc == 0
     assert seen_cmds[1] == [
         sys.executable,
+        "-B",
+        "-X",
+        f"pycache_prefix={_active_environment_prefix() / 'bytecode'}",
         "-m",
         "molt.cli",
         "build",

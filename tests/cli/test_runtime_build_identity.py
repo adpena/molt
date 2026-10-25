@@ -2058,18 +2058,27 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
         return prefix
 
     class Executor:
+        prefix = "MOLT_BUILD_PYTHON"
+        repo_root = Path(__file__).resolve().parents[2]
+
         def start_guarded(self, command, **kwargs):
             live_empty_prefix(command)
             calls.append((command, kwargs))
             return session
 
-        def run(self, command, **kwargs):
-            from types import SimpleNamespace
+    def fresh_run(command, **kwargs):
+        from tests.process_guard_common import guard_result_for_test
 
-            assert session.verifier_prefixes[0].is_dir()
-            live_empty_prefix(command)
-            session.fresh_calls.append((command, kwargs))
-            return SimpleNamespace(stdout=json.dumps(session.fresh_selection))
+        assert kwargs["memory_guard_prefix"] == "MOLT_BUILD_PYTHON"
+        assert kwargs["guard_source_root"] == Executor.repo_root
+        assert session.verifier_prefixes[0].is_dir()
+        live_empty_prefix(command)
+        session.fresh_calls.append((command, kwargs))
+        return guard_result_for_test(
+            command, 0, json.dumps(session.fresh_selection), "", descendants_closed=True
+        )
+
+    monkeypatch.setattr(admission.process_guard, "run_completed_command", fresh_run)
 
     monkeypatch.setattr(
         admission.process_guard, "source_command_executor", lambda _prefix: Executor()

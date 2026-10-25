@@ -1673,8 +1673,11 @@ def test_distribution_probe_sanitizes_python_import_authority(
         assert not list(prefix.iterdir())
         assert prefix != Path(sys.prefix) / "bytecode"
         observed["verifier_prefix"] = prefix
-        return subprocess.CompletedProcess(
-            argv, 0, stdout=json.dumps(realized), stderr=""
+        from tests.process_guard_common import guard_result_for_test
+
+        assert kwargs["memory_guard_prefix"] == "MOLT_CLI"
+        return guard_result_for_test(
+            argv, 0, json.dumps(realized), "", descendants_closed=True
         )
 
     monkeypatch.setattr(

@@ -78,10 +78,24 @@ def _host_target() -> tuple[str, str, list[str], str]:
     return operating_system, architecture, root_roles, dependency_policy
 
 
-def runtime_identity_manifest() -> dict[str, object]:
-    """Return one production-validated synthetic CPython runtime identity."""
+def runtime_identity_manifest(*, python: str | None = None) -> dict[str, object]:
+    """Return one production-validated synthetic physical CPython identity."""
 
     marker = source_build_environment_schema.canonical_source_marker_environment()
+    version = marker["python_full_version"]
+    cache_tag = str(sys.implementation.cache_tag)
+    if python is not None:
+        from molt._python_release_generated import CPYTHON_RELEASES
+        from molt.python_interpreter import parse_python_interpreter_request
+
+        request = parse_python_interpreter_request(python)
+        micro = request.micro
+        if micro is None:
+            # Synthetic identities need a source-pinned patch, independent of
+            # guest admission. Explicit patches remain exact.
+            micro = CPYTHON_RELEASES[request.series][2]
+        version = f"{request.major}.{request.minor}.{micro}"
+        cache_tag = f"cpython-{request.major}{request.minor}"
     operating_system, architecture, root_roles, dependency_policy = _host_target()
     nodes = [{"id": "file-node-0", "size": 1, "sha256": "a" * 64}]
     entries = [
@@ -95,7 +109,7 @@ def runtime_identity_manifest() -> dict[str, object]:
     capabilities = {
         "schema": python_environment_identity.PYTHON_RUNTIME_CAPABILITY_SCHEMA,
         "implementation_policy": "cpython>=3.12",
-        "version_series": ".".join(marker["python_full_version"].split(".")[:2]),
+        "version_series": ".".join(version.split(".")[:2]),
         "operating_system": operating_system,
         "architecture": architecture,
         "linkage": "static",
@@ -127,8 +141,8 @@ def runtime_identity_manifest() -> dict[str, object]:
     material = {
         "schema": python_environment_identity.PYTHON_RUNTIME_IDENTITY_SCHEMA,
         "implementation": "cpython",
-        "version": marker["python_full_version"],
-        "cache_tag": str(sys.implementation.cache_tag),
+        "version": version,
+        "cache_tag": cache_tag,
         "soabi": "test-soabi",
         "abi_flags": "",
         "multiarch": "test-multiarch",
@@ -593,7 +607,6 @@ def materialize_development_environment(
         environment_python_path,
     )
     from molt.python_uv_lock_identity import selected_uv_lock_group_closure
-    from molt.target_python import _parse_target_python_version
 
     repo_root.mkdir(parents=True, exist_ok=True)
     repo_root = repo_root.resolve()
@@ -624,16 +637,7 @@ def materialize_development_environment(
                 f"hash='sha256:{'a' * 64}',size=1}}]\n"
             )
         (repo_root / "uv.lock").write_text(lock, encoding="utf-8")
-    runtime = runtime_identity_manifest()
-    if python is not None:
-        target = _parse_target_python_version(python)
-        runtime.pop("runtime_closure_sha256")
-        runtime["version"] = f"{target.major}.{target.minor}.{target.micro}"
-        runtime["cache_tag"] = f"cpython-{target.major}{target.minor}"
-        runtime["capabilities"]["version_series"] = target.short
-        runtime = python_environment_identity.validate_python_runtime_identity(
-            _sealed(runtime, "runtime_closure_sha256")
-        )
+    runtime = runtime_identity_manifest(python=python)
     if not (repo_root / ".python-version").exists():
         (repo_root / ".python-version").write_text(
             str(runtime["version"]) + "\n", encoding="utf-8"

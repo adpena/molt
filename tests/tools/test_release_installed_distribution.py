@@ -1350,3 +1350,258 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         ]
         assert replays[1]["compilation"]["origins"] == []
         assert cache.read_bytes() == b"original cached object"
+
+
+@pytest.mark.parametrize(
+    ("receiver", "outcome"),
+    [
+        (receiver, outcome)
+        for receiver in ("execution", "absent", "capture", "frontend")
+        for outcome in ("success", "closed-timeout", "unknown-timeout")
+    ]
+    + [("execution-first", "unknown-timeout"), ("execution", "wrong-coordinate")],
+)
+def test_release_metadata_receivers_own_guarded_namespace(
+    tmp_path, monkeypatch, receiver, outcome
+):
+    """Keep release owners real; replace only child execution and CAS publication."""
+    import gc
+    import subprocess
+    import weakref
+    from types import SimpleNamespace
+
+    from molt import input_report, process_guard, temporary_artifacts
+    from molt import python_environment_identity, python_interpreter
+    from tests.executable_test_support import (
+        native_executable_name,
+        write_mock_executable,
+    )
+    from tests.process_guard_common import guard_result_for_test
+    from tests.python_environment_test_support import runtime_identity_manifest
+    from tools.proof_queue_pkg import command_admission, toolchain_capture
+
+    image = b"release Python content; never executed"
+    python = write_mock_executable(tmp_path / native_executable_name("python"), image)
+    prepared = write_mock_executable(
+        tmp_path / native_executable_name("prepared"), image
+    )
+    source_root = tmp_path / "bundle" / "source"
+    source_root.mkdir(parents=True)
+    compiler = SimpleNamespace(source_root=source_root)
+    env = ProcessEnvironment({"RELEASE_METADATA_SENTINEL": "preserve"})
+    allocations = []
+    original_allocation = temporary_artifacts.OwnedTemporaryDirectory
+
+    def allocate(**kwargs):
+        allocation = original_allocation(dir=tmp_path, **kwargs)
+        path = Path(allocation.name).resolve(strict=True)
+        allocations.append(
+            (path, temporary_artifacts._identity(path), weakref.ref(allocation))
+        )
+        return allocation
+
+    monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)
+    # Reporting is outside this argv contract; prohibit an ambient logging flag.
+    monkeypatch.setattr(input_report, "worker_log_dir", lambda: None)
+    capture = {
+        "schema": "molt.python-capture.v2",
+        "identity": runtime_identity_manifest(python="3.12.15"),
+        "file_custody": [{"path": str(python), "size": 1, "sha256": "a" * 64}],
+        "node_custody": [{"node": "/file_nodes/0", "file_index": 0}],
+        "inventory_profile": {
+            "hash_workers": 1,
+            "hashed_files": 1,
+            "hashed_bytes": 1,
+            "hash_seconds": 0.0,
+        },
+    }
+    published = []
+    reference = {"fixture": "toolchain-capture-reference"}
+
+    def publish(root, identities):
+        assert root == tmp_path / "cas" and identities == {}
+        assert all(not path.exists() for path, _, _ in allocations)
+        published.append(True)
+        return {}, reference, None
+
+    monkeypatch.setattr(toolchain_capture, "publish_capture", publish)
+    calls = []
+    failure = subprocess.TimeoutExpired([str(python)], 30)
+    receipt = guard_result_for_test(
+        [str(python)],
+        124,
+        "partial metadata",
+        "timeout",
+        descendants_closed=outcome == "closed-timeout",
+    )
+    failure.guarded_result = receipt
+
+    def run(command, **kwargs):
+        assert len(allocations) == 1
+        prefix = allocations[0][0]
+        assert prefix.is_dir() and list(prefix.iterdir()) == []
+        assert command[:5] == [
+            str(python),
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+        ]
+        assert kwargs["cwd"] == tmp_path and kwargs["capture_output"] is True
+        first_identity = receiver.startswith("execution") and not calls
+        expected_env = dict(env)
+        if first_identity:
+            expected_env["PYTHONHASHSEED"] = "0"
+            assert command[5:] == ["-S", "-c", python_interpreter._IDENTITY_PROBE]
+            assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+            assert kwargs["timeout"] == 10.0 and kwargs["check"] is False
+            output = json.dumps(
+                {
+                    "implementation": "CPython",
+                    "version": "3.12.15",
+                    "executable": str(python),
+                }
+            )
+        else:
+            executor = (
+                command_admission._COMMANDS
+                if receiver == "capture"
+                else verify_consumer._COMMANDS
+            )
+            assert kwargs["memory_guard_prefix"] == executor.prefix
+            assert kwargs["guard_source_root"] == executor.repo_root
+            assert kwargs["timeout"] == (60 if receiver == "frontend" else 30)
+            assert kwargs["check"] is (receiver != "capture")
+            if receiver == "execution":
+                assert command[5:] == ["-c", verify_consumer._HOST_PROBE]
+                output = json.dumps(
+                    {
+                        "system": "Linux",
+                        "machine": "aarch64"
+                        if outcome == "wrong-coordinate"
+                        else "x86_64",
+                        "pointer_bits": 64,
+                        "gil_disabled": False,
+                    }
+                )
+            elif receiver == "absent":
+                assert command[5:] == [
+                    "-c",
+                    "import importlib.util; assert importlib.util.find_spec('molt') is None",
+                ]
+                output = ""
+            elif receiver == "capture":
+                assert command[5:] == [
+                    str(
+                        Path(python_environment_identity.__file__).resolve(strict=True)
+                    ),
+                    "--capture-active-environment",
+                    "--with-custody",
+                    "--hash-workers",
+                    "1",
+                    "--admit-virtualenv-bootstrap",
+                    "--admit-external-root",
+                    str(source_root.resolve(strict=True)),
+                ]
+                output = json.dumps(capture)
+            else:
+                assert receiver == "frontend"
+                assert command[5:] == [
+                    "-c",
+                    "import json,runpy,sys; from pathlib import Path; "
+                    "root=Path(sys.argv[1]); "
+                    "m=runpy.run_path(str(root/'source'/'packaging'/'bootstrap.py')); "
+                    "home,identity=m['_release_inputs'](root); "
+                    "print(json.dumps(str(home/'environments'/identity/'bin'/'python')))",
+                    str(source_root.parent),
+                ]
+                output = json.dumps(str(prepared))
+        assert dict(kwargs["env"]) == expected_env
+        calls.append(command)
+        if outcome.endswith("timeout") and (
+            not first_identity or receiver == "execution-first"
+        ):
+            raise failure
+        return guard_result_for_test(command, 0, output, "", descendants_closed=True)
+
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
+
+    def unexpected_child(*_args, **_kwargs):
+        pytest.fail("release metadata bypassed the mocked core guard")
+
+    monkeypatch.setattr(subprocess, "Popen", unexpected_child)
+
+    def invoke():
+        if receiver.startswith("execution"):
+            return verify_consumer._capture_python_execution(
+                python,
+                env=env,
+                cwd=tmp_path,
+                target={"platform": "linux", "arch": "x86_64"},
+                reference_python="3.12.15",
+            )
+        if receiver == "absent":
+            return verify_consumer._absent_probe(python, env=env, cwd=tmp_path)
+        if receiver == "capture":
+            return verify_consumer._compilation_captures(
+                interpreters=(python, python),
+                tools=(),
+                compiler=compiler,
+                cwd=tmp_path,
+                env=env,
+                supervisor=tmp_path / "unused-supervisor",
+                cas_root=tmp_path / "cas",
+            )
+        return verify_consumer._installed_frontend_python(
+            compiler=compiler,
+            python=python,
+            env=env,
+            cwd=tmp_path,
+            portable_bundle=True,
+        )
+
+    try:
+        if outcome.endswith("timeout"):
+            with pytest.raises(subprocess.TimeoutExpired) as raised:
+                invoke()
+            assert raised.value is failure and raised.value.guarded_result is receipt
+            failure.__traceback__ = None
+            del raised
+        elif outcome == "wrong-coordinate":
+            with pytest.raises(ValueError, match="host differs from candidate"):
+                invoke()
+        else:
+            result = invoke()
+            if receiver == "execution":
+                assert result == {
+                    "host": {"platform": "linux", "arch": "x86_64", "pointer_bits": 64},
+                    "python": {
+                        "implementation": "CPython",
+                        "version": "3.12.15",
+                        "executable": str(python),
+                        "sha256": hashlib.sha256(image).hexdigest(),
+                        "size": len(image),
+                        "gil_disabled": False,
+                    },
+                }
+            elif receiver == "capture":
+                assert result == ([capture], reference)
+            elif receiver == "frontend":
+                assert result == prepared
+            else:
+                assert result is None
+        assert len(calls) == (2 if receiver == "execution" else 1)
+        assert published == (
+            [True] if receiver == "capture" and outcome == "success" else []
+        )
+        assert len(allocations) == 1
+        path, _, allocation_ref = allocations[0]
+        gc.collect()
+        assert allocation_ref() is None
+        assert path.exists() is (outcome == "unknown-timeout")
+        if outcome == "unknown-timeout":
+            assert any(str(path) in note for note in failure.__notes__)
+    finally:
+        # The core seam never spawned a child. Dispose only these exact fixture owners.
+        for path, identity, _ in allocations:
+            temporary_artifacts._cleanup_temporary_directory(path, identity)

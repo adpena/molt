@@ -2446,15 +2446,23 @@ def test_metadata_success_cache_excludes_item_deadlines(monkeypatch):
     )
     calls = []
 
+    from molt import process_guard
+    from tests.process_guard_common import guard_result_for_test
+
     def probe(command, **kwargs):
         calls.append(kwargs["timeout"])
-        return SimpleNamespace(
-            returncode=0,
-            stdout='{"version_info": [3, 12], "executable": "oracle-python"}\n',
-            stderr="",
+        assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+        assert command[1:4] == ["-B", "-I", "-X"]
+        return guard_result_for_test(
+            command,
+            0,
+            '{"implementation":"CPython","version":"3.12.15","executable":"oracle-python"}\n',
+            "",
+            descendants_closed=True,
         )
 
-    monkeypatch.setattr(module.process_guard_common, "run_guarded_test_process", probe)
+    monkeypatch.setattr(process_guard, "run_completed_command", probe)
+
     first = backends.ItemBudget.start(policy, ("native",))
     assert module._python_exe_version(("fixture-python",), budget=first) == (3, 12)
     clock.now = 4.0
@@ -2465,3 +2473,402 @@ def test_metadata_success_cache_excludes_item_deadlines(monkeypatch):
     with pytest.raises(backends.ItemBudgetExpired):
         module._python_command_metadata(("fixture-python",), budget=first)
     assert calls == [3]
+
+
+@pytest.mark.parametrize(
+    "receiver",
+    [
+        "string-resolver",
+        "guest-resolver",
+        "metadata-cache",
+        "run-string",
+        "run-guest",
+        "item-recording",
+    ],
+)
+@pytest.mark.parametrize(
+    "kind,closed",
+    [
+        ("timeout", False),
+        ("timeout", True),
+        ("guard", False),
+        ("guard", True),
+        ("interrupt", False),
+        ("interrupt", True),
+        ("spawn", False),
+    ],
+)
+def test_metadata_deadline_preserves_primary_guard_error_and_receipt(
+    tmp_path, monkeypatch, receiver, kind, closed
+):
+    import gc
+    import weakref
+    from molt import process_guard, temporary_artifacts, toolchain_identity
+
+    module = _load_diff_module()
+    backends = module.compat_backends
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    policy = backends.TimeoutPolicy.from_environment(
+        {
+            "MOLT_DIFF_TIMEOUT": "1",
+            "MOLT_DIFF_BUILD_TIMEOUT": "1",
+        }
+    )
+    budget = backends.ItemBudget(policy, deadline=1.0)
+    selected = tmp_path / "selected-python"
+    selected.write_bytes(b"never executed by this synthetic core guard")
+    monkeypatch.setattr(
+        toolchain_identity,
+        "find_executable",
+        lambda name, **_kw: None if name == "uv" else selected,
+    )
+    monkeypatch.setattr(
+        module.python_interpreter,
+        "python_command_candidates",
+        lambda *_a, **_kw: [[str(selected)], ["must-not-launch"]],
+    )
+    monkeypatch.delenv("MOLT_DIFF_PYTHON", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "1")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "1")
+    monkeypatch.setattr(module, "_PROCESS_STARTED", 0.0)
+    # The subject is metadata/budget error ownership, before suite filesystem
+    # or workload admission. Leave the real resolver, owner and ItemBudget live.
+    monkeypatch.setattr(module.diff_output_layout, "admit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        module.diff_output_layout,
+        "diff_custody_root",
+        lambda *_a, **_kw: tmp_path / "custody",
+    )
+    monkeypatch.setattr(
+        module,
+        "_ensure_diff_run_lock",
+        lambda: pytest.fail("guard error reached workload admission"),
+    )
+    monkeypatch.setattr(
+        module.test_policy,
+        "collect_test_files",
+        lambda *_a, **_kw: pytest.fail(
+            "guard error became an ordinary not-run timeout"
+        ),
+    )
+    receipt_path = tmp_path / "result.jsonl"
+    if receiver == "item-recording":
+        # Exercise the real writer's OSError path independently of the guard
+        # seam: a directory cannot be opened as an append-only JSONL file.
+        receipt_path.mkdir()
+        monkeypatch.setattr(module, "_diff_results_jsonl_path", lambda: receipt_path)
+        monkeypatch.setattr(
+            module.diff_output_layout, "enforce_child", lambda *_a, **_kw: None
+        )
+    original_allocation = temporary_artifacts.OwnedTemporaryDirectory
+    allocations = []
+
+    def allocate(**kwargs):
+        allocation = original_allocation(dir=tmp_path, **kwargs)
+        path = Path(allocation.name)
+        allocations.append(
+            (path, temporary_artifacts._identity(path), weakref.ref(allocation))
+        )
+        return allocation
+
+    monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)
+    receipt = SimpleNamespace(
+        descendants_closed=closed,
+        child_returncode=None,
+        infrastructure_failure=SimpleNamespace(
+            phase="drain", details=("independent deadline-limited guard failure",)
+        ),
+    )
+    if kind == "timeout":
+        failure = subprocess.TimeoutExpired(
+            ["metadata"], 1, output=b"original output", stderr=b"original diagnostic"
+        )
+    elif kind == "guard":
+        failure = process_guard.GuardInfrastructureError(["metadata"], receipt)
+    elif kind == "interrupt":
+        failure = KeyboardInterrupt()
+    else:
+        failure = FileNotFoundError("selected interpreter retired before spawn")
+    if kind != "spawn":
+        failure.guarded_result = receipt
+    calls = []
+
+    def core(command, **kwargs):
+        calls.append(command)
+        assert kwargs["timeout"] == 1.0
+        assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+        assert command[1:4] == ["-B", "-I", "-X"]
+        assert allocations[0][0].is_dir()
+        clock.now = 2.0
+        raise failure
+
+    monkeypatch.setattr(process_guard, "run_completed_command", core)
+
+    def dispatch():
+        if receiver == "string-resolver":
+            return module._resolve_python_command("3.13", budget=budget)
+        if receiver == "guest-resolver":
+            return module._resolve_diff_python_command("3.13", budget=budget)
+        if receiver == "metadata-cache":
+            return module._run_metadata_probe((str(selected),), budget=budget)
+        if receiver == "item-recording":
+            return module.diff_test(
+                str(tmp_path / "never-run.py"), "3.13", "dev", item_budget=budget
+            )
+        return module.run_diff(
+            tmp_path / "never-run.py",
+            "3.13",
+            jobs=1,
+            deadline_s=1.0,
+            oracle_version="3.13" if receiver == "run-guest" else None,
+        )
+
+    unrelated = ValueError("unrelated caller handled exception")
+    try:
+        raise unrelated
+    except ValueError:
+        # The primary belongs to this invocation, even when the caller has a
+        # different handled exception active. Recording must never note it.
+        with pytest.raises(type(failure)) as caught:
+            dispatch()
+    assert caught.value is failure
+    assert not getattr(unrelated, "__notes__", ())
+    unrelated.__traceback__ = None
+    if kind != "spawn":
+        assert caught.value.guarded_result is receipt
+    assert budget.expired()
+    if receiver == "item-recording":
+        assert any(
+            "receipt publication also failed" in note and str(receipt_path) in note
+            for note in failure.__notes__
+        )
+    assert len(calls) == 1 and len(allocations) == 1
+    assert module._METADATA_PROBE_CACHE == {}
+    path, allocation_identity, allocation_ref = allocations[0]
+    assert path.exists() is (not closed)
+    failure.__traceback__ = None
+    del caught
+    gc.collect()
+    assert allocation_ref() is None
+    assert path.exists() is (not closed)
+    if not closed:
+        temporary_artifacts._cleanup_temporary_directory(path, allocation_identity)
+
+
+@pytest.mark.parametrize(
+    "receiver", ["string-resolver", "metadata-cache", "run-string", "run-guest"]
+)
+def test_metadata_normal_success_expired_budget_refuses_before_workload(
+    tmp_path, monkeypatch, receiver
+):
+    from molt import process_guard, toolchain_identity
+    from tests.process_guard_common import guard_result_for_test
+
+    module = _load_diff_module()
+    backends = module.compat_backends
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    policy = backends.TimeoutPolicy.from_environment(
+        {
+            "MOLT_DIFF_TIMEOUT": "1",
+            "MOLT_DIFF_BUILD_TIMEOUT": "1",
+        }
+    )
+    budget = backends.ItemBudget(policy, deadline=1.0)
+    selected = tmp_path / "selected-python"
+    selected.write_bytes(b"never executed by this synthetic core guard")
+    monkeypatch.setattr(
+        toolchain_identity,
+        "find_executable",
+        lambda name, **_kw: None if name == "uv" else selected,
+    )
+    monkeypatch.setattr(
+        module.python_interpreter,
+        "python_command_candidates",
+        lambda *_a, **_kw: [[str(selected)]],
+    )
+    monkeypatch.delenv("MOLT_DIFF_PYTHON", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "1")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "1")
+    monkeypatch.setattr(module, "_PROCESS_STARTED", 0.0)
+    monkeypatch.setattr(module.diff_output_layout, "admit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        module.diff_output_layout,
+        "diff_custody_root",
+        lambda *_a, **_kw: tmp_path / "custody",
+    )
+    for name in (
+        "_ensure_diff_run_lock",
+        "_prune_orphan_diff_workers",
+        "_prune_orphan_build_helpers",
+        "_prune_backend_daemons",
+        "_prune_stale_build_locks",
+    ):
+        monkeypatch.setattr(
+            module,
+            name,
+            lambda: pytest.fail("expired preflight reached workload admission"),
+        )
+    monkeypatch.setattr(
+        module,
+        "_resolve_molt_target_python",
+        lambda *_a, **_kw: pytest.fail(
+            "expired resolution reached another metadata child"
+        ),
+    )
+    events = []
+    prefixes = []
+
+    class ExpiredSelectionReached(Exception):
+        pass
+
+    def selected_files(*_args, **_kwargs):
+        # A successful, proven-closed metadata observation that spends the
+        # deadline retains the existing ordinary not-run selection path.
+        events.append("not-run-selection")
+        raise ExpiredSelectionReached
+
+    monkeypatch.setattr(module.test_policy, "collect_test_files", selected_files)
+
+    def core(command, **kwargs):
+        events.append("guard")
+        assert kwargs["timeout"] == 1.0
+        assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+        prefix = Path(command[command.index("-X") + 1].removeprefix("pycache_prefix="))
+        prefixes.append(prefix)
+        assert prefix.is_dir()
+        clock.now = 2.0
+        return guard_result_for_test(
+            command,
+            0,
+            '{"implementation":"CPython","version":"3.13.17","executable":"selected-python"}',
+            "",
+            descendants_closed=True,
+        )
+
+    monkeypatch.setattr(process_guard, "run_completed_command", core)
+    if receiver.startswith("run-"):
+        with pytest.raises(ExpiredSelectionReached):
+            module.run_diff(
+                tmp_path / "never-run.py",
+                "3.13",
+                jobs=1,
+                deadline_s=1.0,
+                oracle_version="3.13" if receiver == "run-guest" else None,
+            )
+        assert events == ["guard", "not-run-selection"]
+    else:
+        with pytest.raises(backends.ItemBudgetExpired):
+            if receiver == "string-resolver":
+                module._resolve_python_command("3.13", budget=budget)
+            else:
+                module._run_metadata_probe((str(selected),), budget=budget)
+        assert events == ["guard"]
+    assert budget.expired() and module._METADATA_PROBE_CACHE == {}
+    assert len(prefixes) == 1 and not prefixes[0].exists()
+
+
+@pytest.mark.parametrize("ambient", [False, True])
+def test_item_receipt_write_failure_without_primary_is_fatal(
+    tmp_path, monkeypatch, ambient
+):
+    from molt import process_guard
+
+    module = _load_diff_module()
+    backends = module.compat_backends
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: 1.0))
+    policy = backends.TimeoutPolicy.from_environment(
+        {"MOLT_DIFF_TIMEOUT": "1", "MOLT_DIFF_BUILD_TIMEOUT": "1"}
+    )
+    budget = backends.ItemBudget(policy, deadline=0.0)
+    path = tmp_path / "result.jsonl"
+    path.mkdir()
+    monkeypatch.setattr(module, "_diff_results_jsonl_path", lambda: path)
+    monkeypatch.setattr(
+        process_guard,
+        "run_completed_command",
+        lambda *_a, **_kw: pytest.fail("exhausted item launched a child"),
+    )
+
+    # The item deadline is handled as its normal failed record. No exception
+    # escapes that body; an unrelated caller's handled exception is not ours.
+    def invoke():
+        with pytest.raises(
+            RuntimeError, match="differential result receipt write failed"
+        ) as caught:
+            module.diff_test(
+                str(tmp_path / "never-run.py"), "unused", "dev", item_budget=budget
+            )
+        return caught.value
+
+    unrelated = ValueError("unrelated caller handled exception")
+    if ambient:
+        try:
+            raise unrelated
+        except ValueError:
+            failure = invoke()
+    else:
+        failure = invoke()
+    assert isinstance(failure.__cause__, OSError)
+    assert str(path) in str(failure)
+    assert not getattr(unrelated, "__notes__", ())
+
+
+@pytest.mark.parametrize("kind", ["none", "timeout", "interrupt"])
+@pytest.mark.parametrize("ambient", [False, True])
+def test_log_close_failure_preserves_primary_or_is_fatal(
+    tmp_path, monkeypatch, kind, ambient
+):
+    module = _load_diff_module()
+    path = tmp_path / "log.txt"
+    secondary = OSError("independent log close refusal")
+    receipt = SimpleNamespace(descendants_closed=False)
+    if kind == "timeout":
+        primary = subprocess.TimeoutExpired(["metadata"], 1)
+    elif kind == "interrupt":
+        primary = KeyboardInterrupt()
+    else:
+        primary = None
+    if primary is not None:
+        primary.guarded_result = receipt
+    closed = []
+
+    class Handle:
+        def close(self):
+            closed.append(True)
+            raise secondary
+
+    original_open = Path.open
+
+    def open_log(selected, *args, **kwargs):
+        if selected == path:
+            return Handle()
+        return original_open(selected, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_log)
+    expected = secondary if primary is None else primary
+
+    def invoke():
+        with pytest.raises(type(expected)) as caught:
+            with module._open_log_file(path):
+                if primary is not None:
+                    raise primary
+        return caught.value
+
+    unrelated = ValueError("unrelated caller handled exception")
+    if ambient:
+        try:
+            raise unrelated
+        except ValueError:
+            failure = invoke()
+    else:
+        failure = invoke()
+    assert failure is expected and closed == [True]
+    assert not getattr(unrelated, "__notes__", ())
+    if primary is not None:
+        assert failure.guarded_result is receipt
+        assert any(
+            str(path) in note and "log close refusal" in note
+            for note in primary.__notes__
+        )

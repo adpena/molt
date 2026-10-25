@@ -18,7 +18,7 @@ from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.python_environment_identity import (
     python_identity_probe_arguments,
-    python_identity_verifier_prefix,
+    PythonIdentityVerifier,
     validate_python_capture,
 )
 from molt.python_runtime_identity import (
@@ -350,16 +350,18 @@ class BuildPythonAdmission:
         # A launcher can consult any environment key, and unchanged search
         # directories can acquire higher-precedence loader providers. Only a
         # fresh launch observes those selections. This mode does no tree scan.
-        with python_identity_verifier_prefix() as verifier_prefix:
-            completed = self._executor.run(
+        with PythonIdentityVerifier() as verifier:
+            completed = verifier.run(
                 [
                     str(entrypoint),
                     *python_identity_probe_arguments(
                         ("--runtime-selection",),
-                        verifier_bytecode_prefix=verifier_prefix,
+                        verifier_bytecode_prefix=verifier.prefix,
                         no_site=True,
                     ),
                 ],
+                memory_guard_prefix=self._executor.prefix,
+                guard_source_root=self._executor.repo_root,
                 env=env,
                 capture_output=True,
                 text=True,

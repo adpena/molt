@@ -2079,10 +2079,16 @@ def test_secure_wip_clean_tree_is_noop(drv, origin_and_clone):
 def test_python_oracle_pins_current_version(drv):
     # The running interpreter's own version must resolve+verify successfully.
     mm = "%d.%d" % sys.version_info[:2]
-    target = drv.python_interpreter.parse_target_python_version(mm)
-    resolved = drv.python_interpreter.resolve_target_python(
-        target, prefer_uv=False, prefer_current=True
-    )
+    request = drv.python_interpreter.PythonInterpreterRequest(*sys.version_info[:2])
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    with PythonIdentityVerifier() as verifier:
+        resolved = drv.python_interpreter.resolve_python_interpreter(
+            request,
+            prefer_uv=False,
+            prefer_current=True,
+            verifier=verifier,
+        )
     assert resolved.major_minor == mm
     assert resolved.executable
 
@@ -2100,7 +2106,12 @@ def test_python_oracle_rejects_bad_format(drv):
 
 def test_python_interpreter_identity_excludes_wrong_minor(drv):
     # The current interpreter does NOT report a wrong version.
-    resolved = drv.python_interpreter.probe_python_command([sys.executable])
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    with PythonIdentityVerifier() as verifier:
+        resolved = drv.python_interpreter.probe_python_command(
+            [sys.executable], verifier=verifier
+        )
     assert resolved.major_minor != "9.99"
 
 
