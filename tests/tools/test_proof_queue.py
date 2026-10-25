@@ -2758,6 +2758,11 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
             installed[name] = candidate
         expected = {row["name"]: row["version"] for row in closure["packages"]}
         expected[binding["project"]] = binding["version"]
+        missing = sorted(expected.keys() - installed.keys())
+        assert not missing, (
+            f"published-image donor must contain development groups {groups}: "
+            f"missing locked distributions {missing}"
+        )
         for name, version in expected.items():
             selected = installed[name]
             assert selected.version == version, f"donor differs from lock: {name}"
@@ -20915,12 +20920,16 @@ def test_native_llvm_proof_projection_uses_compiler_source_and_request_cwd(
     tmp_path, monkeypatch
 ):
     from molt import llvm_toolchain
+    from tests.llvm_sdk_test_support import native_sdk_projection_fixture
     from tools.proof_queue_pkg import execution_environment
 
     source = Path(__file__).resolve().parents[2]
     guest = tmp_path / "guest"
-    selected = guest / "tools/llvm"
     config = guest / "external/bin/llvm-config"
+    verification = native_sdk_projection_fixture(
+        guest / "tools/llvm", monkeypatch, source_root=source, llvm_config=config
+    )
+    selected = verification.prefix
     monkeypatch.setattr(state, "ROOT", source)
     pin = llvm_toolchain.required_llvm_backend_pin(source)
     assert pin is not None
@@ -20928,9 +20937,7 @@ def test_native_llvm_proof_projection_uses_compiler_source_and_request_cwd(
 
     def verify(root, *, environ, cwd):
         seen.append((root, dict(environ), cwd))
-        return SimpleNamespace(
-            prefix=selected, llvm_config=config, version=pin.default_release
-        )
+        return verification
 
     monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", verify)
     if llvm_toolchain.sys.platform == "darwin":
@@ -20957,6 +20964,15 @@ def test_native_llvm_proof_projection_uses_compiler_source_and_request_cwd(
     assert resolved[pin.env_var] == str(config.parent.parent)
     assert resolved[llvm_toolchain.mlir_sys_prefix_env_var(pin.major)] == str(selected)
     assert resolved[llvm_toolchain.tablegen_prefix_env_var(pin.major)] == str(selected)
+    link = json.loads(resolved[llvm_toolchain.LLVM_NATIVE_LINK_PLAN_ENV])
+    assert link["llvm_config"] == str(config)
+    assert link["driver"] == str(selected / "bin/clang++")
+    assert [(row["name"], row["source"]) for row in link["libraries"]] == [
+        ("LLVMCore", "sdk"),
+        ("compression", "system"),
+        ("m", "system"),
+        ("stdc++", "system"),
+    ]
     captured, contract = execution_environment._deterministic_execution_environment(
         resolved, override_names=[]
     )
@@ -20966,6 +20982,7 @@ def test_native_llvm_proof_projection_uses_compiler_source_and_request_cwd(
         pin.env_var,
         llvm_toolchain.mlir_sys_prefix_env_var(pin.major),
         llvm_toolchain.tablegen_prefix_env_var(pin.major),
+        llvm_toolchain.LLVM_NATIVE_LINK_PLAN_ENV,
     ):
         assert captured[key] == resolved[key]
         assert key in contract["passed_names"]

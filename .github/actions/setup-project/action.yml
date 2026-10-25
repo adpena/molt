@@ -54,6 +54,9 @@ inputs:
   sync-dev:
     description: Include uv's development dependency group
     default: "false"
+  sync-project-groups:
+    description: Select exactly the canonical DxProject development groups after Python bootstrap
+    default: "false"
   sync-groups:
     description: Optional comma-separated dependency groups
     default: ""
@@ -124,6 +127,7 @@ runs:
         INPUT_SYNC_FROZEN: ${{ inputs.sync-frozen }}
         INPUT_SYNC_DEV: ${{ inputs.sync-dev }}
         INPUT_SYNC_GROUPS: ${{ inputs.sync-groups }}
+        INPUT_SYNC_PROJECT_GROUPS: ${{ inputs.sync-project-groups }}
       run: bash .github/actions/setup-project/normalize-inputs.sh "$GITHUB_OUTPUT"
 
     # Only main saves caches. Branches, pull requests and dispatches restore
@@ -272,11 +276,21 @@ runs:
         SYNC_FROZEN: ${{ steps.inputs.outputs.sync-frozen }}
         SYNC_DEV: ${{ steps.inputs.outputs.sync-dev }}
         SYNC_GROUPS: ${{ steps.inputs.outputs.sync-groups }}
+        SYNC_PROJECT_GROUPS: ${{ steps.inputs.outputs.sync-project-groups }}
       run: |
         set -euo pipefail
         args=(sync)
         [[ "$SYNC_FROZEN" != "true" ]] || args+=(--frozen)
         [[ "$SYNC_DEV" != "true" ]] || args+=(--dev)
+        if [[ "$SYNC_PROJECT_GROUPS" == "true" ]]; then
+          # python3 is the exact alias verified by provision-python.sh above.
+          # No site or installed dependencies are needed to read this authority.
+          project_groups=$(python3 -I -S -B -c 'import sys; from pathlib import Path; root = Path.cwd(); sys.path.insert(0, str(root / "src")); from molt.dx import DxProject; groups = DxProject(root).dependency_groups(); assert all("\n" not in group and "\r" not in group for group in groups), "project dependency group contains a line break"; print("\n".join(groups))') || exit "$?"
+          args+=(--no-default-groups)
+          while IFS= read -r group; do
+            [[ -z "$group" ]] || args+=(--group "$group")
+          done <<< "$project_groups"
+        fi
         if [[ -n "$SYNC_GROUPS" ]]; then
           IFS=',' read -r -a groups <<< "$SYNC_GROUPS"
           for group in "${groups[@]}"; do

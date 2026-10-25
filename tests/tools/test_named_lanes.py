@@ -15,6 +15,7 @@ import pytest
 from molt.process_environment import NameRule, ProcessEnvironment
 
 from tests.executable_test_support import custody_spelling
+from tests.llvm_sdk_test_support import native_sdk_projection_fixture
 from tests.process_guard_common import current_thread_only
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission
@@ -252,43 +253,6 @@ def test_rust_target_is_only_read_from_rust_tool_argv(tmp_path) -> None:
     )
 
 
-def _native_sdk_projection_fixture(tmp_path, monkeypatch, *, llvm_config=None):
-    from molt import llvm_toolchain
-    from tests.test_llvm_toolchain import _native_link_selection_fixture
-
-    # Reuse the owning link-selector fixture's captured driver bytes and real
-    # archive/library paths. Only the compiler's external search query is mocked;
-    # native link selection, image-generation checks and serialization stay real.
-    _selector, selected, system, _capability = _native_link_selection_fixture(
-        tmp_path, monkeypatch
-    )
-    (system / "libstdc++.a").write_bytes(b"selected C++ ABI archive")
-    pin = llvm_toolchain.required_llvm_backend_pin(ROOT)
-    assert pin is not None
-    config = selected.llvm_config if llvm_config is None else llvm_config
-    if llvm_config is not None:
-        config.parent.mkdir(parents=True)
-        config.write_bytes(b"external split-layout configuration")
-    return llvm_toolchain.LlvmPrefixVerification(
-        prefix=selected.prefix,
-        llvm_config=config,
-        version=pin.default_release,
-        host_target=selected.host_target,
-        targets=("AArch64", "WebAssembly"),
-        assets=(),
-        tool_versions=tuple(
-            replace(fact, version=pin.default_release)
-            for fact in selected.tool_versions
-        ),
-        library_facts=(),
-        content_facts=(),
-        content_digest=None,
-        link_closure=selected.link_closure,
-        link_probe=(),
-        release=None,
-    )
-
-
 def test_llvm_family_lanes_project_the_complete_declared_sdk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -296,8 +260,8 @@ def test_llvm_family_lanes_project_the_complete_declared_sdk(
     from tools.proof_queue_pkg import guarded_execution as ge
 
     config = tmp_path / "external config/bin/llvm-config"
-    verification = _native_sdk_projection_fixture(
-        tmp_path / "llvm SDK", monkeypatch, llvm_config=config
+    verification = native_sdk_projection_fixture(
+        tmp_path / "llvm SDK", monkeypatch, source_root=ROOT, llvm_config=config
     )
     prefix = verification.prefix
     ambient = os.pathsep.join(
@@ -384,7 +348,9 @@ def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
     installation = llvm_toolchain.load_wasi_sdk_installation(
         ge.state.ROOT, sdk_prefix, verify_tree=False
     )
-    verification = _native_sdk_projection_fixture(tmp_path / "llvm-native", monkeypatch)
+    verification = native_sdk_projection_fixture(
+        tmp_path / "llvm-native", monkeypatch, source_root=ROOT
+    )
     native = verification.prefix
     ambient = str(tmp_path / "ambient")
     selected = {"PATH": ambient, "WASI_SDK_PATH": str(installation.sdk)}

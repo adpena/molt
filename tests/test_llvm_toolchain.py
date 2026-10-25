@@ -1,8 +1,10 @@
 from __future__ import annotations
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
+
+from tests.llvm_sdk_test_support import native_link_selection_fixture
 import json
 import hashlib
 import os
@@ -2905,74 +2907,23 @@ def test_backend_pin_reads_its_release_from_the_pinning_checkout(
     assert read[0] == (tmp_path / "config" / "llvm_toolchain_releases.toml").resolve()
 
 
-def _native_link_selection_fixture(tmp_path, monkeypatch):
-    from molt import llvm_link_plan
-
-    install_module_view(monkeypatch, "sys", sys, llvm_link_plan, platform="linux")
-    monkeypatch.setattr(
-        llvm_toolchain, "llvm_sdk_probe_environment", ProcessEnvironment
-    )
-    prefix, system = tmp_path / "sdk", tmp_path / "system libraries"
-    for path, content in (
-        (prefix / "bin/llvm-config", b"configuration"),
-        (prefix / "bin/clang++", b"selected driver"),
-        (prefix / "lib/libLLVMCore.a", b"LLVM archive"),
-        (system / "libcompression.so", b"shared compression"),
-        (system / "libcompression.a", b"static compression"),
-        (system / "libm.so", b"system math"),
-    ):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-        path.chmod(0o755)
-    driver = prefix / "bin/clang++"
-    verification = SimpleNamespace(
-        prefix=prefix,
-        llvm_config=prefix / "bin/llvm-config",
-        version="22.1.8",
-        host_target="aarch64-unknown-linux-gnu",
-        tool_versions=(
-            llvm_toolchain.LlvmToolVersionFact(
-                "clang++",
-                "bin/clang++",
-                "22.1.8",
-                driver.stat().st_size,
-                hashlib.sha256(driver.read_bytes()).hexdigest(),
-            ),
-        ),
-        link_closure=("lib/libLLVMCore.a", "system:-lcompression", "system:-lm"),
-    )
-    monkeypatch.setattr(
-        llvm_link_plan, "_driver_library_directories", lambda *_args: (system,)
-    )
-    capability = (
-        {
-            "tool": "auditwheel",
-            "version": "6.8.2",
-            "platform": "linux",
-            "arch": "aarch64",
-            "policy_name": "manylinux_2_39_aarch64",
-            "policy_sha256": "a" * 64,
-            "shared_libraries": ("libm.so.6",),
-        },
-        frozenset({"libm.so.6"}),
-    )
-    return llvm_link_plan, verification, system, capability
-
-
 @pytest.mark.parametrize(
     "mode", ["default", "portable", "unavailable", "explicit-static"]
 )
 def test_native_llvm_plan_selects_real_per_library_linkage(tmp_path, monkeypatch, mode):
-    owner, verification, system, capability = _native_link_selection_fixture(
+    owner, verification, system, capability = native_link_selection_fixture(
         tmp_path, monkeypatch
     )
     if mode == "unavailable":
         (system / "libcompression.a").unlink()
     elif mode == "explicit-static":
-        verification.link_closure = (
-            "lib/libLLVMCore.a",
-            f"system:{system / 'libcompression.a'}",
-            "system:-lm",
+        verification = replace(
+            verification,
+            link_closure=(
+                "lib/libLLVMCore.a",
+                f"system:{system / 'libcompression.a'}",
+                "system:-lm",
+            ),
         )
     selected = owner.select_native_llvm_link_plan(
         ROOT,
@@ -3018,7 +2969,7 @@ def test_native_llvm_plan_selects_real_per_library_linkage(tmp_path, monkeypatch
 def test_native_llvm_plan_refuses_malformed_policy_before_driver_probe(
     tmp_path, monkeypatch, mutation
 ):
-    owner, verification, _, capability = _native_link_selection_fixture(
+    owner, verification, _, capability = native_link_selection_fixture(
         tmp_path, monkeypatch
     )
     identity, allowed = capability
@@ -3052,7 +3003,7 @@ def test_native_llvm_plan_refuses_malformed_policy_before_driver_probe(
 def test_native_llvm_plan_refuses_unbound_dependency_inputs(
     tmp_path, monkeypatch, mutation
 ):
-    owner, verification, system, _ = _native_link_selection_fixture(
+    owner, verification, system, _ = native_link_selection_fixture(
         tmp_path, monkeypatch
     )
     if mutation == "driver":
@@ -3061,9 +3012,14 @@ def test_native_llvm_plan_refuses_unbound_dependency_inputs(
         (system / "libcompression.a").unlink()
         (system / "libcompression.so").unlink()
     elif mutation == "duplicate":
-        verification.link_closure += ("system:-lm",)
+        verification = replace(
+            verification, link_closure=(*verification.link_closure, "system:-lm")
+        )
     elif mutation == "selector":
-        verification.link_closure += ("system:-Wl,--as-needed",)
+        verification = replace(
+            verification,
+            link_closure=(*verification.link_closure, "system:-Wl,--as-needed"),
+        )
     else:
 
         def fail_search(*_args):

@@ -201,6 +201,11 @@ def test_every_consumer_reads_one_project_cargo_target(
     project.mkdir()
     external = tmp_path / "external"
     monkeypatch.setattr(cargo_execution, "compiler_source_root", lambda: project)
+    # The governor records target use as a writer; give it the same fixture
+    # source home as every other consumer, including its pinned-session locks.
+    monkeypatch.setattr(
+        compile_governor, "__file__", str(project / "tools/compile_governor.py")
+    )
     base = project
     if request_env != "none":
         monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
@@ -255,10 +260,13 @@ def test_every_consumer_reads_one_project_cargo_target(
     if request_env.startswith("MOLT_"):
         # The CLI's Cargo builds use the same target: no per-process session.
         assert _cargo_build_env()["CARGO_TARGET_DIR"] == str(expected)
-    compiler_root = Path(compile_governor.__file__).resolve().parents[1]
-    assert compile_governor._guard_root(os.environ) == (
-        project_build_state_root(compiler_root, os.environ) / "compile_guard"
-    )
+    assert compile_governor._guard_root(os.environ) == control / "compile_guard"
+    if request_env != "none":
+        from molt.checkout_state import CheckoutOwner, read_checkout_owner
+
+        assert read_checkout_owner(control) == CheckoutOwner(
+            expected.resolve(), "build-control"
+        )
 
 
 def test_daemon_session_sweep_stays_in_its_source_checkout(tmp_path, monkeypatch):

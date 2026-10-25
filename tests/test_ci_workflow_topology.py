@@ -2628,6 +2628,37 @@ def test_ci_rust_consumers_share_compiled_artifact_cache(
     assert not any("rust-cache@" in step.get("uses", "") for step in steps)
 
 
+def test_portability_image_donor_resolves_groups_after_verified_python() -> None:
+    steps = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"][
+        "platform-portability"
+    ]["steps"]
+    setup = next(
+        step for step in steps if step.get("uses") == "./.github/actions/setup-project"
+    )
+    assert "if" not in setup
+    assert setup["with"]["sync"] == "true"
+    assert setup["with"]["sync-frozen"] == "true"
+    assert setup["with"]["sync-project-groups"] == "true"
+    assert "sync-groups" not in setup["with"]
+    assert "sync-dev" not in setup["with"]
+    action = yaml.safe_load(_read(".github/actions/setup-project/action.yml"))
+    assert action["inputs"]["sync-project-groups"]["default"] == "false"
+    action_steps = action["runs"]["steps"]
+    python = next(step for step in action_steps if step.get("id") == "python")
+    sync = next(
+        step
+        for step in action_steps
+        if step.get("name") == "Synchronize project dependencies"
+    )
+    assert action_steps.index(python) < action_steps.index(sync)
+    assert (
+        sync["env"]["SYNC_PROJECT_GROUPS"]
+        == "${{ steps.inputs.outputs.sync-project-groups }}"
+    )
+    assert "DxProject(root).dependency_groups()" in sync["run"]
+    assert "python3 -I -S -B" in sync["run"]
+
+
 @pytest.mark.parametrize(
     ("workflow", "job"),
     [("ci.yml", "rust-build-unit-smoke"), ("molt-wasm-ci.yml", "wasm-build")],
@@ -3033,6 +3064,8 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             *common_profiles,
             "${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
+            "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
+            "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.[0-9]*.[0-9]*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.jsonl', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
         ]
@@ -3089,6 +3122,8 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             / "proof-receipts/evidence/runtime-gate-runs/run/child-0/raw.stderr.log",
             custody / "target/release-output/deps/molt-test-artifacts/run/stderr.log",
             metadata / "case/metadata-owner.json",
+            metadata / "case/execution.supervisor-receipt.json",
+            metadata / "case/execution.supervisor-receipt.json.123.0.tmp",
             metadata / "case/execution.supervisor-receipt.json.events.123.0.tmp",
             metadata / "case/execution.supervisor-receipt.json.events.abcdef.jsonl",
         ]
@@ -3112,13 +3147,20 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         (pytest_dir / "unrelated.txt").write_text("not guard JSON", encoding="utf-8")
         if not detailed:
             # A raw policy/result/CAS may contain command or environment secrets.
-            # The diagnostics consumer must retain only the native journal and
-            # fixture owner, including when no final receipt was published.
+            # Retain native receipts (including interrupted atomic publication),
+            # journals and fixture ownership; never raw policy or workload data.
             for name in (
                 "execution.supervisor-policy.json",
+                "execution.supervisor-policy.json.123.0.tmp",
+                "execution.supervisor-receipt.json.native-environment.tmp",
+                "execution.native-environment.json",
+                "execution.native-environment.json.123.0.tmp",
                 "execution.json",
                 "execution.request.json",
                 "execution.command.stdout.log",
+                "execution.command.stderr.log",
+                "execution.stdout.bin",
+                "execution.stderr.bin",
                 "custody-cas/private.json",
             ):
                 secret = metadata / "case" / name

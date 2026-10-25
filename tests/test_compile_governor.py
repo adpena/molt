@@ -206,7 +206,15 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
     from molt.backend_daemon_custody import backend_daemon_root_from_env
     from molt.cli.runtime_paths import _build_state_root
 
-    project = Path(compile_governor.__file__).resolve().parents[1]
+    from molt.checkout_state import LAST_USE_STAMP, CheckoutOwner, read_checkout_owner
+
+    # The governor is a writer: bind its source home and target leases to
+    # this fixture, while retaining the real owner publication path.
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        compile_governor, "__file__", str(project / "tools/compile_governor.py")
+    )
     artifact = tmp_path / "canonical"
     env = {"MOLT_EXT_ROOT": str(artifact), "MOLT_SESSION_ID": "alpha"}
     target = project / "target" / "sessions" / "alpha"
@@ -228,16 +236,14 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    # Selecting a build-state root records a use, whose lock lives under the
-    # artifact root of that target: this checkout, for a target inside it
-    # (HF-465). The test compares paths only, so it records nothing.
-    from molt.cli import runtime_paths
-
-    monkeypatch.setattr(runtime_paths, "record_build_control_use", lambda *a, **k: None)
-    monkeypatch.setattr(
-        runtime_paths, "record_checkout_target_use", lambda *a, **k: None
-    )
     assert _build_state_root(project) == expected
+    assert read_checkout_owner(expected) == CheckoutOwner(
+        target.resolve(), "build-control"
+    )
+    assert (expected / LAST_USE_STAMP).is_file()
+    # This is real session-target custody, including its durable lock, but
+    # every path belongs to the synthetic checkout rather than the test host.
+    assert any((project / "target/.disk_guard/checkout-state-locks").glob("*.lock"))
 
 
 def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:

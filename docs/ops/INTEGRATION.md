@@ -395,6 +395,10 @@ matching published image at managed operation boundaries. `MOLT_VENV` (or
 `venv_exec --venv`) explicitly borrows an external environment without converting
 it to managed ownership. There is no implicit checkout `.venv`, active-venv or
 main-worktree fallback. Ordinary source bootstrap `uv sync` remains separate.
+The `tools/dev.py` maintenance commands (`doctor`, `setup`, `update`, and
+`validate`) honor an explicit borrowed environment without selecting or syncing
+a managed image. Installation, the Python version matrix, and managed repository
+gates continue to require managed ownership.
 
 Publication derives ordinary checked-hash caches at optimization levels 0, 1 and
 2 into the image's `bytecode` directory. Admission verifies those bytes against

@@ -274,6 +274,7 @@ def _run_normalizer(
     sync_frozen: str = "false",
     sync_dev: str = "false",
     sync_groups: str = "",
+    sync_project_groups: str = "false",
     job: str = "fixture-job",
     python: str = "true",
     uv: str = "true",
@@ -300,6 +301,7 @@ def _run_normalizer(
         "INPUT_SYNC_FROZEN": sync_frozen,
         "INPUT_SYNC_DEV": sync_dev,
         "INPUT_SYNC_GROUPS": sync_groups,
+        "INPUT_SYNC_PROJECT_GROUPS": sync_project_groups,
         "GITHUB_JOB": job,
     }
     completed = run_guarded_test_process(
@@ -416,6 +418,7 @@ def test_control_characters_and_empty_atoms_fail_closed(tmp_path: Path) -> None:
             "INPUT_SYNC_FROZEN": "false",
             "INPUT_SYNC_DEV": "false",
             "INPUT_SYNC_GROUPS": "",
+            "INPUT_SYNC_PROJECT_GROUPS": "false",
         }
         completed = run_guarded_test_process(
             [str(BASH), str(NORMALIZER), str(output)],
@@ -462,6 +465,7 @@ def test_sync_argv_is_typed_normalized_and_requires_sync(tmp_path: Path) -> None
         "INPUT_SYNC_FROZEN": "true",
         "INPUT_SYNC_DEV": "false",
         "INPUT_SYNC_GROUPS": "",
+        "INPUT_SYNC_PROJECT_GROUPS": "false",
     }
     completed = run_guarded_test_process(
         [str(BASH), str(NORMALIZER), str(output)],
@@ -611,6 +615,7 @@ def test_shell_metacharacters_never_execute_before_validation(tmp_path: Path) ->
         "INPUT_SYNC_FROZEN": "false",
         "INPUT_SYNC_DEV": "false",
         "INPUT_SYNC_GROUPS": "",
+        "INPUT_SYNC_PROJECT_GROUPS": "false",
     }
     completed = run_guarded_test_process(
         [str(BASH), str(NORMALIZER), str(output)],
@@ -677,3 +682,153 @@ def test_uv_normalization_reads_exact_manifest_coordinate(
         assert code == 2
         assert "must declare exactly one X.Y.Z" in error
         assert outputs == {}
+
+
+@pytest.mark.parametrize("value", ["TRUE", "1", ""])
+def test_project_group_selector_is_a_strict_boolean(tmp_path: Path, value: str):
+    code, error, outputs = _run_normalizer(
+        tmp_path, toolchain="", sync="true", sync_project_groups=value
+    )
+    assert code != 0
+    assert outputs == {}
+    if value:
+        assert "sync-project-groups must be exactly true or false" in error
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"sync": "true", "sync_dev": "true"}, {"sync": "true", "sync_groups": "dev"}],
+)
+def test_project_group_selector_refuses_ambiguous_or_disabled_sync(tmp_path, options):
+    code, error, outputs = _run_normalizer(
+        tmp_path, toolchain="", sync_project_groups="true", **options
+    )
+    assert code == 2
+    assert "sync" in error
+    assert outputs == {}
+
+
+def test_project_group_selector_normalizes_without_resolving_before_bootstrap(tmp_path):
+    normalized = _normalize(
+        tmp_path, toolchain="", sync="true", sync_project_groups="true"
+    )
+    assert normalized["sync-project-groups"] == "true"
+    assert normalized["sync-groups"] == ""
+
+
+def _run_project_group_sync(tmp_path: Path, mode: str):
+    action = (ROOT / ".github/actions/setup-project/action.yml").read_text(
+        encoding="utf-8"
+    )
+    step = action.split("    - name: Synchronize project dependencies\n", 1)[1]
+    body = step.split("\n    - ", 1)[0].split("      run: |\n", 1)[1]
+    script = tmp_path / "sync.sh"
+    script.write_text(
+        "\n".join(line.removeprefix("        ") for line in body.splitlines()) + "\n",
+        encoding="utf-8",
+    )
+    tools = tmp_path / "bound-python-and-uv"
+    tools.mkdir()
+    query, synced = tmp_path / "query", tmp_path / "synced"
+    selected = shlex.quote(Path(sys.executable).absolute().as_posix())
+    python = tools / "python3"
+    python.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'printf "%s\\n" "$@" > "$QUERY"\n'
+        'if [[ "$MODE" == query ]]; then printf "plausible-group\\n"; exit 43; fi\n'
+        '[[ "$MODE" != explicit ]] || exit 44\n'
+        f'exec {selected} "$@"\n',
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    uv = tools / "uv"
+    uv.write_text(
+        '#!/usr/bin/env bash\nset -euo pipefail\nprintf "%s\\n" "$@" > "$SYNCED"\n',
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    cwd = ROOT
+    if mode in {"changed", "invalid", "framing"}:
+        cwd = tmp_path / "different project"
+        package = cwd / "src/molt"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        # A distinguishable authority proves the consumer calls its method,
+        # rather than reading a copied constant or importing installed Molt.
+        (package / "dx.py").write_text(
+            "import sys\nfrom pathlib import Path\n"
+            "assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n"
+            "class DxProject:\n"
+            "    def __init__(self, root): assert root == Path.cwd()\n"
+            "    def dependency_groups(self):\n"
+            + (
+                "        raise ValueError('invalid dependency groups')\n"
+                if mode == "invalid"
+                else "        return ('bad\\ngroup',)\n"
+                if mode == "framing"
+                else "        return ('fixture-a', 'fixture-z')\n"
+            ),
+            encoding="utf-8",
+        )
+    result = run_guarded_test_process(
+        [str(BASH), str(script)],
+        prefix="MOLT_SETUP_PROJECT_GROUPS_TEST",
+        cwd=cwd,
+        env={
+            **os.environ,
+            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+            "QUERY": query.as_posix(),
+            "SYNCED": synced.as_posix(),
+            "MODE": mode,
+            "SYNC_FROZEN": "true",
+            "SYNC_DEV": "false",
+            "SYNC_GROUPS": "fixture-a,fixture-z" if mode == "explicit" else "",
+            "SYNC_PROJECT_GROUPS": "false" if mode == "explicit" else "true",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    records = [
+        path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        for path in (query, synced)
+    ]
+    return result, records
+
+
+@pytest.mark.parametrize(
+    "mode", ["repository", "changed", "query", "invalid", "framing", "explicit"]
+)
+def test_project_group_sync_uses_bound_python_and_preserves_query_failure(
+    tmp_path: Path, mode: str
+):
+    result, (query, synced) = _run_project_group_sync(tmp_path, mode)
+    if mode == "explicit":
+        assert result.returncode == 0, result.stderr
+        assert query == []
+        assert synced == [
+            "sync",
+            "--frozen",
+            "--group",
+            "fixture-a",
+            "--group",
+            "fixture-z",
+        ]
+        return
+    assert query[:4] == ["-I", "-S", "-B", "-c"]
+    if mode in {"query", "invalid", "framing"}:
+        assert result.returncode == (43 if mode == "query" else 1), result.stderr
+        assert synced == [], "failed group selection must not install any dependency"
+        return
+    assert result.returncode == 0, result.stderr
+    if mode == "repository":
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        groups = sorted(set(project["tool"]["molt"]["dx"]["dependency_groups"]))
+    else:
+        groups = ["fixture-a", "fixture-z"]
+    assert synced == [
+        "sync",
+        "--frozen",
+        "--no-default-groups",
+        *(argument for group in groups for argument in ("--group", group)),
+    ]
