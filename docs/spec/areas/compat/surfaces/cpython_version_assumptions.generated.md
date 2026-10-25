@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 67
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 347
+- `scattered-assumption` files: 346
 
 ## Files
 
@@ -23,7 +23,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/cli/entrypoint_parser.py` | 12 | scattered-assumption | `3.12` |
 | `src/molt/cli/extension_scan_surface.py` | 1 | scattered-assumption | `PY_VERSION_HEX` |
 | `src/molt/cli/factgraph.py` | 3 | scattered-assumption | `3.12` |
-| `src/molt/cli/native_link_plan.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/cli/python_import_resolution.py` | 3 | authority-routed | `sys.version_info` |
 | `src/molt/cli/setup_readiness.py` | 2 | authority-routed | `3.12` |
 | `src/molt/cli/source_extension_cython.py` | 2 | scattered-assumption | `3.12` |
