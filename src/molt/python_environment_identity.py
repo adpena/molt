@@ -10,7 +10,7 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import NoReturn
+from typing import NoReturn, cast
 
 
 def _load_package_import_custody(path: Path) -> ModuleType:
@@ -101,7 +101,13 @@ def _parse_arguments():
     parser.add_argument("--admit-virtualenv-bootstrap", action="store_true")
     parser.add_argument("--admit-site-bootstrap", action="append", default=[])
     parser.add_argument("--admit-external-root", type=Path, action="append", default=[])
+    parser.add_argument("--admit-published-environment", action="store_true")
     args = parser.parse_args()
+    if args.admit_published_environment and (
+        not (args.capture_environment or args.capture_active_environment)
+        or args.publish_bytecode
+    ):
+        parser.error("published admission requires a read-only environment capture")
     if args.wheel_tag_source is not None and (
         not args.capture_runtime or args.with_custody or args.runtime_session
     ):
@@ -316,6 +322,12 @@ def python_capture_authority_paths(
         "python_identity_common",
         "python_uv_lock_identity",
         "python_capture",
+        "cli/__init__",
+        "cli/source_build_environment",
+        "cli/source_build_environment_schema",
+        "cli/source_build_requirements",
+        "cli/atomic_io",
+        "process_guard",
         "toolchain_identity",
         "input_report",
         "llvm_linker_roles",
@@ -418,6 +430,21 @@ def _main() -> None:
                     with_custody=args.with_custody,
                     publish_bytecode=args.publish_bytecode,
                 )
+                if args.admit_published_environment:
+                    # The source-bound guardian has no site dependencies. This
+                    # selected-image child already captured their exact bytes;
+                    # keep all recipe/lock/WHEEL checks in their existing owner.
+                    from molt.cli.source_build_environment import (
+                        admit_published_environment,
+                    )
+
+                    realized = (
+                        cast(dict[str, object], payload["identity"])
+                        if args.with_custody
+                        else payload
+                    )
+                    admit_published_environment(root, realized)
+                    context.verify()
             if args.runtime_session:
                 _serve_runtime_session(
                     payload, context, requests=sys.stdin, responses=sys.stdout

@@ -7447,12 +7447,10 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         "p.ProofPlan.load=lambda _:plan\np._topological_commands=lambda *a,**k:commands\n"
         "p._source_tree_changes=lambda:()\np.toolchain_fingerprints=lambda *a,**k:{}\n"
         "p._source_identity=lambda:{'commit':'a'*40,'tree':'b'*40}\n"
-        "from tools.memory_guard_core.cli_contract import guardian_argv\n"
-        # The guardian's script sits after its interpreter flags; the argv
-        # authority says where.
-        "script=len(guardian_argv(sys.executable,'guardian'))-1\n"
+        "from molt.python_interpreter import parse_python_invocation\n"
         "start=CommandExecutor.start_owned\n"
         "def held_start(self,args,**kwargs):\n"
+        " script=1+len(parse_python_invocation(args).interpreter_options)\n"
         f" return start(self,[*args[:script],{str(worker)!r},*args[script+1:]],**kwargs)\n"
         "CommandExecutor.start_owned=held_start\n"
         f"raise SystemExit(p.main(['--run-family','synthetic','--receipt',{str(receipt)!r}]))\n",

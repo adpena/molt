@@ -1517,7 +1517,16 @@ before startup, including when `-E`/`-I` ignores environment variables. The
 ordinary cache namespace is read-only. Admission verifiers instead start with
 the shared `-B -I -X` policy against fresh empty owned scratch and inspect the
 image's caches by explicit path; they never import through an unadmitted image
-cache. [Checkout provisioning](../ops/INTEGRATION.md#checkout-provisioning)
+cache. The selected interpreter's existing capture process performs canonical
+published-manifest admission before verifying its retained inputs and returning
+the capture. The no-site guardian does not import the image's packaging tools.
+Guardians and their re-executed workers also use fresh empty owned cache prefixes,
+with `-S` preserving their no-site boundary. Their existing command, run or control
+custody retains those prefixes through process closure, including detached and
+exec handoffs; readiness or a dropped Python handle cannot release them. This
+adds an empty directory and uncached source imports per guardian start, with no
+additional process or bytecode writes. Workload startup remains its caller's
+policy. [Checkout provisioning](../ops/INTEGRATION.md#checkout-provisioning)
 owns this distinction and generation lifetime. Receipts store
 names, classes, and keyed fingerprints for every
 passed value, never plaintext values; queued logs and notebooks expose override

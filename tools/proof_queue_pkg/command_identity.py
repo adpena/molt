@@ -639,6 +639,7 @@ def _python_probe_command(
     *,
     verifier_bytecode_prefix: Path,
     source_root: Path,
+    admit_published_environment: bool,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
 ) -> list[str]:
@@ -656,6 +657,11 @@ def _python_probe_command(
                 "--hash-workers",
                 str(hash_workers),
                 "--admit-virtualenv-bootstrap",
+                *(
+                    ("--admit-published-environment",)
+                    if admit_published_environment
+                    else ()
+                ),
                 *(
                     value
                     for root in admitted_roots
@@ -779,6 +785,16 @@ def _python_identity(
     if any(selection.get(key) != value for key, value in expected.items()):
         raise ValueError("proof Python selection differs from its location receipt")
     executable_raw = str(expected["executable"])
+    prefix = Path(str(location["prefix"]))
+    from molt.checkout_state import checkout_state_kind_of
+
+    managed = (
+        len(prefix.parents) > 3
+        and checkout_state_kind_of(prefix, prefix.parents[3]) == "python-environment"
+    )
+    published_admission = (
+        managed or (prefix / SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists()
+    )
     # Selection ran the exact uv/py launcher before arming. Repeating uv run
     # here can sync or close its writable environment lock before full capture
     # has admitted that lock. Preserve the lexical venv launcher (not its base
@@ -788,6 +804,7 @@ def _python_identity(
             Path(executable_raw),
             verifier_bytecode_prefix=verifier_prefix,
             source_root=source_root,
+            admit_published_environment=published_admission,
             external_roots=[
                 Path(value) for value in cast(list[str], selected_external_roots)
             ],
@@ -805,18 +822,6 @@ def _python_identity(
     try:
         capture = validate_python_capture(payload)
         environment = cast(Mapping[str, object], capture["identity"])
-        prefix = Path(str(location["prefix"]))
-        from molt.checkout_state import checkout_state_kind_of
-
-        managed = (
-            len(prefix.parents) > 3
-            and checkout_state_kind_of(prefix, prefix.parents[3])
-            == "python-environment"
-        )
-        if managed or (prefix / SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists():
-            from molt.cli.source_build_environment import admit_published_environment
-
-            admit_published_environment(prefix, environment)
     except PythonEnvironmentIdentityError as exc:
         raise ValueError(f"proof Python identity is invalid: {exc}") from exc
     source_root = source_root.resolve(strict=True)

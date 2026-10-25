@@ -14,6 +14,7 @@ from tests.process_guard_common import (
 
 from molt import dx, process_spawn
 from molt.process_environment import NameRule, ProcessEnvironment
+from molt.python_environment_location import environment_bytecode_arguments
 from tools import uv_project_env
 from tests.python_environment_test_support import materialize_development_environment
 from tests.integration_driver_fixture import copy_driver_trees
@@ -241,6 +242,7 @@ def test_uv_project_env_real_command_exit_status_propagates(
     result = run_guarded_test_process(
         [
             sys.executable,
+            *environment_bytecode_arguments(Path(sys.prefix)),
             str(project / "tools/uv_project_env.py"),
             "--python",
             f"{sys.version_info.major}.{sys.version_info.minor}",
@@ -251,7 +253,9 @@ def test_uv_project_env_real_command_exit_status_propagates(
             "-I",
             "-E",
             "-c",
-            "import sys; assert sys.pycache_prefix == sys.argv[1]; raise SystemExit(int(sys.argv[2]))",
+            "import sys; assert sys.dont_write_bytecode; "
+            "assert sys.pycache_prefix == sys.argv[1]; "
+            "raise SystemExit(int(sys.argv[2]))",
             str(image.root / "bytecode"),
             str(status),
         ],
@@ -338,15 +342,16 @@ def test_forwarded_exec_retains_native_reader_without_a_python_registry(tmp_path
         "assert context.__enter__() is False; context.__exit__(None,None,None); "
         "print('exec-reader-kept-without-registry')"
     )
+    startup = environment_bytecode_arguments(Path(sys.prefix))
     before_exec = (
         "import os,sys; from molt.process_spawn import forward_command; "
         "env=dict(os.environ); env['CARGO_TARGET_DIR']=sys.argv[1]; "
-        "forward_command([sys.executable,'-B','-S','-c',sys.argv[2],sys.argv[1]],env=env)"
+        f"forward_command([sys.executable,*{startup!r},'-S','-c',sys.argv[2],sys.argv[1]],env=env)"
     )
     # `-S` drops the venv's site paths, so the source tree is named here and
     # the test does not depend on a runner that exported it.
     result = run_guarded_test_process(
-        [sys.executable, "-B", "-S", "-c", before_exec, str(target), after_exec],
+        [sys.executable, *startup, "-S", "-c", before_exec, str(target), after_exec],
         cwd=ROOT,
         env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
         timeout=30,
@@ -422,6 +427,7 @@ def test_windows_forward_retains_actual_child_use_after_failed_cleanup_and_gc(
     )
     command = [
         sys.executable,
+        *environment_bytecode_arguments(Path(sys.prefix)),
         "-I",
         "-S",
         "-c",

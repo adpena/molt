@@ -2233,12 +2233,19 @@ def command_descriptor(
 
 
 def codex_stall_launch_command(
-    args: argparse.Namespace, command: Sequence[str]
+    args: argparse.Namespace,
+    command: Sequence[str],
+    *,
+    verifier_bytecode_prefix: Path,
 ) -> list[str]:
     if args.no_memory_guard:
         return list(command)
     memory_guard = args.repo_root.resolve() / "tools" / "memory_guard.py"
-    wrapped = guardian_argv(sys.executable, memory_guard)
+    wrapped = guardian_argv(
+        sys.executable,
+        memory_guard,
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
+    )
     if args.memory_guard_max_rss_gb is not None:
         wrapped.extend(["--max-rss-gb", str(args.memory_guard_max_rss_gb)])
     if args.memory_guard_max_total_rss_gb is not None:
@@ -2308,7 +2315,20 @@ def run_codex_stall_diagnostic(args: argparse.Namespace) -> int:
         print(f"agent_coordination: {exc}", file=sys.stderr)
         return 2
 
-    launched_command = codex_stall_launch_command(args, command)
+    if args.no_memory_guard:
+        launched_command = list(command)
+    else:
+        from molt.temporary_artifacts import new_temporary_directory
+
+        # Retain startup evidence even when the diagnostic cannot prove closure.
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        launched_command = codex_stall_launch_command(
+            args,
+            command,
+            verifier_bytecode_prefix=new_temporary_directory(
+                report_path.parent, prefix="codex-stall-guardian-bytecode-"
+            ),
+        )
     started_at = utc_now()
     started_monotonic = time.monotonic()
     telemetry = CodexStallTelemetry(

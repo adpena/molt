@@ -3318,11 +3318,14 @@ def _worker_env(
     )
 
 
-def _worker_argv(args: argparse.Namespace) -> list[str]:
+def _worker_argv(
+    args: argparse.Namespace, *, verifier_bytecode_prefix: Path
+) -> list[str]:
     return _cli_contract.worker_argv(
         args,
         python_executable=sys.executable,
         script_path=Path(__file__).resolve(),
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
     )
 
 
@@ -3399,7 +3402,18 @@ def main(
         print(f"memory_guard: {exc}", file=sys.stderr)
         return 2
     if hide_command_argv and current_env.get(INTERNAL_WORKER_ENV) != "1":
-        worker_argv = _worker_argv(args)
+        from molt.memory_guard_paths import memory_guard_state_root
+
+        # POSIX exec replaces this frame; retained control custody, rather than
+        # a process-local temporary context, owns the worker's startup namespace.
+        startup_root = memory_guard_state_root(ROOT, current_env)
+        startup_root.mkdir(parents=True, exist_ok=True)
+        verifier_bytecode_prefix = _temporary_artifacts.new_temporary_directory(
+            startup_root, prefix="worker-bytecode-"
+        )
+        worker_argv = _worker_argv(
+            args, verifier_bytecode_prefix=verifier_bytecode_prefix
+        )
         if _process_model.is_windows_process_model():
             completed = subprocess.run(
                 worker_argv,

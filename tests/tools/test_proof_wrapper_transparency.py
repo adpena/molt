@@ -526,6 +526,7 @@ def test_wrapper_preserves_first_payload_cpython_hash_policy(tmp_path, seed, fla
     import os
     import sys
     from pathlib import Path
+    from molt.python_environment_location import environment_bytecode_arguments
     from tests.process_guard_common import run_custody_subject_process
     from tools.proof_queue_pkg import command_identity, execution_environment
 
@@ -552,8 +553,20 @@ def test_wrapper_preserves_first_payload_cpython_hash_policy(tmp_path, seed, fla
     )
     assert selected.get("PYTHONHASHSEED") == seed
     exact = command_identity._exact_command(envelope, cwd=tmp_path, env=selected)
+    # The independent reference must retain the runner's image policy even
+    # when the hash-policy subject deliberately ignores environment variables.
+    reference_command = [
+        exact[0],
+        *environment_bytecode_arguments(Path(sys.prefix)),
+        *exact[1:],
+    ]
     reference = run_custody_subject_process(
-        exact, cwd=tmp_path, env=selected, capture_output=True, text=True, timeout=30
+        reference_command,
+        cwd=tmp_path,
+        env=selected,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     completed, events, _, _ = _run_under_real_child_audit(
         envelope, exact, selected, tmp_path

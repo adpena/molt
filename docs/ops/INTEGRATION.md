@@ -409,6 +409,10 @@ Existing process-state leases retain the selected generation until observed
 process closure, even when a newer generation is selected. Owner/use metadata
 stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
 retirement. Selection or publication alone is not release qualification.
+The selected capture child performs published-manifest admission before final
+input verification; the guardian remains isolated from site packages. Guardian
+startup and prefix lifetime follow the same fresh-namespace rule through
+[existing command and run custody](../agent/PROOF_QUEUE.md).
 
 Other checkout inputs keep their existing protocols: current stamps read the
 declared locks; stale inputs run a guarded provisioner under the checkout lock
