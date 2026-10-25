@@ -1152,9 +1152,13 @@ def test_guarded_completed_process_preallocates_pytest_current_test_env(
     assert child_env["MOLT_PYTEST_CURRENT_TEST_FILE"].startswith(str(tmp_path))
 
 
+@pytest.mark.parametrize("tempfiles", [False, True])
+@pytest.mark.parametrize("observed", [False, True])
 def test_guarded_completed_process_writes_command_profile(
     monkeypatch,
     tmp_path: Path,
+    tempfiles: bool,
+    observed: bool,
 ) -> None:
     profile_log = tmp_path / "commands.jsonl"
     temporary_artifacts = {
@@ -1170,6 +1174,26 @@ def test_guarded_completed_process_writes_command_profile(
             "lease_release": 0.005,
         },
     }
+
+    telemetry = (
+        harness_memory_guard.memory_guard.GuardSamplingTelemetry(
+            attempts=7,
+            successes=7,
+            transient_failures=0,
+            source="fixture-custody-rows",
+            wall_time_s=0.04,
+            cpu_time_s=0.0,
+            max_wall_time_s=0.02,
+            max_cpu_time_s=0.0,
+            process_rows=21,
+            max_process_rows=5,
+            observer_wall_time_s=0.25,
+            observer_cpu_time_s=0.03,
+            observer_cpu_duty_cycle=0.12,
+        )
+        if observed
+        else None
+    )
 
     def fake_run_guarded(command, **kwargs):
         del command, kwargs
@@ -1187,11 +1211,14 @@ def test_guarded_completed_process_writes_command_profile(
                 command="python3 unit.py",
                 scope="process_tree",
             ),
-            stdout="ok\n",
-            stderr="",
+            stdout=b"ok\n" if tempfiles else "ok\n",
+            stderr=b"" if tempfiles else "",
             elapsed_s=0.25,
+            child_elapsed_s=0.15 if observed else None,
+            cleanup_elapsed_s=0.10 if observed else None,
+            sampling_telemetry=telemetry,
             temporary_artifacts=temporary_artifacts,
-            child_stderr="",
+            child_stderr=b"" if tempfiles else "",
         )
 
     monkeypatch.setattr(
@@ -1205,16 +1232,22 @@ def test_guarded_completed_process_writes_command_profile(
         poll_interval=0.1,
     )
 
-    result = harness_memory_guard.guarded_completed_process(
+    run = (
+        harness_memory_guard.guarded_completed_process_to_tempfiles
+        if tempfiles
+        else harness_memory_guard.guarded_completed_process
+    )
+    options = {} if tempfiles else {"operation_role": "build"}
+    result = run(
         [sys.executable, "-c", "print('ok')"],
         prefix="MOLT_TEST",
-        operation_role="build",
         env={
             **guard_custody_env(),
             "MOLT_GUARD_PROFILE_LOG": str(profile_log),
             "MOLT_SESSION_ID": "unit",
         },
         limits=limits,
+        **options,
     )
 
     assert result.returncode == 0
@@ -1229,10 +1262,36 @@ def test_guarded_completed_process_writes_command_profile(
     event = payload[0]
     assert event["event"] == "guarded_command_profile"
     assert event["prefix"] == "MOLT_TEST"
-    assert event["operation_role"] == "build"
+    if not tempfiles:
+        assert event["operation_role"] == "build"
     assert event["session_id"] == "unit"
     assert event["status"] == "pass"
     assert event["elapsed_s"] == 0.25
+    assert event["child_elapsed_s"] == (0.15 if observed else None)
+    assert event["cleanup_elapsed_s"] == (0.10 if observed else None)
+    assert event["sampling_telemetry"] == (
+        {
+            "attempts": 7,
+            "successes": 7,
+            "transient_failures": 0,
+            "enforcement_complete": True,
+            "first_transient_failure_at": None,
+            "last_transient_failure_at": None,
+            "last_transient_error": None,
+            "source": "fixture-custody-rows",
+            "wall_time_s": 0.04,
+            "cpu_time_s": 0.0,
+            "max_wall_time_s": 0.02,
+            "max_cpu_time_s": 0.0,
+            "process_rows": 21,
+            "max_process_rows": 5,
+            "observer_wall_time_s": 0.25,
+            "observer_cpu_time_s": 0.03,
+            "observer_cpu_duty_cycle": 0.12,
+        }
+        if observed
+        else None
+    )
     assert event["memory_guard_enabled"] is True
     assert event["peak"]["rss_kb"] == 64 * 1024
     assert event["peak_total"]["scope"] == "process_tree"
@@ -1243,6 +1302,9 @@ def test_guarded_completed_process_skips_success_profile_by_default(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    # Exercise the unset policy even when the parent profiles every command.
+    monkeypatch.delenv("MOLT_GUARD_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_GUARD_PROFILE_LOG", raising=False)
     profile_log = tmp_path / "commands.jsonl"
 
     def fake_run_guarded(command, **kwargs):
@@ -2440,6 +2502,9 @@ def test_command_profile_routes_effective_env_and_violation_limit_to_repro(
         limits=limits,
         returncode=harness_memory_guard.memory_guard.GUARD_RETURN_CODE,
         elapsed_s=1.0,
+        child_elapsed_s=None,
+        cleanup_elapsed_s=None,
+        sampling_telemetry=None,
         timeout_s=5.0,
         violation=violation,
         timed_out=False,
@@ -4200,6 +4265,9 @@ def test_actual_guard_paths_keep_raw_child_streams_separate(
     command = [sys.executable, "-c", code]
     env = os.environ.copy()
     env["MOLT_EXT_ROOT"] = str(tmp_path)
+    profile_log = tmp_path / "commands.jsonl"
+    env["MOLT_GUARD_PROFILE_LOG"] = str(profile_log)
+    env["MOLT_GUARD_PROFILE"] = "all"
     run = (
         harness_memory_guard.guarded_completed_process_to_tempfiles
         if tempfiles
@@ -4219,6 +4287,15 @@ def test_actual_guard_paths_keep_raw_child_streams_separate(
     # The guard's own stderr names the closure condition that failed.
     assert result.descendants_closed is True, result.stderr
     assert result.sampling_telemetry is not None
+    event = json.loads(profile_log.read_text(encoding="utf-8"))
+    assert result.child_elapsed_s is not None and result.child_elapsed_s > 0
+    assert result.cleanup_elapsed_s is not None and result.cleanup_elapsed_s >= 0
+    assert event["child_elapsed_s"] == result.child_elapsed_s
+    assert event["cleanup_elapsed_s"] == result.cleanup_elapsed_s
+    assert event["sampling_telemetry"]["attempts"] == result.sampling_telemetry.attempts
+    assert event["sampling_telemetry"]["attempts"] > 0
+    assert event["sampling_telemetry"]["enforcement_complete"] is True
+    assert event["descendants_closed"] is True
     assert result.sampling_interval_s > 0
     assert result.timed_out is (termination == "timeout")
     if termination == "timeout":
