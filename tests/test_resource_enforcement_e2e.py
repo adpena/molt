@@ -17,6 +17,10 @@ import tempfile
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tests.resource_enforcement_witnesses import (
+    child_resource_witness,
+    feedback_destination_witness,
+)
 
 
 # The checkout under test, not an installed `molt` script.
@@ -141,45 +145,8 @@ def test_resource_env_vars_absent_when_no_limits():
 @pytest.mark.skipif(os.name != "posix", reason="extended spawn uses POSIX sessions")
 def test_child_resource_policy_survives_real_environment_mutation():
     """Inspect actual child environments through both shipped spawn entrypoints."""
-    keys = [
-        "MOLT_RESOURCE_MAX_MEMORY",
-        "MOLT_RESOURCE_MAX_DURATION_MS",
-        "MOLT_RESOURCE_MAX_ALLOCATIONS",
-        "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
-        "MOLT_RESOURCE_MAX_OPERATION_RESULT",
-        "MOLT_RESOURCE_MAX_POW_RESULT",
-        "MOLT_RESOURCE_MAX_REPEAT_RESULT",
-        "MOLT_RESOURCE_MAX_SHIFT_RESULT",
-        "MOLT_RESOURCE_MAX_STRING_RESULT",
-    ]
-    initial = dict(
-        zip(
-            keys,
-            ["64M", "30000", "1000000", "500", "4096", "2048", "2048", "2048", "2048"],
-        )
-    )
-    initial.update(MOLT_CAPABILITY_TIER="full", MOLT_CHILD_RLIMIT_GB="1")
-    child = (
-        "import os; print(','.join(os.environ.get(k, 'missing') for k in "
-        + repr(keys)
-        + ")); print(os.environ.get('APPLICATION_VALUE', 'missing'))"
-    )
-    source = f"""
-import os
-import subprocess
-keys = {keys!r}
-for key in keys:
-    os.putenv(key, "999999999")
-    os.environ[key] = "999999999"
-os.putenv("MOLT_CHILD_RLIMIT_GB", "0")
-os.environ["APPLICATION_VALUE"] = "dynamic"
-for extended in (False, True):
-    for requested in (None, {{"MOLT_RESOURCE_MAX_MEMORY": "32M", "MOLT_RESOURCE_MAX_OPERATION_RESULT": "1024", "APPLICATION_VALUE": "replacement"}}):
-        result = subprocess.run([{sys.executable!r}, "-c", {child!r}], env=requested, capture_output=True, text=True, start_new_session=extended)
-        assert result.returncode == 0, result.stderr
-        print(result.stdout, end="")
-"""
-    result = _run_molt(source, initial, timeout=180)
+    witness = child_resource_witness(sys.executable)
+    result = _run_molt(witness.source, witness.environment, timeout=180)
     assert result.returncode == 0, result.stderr
     inherited = "67108864,30000,1000000,500,4096,2048,2048,2048,2048"
     tighter = "33554432,30000,1000000,500,1024,1024,1024,1024,1024"
@@ -191,25 +158,8 @@ for extended in (False, True):
 def test_runtime_feedback_destination_cannot_be_enabled_by_environment_write(tmp_path):
     """A guest may change its environment without gaining a file output sink."""
     canary = tmp_path / "unauthorized-feedback.json"
-    source = f"""
-import os
-os.putenv("MOLT_RUNTIME_FEEDBACK", "1")
-os.putenv("MOLT_RUNTIME_FEEDBACK_FILE", {str(canary)!r})
-os.environ["MOLT_RUNTIME_FEEDBACK"] = "1"
-os.environ["MOLT_RUNTIME_FEEDBACK_FILE"] = {str(canary)!r}
-print("completed")
-"""
-    result = _run_molt(
-        source,
-        {
-            "MOLT_CAPABILITY_TIER": "none",
-            "MOLT_CAPABILITIES": "env.write",
-            "MOLT_PROFILE": "1",
-            "MOLT_RUNTIME_FEEDBACK": "0",
-            "MOLT_RUNTIME_FEEDBACK_FILE": str(canary),
-        },
-        timeout=180,
-    )
+    witness = feedback_destination_witness(canary)
+    result = _run_molt(witness.source, witness.environment, timeout=180)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "completed"
     assert not canary.exists(), (

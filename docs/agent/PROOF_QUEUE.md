@@ -43,6 +43,24 @@ Cargo's [artifact messages](https://doc.rust-lang.org/cargo/reference/external-t
 bind observed images to that plan; a successful process exit alone does not.
 These are development proof contracts and add no work to emitted programs.
 
+The Mac compiled-contract owner retains its whole resource and WASM files, its
+non-slow selection and its 600-second body. Its 1200-second prerequisite projects
+the existing WASM host recipe and builds both actual native resource witness
+inputs sequentially. Preparation and execution share one source/environment
+constructor; the tests still enter through `molt run`, including its capability
+policy and runtime-product admission. Guest profile defaults and iteration
+profile overrides remain separate. Neither a generic hello build nor a raw
+Cargo runtime substitutes for the source-selected runtime generation.
+
+The prerequisite's child guards share one elapsed-time budget and retain source
+bytes and build JSON. Build observations are not used-byte attestations. WASM
+application runtimes remain cold in the body; successful native preparation does
+not establish their completion. The measured worker unit is 10 GiB (an observed
+WASM child reached 8.59 GiB), replacing the 4 GiB estimate that admitted six workers
+and exceeded a 24 GiB guard. The canonical capacity planner chooses concurrency;
+no case, timeout or memory limit is relaxed. The 43-minute job, setup duration,
+three-slot memory sharing and cold completion still require actual qualification.
+
 LLVM's local and registered unit proof uses the same complete implementation
 image and checked driver target under `release-fast`. Build, test, link and
 Clippy share that profile. The unused string-based LLVM PGO prototype is removed;

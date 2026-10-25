@@ -1978,7 +1978,7 @@ def test_python_unit_runs_the_same_partitions_on_linux_and_macos() -> None:
     linux = by_cell["linux-x86_64-py312-unit"]
     macos = by_cell["macos-arm64-py312-unit"]
     native_ids = {
-        "python.unit.wasm-host.macos",
+        "python.unit.compiled-contracts.prepare.macos",
         "python.unit.compiled-contracts.macos",
     }
     # The original Mac native/WASM coordinate remains in the unit job;
@@ -8121,7 +8121,6 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
             "rust.test.ir-wasm-runtime-authorities",
             "rust.test.wasi-runtime-lifecycle",
             "wasm.build.host",
-            "python.unit.wasm-host.macos",
         }
     }
     expected.update(
@@ -8145,6 +8144,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "portability.rust.linux-aarch64.clippy-workspace",
                 "portability.rust.macos.clippy-workspace",
                 "portability.rust.macos.runtime-gate",
+                "python.unit.compiled-contracts.prepare.macos",
                 "python.unit.compiled-contracts.macos",
                 "runtime.cost.candidate",
                 "rust.clippy.workspace-default",
@@ -9698,7 +9698,7 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
                     "auto",
                     "-m",
                     "not slow",
-                    "--molt-worker-memory-gb=4.0",
+                    "--molt-worker-memory-gb=10.0",
                     resource_file,
                     wasm_file,
                 )
@@ -9727,7 +9727,7 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
             if command.family == owner.family and "pre-push" in command.data["tiers"]
         } == {owner.id}
 
-    host = rows["python.unit.wasm-host.macos"]
+    host = rows["python.unit.compiled-contracts.prepare.macos"]
     resource = rows["python.unit.compiled-contracts.macos"]
     assert resource.dependencies == (host.id,)
     for command in (host, resource):
@@ -9736,17 +9736,18 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
         assert command.data["resource_class"] == "compiler-build-resource"
         assert {"pre-push", "pr", "main"} == set(command.data["tiers"])
         assert {"rustc", "cargo"} <= set(PLAN.required_toolchains(command))
-    assert host.argv == rows["wasm.build.host"].argv
     assert host.argv == (
-        "cargo",
-        "build",
-        "--locked",
-        "--profile",
-        "dev-fast",
-        "-p",
-        "molt-wasm-host",
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "tools/prepare_compiled_contracts.py",
+        "--out",
+        "proof-results/compiled-contracts/macos",
     )
-    assert proof_plan.cargo_native_units(host.data) == {"target": ["c"]}
+    assert set(host.toolchains) == {"python", "uv", "rustc", "cargo"}
+    assert proof_plan.cargo_native_units(host.data) == {"target": ["c", "c++"]}
     assert proof_plan.cargo_native_units(resource.data) == {"target": ["c", "c++"]}
     assert set(resource.toolchains) == {
         "python",
@@ -9760,8 +9761,9 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
         "wasm-opt",
     }
     assert host.data["timeout_seconds"] == 1200
+    assert host.evidence_outputs == ("proof-results/compiled-contracts/macos",)
     assert resource.data["timeout_seconds"] == 600
-    assert resource.data["pytest_worker_memory_gb"] == 4.0
+    assert resource.data["pytest_worker_memory_gb"] == 10.0
     assert resource.argv[-2:] == (resource_file, wasm_file)
     policies = {policy.name: policy.max_parallel for policy in PLAN.resource_policies}
     assert policies["compiler-build-resource"] == 1
@@ -9809,3 +9811,49 @@ def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admissio
         if requirement.endswith("setup-llvm"):
             assert "profile: wasm" in step and 'wasi: "true"' in step
             assert "profile: full" not in step
+
+
+def test_compiled_preparation_directory_survives_merged_receipt_transport(
+    tmp_path: Path,
+) -> None:
+    command = next(
+        row
+        for row in PLAN.commands
+        if row.id == "python.unit.compiled-contracts.prepare.macos"
+    )
+    relative = "proof-results/compiled-contracts/macos"
+    assert command.evidence_outputs == (relative,)
+    producer = tmp_path / "producer"
+    directory = producer / relative
+    directory.mkdir(parents=True)
+    source = b"print('independent preparation input')\n"
+    (directory / "child-policy.py").write_bytes(source)
+    (directory / "child-policy.build.json").write_text(
+        '{"status":"ok","data":{"output":"native-program"}}\n', encoding="utf-8"
+    )
+    (directory / "host.stdout.log").write_bytes(b"")
+    evidence = proof_receipts.snapshot_evidence_output(producer, relative)
+    files = {item["path"]: item for item in evidence["files"]}
+    assert files["child-policy.py"]["sha256"] == hashlib.sha256(source).hexdigest()
+    assert files["child-policy.py"]["size"] == len(source)
+    assert files["host.stdout.log"]["size"] == 0
+
+    # Multi-path uploads retain the common root; two cell receipts remain
+    # distinct after download-artifact merges their proof-receipt-* artifacts.
+    downloaded = tmp_path / "proof-receipts"
+    receipts = downloaded / "proof-receipts"
+    receipts.mkdir(parents=True)
+    for cell in ("linux-x86_64-py312-unit", "macos-arm64-py312-unit"):
+        (receipts / f"python-unit-{cell}.json").write_text("{}\n", encoding="utf-8")
+    shutil.copytree(directory, downloaded / relative)
+    assert len(list(receipts.glob("python-unit-*.json"))) == 2
+    assert (
+        proof_receipts._verify_receipt_evidence(
+            command.id, command, [evidence], downloaded
+        )
+        == []
+    )
+    (downloaded / relative / "child-policy.py").write_bytes(source + b"# changed\n")
+    assert proof_receipts._verify_receipt_evidence(
+        command.id, command, [evidence], downloaded
+    ) == [f"{command.id}: downloaded evidence bytes do not match receipt: {relative}"]
