@@ -247,8 +247,8 @@ integration speedup.
 | `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
-| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
-| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
+| `lane start <slug>` | Create `lane/<slug>` at the fetched base in an admissible slot, preferring the checkout selected by `--repo`; write its coordination record and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
+| `lane retire <slug>` | Retire a landed lane's local and remote branches and close its record. Detach a managed slot and retain its checkout state; remove a legacy non-slot lane's worktree and checkout state. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
 | `lane list` | Each lane's tip, base, commits ahead and behind, landed, dirty and provisioned state. `--json`, `--no-fetch`. |
 
 ### Lanes (`lane start | retire | list`)
@@ -291,14 +291,24 @@ out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
 `_` or `-`.
 
 - **`lane start <slug>`** fetches `origin/main` (or `--base <ref>`), then
-  takes the first clean, detached slot `<root>/worktrees/slot-NN` beside the
-  main checkout `<root>/molt-src` and runs `git switch --no-track -c
+  prefers the checkout selected by `--repo` when it is a registered, clean,
+  detached, unlocked and non-prunable slot under the selected worktree root.
+  Otherwise it takes the first such slot in path order. It runs `git switch --no-track -c
   lane/<slug>` in it, or adds the next slot with `git worktree add`
   (`molt.custody_layout`: twelve slots, the live worktree limit; another
   layout must pass `--root`). A slot outlives its lanes, so its path-keyed
   Cargo target, sccache keys and checkout inputs stay warm for the next lane
   (HF-491). A detached slot with changes, or a slot path that is no
-  registered worktree, is skipped untouched. It writes the record `logs/agents/lane-<slug>/coordination.json`
+  registered worktree, is skipped untouched. Locked and prunable registrations
+  keep their slot numbers reserved. An active caller is not switched; ordinary
+  slot selection applies. The default family is `<root>/worktrees` beside
+  `<root>/molt-src`; a symlink spelling of `--repo` denotes its resolved checkout.
+  This preference retains the checkout's artifact namespace, not a promise of
+  cache validity: provisioning and each build still validate their inputs.
+  Activating a released slot consumes one active WIP position even though it
+  adds no worktree registration. Detach makes a slot available; the old lane's
+  ref deletion and record completion can finish after a new lane claims it.
+  It writes the record `logs/agents/lane-<slug>/coordination.json`
   in the main checkout through `tools/agent_coordination.py`, with the lane
   worktree as its source checkout. Then it provisions every checkout input
   (`molt.checkout_provisioning`): the lane's immutable development image, the Acorn

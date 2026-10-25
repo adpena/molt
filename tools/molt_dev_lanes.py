@@ -10,7 +10,8 @@ inputs are keyed by its path, so each lane inherits them warm (HF-491). Its
 coordination record is ``logs/agents/lane-<slug>/coordination.json`` in the
 main checkout, written by `tools/agent_coordination.py`.
 
-- ``lane start`` fetches the base, takes the first clean, detached slot (or
+- ``lane start`` fetches the base, prefers the caller's registered slot if
+  clean, detached and unprotected, otherwise takes the first such slot (or
   adds the next one), switches it to the new branch, writes the record and
   provisions every checkout input (`molt.checkout_provisioning`).
 - ``lane retire`` accepts a landed lane (`landing_representation`: every
@@ -615,20 +616,38 @@ def _lane_slots_lock(repo: Path) -> Generator[None]:
 
 
 def _choose_slot(
-    worktrees: list[dict[str, Any]], root: Path, ignore_globs: tuple[str, ...]
+    worktrees: list[dict[str, Any]],
+    root: Path,
+    ignore_globs: tuple[str, ...],
+    *,
+    preferred_repo: Path,
 ) -> tuple[Path, bool]:
-    """The slot a start takes: the first clean, detached slot, reused, or the
-    first unused slot name, to add. A detached slot with changes is skipped
-    and named, never reset; an unregistered path with a slot's name belongs to
-    someone else and is skipped untouched."""
+    """Prefer the resolved caller's admissible registered slot, then path order.
+
+    Reuse requires a clean, detached, unlocked and non-prunable registration.
+    Every registered slot keeps its number reserved even when unavailable;
+    an unregistered path with a slot's name is also left untouched. Otherwise
+    add the first unused slot name. Detach is the availability commit point:
+    the previous lane may still be finishing its ref/record retirement.
+    """
     taken: set[int] = set()
     skipped: list[str] = []
-    for row in sorted(worktrees, key=lambda row: str(row["path"])):
+    for row in sorted(
+        worktrees,
+        key=lambda row: (
+            Path(row["path"]).resolve() != preferred_repo,
+            str(row["path"]),
+        ),
+    ):
         path = Path(row["path"])
         index = lane_slot_index(path, root)
         if index is None:
             continue
         taken.add(index)
+        if row["locked"] or row["prunable"]:
+            reason = "locked" if row["locked"] else "prunable"
+            skipped.append(f"{path} ({reason} registration)")
+            continue
         if not row["detached"]:
             continue
         dirty = _dirty_paths(_driver().Git(path), ignore_globs)
@@ -642,7 +661,7 @@ def _choose_slot(
             return path, False
     raise DriverError(
         f"all {LANE_SLOT_LIMIT} lane slots under {root} hold lanes"
-        + (f"; detached slots with changes: {'; '.join(skipped)}" if skipped else "")
+        + (f"; unavailable slots: {'; '.join(skipped)}" if skipped else "")
         + ". Retire a landed lane first."
     )
 
@@ -778,7 +797,9 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
         base_ref = args.base or f"{args.remote}/{args.branch}"
         base = git.rev_parse(f"{base_ref}^{{commit}}")
 
-        worktree, reused = _choose_slot(_worktrees(git), root, ignore_globs)
+        worktree, reused = _choose_slot(
+            _worktrees(git), root, ignore_globs, preferred_repo=repo
+        )
         if not reused and (worktree.exists() or worktree.is_symlink()):
             raise DriverError(
                 f"{worktree} exists but is no registered slot; reconcile it"

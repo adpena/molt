@@ -243,7 +243,15 @@ The driver creates, provisions and retires each lane.
   sandbox it owns.
 - **Design.** `molt_dev.py lane start <slug>` creates the `lane/<slug>`
   branch from main in a slot worktree, writes the coordination record, and
-  provisions it. `lane retire <slug>` accepts a landed lane, or an abandoned
+  provisions it. The checkout selected by `--repo` is preferred only when its
+  Git registration is a clean, detached, unlocked, non-prunable slot under the
+  selected root; otherwise selection keeps path order. Protected registrations
+  reserve their numbers. This preserves a selected checkout's artifact namespace
+  without weakening provisioning or build identity checks, and starting a lane
+  still consumes an active WIP position. Detach is the availability commit
+  point: a new lane may claim the slot while the old lane finishes deleting its
+  refs and closing its record, with no further checkout mutation by retirement.
+  `lane retire <slug>` accepts a landed lane, or an abandoned
   one after it writes a Git bundle. It deletes the branches, detaches the
   clean slot at main and closes the record; the slot keeps its checkout state
   for the next lane (HF-491). A long-lived monorepo checkout and Bazel's
