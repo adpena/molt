@@ -595,7 +595,8 @@ def materialize_development_environment(
             + "".join(f"{group}=['fixture-{group}==1.0']\n" for group in groups)
             + "[tool.molt.dx]\ndependency_groups="
             + json.dumps(list(groups))
-            + "\n"
+            + "\n",
+            encoding="utf-8",
         )
     if not (repo_root / "uv.lock").exists():
         lock = (
@@ -611,7 +612,7 @@ def materialize_development_environment(
                 f"wheels=[{{url='https://example.invalid/fixture_{group}-1.0-py3-none-any.whl',"
                 f"hash='sha256:{'a' * 64}',size=1}}]\n"
             )
-        (repo_root / "uv.lock").write_text(lock)
+        (repo_root / "uv.lock").write_text(lock, encoding="utf-8")
     runtime = runtime_identity_manifest()
     if python is not None:
         target = _parse_target_python_version(python)
@@ -623,12 +624,14 @@ def materialize_development_environment(
             _sealed(runtime, "runtime_closure_sha256")
         )
     if not (repo_root / ".python-version").exists():
-        (repo_root / ".python-version").write_text(str(runtime["version"]) + "\n")
+        (repo_root / ".python-version").write_text(
+            str(runtime["version"]) + "\n", encoding="utf-8"
+        )
     markers = source_build_environment_schema.canonical_source_marker_environment()
     markers["python_full_version"] = str(runtime["version"])
     markers["python_version"] = ".".join(str(runtime["version"]).split(".")[:2])
     markers["implementation_version"] = str(runtime["version"])
-    document = tomllib.loads(project.read_text())
+    document = tomllib.loads(project.read_text(encoding="utf-8"))
     requirements = tuple(
         value for group in groups for value in document["dependency-groups"][group]
     )
@@ -680,7 +683,9 @@ def materialize_development_environment(
             executable = environment_python_path(root)
             executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_bytes(b"")
-            (root / "pyvenv.cfg").write_text("home = synthetic-selector-fixture\n")
+            (root / "pyvenv.cfg").write_text(
+                "home = synthetic-selector-fixture\n", encoding="utf-8"
+            )
         environment_bytecode_prefix(root).mkdir()
         realized = realized_environment_manifest(
             runtime,
@@ -831,7 +836,7 @@ def materialize_development_environment(
         manifest_path = (
             root / source_build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
         )
-        manifest_path.write_text(json.dumps(manifest))
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     if select:
         from molt import checkout_provisioning as provisioning
         from molt.custody_layout import git_directories

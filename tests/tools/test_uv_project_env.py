@@ -217,7 +217,7 @@ def test_uv_project_env_real_command_exit_status_propagates(
 ) -> None:
     project = tmp_path / "project"
     copy_driver_trees(project, seed=driver_seed)
-    (project / "README.md").write_text("wrapper fixture\n")
+    (project / "README.md").write_text("wrapper fixture\n", encoding="utf-8")
     image = materialize_development_environment(
         project,
         tmp_path / "artifacts",

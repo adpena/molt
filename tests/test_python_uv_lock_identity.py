@@ -159,7 +159,9 @@ def test_tag_capture_source_custody_and_private_namespace_cleanup(
         )
     target = tmp_path / "tags.py"
     if failure == "algorithm":
-        target.write_text("raise RuntimeError('independent algorithm failure')\n")
+        target.write_text(
+            "raise RuntimeError('independent algorithm failure')\n", encoding="utf-8"
+        )
     else:
         original = _FileNodePool.read_bound
 
