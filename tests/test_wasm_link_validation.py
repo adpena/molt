@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -12900,16 +12900,27 @@ def test_admission_link_capture_uses_retained_rewrite_buffers(
     runtime_bytes = b"runtime-original"
     runtime.write_bytes(runtime_bytes)
     report = tmp_path / "inputs.tar"
+    linker_path = tmp_path / "wasm-ld"
+    linker_path.write_bytes(b"fixture selected linker")
+
+    def archive_coordinate(path):
+        # Independent fixture projection; the production projection cannot
+        # supply the bytes/names against which its capture is checked.
+        spelling = path.as_posix()
+        if isinstance(path, PureWindowsPath) and path.drive.endswith(":"):
+            spelling = spelling.replace(":", "", 1)
+        return spelling.lstrip("/")
+
     expected = {
         "compiler_rewritten": (
-            rewritten.path,
+            archive_coordinate(rewritten.path),
             {
                 "size": len(rewritten.data),
                 "sha256": hashlib.sha256(rewritten.data).hexdigest(),
             },
         ),
         "runtime": (
-            runtime,
+            archive_coordinate(runtime),
             {
                 "size": len(runtime_bytes),
                 "sha256": hashlib.sha256(runtime_bytes).hexdigest(),
@@ -12930,8 +12941,8 @@ def test_admission_link_capture_uses_retained_rewrite_buffers(
         entries = {
             "inputs/response.txt": b"wasm-ld",
             "inputs/version.txt": b"23",
-            "inputs/" + str(rewritten.path).lstrip("/"): rewritten.path.read_bytes(),
-            "inputs/" + str(runtime).lstrip("/"): runtime.read_bytes(),
+            "inputs/" + archive_coordinate(rewritten.path): rewritten.path.read_bytes(),
+            "inputs/" + archive_coordinate(runtime): runtime.read_bytes(),
         }
         with tarfile.open(report, "w") as archive:
             for name, data in entries.items():
@@ -12945,7 +12956,7 @@ def test_admission_link_capture_uses_retained_rewrite_buffers(
 
     def run() -> None:
         pipeline._run_admitted_link(
-            ["/wasm-ld"],
+            [str(linker_path)],
             selection=None,
             why_extract=tmp_path / "why.txt",
             role="linked",
@@ -12958,8 +12969,8 @@ def test_admission_link_capture_uses_retained_rewrite_buffers(
         run()
         observation = LinkInputObservation.from_record(observations["linked"])
         assert dict(observation.roles) == {
-            "compiler_rewritten": str(rewritten.path),
-            "runtime": str(runtime),
+            "compiler_rewritten": archive_coordinate(rewritten.path),
+            "runtime": archive_coordinate(runtime),
         }
     else:
         with pytest.raises(ValueError, match="did not consume the admitted"):

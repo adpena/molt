@@ -12,18 +12,54 @@ from dataclasses import dataclass
 from contextlib import nullcontext
 from typing import BinaryIO, Callable, ContextManager
 import hashlib
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 import tarfile
 from typing import Mapping, Literal, TypedDict
 
+from molt.python_identity_common import canonical_absolute_path
 from molt.toolchain_identity import (
     open_stable_regular_file,
     stable_regular_file_handle_identity,
 )
 
-SCHEMA = "molt.link-input-observation.v1"
+SCHEMA = "molt.link-input-observation.v2"
 _MAX_MEMBERS = 16384
 _MAX_BYTES = 8 * 1024 * 1024 * 1024
+
+
+def _canonical_archive_path(value: object) -> str:
+    """Validate an LLD member coordinate without interpreting it as a host path."""
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise ValueError("link input archive coordinate is noncanonical")
+    path = PurePosixPath(value)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or path.as_posix() != value
+        or ".." in path.parts
+    ):
+        raise ValueError("link input archive coordinate is noncanonical")
+    return value
+
+
+def lld_archive_path(path: str | PurePath) -> str:
+    """Project a canonical host path using LLVM lld::relativeToRoot.
+
+    Drive letters lose their colon; UNC server/share components remain. This
+    one-way coordinate names retained archive bytes, never an inferred host file.
+    """
+    if not isinstance(path, (str, PurePath)):
+        raise ValueError("LLD input requires a canonical host path")
+    host = canonical_absolute_path(str(path))
+    prefix = ""
+    if isinstance(host, PureWindowsPath):
+        prefix = (
+            host.drive[:-1]
+            if host.drive.endswith(":")
+            else host.drive.removeprefix("\\\\").replace("\\", "/")
+        )
+    coordinate = "/".join((*((prefix,) if prefix else ()), *host.parts[1:]))
+    return _canonical_archive_path(coordinate)
 
 
 def _content(value: object) -> tuple[int, str]:
@@ -47,11 +83,11 @@ class ContentRecord(TypedDict):
 
 
 class LinkInputFileRecord(ContentRecord):
-    path: str
+    archive_path: str
 
 
 class LinkInputRecord(TypedDict):
-    schema: Literal["molt.link-input-observation.v1"]
+    schema: Literal["molt.link-input-observation.v2"]
     dialect: Literal["elf-gnu", "wasm"]
     linker_path: str
     inputs: list[LinkInputFileRecord]
@@ -66,7 +102,7 @@ class WasmSourceInputRecords(TypedDict):
 
 
 class WasmLinkInputRecord(TypedDict):
-    schema: Literal["molt.wasm-link-inputs.v1"]
+    schema: Literal["molt.wasm-link-inputs.v2"]
     source_inputs: WasmSourceInputRecords
     links: dict[str, LinkInputRecord]
 
@@ -77,7 +113,7 @@ class CompilationCacheRecord(TypedDict):
 
 
 class CompilationInputRecord(TypedDict):
-    schema: Literal["molt.compilation-inputs.v2"]
+    schema: Literal["molt.compilation-inputs.v3"]
     compiler: dict[str, object]
     stdlib: dict[str, object] | None
     cache: CompilationCacheRecord
@@ -102,10 +138,12 @@ class LinkInputObservation:
 
     def as_record(self) -> LinkInputRecord:
         return {
-            "schema": "molt.link-input-observation.v1",
+            "schema": "molt.link-input-observation.v2",
             "dialect": self.dialect,
             "linker_path": self.linker_path,
-            "inputs": [{"path": p, "size": n, "sha256": h} for p, n, h in self.inputs],
+            "inputs": [
+                {"archive_path": p, "size": n, "sha256": h} for p, n, h in self.inputs
+            ],
             "roles": dict(self.roles),
             "reproducer": {
                 "size": self.reproducer_size,
@@ -123,31 +161,19 @@ class LinkInputObservation:
             or value["dialect"] not in {"elf-gnu", "wasm"}
         ):
             raise ValueError("link input observation contract is invalid")
-        linker = value["linker_path"]
-        if (
-            not isinstance(linker, str)
-            or not linker.startswith("/")
-            or "\x00" in linker
-            or PurePosixPath(linker).as_posix() != linker
-            or ".." in PurePosixPath(linker).parts
-        ):
-            raise ValueError("linker selection path is noncanonical")
+        linker = str(canonical_absolute_path(value["linker_path"]))
         rows, roles = value["inputs"], value["roles"]
         if not isinstance(rows, list) or not 1 <= len(rows) <= _MAX_MEMBERS:
             raise ValueError("link input observation has no bounded input inventory")
         inputs = []
         for row in rows:
-            if not isinstance(row, Mapping) or set(row) != {"path", "size", "sha256"}:
+            if not isinstance(row, Mapping) or set(row) != {
+                "archive_path",
+                "size",
+                "sha256",
+            }:
                 raise ValueError("link input observation row is invalid")
-            p = row["path"]
-            if (
-                not isinstance(p, str)
-                or not p.startswith("/")
-                or "\x00" in p
-                or PurePosixPath(p).as_posix() != p
-                or ".." in PurePosixPath(p).parts
-            ):
-                raise ValueError("link input observation path is noncanonical")
+            p = _canonical_archive_path(row["archive_path"])
             size, digest = _content({k: row[k] for k in ("size", "sha256")})
             inputs.append((p, size, digest))
         if [p for p, _, _ in inputs] != sorted({p for p, _, _ in inputs}):
@@ -184,12 +210,14 @@ def capture_link_inputs(
     reproducer: Path,
     *,
     dialect: str,
-    linker_path: Path,
-    expected: Mapping[str, tuple[Path, Mapping[str, object]]],
+    linker_path: str,
+    expected: Mapping[str, tuple[str, Mapping[str, object]]],
     input_sink: Callable[[str, int], ContextManager[BinaryIO | None]] | None = None,
 ) -> LinkInputObservation:
     """Read LLD's retained buffers without extracting or rehashing selected paths.
 
+    Expected roles and sink keys use relative archive coordinates; linker_path
+    is an exact host coordinate. Neither is inferred from the reviewing host.
     Every semantic role is compared to independent upstream content. Unknown
     inputs remain in the complete inventory. Repeated paths and nonregular
     entries reject. LLD itself omits repeated opens, so this is intentionally
@@ -197,6 +225,10 @@ def capture_link_inputs(
     may retain these same buffers in a private, unpublished root; it must not
     publish that root unless this complete parser and its mutation fence pass.
     """
+    linker_path = str(canonical_absolute_path(linker_path))
+    for coordinate, content in expected.values():
+        _canonical_archive_path(coordinate)
+        _content(content)
     prefix: str | None = None
     observed: dict[str, tuple[int, str]] = {}
     administrative: set[str] = set()
@@ -213,16 +245,12 @@ def capture_link_inputs(
                         "link reproducer repeats or exceeds its input inventory"
                     )
                 names.add(member.name)
-                p = PurePosixPath(member.name)
+                p = PurePosixPath(_canonical_archive_path(member.name))
                 if prefix is None and p.parts:
                     prefix = p.parts[0]
                     administrative = {prefix + "/response.txt", prefix + "/version.txt"}
                 if (
                     not member.isfile()
-                    or p.as_posix() != member.name
-                    or p.is_absolute()
-                    or ".." in p.parts
-                    or "\x00" in member.name
                     or len(p.parts) < 2
                     or p.parts[0] != prefix
                     or member.size < 0
@@ -233,12 +261,12 @@ def capture_link_inputs(
                     raise ValueError(
                         "link reproducer expanded bytes exceed the capture bound"
                     )
+                input_path = _canonical_archive_path("/".join(p.parts[1:]))
                 stream = archive.extractfile(member)
                 if stream is None:
                     raise ValueError("link reproducer input bytes are unavailable")
                 digest = hashlib.sha256()
                 remaining = member.size
-                input_path = "/" + "/".join(p.parts[1:])
                 sink = (
                     input_sink(input_path, member.size)
                     if input_sink is not None and member.name not in administrative
@@ -254,7 +282,7 @@ def capture_link_inputs(
                         if destination is not None:
                             destination.write(block)
                 if member.name not in administrative:
-                    observed["/" + "/".join(p.parts[1:])] = (
+                    observed[input_path] = (
                         member.size,
                         digest.hexdigest(),
                     )
@@ -267,18 +295,17 @@ def capture_link_inputs(
         if (closed.size, closed.sha256) != (identity.size, identity.sha256):
             raise ValueError("link reproducer changed during admission")
     roles = {}
-    for role, (path, content) in expected.items():
-        name = path.as_posix()
-        if not path.is_absolute() or observed.get(name) != _content(content):
+    for role, (name, content) in expected.items():
+        if observed.get(name) != _content(content):
             raise ValueError(f"linker did not consume the admitted {role} bytes")
         roles[role] = name
     return LinkInputObservation.from_record(
         {
             "schema": SCHEMA,
             "dialect": dialect,
-            "linker_path": linker_path.as_posix(),
+            "linker_path": linker_path,
             "inputs": [
-                {"path": p, "size": n, "sha256": h}
+                {"archive_path": p, "size": n, "sha256": h}
                 for p, (n, h) in sorted(observed.items())
             ],
             "roles": roles,
@@ -292,7 +319,7 @@ def validate_wasm_link_inputs(value: object) -> WasmLinkInputRecord:
     if (
         not isinstance(value, dict)
         or set(value) != {"schema", "source_inputs", "links"}
-        or value["schema"] != "molt.wasm-link-inputs.v1"
+        or value["schema"] != "molt.wasm-link-inputs.v2"
     ):
         raise ValueError("WASM link input observation contract is invalid")
     sources, links = value["source_inputs"], value["links"]
@@ -328,7 +355,7 @@ def validate_wasm_link_inputs(value: object) -> WasmLinkInputRecord:
                 raise ValueError("WASM linker consumed a different runtime buffer")
         admitted_links[role] = observation.as_record()
     return {
-        "schema": "molt.wasm-link-inputs.v1",
+        "schema": "molt.wasm-link-inputs.v2",
         "source_inputs": {
             "compiler_output": compiler_output,
             "runtime": runtime,
@@ -347,13 +374,8 @@ def compilation_input_observation(
     if not isinstance(cache, dict) or set(cache) != {"compiler", "stdlib"}:
         raise ValueError("compilation cache coordinates are not exact")
     for path in cache.values():
-        if path is not None and (
-            not isinstance(path, str)
-            or not Path(path).is_absolute()
-            or "\0" in path
-            or ".." in Path(path).parts
-        ):
-            raise ValueError("compilation cache coordinate is not canonical")
+        if path is not None:
+            canonical_absolute_path(path)
     cache_record: CompilationCacheRecord = {
         "compiler": cache["compiler"],
         "stdlib": cache["stdlib"],
@@ -364,7 +386,7 @@ def compilation_input_observation(
     )
     expected = (producer.output_size, producer.output_sha256)
     admitted: LinkInputRecord | WasmLinkInputRecord
-    if isinstance(link, dict) and link.get("schema") == "molt.wasm-link-inputs.v1":
+    if isinstance(link, dict) and link.get("schema") == "molt.wasm-link-inputs.v2":
         if constituent_origin is not None:
             raise ValueError("WASM compiler cannot name a native stdlib archive")
         wasm = validate_wasm_link_inputs(link)
@@ -389,7 +411,7 @@ def compilation_input_observation(
                 "native linker buffer differs from original stdlib emissions"
             )
     return {
-        "schema": "molt.compilation-inputs.v2",
+        "schema": "molt.compilation-inputs.v3",
         "compiler": producer.payload(),
         "stdlib": constituent_origin.payload()
         if constituent_origin is not None
@@ -403,7 +425,7 @@ def validate_compilation_input_observation(value: object) -> CompilationInputRec
     if (
         not isinstance(value, dict)
         or set(value) != {"schema", "compiler", "stdlib", "cache", "link"}
-        or value["schema"] != "molt.compilation-inputs.v2"
+        or value["schema"] != "molt.compilation-inputs.v3"
     ):
         raise ValueError("compilation input observation contract is invalid")
     return compilation_input_observation(
@@ -451,24 +473,24 @@ def capture_native_link_preparation(
             resolved, label="native preparation selected file"
         )
         return {
-            "path": lexical.as_posix(),
-            "content_path": identity.path.as_posix(),
+            "path": str(lexical),
+            "content_path": str(identity.path),
             "size": identity.size,
             "sha256": identity.sha256,
         }
 
     files = [
         record(row.lexical, row.resolved)
-        for row in sorted(paths, key=lambda row: row.lexical.as_posix())
+        for row in sorted(paths, key=lambda row: str(row.lexical))
     ]
     verify_stable_regular_file_identity(
         report, label="native preparation dependencies", hash_content=True
     )
     return validate_native_link_preparation(
         {
-            "schema": "molt.native-link-preparation.v1",
+            "schema": "molt.native-link-preparation.v2",
             "driver": record(driver.absolute(), driver.resolve()),
-            "source": source.absolute().as_posix(),
+            "source": str(source.absolute()),
             "files": files,
         }
     )
@@ -478,22 +500,14 @@ def validate_native_link_preparation(value: object) -> dict[str, object]:
     if (
         not isinstance(value, dict)
         or set(value) != {"schema", "driver", "source", "files"}
-        or value["schema"] != "molt.native-link-preparation.v1"
+        or value["schema"] != "molt.native-link-preparation.v2"
         or not isinstance(value["files"], list)
         or not 1 <= len(value["files"]) <= 16384
     ):
         raise ValueError("native link preparation record is not exact")
 
     def path(raw: object) -> str:
-        if (
-            not isinstance(raw, str)
-            or not raw.startswith("/")
-            or "\x00" in raw
-            or PurePosixPath(raw).as_posix() != raw
-            or ".." in PurePosixPath(raw).parts
-        ):
-            raise ValueError("native preparation has no canonical absolute input")
-        return raw
+        return str(canonical_absolute_path(raw))
 
     names = []
     for row in [value["driver"], *value["files"]]:
