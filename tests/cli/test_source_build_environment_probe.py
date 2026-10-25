@@ -24,7 +24,7 @@ def test_selected_recipe_keeps_one_empty_prefix_through_all_probes(
 ):
     from molt import python_interpreter
 
-    (tmp_path / ".python-version").write_text("3.14\n")
+    (tmp_path / ".python-version").write_text("3.14\n", encoding="utf-8")
     executable = tmp_path / "selected-python"
     runtime = runtime_identity_manifest()
     markers = authority_schema.canonical_source_marker_environment()
@@ -237,7 +237,8 @@ def test_development_lock_groups_keep_root_dependencies(tmp_path, groups, expect
 
     (tmp_path / "pyproject.toml").write_text(
         "[project]\nname='demo'\nversion='1.0'\ndependencies=['root-dep==1.0']\n"
-        "[dependency-groups]\ndev=['dev-dep==1.0']\nbench=['bench-dep==1.0']\n"
+        "[dependency-groups]\ndev=['dev-dep==1.0']\nbench=['bench-dep==1.0']\n",
+        encoding="utf-8",
     )
     lock = (
         "version=1\nrevision=1\nrequires-python='>=3.12'\n"
@@ -250,7 +251,7 @@ def test_development_lock_groups_keep_root_dependencies(tmp_path, groups, expect
             f"[[package]]\nname='{name}'\nversion='1.0'\nsource={{registry='https://example.invalid/simple'}}\n"
             f"wheels=[{{url='https://example.invalid/{name.replace('-', '_')}-1.0-py3-none-any.whl',hash='sha256:{'a' * 64}',size=1}}]\n"
         )
-    (tmp_path / "uv.lock").write_text(lock)
+    (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
     requirements = tuple(f"{group}-dep==1.0" for group in groups)
     closure = selected_uv_lock_group_closure(
         tmp_path,
@@ -265,15 +266,20 @@ def test_development_lock_groups_keep_root_dependencies(tmp_path, groups, expect
 
 def test_editable_binding_keeps_mutable_code_out_of_image_address(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
-        "[project]\nname='demo'\nversion='1.0'\nreadme='README.md'\n"
+        "[project]\nname='demo'\nversion='1.0'\nreadme='README.md'\n",
+        encoding="utf-8",
     )
-    (tmp_path / "README.md").write_text("original installed description\n")
+    (tmp_path / "README.md").write_text(
+        "original installed description\n", encoding="utf-8"
+    )
     source = tmp_path / "demo.py"
-    source.write_text("VALUE = 1\n")
+    source.write_text("VALUE = 1\n", encoding="utf-8")
     binding = authority._editable_binding(tmp_path)
-    source.write_text("VALUE = 2\n")
+    source.write_text("VALUE = 2\n", encoding="utf-8")
     assert authority._editable_binding(tmp_path) == binding
-    (tmp_path / "README.md").write_text("changed installed description\n")
+    (tmp_path / "README.md").write_text(
+        "changed installed description\n", encoding="utf-8"
+    )
     assert authority._editable_binding(tmp_path) != binding
     assert binding["source_root"] == str(tmp_path)
     assert "demo.py" not in binding["metadata_inputs"]
@@ -295,13 +301,13 @@ def test_development_loader_binds_requested_intent_and_editable_image(tmp_path, 
     elif fault == "groups":
         groups = ("other",)
     elif fault == "editable-root":
-        manifest = json.loads(image.manifest_path.read_text())
+        manifest = json.loads(image.manifest_path.read_text(encoding="utf-8"))
         projection = manifest["realized_image"]
         # A self-consistent checksum cannot give a different checkout ownership
         # of this generation. Keep the exact recipe/path unchanged.
         projection["image"]["external_roots"][0]["path"] = str(tmp_path / "foreign")
         projection["image_sha256"] = canonical_json_sha256(projection["image"])
-        image.manifest_path.write_text(json.dumps(manifest))
+        image.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     if fault == "none":
         selected = authority.load_development_environment(
             image.root, repo_root=repo, python=version, groups=groups

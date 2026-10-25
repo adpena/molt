@@ -499,11 +499,12 @@ def test_uv_environment_selects_published_images_and_refuses_mutable_roots(
 ) -> None:
     root, artifacts = tmp_path / "project", tmp_path / "artifacts"
     _init_repo(root)
-    (root / "README.md").write_text("declared editable metadata\n")
+    (root / "README.md").write_text("declared editable metadata\n", encoding="utf-8")
     (root / "pyproject.toml").write_text(
         "[project]\nname='selector-fixture'\nversion='1.0'\n"
         "requires-python='>=3.12'\ndependencies=[]\nreadme='README.md'\n"
-        "[dependency-groups]\n[tool.molt.dx]\ndependency_groups=[]\n"
+        "[dependency-groups]\n[tool.molt.dx]\ndependency_groups=[]\n",
+        encoding="utf-8",
     )
     image = materialize_development_environment(root, artifacts, select=True)
     environ = (
@@ -522,7 +523,9 @@ def test_uv_environment_selects_published_images_and_refuses_mutable_roots(
     if not editable:
         old = root / ".venv"
         old.mkdir()
-        (old / "pyvenv.cfg").write_text("home = old mutable environment\n")
+        (old / "pyvenv.cfg").write_text(
+            "home = old mutable environment\n", encoding="utf-8"
+        )
         before = (old / "pyvenv.cfg").read_bytes()
         with pytest.raises(cp.ProvisioningError):
             cp.ensure(
@@ -590,7 +593,7 @@ def test_uv_environment_selects_published_images_and_refuses_mutable_roots(
     manifest = image.manifest_path.read_bytes()
     altered = json.loads(manifest)
     altered["environment_id"] = "0" * 64
-    image.manifest_path.write_text(json.dumps(altered))
+    image.manifest_path.write_text(json.dumps(altered), encoding="utf-8")
     corrupt = image.manifest_path.read_bytes()
     with pytest.raises(cp.ProvisioningError, match="address/recipe"):
         cp.ensure("uv-environment", root, environ)
@@ -614,7 +617,7 @@ def test_development_selection_distinguishes_new_intent_from_invalid_record(
     selection = cp._development_selection_path(spec, cp._development_intent(spec))
     selection.unlink()
     if record_kind == "malformed":
-        selection.write_text("{not JSON}")
+        selection.write_text("{not JSON}", encoding="utf-8")
     elif record_kind == "dangling-link":
         try:
             selection.symlink_to(tmp_path / "absent-target")

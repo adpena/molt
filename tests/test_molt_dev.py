@@ -541,7 +541,10 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         "utf8": 1,
         "encoding": "utf-8",
     }
-    assert [json.loads(path.read_text()) for path in outputs] == [expected, expected]
+    assert [json.loads(path.read_text(encoding="utf-8")) for path in outputs] == [
+        expected,
+        expected,
+    ]
     assert (
         drv.run_gate('python -c "raise SystemExit(23)"', repo, ProcessEnvironment(env))
         == 23

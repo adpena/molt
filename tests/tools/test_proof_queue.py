@@ -2498,7 +2498,9 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
     )
     selection = _selected_python_capture_fixture(tmp_path, prefix=prefix)
     if publication == "manifest":
-        (prefix / command_identity.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}")
+        (prefix / command_identity.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+            "{}", encoding="utf-8"
+        )
     project = tmp_path / "project"
     project.mkdir()
     python = {"kind": kind}
@@ -2610,7 +2612,9 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     distribution = metadata.distribution("packaging")
     locked = [
         row
-        for row in tomllib.loads((state.ROOT / "uv.lock").read_text())["package"]
+        for row in tomllib.loads((state.ROOT / "uv.lock").read_text(encoding="utf-8"))[
+            "package"
+        ]
         if row["name"] == "packaging" and row["version"] == distribution.version
     ]
     assert len(locked) == 1, "the test interpreter must use project-locked packaging"
@@ -2620,7 +2624,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     (source / "pyproject.toml").write_text(
         "[project]\nname='published-capture-control'\nversion='1.0'\n"
         "requires-python='>=3.12'\n"
-        f"dependencies=['packaging=={distribution.version}']\n"
+        f"dependencies=['packaging=={distribution.version}']\n",
+        encoding="utf-8",
     )
     (source / "uv.lock").write_text(
         "version=1\nrevision=1\nrequires-python='>=3.12'\n"
@@ -2638,7 +2643,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
             + f",size={wheel['size']}}},\n"
             for wheel in package_lock["wheels"]
         )
-        + "]\n"
+        + "]\n",
+        encoding="utf-8",
     )
     runtime_capture = publisher._python_identity()
     runtime = runtime_capture["runtime"]
@@ -2685,7 +2691,9 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     custody = {"environment_id": root.name, **recipe}
     provisional = environment_provisioning_record_path(root)
     provisional.parent.mkdir(parents=True)
-    provisional.write_text(json.dumps({"state": "provisioning", "custody": custody}))
+    provisional.write_text(
+        json.dumps({"state": "provisioning", "custody": custody}), encoding="utf-8"
+    )
     # Compile through the real unpublished-image owner, then capture and attest
     # the actual bytes. The full capture's runtime must retain recipe identity.
     publisher._publish_environment_bytecode(executable, root, external_root=state.ROOT)
@@ -2717,7 +2725,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         "env=os.environ,source_root=state.ROOT,selection=selections['python'],hash_workers=1)\n"
         "assert 'packaging.requirements' not in sys.modules\n"
         "assert [row['name'] for row in captured['environment']['distributions']]==['packaging']\n"
-        "print(json.dumps({'runtime':captured['environment']['runtime']['runtime_closure_sha256']}))\n"
+        "print(json.dumps({'runtime':captured['environment']['runtime']['runtime_closure_sha256']}))\n",
+        encoding="utf-8",
     )
 
     def read():
@@ -2746,7 +2755,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     # It must reach the canonical published-image check in the capture child.
     changed = copy.deepcopy(manifest)
     changed["realized_environment"]["distributions"][0]["version"] = "0.0"
-    manifest_path.write_text(json.dumps(changed))
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
     refused = read()
     assert refused.returncode != 0
     assert not refused.stdout

@@ -455,7 +455,9 @@ def _development_intent(spec: DevelopmentEnvironment) -> dict:
             spec.python or spec.environment.get("MOLT_UV_PROJECT_PYTHON", "").strip()
         )
         if not python:
-            python = (spec.checkout / ".python-version").read_text().strip()
+            python = (
+                (spec.checkout / ".python-version").read_text(encoding="utf-8").strip()
+            )
         if not python:
             raise ProvisioningError("uv-environment: empty Python selection")
         from molt.dx import DEFAULT_UV_PROJECT_PURPOSE, artifact_root

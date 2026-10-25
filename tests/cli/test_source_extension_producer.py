@@ -1852,7 +1852,10 @@ def test_requested_dev_group_reaches_publication_without_exclusion(
         )
         assert result.provisioned
         assert installed == [("ninja", "1.13.0")]
-        assert json.loads(spec[2].read_text())["dependency_groups"] == ["bench", "dev"]
+        assert json.loads(spec[2].read_text(encoding="utf-8"))["dependency_groups"] == [
+            "bench",
+            "dev",
+        ]
 
 
 def test_source_build_provision_rejects_group_resolution_before_publication(
@@ -4145,7 +4148,9 @@ def test_published_invalid_image_is_not_recovered_as_provisional(tmp_path, monke
     spec[2].write_text("{}", encoding="utf-8")
     provisional = build_environment.environment_provisioning_record_path(spec[0])
     provisional.parent.mkdir(parents=True)
-    provisional.write_text(json.dumps(build_environment._provisioning_record(spec[3])))
+    provisional.write_text(
+        json.dumps(build_environment._provisioning_record(spec[3])), encoding="utf-8"
+    )
     before = (spec[2].read_bytes(), provisional.read_bytes())
     monkeypatch.setattr(
         build_environment, "_environment_spec", lambda *_args, **_kwargs: spec

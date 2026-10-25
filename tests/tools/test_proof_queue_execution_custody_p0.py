@@ -398,7 +398,7 @@ def test_python_console_shebang_uses_explicit_interpreter_custody(tmp_path):
     # launch and the explicit interpreter boundary used by proof consumers.
     ordinary = run_custody_subject_process([launcher], timeout=20, check=False)
     assert ordinary.returncode == 0
-    assert marker.read_text() == "ran"
+    assert marker.read_text(encoding="utf-8") == "ran"
     marker.unlink()
     images = [
         process_image_capture.capture_image(
@@ -459,7 +459,7 @@ def test_python_console_shebang_uses_explicit_interpreter_custody(tmp_path):
         )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.splitlines() == ["refused", "admitted"]
-    assert marker.read_text() == "ran"
+    assert marker.read_text(encoding="utf-8") == "ran"
     decisions = [
         row for row in server.receipt()["events"] if row.get("event") == "child-process"
     ]

@@ -2511,6 +2511,7 @@ def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=60,
             check=False,
         )
@@ -2569,6 +2570,7 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
         cwd=tmp_path,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )
@@ -2649,6 +2651,7 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
             check=False,
         )
