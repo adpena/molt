@@ -12,13 +12,6 @@
 schema_version = 1
 
 [[pin]]
-name = "rust"
-version = "1.99.1"
-until = 2026-10-23T04:47:44Z
-cites = "HF-62"
-reason = "adopted in 110d5ee09 before the rule landed; a bug-fix release, not an advisory fix"
-
-[[pin]]
 name = "uv"
 version = "0.13.5"
 until = 2026-10-29T01:35:54Z

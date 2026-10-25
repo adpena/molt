@@ -43,7 +43,11 @@ class FakeCargo:
             if "--manifest-path" in command
             else command[command.index("--file") + 1]
         )
-        returncode, lines = self.replies[str(PurePosixPath(target).parent)]
+        returncode, lines = (
+            (0, [])
+            if "fetch" in command
+            else self.replies[str(PurePosixPath(target).parent)]
+        )
         return subprocess.CompletedProcess(
             command, returncode, stdout="", stderr="\n".join(lines)
         )
@@ -113,9 +117,22 @@ def test_an_error_in_any_workspace_fails(capsys) -> None:
 def test_each_run_fetches_its_advisory_database_once() -> None:
     deny = FakeCargo({".": (0, []), "fuzz": (0, [])})
     audit.run_deny([ROOT_WS, FUZZ_WS], run=deny)
-    assert ["--disable-fetch" in command for command in deny.commands] == [False, True]
-    # Every workspace is audited at its committed lockfile.
-    assert all("--locked" in command for command in deny.commands)
+    assert [command[-2:] for command in deny.commands] == [
+        ["fetch", "all"],
+        ["fetch", "index"],
+        ["--offline", "check"],
+        ["--offline", "check"],
+    ]
+    # Root options must precede the subcommand in cargo-deny 0.20. Every
+    # workspace is prepared and checked at its committed lockfile.
+    for command in deny.commands:
+        boundary = command.index("fetch" if "fetch" in command else "check")
+        assert command.index("--config") < boundary
+        assert command.index("--locked") < boundary
+        assert "--disable-fetch" not in command
+    assert [
+        command[command.index("--manifest-path") + 1] for command in deny.commands
+    ] == ["Cargo.toml", "fuzz/Cargo.toml", "Cargo.toml", "fuzz/Cargo.toml"]
 
     cargo_audit = FakeCargo({".": (0, []), "fuzz": (0, [])})
     assert audit.run_audit([ROOT_WS, FUZZ_WS], "db", run=cargo_audit) == 0
@@ -140,3 +157,93 @@ def test_every_tracked_cargo_lockfile_is_a_workspace() -> None:
     assert not any(
         str(workspace).startswith("tests/fixtures") for workspace in workspaces
     )
+
+
+def test_failed_fetch_reports_plain_cli_error_and_runs_no_checks(capsys) -> None:
+    commands: list[list[str]] = []
+
+    def failed_fetch(command: list[str], *, capture: bool):
+        assert capture
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            2,
+            stdout="",
+            stderr="error: unexpected argument '--config' found\nUsage: cargo deny check\n",
+        )
+
+    assert audit.run_deny([ROOT_WS, FUZZ_WS], run=failed_fetch) == 1
+    assert len(commands) == 1
+    assert commands[0][-2:] == ["fetch", "all"]
+    output = capsys.readouterr().out
+    assert "unexpected argument '--config'" in output
+    assert "Usage: cargo deny check" in output
+
+
+def test_failed_secondary_fetch_never_starts_offline_checks(capsys) -> None:
+    commands: list[list[str]] = []
+
+    def fetch(command: list[str], *, capture: bool):
+        assert capture
+        commands.append(command)
+        failed = len(commands) == 2
+        return subprocess.CompletedProcess(
+            command,
+            int(failed),
+            stdout="",
+            stderr=json.dumps(
+                {
+                    "type": "log",
+                    "fields": {"level": "ERROR", "message": "crate fetch refused"},
+                }
+            )
+            if failed
+            else "",
+        )
+
+    assert audit.run_deny([ROOT_WS, FUZZ_WS], run=fetch) == 1
+    assert len(commands) == 2
+    assert all("check" not in command for command in commands)
+    assert "crate fetch refused" in capsys.readouterr().out
+
+
+def test_error_streams_without_separator_keep_both_failures(capsys) -> None:
+    def cargo(command: list[str], *, capture: bool):
+        assert capture
+        if "fetch" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=_diagnostic("vulnerability", "crate", severity="error"),
+            stderr=json.dumps(
+                {
+                    "type": "log",
+                    "fields": {"level": "ERROR", "message": "metadata failed"},
+                }
+            ),
+        )
+
+    assert audit.run_deny([ROOT_WS], run=cargo) == 1
+    output = capsys.readouterr().out
+    assert "vulnerability: vulnerability message" in output
+    assert "metadata failed" in output
+
+
+def test_advisory_identity_and_solution_reach_the_existing_report(capsys) -> None:
+    diagnostic = json.loads(
+        _diagnostic("vulnerability", "affected-crate", severity="error")
+    )
+    notes = [
+        "ID: RUSTSEC-2099-0001",
+        "Advisory: https://rustsec.org/advisories/RUSTSEC-2099-0001",
+        "Solution: upgrade to >= 1.2.3",
+    ]
+    diagnostic["fields"]["notes"] = notes
+    fake = FakeCargo({".": (1, [json.dumps(diagnostic)])})
+
+    assert audit.run_deny([ROOT_WS], run=fake) == 1
+
+    output = capsys.readouterr().out
+    for note in notes:
+        assert note in output

@@ -113,7 +113,16 @@ def _parse_arguments():
     parser.add_argument("--admit-site-bootstrap", action="append", default=[])
     parser.add_argument("--admit-external-root", type=Path, action="append", default=[])
     parser.add_argument("--admit-published-environment", action="store_true")
+    parser.add_argument("--development-checkout", type=Path)
+    parser.add_argument("--development-python")
+    parser.add_argument("--development-group", action="append", default=[])
     args = parser.parse_args()
+    if (
+        args.development_checkout is not None
+        or args.development_python is not None
+        or args.development_group
+    ) and (not args.admit_published_environment or args.development_checkout is None):
+        parser.error("development intent requires published admission and a checkout")
     if args.admit_published_environment and (
         not (args.capture_environment or args.capture_active_environment)
         or args.publish_bytecode
@@ -470,6 +479,17 @@ def _main() -> None:
                         if args.with_custody
                         else payload
                     )
+                    if args.development_checkout is not None:
+                        from molt.source_build_environment import (
+                            load_development_environment,
+                        )
+
+                        load_development_environment(
+                            root,
+                            repo_root=args.development_checkout,
+                            python=args.development_python,
+                            groups=tuple(args.development_group),
+                        )
                     admit_published_environment(root, realized)
                     context.verify()
             if args.runtime_session:

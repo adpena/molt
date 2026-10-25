@@ -16,8 +16,6 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import cast
 
-from packaging.requirements import InvalidRequirement, Requirement
-
 from molt import source_build_environment_schema as _schema
 from molt.file_deletion import delete_path
 from molt.file_locks import _acquire_file_lock, _release_file_lock
@@ -102,6 +100,8 @@ def _uv_identity(
 def _declared_dependency_group(
     repo_root: Path, dependency_group: str
 ) -> tuple[str, ...]:
+    from packaging.requirements import InvalidRequirement, Requirement
+
     try:
         payload = tomllib.loads(
             (repo_root / "pyproject.toml").read_text(encoding="utf-8")
@@ -379,6 +379,7 @@ def _probe_source_build_python(
     publish_bytecode: bool = False,
     verifier_bytecode_prefix: Path | None = None,
     capture_wheel_target: bool = False,
+    development_admission: _schema.DevelopmentEnvironmentAdmission | None = None,
 ) -> dict[str, object]:
     """One isolated bootstrap for recipe and realized-environment identities."""
 
@@ -396,6 +397,12 @@ def _probe_source_build_python(
             str(root.resolve()),
             "--admit-virtualenv-bootstrap",
         ]
+    if development_admission is not None:
+        if root is None or publish_bytecode:
+            raise _schema.SourceBuildEnvironmentError(
+                "development admission requires a read-only environment capture"
+            )
+        probe_arguments.extend(development_admission.probe_arguments())
     if external_root is not None:
         probe_arguments.extend(("--admit-external-root", str(external_root)))
     if publish_bytecode:
@@ -1026,6 +1033,42 @@ def admit_published_environment(
             "published environment image differs from captured live bytes"
         )
     return manifest
+
+
+def admit_development_environment(
+    root: Path,
+    *,
+    repo_root: Path,
+    python: str | None = None,
+    groups: tuple[str, ...],
+) -> Path:
+    """Admit a launch once in its selected interpreter, not the bare bootstrap.
+
+    The child applies the unchanged cheap recipe reader and published-image
+    validator to its one live capture. Environment assembly never calls this.
+    """
+    root = Path(os.path.abspath(root))
+    if root.is_symlink() or root.resolve(strict=True) != root:
+        raise _schema.SourceBuildEnvironmentError(
+            "development image selection must be its physical root"
+        )
+    repo_root = repo_root.resolve(strict=True)
+    admission = _schema.DevelopmentEnvironmentAdmission(repo_root, python, groups)
+    with PythonFileCaptureContext() as context:
+        for path in python_environment_identity.python_capture_authority_paths(
+            source_root=repo_root
+        ):
+            context.bind(path, path.lstat(), label="development admission reader")
+        context.verify()
+        _probe_source_build_python(
+            environment_python_path(root),
+            root=root,
+            external_root=repo_root,
+            source_root=repo_root,
+            development_admission=admission,
+        )
+        context.verify()
+    return root
 
 
 def load_development_environment(

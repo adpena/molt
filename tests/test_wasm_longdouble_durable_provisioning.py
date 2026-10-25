@@ -11,9 +11,11 @@ import pytest
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     clear_wasm_toolchain_selection,
+    publication_executor,
 )
 from molt.cli import wasm_link_inputs
 from molt.cli import runtime_wasm_build_support as rb
+from molt.cli.runtime_identity_schema import RuntimePublicationTransform
 from molt.llvm_toolchain import LlvmToolchainConfigError
 
 
@@ -111,6 +113,11 @@ def test_runtime_relink_requires_admitted_c_abi_before_effects(
             json_output=True,
             link_timeout=1.0,
             cargo_plan=plan,
+            publication=rb.runtime_reloc_publication_action(
+                (),
+                module_name="out.wasm",
+                executor=publication_executor(RuntimePublicationTransform.RELOC),
+            ),
         )
 
 
@@ -136,6 +143,9 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
 
     def mutate(command, **kwargs):
         assert kwargs["env"]["CAPTURED_LINK_ENV"] == "original"
+        response = Path(next(arg[1:] for arg in command if arg.startswith("@")))
+        assert response.read_text(encoding="utf-8") == "--export=entry\n"
+        assert "--soname=runtime.wasm" in command
         Path(command[-1]).write_bytes(b"\0asm\x01\0\0\0")
         if resource == "response":
             selected = Path(next(arg[1:] for arg in command if arg.startswith("@")))
@@ -158,7 +168,11 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
                 cargo_command=("cargo",),
                 requested_target="wasm32-wasip1",
             ),
-            export_link_args=("-C", "link-arg=--export=entry"),
+            publication=rb.runtime_reloc_publication_action(
+                ("-C", "link-arg=--export=entry"),
+                module_name=output.name,
+                executor=publication_executor(RuntimePublicationTransform.RELOC),
+            ),
         )
     assert caught.value.stdout == "link-stdout"
     assert caught.value.stderr == "link-stderr"
@@ -202,6 +216,11 @@ def test_reloc_link_failure_retains_child_evidence(
                 cargo_command=("cargo",),
                 requested_target="wasm32-wasip1",
             ),
+            publication=rb.runtime_reloc_publication_action(
+                (),
+                module_name=output.name,
+                executor=publication_executor(RuntimePublicationTransform.RELOC),
+            ),
         )
     from tests.runtime_build_identity_helper import runtime_wasi_c_abi_plan
 
@@ -241,8 +260,8 @@ def test_split_app_wholearchives_longdouble_when_libc_present(selected_c_abi) ->
         "--whole-archive",
         str(selected_c_abi.path("long_double")),
         "--no-whole-archive",
-        selected_c_abi.path("libc"),
-        selected_c_abi.path("compiler_rt"),
+        str(selected_c_abi.path("libc")),
+        str(selected_c_abi.path("compiler_rt")),
     ]
 
 

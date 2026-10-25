@@ -51,10 +51,11 @@ def test_the_projections_name_every_declared_entry_in_order() -> None:
         assert re.search(rf"pub\(crate\) {entry.name}:\s+unsafe extern", rust)
 
 
-def _stub() -> str:
+def _stub(*, runtime_module_roots: tuple[Path, ...] = ()) -> str:
     return _render_native_main_stub(
         resolved_capability_policy=CapabilityManifest().resolve(),
         compiled_source_paths=("/src/app.py",),
+        runtime_module_roots=runtime_module_roots,
     )
 
 
@@ -77,11 +78,15 @@ def test_the_aot_stub_calls_the_launch_entries_in_the_declared_order() -> None:
 
 
 @pytest.mark.skipif(shutil.which("cc") is None, reason="needs a C compiler")
+@pytest.mark.parametrize("with_runtime_module_roots", [False, True])
 def test_the_generated_declarations_type_check_against_the_stub(
-    tmp_path: Path,
+    tmp_path: Path, with_runtime_module_roots: bool
 ) -> None:
     source = tmp_path / "main.c"
-    source.write_text(_stub(), encoding="utf-8")
+    roots = (tmp_path / "module roots",) if with_runtime_module_roots else ()
+    source.write_text(_stub(runtime_module_roots=roots), encoding="utf-8")
+    # Compile the source as delivered: no external feature-test defines may
+    # mask missing declarations in its capability or module-root setters.
     result = run_guarded_test_process(
         ["cc", "-fsyntax-only", "-std=c11", "-Werror", "-Wall", str(source)]
     )
@@ -117,3 +122,10 @@ def test_the_runner_command_and_image_format_come_from_the_declaration() -> None
         ("image_marker", "IMAGE_MARKER"),
     ):
         assert f'pub(crate) const {constant}: &str = "{declared[key]}";' in rust
+    # Only the macOS allocator restart consumes this internal runner flag.
+    # The declaration remains shared; other runner protocol flags stay portable.
+    assert (
+        '#[cfg(target_os = "macos")]\n'
+        "pub(crate) const ALLOCATOR_RESTART_FLAG: &str = "
+        f'"{declared["allocator_restart_flag"]}";'
+    ) in rust

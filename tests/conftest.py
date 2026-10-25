@@ -194,7 +194,12 @@ def checkout_run_context() -> dict[str, str]:
     creates ``target/``, ``.molt_cache/``, ``.uv-cache/`` and a uv environment
     inside the checkout.
     """
-    keys = _run_context_env_keys()
+    from molt.dx import GITHUB_ACTIONS_CUSTODY_ENV_KEYS
+
+    # Restore the actual session's complete claims, not only its custody root.
+    # Do not add these to developer_host_context's clearing set: RUNNER_TEMP
+    # remains a host scratch fact even while a test isolates its project roots.
+    keys = (*_run_context_env_keys(), *GITHUB_ACTIONS_CUSTODY_ENV_KEYS)
     return {key: value for key, value in _SESSION_ENVIRONMENT.items() if key in keys}
 
 

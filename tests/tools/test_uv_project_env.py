@@ -97,12 +97,15 @@ def test_uv_project_env_accepts_explicit_relative_path(tmp_path: Path) -> None:
     assert dotted["UV_NO_SYNC"] == "1"
     assert image.manifest_path.read_bytes() == manifest
     with pytest.raises(dx.DxConfigError, match="different requested Python"):
-        uv_project_env.uv_project_env(
+        dx.DxProject(tmp_path).normalized_uv_run_env(
+            uv_project_env.uv_project_env(
+                python="3.13",
+                purpose="ignored",
+                repo_root=tmp_path,
+                env={"MOLT_EXT_ROOT": str(tmp_path)},
+                explicit=str(image.root),
+            ),
             python="3.13",
-            purpose="ignored",
-            repo_root=tmp_path,
-            env={"MOLT_EXT_ROOT": str(tmp_path)},
-            explicit=str(image.root),
         )
 
 
@@ -149,12 +152,15 @@ def test_uv_wrapper_selectors_keep_the_captured_environment_rule(
         )
         if name_rule is NameRule.WINDOWS and python == "3.13":
             with pytest.raises(dx.DxConfigError, match="different requested Python"):
-                uv_project_env.uv_project_env(
+                dx.DxProject(root).normalized_uv_run_env(
+                    uv_project_env.uv_project_env(
+                        python=python,
+                        purpose=purpose,
+                        repo_root=root,
+                        env=environment,
+                        create_dirs=False,
+                    ),
                     python=python,
-                    purpose=purpose,
-                    repo_root=root,
-                    env=environment,
-                    create_dirs=False,
                 )
             continue
         selected = uv_project_env.uv_project_env(
@@ -179,6 +185,26 @@ def test_uv_wrapper_selectors_keep_the_captured_environment_rule(
             assert selected["MOLT_SESSION_ID_GENERATED"] == "1"
         assert dict(environment) == values
     assert len(selected_environments) == (2 if name_rule is NameRule.EXACT else 1)
+
+
+def test_managed_model_and_operation_refuse_explicit_borrower(
+    tmp_path, monkeypatch, capsys
+):
+    borrowed = str(tmp_path / "external-bootstrap")
+    with pytest.raises(dx.DxConfigError, match="explicitly borrowed MOLT_VENV"):
+        uv_project_env.uv_project_env(
+            python="3.12",
+            purpose="audit",
+            repo_root=tmp_path,
+            env={"MOLT_VENV": borrowed},
+            create_dirs=False,
+        )
+    monkeypatch.setenv("MOLT_VENV", borrowed)
+    with pytest.raises(SystemExit) as caught:
+        uv_project_env.main(["--python", "3.12", "--", "python", "-V"])
+    assert caught.value.code == 2
+    assert "explicitly borrowed MOLT_VENV" in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
 
 
 def test_parse_command_strips_separator() -> None:

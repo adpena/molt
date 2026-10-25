@@ -45,6 +45,30 @@ from molt.path_custody import (
 from molt.source_root import compiler_source_root, installed_distribution_root
 
 GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV = "MOLT_CI_EPHEMERAL_CUSTODY_ROOT"
+# Complete inputs consumed by hosted-checkout verification. A caller projecting
+# a session's custody must carry the provenance with its issued root; projection
+# never supplies missing values or turns these claims into verified authority.
+GITHUB_ACTIONS_CUSTODY_ENV_KEYS = (
+    GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+    "GITHUB_ACTIONS",
+    "CI",
+    "GITHUB_SERVER_URL",
+    "GITHUB_API_URL",
+    "GITHUB_WORKSPACE",
+    "GITHUB_REPOSITORY",
+    "GITHUB_WORKFLOW_REF",
+    "GITHUB_WORKFLOW_SHA",
+    "GITHUB_EVENT_PATH",
+    "GITHUB_SHA",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_ATTEMPT",
+    "GITHUB_JOB",
+    "GITHUB_EVENT_NAME",
+    "GITHUB_REF",
+    "RUNNER_TEMP",
+    "RUNNER_OS",
+    "RUNNER_ARCH",
+)
 # The operator's artifact root. Only this module reads it: every other
 # consumer asks `configured_artifact_root` or `artifact_root`.
 ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
@@ -607,6 +631,7 @@ def _github_actions_checkout_custody(
     if not contract_raw:
         return None
 
+    env = {key: env[key] for key in GITHUB_ACTIONS_CUSTODY_ENV_KEYS if key in env}
     required_exact = {
         "GITHUB_ACTIONS": "true",
         "CI": "true",
@@ -1881,7 +1906,6 @@ class DxProject:
     ) -> ProcessEnvironment:
         from molt.source_build_environment import load_development_environment
         from molt.source_build_environment_schema import SourceBuildEnvironmentError
-        from molt.python_environment_location import environment_bytecode_prefix
 
         selected = self.uv_project_env_dir(env)
         try:
@@ -1893,14 +1917,26 @@ class DxProject:
             )
         except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
             raise DxConfigError(str(exc)) from exc
-        # Recipe admission owns version/group matching. UV must never repair or
-        # reinterpret the exact generation after selection.
+        return self.projected_uv_run_env(env, root=image.root)
+
+    def projected_uv_run_env(
+        self, env: Mapping[str, str], *, root: Path
+    ) -> ProcessEnvironment:
+        """Assemble a selection; the consuming operation owns its admission.
+
+        The no-site guardian uses this before its existing selected-image
+        capture. Equipped callers use normalized_uv_run_env for cheap recipe
+        validation. Neither path starts another interpreter here.
+        """
+        from molt.python_environment_location import environment_bytecode_prefix
+
+        root = Path(os.path.abspath(root))
         run_env = ProcessEnvironmentBuilder(env)
         run_env.setdefault("PYTHONUNBUFFERED", "1")
-        run_env["UV_PROJECT_ENVIRONMENT"] = str(image.root)
-        run_env["VIRTUAL_ENV"] = str(image.root)
+        run_env["UV_PROJECT_ENVIRONMENT"] = str(root)
+        run_env["VIRTUAL_ENV"] = str(root)
         run_env["UV_NO_SYNC"] = "1"
-        run_env["PYTHONPYCACHEPREFIX"] = str(environment_bytecode_prefix(image.root))
+        run_env["PYTHONPYCACHEPREFIX"] = str(environment_bytecode_prefix(root))
         run_env["PYTHONDONTWRITEBYTECODE"] = "1"
         for name in ("PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             run_env.pop(name, None)

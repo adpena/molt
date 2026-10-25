@@ -1820,6 +1820,11 @@ def _envelope_for_command(
             execution_argv=argv if wrapper is not None else None,
         )
     )
+    if wrapper is not None:
+        # A wrapper selects a Python image even when its payload is native.
+        # Declare that dependency in the existing envelope/toolchain closure;
+        # the guardian locates and captures it once before launching argv.
+        toolchains = _toolchain_dependency_closure([*toolchains, "python"])
     guarded_exec = _guarded_exec_invocation(argv)
     nested_command = (
         [str(value) for value in guarded_exec["nested"]]

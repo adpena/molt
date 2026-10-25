@@ -3701,6 +3701,14 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
     custody = first["run"]
     assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" in custody
     assert "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" in custody
+    assert "MOLT_VENV=$(Join-Path $custodyRoot 'venv')" in custody
+    sync = next(
+        step
+        for step in setup_action["runs"]["steps"]
+        if step["name"] == "Synchronize project dependencies"
+    )
+    assert "args=(sync)" in sync["run"]
+    assert 'uv "${args[@]}"' in sync["run"]
     assert "$env:RUNNER_TEMP" in custody
     assert "$env:RUNNER_TEMP" in ci_text
     assert not (REPO_ROOT / ".github/actions/ephemeral-custody").exists()

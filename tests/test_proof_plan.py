@@ -8090,7 +8090,7 @@ def test_runtime_boundary_consumers_keep_executable_toolchain_authority():
         assert set(envelope["toolchains"]) == expected_tools
     assert (
         "tests/cli/test_cli_native_main_stub_authority.py::"
-        "test_rendered_native_main_reports_owned_raised_exception"
+        "test_rendered_native_main_hands_the_runtime_status_to_its_exit"
     ) in native.argv
     assert {"clang", "llvm-ar", "llvm-nm", "wasm-ld"} <= set(native.toolchains)
     assert {"cargo", "rustc", "wasi-clang", "wasm-ld"} <= set(wasi.toolchains)
@@ -9562,35 +9562,39 @@ def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
     assert len(verified) == before + 2
 
 
+@pytest.mark.parametrize("retired_installation", ["tool", "runtime"])
 def test_a_runtime_tool_is_admitted_by_its_attested_installation(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, retired_installation
 ) -> None:
     from molt import tool_releases
+    from tests.test_tool_releases import _runtime_root
 
+    # Owning offline fixture: real pin/host-asset metadata and cached archives.
+    # Provisioning/extraction, package-tree hashing, both installation receipts,
+    # discovery and proof admission's installation-key cache all remain real.
+    root = _runtime_root(tmp_path)
+    environment = {"PATH": "", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
     policies = {policy.name: policy for policy in PLAN.toolchain_policies}
-    npm, node = policies["npm"], policies["node"]
-    assert (npm.projection, node.projection) == ("runtime-tool-release", "tool-release")
-
-    def installed(name, path, digest, tree=None):
-        release = tool_releases.tool_release(name, proof_plan.ROOT)
-        return tool_releases.ToolDiscovery(
-            release=release,
-            prefix=path.parent,
-            executable=path,
-            executable_sha256=digest,
-            asset=next(iter(release.assets.values())),
-            tree_sha256=tree,
-        )
-
-    command = tool_releases.PinnedCommand(
-        installed("npm", tmp_path / "npm-cli.js", "a" * 64, "b" * 64),
-        installed("node", tmp_path / "node", "c" * 64),
+    npm = replace(
+        policies["npm"],
+        root=root,
+        data={**policies["npm"].data, "version_pattern": r"^1\.2\.3$"},
+    )
+    assert (npm.projection, policies["node"].projection) == (
+        "runtime-tool-release",
+        "tool-release",
     )
     monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
+    original = tool_releases.pinned_command
     calls = []
+    discovered = []
 
-    def pinned(*args, **kwargs):
-        calls.append(kwargs.get("provision", False))
+    def pinned(tool, repo_root, *, environ, cwd=None, provision=False):
+        calls.append(provision)
+        command = original(
+            tool, repo_root, environ=environ, cwd=cwd, provision=provision
+        )
+        discovered.append(command)
         return command
 
     monkeypatch.setattr(tool_releases, "pinned_command", pinned)
@@ -9598,47 +9602,53 @@ def test_a_runtime_tool_is_admitted_by_its_attested_installation(
 
     def probe(name, argv, **kwargs):
         probes.append(list(argv))
-        return SimpleNamespace(stdout="12.2.1\n", stderr="")
+        return SimpleNamespace(stdout="1.2.3\n", stderr="")
 
     monkeypatch.setattr(proof_plan.toolchain_probe, "run_toolchain_probe", probe)
-    # Admission provisions a selected runtime tool, as it provisions a
-    # checkout input, then verifies it once for the whole admission.
     assert (
         proof_plan._provision_runtime_tools(
-            PLAN.toolchain_policies, ("npm",), root=proof_plan.ROOT, environment={}
+            (npm,), ("npm",), root=root, environment=environment
         )
         is None
     )
-    identity = proof_plan._version_fingerprint(npm, environment={"PATH": ""})
+    identity = proof_plan._version_fingerprint(npm, environment=environment)
     projected = proof_plan.project_toolchains(
-        PLAN.toolchain_policies, ("npm",), environ={"PATH": "/usr/bin"}
+        (npm,), ("npm",), environ=environment, root=root
     )
     assert calls == [True]
-    assert not any(entry.startswith("npm:") for entry in projected.missing)
-    assert probes == [
-        [str(tmp_path / "node"), str(tmp_path / "npm-cli.js"), "--version"]
-    ]
-    assert identity["version"] == "12.2.1"
-    assert (identity["tree_sha256"], identity["launcher_sha256"]) == (
-        "b" * 64,
-        "c" * 64,
+    (command,) = discovered
+    assert command.runtime is not None
+    assert projected.missing == ()
+    assert probes == [[*command.argv, "--version"]]
+    assert identity["version"] == "1.2.3"
+    assert identity["tree_sha256"] == tool_releases.tree_sha256(
+        command.tool.prefix / tool_releases.PACKAGE_DIRNAME
     )
-    assert identity["executable_sha256"] == "a" * 64
-    # The launched file is the runtime; the content is the entrypoint.
-    assert identity["path"] == identity["launcher_path"] == str(tmp_path / "node")
-    assert identity["content_path"] == str(tmp_path / "npm-cli.js")
-
-    def missing(*args, **kwargs):
-        raise tool_releases.ToolReleaseError("not provisioned")
-
-    monkeypatch.setattr(tool_releases, "pinned_command", missing)
-    monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
-    assert proof_plan._version_fingerprint(npm, environment={"PATH": ""}) is None
-    assert "npm: not provisioned" in proof_plan._provision_runtime_tools(
-        PLAN.toolchain_policies, ("npm",), root=proof_plan.ROOT, environment={}
+    assert (
+        identity["executable_sha256"]
+        == hashlib.sha256(command.tool.executable.read_bytes()).hexdigest()
     )
+    assert (
+        identity["launcher_sha256"]
+        == hashlib.sha256(command.runtime.executable.read_bytes()).hexdigest()
+    )
+    assert (
+        identity["path"] == identity["launcher_path"] == str(command.runtime.executable)
+    )
+    assert identity["content_path"] == str(command.tool.executable)
+    for installation in (command.tool, command.runtime):
+        assert (installation.prefix / tool_releases.TOOL_ATTESTATION_FILENAME).is_file()
+
+    # Retiring either installation's receipt must invalidate the cached command;
+    # projection cannot adopt its executable from PATH or silently reprovision.
+    retired = getattr(command, retired_installation)
+    receipt = retired.prefix / tool_releases.TOOL_ATTESTATION_FILENAME
+    receipt.unlink()
+    assert proof_plan._version_fingerprint(npm, environment=environment) is None
     projected = proof_plan.project_toolchains(
-        PLAN.toolchain_policies, ("npm",), environ={"PATH": "/usr/bin"}
+        (npm,), ("npm",), environ=environment, root=root
     )
     assert "npm: python3 -m molt.tool_releases provision npm" in projected.missing
+    assert calls == [True, False, False]
+    assert not receipt.exists()
     assert str(tmp_path) not in projected.delta.get("PATH", "")
