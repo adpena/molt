@@ -34,6 +34,15 @@ pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _assert_retained_guardian_startup(argv: list[str]) -> None:
+    assert argv[:4] == [sys.executable, "-B", "-I", "-X"]
+    assert argv[4].startswith("pycache_prefix=")
+    verifier = Path(argv[4].split("=", 1)[1])
+    # The simulated exec/Windows handoff has returned; storage must still live.
+    assert verifier.is_dir() and not list(verifier.iterdir())
+    assert argv[5:7] == ["-S", str(REPO_ROOT / "tools" / "memory_guard.py")]
+
+
 @pytest.fixture(autouse=True)
 def bootstrap_uses_a_private_os(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every ``os`` patch in this file stays inside the pytest bootstrap."""
@@ -599,12 +608,7 @@ def test_pytest_startup_reexecs_direct_pytest_under_memory_guard(monkeypatch) ->
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:4] == [
-        sys.executable,
-        "-I",
-        "-S",
-        str(REPO_ROOT / "tools" / "memory_guard.py"),
-    ]
+    _assert_retained_guardian_startup(argv)
     assert "--summary-json" in argv
     assert argv[-5:] == [sys.executable, "-m", "pytest", "tests/test_one.py", "-q"]
     env = captured["env"]
@@ -681,12 +685,7 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:4] == [
-        sys.executable,
-        "-I",
-        "-S",
-        str(REPO_ROOT / "tools" / "memory_guard.py"),
-    ]
+    _assert_retained_guardian_startup(argv)
     assert argv[-5:] == [sys.executable, "-m", "pytest", "tests/test_one.py", "-q"]
     env = captured["env"]
     assert isinstance(env, dict)
@@ -773,12 +772,7 @@ def test_repo_test_script_startup_reexecs_under_memory_guard(monkeypatch) -> Non
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:4] == [
-        sys.executable,
-        "-I",
-        "-S",
-        str(REPO_ROOT / "tools" / "memory_guard.py"),
-    ]
+    _assert_retained_guardian_startup(argv)
     assert "--summary-json" in argv
     assert argv[-3:] == [sys.executable, str(script), "--flag"]
     env = captured["env"]
@@ -833,12 +827,7 @@ def test_repo_test_module_startup_reexecs_under_memory_guard(monkeypatch) -> Non
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:4] == [
-        sys.executable,
-        "-I",
-        "-S",
-        str(REPO_ROOT / "tools" / "memory_guard.py"),
-    ]
+    _assert_retained_guardian_startup(argv)
     assert argv[-4:] == [
         sys.executable,
         "-m",
@@ -892,12 +881,7 @@ def test_current_file_test_script_startup_uses_resolved_file(monkeypatch) -> Non
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:4] == [
-        sys.executable,
-        "-I",
-        "-S",
-        str(REPO_ROOT / "tools" / "memory_guard.py"),
-    ]
+    _assert_retained_guardian_startup(argv)
     assert argv[-3:] == [sys.executable, str(script), "--flag"]
 
 

@@ -2412,9 +2412,11 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     ]
 
 
-def _selected_python_capture_fixture(tmp_path: Path) -> dict[str, object]:
-    prefix = tmp_path / "selected-environment"
-    prefix.mkdir()
+def _selected_python_capture_fixture(
+    tmp_path: Path, *, prefix: Path | None = None
+) -> dict[str, object]:
+    prefix = tmp_path / "selected-environment" if prefix is None else prefix
+    prefix.mkdir(parents=True)
     prefix = prefix.resolve()
     executable = prefix / "python"
     executable.write_bytes(b"selected lexical launcher fixture")
@@ -2479,10 +2481,24 @@ def test_python_selection_binds_the_base_selector_before_full_capture(tmp_path, 
 
 
 @pytest.mark.parametrize("kind", ["direct", "py-launcher", "uv", "uv-console-script"])
+@pytest.mark.parametrize("publication", ["unpublished", "manifest", "managed-missing"])
 def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, publication: str
 ) -> None:
-    selection = _selected_python_capture_fixture(tmp_path)
+    from molt.dx import checkout_component
+
+    prefix = (
+        tmp_path
+        / "build-environments"
+        / "development"
+        / checkout_component(tmp_path.resolve(strict=True))
+        / ("a" * 64)
+        if publication == "managed-missing"
+        else tmp_path / "selected-environment"
+    )
+    selection = _selected_python_capture_fixture(tmp_path, prefix=prefix)
+    if publication == "manifest":
+        (prefix / command_identity.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}")
     project = tmp_path / "project"
     project.mkdir()
     python = {"kind": kind}
@@ -2534,6 +2550,11 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
                 "--hash-workers",
                 "4",
                 "--admit-virtualenv-bootstrap",
+                *(
+                    ["--admit-published-environment"]
+                    if publication != "unpublished"
+                    else []
+                ),
                 "--admit-external-root",
                 str(project.resolve()),
             ],
@@ -2568,6 +2589,185 @@ def test_full_python_capture_rejects_changed_selection_before_launch(
             selection=selection,
             hash_workers=1,
         )
+
+
+@pytest.mark.slow
+def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_bytes(
+    tmp_path: Path,
+) -> None:
+    """Exercise the real stdlib-only caller and a real offline published image."""
+    from importlib import metadata
+
+    import packaging
+
+    from molt.cli import source_build_environment as publisher
+    from molt.cli import source_build_environment_schema as image_schema
+    from molt.python_environment_location import environment_provisioning_record_path
+    from molt.python_uv_lock_identity import selected_uv_lock_group_closure
+
+    # Reuse the installed, project-locked pure Python dependency without a
+    # resolver, installation, network request, or synthetic live-byte identity.
+    distribution = metadata.distribution("packaging")
+    locked = [
+        row
+        for row in tomllib.loads((state.ROOT / "uv.lock").read_text())["package"]
+        if row["name"] == "packaging" and row["version"] == distribution.version
+    ]
+    assert len(locked) == 1, "the test interpreter must use project-locked packaging"
+    package_lock = locked[0]
+    source = tmp_path / "recipe"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        "[project]\nname='published-capture-control'\nversion='1.0'\n"
+        "requires-python='>=3.12'\n"
+        f"dependencies=['packaging=={distribution.version}']\n"
+    )
+    (source / "uv.lock").write_text(
+        "version=1\nrevision=1\nrequires-python='>=3.12'\n"
+        "[[package]]\nname='published-capture-control'\nversion='1.0'\n"
+        "source={virtual='.'}\ndependencies=[{name='packaging'}]\n"
+        "[[package]]\nname='packaging'\n"
+        f"version={json.dumps(distribution.version)}\n"
+        f"source={{registry={json.dumps(package_lock['source']['registry'])}}}\n"
+        "wheels=[\n"
+        + "".join(
+            "{url="
+            + json.dumps(wheel["url"])
+            + ",hash="
+            + json.dumps(wheel["hash"])
+            + f",size={wheel['size']}}},\n"
+            for wheel in package_lock["wheels"]
+        )
+        + "]\n"
+    )
+    runtime_capture = publisher._python_identity()
+    runtime = runtime_capture["runtime"]
+    closure = selected_uv_lock_group_closure(
+        source,
+        None,
+        (),
+        wheel_target=runtime_capture["wheel_target"],
+        marker_environment=image_schema.canonical_source_marker_environment(),
+        dependency_groups=(),
+    )
+    recipe = {
+        "schema_version": image_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "dependency_groups": [],
+        "dependency_group_requirements": [],
+        "editable_binding": None,
+        "bytecode_policy": image_schema.ORDINARY_BYTECODE_POLICY,
+        "lock_closure": closure,
+        "python_runtime": runtime,
+        "uv": {
+            "executable": "fixture",
+            "version": "offline copy",
+            "sha256": "a" * 64,
+        },
+    }
+    root = tmp_path / "published" / canonical_json_sha256(recipe)
+    executable = create_test_venv(root)
+    site = root / (
+        "Lib/site-packages"
+        if os.name == "nt"
+        else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    )
+    metadata_root = next(
+        Path(distribution.locate_file(path)).parent
+        for path in distribution.files
+        if path.name == "METADATA" and path.parent.name.endswith(".dist-info")
+    )
+    for selected in (Path(packaging.__file__).parent, metadata_root):
+        shutil.copytree(
+            selected,
+            site / selected.name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+    custody = {"environment_id": root.name, **recipe}
+    provisional = environment_provisioning_record_path(root)
+    provisional.parent.mkdir(parents=True)
+    provisional.write_text(json.dumps({"state": "provisioning", "custody": custody}))
+    # Compile through the real unpublished-image owner, then capture and attest
+    # the actual bytes. The full capture's runtime must retain recipe identity.
+    publisher._publish_environment_bytecode(executable, root, external_root=state.ROOT)
+    realized = publisher._probe_environment_identity(
+        executable, root, external_root=state.ROOT
+    )
+    assert realized["runtime"] == runtime
+    manifest = publisher._attested_environment(custody, realized)
+    manifest_path = root / image_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    manifest_bytes = json.dumps(manifest).encode()
+    manifest_path.write_bytes(manifest_bytes)
+    provisional.unlink()
+
+    driver = tmp_path / "isolated_queue_reader.py"
+    driver.write_text(
+        "import json,os,sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0,{str(state.ROOT)!r})\n"
+        "from tools.import_file import bind_repository_imports\n"
+        f"bind_repository_imports({str(Path(guarded_execution.__file__))!r})\n"
+        "from tools.proof_queue_pkg import command_admission,command_identity,execution_environment,state\n"
+        "assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n"
+        f"command=[{str(executable)!r},'-c','pass']\n"
+        "envelope=command_admission.envelope_for_command(command)\n"
+        "_,selections,_,_=execution_environment._locate_toolchain_watch_roots("
+        "envelope,command,cwd=state.ROOT,env=os.environ,"
+        f"supervisor_binary=Path({str(executable)!r}))\n"
+        "assert 'packaging.requirements' not in sys.modules\n"
+        "captured=command_identity._python_identity(envelope,cwd=state.ROOT,"
+        "env=os.environ,source_root=state.ROOT,selection=selections['python'],hash_workers=1)\n"
+        "assert 'packaging.requirements' not in sys.modules\n"
+        "assert [row['name'] for row in captured['environment']['distributions']]==['packaging']\n"
+        "print(json.dumps({'runtime':captured['environment']['runtime']['runtime_closure_sha256']}))\n"
+    )
+
+    def read():
+        with python_environment_identity.python_identity_verifier_prefix() as prefix:
+            return run_custody_subject_process(
+                [
+                    sys.executable,
+                    *python_environment_identity.python_identity_verifier_arguments(
+                        prefix
+                    ),
+                    "-S",
+                    str(driver),
+                ],
+                cwd=tmp_path,
+                env=os.environ,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+
+    accepted = read()
+    assert accepted.returncode == 0, accepted.stderr
+    assert json.loads(accepted.stdout) == {"runtime": runtime["runtime_closure_sha256"]}
+    # This receipt mutation is excluded from the image's ordinary byte scan.
+    # It must reach the canonical published-image check in the capture child.
+    changed = copy.deepcopy(manifest)
+    changed["realized_environment"]["distributions"][0]["version"] = "0.0"
+    manifest_path.write_text(json.dumps(changed))
+    refused = read()
+    assert refused.returncode != 0
+    assert not refused.stdout
+    assert (
+        "published environment image differs from captured live bytes" in refused.stderr
+    )
+    manifest_path.write_bytes(manifest_bytes)
+
+    selected_source = site / "packaging" / "requirements.py"
+    before = selected_source.stat()
+    contents = selected_source.read_bytes()
+    selected_source.chmod(before.st_mode | 0o200)
+    changed_source = contents.replace(b"Requirement", b"requirement", 1)
+    assert changed_source != contents and len(changed_source) == len(contents)
+    selected_source.write_bytes(changed_source)
+    os.utime(selected_source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert selected_source.stat().st_size == before.st_size
+    refused = read()
+    assert refused.returncode != 0
+    assert not refused.stdout
+    assert "installed distribution RECORD mismatch" in refused.stderr
 
 
 def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
@@ -3587,6 +3787,7 @@ def _capture_probe_command(
         executable,
         verifier_bytecode_prefix=verifier_prefix,
         source_root=source_root,
+        admit_published_environment=False,
         hash_workers=hash_workers,
     )
 
@@ -7461,16 +7662,22 @@ def test_proof_queue_memory_guard_defaults_reach_exact_command(
     ):
         monkeypatch.delenv(name, raising=False)
     limits = custody._proof_queue_memory_limits({})
+    verifier_prefix = tmp_path / "verifier"
+    verifier_prefix.mkdir()
     command = custody._memory_guard_command(
         command=["proof-command"],
         summary_json=tmp_path / "summary.json",
         timeout=30.0,
         limits=limits,
+        verifier_bytecode_prefix=verifier_prefix,
     )
 
-    assert command[:4] == [
+    assert command[:7] == [
         sys.executable,
+        "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={verifier_prefix}",
         "-S",
         str(state.ROOT / "tools" / "memory_guard.py"),
     ]
@@ -7508,11 +7715,14 @@ def test_proof_queue_low_memory_overrides_reach_exact_command(
             "MOLT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC": "0.25",
         }
     )
+    verifier_prefix = tmp_path / "verifier"
+    verifier_prefix.mkdir()
     command = custody._memory_guard_command(
         command=["proof-command"],
         summary_json=tmp_path / "summary.json",
         timeout=30.0,
         limits=limits,
+        verifier_bytecode_prefix=verifier_prefix,
     )
 
     assert command[command.index("--max-rss-gb") + 1] == "2.0"
@@ -11334,6 +11544,20 @@ def test_proof_queue_queued_missing_log_is_not_running_evidence(
     )
 
 
+def _detached_queue_guardian_invocation(command: list[str]):
+    invocation = parse_python_invocation(command)
+    assert command[0] == sys.executable
+    assert invocation.mode == "script"
+    assert invocation.target == str(state.ROOT / "tools" / "proof_queue.py")
+    options = invocation.interpreter_options
+    assert options[:3] == ("-B", "-I", "-X")
+    assert len(options) == 5 and options[-1] == "-S"
+    prefix = Path(options[3].removeprefix("pycache_prefix="))
+    assert options[3] == f"pycache_prefix={prefix}"
+    assert prefix.is_dir() and not list(prefix.iterdir())
+    return invocation
+
+
 def test_proof_queue_windows_launchers_hide_console(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -11346,12 +11570,7 @@ def test_proof_queue_windows_launchers_hide_console(
             captured.append(kwargs)
             # Model the real child's exact startup acknowledgement, rather
             # than treating an allocated launcher PID as readiness.
-            assert command[:4] == [
-                sys.executable,
-                "-I",
-                "-S",
-                str(state.ROOT / "tools" / "proof_queue.py"),
-            ]
+            _detached_queue_guardian_invocation(command)
             option = command.index("--detached-state-use")
             ready, token = command[option + 1 : option + 3]
             Path(ready).write_text(
@@ -11398,12 +11617,7 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
             captured.append(kwargs)
             # Model the real child's exact startup acknowledgement, rather
             # than treating an allocated launcher PID as readiness.
-            assert command[:4] == [
-                sys.executable,
-                "-I",
-                "-S",
-                str(state.ROOT / "tools" / "proof_queue.py"),
-            ]
+            _detached_queue_guardian_invocation(command)
             option = command.index("--detached-state-use")
             ready, token = command[option + 1 : option + 3]
             Path(ready).write_text(
@@ -11504,17 +11718,13 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         assert_retirement(False)
         if outcome == "spawn_error":
             raise FileNotFoundError("controlled failed launch")
-        assert command[:4] == [
-            sys.executable,
-            "-I",
-            "-S",
-            str(state.ROOT / "tools" / "proof_queue.py"),
-        ]
+        invocation = _detached_queue_guardian_invocation(command)
         option = command.index("--detached-state-use")
         ready, token = command[option + 1 : option + 3]
         process = real_popen(
             [
-                *command[:3],
+                command[0],
+                *invocation.interpreter_options,
                 str(worker),
                 str(state.ROOT),
                 ready,

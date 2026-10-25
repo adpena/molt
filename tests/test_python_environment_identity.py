@@ -46,6 +46,99 @@ _PORTABLE_PATH_ALIASES = [
 ]
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--capture-runtime"],
+        ["--runtime-selection"],
+        ["--locate-active-environment"],
+        ["--editable-project", "environment", "project"],
+        ["--capture-environment", "environment", "--publish-bytecode"],
+    ],
+)
+def test_published_admission_requires_read_only_environment_capture(
+    monkeypatch, capsys, arguments
+):
+    monkeypatch.setattr(
+        sys, "argv", ["identity", *arguments, "--admit-published-environment"]
+    )
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+    assert "published admission requires a read-only environment capture" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("with_custody", [False, True])
+@pytest.mark.parametrize("verification_fails", [False, True])
+def test_published_admission_keeps_capture_context_until_final_verification(
+    tmp_path, monkeypatch, capsys, with_custody, verification_fails
+):
+    from molt.cli import source_build_environment
+    from molt import input_report
+
+    events = []
+    realized = {"environment": "independent captured bytes"}
+    payload = {"identity": realized} if with_custody else realized
+
+    class Context:
+        def __init__(self, *, hash_workers):
+            assert hash_workers == 1
+
+        def __enter__(self):
+            events.append("context-open")
+            return self
+
+        def __exit__(self, *args):
+            events.append("context-closed")
+
+        def verify(self):
+            events.append("verified")
+            if verification_fails:
+                raise PythonEnvironmentIdentityError("captured input changed")
+
+    def capture(root, *, capture_context, **_kwargs):
+        assert root == tmp_path and isinstance(capture_context, Context)
+        events.append("captured")
+        return payload
+
+    def admit(root, observed):
+        assert root == tmp_path and observed is realized
+        assert events == ["context-open", "captured"]
+        events.append("admitted")
+
+    arguments = [
+        "identity",
+        "--capture-environment",
+        str(tmp_path),
+        "--admit-published-environment",
+        *(["--with-custody"] if with_custody else []),
+    ]
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
+    monkeypatch.setattr(input_report, "worker_initializer", lambda _: None)
+    monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
+    monkeypatch.setattr(identity, "capture_current_python_environment", capture)
+    monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
+    if verification_fails:
+        with pytest.raises(
+            PythonEnvironmentIdentityError, match="captured input changed"
+        ):
+            identity._main()
+        assert not capsys.readouterr().out
+    else:
+        identity._main()
+        assert json.loads(capsys.readouterr().out) == payload
+    assert events == [
+        "context-open",
+        "captured",
+        "admitted",
+        "verified",
+        "context-closed",
+    ]
+
+
 @pytest.mark.parametrize("fault", ["missing", "populated", "symlink"])
 def test_identity_probe_refuses_unowned_cache_namespace(tmp_path, fault):
     prefix = tmp_path / "verifier"

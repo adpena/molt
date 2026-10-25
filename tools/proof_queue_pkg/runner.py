@@ -20,6 +20,7 @@ from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from molt import disk_capacity
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.python_environment_location import environment_bytecode_prefix
+from molt.temporary_artifacts import new_temporary_directory
 from molt.exact_json import (
     ExactJsonError,
     capture_exact,
@@ -1804,9 +1805,16 @@ def _run_one(
             memory_limits = custody._proof_queue_memory_limits(env_overrides)
             poll_interval = str(memory_limits.poll_interval)
             env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
+            # The nonce's existing run-retention owner keeps both namespaces
+            # through detached execution, cancellation and failed closure.
+            startup_root = output_layout.scratch(execution_nonce).parent
+            startup_root.mkdir(parents=True, exist_ok=True)
             guarded_command = guardian_argv(
                 sys.executable,
                 state.ROOT / "tools" / "proof_queue_pkg" / "guarded_execution.py",
+                verifier_bytecode_prefix=new_temporary_directory(
+                    startup_root, prefix="execution-bytecode-"
+                ),
             ) + [
                 "--request",
                 str(request_path),
@@ -1816,6 +1824,9 @@ def _run_one(
                 summary_json=summary_json,
                 timeout=timeout,
                 limits=memory_limits,
+                verifier_bytecode_prefix=new_temporary_directory(
+                    startup_root, prefix="guardian-bytecode-"
+                ),
             )
         except Exception as exc:
             return evidence._fail_preexecution_run(

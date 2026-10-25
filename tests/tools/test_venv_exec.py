@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
+from molt.python_environment_location import environment_bytecode_arguments
 from molt.process_spawn import forward_command
 from molt.process_environment import NameRule, ProcessEnvironment
 from tools import venv_exec
@@ -178,15 +179,25 @@ def test_resolve_command_leaves_non_python_command_intact(tmp_path: Path) -> Non
 def test_wrapped_command_exit_status_propagates(status: int) -> None:
     # On Windows os.exec* exits the caller with 0 at once; the wrapper must
     # still report the wrapped gate's own status on every platform.
+    # --venv borrows the runner's environment, so both interpreter starts
+    # carry its read-only cache policy explicitly, including under -I.
+    startup = environment_bytecode_arguments(Path(sys.prefix))
     result = run_guarded_test_process(
         [
             sys.executable,
+            *startup,
             str(ROOT / "tools" / "venv_exec.py"),
             "--venv",
             sys.prefix,
             "python",
+            *startup,
+            "-I",
             "-c",
-            f"raise SystemExit({status})",
+            "import sys; assert sys.dont_write_bytecode; "
+            "assert sys.pycache_prefix == sys.argv[1]; "
+            "raise SystemExit(int(sys.argv[2]))",
+            str(Path(sys.prefix) / "bytecode"),
+            str(status),
         ],
         cwd=ROOT,
         timeout=120,
@@ -221,7 +232,15 @@ else:
     raise AssertionError("missing executable or cwd was accepted")
 """
     result = run_guarded_test_process(
-        [sys.executable, "-c", code, str(child_cwd)], cwd=ROOT, timeout=60
+        [
+            sys.executable,
+            *environment_bytecode_arguments(Path(sys.prefix)),
+            "-c",
+            code,
+            str(child_cwd),
+        ],
+        cwd=ROOT,
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr
 
