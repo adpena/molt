@@ -4494,12 +4494,10 @@ def _capture_guarded_execution_authorities(
 
 
 @pytest.fixture(scope="module")
-def guarded_execution_authorities(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> GuardedExecutionAuthorities:
-    return _capture_guarded_execution_authorities(
-        Path(sys.executable), tmp_path_factory.mktemp("guarded-execution-source")
-    )
+def guarded_execution_authorities() -> GuardedExecutionAuthorities:
+    # The managed image seals its actual editable source owner. Case-specific
+    # operation roots are rebound only after this full published admission.
+    return _capture_guarded_execution_authorities(Path(sys.executable), state.ROOT)
 
 
 @pytest.fixture(scope="module")
@@ -5107,6 +5105,9 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
+    assert guarded_execution_authorities.python_identity["source_root"] == str(
+        state.ROOT.resolve(strict=True)
+    )
     repo = tmp_path / "alternate-repo"
     commit = _initialize_clean_git_repo(repo)
     rc, record = _execute_request(
