@@ -2346,6 +2346,87 @@ def test_standalone_probe_admits_selected_package_without_repository_tools(
         assert namespace.__spec__ is prior_spec
 
 
+@pytest.mark.parametrize("encoding", ["ascii", "cp1252"])
+def test_standalone_package_refusal_preserves_unicode_on_diagnostic_wire(
+    standalone_probe_source, tmp_path, monkeypatch, encoding
+):
+    foreign = tmp_path / "foreign-λ" / "molt"
+    foreign.mkdir(parents=True)
+    package = ModuleType("molt")
+    package.__file__ = str(foreign / "__init__.py")
+    package.__path__ = [str(foreign)]
+    monkeypatch.setitem(sys.modules, "molt", package)
+    imports = []
+    output = io.BytesIO()
+    stdout = sys.stdout
+    with io.TextIOWrapper(output, encoding=encoding, errors="backslashreplace") as wire:
+        with monkeypatch.context() as streams:
+            streams.setattr(sys, "stderr", wire)
+            with pytest.raises(SystemExit) as caught:
+                _execute_probe_to_package_import(standalone_probe_source, imports)
+            wire.flush()
+            diagnostic = output.getvalue().decode("utf-8", errors="strict")
+        assert caught.value.code == 2
+        assert str(foreign) in diagnostic
+        assert str(standalone_probe_source.parent) in diagnostic
+        assert "\\u03bb" not in diagnostic
+        assert imports == []
+        assert sys.stdout is stdout
+
+
+@pytest.mark.parametrize("failure", ["arguments", "package"])
+def test_standalone_refusal_uses_utf8_after_ascii_child_pipe_startup(tmp_path, failure):
+    selected = tmp_path / "selected-λ"
+    copy_python_capture_authority(selected)
+    foreign = tmp_path / "foreign-λ" / "molt"
+    foreign.mkdir(parents=True)
+    (foreign / "__init__.py").write_bytes(
+        (selected / "src/molt/__init__.py").read_bytes()
+    )
+    invalid_argument = "--unknown-λ"
+    startup = (
+        "sys.argv = [sys.argv[1], '--runtime-selection', sys.argv[2]]; "
+        if failure == "arguments"
+        else "sys.path.insert(0, sys.argv[2]); import molt; "
+        "sys.argv = [sys.argv[1], '--runtime-selection']; "
+    )
+    script = (
+        "import runpy, sys; "
+        "sys.stderr.reconfigure(encoding='ascii', errors='backslashreplace'); "
+        + startup
+        + "runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
+    with identity.python_identity_verifier_prefix() as prefix:
+        completed = _COMMANDS.run(
+            [
+                str(getattr(sys, "_base_executable", sys.executable)),
+                *identity.python_identity_verifier_arguments(prefix),
+                "-S",
+                "-c",
+                script,
+                str(selected / "src/molt/python_environment_identity.py"),
+                invalid_argument if failure == "arguments" else str(foreign.parent),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=30,
+            check=False,
+        )
+        assert not list(prefix.iterdir())
+    assert completed.returncode == 2
+    if failure == "arguments":
+        assert invalid_argument in completed.stderr
+    else:
+        assert "package source admission failed" in completed.stderr
+        assert str(selected / "src/molt") in completed.stderr
+        assert str(foreign) in completed.stderr
+    assert "\\u03bb" not in completed.stderr
+    assert completed.stdout == ""
+
+
 @pytest.mark.parametrize("foreign_kind", ["root", "descendant", "namespace"])
 @pytest.mark.parametrize("authority_preloaded", [False, True])
 def test_standalone_probe_refuses_foreign_package_before_custody_imports(

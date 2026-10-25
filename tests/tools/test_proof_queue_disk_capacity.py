@@ -44,13 +44,22 @@ def test_cleanup_cannot_silently_replace_invalid_admission_policy(raw: str) -> N
 
 
 def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
+    output_root = tmp_path
+    if os.name == "nt":
+        from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+        # Path admission precedes disk admission. Keep the real Windows Cargo
+        # descendant budget while giving this disk test its own short output.
+        temporary = OwnedTemporaryDirectory(prefix="q")
+        request.addfinalizer(temporary.cleanup)
+        output_root = Path(temporary.name)
     args = argparse.Namespace(
-        db=str(tmp_path / "queue.sqlite3"),
-        logs_root=str(tmp_path / "runs"),
+        db=str(output_root / "queue.sqlite3"),
+        logs_root=str(output_root / "runs"),
         repo_root=str(source),
     )
     envelope = {"toolchains": ["cargo"]}
@@ -116,6 +125,7 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
     assert row["guard_pid"] is None
     context = json.loads(row["receipt_context_json"])
     assert context["status"] == "not-executed"
+    assert "disk_capacity_admission" in context, context
     admission = context["disk_capacity_admission"]
     assert admission["status"] == "rejected"
     assert admission["probes"][0]["requested_path"] == str(
