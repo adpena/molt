@@ -6734,24 +6734,29 @@
     },
     {
       "argv": [
-        "cargo",
-        "build",
-        "--locked",
-        "--profile",
-        "dev-fast",
-        "-p",
-        "molt-wasm-host"
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "tools/prepare_compiled_contracts.py",
+        "--out",
+        "proof-results/compiled-contracts/macos"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_native_units": {
         "target": [
-          "c"
+          "c",
+          "c++"
         ]
       },
       "cell": "macos-arm64-py312-unit",
       "dependencies": [],
+      "evidence_outputs": [
+        "proof-results/compiled-contracts/macos"
+      ],
       "family": "python_unit",
-      "id": "python.unit.wasm-host.macos",
+      "id": "python.unit.compiled-contracts.prepare.macos",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pre-push",
@@ -6761,6 +6766,8 @@
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
       "toolchains": [
+        "python",
+        "uv",
         "rustc",
         "cargo"
       ]
@@ -6789,7 +6796,7 @@
       },
       "cell": "macos-arm64-py312-unit",
       "dependencies": [
-        "python.unit.wasm-host.macos"
+        "python.unit.compiled-contracts.prepare.macos"
       ],
       "family": "python_unit",
       "id": "python.unit.compiled-contracts.macos",
@@ -6797,7 +6804,7 @@
         "tests/test_resource_enforcement_e2e.py",
         "tests/test_wasm_runtime_heavy_regressions.py"
       ],
-      "pytest_worker_memory_gb": 4.0,
+      "pytest_worker_memory_gb": 10.0,
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pre-push",

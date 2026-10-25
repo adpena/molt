@@ -3864,15 +3864,25 @@ def test_python_unit_runs_one_receipted_job_per_generated_cell() -> None:
         "matrix.cell",
         '}}"',
     ]
-    upload = next(
+    uploads = [
         step for step in steps if step.get("name") == "Upload Python unit receipt"
+    ]
+    assert len(uploads) == 1
+    upload = uploads[0]
+    # One artifact per cell carries its receipt and any Mac preparation output;
+    # the verdict still merges every proof-receipt-* artifact. The receipt guard
+    # remains independent of whether the prerequisite produced any evidence.
+    assert upload["if"] == (
+        "always() && hashFiles(format('proof-receipts/python-unit-{0}.json', "
+        "matrix.cell)) != ''"
     )
-    # One artifact per cell; the verdict merges every proof-receipt-* artifact.
-    assert upload["with"] == {
-        "name": "proof-receipt-python-unit-${{ matrix.cell }}",
-        "path": "proof-receipts/python-unit-${{ matrix.cell }}.json",
-        "if-no-files-found": "error",
-    }
+    assert upload["with"]["name"] == "proof-receipt-python-unit-${{ matrix.cell }}"
+    assert upload["with"]["path"].splitlines() == [
+        "proof-receipts/python-unit-${{ matrix.cell }}.json",
+        "proof-results/compiled-contracts/macos",
+    ]
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert set(upload["with"]) == {"name", "path", "if-no-files-found"}
     assert steps.index(executor) < steps.index(upload)
     download = next(
         step
@@ -3880,6 +3890,7 @@ def test_python_unit_runs_one_receipted_job_per_generated_cell() -> None:
         if step.get("uses", "").startswith("actions/download-artifact@")
     )
     assert download["with"]["pattern"] == "proof-receipt-*"
+    assert download["with"]["path"] == "proof-receipts"
     assert download["with"]["merge-multiple"] is True
 
 
@@ -4401,6 +4412,7 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
         "wasm": (".github/workflows/molt-wasm-ci.yml", "wasm-build"),
         "formal": (".github/workflows/formal.yml", "formal-quint"),
         "platform_portability": (".github/workflows/ci.yml", "platform-portability"),
+        "python_unit": (".github/workflows/ci.yml", "python-unit"),
     }
     # setup-project resolves `pinned` from config/tool_releases.toml; the
     # plan's preflight pattern must accept exactly that version.
@@ -4415,6 +4427,27 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
             if step.get("uses") == "./.github/actions/setup-project"
         ]
         assert len(setup_steps) == 1, family
+        if family == "python_unit":
+            steps = jobs[job_name]["steps"]
+            provision = [
+                step
+                for step in steps
+                if step.get("run")
+                == "uv run --no-sync python -m molt.tool_releases provision node"
+            ]
+            assert len(provision) == 1
+            assert provision[0]["if"] == "matrix.cell == 'macos-arm64-py312-unit'"
+            execute = next(
+                step
+                for step in steps
+                if "--run-family python_unit" in step.get("run", "")
+            )
+            assert (
+                steps.index(setup_steps[0])
+                < steps.index(provision[0])
+                < steps.index(execute)
+            )
+            continue
         expected_node_setup = (
             "${{ contains(matrix.toolchains, 'node') && 'pinned' || '' }}"
             if family == "platform_portability"

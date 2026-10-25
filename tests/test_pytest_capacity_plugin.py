@@ -226,3 +226,24 @@ def test_a_serial_run_keeps_the_collection_order(tmp_path: Path) -> None:
 )
 def test_reserve_is_a_clamped_fraction_of_physical_memory(total, expected) -> None:
     assert host_capacity.reserve_bytes(total) == expected
+
+
+@pytest.mark.parametrize(("slice_gib", "expected"), [(24, 2), (12, 1)])
+def test_compiled_contract_worker_estimate_limits_actual_capacity_planner(
+    monkeypatch, slice_gib: int, expected: int
+) -> None:
+    from tools.proof_plan import ProofPlan
+
+    row = next(
+        command
+        for command in ProofPlan.load().commands
+        if command.id == "python.unit.compiled-contracts.macos"
+    )
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(slice_gib * 1024**3))
+    monkeypatch.setattr(
+        host_capacity, "_probe_memory_bytes", lambda: (64 * 1024**3, 64 * 1024**3)
+    )
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 32)
+    config = SimpleNamespace(getoption=lambda name: row.data["pytest_worker_memory_gb"])
+    assert pytest_capacity_plugin.pytest_xdist_auto_num_workers(config) == expected

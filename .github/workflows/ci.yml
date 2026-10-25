@@ -322,7 +322,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-python-unit-${{ matrix.cell }}
-          path: proof-receipts/python-unit-${{ matrix.cell }}.json
+          path: |
+            proof-receipts/python-unit-${{ matrix.cell }}.json
+            proof-results/compiled-contracts/macos
           if-no-files-found: error
 
   python-unit-collection:
