@@ -16,12 +16,12 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from molt import process_guard
-from molt.cli.source_build_environment_schema import (
+from molt.source_build_environment_schema import (
     active_source_build_requirements,
     canonical_source_marker_environment,
 )
 from molt.cli.source_build_inventory import SourceBuildInventory
-from molt.cli.source_build_requirements import current_build_requirements
+from molt.source_build_requirements import current_build_requirements
 from molt.toolchain_identity import stable_executable_probe
 
 

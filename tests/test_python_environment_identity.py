@@ -75,7 +75,7 @@ def test_published_admission_requires_read_only_environment_capture(
 def test_published_admission_keeps_capture_context_until_final_verification(
     tmp_path, monkeypatch, capsys, with_custody, verification_fails
 ):
-    from molt.cli import source_build_environment
+    from molt import source_build_environment
     from molt import input_report
 
     events = []

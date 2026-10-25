@@ -1347,10 +1347,10 @@ def prepared_named_lane_command(
 
 
 def _locked_python_environment_root(executable: str) -> Path:
-    from molt.cli.source_build_environment_schema import (
+    from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
-    from molt.cli.source_build_environment import _source_build_custody_root
+    from molt.source_build_environment import _source_build_custody_root
 
     selected = Path(executable)
     if not selected.is_absolute() or not selected.is_file():

@@ -3309,6 +3309,9 @@ def _publish_controller_stub(work: Path, role: str) -> str:
     # Every controller path exists on main (molt_dev_controller.CONTROLLER_PATHS).
     _commit_file(work, "config/tool_releases.toml", "", "config")
     _commit_file(work, "src/molt/__init__.py", "", "molt package")
+    # This stand-in has an empty package and no startup behavior; real driver
+    # origins copy the genuine startup source through the shared file owner.
+    _commit_file(work, "src/sitecustomize.py", "", "fixture Python startup")
     tip = _commit_file(
         work, "tools/molt_dev.py", _CONTROLLER_STUB.format(role=role), "main driver"
     )
@@ -3406,6 +3409,15 @@ def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
     assert second != first.resolve() and second.parent == controllers.resolve()
     assert (second / "tools" / "helper.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert not (second / "tools" / "planted.txt").exists()
+
+    # Startup code is executable controller input even outside the package tree.
+    startup = "# changed startup authority\n"
+    _commit_file(work, "src/sitecustomize.py", startup, "Python startup change")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _, report = _land_through_real_driver(work, tmp_path / "fourth.json")
+    third = Path(report["file"]).parents[1]
+    assert third != second and third.parent == controllers.resolve()
+    assert (third / "src" / "sitecustomize.py").read_text(encoding="utf-8") == startup
 
 
 def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(

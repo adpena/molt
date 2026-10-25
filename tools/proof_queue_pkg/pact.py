@@ -22,8 +22,8 @@ from molt.cli.source_extension_set_registry import (
     source_extension_set,
     source_extension_set_expected_identity,
 )
-from molt.cli.source_build_environment_schema import LockedSourceBuildEnvironment
-from molt.cli.source_build_environment import source_build_environment
+from molt.source_build_environment_schema import LockedSourceBuildEnvironment
+from molt.source_build_environment import source_build_environment
 from molt.cli.source_extension_target import (
     SourceExtensionTargetPlan,
     resolve_source_extension_target_plan,

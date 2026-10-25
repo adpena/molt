@@ -11,7 +11,7 @@ from packaging.markers import default_environment
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
-from molt.cli.source_build_requirements import realized_build_requirement
+from molt.source_build_requirements import realized_build_requirement
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_environment_custody import validate_python_environment_identity

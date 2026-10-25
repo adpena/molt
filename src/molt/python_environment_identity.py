@@ -309,6 +309,7 @@ def python_capture_authority_paths(
         "windows_process_api",
         "dx",
         "checkout_state",
+        "checkout_provisioning",
         "build_state_layout",
         "backend_daemon_paths",
         "host_capacity",
@@ -335,11 +336,17 @@ def python_capture_authority_paths(
         "python_identity_common",
         "python_uv_lock_identity",
         "python_capture",
-        "cli/__init__",
-        "cli/source_build_environment",
-        "cli/source_build_environment_schema",
-        "cli/source_build_requirements",
-        "cli/atomic_io",
+        "python_interpreter",
+        "target_python",
+        "target_python_policy",
+        "_python_release_generated",
+        "verified_subset",
+        "release_matrix",
+        "compiler_analysis/__init__",
+        "compiler_analysis/python_syntax",
+        "source_build_environment",
+        "source_build_environment_schema",
+        "source_build_requirements",
         "process_guard",
         "toolchain_identity",
         "input_report",
@@ -443,7 +450,7 @@ def _main() -> None:
                     # The source-bound guardian has no site dependencies. This
                     # selected-image child already captured their exact bytes;
                     # keep all recipe/lock/WHEEL checks in their existing owner.
-                    from molt.cli.source_build_environment import (
+                    from molt.source_build_environment import (
                         admit_published_environment,
                     )
 

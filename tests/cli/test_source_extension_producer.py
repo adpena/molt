@@ -23,8 +23,8 @@ from molt.python_file_node_custody import VerifiedTreeFile, _semantic_access
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.exact_json import canonical_json_sha256
 from molt.cli import entrypoint_dispatch, entrypoint_parser
-from molt.cli import source_build_environment as build_environment
-from molt.cli import source_build_environment_schema as build_environment_schema
+from molt import source_build_environment as build_environment
+from molt import source_build_environment_schema as build_environment_schema
 from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
 from molt.cli import source_extension_set_validation_sidecars as sidecar_validation
@@ -1470,6 +1470,43 @@ def test_source_build_environment_failed_sync_leaves_only_provisional_record(
     assert json.loads(provisioning_path.read_text(encoding="utf-8")) == (
         build_environment._provisioning_record(spec[3])
     )
+
+
+def test_source_build_environment_keeps_provisional_record_when_deletion_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path, monkeypatch)
+    spec[0].mkdir(parents=True)
+    partial = spec[0] / "partial-input"
+    partial.write_bytes(b"retained unpublished evidence")
+    provisional = build_environment.environment_provisioning_record_path(spec[0])
+    provisional.parent.mkdir(parents=True)
+    provisional.write_text(
+        json.dumps(build_environment._provisioning_record(spec[3])), encoding="utf-8"
+    )
+    before = (partial.read_bytes(), provisional.read_bytes())
+    deleted = []
+
+    def refuse(path):
+        deleted.append(path)
+        return False, "independent deletion refusal"
+
+    monkeypatch.setattr(build_environment, "delete_path", refuse)
+    monkeypatch.setattr(
+        build_environment,
+        "_run_uv_sync",
+        lambda *_args, **_kwargs: pytest.fail("failed recovery must not start sync"),
+    )
+    with pytest.raises(
+        build_environment_schema.SourceBuildEnvironmentError,
+        match="cannot recover unpublished.*independent deletion refusal",
+    ):
+        build_environment._provision_source_build_environment(
+            tmp_path, spec, environ={}
+        )
+    assert deleted == [spec[0]]
+    assert (partial.read_bytes(), provisional.read_bytes()) == before
+    assert not spec[2].exists()
 
 
 def test_source_build_environment_recovers_exact_provisional_record(

@@ -38,7 +38,7 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
 ```
 
 0. **controller** — a live `integrate` fetches, then runs the driver of main's
-   tip by default. It extracts `tools/`, `src/molt`, `config/`,
+   tip by default. It extracts `tools/`, `src/molt`, `src/sitecustomize.py`, `config/`,
    `pyproject.toml`, `uv.lock` and `.python-version` from that commit into
    `<git-common-dir>/molt/controllers/<key>` (the key is the digest of those
    trees, so a landing that changes none of them reuses the extraction), runs
@@ -413,6 +413,12 @@ The selected capture child performs published-manifest admission before final
 input verification; the guardian remains isolated from site packages. Guardian
 startup and prefix lifetime follow the same fresh-namespace rule through
 [existing command and run custody](../agent/PROOF_QUEUE.md).
+
+The core `molt.source_build_environment` authority serves DX, proof capture and
+CLI producers; its schema and requirement owners also live under `molt`.
+Image publication uses the existing durable exact-JSON writer with literal
+UTF-8. Recipe identities and admission compare decoded canonical objects, and
+existing published manifests retain their original bytes.
 
 When a controller provisions another editable checkout, publication selects
 that checkout's reader and binds its source files before launch. The

@@ -521,8 +521,8 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
         return venv_exec.resolve_venv(repo_root=repo, env=env)
     from molt import checkout_provisioning
     from molt.dx import DxConfigError, DxProject
-    from molt.cli.source_build_environment import load_development_environment
-    from molt.cli.source_build_environment_schema import SourceBuildEnvironmentError
+    from molt.source_build_environment import load_development_environment
+    from molt.source_build_environment_schema import SourceBuildEnvironmentError
 
     try:
         if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
