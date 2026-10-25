@@ -93,7 +93,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/decimal.py` | 1 | scattered-assumption | `3.11` |
 | `src/molt/stdlib/difflib.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/email/feedparser.py` | 8 | operational-tooling | `3.12` |
-| `src/molt/stdlib/encodings/aliases.py` | 3 | scattered-assumption | `3.4` |
 | `src/molt/stdlib/encodings/idna.py` | 2 | scattered-assumption | `3.1` |
 | `src/molt/stdlib/encodings/mac_romanian.py` | 4 | scattered-assumption | `3.0` |
 | `src/molt/stdlib/encodings/palmos.py` | 1 | scattered-assumption | `3.5` |
@@ -395,6 +394,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-stdlib-text/src/token_metadata_generated.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs` | 1 | scattered-assumption | `3.0` |
 | `config/ci_resource_policy.toml` | 1 | scattered-assumption | `3.0` |
+| `config/codec_aliases.toml` | 3 | scattered-assumption | `3.4` |
 | `config/cpython_coverage.toml` | 21 | authority-routed | `3.12` |
 | `config/cpython_regrtest_sources.toml` | 8 | authority-routed | `3.12` |
 | `config/cpython_stable_abi_3_12.toml` | 1262 | scattered-assumption | `3.2` |
