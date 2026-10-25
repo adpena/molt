@@ -14,7 +14,10 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkLoadingPolicy,
     source_extension_link_file,
 )
-from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
+from tests.cli.native_link_test_support import (
+    RUNTIME_BUILD_IDENTITY,
+    write_test_darwin_sdk,
+)
 
 
 def test_bool_singletons_need_no_final_link_aliases() -> None:
@@ -34,6 +37,10 @@ def test_bool_singletons_need_no_final_link_aliases() -> None:
 
 
 def _plan(monkeypatch, tmp_path: Path, platform: str) -> NativeLinkPlan:
+    if platform == "darwin":
+        sdk = write_test_darwin_sdk(tmp_path / "SDK")
+        monkeypatch.setenv("SDKROOT", str(sdk))
+        monkeypatch.delenv("DEVELOPER_DIR", raising=False)
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
@@ -79,6 +86,8 @@ def test_darwin_native_artifact_link_aliases_singletons_to_same_storage(
     monkeypatch, tmp_path: Path
 ) -> None:
     plan = _plan(monkeypatch, tmp_path, "darwin")
+    sysroot_index = plan.command.index("-isysroot")
+    assert plan.command[sysroot_index + 1] == str(tmp_path / "SDK")
     for canonical, storage in native_link_command._CPYTHON_SINGLETON_CANONICAL_ALIASES:
         assert f"-Wl,-alias,_{storage},_{canonical}" in plan.command
     assert plan.sidecars[0].role == "macho-exports"

@@ -23,6 +23,7 @@ _COMMAND_AUTHORITIES = {
         "_apply_run_capability_policy",
         "_deploy",
         "_run_script_cross",
+        "_run_wasm_with_guest_stderr",
         "_wasm_node_runner",
         "_wasm_run_build_args",
         "compare",
