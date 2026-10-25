@@ -8,7 +8,7 @@ import re
 import stat as stat_module
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
@@ -598,12 +598,17 @@ class _RuntimeFlagProjection:
     """Ordered logical paths captured once for one runtime identity operation.
 
     Resolved roots and their original text forms are local to this capture, never a
-    process cache. Absolute operands still resolve when inspected; response
-    files retain the Cargo plan's separate content and custody checks.
+    process cache. Only successfully validated literal tokens are remembered
+    within this capture. Absolute operands still resolve when inspected;
+    response files retain the Cargo plan's separate content and custody checks.
+    Fresh captures and prepended-root projections start with no remembered text.
     """
 
     roots: tuple[tuple[str, Path, str], ...]
     cargo_plan: RuntimeCargoPlan | None = None
+    _literal_tokens: set[str] = field(
+        default_factory=set, init=False, compare=False, repr=False
+    )
 
     @classmethod
     def capture(
@@ -651,6 +656,8 @@ class _RuntimeFlagProjection:
         )
 
     def token(self, token: str) -> str:
+        if token in self._literal_tokens:
+            return token
         if "@" in token:
             if self.cargo_plan is None:
                 raise ValueError(
@@ -678,6 +685,12 @@ class _RuntimeFlagProjection:
             prefix, operand = token.split("=", 1)
             if _is_host_absolute(operand):
                 return prefix + "=" + self.path_operand(operand)
+        return self._validate_literal_token(token)
+
+    def _validate_literal_token(self, token: str) -> str:
+        # This boundary is reached only after path/response branches. Its call
+        # count in MOLT_CLI_PROFILE records fresh literal validation work;
+        # successful calls admit distinct text within this exact root capture.
         for _label, _root, root_text in self.roots:
             if token.find(root_text) > 0:
                 raise ValueError(
@@ -691,6 +704,7 @@ class _RuntimeFlagProjection:
             raise ValueError(
                 f"embedded absolute host path in canonical runtime flags: {token!r}"
             )
+        self._literal_tokens.add(token)
         return token
 
     def rustflags(self, value: Sequence[str]) -> list[str]:

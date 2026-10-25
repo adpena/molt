@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
@@ -945,6 +945,24 @@ class _SubprocessVisitor(ast.NodeVisitor):
         self.stack: list[str] = []
         self.constant_scopes: list[dict[str, object]] = [{}]
         self.calls: list[RawSubprocessCall] = []
+        # Handlers are stable during one scan; analysis state remains mutable.
+        # Bound methods retain this visitor, so scan_observation clears these
+        # references in its finally path, including when a handler raises.
+        self._visit_handlers: dict[type[ast.AST], Callable[[ast.AST], None]] = {}
+
+    def visit(self, node: ast.AST) -> None:
+        node_type = type(node)
+        handler = self._visit_handlers.get(node_type)
+        if handler is None:
+            handler = self._resolve_visit_handler(node_type)
+            self._visit_handlers[node_type] = handler
+        return handler(node)
+
+    def _resolve_visit_handler(
+        self, node_type: type[ast.AST]
+    ) -> Callable[[ast.AST], None]:
+        # Retain NodeVisitor's inherited-method and unknown-node behavior.
+        return getattr(self, "visit_" + node_type.__name__, self.generic_visit)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -1320,8 +1338,11 @@ def scan_observation(
     tree = source.tree(filename=rel, strip_bom=True, emit_syntax_warnings=False)
     text = source.text.removeprefix("\ufeff")
     visitor = _SubprocessVisitor(path=rel, source_text=text)
-    visitor.visit(tree)
-    return tuple(visitor.calls)
+    try:
+        visitor.visit(tree)
+        return tuple(visitor.calls)
+    finally:
+        visitor._visit_handlers.clear()
 
 
 def scan_source(data: bytes, rel: str) -> tuple[RawSubprocessCall, ...]:

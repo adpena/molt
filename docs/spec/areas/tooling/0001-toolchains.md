@@ -98,6 +98,16 @@ otherwise the whole value, including `=`, is an `all` search path. Those literal
 paths receive the same capture and SDK-prefix ordering checks.
 Interrupted-process inventory marks malformed or truncated arguments incomplete.
 
+Each runtime-identity flag projection remembers successfully validated terminal
+literal text within that capture. Repeated literals take a set lookup; first
+occurrences retain the existing root-text and absolute-path checks. Storage
+scales with distinct literal text and ends with the projection. Path operands
+still resolve on every inspection, and response arguments retain the Cargo
+plan's content and custody checks. A fresh capture or prepended-root projection
+starts empty; no remembered literal can cross an identity operation or replace
+the final runtime-input fence. `MOLT_CLI_PROFILE` exposes fresh validation calls
+through `_validate_literal_token` without adding filesystem or process work.
+
 The runtime target coordinate appends its reference-types/SIMD directive only
 when it differs from the last actual target-feature directive. Later SDK search
 and external-libc options do not cause repeated policy growth. Re-resolving a

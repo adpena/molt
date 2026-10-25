@@ -7,6 +7,7 @@ import warnings
 
 import pytest
 
+from tests.process_guard_common import current_thread_only, install_thread_module_view
 from tools import check_memory_guard_wiring as audit_tool
 from tools import check_subprocess_guard_coverage as subprocess_audit
 
@@ -157,8 +158,10 @@ def test_combined_source_audit_reads_and_parses_overlap_once(tmp_path, monkeypat
             parses.append(filename)
         return parse(source, filename, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", read)
-    monkeypatch.setattr(ast, "parse", parse_source)
+    monkeypatch.setattr(Path, "read_bytes", current_thread_only(read, read_bytes))
+    install_thread_module_view(
+        monkeypatch, "ast", ast, audit_tool, subprocess_audit, parse=parse_source
+    )
     audit = _source_audit(tmp_path)
 
     assert len(reads) == len(parses) == 1
@@ -232,7 +235,9 @@ def test_newer_program_fixture_without_launcher_is_read_but_not_parsed(
         parsed.append(filename)
         return parse(source, filename, *args, **kwargs)
 
-    monkeypatch.setattr(ast, "parse", observe)
+    install_thread_module_view(
+        monkeypatch, "ast", ast, audit_tool, subprocess_audit, parse=observe
+    )
     audit = _source_audit(tmp_path)
     assert "tests/differential/newer.py" not in parsed
     assert audit.minimal_guard_environments == ()
