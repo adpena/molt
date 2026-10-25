@@ -85,9 +85,19 @@ strip; Molt removes only local symbols, and ld64's `-x` (drop non-global
 symbols) with `-S` (drop the debug-map stabs) is the documented equivalent of
 `strip -x`. The real-link oracle test compares both images symbol by symbol.
 
-The linked image is then final. No tool rewrites it, and Apple ld's ad hoc
-signature, made under the published name, stands. A separate strip and
-re-sign each rewrote the whole image: on a 50 MB release binary on macOS arm64
+The symbol table is then final; publication does not run another strip.
+The actual CodeDirectory decides whether the linker signature can stand:
+it must name the published binary and cover the unchanged image. The Apple
+driver receives `-adhoc_codesign` and a `-final_output` hint, but the latter
+is documented as a dylib install-name option, not a portable executable
+signing-ID contract. [Classic Apple ld](https://github.com/apple-oss-distributions/ld64/blob/main/src/ld/LinkEdit.hpp)
+uses its install path for signing; [LLVM Mach-O](https://github.com/llvm/llvm-project/blob/main/lld/MachO/SyntheticSections.cpp)
+uses its output filename when no install name exists. Linkers that retain
+the private stage name take the existing explicit-identifier `codesign`
+path. Raw private-stage bytes need not be identical across those links.
+
+The previous separate strip and re-sign each rewrote the whole image:
+on a 50 MB release binary on macOS arm64
 `strip -x` cost 0.9-5.7 s and `codesign` 0.9-6.9 s, depending on volume load.
 The trade is the signature's page size: ld64 signs 4 KiB pages and `codesign`
 16 KiB pages, so the linker-signed image is 275,200 B (0.55%) larger. Startup

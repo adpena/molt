@@ -967,9 +967,9 @@ def test_native_candidate_in_the_output_directory_is_published_without_a_copy(
 @pytest.mark.parametrize(
     ("placement", "identifier", "strip", "re_signed"),
     [
-        # Apple ld signed its stage as the published binary: keep it.
+        # The actual linker signature names the published binary: keep it.
         ("linker-stage", "app", False, False),
-        # ld64.lld and zig name the signature after the stage.
+        # Some Apple ld versions, ld64.lld and zig use the private stage name.
         ("linker-stage", "stage", False, True),
         # x86_64 ld64 without -adhoc_codesign leaves the image unsigned.
         ("linker-stage", None, False, True),

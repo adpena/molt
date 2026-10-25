@@ -89,7 +89,6 @@ from molt.wasm_artifact import (  # noqa: E402
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
-    ensure_molt_conformance_dirs,
 )
 
 # Default scratch for benchmark builds outside a canonical bench env.
@@ -646,7 +645,6 @@ def _canonical_bench_env(
         }
     )
     if create_dirs:
-        ensure_molt_conformance_dirs(env)
         _bench_tmp_root(env).mkdir(parents=True, exist_ok=True)
     return env
 

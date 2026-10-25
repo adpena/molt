@@ -302,7 +302,7 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
     ("driver", "signs"),
     [(("clang",), True), (("clang", "-fuse-ld=lld"), False), (("zig", "cc"), False)],
 )
-def test_only_apple_ld_is_told_the_published_name_of_its_stage(
+def test_only_apple_ld_gets_the_published_output_hint(
     monkeypatch, tmp_path: Path, driver: tuple[str, ...], signs: bool
 ) -> None:
     from molt.cli.native_link_plan import native_link_execution_command
@@ -312,8 +312,8 @@ def test_only_apple_ld_is_told_the_published_name_of_its_stage(
     with native_link_execution_command(
         plan, planned_output=output, execution_output=stage
     ) as command:
-        # The stage replaces the -o operand; the signature still names the
-        # published binary.
+        # The stage replaces -o; -final_output remains a published-name
+        # hint whose effect is checked against the actual linked signature.
         assert command[command.index("-o") + 1] == str(stage)
         if signs:
             assert "-Wl,-adhoc_codesign" in command
@@ -329,7 +329,7 @@ def test_only_apple_ld_is_told_the_published_name_of_its_stage(
     sys.platform != "darwin", reason="actual Apple ld and codesign oracle"
 )
 @pytest.mark.parametrize("arch", ["arm64", "x86_64"])
-def test_apple_ld_signs_a_private_stage_as_the_published_binary(
+def test_apple_ld_stage_publishes_under_the_binary_name(
     monkeypatch, tmp_path: Path, arch: str
 ) -> None:
     import platform
@@ -353,9 +353,9 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
     )
     flags = native_link_output_flags(
         capabilities=native_link_capabilities(target=target, linker_hint=None),
-        output=tmp_path / "out" / "app",
+        output=tmp_path / "out" / "app, signed",
     )
-    output = tmp_path / "out" / "app"
+    output = tmp_path / "out" / "app, signed"
     output.parent.mkdir()
     source = tmp_path / "main.c"
     source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
@@ -378,37 +378,64 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
             check=True,
             timeout=cold_timeout,
         )
-    # The stage name never reaches the published bytes.
-    assert stages[0].read_bytes() == stages[1].read_bytes()
+    # A published-name hint is not a portable executable signing contract.
+    # Keep the byte-stability oracle for linkers that actually honor it.
     signature = read_macho_code_signature(stages[0])
     assert signature is not None
-    assert signature.identifier == "app"
+    assert signature.identifier in {output.name, stages[0].name}
     assert signature.ad_hoc and signature.covers_image
     # Apple's own decoder and verifier are the oracle for both.
     described = run_cli_test_process(
         ["codesign", "-dv", str(stages[0])], check=True, timeout=30
     ).stderr
-    assert "Identifier=app\n" in described
+    assert f"Identifier={signature.identifier}\n" in described
     assert f"flags=0x{signature.flags:x}(adhoc,linker-signed)" in described
     assert f"hashes={signature.code_slots}+" in described
     run_cli_test_process(
         ["codesign", "--verify", "--strict", str(stages[0])], check=True, timeout=30
     )
 
-    def no_codesign(*_args: object) -> None:
-        raise AssertionError("the linker signature already names the binary")
+    second_signature = read_macho_code_signature(stages[1])
+    assert second_signature is not None
+    assert second_signature.identifier in {output.name, stages[1].name}
+    assert second_signature.ad_hoc and second_signature.covers_image
+    if signature.identifier == second_signature.identifier == output.name:
+        assert stages[0].read_bytes() == stages[1].read_bytes()
 
-    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", no_codesign)
-    assert (
-        build_results._finalize_native_link_candidate(
-            candidate=stages[0],
-            output_binary=output,
-            target_triple=target.triple,
-            strip=False,
+    signed: list[Path] = []
+    codesign = atomic_io._codesign_atomic_copy_temp
+
+    def sign(stage: Path, destination: Path) -> None:
+        assert destination == output
+        signed.append(stage)
+        codesign(stage, destination)
+
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
+    for stage, linked_signature in zip(stages, (signature, second_signature)):
+        signed.clear()
+        assert (
+            build_results._finalize_native_link_candidate(
+                candidate=stage,
+                output_binary=output,
+                target_triple=target.triple,
+                strip=False,
+            )
+            is None
         )
-        is None
-    )
-    stages[1].unlink()
+        expected_signs = [] if linked_signature.identifier == output.name else [stage]
+        assert signed == expected_signs
+        published = read_macho_code_signature(output)
+        assert published is not None and published.identifier == output.name
+        assert published.ad_hoc and published.covers_image
+        described = run_cli_test_process(
+            ["codesign", "-dv", str(output)], check=True, timeout=30
+        ).stderr
+        assert f"Identifier={output.name}\n" in described
+        run_cli_test_process(
+            ["codesign", "--verify", "--strict", str(output)],
+            check=True,
+            timeout=30,
+        )
     if platform.machine() == arch:
         run_cli_test_process([str(output)], check=True, timeout=cold_timeout)
 
@@ -417,7 +444,7 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
     sys.platform != "darwin", reason="actual Apple ld, strip and codesign oracle"
 )
 @pytest.mark.parametrize("arch", ["arm64", "x86_64"])
-def test_apple_ld_strips_at_link_as_strip_x_does_and_keeps_its_signature(
+def test_apple_ld_strips_at_link_and_publishes_a_valid_signature(
     monkeypatch, tmp_path: Path, arch: str
 ) -> None:
     import platform
@@ -502,22 +529,28 @@ def test_apple_ld_strips_at_link_as_strip_x_does_and_keeps_its_signature(
     link(stage, *native_link_strip_flags(target))
     assert symbols(stage) == symbols(oracle)
     assert not any(line.endswith(" _helper") for line in symbols(stage))
-    # The linker signed the stripped image itself, as the published binary.
+    # At-link stripping keeps a valid linker signature. Its actual identifier
+    # determines whether publication needs the existing re-signing path.
     signature = read_macho_code_signature(stage)
     assert signature is not None
-    assert signature.identifier == "app"
+    assert signature.identifier in {output.name, stage.name}
     assert signature.ad_hoc and signature.covers_image
     run_cli_test_process(
         ["codesign", "--verify", "--strict", str(stage)], check=True, timeout=30
     )
 
-    def no_codesign(*_args: object) -> None:
-        raise AssertionError("an image stripped at link time keeps its signature")
+    signed: list[Path] = []
+    codesign = atomic_io._codesign_atomic_copy_temp
+
+    def sign(candidate: Path, destination: Path) -> None:
+        assert candidate == stage and destination == output
+        signed.append(candidate)
+        codesign(candidate, destination)
 
     def no_strip(*_args: object) -> None:
         raise AssertionError("an image stripped at link time is final")
 
-    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", no_codesign)
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
     monkeypatch.setattr(build_results, "_post_link_strip", no_strip)
     assert (
         build_results._finalize_native_link_candidate(
@@ -527,6 +560,18 @@ def test_apple_ld_strips_at_link_as_strip_x_does_and_keeps_its_signature(
             strip=policy.symbol_strip is NativeSymbolStrip.AFTER_LINK,
         )
         is None
+    )
+    assert signed == ([] if signature.identifier == output.name else [stage])
+    assert symbols(output) == symbols(oracle)
+    published = read_macho_code_signature(output)
+    assert published is not None and published.identifier == output.name
+    assert published.ad_hoc and published.covers_image
+    described = run_cli_test_process(
+        ["codesign", "-dv", str(output)], check=True, timeout=30
+    ).stderr
+    assert f"Identifier={output.name}\n" in described
+    run_cli_test_process(
+        ["codesign", "--verify", "--strict", str(output)], check=True, timeout=30
     )
     if platform.machine() == arch:
         run_cli_test_process([str(output)], check=True, timeout=cold_timeout)

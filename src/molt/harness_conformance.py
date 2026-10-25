@@ -13,7 +13,11 @@ from molt.dx import (
 
 
 def build_molt_conformance_env(
-    project_root: Path, session_id: str | None, base: Mapping[str, str]
+    project_root: Path,
+    session_id: str | None,
+    base: Mapping[str, str],
+    *,
+    create_dirs: bool = False,
 ) -> ProcessEnvironment:
     """Resolve a conformance run's DX roots from the caller's environment.
 
@@ -25,9 +29,17 @@ def build_molt_conformance_env(
     A ``session_id`` pins the run's session, which scopes its Cargo target.
     ``None`` lets the run context generate one, so the run builds in the warm
     shared target.
+
+    Python environment selection belongs to the caller. DX alone creates
+    writable artifact directories; only the image publisher creates managed
+    Python environments and their read-only bytecode namespaces.
     """
     selectors = ProcessEnvironment(base).without(
-        [key for key in CANONICAL_RUN_ENV_KEYS if key != ARTIFACT_ROOT_ENV]
+        [
+            key
+            for key in CANONICAL_RUN_ENV_KEYS
+            if key not in {ARTIFACT_ROOT_ENV, "UV_PROJECT_ENVIRONMENT"}
+        ]
         + ["PYTHONPATH"]
     )
     if session_id is not None:
@@ -36,25 +48,8 @@ def build_molt_conformance_env(
         project_root,
         selectors,
         session_prefix="conformance",
-        create_dirs=False,
+        create_dirs=create_dirs,
     )
-
-
-def ensure_molt_conformance_dirs(env: Mapping[str, str]) -> None:
-    for key in (
-        "CARGO_TARGET_DIR",
-        "MOLT_CACHE",
-        "MOLT_DIFF_ROOT",
-        "MOLT_DIFF_TMPDIR",
-        "UV_CACHE_DIR",
-        "UV_PROJECT_ENVIRONMENT",
-        "PIP_CACHE_DIR",
-        "PYTHONPYCACHEPREFIX",
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-    ):
-        Path(env[key]).mkdir(parents=True, exist_ok=True)
 
 
 def load_molt_conformance_suite(
