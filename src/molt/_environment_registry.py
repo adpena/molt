@@ -5150,7 +5150,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_PROOF_CHILD_CUSTODY_JSON",
       "output_neutral": false,
       "owner": "tools/proof_queue_pkg/python_child_custody.py",
-      "summary": "JSON policy (schema molt.proof-child-custody.v1) that names the toolchain closure a proof child may execute; the guarded proof runner sets it, and the Python child custody bootstrap installs its audit hook only when the value is present.",
+      "summary": "JSON policy (schema molt.proof-child-custody.v2) that names the toolchain closure a proof child may execute; the guarded proof runner sets it, and the Python child custody bootstrap installs its audit hook only when the value is present.",
       "values": []
     },
     {
@@ -7533,8 +7533,8 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_UV_PROJECT_PURPOSE",
       "output_neutral": false,
-      "owner": "src/molt/dx.py",
-      "summary": "Purpose label that, with MOLT_UV_PROJECT_PYTHON, names the durable managed uv project environment under the artifact root when UV_PROJECT_ENVIRONMENT is unset; tools/run_context_env.py --dx and tools/uv_project_env.py set it; default dx.",
+      "owner": "src/molt/checkout_provisioning.py",
+      "summary": "Purpose label for immutable managed development-image selection; tools/uv_project_env.py sets it; default dx.",
       "values": []
     },
     {
@@ -7543,8 +7543,8 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_UV_PROJECT_PYTHON",
       "output_neutral": false,
-      "owner": "src/molt/dx.py",
-      "summary": "Python version label that, with MOLT_UV_PROJECT_PURPOSE, names the durable managed uv project environment under the artifact root when UV_PROJECT_ENVIRONMENT is unset; tools/run_context_env.py --dx and tools/uv_project_env.py set it; default 3.12.",
+      "owner": "src/molt/checkout_provisioning.py",
+      "summary": "Python version selection for the immutable managed development image, unless the caller supplies an explicit Python selection; tools/uv_project_env.py sets it; unset uses the checkout .python-version pin.",
       "values": []
     },
     {
@@ -7574,7 +7574,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_VENV",
       "output_neutral": false,
       "owner": "tools/venv_exec.py",
-      "summary": "Path to the repository virtualenv that tools/venv_exec.py runs pinned tools from, resolved against the repo root when relative; tools/molt_dev.py injects it for gates (own .venv, then the main worktree .venv) and the proof-queue CLI reads it as the last fallback for a warm project environment; unset means <repo>/.venv.",
+      "summary": "Explicit borrowed external virtual environment for tools/venv_exec.py and proof-tool execution; relative paths resolve against the repository root. Without this override, wrappers use UV_PROJECT_ENVIRONMENT or the selected immutable development image.",
       "values": []
     },
     {

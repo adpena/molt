@@ -11,11 +11,14 @@ from packaging.markers import default_environment
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
-from molt.cli.source_build_requirements import realized_build_requirement
+from molt.source_build_requirements import realized_build_requirement
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_environment_custody import validate_python_environment_identity
 from molt.python_runtime_identity import validate_python_runtime_identity
+from molt.python_environment_location import (
+    SOURCE_BUILD_ENVIRONMENT_MANIFEST as SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+)
 from molt.python_uv_lock_identity import (
     PYTHON_MARKER_ENVIRONMENT_FIELDS,
     environment_matches_lock_closure,
@@ -27,19 +30,40 @@ class SourceBuildEnvironmentError(ValueError):
     pass
 
 
-SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 5
+SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 7
+ORDINARY_BYTECODE_POLICY = "cpython-checked-hash-ordinary-012.v1"
 
 
-SOURCE_BUILD_ENVIRONMENT_MANIFEST = "molt-source-build-environment.json"
+def source_build_environment_contract() -> dict[str, object]:
+    """Current producer policy; selection intents derive from these authorities."""
+    from molt.python_environment_custody import PYTHON_ENVIRONMENT_IDENTITY_SCHEMA
+    from molt.python_environment_location import PYTHON_ENVIRONMENT_LOCATION_SCHEMA
+    from molt.python_runtime_identity import PYTHON_RUNTIME_IDENTITY_SCHEMA
+    from molt.python_uv_lock_identity import (
+        UV_LOCK_GROUP_CLOSURE_SCHEMA,
+        PYTHON_WHEEL_TARGET_SCHEMA,
+    )
+
+    return {
+        "source_build": SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "lock_closure": UV_LOCK_GROUP_CLOSURE_SCHEMA,
+        "wheel_target": PYTHON_WHEEL_TARGET_SCHEMA,
+        "runtime": PYTHON_RUNTIME_IDENTITY_SCHEMA,
+        "environment": PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
+        "location": PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
+        "bytecode": ORDINARY_BYTECODE_POLICY,
+    }
 
 
 class _SourceBuildAddress(TypedDict):
     schema_version: int
-    dependency_group: str
+    dependency_groups: list[str]
     dependency_group_requirements: list[str]
     lock_closure: dict[str, object]
     python_runtime: dict[str, object]
     uv: dict[str, str]
+    editable_binding: dict[str, object] | None
+    bytecode_policy: str
 
 
 class _SourceBuildCustody(_SourceBuildAddress):
@@ -53,6 +77,13 @@ class LockedSourceBuildEnvironment:
     manifest_path: Path
     custody: Mapping[str, object]
     active: bool
+    provisioned: bool = False
+
+    @property
+    def bytecode_prefix(self) -> Path:
+        from molt.python_environment_location import environment_bytecode_prefix
+
+        return environment_bytecode_prefix(self.root)
 
 
 def canonical_source_marker_environment(
@@ -147,11 +178,13 @@ def source_build_environment_problems(payload: object) -> list[str]:
     recipe_keys = {
         "schema_version",
         "environment_id",
-        "dependency_group",
+        "dependency_groups",
         "dependency_group_requirements",
         "lock_closure",
         "python_runtime",
         "uv",
+        "editable_binding",
+        "bytecode_policy",
     }
     if not isinstance(custody, Mapping) or set(custody) != {
         *recipe_keys,
@@ -162,6 +195,16 @@ def source_build_environment_problems(payload: object) -> list[str]:
     else:
         custody = cast(Mapping[str, object], custody)
         recipe = {key: custody[key] for key in recipe_keys if key != "environment_id"}
+        dependency_groups = custody.get("dependency_groups")
+        if (
+            custody.get("editable_binding") is not None
+            or custody.get("bytecode_policy") != ORDINARY_BYTECODE_POLICY
+            or not isinstance(dependency_groups, list)
+            or len(dependency_groups) != 1
+        ):
+            problems.append(
+                "extension-set manifest requires a source-build image recipe"
+            )
         environment_id = custody.get("environment_id")
         if (
             type(custody.get("schema_version")) is not int
@@ -191,8 +234,8 @@ def source_build_environment_problems(payload: object) -> list[str]:
                 or not environment_matches_lock_closure(
                     validated_environment, validated_lock
                 )
-                or validated_lock.get("dependency_group")
-                != custody.get("dependency_group")
+                or validated_lock.get("dependency_groups")
+                != custody.get("dependency_groups")
                 or validated_lock.get("requirements")
                 != custody.get("dependency_group_requirements")
             ):

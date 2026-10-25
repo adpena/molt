@@ -30,6 +30,7 @@ from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.rust_toolchain import cargo_config_arguments
 from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
+    python_identity_verifier_prefix,
     validate_python_environment_location,
 )
 from molt.python_runtime_identity import python_runtime_selection_locations
@@ -620,19 +621,22 @@ def _capture_toolchains(
             proof_plan.validate_selected_python_runtime(
                 policies[name], selected_runtime
             )
-            fresh = command_identity._parse_json_output(
-                command_identity._run_captured(
-                    [
-                        selected_runtime["launch_argv"][0],
-                        *command_identity.python_identity_probe_arguments(
-                            ("--runtime-selection",), no_site=True
-                        ),
-                    ],
-                    cwd=cwd,
-                    env=env,
-                ),
-                purpose=f"{name} fresh isolated startup selection",
-            )
+            with python_identity_verifier_prefix() as verifier_prefix:
+                fresh = command_identity._parse_json_output(
+                    command_identity._run_captured(
+                        [
+                            selected_runtime["launch_argv"][0],
+                            *command_identity.python_identity_probe_arguments(
+                                ("--runtime-selection",),
+                                no_site=True,
+                                verifier_bytecode_prefix=verifier_prefix,
+                            ),
+                        ],
+                        cwd=cwd,
+                        env=env,
+                    ),
+                    purpose=f"{name} fresh isolated startup selection",
+                )
             from molt.python_runtime_identity import startup_selection_difference
 
             if startup_selection_difference(
@@ -836,18 +840,20 @@ def _locate_toolchain_watch_roots(
                 [sys.executable, "-c", "raise SystemExit('location-only')"]
             )
             python_exact = [sys.executable, "-c", "raise SystemExit('location-only')"]
-        command = command_identity._python_auxiliary_command(
-            python_envelope,
-            python_exact,
-            arguments=("--locate-active-environment",),
-            no_site=True,
-        )
-        if command is None:
-            raise ValueError("proof Python locator has no selected interpreter")
-        located = command_identity._parse_json_output(
-            command_identity._run_captured(command, cwd=cwd, env=env),
-            purpose="proof Python toolchain locator",
-        )
+        with python_identity_verifier_prefix() as verifier_prefix:
+            command = command_identity._python_auxiliary_command(
+                python_envelope,
+                python_exact,
+                arguments=("--locate-active-environment",),
+                no_site=True,
+                verifier_bytecode_prefix=verifier_prefix,
+            )
+            if command is None:
+                raise ValueError("proof Python locator has no selected interpreter")
+            located = command_identity._parse_json_output(
+                command_identity._run_captured(command, cwd=cwd, env=env),
+                purpose="proof Python toolchain locator",
+            )
         try:
             located = validate_python_environment_location(located)
         except PythonEnvironmentIdentityError as exc:

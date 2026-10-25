@@ -59,7 +59,9 @@ installed.write_text("hook\\n", encoding="utf-8")
 """
 
 
-def _fixture_checkout_input(name, checkout, environ=None, *, guard_source_root=None):
+def _fixture_checkout_input(
+    name, checkout, environ=None, *, guard_source_root=None, python=None, groups=None
+):
     """The fixture's checkout inputs: provisioners that log each run. A child
     process of a test installs it as the fixture does."""
     checkout = Path(checkout).resolve()
@@ -847,8 +849,12 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     tip = _commit_file(worktree, "landed.txt", "landed\n", "landed work")
     _git(worktree, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/lane/landed")
     artifacts = isolated_checkout_artifacts
-    state = dx.stable_uv_project_env_dir(
-        artifacts, purpose="dx", python="3.12", source_root=worktree
+    state = (
+        artifacts
+        / "build-environments"
+        / "development"
+        / dx.checkout_component(worktree)
+        / ("a" * 64)
     )
     state.mkdir(parents=True)
     (state / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")

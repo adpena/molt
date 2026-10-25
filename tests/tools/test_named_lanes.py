@@ -703,8 +703,8 @@ def test_disposable_named_override_is_refused_before_environment_provision(
 def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_id: str
 ) -> None:
-    from molt.cli import source_build_environment as environment_authority
-    from molt.cli import source_build_environment_schema as environment_authority_schema
+    from molt import source_build_environment as environment_authority
+    from molt import source_build_environment_schema as environment_authority_schema
 
     custody = tmp_path / "environments"
     root = custody / ("a" * 64)
@@ -798,7 +798,7 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
     tmp_path: Path,
 ) -> None:
     import hashlib
-    from molt.cli.source_build_environment_schema import (
+    from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
     from tools.proof_queue_pkg import execution_custody
@@ -1128,8 +1128,8 @@ def test_differential_list_must_be_owned_and_cli_rejects_unknown_options(
 def test_prepared_differential_lane_keeps_selected_files(
     selected_diff_sources, monkeypatch
 ):
-    from molt.cli import source_build_environment as environment_authority
-    from molt.cli.source_build_environment_schema import (
+    from molt import source_build_environment as environment_authority
+    from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
 

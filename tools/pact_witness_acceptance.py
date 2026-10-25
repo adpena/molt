@@ -24,7 +24,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.compilation_target import admit_target  # noqa: E402
-from molt.cli.source_build_environment import source_build_environment  # noqa: E402
+from molt.source_build_environment import source_build_environment  # noqa: E402
 from molt.cli.source_extension_set_registry import SourceExtensionVariant  # noqa: E402
 from molt.cli.source_extension_target import resolve_source_extension_target_plan  # noqa: E402
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json  # noqa: E402

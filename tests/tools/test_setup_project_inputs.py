@@ -477,8 +477,7 @@ def test_sync_argv_is_typed_normalized_and_requires_sync(tmp_path: Path) -> None
 
 
 def test_target_pythons_install_only_after_sync(tmp_path: Path) -> None:
-    # The target-line authority imports project dependencies, so the install
-    # step needs the synchronized environment.
+    # Keep target-line provisioning after repository environment synchronization.
     normalized = _normalize(
         tmp_path / "valid", toolchain="", sync="true", target_pythons="true"
     )
@@ -489,6 +488,105 @@ def test_target_pythons_install_only_after_sync(tmp_path: Path) -> None:
     assert returncode == 2
     assert "target-pythons requires sync" in stderr
     assert outputs == {}
+
+
+def _run_target_python_setup(tmp_path: Path, failure: str):
+    # Run the actual action step, not a reconstruction of its shell commands.
+    action = (ROOT / ".github/actions/setup-project/action.yml").read_text(
+        encoding="utf-8"
+    )
+    step = action.split("    - name: Install supported target CPython lines\n", 1)[1]
+    step = step.split("\n    - ", 1)[0]
+    body = step.split("      run: |\n", 1)[1]
+    script = tmp_path / "target-python-setup.sh"
+    script.write_text(
+        "\n".join(line.removeprefix("        ") for line in body.splitlines()) + "\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "catalog-source"
+    package = source / "molt"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "target_python_policy.py").write_text(
+        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.14', '3.12')\n",
+        encoding="utf-8",
+    )
+    (package / "target_python.py").write_text(
+        "raise AssertionError('retired catalog import')\n", encoding="utf-8"
+    )
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    events, installed, selection = (
+        tmp_path / name for name in ("events", "installed", "selection")
+    )
+    selected = Path(sys.executable).absolute().as_posix()
+    query_driver = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "exec(compile(sys.argv[2], '<catalog query>', 'exec'), "
+        "{'__name__': '__main__'})"
+    )
+    uv = tools / "uv"
+    uv.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'case "${1-} ${2-}" in\n'
+        ' "run --no-sync")\n'
+        '  [[ "${3-} ${4-}" == "python3 -c" ]] || exit 44\n'
+        '  printf "query\\n" >> "$EVENTS"\n'
+        '  printf "%s\\n" "$UV_PYTHON" "$UV_PYTHON_DOWNLOADS" >> "$SELECTION"\n'
+        '  if [[ "$FAILURE" == query ]]; then printf "3.14 3.12\\n"; exit 43; fi\n'
+        '  [[ "$FAILURE" != empty ]] || exit 0\n'
+        f"  exec {shlex.quote(Path(sys.executable).as_posix())} -I -S -B -c "
+        f'{shlex.quote(query_driver)} "$CATALOG_SOURCE" "$5" ;;\n'
+        ' "python install")\n'
+        '  printf "install\\n" >> "$EVENTS"\n'
+        '  printf "%s\\n" "$@" >> "$INSTALLED"\n'
+        '  printf "%s\\n" "$UV_PYTHON" "$UV_PYTHON_DOWNLOADS" >> "$SELECTION" ;;\n'
+        " *) exit 44 ;;\nesac\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    result = run_guarded_test_process(
+        [str(BASH), str(script)],
+        prefix="MOLT_SETUP_TARGET_PYTHON_TEST",
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+            "CATALOG_SOURCE": source.as_posix(),
+            "FAILURE": failure,
+            "EVENTS": events.as_posix(),
+            "INSTALLED": installed.as_posix(),
+            "SELECTION": selection.as_posix(),
+            "UV_PYTHON": selected,
+            "UV_PYTHON_DOWNLOADS": "never",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    records = [
+        path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        for path in (events, installed, selection)
+    ]
+    return result, records, selected
+
+
+@pytest.mark.parametrize("failure", ["", "query", "empty"])
+def test_target_python_setup_requires_catalog_before_install(tmp_path: Path, failure):
+    result, (events, installed, selection), selected = _run_target_python_setup(
+        tmp_path, failure
+    )
+    assert selection[:2] == [selected, "never"]
+    if failure:
+        assert result.returncode == (43 if failure == "query" else 2), result.stderr
+        assert events == ["query"]
+        assert installed == []
+        assert selection == [selected, "never"]
+    else:
+        assert result.returncode == 0, result.stderr
+        assert events == ["query", "install"]
+        assert installed == ["python", "install", "3.14", "3.12"]
+        assert selection == [selected, "never", selected, "manual"]
 
 
 def test_shell_metacharacters_never_execute_before_validation(tmp_path: Path) -> None:

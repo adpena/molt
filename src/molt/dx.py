@@ -226,39 +226,27 @@ def checkout_component(source_root: Path) -> str:
     return f"{uv_project_env_component(source.name)[:24]}-{digest}"
 
 
-def stable_uv_project_env_dir(
-    artifact_root: Path,
-    *,
-    purpose: str,
-    python: str,
-    source_root: Path,
-) -> Path:
-    name = (
-        f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
-        f"__src-{checkout_component(source_root)}"
-    )
-    return (artifact_root.expanduser().resolve() / "uv-project-envs" / name).resolve()
-
-
-# The uv project environment (installed deps + editable molt) is a pure function
-# of (project source, purpose, python) — NOT of the session — so it is stable
-# within one checkout and cannot be overwritten by a sibling worktree. It is shared
-# across sessions; only the Cargo target dir may be session-scoped for build
-# isolation. Managed uv environments are durable caches. Callers that need a
-# different environment must set an explicit `UV_PROJECT_ENVIRONMENT`.
+# Interpreter/group intent is declared by the project. Its exact immutable
+# image is selected by checkout_provisioning's bounded Git control projection.
 DEFAULT_UV_PROJECT_PURPOSE = "dx"
-DEFAULT_UV_PROJECT_PYTHON = "3.12"
 
 
-def stable_uv_project_env_from_env(
-    env: Mapping[str, str], artifact_root: Path, source_root: Path
-) -> Path:
-    return stable_uv_project_env_dir(
-        artifact_root,
-        purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or DEFAULT_UV_PROJECT_PURPOSE,
-        python=env.get("MOLT_UV_PROJECT_PYTHON") or DEFAULT_UV_PROJECT_PYTHON,
-        source_root=source_root,
+def selected_uv_project_environment(
+    env: Mapping[str, str], source_root: Path
+) -> Path | None:
+    explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+    if explicit:
+        path = Path(explicit).expanduser()
+        return (path if path.is_absolute() else source_root / path).absolute()
+    from molt.checkout_provisioning import (
+        ProvisioningError,
+        selected_development_environment,
     )
+
+    try:
+        return selected_development_environment(source_root, env)
+    except ProvisioningError as exc:
+        raise DxConfigError(str(exc)) from exc
 
 
 def session_scoped_target_dir(target_root: Path, session_id: str | None) -> Path:
@@ -1569,13 +1557,13 @@ class RunContext:
         return path.resolve()
 
     def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
-        explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
-        if explicit:
-            return self._resolve_env_path(explicit)
-        ext_root = artifact_root(
-            self.root, env, prefer_external=self.prefer_external_artifacts
-        )
-        return stable_uv_project_env_from_env(env, ext_root, self.root)
+        selected = selected_uv_project_environment(env, self.root)
+        if selected is None:
+            raise DxConfigError(
+                "development image not selected; run "
+                "`python -m molt.checkout_provisioning ensure uv-environment`"
+            )
+        return selected
 
     def canonical_env(
         self,
@@ -1675,13 +1663,32 @@ class RunContext:
         install_default("MOLT_DIFF_ROOT", run_scratch / "diff")
         install_default("MOLT_DIFF_TMPDIR", run_scratch)
         install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
-        install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
+        selected_environment = selected_uv_project_environment(env, self.root)
+        if selected_environment is not None:
+            install_default("UV_PROJECT_ENVIRONMENT", selected_environment)
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
         install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
         # MOLT_TARGET_ROOT is durable toolchain state, not scratch capacity. The
         # same selector serves direct discovery, provisioning and DX children.
         env["MOLT_TARGET_ROOT"] = str(selected_toolchain_root)
-        install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
+        from molt.checkout_state import checkout_state_kind_of
+
+        managed_python = (
+            selected_environment is not None
+            and not env.get("MOLT_VENV")
+            and checkout_state_kind_of(selected_environment, ext_root)
+            == "python-environment"
+        )
+        if managed_python:
+            assert selected_environment is not None
+            from molt.python_environment_location import environment_bytecode_prefix
+
+            env["PYTHONPYCACHEPREFIX"] = str(
+                environment_bytecode_prefix(selected_environment)
+            )
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+        else:
+            install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
         install_default("TMPDIR", run_scratch)
         install_default("TMP", env["TMPDIR"])
         install_default("TEMP", env["TMPDIR"])
@@ -1689,7 +1696,13 @@ class RunContext:
         for key in root_keys:
             value = env.get(key)
             if value:
-                env[key] = str(self._resolve_env_path(value))
+                if key == "UV_PROJECT_ENVIRONMENT":
+                    # Keep the caller's physical spelling until the image
+                    # loader validates it; resolving first hides aliases.
+                    assert selected_environment is not None
+                    env[key] = str(selected_environment)
+                else:
+                    env[key] = str(self._resolve_env_path(value))
                 value = env[key]
                 if key == "MOLT_TARGET_ROOT":
                     continue  # Toolchain state is independent of artifact placement.
@@ -1702,6 +1715,10 @@ class RunContext:
 
         if create_dirs:
             for key in root_keys:
+                if key == "UV_PROJECT_ENVIRONMENT" or (
+                    key == "PYTHONPYCACHEPREFIX" and managed_python
+                ):
+                    continue  # Only the immutable image publisher creates it.
                 value = env.get(key)
                 if value:
                     from molt.checkout_state import checkout_state_use
@@ -1835,54 +1852,58 @@ class DxProject:
         commands = self.load_config().get("commands", {})
         return cast(dict[str, object], commands) if isinstance(commands, dict) else {}
 
+    def dependency_groups(self) -> tuple[str, ...]:
+        groups = self.load_config().get("dependency_groups", [])
+        if not isinstance(groups, list) or any(
+            not isinstance(group, str) or not group.strip() for group in groups
+        ):
+            raise DxConfigError("[tool.molt.dx].dependency_groups must be group names")
+        return tuple(sorted(set(groups)))
+
     def project_env_dir(self) -> Path:
-        return self.root / ".venv"
+        return self.uv_project_env_dir(os.environ)
 
     def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
-        explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
-        if explicit:
-            path = Path(explicit).expanduser()
-            if not path.is_absolute():
-                path = self.root / path
-            return path.resolve()
-        ext_root = artifact_root(
-            self.root,
-            env,
-            prefer_external=bool(self.load_config().get("prefer_external_artifacts")),
-        )
-        return stable_uv_project_env_from_env(env, ext_root, self.root)
+        return RunContext(self.root).uv_project_env_dir(env)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
-        if env is not None:
-            project_env = self.uv_project_env_dir(env)
-            if os.name == "nt":
-                return project_env / "Scripts" / "python.exe"
-            return project_env / "bin" / "python3"
-        if os.name == "nt":
-            return self.project_env_dir() / "Scripts" / "python.exe"
-        return self.project_env_dir() / "bin" / "python3"
+        from molt.python_environment_location import environment_python_path
+
+        return environment_python_path(
+            self.uv_project_env_dir(os.environ if env is None else env)
+        )
 
     def normalized_uv_run_env(
         self,
         env: Mapping[str, str],
         *,
         python: str | None,
-        project_env_matches_python: bool | None = None,
     ) -> ProcessEnvironment:
+        from molt.source_build_environment import load_development_environment
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+        from molt.python_environment_location import environment_bytecode_prefix
+
+        selected = self.uv_project_env_dir(env)
+        try:
+            image = load_development_environment(
+                selected,
+                repo_root=self.root,
+                python=python,
+                groups=self.dependency_groups(),
+            )
+        except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
+            raise DxConfigError(str(exc)) from exc
+        # Recipe admission owns version/group matching. UV must never repair or
+        # reinterpret the exact generation after selection.
         run_env = ProcessEnvironmentBuilder(env)
         run_env.setdefault("PYTHONUNBUFFERED", "1")
-        run_env["UV_PROJECT_ENVIRONMENT"] = str(self.uv_project_env_dir(run_env))
-        for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
+        run_env["UV_PROJECT_ENVIRONMENT"] = str(image.root)
+        run_env["VIRTUAL_ENV"] = str(image.root)
+        run_env["UV_NO_SYNC"] = "1"
+        run_env["PYTHONPYCACHEPREFIX"] = str(environment_bytecode_prefix(image.root))
+        run_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        for name in ("PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             run_env.pop(name, None)
-        if run_env.get("UV_NO_SYNC") == "1":
-            env_matches = project_env_matches_python
-            if env_matches is None:
-                raise DxConfigError(
-                    "UV_NO_SYNC normalization requires a guarded project "
-                    "Python version probe result"
-                )
-            if not env_matches:
-                run_env.pop("UV_NO_SYNC", None)
         return ProcessEnvironment(run_env)
 
     def canonical_env(
@@ -1993,10 +2014,10 @@ class DxProject:
         command: str,
         env: Mapping[str, str] | None = None,
     ) -> str:
-        return command.format(
-            root=str(self.root),
-            project_python=str(self.project_python(env)),
-        )
+        values = {"root": str(self.root)}
+        if "{project_python}" in command:
+            values["project_python"] = str(self.project_python(env))
+        return command.format(**values)
 
     def split_command(
         self,

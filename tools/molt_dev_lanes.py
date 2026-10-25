@@ -125,10 +125,9 @@ def lane_task(slug: str) -> str:
 def lane_environment(environ: Mapping[str, str]) -> ProcessEnvironment:
     """The environment that provisions a new lane.
 
-    The lane's ``uv run`` from a plain shell selects ``<lane>/.venv``. An
-    inherited ``UV_PROJECT_ENVIRONMENT`` names the driver checkout's
-    environment, and syncing it to the lane's lock would rewrite that
-    checkout's environment.
+    An inherited UV selection belongs to the driver checkout. The lane
+    publishes/selects its own immutable generation and records that choice
+    through checkout_provisioning's existing per-worktree control projection.
     """
     return ProcessEnvironment(environ).without(
         ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV")
@@ -418,9 +417,7 @@ def _unharvested_ignored_paths(git: Any) -> tuple[list[str], list[str]]:
 
 
 def provision_lane(worktree: Path) -> tuple[checkout_provisioning.Ensured, ...]:
-    """Make every declared input of a lane current, as `uv run` syncs its
-    environment before it runs. A current locked tree costs one stamp check;
-    the Git hooks' check starts one child Python."""
+    """Publish/select the lane's declared inputs through their existing owners."""
     return checkout_provisioning.ensure_all(
         worktree,
         lane_environment(os.environ),
@@ -475,10 +472,24 @@ def validate_lane_handoff(
     done: tuple[checkout_provisioning.Ensured, ...] = ()
     if provision:
         try:
+            inputs = {name for name, _spec in _lane_trees(worktree)}
+            environment = lane_environment(os.environ)
+            python_input = checkout_provisioning.checkout_input(
+                "uv-environment",
+                worktree,
+                environment,
+                guard_source_root=_COMMANDS.repo_root,
+            )
+            if checkout_provisioning.declares(python_input):
+                inputs.add("uv-environment")
             done = checkout_provisioning.ensure_all(
                 worktree,
-                lane_environment(os.environ),
-                [name for name, _spec in _lane_trees(worktree)],
+                environment,
+                [
+                    name
+                    for name in checkout_provisioning.CHECKOUT_INPUT_NAMES
+                    if name in inputs
+                ],
                 guard_source_root=_COMMANDS.repo_root,
             )
         except checkout_provisioning.ProvisioningError as exc:

@@ -15643,7 +15643,10 @@ def test_backend_source_paths_are_feature_aware() -> None:
     assert wasm_paths == common | wasm_leaf | codegen_abi
     assert rust_paths == common | rust_leaf
     assert luau_paths == common | luau_leaf
-    assert llvm_paths == common | native_leaf | codegen_abi
+    assert llvm_paths == common | native_leaf | codegen_abi | {"runtime/molt-llvm-link"}
+    assert "runtime/molt-llvm-link" not in (
+        native_paths | wasm_paths | rust_paths | luau_paths
+    )
     assert "runtime/molt-backend-wasm" not in native_paths
     assert "runtime/molt-backend-native" not in wasm_paths
     assert "runtime/molt-wasm-facts" not in (
@@ -17043,8 +17046,12 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
         context_digest: str,
+        body_selection: ModuleBodySelection,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
+        assert isinstance(body_selection, ModuleBodySelection)
+        assert body_selection.kind == "complete_source"
+        assert body_selection.roots == ()
         assert path == module_path
         source_lease.validate_path(path)
         source_lease.validate()
@@ -17141,8 +17148,12 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
         context_digest: str,
+        body_selection: ModuleBodySelection,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
+        assert isinstance(body_selection, ModuleBodySelection)
+        assert body_selection.kind == "complete_source"
+        assert body_selection.roots == ()
         assert path == module_path
         source_lease.validate_path(path)
         source_lease.validate()

@@ -6,10 +6,22 @@ import importlib.machinery
 import importlib.util
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
+from io import TextIOWrapper
 from pathlib import Path
 from types import ModuleType
-from typing import NoReturn
+from typing import NoReturn, cast
+
+
+if __name__ == "__main__":
+    # Probe receivers decode diagnostic pipes as UTF-8, including refusals
+    # before package admission. Windows redirected stderr otherwise uses the
+    # locale codec and can escape or corrupt a selected Unicode package home.
+    # This is the standalone wire contract, never an imported-facade side effect.
+    cast(TextIOWrapper, sys.stderr).reconfigure(
+        encoding="utf-8", errors="backslashreplace"
+    )
 
 
 def _load_package_import_custody(path: Path) -> ModuleType:
@@ -92,13 +104,31 @@ def _parse_arguments():
     modes.add_argument("--capture-environment", type=Path, metavar="ROOT")
     modes.add_argument("--capture-active-environment", action="store_true")
     parser.add_argument("--runtime-session", action="store_true")
+    parser.add_argument("--wheel-tag-source", type=Path)
     parser.add_argument("--input-report-log-dir")
     parser.add_argument("--with-custody", action="store_true")
+    parser.add_argument("--publish-bytecode", action="store_true")
     parser.add_argument("--hash-workers", type=int, default=1)
     parser.add_argument("--admit-virtualenv-bootstrap", action="store_true")
     parser.add_argument("--admit-site-bootstrap", action="append", default=[])
     parser.add_argument("--admit-external-root", type=Path, action="append", default=[])
+    parser.add_argument("--admit-published-environment", action="store_true")
     args = parser.parse_args()
+    if args.admit_published_environment and (
+        not (args.capture_environment or args.capture_active_environment)
+        or args.publish_bytecode
+    ):
+        parser.error("published admission requires a read-only environment capture")
+    if args.wheel_tag_source is not None and (
+        not args.capture_runtime or args.with_custody or args.runtime_session
+    ):
+        parser.error("wheel tag capture requires a plain runtime capture")
+    if args.publish_bytecode and (
+        not args.capture_environment or args.with_custody or args.runtime_session
+    ):
+        parser.error(
+            "bytecode publication requires one unpublished environment capture"
+        )
     admissions = (
         args.admit_virtualenv_bootstrap
         or args.admit_site_bootstrap
@@ -145,6 +175,7 @@ else:
     )
     from molt.python_environment_location import (  # noqa: E402
         PYTHON_ENVIRONMENT_LOCATION_SCHEMA as PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
+        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
         locate_current_python_environment as locate_current_python_environment,
         validate_python_environment_location as validate_python_environment_location,
     )
@@ -175,26 +206,89 @@ def _probe_error(message: str) -> NoReturn:
     raise SystemExit(2)
 
 
-def python_identity_probe_arguments(
-    arguments: Sequence[str], *, no_site: bool = False
-) -> list[str]:
-    """Launch this read-only authority with isolation and no bytecode writes.
+@contextmanager
+def python_identity_verifier_prefix() -> Generator[Path, None, None]:
+    """Own an empty verifier read namespace until the child has fully closed.
+
+    Callers with existing scratch custody may instead create an empty directory
+    there and pass it directly to ``python_identity_probe_arguments``. Neither
+    path is the published image namespace; admission reads that by explicit path.
+    """
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    temporary = OwnedTemporaryDirectory(prefix="molt-python-verifier-")
+    try:
+        yield Path(temporary.name).resolve(strict=True)
+    except BaseException as primary:
+        try:
+            temporary.cleanup()
+        except BaseException as cleanup_error:
+            primary.add_note(
+                f"Python verifier scratch cleanup also failed at {temporary.name}: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}"
+            )
+        raise
+    else:
+        temporary.cleanup()
+
+
+def python_identity_verifier_arguments(verifier_bytecode_prefix: Path) -> list[str]:
+    """Select the empty owned read namespace before arbitrary verifier imports.
 
     Isolation ignores PYTHONDONTWRITEBYTECODE, so the no-write policy must be
     an interpreter flag before either site startup or the authority imports.
-    Interpreter/launcher selection belongs to the caller; this owns its suffix.
+    The caller retains the fresh prefix's owner until child closure.
     """
-    from molt import input_report
+    from molt.python_file_node_custody import _is_junction
 
-    log_dir = input_report.worker_log_dir()
+    prefix = Path(verifier_bytecode_prefix).absolute()
+    if (
+        not prefix.is_dir()
+        or prefix.is_symlink()
+        or _is_junction(prefix)
+        or any(prefix.iterdir())
+    ):
+        raise PythonEnvironmentIdentityError(
+            "Python verifier requires a fresh empty owned bytecode prefix"
+        )
     return [
         "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={prefix}",
+    ]
+
+
+def python_identity_probe_arguments(
+    arguments: Sequence[str],
+    *,
+    verifier_bytecode_prefix: Path,
+    no_site: bool = False,
+    source_root: Path | None = None,
+) -> list[str]:
+    """Select the reader explicitly; external-root grants never choose code."""
+    from molt import input_report
+
+    log_dir = input_report.worker_log_dir()
+    probe_path = (
+        _python_capture_package_path(source_root) / "python_environment_identity.py"
+    ).resolve(strict=True)
+    return [
+        *python_identity_verifier_arguments(verifier_bytecode_prefix),
         *(["-S"] if no_site else []),
-        str(Path(__file__).resolve(strict=True)),
+        str(probe_path),
         *arguments,
         *(["--input-report-log-dir", log_dir] if log_dir is not None else []),
     ]
+
+
+def _python_capture_package_path(source_root: Path | None) -> Path:
+    """Select reader code independently of grants to captured external roots."""
+    return (
+        Path(__file__).resolve().parent
+        if source_root is None
+        else source_root / "src" / "molt"
+    )
 
 
 def python_capture_authority_paths(
@@ -226,6 +320,7 @@ def python_capture_authority_paths(
         "windows_process_api",
         "dx",
         "checkout_state",
+        "checkout_provisioning",
         "build_state_layout",
         "backend_daemon_paths",
         "host_capacity",
@@ -252,6 +347,18 @@ def python_capture_authority_paths(
         "python_identity_common",
         "python_uv_lock_identity",
         "python_capture",
+        "python_interpreter",
+        "target_python",
+        "target_python_policy",
+        "_python_release_generated",
+        "verified_subset",
+        "release_matrix",
+        "compiler_analysis/__init__",
+        "compiler_analysis/python_syntax",
+        "source_build_environment",
+        "source_build_environment_schema",
+        "source_build_requirements",
+        "process_guard",
         "toolchain_identity",
         "input_report",
         "llvm_linker_roles",
@@ -260,11 +367,7 @@ def python_capture_authority_paths(
         "file_publication",
         "portable_paths",
     )
-    root = (
-        Path(__file__).resolve().parent
-        if source_root is None
-        else source_root / "src" / "molt"
-    )
+    root = _python_capture_package_path(source_root)
     # Standalone probes import the package bootstrap too. Its version resolver
     # consults this source-tree marker even when the proof's cwd is another repo.
     return (
@@ -328,6 +431,16 @@ def _main() -> None:
                 payload = capture_current_python_runtime(
                     capture_context=context, with_custody=args.with_custody
                 )
+                if args.wheel_tag_source is not None:
+                    from molt.python_uv_lock_identity import capture_python_wheel_target
+
+                    payload = {
+                        "runtime": payload,
+                        "wheel_target": capture_python_wheel_target(
+                            args.wheel_tag_source, payload, context
+                        ),
+                    }
+                    context.verify()
             else:
                 from molt.python_environment_location import _active_environment_prefix
 
@@ -337,12 +450,28 @@ def _main() -> None:
                     bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
                 payload = capture_current_python_environment(
                     root,
-                    excluded_relative_paths=("molt-source-build-environment.json",),
+                    excluded_relative_paths=(SOURCE_BUILD_ENVIRONMENT_MANIFEST,),
                     admitted_site_bootstrap_paths=bootstrap,
                     admitted_external_roots=args.admit_external_root,
                     capture_context=context,
                     with_custody=args.with_custody,
+                    publish_bytecode=args.publish_bytecode,
                 )
+                if args.admit_published_environment:
+                    # The source-bound guardian has no site dependencies. This
+                    # selected-image child already captured their exact bytes;
+                    # keep all recipe/lock/WHEEL checks in their existing owner.
+                    from molt.source_build_environment import (
+                        admit_published_environment,
+                    )
+
+                    realized = (
+                        cast(dict[str, object], payload["identity"])
+                        if args.with_custody
+                        else payload
+                    )
+                    admit_published_environment(root, realized)
+                    context.verify()
             if args.runtime_session:
                 _serve_runtime_session(
                     payload, context, requests=sys.stdin, responses=sys.stdout

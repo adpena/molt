@@ -13,8 +13,8 @@ import pytest
 
 from molt.process_environment import NameRule, ProcessEnvironment
 
-from molt.cli import source_build_environment as build_environment
-from molt.cli import source_build_environment_schema as build_environment_schema
+from molt import source_build_environment as build_environment
+from molt import source_build_environment_schema as build_environment_schema
 from molt.cli import source_extension_set_registry as registry_authority
 from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
 from tools.proof_queue_pkg import command_admission as admission

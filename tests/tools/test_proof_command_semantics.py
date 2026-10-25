@@ -271,3 +271,257 @@ def test_query_without_test_counts_is_not_build_or_test_execution(arguments, tmp
     assert command_admission.command_proof_kind(envelope) == "query"
     assert transcript["stdout"]["test_counts"] == {}
     command_identity.validate_structured_test_counts(envelope, transcript, returncode=0)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["-I", "-E", "-m", "pytest", "-X", "pycache_prefix=payload"],
+        ["-IE", "-c", "print('untouched')", "--", "-Xpycache_prefix=payload"],
+        ["--", "script with spaces.py", "-I", "-Xpycache_prefix=payload"],
+    ],
+)
+def test_selected_image_python_prefix_precedes_startup_and_preserves_payload(
+    tmp_path, arguments
+):
+    from tools.proof_command_argv import python_environment_command
+
+    root = tmp_path / "image"
+    command = ["python", *arguments]
+    assert python_environment_command(command, environment_root=root) == [
+        "python",
+        "-B",
+        "-X",
+        f"pycache_prefix={root / 'bytecode'}",
+        *arguments,
+    ]
+    assert not root.exists(), "launch projection must create no state"
+
+
+@pytest.mark.parametrize("attached", [False, True])
+def test_selected_image_python_prefix_admits_one_exact_prefix(tmp_path, attached):
+    from tools.proof_command_argv import python_environment_command
+
+    root = tmp_path / "image"
+    value = f"pycache_prefix={root / 'bytecode'}"
+    prefix = [f"-IX{value}"] if attached else ["-I", "-X", value]
+    command = ["python", *prefix, "-m", "pytest", "-X", "payload"]
+    assert python_environment_command(command, environment_root=root) == [
+        "python",
+        "-B",
+        *command[1:],
+    ]
+    with pytest.raises(ValueError, match="selected exactly once"):
+        python_environment_command(
+            ["python", *prefix, "-X", value, "-m", "pytest"], environment_root=root
+        )
+    with pytest.raises(ValueError, match="conflicts"):
+        python_environment_command(
+            ["python", "-IXpycache_prefix=foreign", "-m", "pytest"],
+            environment_root=root,
+        )
+
+
+@pytest.mark.parametrize("arguments", [["--help", "-X"], ["--version"], ["-V"]])
+def test_selected_image_python_terminal_actions_remain_terminal(tmp_path, arguments):
+    from tools.proof_command_argv import python_environment_command
+
+    command = ["python", *arguments]
+    assert python_environment_command(command, environment_root=tmp_path) == command
+
+
+@pytest.mark.parametrize(
+    ("tail", "arguments"),
+    [
+        ('"a b c" d e', ("a b c", "d", "e")),
+        (r'"ab\"c" "\\" d', ('ab"c', "\\", "d")),
+        (r'a\\\b d"e f"g h', (r"a\\\b", "de fg", "h")),
+        (r"a\\\"b c d", ('a\\"b', "c", "d")),
+        (r'a\\\\"b c" d e', (r"a\\b c", "d", "e")),
+        ('a"b"" c d', ('ab" c d',)),
+        ('"" "unterminated', ("", "unterminated")),
+    ],
+)
+def test_windows_python_argv_follows_documented_crt_grammar(tail, arguments):
+    from tools.proof_command_argv import split_windows_python_command_line
+
+    # Microsoft's published CRT examples provide the independent expected argv.
+    # CommandLineToArgvW differs on the doubled-quote example.
+    assert split_windows_python_command_line(
+        f'"C:\\Python path\\python.exe" {tail}'
+    ) == (
+        r"C:\Python path\python.exe",
+        *arguments,
+    )
+
+
+def test_windows_python_argv_doubled_quotes_do_not_invent_startup_flags(tmp_path):
+    from molt.python_interpreter import parse_python_invocation
+    from tools.proof_command_argv import (
+        split_windows_python_command_line,
+        validate_python_environment_command,
+    )
+
+    root = tmp_path / "image"
+    warning = f'-W"x"" -B -Xpycache_prefix={root / "bytecode"} "'
+    argv = split_windows_python_command_line(f'python.exe {warning} -c "print(1)"')
+    assert argv[1] == f'-Wx" -B -Xpycache_prefix={root / "bytecode"} '
+    invocation = parse_python_invocation(argv)
+    assert invocation.mode == "command"
+    assert invocation.target == "print(1)"
+    with pytest.raises(ValueError, match="cache prefix"):
+        validate_python_environment_command(argv, environment_root=root, environment={})
+
+
+def test_windows_python_program_name_uses_pathname_grammar():
+    from tools.proof_command_argv import split_windows_python_command_line
+
+    assert split_windows_python_command_line('C:\\a" b"\\python.exe -B') == (
+        r"C:\a b\python.exe",
+        "-B",
+    )
+    assert split_windows_python_command_line(" python.exe -B") == (
+        "",
+        "python.exe",
+        "-B",
+    )
+    for command in ("", "python.exe\x00 -B"):
+        with pytest.raises(ValueError, match="empty or contains NUL"):
+            split_windows_python_command_line(command)
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        r'"fake\"',
+        '"fake"suffix',
+        "python.exe\t-B",
+        "python.exe\r",
+        "python.exe\v",
+        "python.exe\f",
+    ],
+)
+def test_windows_python_forwarders_must_keep_the_same_startup_suffix(program):
+    from tools.proof_command_argv import validate_windows_python_launch_prefix
+
+    with pytest.raises(ValueError, match="ambiguous forwarding"):
+        validate_windows_python_launch_prefix(
+            f'{program} -B -X pycache_prefix=selected -c "dummy -c real"'
+        )
+    with pytest.raises(ValueError, match="ambiguous forwarding"):
+        validate_windows_python_launch_prefix(f"{program} --help")
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        r"C:\Python\python.exe",
+        r'"C:\Python path\python.exe"',
+        r'"\\server\share\python.exe"',
+    ],
+)
+def test_windows_python_forwarders_preserve_canonical_startup_prefixes(program):
+    from tools.proof_command_argv import validate_windows_python_launch_prefix
+
+    validate_windows_python_launch_prefix(
+        f'{program} -B -X pycache_prefix=selected -c "payload"'
+    )
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+def test_selected_image_child_validation_uses_only_honored_startup_inputs(
+    tmp_path, isolated
+):
+    from tools.proof_command_argv import validate_python_environment_command
+
+    root = tmp_path / "image"
+    env = {
+        "PYTHONPYCACHEPREFIX": str(root / "bytecode"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    command = ["python", *(["-IE"] if isolated else []), "-c", "pass"]
+    if isolated:
+        with pytest.raises(ValueError, match="cache prefix"):
+            validate_python_environment_command(
+                command, environment_root=root, environment=env
+            )
+    else:
+        validate_python_environment_command(
+            command, environment_root=root, environment=env
+        )
+        with pytest.raises(ValueError, match="disable bytecode writes"):
+            validate_python_environment_command(
+                command,
+                environment_root=root,
+                environment={"PYTHONPYCACHEPREFIX": env["PYTHONPYCACHEPREFIX"]},
+            )
+    explicit = [
+        "python",
+        "-B",
+        "-X",
+        f"pycache_prefix={root / 'bytecode'}",
+        *command[1:],
+    ]
+    validate_python_environment_command(explicit, environment_root=root, environment={})
+    with pytest.raises(ValueError, match="selected exactly once"):
+        validate_python_environment_command(
+            [*explicit[:4], "-X", f"pycache_prefix={root / 'bytecode'}", *explicit[4:]],
+            environment_root=root,
+            environment=env,
+        )
+    validate_python_environment_command(
+        ["python", "--help", "-X"], environment_root=root, environment={}
+    )
+    assert not root.exists()
+
+
+def test_selected_image_uv_transport_preserves_typed_values_and_payload(tmp_path):
+    from tools.proof_command_argv import uv_environment_command
+
+    root, image = tmp_path / "repo", tmp_path / "image"
+    from molt.python_environment_location import environment_python_path
+
+    payload = ["python", "-I", "-c", "pass", "--python", "payload"]
+    command = [
+        "uv",
+        "run",
+        "--project",
+        ".",
+        "-p",
+        "3.15",
+        "--extra",
+        "--active",
+        "--no-sync",
+        "--",
+        *payload,
+    ]
+    assert uv_environment_command(
+        command, repo_root=root, environment_root=image, python_selector="3.15"
+    ) == [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        str(root),
+        "--python",
+        str(environment_python_path(image)),
+        "--no-sync",
+        "--no-config",
+        "--extra",
+        "--active",
+        "--",
+        *payload,
+    ]
+    for prefix, message in [
+        (["--python", "4.0"], "Python selector"),
+        (["--project", "foreign"], "project selector"),
+        (["--isolated"], "isolated"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            uv_environment_command(
+                ["uv", "run", *prefix, "python"],
+                repo_root=root,
+                environment_root=image,
+                python_selector="3.15",
+            )
+    assert not image.exists()

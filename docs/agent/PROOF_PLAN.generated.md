@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 386 |
+| Hashed executable authority inputs | 1 | 391 |
 | Local path rules | 35 | 91 |
 | Unique local commands | 73 | 78 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -57,7 +57,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 150 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 151 |
 
 ## Scheduled families
 
@@ -370,8 +370,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `codec-tables` | 7 | 0 |
 | `stringprep-tables` | 3 | 0 |
 | `llvm-runtime-abi` | 8 | 1 |
-| `source-extension-package-sets` | 44 | 0 |
-| `source-extension-proof-policy` | 59 | 0 |
+| `source-extension-package-sets` | 45 | 0 |
+| `source-extension-proof-policy` | 60 | 0 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 0 |

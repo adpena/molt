@@ -504,9 +504,10 @@ Key controls:
   unproven conditional imports conservatively, including type-only declarations.
   Declaration and validation consumers import their owning contract or schema;
   any remaining producer dependencies stay in that conservative scope. Source-build
-  validation belongs to `source_build_environment_schema`; provisioning belongs
-  to `source_build_environment`. Atomic text/JSON writes depend only on file
-  publication; staged artifact copying loads
+  validation belongs to `molt.source_build_environment_schema`; provisioning belongs
+  to `molt.source_build_environment`. These core authorities serve DX, proofs, and
+  CLI producers without importing the CLI facade. Atomic text/JSON writes depend
+  only on file publication; staged artifact copying loads
   its transactional producer when the copy is requested.
 - Native binary builds transport compiler output and shared stdlib batches as
   deterministic static archives, with explicit archive identity through daemon

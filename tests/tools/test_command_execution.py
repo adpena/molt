@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import command_execution
+from molt.python_interpreter import parse_python_invocation
 from molt.process_environment import (
     NameRule,
     ProcessEnvironment,
@@ -1076,6 +1077,7 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
     tmp_path, monkeypatch, pause
 ):
     """A real worker is held independently of its cancellation implementation."""
+    import gc
     import json
     import time
 
@@ -1112,9 +1114,12 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
     start = command_execution.CommandExecutor.start_owned
 
     def held_start(self, args, **kwargs):
-        assert args[1:3] == ["-I", "-S"]
-        assert Path(args[3]).name == "guarded_exec.py"
-        return start(self, [*args[:3], str(wrapper), *args[4:]], **kwargs)
+        invocation = parse_python_invocation(args)
+        script = 1 + len(invocation.interpreter_options)
+        assert Path(args[script]).name == "guarded_exec.py"
+        return start(
+            self, [*args[:script], str(wrapper), *args[script + 1 :]], **kwargs
+        )
 
     monkeypatch.setattr(command_execution.CommandExecutor, "start_owned", held_start)
     executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
@@ -1130,6 +1135,15 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
         timeout=15,
         harness=True,
+    )
+    verifier = Path(
+        next(
+            option.removeprefix("pycache_prefix=")
+            for option in parse_python_invocation(
+                owned.process.args
+            ).interpreter_options
+            if option.startswith("pycache_prefix=")
+        )
     )
     try:
         ready = entered if pause == "startup" else child_ready
@@ -1148,6 +1162,8 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         assert not owned.terminal
         assert owned.cancellation_path.is_file()
         assert owned.evidence_path.is_file()
+        gc.collect()
+        assert verifier.is_dir() and not list(verifier.iterdir())
         if pause == "closure":
             assert entered.is_file()  # Actual guard cleanup reached our barrier.
         release.write_text("release", encoding="utf-8")
@@ -1255,9 +1271,12 @@ def test_harness_owner_observes_a_guard_slower_than_one_window(tmp_path, monkeyp
     start = command_execution.CommandExecutor.start_owned
 
     def progressing_start(self, args, **kwargs):
-        assert args[1:3] == ["-I", "-S"]
-        assert Path(args[3]).name == "guarded_exec.py"
-        return start(self, [*args[:3], str(wrapper), *args[4:]], **kwargs)
+        invocation = parse_python_invocation(args)
+        script = 1 + len(invocation.interpreter_options)
+        assert Path(args[script]).name == "guarded_exec.py"
+        return start(
+            self, [*args[:script], str(wrapper), *args[script + 1 :]], **kwargs
+        )
 
     monkeypatch.setattr(
         command_execution.CommandExecutor, "start_owned", progressing_start
@@ -1480,6 +1499,7 @@ def test_guardian_isolates_startup_without_changing_workload_environment(
     """A foreign editable installation must affect only the selected workload."""
     import json
     import venv
+    from molt.python_environment_identity import python_identity_verifier_arguments
 
     virtual = tmp_path / "foreign-venv"
     builder = venv.EnvBuilder(with_pip=False)
@@ -1541,11 +1561,18 @@ def test_guardian_isolates_startup_without_changing_workload_environment(
         "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
         "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "guard-state"),
     }
+    parent_verifier = tmp_path / "parent-verifier"
+    parent_verifier.mkdir()
     # This exact interpreter/bootstrap is the custody subject. The shared
     # finite-deadline owner must not wrap it in another guardian and obscure
     # the inner start_guarded boundary exercised by the source-bound parent.
     completed = run_custody_subject_process(
-        [str(context.env_exec_cmd), "-I", "-S", str(parent)],
+        [
+            str(context.env_exec_cmd),
+            *python_identity_verifier_arguments(parent_verifier),
+            "-S",
+            str(parent),
+        ],
         cwd=tmp_path,
         env=environment,
         capture_output=True,
@@ -1565,3 +1592,72 @@ def test_guardian_isolates_startup_without_changing_workload_environment(
         json.loads(line)
         for line in startup_log.read_text(encoding="utf-8").splitlines()
     ] == [{"pid": observed["pid"], "molt": observed["molt"]}]
+
+
+def test_guardian_ignores_forged_valid_header_cache_without_writing(tmp_path):
+    """-B prevents writes but still executes a valid-header forged cache."""
+    import importlib.util
+    import json
+    import marshal
+
+    from tools.memory_guard_core.cli_contract import guardian_argv
+
+    source = tmp_path / "guardian_dependency.py"
+    source_bytes = b"ORIGIN = 'source'\n"
+    source.write_bytes(source_bytes)
+    adjacent = tmp_path / "__pycache__"
+    adjacent.mkdir()
+    cache = (
+        adjacent
+        / Path(importlib.util.cache_from_source(str(source), optimization="")).name
+    )
+    forged = (
+        importlib.util.MAGIC_NUMBER
+        + (3).to_bytes(4, "little")
+        + importlib.util.source_hash(source_bytes)
+        + marshal.dumps(compile("ORIGIN = 'forged'\n", str(source), "exec"))
+    )
+    cache.write_bytes(forged)
+    script = tmp_path / "guardian.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(tmp_path)!r})\n"
+        "import guardian_dependency as subject\n"
+        "import json\n"
+        "print(json.dumps({'origin':subject.ORIGIN,"
+        "'no_write':sys.dont_write_bytecode,'prefix':sys.pycache_prefix,"
+        "'isolated':sys.flags.isolated,'no_site':sys.flags.no_site}))\n",
+        encoding="utf-8",
+    )
+    verifier = tmp_path / "verifier"
+    verifier.mkdir()
+    # This intentionally unsafe positive control proves the forged body is
+    # executable despite -B; all fixture bytes remain confined to tmp_path.
+    unsafe = run_custody_subject_process(
+        [sys.executable, "-B", "-I", "-S", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=True,
+    )
+    assert json.loads(unsafe.stdout)["origin"] == "forged"
+    protected = run_custody_subject_process(
+        guardian_argv(sys.executable, script, verifier_bytecode_prefix=verifier),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=True,
+    )
+    assert json.loads(protected.stdout) == {
+        "origin": "source",
+        "no_write": True,
+        "prefix": str(verifier),
+        "isolated": 1,
+        "no_site": 1,
+    }
+    assert not list(verifier.iterdir())
+    assert cache.read_bytes() == forged
+    with pytest.raises(ValueError, match="fresh empty owned bytecode prefix"):
+        guardian_argv(sys.executable, script, verifier_bytecode_prefix=adjacent)
