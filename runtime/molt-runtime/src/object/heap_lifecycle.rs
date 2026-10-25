@@ -697,9 +697,11 @@ pub(crate) unsafe fn visit_payload_owned_values(
             HeapLifecycleHandler::GenericAlias => {
                 visit_bits(super::layout::generic_alias_origin_bits(ptr), visit);
                 visit_bits(super::layout::generic_alias_args_bits(ptr), visit);
+                visit_bits(super::layout::generic_alias_parameters_bits(ptr), visit);
             }
             HeapLifecycleHandler::Union => {
                 visit_bits(super::layout::union_type_args_bits(ptr), visit);
+                visit_bits(super::layout::union_type_parameters_bits(ptr), visit);
             }
             HeapLifecycleHandler::TracebackPayload => {
                 for slot in crate::builtins::frames::TRACEBACK_PAYLOAD_OWNED_SLOTS {
@@ -1590,16 +1592,21 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             HeapLifecycleHandler::DictKeysView
             | HeapLifecycleHandler::DictValuesView
             | HeapLifecycleHandler::DictItemsView
-            | HeapLifecycleHandler::Reversed
-            | HeapLifecycleHandler::Union => detach_slots(ptr, [0], sink),
+            | HeapLifecycleHandler::Reversed => detach_slots(ptr, [0], sink),
+            HeapLifecycleHandler::Union => {
+                sink.detach_if_heap(super::layout::union_type_take_parameters(ptr));
+                detach_slots(ptr, [0], sink);
+            }
             HeapLifecycleHandler::BoundMethod => {
                 for edge in super::layout::bound_method_take_edges(ptr) {
                     sink.detach_if_heap(edge);
                 }
             }
-            HeapLifecycleHandler::GenericAlias | HeapLifecycleHandler::Filter => {
-                detach_slots(ptr, [0, 1], sink)
+            HeapLifecycleHandler::GenericAlias => {
+                sink.detach_if_heap(super::layout::generic_alias_take_parameters(ptr));
+                detach_slots(ptr, [0, 1], sink);
             }
+            HeapLifecycleHandler::Filter => detach_slots(ptr, [0, 1], sink),
             HeapLifecycleHandler::Super => detach_slots(ptr, [0, 1, 2], sink),
             HeapLifecycleHandler::Slice | HeapLifecycleHandler::Range => {
                 detach_slots(ptr, [0, 1, 2], sink)

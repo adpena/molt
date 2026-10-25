@@ -26,7 +26,10 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.profile_typing_lazy_once import _load_typing  # noqa: E402
+from tools.profile_typing_lazy_once import (  # noqa: E402
+    typing_source_inputs,
+    typing_source_modules,
+)
 
 
 def _pool_allocation(module: ModuleType, stripe_count: int) -> dict[str, int]:
@@ -133,74 +136,75 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=9)
     parser.add_argument("--evaluator-delay-ms", type=float, default=5.0)
     args = parser.parse_args()
-    module = _load_typing(args.source_root.resolve())
     source_root = args.source_root.resolve()
     implementation = source_root / "src/molt/stdlib/typing.py"
     tool = Path(__file__).resolve()
-    stripe_counts = (1, 2, 4, 8, 16, 32, 64, 128, 256)
-    thread_counts = (1, 2, 4, 8)
-    delay_seconds = args.evaluator_delay_ms / 1000.0
-    rows: list[dict[str, object]] = []
-    for stripe_count in stripe_counts:
-        _configure_pool(module, stripe_count)
-        concurrency: dict[str, object] = {}
-        for thread_count in thread_counts:
-            samples = [
-                _different_alias_sample(
-                    module,
-                    thread_count=thread_count,
-                    evaluator_delay_seconds=delay_seconds,
-                )
-                for _ in range(args.repeats)
-            ]
-            concurrency[str(thread_count)] = {
-                "elapsed_ns_median": _median(samples, "elapsed_ns"),
-                "elapsed_ns_max": max(sample["elapsed_ns"] for sample in samples),
-                "distinct_stripes_median": _median(samples, "distinct_stripes"),
-                "collision_sample_count": sum(
-                    sample["distinct_stripes"] < thread_count for sample in samples
+    with typing_source_modules(source_root) as (module, _collections):
+        stripe_counts = (1, 2, 4, 8, 16, 32, 64, 128, 256)
+        thread_counts = (1, 2, 4, 8)
+        delay_seconds = args.evaluator_delay_ms / 1000.0
+        rows: list[dict[str, object]] = []
+        for stripe_count in stripe_counts:
+            _configure_pool(module, stripe_count)
+            concurrency: dict[str, object] = {}
+            for thread_count in thread_counts:
+                samples = [
+                    _different_alias_sample(
+                        module,
+                        thread_count=thread_count,
+                        evaluator_delay_seconds=delay_seconds,
+                    )
+                    for _ in range(args.repeats)
+                ]
+                concurrency[str(thread_count)] = {
+                    "elapsed_ns_median": _median(samples, "elapsed_ns"),
+                    "elapsed_ns_max": max(sample["elapsed_ns"] for sample in samples),
+                    "distinct_stripes_median": _median(samples, "distinct_stripes"),
+                    "collision_sample_count": sum(
+                        sample["distinct_stripes"] < thread_count for sample in samples
+                    ),
+                }
+            rows.append(
+                {
+                    "pool": _pool_allocation(module, stripe_count),
+                    "different_aliases": concurrency,
+                }
+            )
+        selected_stripe_count = 128
+        _configure_pool(module, selected_stripe_count)
+        same_alias_samples = [
+            _same_alias_sample(
+                module, thread_count=8, evaluator_delay_seconds=delay_seconds
+            )
+            for _ in range(args.repeats)
+        ]
+        payload = {
+            "schema_version": 1,
+            "identity": {
+                "source_inputs_sha256": typing_source_inputs(source_root),
+                "source_root": str(source_root),
+                "implementation_sha256": hashlib.sha256(
+                    implementation.read_bytes()
+                ).hexdigest(),
+                "tool_sha256": hashlib.sha256(tool.read_bytes()).hexdigest(),
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+            },
+            "repeats": args.repeats,
+            "evaluator_delay_ns": int(delay_seconds * 1_000_000_000),
+            "selected_stripe_count": selected_stripe_count,
+            "stripe_rows": rows,
+            "same_alias_8_threads": {
+                "elapsed_ns_median": _median(same_alias_samples, "elapsed_ns"),
+                "elapsed_ns_max": max(
+                    sample["elapsed_ns"] for sample in same_alias_samples
                 ),
-            }
-        rows.append(
-            {
-                "pool": _pool_allocation(module, stripe_count),
-                "different_aliases": concurrency,
-            }
-        )
-    selected_stripe_count = 128
-    _configure_pool(module, selected_stripe_count)
-    same_alias_samples = [
-        _same_alias_sample(
-            module, thread_count=8, evaluator_delay_seconds=delay_seconds
-        )
-        for _ in range(args.repeats)
-    ]
-    payload = {
-        "schema_version": 1,
-        "identity": {
-            "source_root": str(source_root),
-            "implementation_sha256": hashlib.sha256(
-                implementation.read_bytes()
-            ).hexdigest(),
-            "tool_sha256": hashlib.sha256(tool.read_bytes()).hexdigest(),
-            "python": platform.python_version(),
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-        },
-        "repeats": args.repeats,
-        "evaluator_delay_ns": int(delay_seconds * 1_000_000_000),
-        "selected_stripe_count": selected_stripe_count,
-        "stripe_rows": rows,
-        "same_alias_8_threads": {
-            "elapsed_ns_median": _median(same_alias_samples, "elapsed_ns"),
-            "elapsed_ns_max": max(
-                sample["elapsed_ns"] for sample in same_alias_samples
-            ),
-            "evaluator_calls_per_sample": sorted(
-                {sample["evaluator_calls"] for sample in same_alias_samples}
-            ),
-        },
-    }
+                "evaluator_calls_per_sample": sorted(
+                    {sample["evaluator_calls"] for sample in same_alias_samples}
+                ),
+            },
+        }
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)

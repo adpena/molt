@@ -584,16 +584,19 @@ def _simple_type_repr(value):
 
 
 def _is_param_expr(obj):
-    """Checks if obj matches either a list of types, ``...``, ``ParamSpec`` or
-    ``_ConcatenateGenericAlias`` from typing.py
+    """Shared Callable/ParamSpec expression authority, with actual class identity.
+
+    Builtin argument shapes keep their import-free path. A real parameter
+    instance already has a typing producer; lazy import avoids a bootstrap
+    cycle without registering another classification table.
     """
-    if obj is Ellipsis:
+    if obj is Ellipsis or isinstance(obj, (list, tuple)):
         return True
-    if isinstance(obj, list):
-        return True
-    obj = type(obj)
-    names = ("ParamSpec", "_ConcatenateGenericAlias")
-    return obj.__module__ == "typing" and any(obj.__name__ == name for name in names)
+    if isinstance(obj, type):
+        return False
+    from typing import _ParamSpec, _ConcatenateAlias
+
+    return isinstance(obj, (_ParamSpec, _ConcatenateAlias))
 
 
 class Callable(metaclass=ABCMeta):

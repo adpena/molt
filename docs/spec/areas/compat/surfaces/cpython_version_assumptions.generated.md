@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 66
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 346
+- `scattered-assumption` files: 347
 
 ## Files
 
@@ -265,11 +265,12 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/abc.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/attr/descriptor_tests.rs` | 1 | scattered-assumption | `3.25` |
 | `runtime/molt-runtime/src/builtins/attr.rs` | 8 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/attributes/generic_parameters.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/attributes/mutation.rs` | 7 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/attributes/scalar_attrs.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/attributes/type_metadata.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/attributes/wrapper_attrs.rs` | 2 | authority-routed | `sys.version_info` |
-| `runtime/molt-runtime/src/builtins/attributes.rs` | 1 | scattered-assumption | `3.0` |
+| `runtime/molt-runtime/src/builtins/attributes.rs` | 3 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/builtins/binding_guards.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/classes.rs` | 5 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/concurrent.rs` | 1 | scattered-assumption | `3.5` |
