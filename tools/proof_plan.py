@@ -3787,6 +3787,7 @@ def _runtime_tool_fingerprint(
 def _version_fingerprint(
     policy: ToolchainPolicy,
     *,
+    python_executable: Path | None,
     environment: Mapping[str, str],
     python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, Any] | None:
@@ -3804,7 +3805,14 @@ def _version_fingerprint(
     if policy.projection == "runtime-tool-release":
         return _runtime_tool_fingerprint(policy, environment=environment)
     executable = str(policy.data["executable"])
-    requested = sys.executable if executable == "{python}" else executable
+    if executable == "{python}":
+        if python_executable is None:
+            raise ValueError(f"{policy.name}: environment Python was not prepared")
+        if not python_executable.is_absolute():
+            raise ValueError(
+                f"{policy.name}: environment Python must be an absolute entrypoint"
+            )
+    requested = str(python_executable) if executable == "{python}" else executable
     probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
     compiler_path = compiler_tool_path(
         policy, environment=environment, cwd=probe_directory
@@ -4112,6 +4120,7 @@ def admit_toolchains(
     policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
+    python_executable: Path | None,
     environ: Mapping[str, str],
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
@@ -4155,6 +4164,7 @@ def admit_toolchains(
             environment=environment,
             owners=owners,
             python_admissions=python_admissions,
+            python_executable=python_executable,
         )
     except ValueError as exc:
         details = [str(exc)]
@@ -4211,6 +4221,7 @@ def toolchain_fingerprints(
     toolchain_policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
+    python_executable: Path | None,
     environment: Mapping[str, str],
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
@@ -4271,9 +4282,14 @@ def toolchain_fingerprints(
                         policies[name],
                         environment=environment,
                         python_admission=python_admissions[name],
+                        python_executable=python_executable,
                     )
                     if python_admissions is not None and name in python_admissions
-                    else _version_fingerprint(policies[name], environment=environment),
+                    else _version_fingerprint(
+                        policies[name],
+                        environment=environment,
+                        python_executable=python_executable,
+                    ),
                     None,
                 )
             except Exception as exc:
@@ -4851,7 +4867,11 @@ def execute_commands(
     ) -> dict[str, dict[str, Any]]:
         policies = tuple(policies)
         fingerprints = admit_toolchains(
-            policies, names, environ=baseline, root=plan.path.parent.parent
+            policies,
+            names,
+            environ=baseline,
+            root=plan.path.parent.parent,
+            python_executable=Path(sys.executable),
         ).fingerprints
         # Admission reports every selected prerequisite before any execution.
         # Its union projection serves only its own probes, never a child's

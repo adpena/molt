@@ -723,7 +723,12 @@ def test_transitive_cargo_metadata_availability_adds_no_build_requirement():
     gates, _ = cfg.select(["docs/agent/V1_HANDOFF_FINDINGS.md"])
     # This is the real ledger-only policy, including its generator dependency.
     assert ("python", "git", "generators") in [gate.toolchains for gate in gates]
-    environments = {gate.toolchains: ProcessEnvironment({}) for gate in gates}
+    from tools.molt_dev_policy import GateEnvironment
+
+    environments = {
+        gate.toolchains: GateEnvironment(ProcessEnvironment({}), None, False)
+        for gate in gates
+    }
     assert cfg.cargo_outputs(environments) == {}
 
 

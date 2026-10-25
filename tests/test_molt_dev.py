@@ -78,7 +78,12 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 from tools import molt_dev_gates  # noqa: E402
 from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402
-from tools.molt_dev_policy import GateConfig, SelectedGate  # noqa: E402
+from tools.molt_dev_policy import (  # noqa: E402
+    GateConfig,
+    GateEnvironment,
+    PreparedGates,
+    SelectedGate,
+)
 from tools.molt_dev_common import (  # noqa: E402
     CandidateFailure,
     GateFailure,
@@ -494,7 +499,11 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         _make_gate_venv(main_repo / ".venv", "main must not run")
         with pytest.raises(drv.DriverError, match="development image not selected"):
             drv.run_gate(
-                "python -c 'raise SystemExit(0)'", repo, ProcessEnvironment(env)
+                "python -c 'raise SystemExit(0)'",
+                repo,
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
             )
         return
     managed = selection != "MOLT_VENV"
@@ -530,7 +539,16 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         _gate_shell_command("python", str(script), str(output)) for output in outputs
     )
     before = dict(env)
-    assert drv.run_gate(command, repo, ProcessEnvironment(env)) == 0
+    assert (
+        drv.run_gate(
+            command,
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
+        )
+        == 0
+    )
     assert dict(env) == before
     expected = {
         "token": None if managed else "selected λ",
@@ -546,7 +564,13 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         expected,
     ]
     assert (
-        drv.run_gate('python -c "raise SystemExit(23)"', repo, ProcessEnvironment(env))
+        drv.run_gate(
+            'python -c "raise SystemExit(23)"',
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
+        )
         == 23
     )
     if managed:
@@ -561,7 +585,9 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
                     str(selected / "bytecode"),
                 ),
                 repo,
-                ProcessEnvironment(env),
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
             )
             == 0
         )
@@ -569,7 +595,9 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
             drv._gate_environment(
                 "echo before && " + _gate_shell_command("python", "-I", "-c", "pass"),
                 repo,
-                ProcessEnvironment(env),
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
             )
         with pytest.raises(drv.DriverError, match="cache prefix conflicts"):
             drv._gate_environment(
@@ -582,7 +610,9 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
                     "pass",
                 ),
                 repo,
-                ProcessEnvironment(env),
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
             )
 
 
@@ -646,7 +676,16 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
         for output in outputs
     )
     before = dict(env)
-    assert drv.run_gate(command, repo, ProcessEnvironment(env)) == 0
+    assert (
+        drv.run_gate(
+            command,
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
+        )
+        == 0
+    )
     assert dict(env) == before
     first, second = [json.loads(path.read_text(encoding="utf-8")) for path in outputs]
     assert first == second
@@ -681,7 +720,11 @@ def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, sele
     )
     with pytest.raises(drv.DriverError, match=message):
         drv.run_gate(
-            "echo should-not-run > launched.txt", repo, ProcessEnvironment(env)
+            "echo should-not-run > launched.txt",
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
         )
     assert not (repo / "launched.txt").exists()
     assert dict(env) == before
@@ -699,7 +742,11 @@ def test_run_gate_invalid_worktree_venv_does_not_fall_back_to_main(drv, tmp_path
         drv.run_gate(
             ("python", "-c", "raise SystemExit(0)"),
             work,
-            ProcessEnvironment(_gate_caller_env(main / ".venv")),
+            drv.prepare_gate_environment(
+                work,
+                ProcessEnvironment(_gate_caller_env(main / ".venv")),
+                requires_python=True,
+            ),
         )
     assert not (work / "launched.txt").exists()
 
@@ -710,17 +757,34 @@ def test_run_gate_missing_project_venv_refuses_python_but_allows_generic_shell(
     env = _gate_caller_env(tmp_path / "absent")
     with pytest.raises(drv.DriverError, match="development image not selected"):
         drv.run_gate(
-            'python -c "raise SystemExit(0)"', tmp_path, ProcessEnvironment(env)
+            'python -c "raise SystemExit(0)"',
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path, ProcessEnvironment(env), requires_python=True
+            ),
         )
     assert (
-        drv.run_gate("echo generic > observed.txt", tmp_path, ProcessEnvironment(env))
+        drv.run_gate(
+            "echo generic > observed.txt",
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path, ProcessEnvironment(env), requires_python=False
+            ),
+        )
         == 0
     )
     assert (tmp_path / "observed.txt").read_text(encoding="utf-8").strip() == "generic"
     if os.name != "nt":
         # POSIX sh reports unmatched quotes; cmd.exe accepts that spelling.
         assert (
-            drv.run_gate('echo "unterminated', tmp_path, ProcessEnvironment(env)) != 0
+            drv.run_gate(
+                'echo "unterminated',
+                tmp_path,
+                drv.prepare_gate_environment(
+                    tmp_path, ProcessEnvironment(env), requires_python=False
+                ),
+            )
+            != 0
         )
 
 
@@ -735,7 +799,11 @@ def test_run_gate_missing_selected_python_alias_never_uses_host_path(drv, tmp_pa
         drv.DriverError, match="virtualenv command 'python3' not executable"
     ):
         drv.run_gate(
-            'python3 -c "raise SystemExit(0)"', tmp_path, ProcessEnvironment(env)
+            'python3 -c "raise SystemExit(0)"',
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path, ProcessEnvironment(env), requires_python=True
+            ),
         )
 
 
@@ -753,7 +821,11 @@ def test_run_gate_quoted_windows_python_requires_project_environment(
         drv.run_gate(
             f'{head} -c "raise SystemExit(0)"',
             tmp_path,
-            ProcessEnvironment(_gate_caller_env(tmp_path / "absent")),
+            drv.prepare_gate_environment(
+                tmp_path,
+                ProcessEnvironment(_gate_caller_env(tmp_path / "absent")),
+                requires_python=True,
+            ),
         )
 
 
@@ -1089,8 +1161,12 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
         drv.run_gate(
             command,
             repo,
-            ProcessEnvironment(_gate_caller_env(tmp_path / "absent")).updated(
-                {"MOLT_VENV": str(selected)}
+            drv.prepare_gate_environment(
+                repo,
+                ProcessEnvironment(_gate_caller_env(tmp_path / "absent")).updated(
+                    {"MOLT_VENV": str(selected)}
+                ),
+                requires_python=True,
             ),
         )
         == 0
@@ -1102,7 +1178,13 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
     ]
     with pytest.raises(drv.DriverError, match="development image not selected"):
         drv.run_gate(
-            command, tmp_path, ProcessEnvironment(_gate_caller_env(tmp_path / "absent"))
+            command,
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path,
+                ProcessEnvironment(_gate_caller_env(tmp_path / "absent")),
+                requires_python=True,
+            ),
         )
 
 
@@ -2583,7 +2665,7 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     environment = ProcessEnvironment(os.environ)
     runtime = molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={("python",): environment},
+        environments={("python",): GateEnvironment(environment, None, False)},
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2642,7 +2724,9 @@ def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
     receipt = tmp_path / "receipt.json"
     runtime = molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={("python",): ProcessEnvironment(os.environ)},
+        environments={
+            ("python",): GateEnvironment(ProcessEnvironment(os.environ), None, False)
+        },
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2692,7 +2776,9 @@ def _gate_runtime_fixture(molt_dev_gates, tmp_path, outcomes, *, output_dir):
 
     return molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={("python",): ProcessEnvironment(os.environ)},
+        environments={
+            ("python",): GateEnvironment(ProcessEnvironment(os.environ), None, False)
+        },
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2778,7 +2864,11 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
     outcome = drv.run_captured_gate(
         (sys.executable, "-c", script),
         tmp_path,
-        ProcessEnvironment(os.environ).updated({"MOLT_VENV": sys.prefix}),
+        drv.prepare_gate_environment(
+            tmp_path,
+            ProcessEnvironment(os.environ).updated({"MOLT_VENV": sys.prefix}),
+            requires_python=True,
+        ),
         lambda: False,
         streams,
     )
@@ -2837,11 +2927,21 @@ def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monke
         return 0, "", "", None
 
     monkeypatch.setattr(drv, "_run_captured_gate", fake)
-    monkeypatch.setattr(drv, "_gate_environment", lambda cmd, repo, env: (cmd, env))
-    drv.run_captured_gate(
-        "python tools/a.py --one --two --three", Path("."), None, lambda: False
+    monkeypatch.setattr(
+        drv, "_gate_environment", lambda cmd, repo, context: (cmd, context.environment)
     )
-    drv.run_captured_gate(("cargo", "test"), Path("."), None, lambda: False)
+    drv.run_captured_gate(
+        "python tools/a.py --one --two --three",
+        Path("."),
+        GateEnvironment(ProcessEnvironment(os.environ), None, False),
+        lambda: False,
+    )
+    drv.run_captured_gate(
+        ("cargo", "test"),
+        Path("."),
+        GateEnvironment(ProcessEnvironment(os.environ), None, False),
+        lambda: False,
+    )
     assert seen == ["gate python tools/a.py --one --two ...", "gate cargo test"]
 
 
@@ -2861,13 +2961,15 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
     slices: list[str | None] = []
 
     def run_captured_gate(command, repo, environment, cancelled, streams=None):
+        assert environment.python_root == tmp_path / "planned-image"
+        assert environment.managed is True
         name = command[0]
         with lock:
             active[name] = active.get(name, 0) + 1
             peak[name] = max(peak.get(name, 0), active[name])
             if active.get("cargo", 0) and active.get("pytest", 0):
                 overlap["cargo_and_pytest"] = True
-            slices.append(environment.get(host_capacity.MEMORY_SLICE_ENV))
+            slices.append(environment.environment.get(host_capacity.MEMORY_SLICE_ENV))
         time.sleep(0.3)
         with lock:
             active[name] -= 1
@@ -2892,7 +2994,12 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
     ]
     runtime = molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={gate.toolchains: environment for gate in gates},
+        environments={
+            gate.toolchains: GateEnvironment(
+                environment, tmp_path / "planned-image", True
+            )
+            for gate in gates
+        },
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2950,7 +3057,10 @@ def _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate):
     return molt_dev_gates.GateRuntime(
         repo=tmp_path,
         environments={
-            gate.toolchains: ProcessEnvironment(os.environ) for gate in gates
+            gate.toolchains: GateEnvironment(
+                ProcessEnvironment(os.environ), None, False
+            )
+            for gate in gates
         },
         cargo_outputs={},
         capacity_requirements={},
@@ -3828,14 +3938,11 @@ def test_queue_preserves_source_merges_and_resolves_their_citations(
         )
     paths, requests = _enqueue(drv, work, merged)
     if advance_before_integrate:
-        from tools import molt_dev_queue as queue
-
-        provision = queue._provision_landing_sandbox
+        integrate = drv.cmd_integrate
         moved = False
 
-        def advance_after_provision(sandbox):
+        def advance_before_integration(args):
             nonlocal moved
-            provision(sandbox)
             if not moved:
                 moved = True
                 _commit_file(
@@ -3845,10 +3952,9 @@ def test_queue_preserves_source_merges_and_resolves_their_citations(
                     "late main",
                 )
                 _git(work, "push", "-q", "origin", "HEAD:main")
+            return integrate(args)
 
-        monkeypatch.setattr(
-            queue, "_provision_landing_sandbox", advance_after_provision
-        )
+        monkeypatch.setattr(drv, "cmd_integrate", advance_before_integration)
     commands = _record_driver_git_commands(drv, monkeypatch)
 
     assert _run_queue(drv, work) == drv.EXIT_OK
@@ -3992,13 +4098,13 @@ def test_land_runs_static_gates_in_the_lane_before_queueing(
     # The precheck admits under the gates' baseline, which alone sets this key.
     monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
     admitted = []
-    admit_gates = GateConfig.admit_gates
+    prepare = GateConfig.prepare
 
-    def recorded_admission(self, gates, *, environ):
-        admitted.append(environ)
-        return admit_gates(self, gates, environ=environ)
+    def recorded_admission(self, gates, *, baseline, prepare_python):
+        admitted.append(baseline)
+        return prepare(self, gates, baseline=baseline, prepare_python=prepare_python)
 
-    monkeypatch.setattr(GateConfig, "admit_gates", recorded_admission)
+    monkeypatch.setattr(GateConfig, "prepare", recorded_admission)
 
     assert _land_without_runner(drv, monkeypatch, lane) == drv.EXIT_OK
     assert admitted and all("PYTHONPYCACHEPREFIX" in env for env in admitted)
@@ -4089,6 +4195,13 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
     landed = _git(work, "show", "origin/main:queued.txt").stdout
     assert landed == "queued\n"
     assert _git(work, "rev-parse", "origin/main").stdout.strip() != tip, "replayed"
+    from molt.checkout_provisioning import selected_development_environment
+
+    # Both checkouts declare the real driver project, but the selected echo
+    # policy grants no source-Python environment. Observe persistent selection
+    # state after the real child protocol, not a mocked provisioner call count.
+    for checkout in (lane, work / ".git/molt/landing-sandbox"):
+        assert selected_development_environment(checkout, os.environ) is None
 
 
 def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeypatch):
@@ -4662,7 +4775,7 @@ def test_integrate_gates_build_into_the_checkouts_cargo_target(
     targets = []
 
     def gate(command, repo, env):
-        targets.append((env["CARGO_TARGET_DIR"], dict(env)))
+        targets.append((env.environment["CARGO_TARGET_DIR"], dict(env.environment)))
         return 0
 
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
@@ -5444,7 +5557,7 @@ def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
     _commit_integration_policy(work, ["echo {integration_upstream_ref}"])
     monkeypatch.setattr(
         GateConfig,
-        "admit",
+        "prepare",
         lambda *args, **kwargs: pytest.fail("invalid policy admitted"),
     )
     monkeypatch.setattr(
@@ -5952,7 +6065,7 @@ version_pattern = '^ok$'
 """
     _commit_file(work, "tools/proof_plan.toml", policy, "selected prerequisites")
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         if policy.name == "one":
             raise OSError("first probe raised")
         return None
@@ -5990,13 +6103,18 @@ version_pattern = '.*'
     )
     # Tool installation/version projection is outside the capacity contract.
     # Selection, explicit capability, output resolution, and admission stay real.
-    monkeypatch.setattr(GateConfig, "admit", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         GateConfig,
-        "environments",
-        lambda self, gates, *, baseline: {
-            gate.toolchains: ProcessEnvironment(baseline) for gate in gates
-        },
+        "prepare",
+        lambda self, gates, *, baseline, prepare_python: PreparedGates(
+            {
+                gate.toolchains: GateEnvironment(
+                    ProcessEnvironment(baseline), None, False
+                )
+                for gate in gates
+            },
+            {},
+        ),
     )
 
 
@@ -6250,9 +6368,17 @@ toolchains = ["unrelated"]
         lambda _, **_kw: pytest.fail("unrelated probe ran"),
     )
     # No selected gate declares a toolchain, so nothing is fingerprinted.
-    assert cfg.admit(["src/one.py"], matched, [], environ=os.environ) == {}
+    selected, _ = cfg.select(["src/one.py"])
+    prepared = cfg.prepare(
+        selected,
+        baseline=_gate_caller_env(tmp_path / "host"),
+        prepare_python=lambda env, needed: drv.prepare_gate_environment(
+            tmp_path, env, requires_python=needed
+        ),
+    )
+    assert prepared.fingerprints == {}
     with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
-        cfg.admit(["src/one.py"], matched, ["unknown executable"], environ=os.environ)
+        cfg.select(["src/one.py"], extra=["unknown executable"])
 
 
 def test_integrate_missing_committer_refuses_before_rebase(
@@ -6357,7 +6483,7 @@ python_versions = "supported-targets"
     before_catalog = target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     observed = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         observed.append(policy.name)
         if policy.name == "uv":
             return {
@@ -7411,11 +7537,15 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
             molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "logs"
         ),
         environments={
-            ("python",): ProcessEnvironment(os.environ).updated(
-                {
-                    "MOLT_VENV": sys.prefix,
-                    "PYTEST_XDIST_AUTO_NUM_WORKERS": "1",
-                }
+            ("python",): GateEnvironment(
+                ProcessEnvironment(os.environ).updated(
+                    {
+                        "MOLT_VENV": sys.prefix,
+                        "PYTEST_XDIST_AUTO_NUM_WORKERS": "1",
+                    }
+                ),
+                Path(sys.prefix),
+                False,
             )
         },
         run_captured_gate=execute,
@@ -7537,3 +7667,145 @@ def test_filtered_pytest_collection_retains_whole_selected_envelope(drv, tmp_pat
         "tests/test_nodes.py::test_one",
         "--collect-only",
     )
+
+
+@pytest.mark.parametrize("selector", ["MOLT_VENV", "UV_PROJECT_ENVIRONMENT"])
+def test_empty_gate_demand_preserves_explicit_selection_refusal(
+    drv, tmp_path, selector
+):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    marker = repo / "launched.txt"
+    config = GateConfig.parse(
+        'always = ["echo forbidden > launched.txt"]\n', "empty demand", root=repo
+    )
+    gates, _ = config.select(["source.py"])
+    environment = _gate_caller_env(tmp_path / "host")
+    environment[selector] = str(tmp_path / "missing explicit image")
+    with pytest.raises(drv.DriverError):
+        config.prepare(
+            gates,
+            baseline=environment,
+            prepare_python=lambda env, needed: drv.prepare_gate_environment(
+                repo, env, requires_python=needed
+            ),
+        )
+    assert not marker.exists()
+    assert not (repo / ".venv").exists()
+
+
+def test_transitive_gate_environment_binds_fingerprint_and_rechecks_image(
+    drv, tmp_path
+):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    repo = tmp_path / "source"
+    repo.mkdir()
+    artifacts = tmp_path / "artifacts"
+    image = materialize_development_environment(
+        repo, artifacts, runnable=True, select=True
+    )
+    environment = _gate_caller_env(tmp_path / "host")
+    environment["MOLT_EXT_ROOT"] = str(artifacts)
+    policy = """
+always = ["python -c pass"]
+always_toolchains = ["transitive"]
+[[toolchain_policy]]
+name = "transitive"
+members = ["source-interpreter"]
+[[toolchain_policy]]
+name = "source-interpreter"
+executable = "{python}"
+version_args = ["--version"]
+version_pattern = '^Python 3\\.'
+"""
+    config = GateConfig.parse(policy, "transitive environment", root=repo)
+    gates, _ = config.select(["source.py"])
+    prepared = config.prepare(
+        gates,
+        baseline=environment,
+        prepare_python=lambda env, needed: drv.prepare_gate_environment(
+            repo, env, requires_python=needed
+        ),
+    )
+    context = prepared.environments[("transitive",)]
+    assert context.python_root == image.root and context.managed is True
+    expected = image.root / ("Scripts/python.exe" if os.name == "nt" else "bin/python3")
+    assert prepared.fingerprints["source-interpreter"]["path"] == str(expected)
+    assert prepared.fingerprints["source-interpreter"]["path"] != str(
+        Path(sys.executable)
+    )
+    output = tmp_path / "observed.json"
+    command = (
+        "python",
+        "-c",
+        "import json,sys;from pathlib import Path;Path(sys.argv[1]).write_text(json.dumps([sys.prefix,sys.pycache_prefix]),encoding='utf-8')",
+        str(output),
+    )
+    assert drv.run_gate(command, repo, context) == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        str(image.root),
+        str(image.root / "bytecode"),
+    ]
+    # The context is a plan, not reusable physical admission. A changed recipe
+    # after preparation must refuse before the next child can overwrite output.
+    image.manifest_path.write_text("{}\n", encoding="utf-8")
+    output.write_text("must survive", encoding="utf-8")
+    with pytest.raises(drv.DriverError, match="managed development image refused"):
+        drv.run_gate(command, repo, context)
+    assert output.read_text(encoding="utf-8") == "must survive"
+
+
+def test_runtime_only_gate_demand_keeps_target_failure_without_source_image(
+    drv, tmp_path, monkeypatch
+):
+    from tools import proof_plan
+
+    # The target catalog/capture itself has separate real runtime controls.
+    # Keep its role literal here so this oracle challenges source-image demand,
+    # including a runtime whose name looks like the default Python tool.
+    runtime = proof_plan.ToolchainPolicy(
+        "python",
+        {
+            "name": "python",
+            "executable": "target-python",
+            "python_identity_role": "runtime",
+            "version_args": ["--version"],
+            "version_pattern": "^ok$",
+        },
+        tmp_path,
+    )
+    config = GateConfig.parse(
+        'always = ["echo runtime-only"]\nalways_toolchains = ["python"]\n',
+        "runtime demand",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    monkeypatch.setattr(
+        proof_plan, "load_toolchain_policies", lambda *args, **kwargs: (runtime,)
+    )
+
+    def probe(policy, *, environment, python_executable):
+        assert policy.python_identity_role == "runtime"
+        assert python_executable is None
+        raise OSError("independent target runtime probe failure")
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    monkeypatch.setattr(
+        drv,
+        "_resolve_repo_venv",
+        lambda *args: pytest.fail("source image selected for target runtime"),
+    )
+    with pytest.raises(
+        drv.DriverError, match="independent target runtime probe failure"
+    ):
+        config.prepare(
+            gates,
+            baseline=_gate_caller_env(tmp_path / "host"),
+            prepare_python=lambda env, needed: drv.prepare_gate_environment(
+                tmp_path, env, requires_python=needed
+            ),
+        )
+    assert not (tmp_path / ".venv").exists()

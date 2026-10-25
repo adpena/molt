@@ -1244,11 +1244,36 @@ def test_lane_list_reports_each_lane(
     assert payload["repository_inputs"] == {"git-hooks": "current"}
 
 
-def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) -> None:
+@pytest.mark.parametrize("selected_input", [False, True])
+def test_queue_provisions_selected_sandbox_inputs_and_retires_a_landed_lane(
+    family: Path, selected_input: bool
+) -> None:
     from tools import molt_dev_queue as queue
 
     main = family / "molt-src"
-    _commit_file(main, "tools/proof_plan.toml", 'always = ["true"]\n', "policy")
+    policy = 'always = ["true"]\n'
+    if selected_input:
+        # Real non-Python tool admission reads the exact tree that the fixture
+        # provisioner produced. The command's own toolchain closure is the only
+        # grant; default uv/Acorn enumeration would fail the empty case below.
+        tool = "cmd.exe" if os.name == "nt" else "cat"
+        args = (
+            ["/d", "/c", "type", "browser-acorn-tree\\ready"]
+            if os.name == "nt"
+            else ["browser-acorn-tree/ready"]
+        )
+        policy += (
+            'always_toolchains = ["fixture-tree"]\n'
+            '[[toolchain_policy]]\nname = "fixture-tree"\n'
+            + "executable = "
+            + json.dumps(tool)
+            + "\n"
+            + "version_args = "
+            + json.dumps(args)
+            + "\n"
+            + "version_pattern = '^v1$'\ncheckout_input = 'browser-acorn'\n"
+        )
+    _commit_file(main, "tools/proof_plan.toml", policy, "policy")
     _git(main, "push", "-q", "origin", "HEAD:main")
     worktree = _start(family, "queued")
     tip = _commit_file(worktree, "queued.txt", "queued\n", "queued work")
@@ -1262,9 +1287,17 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
 
     landed = queue.read_result(paths, request.id)
     assert landed is not None and landed["status"] == "landed"
-    # The sandbox's declared inputs were built before its gates ran.
-    assert (paths.sandbox / "uv-environment-tree" / "ready").is_file()
-    assert (paths.sandbox / "browser-acorn-tree" / "ready").is_file()
+    # Lane start still provisioned its editing environment. The sandbox owns
+    # only selected inputs; its real admission probe proved their contents.
+    assert not (paths.sandbox / "uv-environment-tree").exists()
+    assert (paths.sandbox / "browser-acorn-tree" / "ready").is_file() is selected_input
+    if selected_input:
+        assert (paths.sandbox / "browser-acorn-tree" / "ready").read_text(
+            encoding="utf-8"
+        ) == "v1\n"
+        assert (paths.sandbox / "browser-acorn-tree" / "runs").read_text(
+            encoding="utf-8"
+        ) == "run\n"
     assert not (paths.sandbox / "edgebox-typescript-tree").exists()
     _git(main, "fetch", "-q", "origin")
     assert "queued.txt" in _git(main, "ls-tree", "--name-only", "origin/main").stdout
