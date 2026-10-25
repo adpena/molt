@@ -1248,6 +1248,13 @@ lanes must follow that protocol first.
   helpers or document why they are bounded metadata probes or interactive
   guarded Popen paths, and new guard entrypoints must stay visible to the repo
   process sentinel.
+  The combined wiring audit shares one fresh file inventory, byte observation
+  and lazy AST across its raw-call, guard-wiring and minimal-environment rules.
+  The raw-call visitor resolves each encountered AST type's inherited handler
+  once per visitor, retaining the existing depth-first order and scope rules.
+  Its bounded handler map is cleared on success and failure; neither trees nor
+  completed audit verdicts persist across operations. Python profiling
+  exposes first-time dispatch through `_resolve_visit_handler`.
 - `tools/dev.py gates` persists the pyproject-owned local gate sequence under
   `logs/dev-gates-summary.json` by default. Pass `--summary-out` when a batch
   needs a named custody artifact; failed gates still write the partial command

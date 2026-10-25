@@ -37,6 +37,7 @@ from tests.runtime_build_identity_helper import (
     publication_executor,
     clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
+    runtime_cargo_plan,
 )
 from molt.llvm_toolchain import (
     wasi_c_abi_plan,
@@ -1288,6 +1289,114 @@ def test_flag_projection_resolves_roots_once_not_per_export(
     operand = tmp_path / "nested" / "input.a"
     assert projection.token(str(operand)) == "${source}/nested/input.a"
     assert resolved == [path for _label, path in roots] + [operand]
+
+
+def test_flag_projection_validates_distinct_literals_once_per_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+    original = identity._RuntimeFlagProjection._validate_literal_token
+
+    def validate(projection, token):
+        observed.append(token)
+        return original(projection, token)
+
+    monkeypatch.setattr(
+        identity._RuntimeFlagProjection, "_validate_literal_token", validate
+    )
+    projection = identity._RuntimeFlagProjection.capture(())
+    tokens = ("-C", "link-arg=--export=molt_one", "-C", "link-arg=--export=molt_two")
+    # The two member projections retain order and duplicate tokens exactly.
+    assert projection.rustflags(tokens) == list(tokens)
+    assert projection.link_args(tokens[::-1]) == list(tokens[::-1])
+    assert observed == [
+        "-C",
+        "link-arg=--export=molt_one",
+        "link-arg=--export=molt_two",
+    ]
+    identity._RuntimeFlagProjection.capture(()).link_args(tokens)
+    assert observed[3:] == observed[:3]
+
+
+def test_flag_projection_literal_admission_does_not_cross_root_domains() -> None:
+    projection = identity._RuntimeFlagProjection.capture(())
+    token = "--cfg=literal_root"
+    assert projection.token(token) == token
+    changed = projection.prepend_root("source", Path("literal_root"))
+    for _attempt in range(2):
+        with pytest.raises(ValueError, match="embedded absolute host path"):
+            changed.token(token)
+    # Warming and rejected requests do not change value identity or its parent.
+    assert projection == identity._RuntimeFlagProjection.capture(())
+    assert projection.token(token) == token
+
+
+@pytest.mark.parametrize("prefix", ["", "-I", "-Clink-arg=", "--sysroot=", "key="])
+def test_flag_projection_reobserves_absolute_operand_after_literal_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    projection = identity._RuntimeFlagProjection.capture((("source", tmp_path),))
+    operand = tmp_path / "selected"
+    selected = tmp_path / "before"
+    resolved: list[Path] = []
+    original = Path.resolve
+
+    def resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == operand:
+            resolved.append(path)
+            return selected
+        return original(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", current_thread_only(resolve, original))
+    for _attempt in range(2):
+        assert projection.token("--export=molt_one") == "--export=molt_one"
+    token = prefix + str(operand)
+    assert projection.token(token) == prefix + "${source}/before"
+    selected = tmp_path / "after"
+    assert projection.token(token) == prefix + "${source}/after"
+    selected = tmp_path.parent / "outside"
+    with pytest.raises(ValueError, match="unknown absolute host path"):
+        projection.token(token)
+    assert resolved == [operand, operand, operand]
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "delete"])
+def test_flag_projection_reobserves_captured_response_after_literal_hits(
+    tmp_path: Path, mutation: str
+) -> None:
+    response = tmp_path / "runtime.rsp"
+    payload = b"--export=molt_one\n"
+    response.write_bytes(payload)
+    plan = runtime_cargo_plan(
+        tmp_path,
+        fixture_root=RuntimeFixtureRoot(tmp_path),
+        env={name: sys.executable for name in ("CC", "CXX", "AR", "RANLIB")},
+        cargo_command=(
+            sys.executable,
+            "rustc",
+            "--",
+            "-C",
+            "link-arg=@" + str(response),
+        ),
+    )
+    projection = identity._RuntimeFlagProjection.capture(
+        plan.logical_paths, cargo_plan=plan
+    )
+    token = "-Clink-arg=@" + str(response)
+    expected = "-Clink-arg=@response:sha256=" + hashlib.sha256(payload).hexdigest()
+    expected += ":size=" + str(len(payload))
+    assert projection.token(token) == expected
+    assert projection.token(token) == expected
+    for _attempt in range(2):
+        assert projection.token("--export=molt_one") == "--export=molt_one"
+    if mutation == "rewrite":
+        before = response.stat()
+        response.write_bytes(b"--export=molt_two\n")
+        os.utime(response, ns=(before.st_atime_ns, before.st_mtime_ns))
+    else:
+        response.unlink()
+    with pytest.raises(ValueError):
+        projection.token(token)
 
 
 def test_flag_projection_preserves_ordered_root_precedence(tmp_path: Path) -> None:

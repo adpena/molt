@@ -6,16 +6,180 @@ import os
 from pathlib import Path
 import sys
 import warnings
+import weakref
 
 import pytest
 
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import (
+    current_thread_only,
+    install_thread_module_view,
+    run_guarded_test_process,
+)
 from tools import check_subprocess_guard_coverage
 from tools import scan_records
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AUDIT_TOOL = REPO_ROOT / "tools" / "check_subprocess_guard_coverage.py"
+
+
+def test_dispatch_reuse_preserves_raw_scope_and_diagnostic_order():
+    source = "\n".join(
+        [
+            "import subprocess as sp",
+            "from subprocess import run as launch",
+            "USE_SHELL = True",
+            "class Host:",
+            "    def member(self, launch):",
+            "        launch([])",
+            "        sp.run(sp.call([]), shell=USE_SHELL)",
+            "async def outer(pos, /, *args, launch=None, **kwargs):",
+            "    launch([])",
+            "    operation = sp.run",
+            "    alias: object = operation",
+            "    alias('pkill -f molt-backend', shell=True)",
+            "    operation += 1",
+            "    operation([])",
+            "    a, b = sp.run, sp.run",
+            "    a([])",
+            "    return sp.check_output([])",
+            "",
+            "@sp.run([])",
+            "def decorated(arg=sp.call([])) -> sp.check_output([]):",
+            "    sp.check_call([])",
+            "",
+        ]
+    )
+    calls = check_subprocess_guard_coverage.scan_source(
+        source.encode(), "tools/dispatch.py"
+    )
+    assert [(call.line, call.qualname, call.method, call.source) for call in calls] == [
+        (7, "Host.member", "run", "sp.run(sp.call([]), shell=USE_SHELL)"),
+        (7, "Host.member", "shell.exec", "sp.run(sp.call([]), shell=USE_SHELL)"),
+        (7, "Host.member", "call", "sp.call([])"),
+        (12, "outer", "run", "alias('pkill -f molt-backend', shell=True)"),
+        (12, "outer", "shell.exec", "alias('pkill -f molt-backend', shell=True)"),
+        (12, "outer", "shell.kill", "alias('pkill -f molt-backend', shell=True)"),
+        (17, "outer", "check_output", "sp.check_output([])"),
+        # Keep the existing generic FunctionDef field order, including its
+        # current qualification of defaults, decorators and return annotations.
+        (20, "decorated", "call", "sp.call([])"),
+        (21, "decorated", "check_call", "sp.check_call([])"),
+        (19, "decorated", "run", "sp.run([])"),
+        (20, "decorated", "check_output", "sp.check_output([])"),
+    ]
+    assert {call.path for call in calls} == {"tools/dispatch.py"}
+
+
+def test_dispatch_resolves_each_node_type_once_for_each_visitor(monkeypatch):
+    module = check_subprocess_guard_coverage
+    observed = []
+
+    class ObservingVisitor(module._SubprocessVisitor):
+        def _resolve_visit_handler(self, node_type):
+            observed.append((self.path, node_type.__name__))
+            return super()._resolve_visit_handler(node_type)
+
+    monkeypatch.setattr(
+        module,
+        "_SubprocessVisitor",
+        current_thread_only(ObservingVisitor, module._SubprocessVisitor),
+    )
+    source = b"import subprocess\nsubprocess.run([1])\nsubprocess.run([2])\n"
+    expected_types = {
+        "Module",
+        "Import",
+        "alias",
+        "Expr",
+        "Call",
+        "Attribute",
+        "Name",
+        "Load",
+        "List",
+        "Constant",
+    }
+    for path in ("tools/first.py", "tools/second.py"):
+        calls = module.scan_source(source, path)
+        assert [(call.path, call.line, call.method) for call in calls] == [
+            (path, 2, "run"),
+            (path, 3, "run"),
+        ]
+        names = [name for selected, name in observed if selected == path]
+        assert set(names) == expected_types
+        assert len(names) == len(expected_types)
+
+
+def test_dispatch_preserves_inherited_handlers_and_generic_node_traversal(monkeypatch):
+    module = check_subprocess_guard_coverage
+    constants = []
+
+    class ConstantVisitor(module._SubprocessVisitor):
+        def visit_Constant(self, node):
+            constants.append(node.value)
+            self.generic_visit(node)
+
+    class InheritingVisitor(ConstantVisitor):
+        pass
+
+    monkeypatch.setattr(
+        module,
+        "_SubprocessVisitor",
+        current_thread_only(InheritingVisitor, module._SubprocessVisitor),
+    )
+    calls = module.scan_source(
+        b"import subprocess\nmatch 1:\n    case _:\n        subprocess.run([2, 3])\n",
+        "tools/match.py",
+    )
+    assert constants == [1, 2, 3]
+    assert [(call.line, call.method) for call in calls] == [(4, "run")]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_dispatch_releases_bound_handlers_on_success_and_error(monkeypatch, fail):
+    module = check_subprocess_guard_coverage
+    references = []
+    retained_handler_maps = []
+
+    class VisitorFailure(Exception):
+        pass
+
+    class TrackingVisitor(module._SubprocessVisitor):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            references.append(weakref.ref(self))
+            # Keeping the map itself alive makes an uncleared bound method a
+            # real root: cyclic GC cannot hide a missing finally cleanup.
+            retained_handler_maps.append(self._visit_handlers)
+
+        def visit_Call(self, node):
+            if fail:
+                raise VisitorFailure("handler stopped")
+            super().visit_Call(node)
+
+    monkeypatch.setattr(
+        module,
+        "_SubprocessVisitor",
+        current_thread_only(TrackingVisitor, module._SubprocessVisitor),
+    )
+
+    def scan():
+        try:
+            result = module.scan_source(
+                b"import subprocess\nsubprocess.run([])\n", "tools/lifetime.py"
+            )
+        except VisitorFailure as error:
+            assert fail
+            assert str(error) == "handler stopped"
+        else:
+            assert not fail
+            assert [(call.line, call.method) for call in result] == [(2, "run")]
+        # Leave this frame before observing release; an active exception
+        # traceback may legitimately retain the visitor until it is handled.
+
+    scan()
+    assert retained_handler_maps == [{}]
+    assert len(references) == 1
+    assert references[0]() is None
 
 
 @pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf"])
@@ -153,7 +317,9 @@ def test_warning_free_observation_shares_parse_across_policy_changes(monkeypatch
         parses.append(filename)
         return parse(source, filename, *args, **kwargs)
 
-    monkeypatch.setattr(ast, "parse", observe)
+    install_thread_module_view(
+        monkeypatch, "ast", ast, check_subprocess_guard_coverage, parse=observe
+    )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("ignore", SyntaxWarning)
         original = observation.tree()
