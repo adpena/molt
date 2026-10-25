@@ -12,7 +12,6 @@ from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests.wasm_linked_runner import (
     _run_wasm_test_process,
     build_wasm_linked,
-    require_wasm_toolchain,
     run_wasm_linked,
 )
 
@@ -32,8 +31,6 @@ def test_wasm_imported_syntax_errors_keep_native_identity_and_payload(
 def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
     tmp_path: Path,
 ) -> None:
-    require_wasm_toolchain()
-
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "wasm_asyncio_task_basic.py"
     src.write_text(
@@ -228,8 +225,6 @@ def test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls(
 def test_wasm_zipimport_package_lookup_parity(
     tmp_path: Path,
 ) -> None:
-    require_wasm_toolchain()
-
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "wasm_zipimport_basic.py"
     src.write_text(
@@ -277,8 +272,6 @@ def test_wasm_zipimport_package_lookup_parity(
 def test_wasm_smtplib_thread_dependent_paths_fail_fast(
     tmp_path: Path,
 ) -> None:
-    require_wasm_toolchain()
-
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "wasm_smtplib_thread_gate.py"
     src.write_text(

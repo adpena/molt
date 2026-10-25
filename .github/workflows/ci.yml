@@ -294,6 +294,23 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
+      # The Mac compiled partition preserves both native and WASM witnesses.
+      # Its native compiler uses Xcode custody; only the WASI SDK is needed here.
+      - name: Setup Mac unit WASI SDK
+        if: matrix.cell == 'macos-arm64-py312-unit'
+        uses: ./.github/actions/setup-llvm
+        with:
+          profile: wasm
+          wasi: "true"
+      - name: Setup Mac unit WASM optimizer
+        if: matrix.cell == 'macos-arm64-py312-unit'
+        uses: ./.github/actions/setup-binaryen
+      - name: Provision Mac unit pinned Node
+        if: matrix.cell == 'macos-arm64-py312-unit'
+        run: uv run --no-sync python -m molt.tool_releases provision node
+      - name: Provision Mac unit pinned WASM validator
+        if: matrix.cell == 'macos-arm64-py312-unit'
+        run: uv run --no-sync python -m molt.tool_releases provision wasm-tools
       - name: Execute selected Python unit partitions
         run: >-
           python3 tools/proof_plan.py

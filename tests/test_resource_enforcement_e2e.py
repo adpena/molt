@@ -26,7 +26,7 @@ _MOLT_CLI = (sys.executable, "-m", "molt.cli")
 def _run_molt(
     source: str, env_overrides: dict[str, str] | None = None, timeout: int = 10
 ) -> subprocess.CompletedProcess:
-    """Write source to a temp file and run via molt run."""
+    """Run via molt, retaining the guard's timeout output and closure receipt."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         f.write(source)
         path = f.name
@@ -40,13 +40,6 @@ def _run_molt(
             text=True,
             timeout=timeout,
             env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            args=[*_MOLT_CLI, "run", path],
-            returncode=-1,
-            stdout="",
-            stderr="TIMEOUT",
         )
     finally:
         os.unlink(path)
@@ -63,13 +56,6 @@ def _run_python(source: str, timeout: int = 10) -> subprocess.CompletedProcess:
             capture_output=True,
             text=True,
             timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            args=[sys.executable, path],
-            returncode=-1,
-            stdout="",
-            stderr="TIMEOUT",
         )
     finally:
         os.unlink(path)

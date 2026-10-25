@@ -746,6 +746,7 @@
       "required": true,
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -899,6 +900,7 @@
         "tests/cli/test_cli_smoke.py/**",
         "tests/cli/test_cli_build_identity.py/**",
         "tests/cli/test_traceback_carets.py/**",
+        "tests/test_resource_enforcement_e2e.py/**",
         "tests/metamorphic/**"
       ],
       "job": "native-integration",
@@ -907,6 +909,7 @@
       "required": true,
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -4613,6 +4616,7 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
+        "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "family": "wasm",
@@ -4622,13 +4626,11 @@
         "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results",
         "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64",
         "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload"
+        "tests/test_wasm_runtime_heavy_regressions.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -6376,43 +6378,6 @@
         "not slow"
       ],
       "cache_domain": "pytest",
-      "cell": "linux-x86_64-py312-unit",
-      "dependencies": [],
-      "family": "python_unit",
-      "id": "python.unit.compiled-contracts",
-      "pytest": [
-        "tests/test_resource_enforcement_e2e.py",
-        "tests/test_wasm_runtime_heavy_regressions.py"
-      ],
-      "pytest_worker_memory_gb": 4.0,
-      "resource_class": "python-tests",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 600,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python",
-        "-m",
-        "pytest",
-        "-q",
-        "-n",
-        "auto",
-        "-m",
-        "not slow"
-      ],
-      "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -6769,6 +6734,39 @@
     },
     {
       "argv": [
+        "cargo",
+        "build",
+        "--locked",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "molt-wasm-host"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
+      "cell": "macos-arm64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.wasm-host.macos",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
         "uv",
         "run",
         "--python",
@@ -6782,9 +6780,17 @@
         "-m",
         "not slow"
       ],
-      "cache_domain": "pytest",
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "macos-arm64-py312-unit",
-      "dependencies": [],
+      "dependencies": [
+        "python.unit.wasm-host.macos"
+      ],
       "family": "python_unit",
       "id": "python.unit.compiled-contracts.macos",
       "pytest": [
@@ -6792,16 +6798,24 @@
         "tests/test_wasm_runtime_heavy_regressions.py"
       ],
       "pytest_worker_memory_gb": 4.0,
-      "resource_class": "python-tests",
+      "resource_class": "compiler-build-resource",
       "tiers": [
         "pre-push",
         "pr",
         "main"
       ],
+      "timeout_budget": "integration",
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo",
+        "node",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -7245,10 +7259,12 @@
       "pytest": [
         "tests/cli/test_cli_smoke.py",
         "tests/cli/test_cli_build_identity.py",
-        "tests/cli/test_traceback_carets.py"
+        "tests/cli/test_traceback_carets.py",
+        "tests/test_resource_enforcement_e2e.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -9182,23 +9198,24 @@
         "linux-x86_64-py312-unit": {
           "budget_seconds": 2580,
           "critical_path_seconds": 900,
-          "headroom_seconds": 0,
+          "headroom_seconds": 120,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2520,
-          "required_job_seconds": 2580,
+          "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2460
+            "python-tests": 2160
           }
         },
         "macos-arm64-py312-unit": {
           "budget_seconds": 2580,
-          "critical_path_seconds": 900,
-          "headroom_seconds": 0,
+          "critical_path_seconds": 1800,
+          "headroom_seconds": 120,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2520,
-          "required_job_seconds": 2580,
+          "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2460
+            "compiler-build-resource": 1800,
+            "python-tests": 2160
           }
         }
       },

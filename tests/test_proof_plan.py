@@ -1977,6 +1977,15 @@ def test_python_unit_runs_the_same_partitions_on_linux_and_macos() -> None:
     }
     linux = by_cell["linux-x86_64-py312-unit"]
     macos = by_cell["macos-arm64-py312-unit"]
+    native_ids = {
+        "python.unit.wasm-host.macos",
+        "python.unit.compiled-contracts.macos",
+    }
+    # The original Mac native/WASM coordinate remains in the unit job;
+    # Linux uses its equipped native/WASM integration owners. Its exact source,
+    # prerequisites and unchanged caps are independently checked below.
+    assert {command.id for command in macos if command.id in native_ids} == native_ids
+    macos = [command for command in macos if command.id not in native_ids]
 
     def contract(command: proof_plan.ProofCommand) -> dict[str, object]:
         return {
@@ -2098,15 +2107,13 @@ def test_matrix_family_budget_binds_each_cell() -> None:
         for command in PLAN.commands
     )
     errors = replace(PLAN, commands=commands).validate()
-    # Commands take the first free slot in declaration order. Harness (2401 s)
-    # holds slot 1; custody (300), binding (300), frontend (600), CLI (900)
-    # and surface contracts (600) fill slot 2 until 2700 s; compiled contracts
-    # (600) take slot 1 at 2401 s and end at 3001 s; runtime-artifacts (600)
-    # takes slot 2 at 2700 s and ends at 3300 s; the 120 s boundary partition
-    # takes slot 1 at 3001 s. The makespan is 3300 s. The Linux job is
-    # unchanged, so only the macOS cell exceeds its 43-minute budget.
+    # Harness holds one Python slot until 2401 s; custody, binding,
+    # frontend, CLI and surface fill the other until 2700 s. Runtime artifacts
+    # then run on the first slot until 3001 s; the 120 s boundary ends at
+    # 2820 s on the second. The independent compiler slot finishes its
+    # host/compiled dependency at 1800 s. Only Mac exceeds its fixed cap.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 3300s in matrix "
+        "python_unit: projected resource-aware timeout envelope 3001s in matrix "
         "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2580s"
     ]
 
@@ -2560,8 +2567,8 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
             for selected in proof_plan._topological_commands(PLAN, command_id=name)
         } == {name, "wasm.build.backend", *runtime_dependencies}
 
-    # The host-boundary programs use core intrinsics in the admitted micro
-    # pair. Keep one shared cold build window instead of duplicating prebuilds.
+    # The whole regression file also executes the linked native WASM host.
+    # Its existing host build joins the same shared cold application window.
     boundaries = next(
         row for row in PLAN.commands if row.id == "wasm.integration.host-boundaries"
     )
@@ -2570,14 +2577,12 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results",
         "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64",
         "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload",
+        "tests/test_wasm_runtime_heavy_regressions.py",
     )
     assert boundaries.data["timeout_budget"] == "cold"
     assert set(boundaries.dependencies) == {
         "wasm.build.backend",
+        "wasm.build.host",
         "wasm.build.shared-runtime",
     }
     assert {"node", "wasi-clang"}.issubset(PLAN.required_toolchains(boundaries))
@@ -8116,6 +8121,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
             "rust.test.ir-wasm-runtime-authorities",
             "rust.test.wasi-runtime-lifecycle",
             "wasm.build.host",
+            "python.unit.wasm-host.macos",
         }
     }
     expected.update(
@@ -8139,6 +8145,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "portability.rust.linux-aarch64.clippy-workspace",
                 "portability.rust.macos.clippy-workspace",
                 "portability.rust.macos.runtime-gate",
+                "python.unit.compiled-contracts.macos",
                 "runtime.cost.candidate",
                 "rust.clippy.workspace-default",
                 "rust.test.default-truth",
@@ -9652,3 +9659,153 @@ def test_a_runtime_tool_is_admitted_by_its_attested_installation(
     assert calls == [True, False, False]
     assert not receipt.exists()
     assert str(tmp_path) not in projected.delta.get("PATH", "")
+
+
+def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> None:
+    resource_file = "tests/test_resource_enforcement_e2e.py"
+    wasm_file = "tests/test_wasm_runtime_heavy_regressions.py"
+    rows = {command.id: command for command in PLAN.commands}
+    for path, expected in (
+        (
+            resource_file,
+            {"native.integration.cli-smoke", "python.unit.compiled-contracts.macos"},
+        ),
+        (
+            wasm_file,
+            {
+                "wasm.integration.host-boundaries",
+                "python.unit.compiled-contracts.macos",
+            },
+        ),
+    ):
+        owners = {
+            command.id
+            for command in PLAN.commands
+            if any(arg == path or arg.startswith(path + "::") for arg in command.argv)
+        }
+        assert owners == expected
+        assert all(path in rows[name].argv for name in owners)
+        for name in owners:
+            argv = rows[name].argv
+            pytest_args = argv[argv.index("pytest") + 1 :]
+            assert not {"-k", "--deselect", "--ignore"} & set(pytest_args)
+            if name != "python.unit.compiled-contracts.macos":
+                assert "-m" not in pytest_args
+            else:
+                assert pytest_args == (
+                    "-q",
+                    "-n",
+                    "auto",
+                    "-m",
+                    "not slow",
+                    "--molt-worker-memory-gb=4.0",
+                    resource_file,
+                    wasm_file,
+                )
+
+    native = rows["native.integration.cli-smoke"]
+    assert native.dependencies == ("native.integration.capability-manifest",)
+    assert {"python", "uv", "rustc", "cargo", "ld.lld"} <= set(
+        PLAN.required_toolchains(native)
+    )
+    wasm = rows["wasm.integration.host-boundaries"]
+    assert set(wasm.dependencies) == {
+        "wasm.build.backend",
+        "wasm.build.host",
+        "wasm.build.shared-runtime",
+    }
+    assert {"node", "wasm-tools", "wasi-clang", "wasm-ld"} <= set(
+        PLAN.required_toolchains(wasm)
+    )
+    for owner in (native, wasm):
+        family = next(family for family in PLAN.families if family.name == owner.family)
+        assert {"pre-push", "pr", "main"} == set(owner.data["tiers"])
+        assert "pre-push" in family.data["tiers"]
+        assert {
+            command.id
+            for command in PLAN.commands
+            if command.family == owner.family and "pre-push" in command.data["tiers"]
+        } == {owner.id}
+
+    host = rows["python.unit.wasm-host.macos"]
+    resource = rows["python.unit.compiled-contracts.macos"]
+    assert resource.dependencies == (host.id,)
+    for command in (host, resource):
+        assert command.family == "python_unit"
+        assert command.data["cell"] == "macos-arm64-py312-unit"
+        assert command.data["resource_class"] == "compiler-build-resource"
+        assert {"pre-push", "pr", "main"} == set(command.data["tiers"])
+        assert {"rustc", "cargo"} <= set(PLAN.required_toolchains(command))
+    assert host.argv == rows["wasm.build.host"].argv
+    assert host.argv == (
+        "cargo",
+        "build",
+        "--locked",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "molt-wasm-host",
+    )
+    assert proof_plan.cargo_native_units(host.data) == {"target": ["c"]}
+    assert proof_plan.cargo_native_units(resource.data) == {"target": ["c", "c++"]}
+    assert set(resource.toolchains) == {
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "node",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt",
+    }
+    assert host.data["timeout_seconds"] == 1200
+    assert resource.data["timeout_seconds"] == 600
+    assert resource.data["pytest_worker_memory_gb"] == 4.0
+    assert resource.argv[-2:] == (resource_file, wasm_file)
+    policies = {policy.name: policy.max_parallel for policy in PLAN.resource_policies}
+    assert policies["compiler-build-resource"] == 1
+    assert policies["python-tests"] == 2
+    family = next(family for family in PLAN.families if family.name == "python_unit")
+    assert family.data["timeout_minutes"] == 43
+    assert family.data["job_reserve_seconds"] == 60
+    # This is the existing command-only scheduler envelope. Setup time,
+    # cold completion and concurrent memory still require actual qualification.
+    for cell in ("linux-x86_64-py312-unit", "macos-arm64-py312-unit"):
+        envelope = PLAN.timeout_envelope("python_unit", matrix_cell=cell)
+        assert envelope.projected_makespan_seconds == 2400
+        assert envelope.projected_makespan_seconds + 60 <= 43 * 60
+
+
+def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admission() -> (
+    None
+):
+    job = proof_plan._workflow_job_block(
+        (PLAN.path.parent.parent / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        ),
+        "python-unit",
+    )
+    assert job is not None
+    assert "timeout-minutes: 43" in job
+    steps = job.split("      - ")
+    admission = next(
+        index for index, step in enumerate(steps) if "--run-family python_unit" in step
+    )
+    required = (
+        "uses: ./.github/actions/setup-llvm",
+        "uses: ./.github/actions/setup-binaryen",
+        "python -m molt.tool_releases provision node",
+        "python -m molt.tool_releases provision wasm-tools",
+    )
+    for requirement in required:
+        matching = [
+            (index, step) for index, step in enumerate(steps) if requirement in step
+        ]
+        assert len(matching) == 1
+        index, step = matching[0]
+        assert index < admission
+        assert "if: matrix.cell == 'macos-arm64-py312-unit'" in step
+        if requirement.endswith("setup-llvm"):
+            assert "profile: wasm" in step and 'wasi: "true"' in step
+            assert "profile: full" not in step
