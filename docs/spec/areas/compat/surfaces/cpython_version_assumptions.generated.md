@@ -6,9 +6,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 68
+- `authority-routed` files: 67
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 348
+- `scattered-assumption` files: 347
 
 ## Files
 
@@ -36,7 +36,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/compiler_analysis/python_lexical_scope.py` | 2 | authority-routed | `3.12` |
 | `src/molt/compiler_analysis/python_syntax.py` | 1 | authority-routed | `3.15` |
 | `src/molt/debug/contracts.py` | 2 | operational-tooling | `sys.version_info` |
-| `src/molt/dx.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/environment_registry.toml` | 2 | scattered-assumption | `3.12` |
 | `src/molt/file_locks.py` | 3 | scattered-assumption | `3.12` |
 | `src/molt/frontend/_types.py` | 2 | authority-routed | `3.13` |
@@ -59,7 +58,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/host_capacity.py` | 1 | scattered-assumption | `3.13` |
 | `src/molt/llvm_wasi_tools.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/python_external_custody.py` | 1 | scattered-assumption | `3.10` |
-| `src/molt/python_interpreter.py` | 5 | authority-routed | `sys.version_info` |
+| `src/molt/python_interpreter.py` | 6 | authority-routed | `3.12` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |
 | `src/molt/python_runtime_identity.py` | 4 | operational-tooling | `sys.version_info` |
 | `src/molt/release_matrix.py` | 3 | operational-tooling | `3.12` |
@@ -428,7 +427,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/cpython_regrtest.py` | 13 | authority-routed | `3.12` |
 | `tools/cross_run.py` | 3 | scattered-assumption | `3.12` |
 | `tools/dashboard_delta.py` | 1 | operational-tooling | `3.12` |
-| `tools/dev.py` | 7 | authority-routed | `sys.version_info` |
 | `tools/fail_closed_gate.py` | 1 | scattered-assumption | `3.12` |
 | `tools/fail_closed_registry.toml` | 1 | scattered-assumption | `3.12` |
 | `tools/fast_frontier_cycle.py` | 1 | scattered-assumption | `3.12` |
@@ -467,7 +465,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard_model.py` | 1 | scattered-assumption | `3.182` |
 | `tools/perf_scoreboard_profile.py` | 1 | authority-routed | `3.0` |
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
-| `tools/proof_command_argv.py` | 1 | operational-tooling | `3.12` |
+| `tools/proof_command_argv.py` | 2 | operational-tooling | `3.12` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
 | `tools/proof_plan.toml` | 80 | authority-routed | `3.12` |
 | `tools/public_contract_gate.py` | 2 | authority-routed | `3.12` |
