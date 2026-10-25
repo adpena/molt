@@ -109,6 +109,37 @@ def test_identity_class_stable_across_revs_same_tool_suite_host() -> None:
     assert ph.board_identity(a) != ph.board_identity(b)
 
 
+def test_history_keeps_old_methodology_bytes_out_of_new_baseline(
+    tmp_path: Path,
+) -> None:
+    hist = tmp_path / "history"
+    old_doc = _source_doc([_cell()], authoritative=True)
+    old_doc["provenance"]["methodology_version"] = 9
+    old = pb.project_all(old_doc)["cpython"]
+    ph.record_board(old, history_dir=hist)
+    assert (
+        ph.latest_authoritative_baseline(
+            "cpython", ph.identity_class(old), history_dir=hist
+        )
+        is not None
+    )
+    retained = {path: path.read_bytes() for path in hist.rglob("*.json")}
+
+    new_doc = _source_doc([_cell()], authoritative=True)
+    new_doc["provenance"]["methodology_version"] = 10
+    new = pb.project_all(new_doc)["cpython"]
+    assert ph.identity_class(old) != ph.identity_class(new)
+    assert (
+        ph.latest_authoritative_baseline(
+            "cpython", ph.identity_class(new), history_dir=hist
+        )
+        is None
+    )
+    assert retained and all(
+        path.read_bytes() == content for path, content in retained.items()
+    )
+
+
 def test_identity_class_differs_across_host() -> None:
     a = pb.project_all(_source_doc([_cell()]))["cpython"]
     b_doc = _source_doc([_cell()])

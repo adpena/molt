@@ -27,6 +27,7 @@ DEFAULT_MANIFEST_PATH = ROOT / "bench" / "results" / "docs_manifest.json"
 from tools import perf_authority  # noqa: E402
 from tools.bench_evidence import (  # noqa: E402
     comparator_time,
+    format_observed_build_profiles,
     native_molt_speedup,
     native_molt_time,
     valid_positive_number,
@@ -91,7 +92,25 @@ def _format_run_settings(payload: dict[str, Any]) -> str:
     timing_mode = payload.get("timing_mode", "legacy-unknown")
     warmup = payload.get("warmup", "legacy-unknown")
     samples = payload.get("samples", "legacy-unknown")
-    return f"timing_mode={timing_mode}, warmup={warmup}, samples={samples}"
+    provenance = payload.get("provenance", {})
+    requested = (
+        provenance.get("requested_profile", "unbound")
+        if isinstance(provenance, dict)
+        else "unbound"
+    )
+    cells = payload.get("benchmarks", {})
+    observations = sorted(
+        {
+            format_observed_build_profiles(entry)
+            for entry in (cells.values() if isinstance(cells, dict) else ())
+            if isinstance(entry, dict)
+        }
+    )
+    observed = "; ".join(observations) if observations else "unbound"
+    return (
+        f"timing_mode={timing_mode}, warmup={warmup}, samples={samples}, "
+        f"requested_profile={requested}, observed_profiles={observed}"
+    )
 
 
 def _display_path(path: Path) -> str:

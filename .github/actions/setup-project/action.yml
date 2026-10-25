@@ -285,7 +285,7 @@ runs:
         if [[ "$SYNC_PROJECT_GROUPS" == "true" ]]; then
           # python3 is the exact alias verified by provision-python.sh above.
           # No site or installed dependencies are needed to read this authority.
-          project_groups=$(python3 -I -S -B -c 'import sys; from pathlib import Path; root = Path.cwd(); sys.path.insert(0, str(root / "src")); from molt.dx import DxProject; groups = DxProject(root).dependency_groups(); assert all("\n" not in group and "\r" not in group for group in groups), "project dependency group contains a line break"; print("\n".join(groups))') || exit "$?"
+          project_groups=$(python3 -I -S -B -c 'import sys; from pathlib import Path; root = Path.cwd(); sys.path.insert(0, str(root / "src")); from molt.dx import DxProject; groups = DxProject(root).dependency_groups(); assert all("\n" not in group and "\r" not in group for group in groups), "project dependency group contains a line break"; sys.stdout.buffer.write(("\n".join(groups) + "\n").encode("utf-8"))') || exit "$?"
           args+=(--no-default-groups)
           while IFS= read -r group; do
             [[ -z "$group" ]] || args+=(--group "$group")
@@ -314,7 +314,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        catalog=$(uv run --no-sync python3 -c 'from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; print(" ".join(versions))') || exit "$?"
+        catalog=$(uv run --no-sync python3 -c 'import sys; from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; sys.stdout.buffer.write((" ".join(versions) + "\n").encode("utf-8"))') || exit "$?"
         if [[ -z "$catalog" ]]; then
           echo "supported target CPython catalog is empty" >&2
           exit 2

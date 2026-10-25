@@ -1,6 +1,14 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "bench/harness.py",
+    "src/molt/compilation_target.py",
+    "src/molt/native_target.py",
+    "tools/bench_dashboard.py",
+    "tools/bench_diff.py",
+    "tools/bench_evidence.py",
+    "tools/bench_reporting.py",
+    "tools/perf_regression.py",
     "src/molt/binaryen_identity.py",
     "src/molt/binaryen_toolchain.py",
     "src/molt/llvm_wasi_tools.py",

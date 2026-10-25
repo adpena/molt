@@ -21,7 +21,10 @@ bind_repository_imports(__file__)
 TOOLS_ROOT = Path(__file__).resolve().parent
 
 
-from tools.bench_evidence import metric_is_comparable  # noqa: E402
+from tools.bench_evidence import (  # noqa: E402
+    comparable_build_profile_errors,
+    metric_is_comparable,
+)
 
 
 _LOWER_IS_BETTER = {
@@ -165,6 +168,14 @@ def _compute_metric_diffs(
             and _is_number(new_raw)
         ):
             continue
+        if metric.startswith("molt_"):
+            errors = comparable_build_profile_errors(
+                {"benchmarks": {benchmark: new_bench[benchmark]}},
+                {"benchmarks": {benchmark: old_bench[benchmark]}},
+                metric=metric,
+            )
+            if errors:
+                raise ValueError("incompatible benchmark diff: " + "; ".join(errors))
         old_val = float(old_raw)
         new_val = float(new_raw)
         delta = new_val - old_val
@@ -359,7 +370,11 @@ def main() -> int:
         None if args.fail_regression_abs is None else abs(args.fail_regression_abs)
     )
     for metric in metrics:
-        rows = _compute_metric_diffs(metric, old_bench, new_bench)
+        try:
+            rows = _compute_metric_diffs(metric, old_bench, new_bench)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
         if (
             not args.include_zero_only_metrics
             and rows

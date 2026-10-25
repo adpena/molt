@@ -512,7 +512,12 @@ def _run_target_python_setup(tmp_path: Path, failure: str):
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "target_python_policy.py").write_text(
-        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.14', '3.12')\n",
+        (
+            "import sys\nsys.stdout.reconfigure(newline='\\r\\n')\n"
+            if failure == "crlf"
+            else ""
+        )
+        + "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.14', '3.12')\n",
         encoding="utf-8",
     )
     (package / "target_python.py").write_text(
@@ -568,20 +573,23 @@ def _run_target_python_setup(tmp_path: Path, failure: str):
         text=True,
         check=False,
     )
+    # Preserve literal CR bytes in the install argv; splitlines would hide them.
     records = [
-        path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        path.read_bytes().decode("utf-8").removesuffix("\n").split("\n")
+        if path.exists()
+        else []
         for path in (events, installed, selection)
     ]
     return result, records, selected
 
 
-@pytest.mark.parametrize("failure", ["", "query", "empty"])
+@pytest.mark.parametrize("failure", ["", "crlf", "query", "empty"])
 def test_target_python_setup_requires_catalog_before_install(tmp_path: Path, failure):
     result, (events, installed, selection), selected = _run_target_python_setup(
         tmp_path, failure
     )
     assert selection[:2] == [selected, "never"]
-    if failure:
+    if failure in {"query", "empty"}:
         assert result.returncode == (43 if failure == "query" else 2), result.stderr
         assert events == ["query"]
         assert installed == []
@@ -748,7 +756,7 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
     )
     uv.chmod(0o755)
     cwd = ROOT
-    if mode in {"changed", "invalid", "framing"}:
+    if mode in {"changed", "invalid", "framing", "crlf"}:
         cwd = tmp_path / "different project"
         package = cwd / "src/molt"
         package.mkdir(parents=True)
@@ -758,7 +766,10 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
         (package / "dx.py").write_text(
             "import sys\nfrom pathlib import Path\n"
             "assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n"
-            "class DxProject:\n"
+            # Model Windows pipe translation on every host. The actual action
+            # producer must emit LF bytes after calling this authority.
+            + ("sys.stdout.reconfigure(newline='\\r\\n')\n" if mode == "crlf" else "")
+            + "class DxProject:\n"
             "    def __init__(self, root): assert root == Path.cwd()\n"
             "    def dependency_groups(self):\n"
             + (
@@ -789,15 +800,18 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
         text=True,
         check=False,
     )
+    # Universal-newline decoding would hide a literal CR in an argv value.
     records = [
-        path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        path.read_bytes().decode("utf-8").removesuffix("\n").split("\n")
+        if path.exists()
+        else []
         for path in (query, synced)
     ]
     return result, records
 
 
 @pytest.mark.parametrize(
-    "mode", ["repository", "changed", "query", "invalid", "framing", "explicit"]
+    "mode", ["repository", "changed", "crlf", "query", "invalid", "framing", "explicit"]
 )
 def test_project_group_sync_uses_bound_python_and_preserves_query_failure(
     tmp_path: Path, mode: str
