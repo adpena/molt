@@ -5,6 +5,8 @@ origin, a main checkout at ``<root>/molt-src`` and lanes under
 ``<root>/worktrees``. Git plumbing, the filesystem and the coordination
 records are the oracles. The provisioning table is replaced by fixture inputs
 whose provisioners log each run; `molt.checkout_provisioning` still runs them.
+Only the identical unprovisioned starting history is shared per session;
+each test owns an independent writable origin and a real Git working clone.
 """
 
 from __future__ import annotations
@@ -21,7 +23,9 @@ import pytest
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
 from tests.integration_driver_fixture import (
+    clone_tree,
     isolated_checkout_artifacts as isolated_checkout_artifacts,
+    shared_session_tree,
 )
 from tests.test_molt_dev import _commit_file, _git, _init_repo
 from tools import molt_dev, molt_dev_lanes as lanes
@@ -95,31 +99,45 @@ def _fixture_checkout_input(
     )
 
 
+@pytest.fixture(scope="session")
+def _family_origin_seed(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str
+) -> Path:
+    """Build the lane family's unprovisioned history once across workers."""
+
+    def build(root: Path) -> None:
+        seed = root / "seed"
+        _init_repo(seed)
+        (seed / "tools").mkdir()
+        for relative, text in (
+            ("provision.py", _PROVISIONER),
+            ("fixture.lock", "v1\n"),
+            # A virtual uv project deliberately installs no editable package.
+            ("pyproject.toml", "[tool.fixture]\n"),
+            ("tools/install_git_hooks.py", _INSTALLER),
+            (".gitignore", "*-tree/\n"),
+        ):
+            (seed / relative).write_text(text, encoding="utf-8")
+        _git(seed, "add", "--", ".")
+        _commit_file(seed, "README.md", "seed\n", "seed")
+        _git(root, "clone", "--bare", "-q", str(seed), str(root / "origin.git"))
+
+    root = shared_session_tree(tmp_path_factory, worker_id, "lane-family-origin", build)
+    return root / "origin.git"
+
+
 @pytest.fixture
 def family(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     isolated_checkout_artifacts: Path,
+    _family_origin_seed: Path,
 ) -> Path:
-    """origin.git, <root>/molt-src and an empty <root>/worktrees."""
+    """Private origin.git, real <root>/molt-src clone and empty worktrees."""
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
-    seed = tmp_path / "seed"
-    _init_repo(seed)
-    (seed / "tools").mkdir()
-    for relative, text in (
-        ("provision.py", _PROVISIONER),
-        ("fixture.lock", "v1\n"),
-        # A virtual uv project deliberately installs no editable package.
-        ("pyproject.toml", "[tool.fixture]\n"),
-        ("tools/install_git_hooks.py", _INSTALLER),
-        (".gitignore", "*-tree/\n"),
-    ):
-        (seed / relative).write_text(text, encoding="utf-8")
-    _git(seed, "add", "--", ".")
-    _commit_file(seed, "README.md", "seed\n", "seed")
     origin = tmp_path / "origin.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(seed), str(origin))
+    clone_tree(_family_origin_seed, origin)
     root = tmp_path / "family"
     main = root / "molt-src"
     root.mkdir()
@@ -182,6 +200,33 @@ def _assert_released(main: Path, worktree: Path) -> None:
 def _record(root: Path, slug: str) -> dict:
     path = root / "molt-src" / "logs" / "agents" / f"lane-{slug}" / "coordination.json"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_lane_family_origin_does_not_share_mutable_git_state(
+    family: Path, _family_origin_seed: Path, tmp_path: Path
+) -> None:
+    origin = family.parent / "origin.git"
+    sibling = tmp_path / "sibling-origin.git"
+    clone_tree(_family_origin_seed, sibling)
+    initial = _git(_family_origin_seed, "rev-parse", "HEAD").stdout.strip()
+    original_config = (_family_origin_seed / "config").read_bytes()
+    (origin / "config").write_bytes(original_config + b"\n# private mutation\n")
+    (origin / "hooks" / "private-hook").write_bytes(b"private hook\n")
+    tip = _commit_file(family / "molt-src", "private.txt", "private\n", "private")
+    _git(family / "molt-src", "push", "-q", "origin", "HEAD:main")
+    assert _ref(origin, "refs/heads/main") == tip
+    for untouched in (_family_origin_seed, sibling):
+        assert (untouched / "config").read_bytes() == original_config
+        assert not (untouched / "hooks" / "private-hook").exists()
+        assert _ref(untouched, "refs/heads/main") == initial
+        assert _git(untouched, "show", "HEAD:README.md").stdout == "seed\n"
+    # Atomic Git ref replacement alone would miss hardlinked object aliases.
+    relative = Path("objects") / initial[:2] / initial[2:]
+    original_object = (_family_origin_seed / relative).read_bytes()
+    (origin / relative).chmod(0o600)
+    (origin / relative).write_bytes(b"deliberately corrupt private object")
+    assert (_family_origin_seed / relative).read_bytes() == original_object
+    assert (sibling / relative).read_bytes() == original_object
 
 
 def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> None:
