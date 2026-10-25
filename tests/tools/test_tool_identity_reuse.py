@@ -1491,20 +1491,29 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
         command_identity, "_which_in_command_environment", lambda *a, **kw: uv
     )
     original_run = command_identity._run_captured
+    original_python_run = command_identity._run_python_captured
 
     def run(command, **kwargs):
         argv = list(command)
         if argv[0] == str(uv):
             return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
+        return original_run(command, **kwargs)
+
+    def run_python(verifier, command, **kwargs):
+        argv = list(command)
         if argv[-1:] == ["--runtime-selection"]:
+            # Fresh selection now belongs to the verifier-owned Python seam.
+            # Observe the finite installation again; never replay its old row.
+            assert f"pycache_prefix={verifier.prefix}" in argv
             with FiniteAdmission(with_custody=True) as owner:
                 data = owner.capture({"MOLT_BUILD_PYTHON": argv[0]})[
                     "startup_selection"
                 ]
             return subprocess.CompletedProcess(argv, 0, json.dumps(data), "")
-        return original_run(command, **kwargs)
+        return original_python_run(verifier, command, **kwargs)
 
     monkeypatch.setattr(command_identity, "_run_captured", run)
+    monkeypatch.setattr(command_identity, "_run_python_captured", run_python)
     plan = replace(proof_plan.ProofPlan.load(), toolchain_policies=(policy,))
     return types.SimpleNamespace(
         plan=plan,
