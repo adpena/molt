@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tests import native_process_guard
 
@@ -120,3 +122,40 @@ def test_run_native_test_process_preserves_check_semantics(monkeypatch) -> None:
         assert exc.stderr == "err"
     else:  # pragma: no cover - assertion clarity
         raise AssertionError("expected CalledProcessError")
+
+
+@pytest.mark.parametrize("helper", ["_run_molt", "_run_python"])
+def test_resource_witness_preserves_the_original_guard_timeout(
+    monkeypatch, helper: str
+) -> None:
+    from tests import test_resource_enforcement_e2e as resource_witness
+
+    guarded_result = object()
+    error = subprocess.TimeoutExpired(
+        ["selected-child"],
+        180,
+        output="compiler reached link\n",
+        stderr="child blocked\n",
+    )
+    error.add_note("molt.test-process-timeout.v1: original closed guard receipt")
+    setattr(error, "guarded_result", guarded_result)
+    sources: list[Path] = []
+
+    def timed_out(args, *, capture_output, text, timeout, env=None):
+        source = Path(args[-1])
+        assert source.read_text(encoding="utf-8") == "print('witness')"
+        assert capture_output and text and timeout == 180
+        sources.append(source)
+        raise error
+
+    monkeypatch.setattr(resource_witness, "run_native_test_process", timed_out)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        getattr(resource_witness, helper)("print('witness')", timeout=180)
+    assert caught.value is error
+    assert caught.value.stdout == "compiler reached link\n"
+    assert caught.value.stderr == "child blocked\n"
+    assert caught.value.__notes__ == [
+        "molt.test-process-timeout.v1: original closed guard receipt"
+    ]
+    assert getattr(caught.value, "guarded_result") is guarded_result
+    assert len(sources) == 1 and not sources[0].exists()
