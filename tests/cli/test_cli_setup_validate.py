@@ -1361,7 +1361,10 @@ def test_cli_validate_defaults_execution_summary_to_logs(
 def test_tools_dev_validate_delegates_to_canonical_cli(
     checkout_run_context: dict[str, str],
 ) -> None:
-    res = _run_dev(["validate", "--check"], checkout_run_context)
+    # Exercise the real externally provisioned bootstrap role on every host,
+    # including local runs whose outer context selected a managed image.
+    borrowed_context = {**checkout_run_context, "MOLT_VENV": sys.prefix}
+    res = _run_dev(["validate", "--check"], borrowed_context)
     assert res.returncode == 0, res.stderr
     assert "validate" in res.stdout.lower() or "validate" in res.stderr.lower()
 
@@ -1383,6 +1386,10 @@ def test_cli_lint_uses_shared_dx_planner(
     monkeypatch.delenv("MOLT_VENV", raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    # This module clears hosted custody. Artifact placement does not select
+    # durable tools, so give this real DX writer its own toolchain root too.
+    toolchain_root = tmp_path / "toolchain-root"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
     # Command data is this test's input; DX parsing, image loading and launch
     # assembly retain their real owners.
     monkeypatch.setattr(
@@ -1398,6 +1405,8 @@ def test_cli_lint_uses_shared_dx_planner(
         assert kwargs["capture_output"] is False
         assert kwargs["memory_guard_prefix"] == "MOLT_CLI"
         assert kwargs["env"]["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+        assert kwargs["env"]["MOLT_TARGET_ROOT"] == str(toolchain_root)
+        assert toolchain_root.is_dir()
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(quality_commands, "compiler_source_root", lambda: ROOT)

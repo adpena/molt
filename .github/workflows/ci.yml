@@ -153,7 +153,7 @@ jobs:
 
       - name: Setup portability toolchains
         # The Windows image supplies clang-cl, MSVC and CMake for compiler-boundary probes.
-        # The dev group supplies the existing pinned Ninja.
+        # Published-image tests copy the complete canonical development recipe.
         # The proof command captures its selected image tools before execution.
         uses: ./.github/actions/setup-project
         with:
@@ -162,7 +162,7 @@ jobs:
           cache-cargo: "true"
           sync: "true"
           sync-frozen: "true"
-          sync-groups: dev
+          sync-project-groups: "true"
 
       - name: Install completion test shells
         if: matrix.cell == 'linux-x86_64-py312-queue-portability'
@@ -207,6 +207,8 @@ jobs:
             ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
             ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
+            ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
+            ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.[0-9]*.[0-9]*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.jsonl', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
           include-hidden-files: true

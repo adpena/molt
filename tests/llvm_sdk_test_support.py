@@ -9,11 +9,13 @@ on macOS SDKROOT and DEVELOPER_DIR), never in the ambient shell's (HF-231).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import functools
+import hashlib
 import os
 from pathlib import Path
 import platform
+import sys
 
 import pytest
 
@@ -127,3 +129,104 @@ def verified_llvm_tools() -> VerifiedLlvmTools:
     if isinstance(tools, str):
         pytest.skip(tools)
     return tools
+
+
+def native_link_selection_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Captured Linux link inputs, independent of the execution host.
+
+    Only the compiler search query is replaced; selection, byte admission and
+    serialization use the production authorities.
+    """
+    from molt import llvm_link_plan, llvm_toolchain
+    from molt.process_environment import ProcessEnvironment
+    from tests.process_guard_common import install_module_view
+
+    install_module_view(monkeypatch, "sys", sys, llvm_link_plan, platform="linux")
+    monkeypatch.setattr(
+        llvm_toolchain, "llvm_sdk_probe_environment", ProcessEnvironment
+    )
+    prefix, system = tmp_path / "sdk", tmp_path / "system libraries"
+    for path, content in (
+        (prefix / "bin/llvm-config", b"configuration"),
+        (prefix / "bin/clang++", b"selected driver"),
+        (prefix / "lib/libLLVMCore.a", b"LLVM archive"),
+        (system / "libcompression.so", b"shared compression"),
+        (system / "libcompression.a", b"static compression"),
+        (system / "libm.so", b"system math"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        path.chmod(0o755)
+    driver = prefix / "bin/clang++"
+    verification = llvm_toolchain.LlvmPrefixVerification(
+        prefix=prefix,
+        llvm_config=prefix / "bin/llvm-config",
+        version="22.1.8",
+        host_target="aarch64-unknown-linux-gnu",
+        targets=("AArch64", "WebAssembly"),
+        assets=(),
+        tool_versions=(
+            llvm_toolchain.LlvmToolVersionFact(
+                "clang++",
+                "bin/clang++",
+                "22.1.8",
+                driver.stat().st_size,
+                hashlib.sha256(driver.read_bytes()).hexdigest(),
+            ),
+        ),
+        library_facts=(),
+        content_facts=(),
+        content_digest=None,
+        link_closure=("lib/libLLVMCore.a", "system:-lcompression", "system:-lm"),
+        link_probe=(),
+        release=None,
+    )
+    monkeypatch.setattr(
+        llvm_link_plan, "_driver_library_directories", lambda *_args: (system,)
+    )
+    capability = (
+        {
+            "tool": "auditwheel",
+            "version": "6.8.2",
+            "platform": "linux",
+            "arch": "aarch64",
+            "policy_name": "manylinux_2_39_aarch64",
+            "policy_sha256": "a" * 64,
+            "shared_libraries": ("libm.so.6",),
+        },
+        frozenset({"libm.so.6"}),
+    )
+    return llvm_link_plan, verification, system, capability
+
+
+def native_sdk_projection_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source_root: Path,
+    llvm_config: Path | None = None,
+):
+    from molt import llvm_toolchain
+
+    # Reuse the owning link-selector fixture's captured driver bytes and real
+    # archive/library paths. Only the compiler's external search query is mocked;
+    # native link selection, image-generation checks and serialization stay real.
+    _selector, selected, system, _capability = native_link_selection_fixture(
+        tmp_path, monkeypatch
+    )
+    (system / "libstdc++.a").write_bytes(b"selected C++ ABI archive")
+    pin = llvm_toolchain.required_llvm_backend_pin(source_root)
+    assert pin is not None
+    config = selected.llvm_config if llvm_config is None else llvm_config
+    if llvm_config is not None:
+        config.parent.mkdir(parents=True)
+        config.write_bytes(b"external split-layout configuration")
+    return replace(
+        selected,
+        llvm_config=config,
+        version=pin.default_release,
+        tool_versions=tuple(
+            replace(fact, version=pin.default_release)
+            for fact in selected.tool_versions
+        ),
+    )

@@ -70,18 +70,29 @@ def run_uv(
     env: Mapping[str, str] | None = None,
     tty: bool = False,
 ) -> None:
-    from molt.checkout_provisioning import ensure
-    from tools.venv_exec import resolve_command
-    from tools.proof_command_argv import uv_environment_command
+    from tools.venv_exec import resolve_command, resolve_venv, venv_env
 
     intent_env = ProcessEnvironment(os.environ if env is None else env)
+    if intent_env.get("MOLT_VENV") and python is not None:
+        raise RuntimeError(
+            "managed Python selection cannot replace an explicitly borrowed MOLT_VENV"
+        )
     if python is not None:
         intent_env = intent_env.updated({"MOLT_UV_PROJECT_PYTHON": python})
     base_env = _canonical_harness_env(intent_env)
     if base_env.get("MOLT_VENV"):
-        raise RuntimeError(
-            "managed UV execution cannot replace an explicitly borrowed MOLT_VENV"
-        )
+        # Maintenance borrows exactly the caller's environment. It neither
+        # provisions a managed image nor asks uv to select or sync a project.
+        selected_root = resolve_venv(repo_root=ROOT, env=base_env)
+        run_env = venv_env(venv=selected_root, env=base_env, managed=False)
+        cmd = resolve_command(args, venv=selected_root, managed=False)
+        limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
+        _check_call_guarded(cmd, run_env, limits=limits)
+        return
+
+    from molt.checkout_provisioning import ensure
+    from tools.proof_command_argv import uv_environment_command
+
     selected = ensure("uv-environment", ROOT, base_env, python=python)
     assert selected.environment_root is not None
     run_env = DX.normalized_uv_run_env(

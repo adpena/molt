@@ -57,6 +57,7 @@ target_pythons=${INPUT_TARGET_PYTHONS:?}
 sync=${INPUT_SYNC:?}
 sync_frozen=${INPUT_SYNC_FROZEN:?}
 sync_dev=${INPUT_SYNC_DEV:?}
+sync_project_groups=${INPUT_SYNC_PROJECT_GROUPS:?}
 namespace=${INPUT_CACHE_NAMESPACE:?}
 
 # Callers name a role, never a version: each version lives in one authority
@@ -110,7 +111,7 @@ if [[ -n "${INPUT_NODE_CACHE_DEPENDENCY_PATH:-}" && -z "$node_version" ]]; then
   exit 2
 fi
 
-for bool_name in python uv cache_uv cache_cargo cache_lean actionlint target_pythons sync sync_frozen sync_dev; do
+for bool_name in python uv cache_uv cache_cargo cache_lean actionlint target_pythons sync sync_frozen sync_dev sync_project_groups; do
   validate_bool "${bool_name//_/-}" "${!bool_name}"
 done
 validate_atom cache-namespace "$namespace"
@@ -139,8 +140,12 @@ if [[ "$sync" == "true" && "$uv" != "true" ]]; then
   echo "sync requires uv" >&2
   exit 2
 fi
-if [[ "$sync" != "true" && ( "$sync_frozen" == "true" || "$sync_dev" == "true" || -n "$sync_groups" ) ]]; then
+if [[ "$sync" != "true" && ( "$sync_frozen" == "true" || "$sync_dev" == "true" || "$sync_project_groups" == "true" || -n "$sync_groups" ) ]]; then
   echo "sync options require sync" >&2
+  exit 2
+fi
+if [[ "$sync_project_groups" == "true" && ( "$sync_dev" == "true" || -n "$sync_groups" ) ]]; then
+  echo "sync-project-groups cannot be combined with sync-dev or sync-groups" >&2
   exit 2
 fi
 if [[ "$cache_cargo" == "true" && -z "$toolchain" ]]; then
@@ -186,6 +191,7 @@ rust_cache_token=$(
   printf 'sync-frozen=%s\n' "$sync_frozen"
   printf 'sync-dev=%s\n' "$sync_dev"
   printf 'sync-groups=%s\n' "$sync_groups"
+  printf 'sync-project-groups=%s\n' "$sync_project_groups"
   printf 'cache-namespace=%s\n' "$namespace"
   printf 'rust-toolchain=%s\n' "$toolchain"
   printf 'node-version=%s\n' "$node_version"

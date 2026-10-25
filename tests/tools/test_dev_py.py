@@ -527,6 +527,78 @@ def _isolated_checkout(module, monkeypatch, tmp_path: Path) -> Path:
     return clone
 
 
+@pytest.mark.usefixtures("developer_host_context")
+@pytest.mark.parametrize("command", ["doctor", "setup", "update", "validate"])
+def test_dev_py_maintenance_borrows_without_selecting_a_managed_image(
+    monkeypatch, tmp_path: Path, command: str
+) -> None:
+    from molt import checkout_provisioning
+    from tools.venv_exec import VenvExecError
+
+    clone = _isolated_checkout(dev, monkeypatch, tmp_path)
+    borrowed = tmp_path / "borrowed"
+    scripts = borrowed / ("Scripts" if os.name == "nt" else "bin")
+    scripts.mkdir(parents=True)
+    executable = scripts / ("python.exe" if os.name == "nt" else "python3")
+    executable.write_bytes(b"borrowed interpreter fixture")
+    # Explicit borrowed ownership wins over an unrelated managed selection.
+    unrelated = tmp_path / "unrelated managed image"
+    monkeypatch.setenv("MOLT_VENV", str(borrowed))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(unrelated))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "toolchains"))
+
+    def forbid_managed_selection(*args, **kwargs):
+        raise AssertionError(
+            "borrowed execution must not admit, install or normalize an image"
+        )
+
+    monkeypatch.setattr(checkout_provisioning, "ensure", forbid_managed_selection)
+    monkeypatch.setattr(dev.DX, "normalized_uv_run_env", forbid_managed_selection)
+    calls = []
+    limits = object()
+    monkeypatch.setattr(
+        dev.harness_memory_guard, "limits_from_env", lambda prefix, env: limits
+    )
+
+    def capture(cmd, env, *, limits=None):
+        calls.append((list(cmd), dict(env), limits))
+
+    monkeypatch.setattr(dev, "_check_call_guarded", capture)
+    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", command, "--check"])
+    dev.main()
+    assert len(calls) == 1
+    argv, environment, actual_limits = calls[0]
+    assert argv == [str(executable), "-m", "molt.cli", command, "--check"]
+    assert environment["MOLT_VENV"] == str(borrowed)
+    assert environment["VIRTUAL_ENV"] == str(borrowed)
+    assert environment["UV_PROJECT_ENVIRONMENT"] == str(unrelated)
+    assert Path(environment["PATH"].split(os.pathsep)[0]) == scripts
+    assert actual_limits is limits
+    assert not unrelated.exists()
+    assert sorted(path.relative_to(borrowed) for path in borrowed.rglob("*")) == [
+        scripts.relative_to(borrowed),
+        executable.relative_to(borrowed),
+    ]
+
+    # Version-matrix selection and installation may never replace a borrower.
+    with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
+        dev.run_uv(["python", "--version"], python="3.13")
+    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", "install"])
+    with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
+        dev.main()
+    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", "test"])
+    with pytest.raises(RuntimeError, match="version matrix requires managed"):
+        dev.main()
+    with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
+        dev._run_repo_cmd(["python", "-c", "pass"], environment, tty=False)
+    # An absent explicit borrower cannot turn into a managed selection or PATH run.
+    monkeypatch.setenv("MOLT_VENV", str(clone / "missing"))
+    with pytest.raises(VenvExecError, match="virtualenv Python not found"):
+        dev.run_uv(["python", "--version"])
+    assert len(calls) == 1
+
+
 def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> None:
     module = dev
     clone = _isolated_checkout(module, monkeypatch, tmp_path)
