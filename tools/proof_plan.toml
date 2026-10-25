@@ -3131,8 +3131,9 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
 pytest = ["tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_native_locations.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3144,8 +3145,9 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
 pytest = ["tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_native_locations.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv"]
 
 [[command]]
