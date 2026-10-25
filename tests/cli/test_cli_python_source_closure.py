@@ -2133,3 +2133,468 @@ def test_namespace_premise_fixpoint_reuses_every_cached_round(
         local_python_import_closure(tmp_path, (seed,), policy=_EAGER_SOURCE_POLICY)
         == first
     )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_distinct_operation_queries_share_bytes_but_keep_exact_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+) -> None:
+    left, right, shared, only_left, only_right = (
+        tmp_path / name
+        for name in (
+            "left.py",
+            "right.py",
+            "shared.py",
+            "only_left.py",
+            "only_right.py",
+        )
+    )
+    left.write_bytes(b"import shared\nimport only_left\n")
+    right.write_bytes(b"import shared\nimport only_right\n")
+    shared.write_bytes(b"VALUE = 'shared'\n")
+    only_left.write_bytes(b"VALUE = 'left'\n")
+    only_right.write_bytes(b"VALUE = 'right'\n")
+    expected = {
+        left: local_python_import_closure(tmp_path, (left,)),
+        right: local_python_import_closure(tmp_path, (right,)),
+    }
+    assert set(expected[left].paths) == {left, shared, only_left}
+    assert set(expected[right].paths) == {right, shared, only_right}
+    captures = []
+    capture = graph.LocalPythonModuleResolver.capture_source
+
+    def observe(resolver, path):
+        captures.append(path)
+        return capture(resolver, path)
+
+    monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", observe)
+    seeds = (right, left) if reverse else (left, right)
+    with graph.local_python_import_graph_transaction():
+        for seed in seeds:
+            actual = local_python_import_closure(tmp_path, (seed,))
+            assert actual == expected[seed]
+            assert (
+                actual.source_sha256[shared]
+                == hashlib.sha256(b"VALUE = 'shared'\n").hexdigest()
+            )
+            with graph.local_python_import_graph_transaction():
+                assert local_python_import_closure(tmp_path, (seed,)) is actual
+    assert set(captures) == {left, right, shared, only_left, only_right}
+    assert len(captures) == 5
+
+
+def test_operation_inventory_is_shared_across_seeds_and_premise_rounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    left, right, speculative = (
+        tmp_path / name for name in ("left.py", "right.py", "speculative.py")
+    )
+    for seed in (left, right):
+        seed.write_text("__package__ = unknown\nfrom .missing import value\n")
+    # Covered bytes must not acquire speculative analysis or syntax errors.
+    speculative.write_bytes(b"this is not valid python (\n")
+    inventories = []
+    captures = []
+    inventory = graph.LocalPythonModuleResolver.source_inventory
+    capture = graph.LocalPythonModuleResolver.capture_source
+
+    def observe_inventory(resolver, **kwargs):
+        inventories.append(kwargs)
+        return inventory(resolver, **kwargs)
+
+    def observe_capture(resolver, path):
+        captures.append(path)
+        return capture(resolver, path)
+
+    monkeypatch.setattr(
+        graph.LocalPythonModuleResolver, "source_inventory", observe_inventory
+    )
+    monkeypatch.setattr(
+        graph.LocalPythonModuleResolver, "capture_source", observe_capture
+    )
+    with graph.local_python_import_graph_transaction():
+        first = local_python_import_closure(tmp_path, (left,))
+        second = local_python_import_closure(tmp_path, (right,))
+    assert first.topology_digest and first == second
+    assert set(first.paths) == {left, right, speculative}
+    assert (
+        first.source_sha256[speculative]
+        == hashlib.sha256(b"this is not valid python (\n").hexdigest()
+    )
+    assert len(inventories) == 1
+    assert len(captures) == 3 and set(captures) == {left, right, speculative}
+    cache = json.loads(graph.python_source_closure_cache_path(tmp_path).read_bytes())
+    assert "speculative.py" not in cache["entries"]
+
+
+def test_operation_keeps_alias_and_policy_analysis_contexts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "tools" / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    left, right = tmp_path / "left.py", tmp_path / "right.py"
+    left.write_text("import pkg.helper\n")
+    right.write_text("import tools.pkg.helper\n")
+    helper, child = package / "helper.py", package / "child.py"
+    helper.write_text("if False:\n    from . import child\n")
+    child.write_text("VALUE = 1\n")
+    captures, contexts = [], []
+    capture = graph.LocalPythonModuleResolver.capture_source
+    analyze = graph.analyze_local_imports
+
+    def observe_capture(resolver, path):
+        captures.append(path)
+        return capture(resolver, path)
+
+    def observe_analysis(snapshot, module, policy, **kwargs):
+        if snapshot.path == helper:
+            contexts.append((module.name, policy.module_level_only))
+        return analyze(snapshot, module, policy, **kwargs)
+
+    monkeypatch.setattr(
+        graph.LocalPythonModuleResolver, "capture_source", observe_capture
+    )
+    monkeypatch.setattr(graph, "analyze_local_imports", observe_analysis)
+    with graph.local_python_import_graph_transaction():
+        for seed in (left, right):
+            lexical = local_python_import_closure(tmp_path, (seed,))
+            eager = local_python_import_closure(
+                tmp_path, (seed,), policy=_EAGER_SOURCE_POLICY
+            )
+            assert child in lexical.paths and child not in eager.paths
+            assert helper in lexical.paths and helper in eager.paths
+    assert captures.count(helper) == 1
+    assert set(contexts) == {
+        ("pkg.helper", False),
+        ("tools.pkg.helper", False),
+        ("pkg.helper", True),
+        ("tools.pkg.helper", True),
+    }
+
+
+@pytest.mark.parametrize("writer_first", [False, True])
+def test_operation_queries_converge_independent_writer_premises(
+    tmp_path: Path, writer_first: bool
+) -> None:
+    clean, dirty, reader, writer, selected = (
+        tmp_path / name
+        for name in ("clean.py", "dirty.py", "reader.py", "writer.py", "selected.py")
+    )
+    clean.write_text("import reader\n")
+    dirty.write_text("import writer\nimport reader\n")
+    reader.write_text(
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import selected\n"
+    )
+    writer.write_text("import typing\ntyping.TYPE_CHECKING = True\n")
+    selected.write_text("VALUE = 1\n")
+    order = (dirty, clean) if writer_first else (clean, dirty)
+    with graph.local_python_import_graph_transaction():
+        results = {seed: _eager_closure(tmp_path, seed) for seed in order}
+    assert results[clean] == {clean, reader}
+    assert results[dirty] == {dirty, writer, reader, selected}
+
+
+@pytest.mark.parametrize("change", ["bytes", "add", "remove", "rename"])
+def test_fresh_and_nested_fresh_operations_recapture_content_and_members(
+    tmp_path: Path, change: str
+) -> None:
+    seed, helper, renamed = (
+        tmp_path / name for name in ("entry.py", "helper.py", "renamed.py")
+    )
+    seed.write_bytes(b"import helper\nimport renamed\n")
+    if change != "add":
+        helper.write_bytes(b"VALUE = 1\n")
+    with graph.local_python_import_graph_transaction():
+        original = local_python_import_closure(tmp_path, (seed,))
+        assert set(original.paths) == ({seed} if change == "add" else {seed, helper})
+        if change == "bytes":
+            before = helper.stat()
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"VALUE = 2\n")
+            os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+            replacement.replace(helper)
+        elif change == "add":
+            helper.write_bytes(b"VALUE = 2\n")
+        elif change == "remove":
+            helper.unlink()
+        else:
+            helper.rename(renamed)
+        # The explicit transaction retains an already admitted query. A nested
+        # fresh operation must not inherit its positive or negative filesystem facts.
+        assert local_python_import_closure(tmp_path, (seed,)) is original
+        with graph.local_python_import_graph_transaction(fresh=True):
+            fresh = local_python_import_closure(tmp_path, (seed,))
+        assert local_python_import_closure(tmp_path, (seed,)) is original
+    newest = local_python_import_closure(tmp_path, (seed,))
+    assert newest == fresh and newest != original
+    expected = {seed}
+    if change in {"bytes", "add"}:
+        expected.add(helper)
+        assert (
+            newest.source_sha256[helper] == hashlib.sha256(b"VALUE = 2\n").hexdigest()
+        )
+    elif change == "rename":
+        expected.add(renamed)
+        assert (
+            newest.source_sha256[renamed] == hashlib.sha256(b"VALUE = 1\n").hexdigest()
+        )
+    assert set(newest.paths) == expected
+
+
+def test_operation_domain_separates_root_order_and_cache_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    first, second = project / "first", project / "second"
+    first.mkdir(parents=True)
+    second.mkdir()
+    seed = first / "entry.py"
+    seed.write_text("import helper\n")
+    left, right = first / "helper.py", second / "helper.py"
+    left.write_bytes(b"VALUE = 'left'\n")
+    right.write_bytes(b"VALUE = 'right'\n")
+    with graph.local_python_import_graph_transaction():
+        left_result = local_python_import_closure(
+            project, (seed,), search_roots=(first, second)
+        )
+        right_result = local_python_import_closure(
+            project, (seed,), search_roots=(second, first)
+        )
+        assert set(left_result.paths) == {seed, left}
+        assert set(right_result.paths) == {seed, right}
+        assert (
+            left_result.source_sha256[left]
+            == hashlib.sha256(b"VALUE = 'left'\n").hexdigest()
+        )
+        assert (
+            right_result.source_sha256[right]
+            == hashlib.sha256(b"VALUE = 'right'\n").hexdigest()
+        )
+        monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "new-cache"))
+        copied = local_python_import_closure(
+            project, (seed,), search_roots=(first, second)
+        )
+        assert copied == left_result and copied is not left_result
+        stored = json.loads(
+            graph.python_source_closure_cache_path(project).read_bytes()
+        )
+        assert "first/helper.py" in stored["entries"]
+
+
+def test_operation_manifest_contract_changes_select_a_new_domain(
+    tmp_path: Path,
+) -> None:
+    seed, first, later = (
+        tmp_path / name for name in ("entry.py", "first.py", "later.py")
+    )
+    seed.write_text("__import__(name)\n")
+    first.write_text("VALUE = 1\n")
+    later.write_text("VALUE = 2\n")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+
+    def write_manifest(target, count=1):
+        manifest.write_text(
+            "schema_version = 1\n[[source]]\npath = 'entry.py'\n"
+            f"nonliteral_calls = {count}\nmodules = ['{target}']\n"
+        )
+
+    write_manifest("first")
+    with graph.local_python_import_graph_transaction():
+        original = local_python_import_closure(tmp_path, (seed,))
+        assert set(original.paths) == {seed, first, manifest}
+        write_manifest("later")
+        changed = local_python_import_closure(tmp_path, (seed,))
+        assert set(changed.paths) == {seed, later, manifest}
+        assert (
+            changed.source_sha256[manifest]
+            == hashlib.sha256(manifest.read_bytes()).hexdigest()
+        )
+        cache = graph.python_source_closure_cache_path(tmp_path)
+        accepted = cache.read_bytes()
+        write_manifest("later", count=0)
+        with pytest.raises(ValueError, match="manifest drift"):
+            local_python_import_closure(tmp_path, (seed,))
+        assert cache.read_bytes() == accepted
+    with graph.local_python_import_graph_transaction(fresh=True):
+        with pytest.raises(ValueError, match="manifest drift"):
+            local_python_import_closure(tmp_path, (seed,))
+
+
+def test_failed_query_cannot_publish_tentative_rows_through_its_sibling(
+    tmp_path: Path,
+) -> None:
+    good, sibling, bad, failure, shared = (
+        tmp_path / name
+        for name in ("good.py", "sibling.py", "bad.py", "failure.py", "shared.py")
+    )
+    for seed in (good, sibling):
+        seed.write_text("import shared\n")
+    bad.write_text("import failure\n")
+    failure.write_text("__import__(unknown)\n")
+    shared.write_bytes(b"VALUE = 1\n")
+    with graph.local_python_import_graph_transaction():
+        good_result = local_python_import_closure(tmp_path, (good,))
+        assert set(good_result.paths) == {good, shared}
+        cache = graph.python_source_closure_cache_path(tmp_path)
+        accepted = cache.read_bytes()
+        with pytest.raises(ValueError, match="non-literal"):
+            local_python_import_closure(tmp_path, (bad,))
+        assert cache.read_bytes() == accepted
+        sibling_result = local_python_import_closure(tmp_path, (sibling,))
+        assert set(sibling_result.paths) == {sibling, shared}
+    rows = json.loads(cache.read_bytes())["entries"]
+    assert set(rows) == {"good.py", "sibling.py", "shared.py"}
+
+
+def test_new_query_validates_the_shared_negative_topology_facts(tmp_path: Path) -> None:
+    from molt.cli.python_import_topology import PythonImportTopologyChangedError
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    left, right = tmp_path / "left.py", tmp_path / "right.py"
+    for seed in (left, right):
+        seed.write_text("from pkg import missing\n")
+    with graph.local_python_import_graph_transaction():
+        first = local_python_import_closure(tmp_path, (left,))
+        cache = graph.python_source_closure_cache_path(tmp_path)
+        accepted = cache.read_bytes()
+        (package / "missing.py").write_text("VALUE = 1\n")
+        with pytest.raises(PythonImportTopologyChangedError):
+            local_python_import_closure(tmp_path, (right,))
+        assert cache.read_bytes() == accepted
+    fresh = local_python_import_closure(tmp_path, (right,))
+    assert package / "missing.py" in fresh.paths
+    assert package / "missing.py" not in first.paths
+
+
+def test_parallel_explicit_operations_do_not_share_domain_captures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from collections import Counter
+    from threading import Barrier, get_ident
+
+    left, right, helper = (
+        tmp_path / name for name in ("left.py", "right.py", "helper.py")
+    )
+    for seed in (left, right):
+        seed.write_text("import helper\n")
+    helper.write_bytes(b"VALUE = 1\n")
+    captures = []
+    capture = graph.LocalPythonModuleResolver.capture_source
+    gate = Barrier(2)
+
+    def observe(resolver, path):
+        if path == helper:
+            captures.append(get_ident())
+        return capture(resolver, path)
+
+    def worker(_index):
+        with graph.local_python_import_graph_transaction():
+            first = local_python_import_closure(tmp_path, (left,))
+            gate.wait(timeout=30)
+            second = local_python_import_closure(tmp_path, (right,))
+            return first, second
+
+    monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", observe)
+    with graph.local_python_import_graph_transaction():
+        parent = local_python_import_closure(tmp_path, (left,))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(worker, range(2)))
+        assert local_python_import_closure(tmp_path, (left,)) is parent
+    assert len(Counter(captures)) == 3 and set(Counter(captures).values()) == {1}
+    for first, second in results:
+        assert first == parent and first is not parent
+        assert set(second.paths) == {right, helper}
+        assert (
+            second.source_sha256[helper] == hashlib.sha256(b"VALUE = 1\n").hexdigest()
+        )
+
+
+def test_operation_inventory_keeps_policy_prefix_and_project_ownership(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    package = project / "pkg"
+    package.mkdir(parents=True)
+    seed = project / "entry.py"
+    seed.write_text("__package__ = unknown\nfrom .missing import value\n")
+    initializer, helper = package / "__init__.py", package / "helper.py"
+    initializer.write_text("")
+    helper.write_text("VALUE = 1\n")
+    outsider = project / "outsider.py"
+    outsider.write_text("VALUE = 2\n")
+    restricted = PythonImportPolicy(
+        module_level_only=False,
+        include_parent_packages=True,
+        fail_on_nonliteral_dynamic_import=True,
+        allowed_prefix="pkg",
+        purpose="source_dependency",
+        unknown_relative_sources="local_inventory",
+    )
+    other = tmp_path / "other"
+    other.mkdir()
+    other_seed = other / "entry.py"
+    other_seed.write_text("import foreign\n")
+    foreign = other / "foreign.py"
+    foreign.write_text("VALUE = 3\n")
+    with graph.local_python_import_graph_transaction():
+        complete = local_python_import_closure(project, (seed,))
+        scoped = local_python_import_closure(project, (seed,), policy=restricted)
+        separate = local_python_import_closure(other, (other_seed,))
+    assert set(complete.paths) == {seed, initializer, helper, outsider}
+    assert set(scoped.paths) == {seed, initializer, helper}
+    assert scoped.topology_digest != complete.topology_digest
+    assert set(separate.paths) == {other_seed, foreign}
+
+
+def test_operation_releases_raw_captures_without_retaining_analysis_trees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import gc
+    import weakref
+
+    left, right, helper = (
+        tmp_path / name for name in ("left.py", "right.py", "helper.py")
+    )
+    for seed in (left, right):
+        seed.write_text("import helper\n")
+    helper.write_text("VALUE = 1\n")
+    captures = []
+    capture = graph.LocalPythonModuleResolver.capture_source
+
+    def observe(resolver, path):
+        snapshot = capture(resolver, path)
+        captures.append(weakref.ref(snapshot))
+        return snapshot
+
+    monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", observe)
+    with graph.local_python_import_graph_transaction():
+        receipts = [
+            local_python_import_closure(tmp_path, (seed,)) for seed in (left, right)
+        ]
+        assert len(captures) == 3
+        assert all(reference() is not None for reference in captures)
+        assert all(
+            not {"tree", "_decoded_text", "ast_digest"}.intersection(
+                reference().__dict__
+            )
+            for reference in captures
+        )
+    gc.collect()
+    assert all(reference() is None for reference in captures)
+    assert set(receipts[0].paths) == {left, helper}
+    assert set(receipts[1].paths) == {right, helper}
+
+
+def test_new_query_does_not_hide_a_removed_explicit_seed(tmp_path: Path) -> None:
+    left, right = tmp_path / "left.py", tmp_path / "right.py"
+    left.write_text("VALUE = 1\n")
+    right.write_text("VALUE = 2\n")
+    with graph.local_python_import_graph_transaction():
+        local_python_import_closure(tmp_path, (left,))
+        left.unlink()
+        with pytest.raises(FileNotFoundError, match="missing Python tooling source"):
+            local_python_import_closure(tmp_path, (left, right))
