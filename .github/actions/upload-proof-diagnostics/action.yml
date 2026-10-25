@@ -1,0 +1,36 @@
+name: Upload proof diagnostics
+description: Export existing guard evidence from this job's canonical custody after proof execution.
+inputs:
+  name:
+    description: Diagnostic artifact base name, distinct from strict proof-receipt artifacts and other matrix cells.
+    required: true
+outputs:
+  root:
+    description: Canonical project build-control root for specialized evidence consumers.
+    value: ${{ steps.paths.outputs.root }}
+  proof_scratch_root:
+    description: Canonical proof scratch root for specialized evidence consumers.
+    value: ${{ steps.paths.outputs.proof_scratch_root }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve current proof diagnostic custody
+      id: paths
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.workspace }}/src
+      run: uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
+    - name: Upload existing guard diagnostics
+      if: always() && steps.paths.outcome == 'success'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.name }}-${{ github.run_attempt }}
+        # Exact selected roots only. Never upload scratch payloads or all host state.
+        path: |
+          ${{ steps.paths.outputs.profile_log }}
+          ${{ steps.paths.outputs.profile_log != '' && format('{0}.1', steps.paths.outputs.profile_log) || '' }}
+          ${{ steps.paths.outputs.incident_root != '' && format('{0}/*.json', steps.paths.outputs.incident_root) || '' }}
+          ${{ steps.paths.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.paths.outputs.guard_state_root) || '' }}
+          ${{ steps.paths.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.paths.outputs.pytest_guard_root) || '' }}
+        include-hidden-files: true
+        if-no-files-found: warn

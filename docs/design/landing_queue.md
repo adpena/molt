@@ -414,6 +414,42 @@ One runner owns main. Agents enqueue and continue.
 - This replaces three-day red stretches of main, each repaired by hand after
   the fact, with one bounded run per candidate.
 
+## Hosted evidence handoff
+
+The existing classifier publishes its canonical selection as
+`molt.proof-selection.v1`, separately from executable receipts. The artifact
+binds the exact tested commit/tree, proof authority, declared tier and GitHub
+run/attempt. Its changed paths or full-plan mode reconstruct the complete
+family selection; received receipt files never determine the required set.
+The same `family_outputs` projection continues to feed CI job outputs and its
+aggregate verdict. This adds transport for an existing fact, not a second
+selection registry or scheduler.
+
+`ci_triage.py --verify` joins that artifact with the existing receipt verifier
+and strict ZIP reader. It pins a completed successful run, retrieves immutable
+artifact IDs and digests, verifies source and coverage, then rechecks the run
+and source before reporting success. Unique earlier-attempt receipts can
+prove the same unchanged source; duplicates remain errors. A missing current
+classifier is unavailable, including a partial rerun that retained its older
+classifier. No timestamps, newest-artifact choice, automatic rerun or checkout
+mutation substitute for evidence. CI lifecycle and coverage are separate
+results, and neither grants installed-release acceptance.
+
+This follows [Bazel's structured build-event contract](https://bazel.build/remote/bep):
+announced work and its completion must be joined programmatically. It retains
+Molt's existing proof plan and receipts rather than introducing Bazel or a
+second execution system. [rustc's supported workflows](https://rustc-dev-guide.rust-lang.org/building/suggested.html)
+likewise keep routine development behind maintained project commands.
+
+Ordinary triage keeps its existing lazy startup and completed-log cache.
+Explicit verification costs one paginated artifact inventory, one streamed
+download per selected artifact, bounded archive validation/extraction and the
+existing evidence hash checks, plus source/run fences. Time and storage scale
+with downloaded evidence bytes; no compiler, environment publication or proof
+execution occurs. Failed downloads and receipts remain recoverable. Guard
+incidents/current-test evidence are exported by one shared CI action; no
+additional profiler or per-test write is introduced by this handoff.
+
 ## Migration
 
 HF-373 lands in this order, one slice per landing: the pinned controller;

@@ -2800,9 +2800,18 @@ def test_ci_push_path_is_cheap_only() -> None:
 def test_ci_control_evidence_uses_shared_path_command(workflow, job, upload_name):
     steps = yaml.safe_load(_read(workflow))["jobs"][job]["steps"]
     resolver = next(step for step in steps if step.get("id") == "build-control")
-    assert resolver["run"].strip() == (
+    assert resolver["uses"] == "./.github/actions/upload-proof-diagnostics"
+    action = yaml.safe_load(
+        _read(".github/actions/upload-proof-diagnostics/action.yml")
+    )
+    path_step = next(
+        step for step in action["runs"]["steps"] if step.get("id") == "paths"
+    )
+    assert path_step["run"] == (
         'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
     )
+    executor = next(step for step in steps if "--run-family" in step.get("run", ""))
+    assert steps.index(executor) < steps.index(resolver)
     upload = next(step for step in steps if step.get("name") == upload_name)
     paths = upload["with"]["path"].splitlines()
     assert "${{ steps.build-control.outputs.root }}/build_failures/*.json" in paths
@@ -2870,8 +2879,6 @@ def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> N
             "proof-receipts/evidence/llvm-backend-debug/native-batch-failures/",
             "${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log', steps.build-control.outputs.root) || '' }}",
             "${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log.old', steps.build-control.outputs.root) || '' }}",
-            "${{ steps.build-control.outputs.profile_log }}",
-            "${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}",
         ]
 
 
@@ -2953,11 +2960,18 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     assert upload["with"]["include-hidden-files"] is True
     assert upload["with"]["if-no-files-found"] == "warn"
     resolver = next(step for step in steps if step.get("id") == "build-control")
-    assert resolver["shell"] == "bash"
-    assert (
-        resolver["run"].strip()
-        == 'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
+    assert resolver["uses"] == "./.github/actions/upload-proof-diagnostics"
+    assert resolver["if"] == "always()"
+    action = yaml.safe_load(
+        _read(".github/actions/upload-proof-diagnostics/action.yml")
     )
+    path_step, common_upload = action["runs"]["steps"]
+    assert path_step["shell"] == "bash"
+    assert path_step["run"] == (
+        'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
+    )
+    assert common_upload["with"]["include-hidden-files"] is True
+    assert common_upload["with"]["if-no-files-found"] == "warn"
     executor = next(
         step for step in steps if f"--run-family {family}" in step.get("run", "")
     )
@@ -2966,8 +2980,8 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     )
     assert (
         steps.index(setup)
-        < steps.index(resolver)
         < steps.index(executor)
+        < steps.index(resolver)
         < steps.index(upload)
     )
     assert "continue-on-error" not in executor
@@ -3013,6 +3027,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     pytest_dir = custody / "tmp" / "pytest-memory-guard"
     metadata = runner_temp / "mr-12345-2"
     assert outputs["profile_log"] == str(profile)
+    assert outputs["incident_root"] == str(profile.parent / "incidents")
     assert outputs["guard_state_root"] == str(custody / "tmp" / "memory_guard")
     assert outputs["pytest_guard_root"] == str(pytest_dir)
     assert outputs["proof_scratch_root"] == str(custody / "tmp")
@@ -3033,15 +3048,17 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             else ""
             for name, value in outputs.items()
         },
+        **{
+            f"steps.paths.outputs.{name}": value if state.startswith("failed-") else ""
+            for name, value in outputs.items()
+        },
     }
     name = _diagnostic_path_expression(upload["with"]["name"], values)
     assert not fnmatchcase(name, strict_download["with"]["pattern"])
-    paths = upload["with"]["path"].splitlines()
-    common_profiles = [
-        "${{ steps.build-control.outputs.profile_log }}",
-        "${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}",
-    ]
-    assert paths == (
+    specialized_paths = upload["with"]["path"].splitlines()
+    common_profiles = common_upload["with"]["path"].splitlines()
+    paths = [*specialized_paths, *common_profiles]
+    assert specialized_paths == (
         [
             f"proof-receipts/{family}.json",
             *(
@@ -3052,17 +3069,12 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
                 if wasm
                 else []
             ),
-            *common_profiles,
-            "${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}",
-            "${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}",
         ]
         if detailed
         else [
             "proof-receipts/platform-portability-${{ matrix.cell }}.json",
             "proof-receipts/evidence/runtime-gate-runs/",
             "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
-            *common_profiles,
-            "${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.[0-9]*.[0-9]*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
@@ -3089,7 +3101,15 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         "temporary_artifacts": {"closure": {"closed": False}},
         "termination_reports": [{"reason": "tracked_orphan_cleanup"}],
     }
-    retained_files = [profile, profile.with_name(profile.name + ".1")]
+    retained_files = [
+        profile,
+        profile.with_name(profile.name + ".1"),
+        profile.parent / "incidents" / "timeout-owner.json",
+    ]
+    retained_files += [
+        custody / "tmp/memory_guard/commands/current" / name
+        for name in ("custody.json", "startup.json", "guard.json")
+    ]
     retained_files += [
         pytest_dir / name
         for name in (
@@ -3099,10 +3119,6 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         )
     ]
     if detailed:
-        retained_files += [
-            custody / "tmp/memory_guard/commands/current" / name
-            for name in ("custody.json", "startup.json", "guard.json")
-        ]
         if wasm:
             retained_files += [
                 custody / "tmp/differential/runtime-import" / name
@@ -3201,6 +3217,154 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     if state.startswith("failed-"):
         assert json.loads(profile.read_text(encoding="utf-8")) == inner
         assert profile.with_name(profile.name + ".1") in retained_paths
+
+
+def test_every_proof_execution_exports_common_diagnostics_after_execution() -> None:
+    action = yaml.safe_load(
+        _read(".github/actions/upload-proof-diagnostics/action.yml")
+    )
+    resolver, upload = action["runs"]["steps"]
+    assert resolver["id"] == "paths"
+    assert resolver["shell"] == "bash"
+    assert resolver["env"] == {"PYTHONPATH": "${{ github.workspace }}/src"}
+    assert resolver["run"] == (
+        'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
+    )
+    assert upload["if"] == "always() && steps.paths.outcome == 'success'"
+    assert upload["uses"] == (
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+    )
+    assert upload["with"]["name"] == "${{ inputs.name }}-${{ github.run_attempt }}"
+    assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["if-no-files-found"] == "warn"
+    assert upload["with"]["path"].splitlines() == [
+        "${{ steps.paths.outputs.profile_log }}",
+        "${{ steps.paths.outputs.profile_log != '' && format('{0}.1', steps.paths.outputs.profile_log) || '' }}",
+        "${{ steps.paths.outputs.incident_root != '' && format('{0}/*.json', steps.paths.outputs.incident_root) || '' }}",
+        "${{ steps.paths.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.paths.outputs.guard_state_root) || '' }}",
+        "${{ steps.paths.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.paths.outputs.pytest_guard_root) || '' }}",
+    ]
+    seen = set()
+    for workflow in (
+        ".github/workflows/ci.yml",
+        ".github/workflows/molt-wasm-ci.yml",
+        ".github/workflows/security_hardening.yml",
+        ".github/workflows/formal.yml",
+    ):
+        jobs = yaml.safe_load(_read(workflow))["jobs"]
+        for job_name, job in jobs.items():
+            steps = job.get("steps", [])
+            executions = [
+                step
+                for step in steps
+                if "tools/proof_plan.py" in step.get("run", "")
+                and re.search(r"--run-(?:family|command)\b", step["run"])
+            ]
+            if not executions:
+                continue
+            exports = [
+                step
+                for step in steps
+                if step.get("uses") == "./.github/actions/upload-proof-diagnostics"
+            ]
+            assert len(executions) == len(exports) == 1, (workflow, job_name)
+            export = exports[0]
+            assert export["if"] == "always()"
+            assert export["id"] == "build-control"
+            assert steps.index(export) > steps.index(executions[0])
+            assert not any(
+                "tools.build_control_path" in step.get("run", "") for step in steps
+            )
+            assert "continue-on-error" not in executions[0]
+            name = export["with"]["name"]
+            assert name.startswith("proof-diagnostics-")
+            assert not fnmatchcase(name, "proof-receipt-*")
+            assert name not in seen
+            seen.add(name)
+            if "${{ matrix.cell }}" in executions[0]["run"]:
+                assert "${{ matrix.cell }}" in name
+    assert len(seen) == 15
+
+
+@pytest.mark.usefixtures("no_ambient_guard_caps", "session_sentinel_paused")
+def test_common_diagnostics_include_real_timeout_incident_after_passing_neighbor(
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    from tools import harness_memory_guard
+    from tools.build_control_path import build_control_output
+    from tests.process_guard_common import HUNG_CHILD_SOURCE
+
+    profile = tmp_path / "selected" / "commands.jsonl"
+    profile.parent.mkdir()
+    # A full previous log exercises the existing rotation authority; the named
+    # incident must remain independently selectable after later passing work.
+    profile.write_text('{"previous":true}\n' * 100, encoding="utf-8")
+    environment = {
+        **os.environ,
+        "MOLT_GUARD_PROFILE_LOG": str(profile),
+        "MOLT_GUARD_PROFILE": "incident",
+        "MOLT_GUARD_PROFILE_MAX_MB": "0.001",
+        "PYTEST_CURRENT_TEST": "fixture/owner.py::waiting_owner (call)",
+    }
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
+        prefix="MOLT_TEST_DIAGNOSTIC_EXPORT",
+        env=environment,
+        timeout=2.0,
+    )
+    assert result.returncode == 124 and result.timed_out
+    assert result.descendants_closed is True, result.stderr
+    incident_dir = tmp_path / "selected" / "incidents"
+    (incident,) = incident_dir.glob("*.json")
+    original = incident.read_bytes()
+    record = json.loads(original)
+    assert record["status"] == "timeout"
+    assert record["repro"]["pytest"]["current_test"] == (
+        "fixture/owner.py::waiting_owner (call)"
+    )
+    neighbor = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST_DIAGNOSTIC_EXPORT",
+        env={
+            **environment,
+            "PYTEST_CURRENT_TEST": "fixture/neighbor.py::passing (call)",
+        },
+        timeout=10.0,
+    )
+    assert neighbor.returncode == 0 and neighbor.descendants_closed is True
+    assert list(incident_dir.glob("*.json")) == [incident]
+    assert incident.read_bytes() == original
+
+    foreign = tmp_path / "foreign" / "incidents" / incident.name
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text('{"foreign":true}', encoding="utf-8")
+    # A payload or a policy alongside diagnostics is not a declared artifact.
+    private = profile.parent / "private-payload.bin"
+    private.write_bytes(b"not a diagnostic")
+    outputs = dict(
+        line.split("=", 1)
+        for line in build_control_output(environment, repo_root=REPO_ROOT).splitlines()
+    )
+    assert outputs["incident_root"] == str(incident_dir)
+    values = {f"steps.paths.outputs.{key}": value for key, value in outputs.items()}
+    action = yaml.safe_load(
+        _read(".github/actions/upload-proof-diagnostics/action.yml")
+    )
+    upload = action["runs"]["steps"][1]
+    selected = {
+        Path(found)
+        for line in upload["with"]["path"].splitlines()
+        for pattern in [_diagnostic_path_expression(line, values)]
+        if pattern
+        for found in glob.glob(pattern, recursive=True, include_hidden=True)
+    }
+    assert {incident, profile, profile.with_name("commands.jsonl.1")} <= selected
+    assert foreign not in selected and private not in selected
+    assert json.loads(incident.read_bytes())["repro"]["pytest"]["current_test"] == (
+        "fixture/owner.py::waiting_owner (call)"
+    )
 
 
 def test_ci_heavy_jobs_are_path_classified() -> None:

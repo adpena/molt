@@ -244,7 +244,7 @@ integration speedup.
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
 | `python-oracle` | Resolve + PIN + verify a CPython version before use. `--python-version`, `--no-uv`, `--json`. |
-| `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
+| `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call using the published recovery command or JSON `verify_argv`. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
 | `lane start <slug>` | Create `lane/<slug>` at the fetched base in an admissible slot, preferring the checkout selected by `--repo`; write its coordination record and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
@@ -578,21 +578,33 @@ guard.
 
 ```bash
 # Tool call 1 (UNSANDBOXED — the sandbox is precisely what kills daemons):
-python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip \
+python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip --json \
   -- python3 tests/molt_diff.py tests/differential/basic --jobs 4 \
      --json-output /tmp/sweep.json
 
 # Tool call 2+ (any later call; --min-age-s proves it survived teardown):
-python3 tools/molt_dev.py detached-verify --name flip_sweep --min-age-s 30 --json
+# Run the published POSIX command, or pass the returned verify_argv directly
+# to the process launcher without a shell. Do not reconstruct its state root.
 # → running        keep waiting (poll again later)
 # → done, rc=N     read the artifacts; rc≠0 exits 1
 # → died-silent    the hazard-11 group-kill class, reported LOUDLY
 ```
 
-`detached-run` prints the exact verify command to run next: its own
-interpreter and the driver by absolute path, with the `--state-dir` it ran
-under (the landing queue's runners live under
-`.git/molt/landing-queue/runners`).
+`detached-run --json` returns `name`, `pid`, the per-run `state_dir`, and
+`verify_argv`: the argument array for the required later observation. It pins
+this interpreter, its isolation flag, the absolute driver, and the selected
+state root through `--state-dir`, including when launch used the default.
+A later call can therefore use a different temporary environment or working
+directory. The landing queue's runners still live under
+`.git/molt/landing-queue/runners`; state placement and lookup defaults are
+unchanged. Observation does not restart the payload.
+
+The human hint displays the same argv as a POSIX shell command on POSIX hosts
+and a labeled JSON argument array on Windows. Pass the array directly to a
+process launcher; POSIX quoting is not a Windows shell command. The JSON
+`state_dir` names the run's directory, while the argv's `--state-dir` names its
+parent, as required by the verifier. Preserve the returned handoff instead of
+reconstructing either path in a new environment.
 
 Discovered 2026-06-06 (twice in one session): a backgrounded 807-test sweep
 died at harness detach with an **empty log** — block buffering ate every line —

@@ -195,6 +195,12 @@ def test_harness_default_outputs_follow_guard_state_authority(
     assert harness_memory_guard.command_profile_log_path(env, repo_root=repo) == (
         expected / "commands.jsonl"
     )
+    assert (
+        harness_memory_guard.command_profile_incident_dir(
+            harness_memory_guard.command_profile_log_path(env, repo_root=repo)
+        )
+        == expected / "incidents"
+    )
     assert harness_memory_guard._command_profile_mode(env) == "incident"
     assert not expected.is_relative_to(repo)
 
@@ -207,6 +213,9 @@ def test_harness_explicit_profile_path_preserves_selection_and_mode(
     env = {"MOLT_GUARD_PROFILE_LOG": str(selected)}
     assert (
         harness_memory_guard.command_profile_log_path(env, repo_root=repo) == selected
+    )
+    assert harness_memory_guard.command_profile_incident_dir(selected) == (
+        tmp_path / "selected" / "incidents"
     )
     assert harness_memory_guard._command_profile_mode(env) == "all"
 

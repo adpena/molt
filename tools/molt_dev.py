@@ -2037,7 +2037,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=30,
         help="min-age-s echoed into the printed detached-verify instruction",
     )
-    p_dr.add_argument("--json", action="store_true", help="emit JSON to stdout")
+    p_dr.add_argument(
+        "--json",
+        action="store_true",
+        help="emit launch state and verify_argv for the required later call",
+    )
     p_dr.add_argument(
         "argv",
         nargs=argparse.REMAINDER,

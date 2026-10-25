@@ -16,21 +16,275 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 from molt.file_publication import is_link_like, resolve_owned_path
+from molt.exact_json import encode_exact, read_exact, write_exact
 from molt.portable_paths import portable_relative_path
+from tools.git_identity import require_git_object_id
 
 if TYPE_CHECKING:
-    from tools.proof_plan import ProofPlan, ToolchainPolicy
+    from tools.proof_plan import ProofCommand, ProofPlan, ToolchainPolicy
 
 RECEIPT_SCHEMA = "molt.proof-receipt.v4"
+SELECTION_SCHEMA = "molt.proof-selection.v1"
+SELECTION_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _selection_context(
+    github_context: Mapping[str, Any], *, tier: str, event_tiers: Mapping[str, str]
+) -> dict[str, Any]:
+    if set(github_context) != {"run_id", "run_attempt", "event_name"}:
+        raise ValueError("selection requires exact GitHub run context")
+    for key in ("run_id", "run_attempt"):
+        if type(github_context[key]) is not int or github_context[key] <= 0:
+            raise ValueError(f"selection {key} must be a positive integer")
+    event = github_context["event_name"]
+    if not isinstance(event, str) or event not in event_tiers:
+        raise ValueError("selection requires a supported GitHub event")
+    if not isinstance(tier, str) or not tier or event_tiers[event] != tier:
+        raise ValueError("selection tier does not match its GitHub event")
+    return dict(github_context)
+
+
+def _selection_material(
+    plan: ProofPlan,
+    inputs: object,
+    *,
+    tier: str,
+    github_context: Mapping[str, Any],
+    full_selection_events: Iterable[str],
+    family_outputs: Callable[..., Mapping[str, str]],
+) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(inputs, dict) or set(inputs) != {
+        "mode",
+        "changed_paths",
+        "reason",
+        "reasons",
+    }:
+        raise ValueError("malformed selection inputs")
+    mode, paths, reason = inputs["mode"], inputs["changed_paths"], inputs["reason"]
+    if not isinstance(mode, str):
+        raise ValueError("selection mode must be a string")
+    if (
+        not isinstance(paths, list)
+        or not all(isinstance(path, str) and path.strip() for path in paths)
+        or len(set(paths)) != len(paths)
+    ):
+        raise ValueError("selection changed paths must be distinct nonempty strings")
+    if mode == "changed-paths":
+        if github_context["event_name"] in full_selection_events:
+            raise ValueError("full-plan event cannot use a changed-path selection")
+        if reason is not None:
+            raise ValueError("changed-path selection cannot declare a full-plan reason")
+        selection = plan.select(paths)
+        if list(selection.changed_paths) != paths:
+            raise ValueError("selection changed paths are not canonical")
+    elif mode in {"full", "fail-closed"}:
+        if paths or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("full selection requires a reason and no changed paths")
+        if mode == "full" and (
+            github_context["event_name"] not in full_selection_events
+            or reason != f"{github_context['event_name']}: full proof plan"
+        ):
+            raise ValueError("full selection does not match its canonical event")
+        selection = plan.all_selected(reason=reason, fail_closed=mode == "fail-closed")
+    else:
+        raise ValueError("unknown selection mode")
+    material = {
+        "mode": mode,
+        "changed_paths": list(selection.changed_paths),
+        "reason": reason,
+        "reasons": {name: list(values) for name, values in selection.reasons.items()},
+    }
+    if inputs != material:
+        raise ValueError("selection reasons differ from canonical selection")
+    selected = json.loads(family_outputs(plan, selection, tier=tier)["selected"])
+    return material, selected
+
+
+def selection_record(
+    plan: ProofPlan,
+    selection: Any,
+    *,
+    mode: str,
+    tier: str,
+    source_identity: Mapping[str, str],
+    authority_sha256: str,
+    github_context: Mapping[str, Any],
+    event_tiers: Mapping[str, str],
+    full_selection_events: Iterable[str],
+    family_outputs: Callable[..., Mapping[str, str]],
+) -> dict[str, Any]:
+    """Project a source-bound classifier result, never executable receipts."""
+    context = _selection_context(github_context, tier=tier, event_tiers=event_tiers)
+    if set(source_identity) != {"commit", "tree"}:
+        raise ValueError("selection source identity must contain commit and tree")
+    for key in ("commit", "tree"):
+        require_git_object_id(source_identity[key], label=f"selection source {key}")
+    if (
+        not isinstance(authority_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", authority_sha256) is None
+    ):
+        raise ValueError("selection authority digest is invalid")
+    reason = selection.fail_closed_reason
+    if mode == "full":
+        reason = f"{context['event_name']}: full proof plan"
+    inputs, selected = _selection_material(
+        plan,
+        {
+            "mode": mode,
+            "changed_paths": list(selection.changed_paths),
+            "reason": reason,
+            "reasons": {
+                name: list(values) for name, values in selection.reasons.items()
+            },
+        },
+        tier=tier,
+        github_context=context,
+        full_selection_events=full_selection_events,
+        family_outputs=family_outputs,
+    )
+    actual = json.loads(family_outputs(plan, selection, tier=tier)["selected"])
+    if actual != selected:
+        raise ValueError("classifier selection differs from its declared inputs")
+    return {
+        "schema": SELECTION_SCHEMA,
+        "source_commit": source_identity["commit"],
+        "source_tree": source_identity["tree"],
+        "source_tree_state": "clean",
+        "authority_sha256": authority_sha256,
+        "tier": tier,
+        "github_context": context,
+        "selection": inputs,
+        "selected": selected,
+    }
+
+
+def validate_selection(
+    payload: object,
+    plan: ProofPlan,
+    *,
+    tier: str,
+    source_identity: Mapping[str, str],
+    authority_sha256: str,
+    github_context: Mapping[str, Any],
+    event_tiers: Mapping[str, str],
+    full_selection_events: Iterable[str],
+    family_outputs: Callable[..., Mapping[str, str]],
+) -> tuple[str, ...]:
+    """Reconstruct the complete expected selection before examining receipts."""
+    context = _selection_context(github_context, tier=tier, event_tiers=event_tiers)
+    if set(source_identity) != {"commit", "tree"}:
+        raise ValueError("selection source identity must contain commit and tree")
+    for key in ("commit", "tree"):
+        require_git_object_id(source_identity[key], label=f"selection source {key}")
+    if (
+        not isinstance(authority_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", authority_sha256) is None
+    ):
+        raise ValueError("selection authority digest is invalid")
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema",
+        "source_commit",
+        "source_tree",
+        "source_tree_state",
+        "authority_sha256",
+        "tier",
+        "github_context",
+        "selection",
+        "selected",
+    }:
+        raise ValueError("malformed proof selection artifact")
+    expected = {
+        "schema": SELECTION_SCHEMA,
+        "source_commit": source_identity["commit"],
+        "source_tree": source_identity["tree"],
+        "source_tree_state": "clean",
+        "authority_sha256": authority_sha256,
+        "tier": tier,
+        "github_context": context,
+    }
+    observed_context = payload["github_context"]
+    if not isinstance(observed_context, dict):
+        raise ValueError("malformed artifact GitHub context")
+    _selection_context(observed_context, tier=tier, event_tiers=event_tiers)
+    for name, value in expected.items():
+        if payload[name] != value:
+            if name == "source_commit":
+                raise ValueError(
+                    f"selection source_commit requires checkout {payload[name]}; "
+                    f"this checkout is {value}. No checkout was changed"
+                )
+            raise ValueError(f"selection {name} does not match requested context")
+    names = payload["selected"]
+    known = {family.name for family in plan.families}
+    if (
+        not isinstance(names, list)
+        or not all(isinstance(name, str) and name in known for name in names)
+        or len(set(names)) != len(names)
+    ):
+        raise ValueError("selection names must be distinct known proof families")
+    _, selected = _selection_material(
+        plan,
+        payload["selection"],
+        tier=tier,
+        github_context=context,
+        full_selection_events=full_selection_events,
+        family_outputs=family_outputs,
+    )
+    if names != selected:
+        raise ValueError(
+            "selection is incomplete or differs from canonical family outputs"
+        )
+    return tuple(selected)
+
+
+def selection_path_outside_receipts(path: Path, receipt_root: Path) -> Path:
+    path = resolve_owned_path(path)
+    root = resolve_owned_path(receipt_root)
+    if path == root or path.is_relative_to(root):
+        raise ValueError(
+            "selection artifact must be outside executable receipt directory"
+        )
+    return path
+
+
+def read_selection(path: Path, *, receipt_root: Path) -> object:
+    return read_exact(
+        selection_path_outside_receipts(path, receipt_root),
+        max_bytes=SELECTION_MAX_BYTES,
+        label="proof selection artifact",
+    )
+
+
+def write_selection(
+    path: Path, payload: Mapping[str, Any], *, receipt_root: Path
+) -> None:
+    if len(encode_exact(payload)) > SELECTION_MAX_BYTES:
+        raise ValueError("proof selection artifact exceeds size limit")
+    write_exact(
+        selection_path_outside_receipts(path, receipt_root), payload, exclusive=True
+    )
 
 
 class ReceiptCommand(Protocol):
-    id: str
-    family: str
-    data: dict[str, Any]
-    argv: tuple[str, ...]
-    dependencies: tuple[str, ...]
-    evidence_outputs: tuple[str, ...]
+    """Read-only projection of an immutable declared proof command."""
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def family(self) -> str: ...
+
+    @property
+    def data(self) -> dict[str, Any]: ...
+
+    @property
+    def argv(self) -> tuple[str, ...]: ...
+
+    @property
+    def dependencies(self) -> tuple[str, ...]: ...
+
+    @property
+    def evidence_outputs(self) -> tuple[str, ...]: ...
 
 
 def receipt_context(
@@ -339,7 +593,7 @@ def verify_receipts(
     selected_names: list[str] | tuple[str, ...],
     receipt_root: Path,
     *,
-    selected_commands: Callable[..., Iterable[ReceiptCommand]],
+    selected_commands: Callable[..., Iterable[ProofCommand]],
     authority_sha256: Callable[[ProofPlan], str],
     source_identity: Callable[[], Mapping[str, str]],
     toolchain_fingerprint_digest: Callable[[Mapping[str, Any]], str],
