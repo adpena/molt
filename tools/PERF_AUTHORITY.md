@@ -14,6 +14,37 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v10 separates requested profile labels from the build producer's
+observed compiler/runtime selections. Baseline and trend comparisons refuse
+missing or different observations, including historical records labelled
+`release-fast` from a logical `release` request. This changes comparison verdicts,
+so v9 boards remain historical in their original methodology class. It does not
+change the canonical scoreboard's declared lanes or prove loaded-byte admission.
+
+Methodology v9 preserves the selected immutable Python image and bytecode policy
+during conformance/benchmark setup. This can change measured build startup;
+v8 boards remain historical and are not a comparable baseline.
+
+Noncanonical benchmark provenance records `requested_profile` as a request
+label. It does not infer a physical compiler or runtime profile. Each regular
+benchmark cell retains the CLI producer's `build_observation.selected_profiles`
+(backend, target, guest request, runtime Cargo profile and compiler Cargo profile).
+Reports show missing historical observations as `unbound`; baseline comparisons
+require matching observed coordinates and timing settings. Historical files are
+not rewritten or upgraded from logical labels. Native logical `release` normally
+selects `release-output`; the canonical scoreboard pins `release-fast` explicitly
+through the shared release-lane authority. Publication observation still does
+not prove loaded compiler/runtime bytes, and these records remain noncanonical.
+The legacy `bench/harness.py` retains raw timings and status checks but does not
+capture a build observation. It explicitly refuses baseline timing comparisons;
+its request label cannot supply missing physical selection evidence.
+The regular baseline gate, `perf_regression.py` (including trends), Molt metrics
+in `bench_diff.py`, and `bench_dashboard.py` reuse the shared observation policy.
+Standalone producers without a retained observation remain unbound, including
+historical and current `bench_wasm.py` records. Their raw measurements remain
+readable, but cannot authorize cross-run Molt timing comparisons. External-only
+metrics in `bench_diff.py` retain their existing independent comparison rules.
+
 Methodology v8 binds source and ancestry to original Git objects, ignoring
 replacement refs and legacy grafts. Performance freshness resolves the current
 `origin/main` rather than retaining a process-lifetime ref or ancestry verdict.
@@ -347,7 +378,7 @@ top-level `provenance` object from `tools/perf_authority.py` with:
 - `authoritative: false`
 - `source: "non-canonical"`
 - `lane`: the emitting tool path
-- `profile`: the actual measured profile
+- `requested_profile`: the request label, never an inferred physical profile
 - `canonical_gate`: the full `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15` command
 
 These lanes are for debugging, triage, and local comparison. Do not cite them as
@@ -626,3 +657,17 @@ content closures continue to deduplicate resolved files. Selected driver bytes
 must already belong to the admitted toolchain root and join the native journal.
 CRT objects and link libraries are copied from the LLD reproducer buffers. The
 fresh supervised build still supplies the actual link-consumption evidence.
+
+The shared `bench_evidence.METRIC_POLICIES` declaration binds each Molt metric's
+success gates and native/WASM lane. Comparison admits the observed target
+through the compiler's target authority; an identical wrong-lane observation
+does not qualify, and a mixed native/WASM metric cell cannot share one build
+observation. A new Molt metric requires a declared policy. Exact native triples
+and all admitted WASM/WASI intents preserve their target distinctions; no
+runtime profile is inferred from a metric name or target.
+
+Methodology v10 governs the shared comparison policy and each comparison
+verdict owner (`bench_reporting`, `bench_diff`, `bench_dashboard`,
+`perf_regression` and the legacy harness), including the target-admission
+dependencies. They are not unlocked report-formatting mechanics. The canonical
+bump must run after final formatting, and historical versions remain separate.

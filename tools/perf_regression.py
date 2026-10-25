@@ -474,7 +474,7 @@ def compare_benchmarks(
         raise ValueError(
             "incompatible benchmark baseline: "
             + "; ".join(metadata_errors)
-            + "; regenerate the baseline with matching benchmark timing settings"
+            + "; regenerate the baseline with matching benchmark timing settings and observed build profiles"
         )
 
     current_benches = current.get("benchmarks", {})
@@ -585,13 +585,23 @@ def analyze_trends(
     results: list[TrendAnalysis] = []
 
     for name in sorted(bench_names):
+        points = []
+        for data in all_data:
+            entry = data.get("benchmarks", {}).get(name, {})
+            if entry.get("molt_ok", False):
+                points.append({**data, "benchmarks": {name: entry}})
+        if len(points) < MIN_TREND_POINTS:
+            continue
+        # Reuse the pairwise evidence policy for every actual trend point,
+        # including historical-only benchmarks absent from the current run.
+        for point in points:
+            errors = comparable_run_metadata_errors(point, points[0])
+            if errors:
+                raise ValueError("incompatible benchmark trend: " + "; ".join(errors))
         for metric in METRIC_FIELDS:
             values: list[float] = []
-            for data in all_data:
-                entry = data.get("benchmarks", {}).get(name, {})
-                if not entry.get("molt_ok", False):
-                    continue
-                val = _extract_metric(entry, metric)
+            for point in points:
+                val = _extract_metric(point["benchmarks"][name], metric)
                 if val is not None:
                     values.append(val)
 

@@ -3,12 +3,33 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 from tools import bench_diff
 
 
 def _benchmarks(entry: dict) -> dict[str, dict]:
-    return {"bench.py": entry}
+    target = "wasm" if "molt_wasm_ok" in entry else "native"
+    return {
+        "bench.py": {
+            "requested_profile": "release",
+            "build_observation": {
+                "kind": "molt-build-observation-v1",
+                "compiled_with_verified": False,
+                "selected_profiles": {
+                    "backend": "native",
+                    "target": target,
+                    "guest_profile": "release",
+                    "compiler_profile": "release",
+                    "runtime_profile": "wasm-release"
+                    if target == "wasm"
+                    else "release-output",
+                },
+            },
+            **entry,
+        }
+    }
 
 
 def test_failed_molt_ok_excludes_native_timing_metrics() -> None:
@@ -206,3 +227,108 @@ def test_regression_gate_ignores_failed_gated_metrics(
     assert payload["metrics"][0]["rows"] == 0
     assert payload["gates"]["regressed_rows"] == 0
     assert payload["gates"]["failed"] is False
+
+
+def test_diff_refuses_legacy_molt_timing_but_keeps_external_metrics() -> None:
+    old = {"bench.py": {"molt_ok": True, "molt_time_s": 1.0, "cpython_time_s": 2.0}}
+    new = {"bench.py": {"molt_ok": True, "molt_time_s": 1.5, "cpython_time_s": 3.0}}
+    with pytest.raises(ValueError, match="selected profiles unbound"):
+        bench_diff._compute_metric_diffs("molt_time_s", old, new)
+    external = bench_diff._compute_metric_diffs("cpython_time_s", old, new)
+    assert len(external) == 1 and external[0].new == 3.0
+
+
+@pytest.mark.parametrize(
+    "coordinate",
+    ["backend", "target", "guest_profile", "runtime_profile", "compiler_profile"],
+)
+def test_diff_refuses_changed_observed_profile_coordinate(coordinate: str) -> None:
+    old = _benchmarks({"molt_ok": True, "molt_time_s": 1.0})
+    new = _benchmarks({"molt_ok": True, "molt_time_s": 1.5})
+    new["bench.py"]["build_observation"]["selected_profiles"][coordinate] = "different"
+    with pytest.raises(
+        ValueError,
+        match="selected build profiles differ|requested guest profile differs",
+    ):
+        bench_diff._compute_metric_diffs("molt_time_s", old, new)
+
+
+def test_diff_cli_refuses_unbound_comparison_before_writing_success(
+    monkeypatch, tmp_path: Path
+) -> None:
+    old, new, output = (
+        tmp_path / name for name in ("old.json", "new.json", "diff.json")
+    )
+    for path, value in ((old, 1.0), (new, 1.5)):
+        path.write_text(
+            json.dumps(
+                {"benchmarks": {"bench.py": {"molt_ok": True, "molt_time_s": value}}}
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "bench_diff.py",
+            str(old),
+            str(new),
+            "--metrics",
+            "molt_time_s",
+            "--json-out",
+            str(output),
+        ],
+    )
+    assert bench_diff.main() == 2
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "metric,observed_target",
+    [
+        ("molt_wasm_time_s", "native"),
+        ("molt_time_s", "wasm"),
+    ],
+)
+def test_diff_refuses_consistently_wrong_lane_even_when_observations_match(
+    metric, observed_target
+):
+    def entry(value):
+        cell = _benchmarks({metric: value, "molt_ok": True, "molt_wasm_ok": True})[
+            "bench.py"
+        ]
+        cell["build_observation"]["selected_profiles"]["target"] = observed_target
+        return {"bench.py": cell}
+
+    with pytest.raises(ValueError, match="requires .* target"):
+        bench_diff._compute_metric_diffs(metric, entry(1.0), entry(2.0))
+
+
+@pytest.mark.parametrize("metric", ["molt_time_s", "molt_wasm_time_s"])
+def test_diff_refuses_mixed_metric_cell_with_one_observation(metric):
+    old = _benchmarks(
+        {
+            "molt_ok": True,
+            "molt_wasm_ok": True,
+            "molt_time_s": 1.0,
+            "molt_wasm_time_s": 2.0,
+        }
+    )
+    new = _benchmarks(
+        {
+            "molt_ok": True,
+            "molt_wasm_ok": True,
+            "molt_time_s": 2.0,
+            "molt_wasm_time_s": 3.0,
+        }
+    )
+    with pytest.raises(ValueError, match="mixed native/WASM metric cell"):
+        bench_diff._compute_metric_diffs(metric, old, new)
+
+
+def test_every_declared_molt_diff_metric_has_one_shared_policy():
+    from tools.bench_evidence import METRIC_POLICIES
+
+    declared = bench_diff._LOWER_IS_BETTER | bench_diff._HIGHER_IS_BETTER
+    assert {
+        name for name in declared if name.startswith("molt_")
+    } <= METRIC_POLICIES.keys()

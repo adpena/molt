@@ -31,7 +31,12 @@ TOOLS_ROOT = Path(__file__).resolve().parent
 
 
 from tools import perf_authority  # noqa: E402
-from tools.bench_evidence import native_molt_speedup, native_molt_time  # noqa: E402
+from tools.bench_evidence import (  # noqa: E402
+    comparable_build_profile_errors,
+    format_observed_build_profiles,
+    native_molt_speedup,
+    native_molt_time,
+)
 
 
 def load_benchmarks(path: Path) -> dict:
@@ -131,6 +136,7 @@ def build_rows(results: dict) -> list[dict]:
         rows.append(
             {
                 "name": name,
+                "metric_evidence": entry,
                 "cpython_time": cpython_t,
                 "molt_time": molt_t,
                 "speedup": sp,
@@ -191,6 +197,13 @@ def compute_baseline_diff(rows: list[dict], baseline: dict) -> list[dict]:
         if base_speedup == 0:
             continue
 
+        errors = comparable_build_profile_errors(
+            {"benchmarks": {name: row["metric_evidence"]}},
+            {"benchmarks": {name: base_entry}},
+            metric="molt_speedup",
+        )
+        if errors:
+            raise ValueError("incompatible benchmark baseline: " + "; ".join(errors))
         pct = (cur_speedup - base_speedup) / base_speedup * 100
 
         if pct > 10:
@@ -235,6 +248,9 @@ def compute_baseline_diff(rows: list[dict], baseline: dict) -> list[dict]:
 def render_markdown(rows: list[dict], summary: dict, diffs: list[dict] | None) -> str:
     lines = []
     lines.append("# Molt Benchmark Dashboard\n")
+    lines.append(
+        "Raw noncanonical measurements; publication observations do not prove loaded bytes.\n"
+    )
 
     # Summary
     lines.append("## Summary\n")
@@ -270,6 +286,13 @@ def render_markdown(rows: list[dict], summary: dict, diffs: list[dict] | None) -
             f"| {fmt_time(r['molt_time'])} "
             f"| {fmt_speedup(r['speedup'])}{marker} "
             f"| {r['status']} |"
+        )
+    lines.append("")
+
+    lines.extend(["## Build Profile Observations", ""])
+    for row in rows:
+        lines.append(
+            f"- `{row['name']}` requested=`{row['metric_evidence'].get('requested_profile') or 'unbound'}`; observed=`{format_observed_build_profiles(row['metric_evidence'])}`"
         )
     lines.append("")
 
@@ -389,6 +412,9 @@ tr:hover { background: #f6f8fa; }
 """)
     h.append("</style></head><body>")
     h.append("<h1>Molt Benchmark Dashboard</h1>")
+    h.append(
+        "<p>Raw noncanonical measurements; publication observations do not prove loaded bytes.</p>"
+    )
 
     # Summary cards
     h.append("<h2>Summary</h2>")
@@ -434,6 +460,15 @@ tr:hover { background: #f6f8fa; }
         )
         h.append("</tr>")
     h.append("</tbody></table>")
+
+    h.append("<h2>Build Profile Observations</h2><ul>")
+    for row in rows:
+        h.append(
+            f"<li>{html_escape(row['name'])}: requested="
+            f"{html_escape(row['metric_evidence'].get('requested_profile') or 'unbound')}; observed="
+            f"{html_escape(format_observed_build_profiles(row['metric_evidence']))}</li>"
+        )
+    h.append("</ul>")
 
     # Baseline diff
     if diffs:
@@ -554,7 +589,11 @@ def main():
             print(f"Error: baseline not found: {args.baseline}", file=sys.stderr)
             sys.exit(1)
         baseline = load_benchmarks(args.baseline)
-        diffs = compute_baseline_diff(rows, baseline)
+        try:
+            diffs = compute_baseline_diff(rows, baseline)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(2)
 
     if args.fmt == "markdown":
         output = render_markdown(rows, summary, diffs)
