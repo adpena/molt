@@ -358,7 +358,8 @@ def test_a_second_start_of_a_slug_refuses_while_the_first_runs(
 # process a second holder stops at the in-process mutex (review v5, A-1). It
 # installs the fixture's checkout inputs and skips provisioning. With
 # ``hold``, it writes ``ready`` when it reaches that module function and waits
-# for ``go`` before it calls it.
+# for ``go`` before it calls it. A release_slot hold instead pauses immediately
+# after the real detach, before retirement deletes refs and closes its record.
 _LANE_CHILD = """
 import sys, time
 from pathlib import Path
@@ -370,14 +371,17 @@ from tools.molt_dev_common import DriverError
 cp.checkout_input = _fixture_checkout_input
 lanes.provision_lane = lambda worktree: []
 if {hold!r}:
-    real = getattr(lanes, {hold!r})
+    owner = lanes.molt_dev_retire if {hold!r} == "release_slot" else lanes
+    real = getattr(owner, {hold!r})
     def held(*args, **kwargs):
+        after_release = {hold!r} == "release_slot"
+        result = real(*args, **kwargs) if after_release else None
         Path({ready!r}).write_text("ready")
         deadline = time.monotonic() + 60
         while not Path({go!r}).exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        return real(*args, **kwargs)
-    setattr(lanes, {hold!r}, held)
+        return result if after_release else real(*args, **kwargs)
+    setattr(owner, {hold!r}, held)
 command = lanes.cmd_lane_start if {command!r} == "start" else lanes.cmd_lane_retire
 try:
     print("RESULT ok", command(_args(Path({family!r}), slug={slug!r})), flush=True)
@@ -719,6 +723,183 @@ def test_lanes_take_distinct_slots_and_reuse_a_released_one(family: Path) -> Non
     assert _git(third, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/lane/third"
     assert _ref(main, "refs/heads/lane/third") == _ref(main, "refs/remotes/origin/main")
     assert _record(family, "third")["lane"]["slot"] is True
+
+
+@pytest.mark.parametrize("alias", [False, True], ids=["path", "symlink"])
+def test_lane_start_prefers_the_callers_released_slot(
+    family: Path, tmp_path: Path, alias: bool
+) -> None:
+    """Two free slots distinguish caller locality from first-free allocation."""
+    main = family / "molt-src"
+    first = _start(family, "first")
+    preferred = _start(family, "preferred")
+    for slug in ("first", "preferred"):
+        assert lanes.cmd_lane_retire(_args(family, slug=slug)) == molt_dev.EXIT_OK
+    caller = preferred
+    if alias:
+        caller = tmp_path / "caller-alias"
+        try:
+            caller.symlink_to(preferred, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"host cannot create directory symlinks: {exc}")
+    before = _registered(main)
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="local", repo=str(caller)))
+        == molt_dev.EXIT_OK
+    )
+    assert Path(_record(family, "local")["repo_root"]) == preferred
+    assert _registered(main) == before
+    assert (
+        _git(preferred, "symbolic-ref", "HEAD").stdout.strip()
+        == "refs/heads/lane/local"
+    )
+    assert _ref(main, "refs/heads/lane/local") == _ref(main, "refs/remotes/origin/main")
+    _assert_released(main, first)
+    for slot in (first, preferred):
+        for name in ("uv-environment", "browser-acorn"):
+            assert (slot / f"{name}-tree" / "runs").read_text(
+                encoding="utf-8"
+            ) == "run\n"
+
+
+def test_lane_start_does_not_prefer_a_caller_outside_the_selected_slot_root(
+    family: Path,
+) -> None:
+    main = family / "molt-src"
+    caller = _start(family, "caller")
+    assert lanes.cmd_lane_retire(_args(family, slug="caller")) == molt_dev.EXIT_OK
+    selected_root = family / "other-slots"
+    args = _args(family, slug="elsewhere", repo=str(caller))
+    args.root = str(selected_root)
+    assert lanes.cmd_lane_start(args) == molt_dev.EXIT_OK
+    assert Path(_record(family, "elsewhere")["repo_root"]) == selected_root / "slot-01"
+    _assert_released(main, caller)
+    assert (caller / "uv-environment-tree" / "runs").read_text(
+        encoding="utf-8"
+    ) == "run\n"
+
+
+@pytest.mark.parametrize("state", ["active", "dirty"])
+def test_lane_start_leaves_an_unavailable_caller_untouched(
+    family: Path, state: str
+) -> None:
+    main = family / "molt-src"
+    first = _start(family, "first")
+    caller = _start(family, "caller")
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == molt_dev.EXIT_OK
+    if state == "dirty":
+        assert lanes.cmd_lane_retire(_args(family, slug="caller")) == molt_dev.EXIT_OK
+        (caller / "README.md").write_bytes(b"owner's tracked change\n")
+        (caller / "notes.txt").write_bytes(b"owner's untracked change\n")
+    before_record = _record(family, "caller")
+    before_head = _git(caller, "rev-parse", "HEAD").stdout
+    before_branch = _git(caller, "symbolic-ref", "-q", "HEAD", check=False).stdout
+    before_readme = (caller / "README.md").read_bytes()
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="fallback", repo=str(caller)))
+        == molt_dev.EXIT_OK
+    )
+    assert Path(_record(family, "fallback")["repo_root"]) == first
+    assert _git(caller, "rev-parse", "HEAD").stdout == before_head
+    assert (
+        _git(caller, "symbolic-ref", "-q", "HEAD", check=False).stdout == before_branch
+    )
+    assert _record(family, "caller") == before_record
+    assert (caller / "README.md").read_bytes() == before_readme
+    if state == "dirty":
+        assert (caller / "notes.txt").read_bytes() == b"owner's untracked change\n"
+    assert len(_registered(main)) == 3
+
+
+@pytest.mark.parametrize(
+    ("protection", "prefer"),
+    [("locked", False), ("locked", True), ("prunable", False)],
+)
+def test_lane_start_reserves_protected_slot_numbers(
+    family: Path, monkeypatch: pytest.MonkeyPatch, protection: str, prefer: bool
+) -> None:
+    """Both preferred and ordinary choice use the same protected-row boundary."""
+    main = family / "molt-src"
+    held = _start(family, "held")
+    assert lanes.cmd_lane_retire(_args(family, slug="held")) == molt_dev.EXIT_OK
+    if protection == "locked":
+        _git(main, "worktree", "lock", "--reason", "owner custody", str(held))
+        saved = held
+    else:
+        # Preserve the directory while making its real Git registration stale.
+        saved = family / "held-checkout"
+        held.rename(saved)
+    row = next(
+        row for row in lanes._worktrees(molt_dev.Git(main)) if Path(row["path"]) == held
+    )
+    assert row[protection] is True
+    before_readme = (saved / "README.md").read_bytes()
+    before_record = _record(family, "held")
+    caller = held if prefer else main
+    monkeypatch.setattr(lanes, "LANE_SLOT_LIMIT", 1)
+    with pytest.raises(DriverError, match=f"{protection} registration"):
+        lanes.cmd_lane_start(_args(family, slug="blocked", repo=str(caller)))
+    assert _ref(main, "refs/heads/lane/blocked") is None
+    monkeypatch.setattr(lanes, "LANE_SLOT_LIMIT", 2)
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="fallback", repo=str(caller)))
+        == molt_dev.EXIT_OK
+    )
+    assert (
+        Path(_record(family, "fallback")["repo_root"])
+        == family / "worktrees" / "slot-02"
+    )
+    assert (saved / "README.md").read_bytes() == before_readme
+    assert _record(family, "held") == before_record
+    row = next(
+        row for row in lanes._worktrees(molt_dev.Git(main)) if Path(row["path"]) == held
+    )
+    assert row[protection] is True
+    if protection == "locked":
+        _assert_released(main, held)
+    else:
+        assert not held.exists()
+
+
+def test_lane_start_reuses_a_slot_while_its_old_retirement_finishes(
+    family: Path, tmp_path: Path
+) -> None:
+    """Detach admits a new owner before the old process deletes refs/record."""
+    from tests.process_guard_common import close_owned_test_process
+
+    main = family / "molt-src"
+    first = _start(family, "first")
+    released = _start(family, "retiring")
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == molt_dev.EXIT_OK
+    signals = (tmp_path / "ready", tmp_path / "go")
+    retiring = _lane_child(
+        family, signals, command="retire", slug="retiring", hold="release_slot"
+    )
+    try:
+        _await_hold(retiring, signals[0], "its completed detach")
+        _assert_released(main, released)
+        assert _ref(main, "refs/heads/lane/retiring") is not None
+        assert _record(family, "retiring")["status"] == "running"
+        assert (
+            lanes.cmd_lane_start(_args(family, slug="next", repo=str(released)))
+            == molt_dev.EXIT_OK
+        )
+        assert Path(_record(family, "next")["repo_root"]) == released
+        (released / "new-owner.txt").write_bytes(b"new lane custody\n")
+        signals[1].write_text("go", encoding="utf-8")
+        out, err = retiring.communicate(timeout=120)
+    finally:
+        signals[1].write_text("go", encoding="utf-8")
+        close_owned_test_process(retiring)
+    assert "RESULT ok 0" in out, out + err
+    assert _ref(main, "refs/heads/lane/retiring") is None
+    assert _record(family, "retiring")["status"] == "landed"
+    assert _record(family, "next")["status"] == "running"
+    assert (
+        _git(released, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/lane/next"
+    )
+    assert (released / "new-owner.txt").read_bytes() == b"new lane custody\n"
+    _assert_released(main, first)
 
 
 def test_lane_start_from_released_slot_uses_family_work_in_progress_count(
