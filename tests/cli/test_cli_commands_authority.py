@@ -18,6 +18,7 @@ _COMMAND_AUTHORITIES = {
         "_format_duration",
         "_run_command",
         "_run_command_timed",
+        "_timed_process_result",
     ),
     script_commands: (
         "_apply_run_capability_policy",
