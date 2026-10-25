@@ -45,13 +45,22 @@ for the crate-extraction and incremental-build routing plan.
   `codec_registry` module is a non-optional runtime dependency and is the
   canonical descriptor source for direct codec labels, Python `encodings` module
   names, ordinal limits, and text-I/O classes. `tools/gen_codecs.py` filters
-  CPython alias reference data through that registry and derives the named
-  single-byte table set from the same descriptor source; it generates alias rows
-  plus encode/decode maps from the repo-pinned
+  the build-only `config/codec_aliases.toml` reference data through that registry
+  and derives the named
+  single-byte table set from the same descriptor source. It generates both native
+  and Python-facing alias rows from the TOML input, and encode/decode maps from
+  the repo-pinned
   `src/molt/stdlib/encodings/*.py` modules, so `molt-runtime` remains only the
   caller/error adapter for codec execution. The `codec-tables` dev gate watches
-  the generator, generated tables, Python encoding modules, and that runtime
-  consumer so the old facade-owned charmap shim cannot reappear silently. The
+  the generator, alias input, generated tables, Python encoding modules, and that runtime
+  consumer so the old facade-owned charmap shim cannot reappear silently.
+  The Python `encodings.aliases` module constructs only the intrinsic-provided
+  public map; it carries no second executable reference dictionary. Keeping the
+  reference rows outside guest source avoids generating a second large module
+  initializer while preserving the runtime table and ordinary alias lookup.
+  The reference follows [CPython's codec alias model](https://github.com/python/cpython/blob/v3.12.15/Lib/encodings/aliases.py);
+  its migration provenance is recorded with the TOML input. Generator work stays
+  linear in the reference rows and adds no guest file reads or runtime fallback. The
   heavier html/unicodedata modules
   remain gated by `stdlib_text`; `molt_html_*` and
   `molt_unicodedata_*` resolver arms are gated by `stdlib_text`, and
