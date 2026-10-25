@@ -1002,6 +1002,43 @@ pub(crate) unsafe fn union_type_args_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
 
+/// Nullable tuple caches are owned edges, with explicit publication across
+/// reentrant callbacks. Load-then-retain additionally requires the current
+/// PyToken/GilGuard runtime lock; atomics alone are not no-GIL-safe.
+pub(crate) unsafe fn generic_alias_parameters_cache(
+    ptr: *mut u8,
+) -> *mut std::sync::atomic::AtomicU64 {
+    unsafe { ptr.add(2 * std::mem::size_of::<u64>()).cast() }
+}
+
+pub(crate) unsafe fn union_type_parameters_cache(
+    ptr: *mut u8,
+) -> *mut std::sync::atomic::AtomicU64 {
+    unsafe { ptr.add(std::mem::size_of::<u64>()).cast() }
+}
+
+pub(crate) unsafe fn generic_alias_parameters_bits(ptr: *mut u8) -> u64 {
+    unsafe { &*generic_alias_parameters_cache(ptr) }.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) unsafe fn union_type_parameters_bits(ptr: *mut u8) -> u64 {
+    unsafe { &*union_type_parameters_cache(ptr) }.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) unsafe fn generic_alias_take_parameters(ptr: *mut u8) -> u64 {
+    unsafe { &*generic_alias_parameters_cache(ptr) }.swap(
+        crate::MoltObject::none().bits(),
+        std::sync::atomic::Ordering::AcqRel,
+    )
+}
+
+pub(crate) unsafe fn union_type_take_parameters(ptr: *mut u8) -> u64 {
+    unsafe { &*union_type_parameters_cache(ptr) }.swap(
+        crate::MoltObject::none().bits(),
+        std::sync::atomic::Ordering::AcqRel,
+    )
+}
+
 pub(crate) unsafe fn function_fn_ptr(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }

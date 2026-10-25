@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import builtins
+from contextlib import contextmanager
 import gc
 import hashlib
 import importlib.util
@@ -14,47 +16,132 @@ import sys
 import time
 import tracemalloc
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 
-def _load_typing(source_root: Path) -> types.ModuleType:
-    intrinsic_module = types.ModuleType("_intrinsics")
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tests.stdlib_intrinsic_registry import intrinsic_registry  # noqa: E402
+
+
+def _host_collection_runtime_types() -> dict[str, type]:
+    """Actual host runtime input for the selected collections.abc source."""
+    return {
+        "bytes_iterator": type(iter(b"")),
+        "bytearray_iterator": type(iter(bytearray())),
+        "dict_keyiterator": type(iter({}.keys())),
+        "dict_valueiterator": type(iter({}.values())),
+        "dict_itemiterator": type(iter({}.items())),
+        "list_iterator": type(iter([])),
+        "list_reverseiterator": type(reversed([])),
+        "range_iterator": type(iter(range(0))),
+        "longrange_iterator": type(iter(range(1 << 65, (1 << 65) + 1))),
+        "set_iterator": type(iter(set())),
+        "str_iterator": type(iter("")),
+        "tuple_iterator": type(iter(())),
+        "zip_iterator": type(iter(zip())),
+        "dict_keys": type({}.keys()),
+        "dict_values": type({}.values()),
+        "dict_items": type({}.items()),
+        "mappingproxy": type(type.__dict__),
+        "framelocalsproxy": type(sys._getframe().f_locals),
+        "generator": types.GeneratorType,
+        "coroutine": types.CoroutineType,
+        "async_generator": types.AsyncGeneratorType,
+    }
+
+
+def typing_source_inputs(source_root: Path) -> dict[str, str]:
+    """Bind selected source and the actual host fixture/resolver reader authority."""
+    paths = {
+        "typing": source_root / "src/molt/stdlib/typing.py",
+        "collections_abc": source_root / "src/molt/stdlib/_collections_abc.py",
+        "resolver": _REPO_ROOT / "src/molt/stdlib/_intrinsics.py",
+        "registry": _REPO_ROOT / "tests/stdlib_intrinsic_registry.py",
+        "loader": Path(__file__).resolve(),
+    }
+    return {
+        f"{name}:{path}": hashlib.sha256(path.read_bytes()).hexdigest()
+        for name, path in paths.items()
+    }
+
+
+@contextmanager
+def typing_source_modules(
+    source_root: Path,
+) -> Iterator[tuple[types.ModuleType, types.ModuleType]]:
+    """Execute both genuine sources with private imports and the strict resolver.
+
+    The host typing/collections modules remain untouched for independent oracles.
+    This one loader is shared by semantic tests and both profiling tools.
+    """
+    import _thread
 
     def rlock_acquire(lock: object, blocking: bool, timeout: float) -> bool:
         acquire = getattr(lock, "acquire")
-        if timeout == -1.0:
-            return bool(acquire(blocking))
-        return bool(acquire(blocking, timeout))
+        return bool(
+            acquire(blocking) if timeout == -1.0 else acquire(blocking, timeout)
+        )
 
-    def require_intrinsic(name: str) -> object:
-        if name == "molt_generic_alias_new":
-            return lambda origin, args: types.GenericAlias(origin, args)
-        if name == "molt_typing_type_param":
-            return lambda factory, name: factory(name)
-        if name == "molt_rlock_new":
-            return __import__("_thread").RLock
-        if name == "molt_rlock_acquire":
-            return rlock_acquire
-        if name == "molt_rlock_release":
-            return lambda lock: lock.release()
-        if name.startswith("molt_protocol_"):
-            return lambda *_args, **_kwargs: None
-        raise RuntimeError(f"runtime intrinsic unavailable while profiling: {name}")
+    behavior = {
+        "molt_typing_cast": lambda _tp, value: value,
+        "molt_generic_alias_new": types.GenericAlias,
+        "molt_typing_type_param": lambda factory, name: factory(name),
+        "molt_rlock_new": _thread.RLock,
+        "molt_rlock_acquire": rlock_acquire,
+        "molt_rlock_release": lambda lock: lock.release(),
+        "molt_protocol_check": lambda *_args: None,
+        "molt_protocol_get_structural_members": lambda *_args: None,
+        "molt_protocol_register": lambda *_args: None,
+        "molt_collections_abc_runtime_types": _host_collection_runtime_types,
+    }
+    specs = [
+        importlib.util.spec_from_file_location(
+            name, source_root / "src/molt/stdlib" / filename
+        )
+        for name, filename in (
+            ("_collections_abc", "_collections_abc.py"),
+            ("typing", "typing.py"),
+        )
+    ]
+    collections_spec, typing_spec = specs
+    if collections_spec is None or collections_spec.loader is None:
+        raise RuntimeError(
+            f"cannot load selected collections source from {source_root}"
+        )
+    if typing_spec is None or typing_spec.loader is None:
+        raise RuntimeError(f"cannot load selected typing source from {source_root}")
+    collections_module = importlib.util.module_from_spec(collections_spec)
+    typing_module = importlib.util.module_from_spec(typing_spec)
+    with intrinsic_registry(behavior) as resolver:
+        selected = {
+            "_intrinsics": resolver,
+            "_collections_abc": collections_module,
+            "typing": typing_module,
+        }
+        original_import = builtins.__import__
 
-    intrinsic_module.require_intrinsic = require_intrinsic  # type: ignore[attr-defined]
-    sys.modules["_intrinsics"] = intrinsic_module
-    path = source_root / "src/molt/stdlib/typing.py"
-    module_name = (
-        f"_molt_typing_profile_{hashlib.sha256(path.read_bytes()).hexdigest()}"
-    )
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load typing implementation from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+        def source_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if level == 0 and name in selected:
+                return selected[name]
+            return original_import(name, globals, locals, fromlist, level)
+
+        for module in (collections_module, typing_module):
+            module.__dict__["__builtins__"] = {
+                **vars(builtins),
+                "__import__": source_import,
+            }
+        collections_spec.loader.exec_module(collections_module)
+        typing_spec.loader.exec_module(typing_module)
+        yield typing_module, collections_module
 
 
 def _measure(
@@ -187,32 +274,33 @@ def main() -> int:
     source_root = args.source_root.resolve()
     implementation = source_root / "src/molt/stdlib/typing.py"
     tool = Path(__file__).resolve()
-    module = _load_typing(source_root)
-    if args.synchronization == "unsynchronized-control":
-        _disable_synchronization_control(module)
-    result = {
-        "schema_version": 1,
-        "identity": {
-            "label": args.label,
-            "source_root": str(source_root),
-            "implementation": str(implementation),
-            "implementation_sha256": hashlib.sha256(
-                implementation.read_bytes()
-            ).hexdigest(),
-            "tool": str(tool),
-            "tool_sha256": hashlib.sha256(tool.read_bytes()).hexdigest(),
-            "python": platform.python_version(),
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "synchronization": args.synchronization,
-        },
-        "metrics": _profile(
-            module,
-            count=args.count,
-            warm_reads=args.warm_reads,
-            repeats=args.repeats,
-        ),
-    }
+    with typing_source_modules(source_root) as (module, _collections):
+        if args.synchronization == "unsynchronized-control":
+            _disable_synchronization_control(module)
+        result = {
+            "schema_version": 1,
+            "identity": {
+                "source_inputs_sha256": typing_source_inputs(source_root),
+                "label": args.label,
+                "source_root": str(source_root),
+                "implementation": str(implementation),
+                "implementation_sha256": hashlib.sha256(
+                    implementation.read_bytes()
+                ).hexdigest(),
+                "tool": str(tool),
+                "tool_sha256": hashlib.sha256(tool.read_bytes()).hexdigest(),
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+                "synchronization": args.synchronization,
+            },
+            "metrics": _profile(
+                module,
+                count=args.count,
+                warm_reads=args.warm_reads,
+                repeats=args.repeats,
+            ),
+        }
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
