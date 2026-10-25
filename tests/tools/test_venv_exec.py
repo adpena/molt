@@ -29,7 +29,8 @@ def test_resolve_venv_uses_repo_default(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
 
-    assert venv_exec.resolve_venv(repo_root=root, env={}) == root / ".venv"
+    with pytest.raises(venv_exec.VenvExecError, match="development image not selected"):
+        venv_exec.resolve_venv(repo_root=root, env={})
 
 
 def test_resolve_venv_follows_the_uv_project_environment(tmp_path: Path) -> None:
@@ -60,13 +61,8 @@ def test_resolve_venv_ignores_unrelated_active_virtualenv(tmp_path: Path) -> Non
     root.mkdir()
     unrelated = tmp_path / "other-venv"
 
-    assert (
-        venv_exec.resolve_venv(
-            repo_root=root,
-            env={"VIRTUAL_ENV": str(unrelated)},
-        )
-        == root / ".venv"
-    )
+    with pytest.raises(venv_exec.VenvExecError, match="development image not selected"):
+        venv_exec.resolve_venv(repo_root=root, env={"VIRTUAL_ENV": str(unrelated)})
 
 
 def test_venv_env_marks_virtualenv_and_prepends_bin(tmp_path: Path) -> None:
@@ -123,26 +119,53 @@ def test_venv_selector_uses_the_callers_name_rule(tmp_path, name_rule):
     root = tmp_path / "repo"
     selected = tmp_path / "selected"
     environment = ProcessEnvironment({"molt_venv": str(selected)}, rule=name_rule)
-    assert venv_exec.resolve_venv(repo_root=root, env=environment) == (
-        root / ".venv" if name_rule is NameRule.EXACT else selected
-    )
+    if name_rule is NameRule.EXACT:
+        with pytest.raises(
+            venv_exec.VenvExecError, match="development image not selected"
+        ):
+            venv_exec.resolve_venv(repo_root=root, env=environment)
+    else:
+        assert venv_exec.resolve_venv(repo_root=root, env=environment) == selected
 
 
-def test_resolve_command_rewrites_python_to_venv_python(tmp_path: Path) -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_resolve_command_rewrites_python_to_venv_python(
+    tmp_path: Path, managed: bool
+) -> None:
     venv = tmp_path / ".venv"
     bin_dir = venv_exec.venv_bin_dir(venv)
     bin_dir.mkdir(parents=True)
     python = bin_dir / ("python.exe" if os.name == "nt" else "python3")
     python.write_text("", encoding="utf-8")
+    if os.name == "nt":
+        python = bin_dir / "python3.exe"
+        python.write_text("", encoding="utf-8")
 
-    command = venv_exec.resolve_command(["python3", "-m", "pytest"], venv=venv)
-
-    assert command == [str(python), "-m", "pytest"]
+    command = venv_exec.resolve_command(
+        ["python3", "-I", "-E", "-m", "pytest"], venv=venv, managed=managed
+    )
+    expected_prefix = (
+        ["-B", "-X", f"pycache_prefix={venv / 'bytecode'}"] if managed else []
+    )
+    assert command == [str(python), *expected_prefix, "-I", "-E", "-m", "pytest"]
+    with pytest.raises(venv_exec.VenvExecError, match="alias.*absent"):
+        venv_exec.resolve_command(
+            ["python4.0", "-c", "pass"], venv=venv, managed=managed
+        )
 
 
 def test_resolve_command_reports_missing_venv_python(tmp_path: Path) -> None:
-    with pytest.raises(venv_exec.VenvExecError, match="virtualenv Python not found"):
-        venv_exec.resolve_command(["python3", "-m", "pytest"], venv=tmp_path / ".venv")
+    missing = tmp_path / ".venv"
+    with pytest.raises(
+        venv_exec.VenvExecError, match="Python executable alias"
+    ) as error:
+        venv_exec.resolve_command(["python3", "-m", "pytest"], venv=missing)
+    alias = "python3.exe" if os.name == "nt" else "python3"
+    assert (
+        str(error.value)
+        == f"Python executable alias {alias!r} is absent from the selected environment"
+    )
+    assert not missing.exists()
 
 
 def test_resolve_command_leaves_non_python_command_intact(tmp_path: Path) -> None:
@@ -159,6 +182,8 @@ def test_wrapped_command_exit_status_propagates(status: int) -> None:
         [
             sys.executable,
             str(ROOT / "tools" / "venv_exec.py"),
+            "--venv",
+            sys.prefix,
             "python",
             "-c",
             f"raise SystemExit({status})",

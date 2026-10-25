@@ -68,7 +68,7 @@ def _journal(payload: Mapping[str, object]) -> None:
 
 
 def _posix_launch(
-    token: object, child_env: object, child_cwd: object
+    token: object, child_env: object, child_cwd: object, argv: object = None
 ) -> dict[str, object]:
     """Report what CPython's POSIX launch searches: the child's PATH and cwd."""
     # Match the actual CPython child launch: an explicit environment without
@@ -88,23 +88,31 @@ def _posix_launch(
         "requested": os.fsdecode(token) if isinstance(token, bytes) else str(token),
         "path": path_value,
         "cwd": effective_cwd,
+        "argv": (
+            [os.fsdecode(arg) if isinstance(arg, bytes) else arg for arg in argv]
+            if isinstance(argv, (list, tuple))
+            else None
+        ),
     }
 
 
-def _windows_caller_facts() -> Callable[[], dict[str, object]]:
-    """Bind the calling-process facts that CreateProcessW searches with.
-
-    Windows resolves a launch in the calling process, so the child's env and
-    cwd take no part. PATH comes from the process environment block, which
-    os.putenv changes without updating os.environ.
-    """
-    import _winapi
+def _native_environment_reader() -> Callable[[str], str | None]:
+    """Read the real inherited block, including os.putenv-only changes."""
     import ctypes
+
+    if os.name != "nt":
+        getenv = ctypes.CDLL(None).getenv
+        getenv.argtypes = [ctypes.c_char_p]
+        getenv.restype = ctypes.c_char_p
+
+        def variable(name: str) -> str | None:
+            value = getenv(os.fsencode(name))
+            return None if value is None else os.fsdecode(value)
+
+        return variable
+
     from ctypes import wintypes
 
-    module_file_name = _winapi.GetModuleFileName
-    need_current_directory = _winapi.NeedCurrentDirectoryForExePath
-    current_directory = os.getcwd
     get_variable = ctypes.WinDLL(
         "kernel32", use_last_error=True
     ).GetEnvironmentVariableW
@@ -115,28 +123,84 @@ def _windows_caller_facts() -> Callable[[], dict[str, object]]:
     set_last_error = ctypes.set_last_error
     error_envvar_not_found = 203
 
-    def process_path() -> str | None:
+    def variable(name: str) -> str | None:
         size = 1024
         while True:
             buffer = create_buffer(size)
             set_last_error(0)
-            length = get_variable("PATH", buffer, size)
+            length = get_variable(name, buffer, size)
             if length == 0:
                 error = get_last_error()
                 if error == error_envvar_not_found:
                     return None
                 if error:
-                    raise OSError(error, "cannot read the process PATH")
+                    raise OSError(error, f"cannot read the process {name}")
                 return ""
             if length < size:
                 return buffer.value
             size = length
 
+    return variable
+
+
+def _python_environment(
+    child_env: object, inherited: Callable[[str], str | None], *, windows: bool
+) -> dict[str, str | None]:
+    names = ("PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE")
+    if child_env is None:
+        return {name: inherited(name) for name in names}
+    if not isinstance(child_env, Mapping):
+        raise ValueError("Python child environment is not a mapping")
+    if not windows:
+        selected = {}
+        for name in names:
+            text = child_env.get(name)
+            raw = child_env.get(os.fsencode(name))
+            if text is not None and raw is not None:
+                raise ValueError("Python child environment has duplicate custody names")
+            value = text if text is not None else raw
+            if isinstance(value, bytes):
+                value = os.fsdecode(value)
+            if value is not None and not isinstance(value, str):
+                raise ValueError("Python child environment value is not text")
+            selected[name] = value
+        return selected
+    # CPython permits byte-key/value mappings on POSIX. Windows names follow
+    # its case-insensitive environment block; conflicting aliases are refused.
+    selected = dict.fromkeys(names)
+    seen: set[str] = set()
+    for key, value in child_env.items():
+        key = os.fsdecode(key) if isinstance(key, bytes) else key
+        if windows and isinstance(key, str):
+            key = key.upper()
+        if key not in names:
+            continue
+        if key in seen:
+            raise ValueError("Python child environment has duplicate custody names")
+        seen.add(key)
+        if isinstance(value, bytes):
+            value = os.fsdecode(value)
+        if not isinstance(value, str):
+            raise ValueError("Python child environment value is not text")
+        selected[key] = value
+    return selected
+
+
+def _windows_caller_facts(
+    variable: Callable[[str], str | None],
+) -> Callable[[], dict[str, object]]:
+    """Bind CreateProcessW search to the actual calling process environment."""
+    import _winapi
+
+    module_file_name = _winapi.GetModuleFileName
+    need_current_directory = _winapi.NeedCurrentDirectoryForExePath
+    current_directory = os.getcwd
+
     def caller_facts() -> dict[str, object]:
         return {
             "caller_image": module_file_name(0),
             "caller_cwd": current_directory(),
-            "caller_path": process_path(),
+            "caller_path": variable("PATH"),
             # A name without a backslash follows NoDefaultCurrentDirectoryInExePath.
             "caller_searches_current_directory": bool(need_current_directory("molt")),
         }
@@ -187,7 +251,7 @@ def install_python_child_custody() -> None:
     policy = json.loads(raw)
     if (
         not isinstance(policy, dict)
-        or policy.get("schema") != "molt.proof-child-custody.v1"
+        or policy.get("schema") != "molt.proof-child-custody.v2"
     ):
         raise RuntimeError("malformed proof child custody policy")
     # Capture enforcement callables before payload execution.  The audit hook
@@ -197,7 +261,9 @@ def install_python_child_custody() -> None:
     record_event = _journal
     posix_launch = _posix_launch
     windows = os.name == "nt"
-    caller_facts = _windows_caller_facts() if windows else None
+    inherited_environment = _native_environment_reader()
+    python_environment = _python_environment
+    caller_facts = _windows_caller_facts(inherited_environment) if windows else None
     announced = WindowsLaunchAnnouncements()
     opaque_events = OPAQUE_PROCESS_EVENTS
     endpoint = os.environ.get(CHILD_ENDPOINT_ENV, "")
@@ -273,7 +339,13 @@ def install_python_child_custody() -> None:
                     args[0] if args else None,
                     args[3] if len(args) > 3 else None,
                     args[2] if len(args) > 2 else None,
+                    args[1] if len(args) > 1 else None,
                 )
+            launch["python_environment"] = python_environment(
+                args[3] if len(args) > 3 else None,
+                inherited_environment,
+                windows=windows,
+            )
             admit_executable(launch)
             if caller_facts is not None:
                 announced.announce(launch["application_name"])

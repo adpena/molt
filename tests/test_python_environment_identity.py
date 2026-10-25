@@ -28,7 +28,10 @@ from molt import python_environment_location as location
 from molt import python_file_node_custody as files
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
-from tests.python_environment_test_support import runtime_identity_manifest
+from tests.python_environment_test_support import (
+    environment_location_manifest,
+    runtime_identity_manifest,
+)
 from tests.process_guard_common import install_module_view
 from tests.module_isolation import forget_module
 
@@ -41,6 +44,81 @@ _PORTABLE_PATH_ALIASES = [
     pytest.param("caf\u00e9", "cafe\u0301", id="unicode-normalization"),
     pytest.param("stra\u00dfe", "STRASSE", id="unicode-casefold"),
 ]
+
+
+@pytest.mark.parametrize("fault", ["missing", "populated", "symlink"])
+def test_identity_probe_refuses_unowned_cache_namespace(tmp_path, fault):
+    prefix = tmp_path / "verifier"
+    if fault == "populated":
+        prefix.mkdir()
+        (prefix / "cache.pyc").write_bytes(b"unadmitted")
+    elif fault == "symlink":
+        target = tmp_path / "target"
+        target.mkdir()
+        try:
+            prefix.symlink_to(target, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable")
+    with pytest.raises(PythonEnvironmentIdentityError, match="fresh empty owned"):
+        identity.python_identity_probe_arguments(
+            ("--capture-runtime",), verifier_bytecode_prefix=prefix
+        )
+
+
+def test_image_cache_mapping_refuses_absent_verifier_prefix(tmp_path, monkeypatch):
+    install_module_view(monkeypatch, "sys", sys, environment, pycache_prefix=None)
+    with pytest.raises(PythonEnvironmentIdentityError, match="pre-start"):
+        environment._image_cache_from_source(
+            tmp_path / "demo.py", tmp_path / "image", 0
+        )
+
+
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_verifier_prefix_cleanup_keeps_primary_failure(
+    tmp_path, monkeypatch, body_fails
+):
+    from molt import temporary_artifacts
+
+    owners = []
+    original_owner = temporary_artifacts.OwnedTemporaryDirectory
+    original_delete = temporary_artifacts.delete_path
+
+    class TrackedDirectory(original_owner):
+        def __init__(self, *, prefix):
+            super().__init__(prefix=prefix, dir=tmp_path)
+            owners.append(self)
+
+    def refuse_owned_cleanup(path):
+        if owners and Path(path) == Path(owners[0].name):
+            return False, "injected deletion refusal"
+        return original_delete(path)
+
+    primary = RuntimeError("original probe failure")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                temporary_artifacts, "OwnedTemporaryDirectory", TrackedDirectory
+            )
+            patch.setattr(temporary_artifacts, "delete_path", refuse_owned_cleanup)
+            with pytest.raises(RuntimeError if body_fails else OSError) as raised:
+                with identity.python_identity_verifier_prefix() as prefix:
+                    assert prefix.is_dir()
+                    if body_fails:
+                        raise primary
+            assert prefix.is_dir()
+            if body_fails:
+                assert raised.value is primary
+                notes = "\n".join(primary.__notes__)
+                assert str(prefix) in notes
+                assert "OSError" in notes
+                assert "injected deletion refusal" in notes
+            else:
+                assert "injected deletion refusal" in str(raised.value)
+    finally:
+        # Retry through the same allocation owner after restoring deletion;
+        # the test never reconstructs ownership from the retained path.
+        for owner in owners:
+            owner.cleanup()
 
 
 @pytest.mark.parametrize("authority", ["", "localhost", "LOCALHOST", "LoCaLhOsT"])
@@ -140,21 +218,27 @@ def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkey
 
     before = snapshot()
     assert not list(disposable.rglob("__pycache__"))
-    command = [
-        str(getattr(sys, "_base_executable", sys.executable)),
-        *identity.python_identity_probe_arguments(("--capture-runtime",), no_site=True),
-    ]
     for _ in range(2):
-        completed = _COMMANDS.run(
-            command,
-            cwd=disposable,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "0"},
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
-            check=False,
-        )
+        with identity.python_identity_verifier_prefix() as verifier_prefix:
+            command = [
+                str(getattr(sys, "_base_executable", sys.executable)),
+                *identity.python_identity_probe_arguments(
+                    ("--capture-runtime",),
+                    no_site=True,
+                    verifier_bytecode_prefix=verifier_prefix,
+                ),
+            ]
+            completed = _COMMANDS.run(
+                command,
+                cwd=disposable,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "0"},
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=60,
+                check=False,
+            )
+            assert not list(verifier_prefix.iterdir())
         assert completed.returncode == 0, completed.stderr
         identity.validate_python_runtime_identity(json.loads(completed.stdout))
         assert not list(disposable.rglob("__pycache__"))
@@ -987,7 +1071,7 @@ def test_synthetic_environment_preserves_declared_empty_import_roots(packages):
     assert [row["name"] for row in environment["distributions"]] == sorted(
         name for name, _version in packages
     )
-    assert environment["tree"]["file_count"] == 2 + len(packages)
+    assert environment["tree"]["file_count"] == 2 + 2 * len(packages)
 
 
 @pytest.mark.parametrize(
@@ -1057,12 +1141,75 @@ def test_environment_projects_only_captured_interpreter_aliases(
     base = tmp_path / "base.exe"
     base.write_bytes(b"synthetic base image; content is owned by the manifest")
     projected = identity.python_environment_executable_files(
-        payload, tmp_path, base_executable=base
+        payload, tmp_path, base_executable=base, base_executable_selector=base
     )
     paths = {row["path"] for row in projected}
     assert (str(tmp_path / relative) in paths) is admitted
     assert str(tmp_path / selected["path"]) in paths
     assert str(base.resolve()) in paths
+
+
+@pytest.mark.parametrize("target", ["captured", "foreign-samebytes", "wrong-node"])
+def test_base_selector_projection_binds_the_exact_captured_target(tmp_path, target):
+    from tests.python_environment_test_support import realized_environment_manifest
+
+    data = b"captured base interpreter"
+    physical = tmp_path / "physical" / "python.exe"
+    foreign = tmp_path / "foreign" / "python.exe"
+    for path in (physical, foreign):
+        path.parent.mkdir()
+        path.write_bytes(data)
+    alias = tmp_path / "base-selector"
+    try:
+        alias.symlink_to(
+            foreign.parent if target == "foreign-samebytes" else physical.parent,
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows host lacks symbolic-link creation privilege")
+        raise
+    selector = alias / "python.exe"
+    assert selector.read_bytes() == physical.read_bytes() == foreign.read_bytes()
+    runtime = runtime_identity_manifest()
+    runtime["file_nodes"][0].update(
+        size=len(data),
+        sha256=hashlib.sha256(data if target != "wrong-node" else b"other").hexdigest(),
+    )
+    runtime["runtime_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in runtime.items()
+            if key != "runtime_closure_sha256"
+        }
+    )
+    payload = realized_environment_manifest(runtime, [])
+
+    def project():
+        return environment.python_environment_executable_files(
+            payload,
+            tmp_path,
+            base_executable=physical,
+            base_executable_selector=selector,
+        )
+
+    if target == "captured":
+        rows = {row["role"]: row for row in project()}
+        assert rows["base-interpreter"]["path"] == str(physical)
+        assert rows["interpreter-alias:base-selector"] == {
+            "role": "interpreter-alias:base-selector",
+            "path": str(selector),
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    else:
+        with pytest.raises(
+            PythonEnvironmentIdentityError,
+            match="captured physical base"
+            if target == "foreign-samebytes"
+            else "runtime node",
+        ):
+            project()
 
 
 def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_path):
@@ -1084,13 +1231,29 @@ def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_pat
         }
     )
     environment = realized_environment_manifest(runtime, [("example", "1.0")])
+    wheel = environment["distributions"][0]["wheel"]
+    wheel_node = next(
+        row["node"]
+        for row in environment["tree"]["entries"]
+        if row["path"] == wheel["path"]
+    )
     environment_pool = files._FileNodePool(capture_context=context)
     for index in range(len(environment["tree"]["file_nodes"])):
         path = tmp_path / f"file-{index}"
         if index:
-            path.write_bytes(f"environment-{index}".encode())
+            path.write_bytes(
+                b"Wheel-Version: 1.0\nTag: py3-none-any\n"
+                if environment["tree"]["file_nodes"][index]["id"] == wheel_node
+                else f"environment-{index}".encode()
+            )
         environment_pool.bind(path, path.stat(), label="environment")
     environment["tree"]["file_nodes"] = environment_pool.nodes
+    wheel["sha256"] = next(
+        row["sha256"] for row in environment_pool.nodes if row["id"] == wheel_node
+    )
+    environment["distribution_inventory_sha256"] = canonical_json_sha256(
+        environment["distributions"]
+    )
     environment["environment_closure_sha256"] = canonical_json_sha256(
         {
             key: value
@@ -1103,6 +1266,11 @@ def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_pat
     assert bindings["/runtime/file_nodes/0"] == bindings["/tree/file_nodes/0"]
     assert len(envelope["node_custody"]) == len(envelope["file_custody"]) + 1
     assert context.inventory_profile()["hashed_files"] == len(envelope["file_custody"])
+    assert capture.captured_file_for_node(envelope, runtime["file_nodes"][0])[
+        "path"
+    ] == str(shared)
+    with pytest.raises(PythonEnvironmentIdentityError, match="unique capture custody"):
+        capture.captured_file_for_node(envelope, dict(runtime["file_nodes"][0]))
     with pytest.raises(
         PythonEnvironmentIdentityError, match="producer custody binding"
     ):
@@ -1462,29 +1630,112 @@ def test_location_exact_native_files_do_not_broaden_watch_roots(tmp_path):
     executable.write_bytes(b"python")
     native = tmp_path / "system.dll"
     native.write_bytes(b"native")
-    material = {
-        "schema": location.PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-        "prefix": str(prefix),
-        "selected_executable": str(executable),
-        "base_executable": str(executable),
-        "roots": [str(prefix)],
-        "external_roots": [],
-        "file_paths": [str(native)],
-    }
-    payload = {**material, "identity_sha256": canonical_json_sha256(material)}
+    payload = environment_location_manifest(
+        prefix=prefix,
+        selected_executable=executable,
+        base_executable=executable,
+        base_executable_selector=executable,
+        roots=[prefix],
+        external_roots=[],
+        file_paths=[native],
+    )
     assert location.validate_python_environment_location(payload) == payload
-    material["file_paths"] = [str(tmp_path)]
-    with pytest.raises(PythonEnvironmentIdentityError, match="file kind"):
+    from tools.proof_queue_pkg import execution_custody
+
+    source = tmp_path / "source"
+    source.mkdir()
+    specs = execution_custody.watch_specs(
+        source_root=source,
+        tracked_paths=[],
+        identities=[payload],
+        broad_roots=[prefix],
+    )
+    exact = next(spec for spec in specs if spec.root == tmp_path)
+    assert exact.owns(native)
+    assert not exact.owns(tmp_path / "unrelated.dll")
+    material = {
+        key: value for key, value in payload.items() if key != "identity_sha256"
+    }
+    material["file_paths"] = ["relative-native.dll"]
+    with pytest.raises(PythonEnvironmentIdentityError, match="canonical absolute"):
         location.validate_python_environment_location(
             {**material, "identity_sha256": canonical_json_sha256(material)}
         )
 
 
-def test_environment_locator_keeps_import_archive_as_exact_input(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "fault", ["missing", "v1", "relative", "parent", "nul", "extra"]
+)
+def test_location_v2_requires_an_explicit_absolute_base_selector(tmp_path, fault):
+    prefix = tmp_path / "environment"
+    executable = prefix / "python.exe"
+    payload = environment_location_manifest(
+        prefix=prefix,
+        selected_executable=executable,
+        base_executable=executable,
+        base_executable_selector=executable,
+        roots=[prefix],
+        external_roots=[],
+        file_paths=[executable],
+    )
+    payload.pop("identity_sha256")
+    if fault == "missing":
+        payload.pop("base_executable_selector")
+    elif fault == "v1":
+        payload["schema"] = "molt.python-environment-location.v1"
+    elif fault == "relative":
+        payload["base_executable_selector"] = "python.exe"
+    elif fault == "parent":
+        payload["base_executable_selector"] = str(prefix / ".." / "python.exe")
+    elif fault == "nul":
+        payload["base_executable_selector"] = str(executable) + "\x00"
+    else:
+        payload["implicit_base_selector"] = str(executable)
+    payload["identity_sha256"] = canonical_json_sha256(payload)
+    with pytest.raises(PythonEnvironmentIdentityError):
+        location.validate_python_environment_location(payload)
+
+
+def test_location_validation_never_resolves_a_declared_selector(tmp_path, monkeypatch):
+    prefix = tmp_path / "absent-environment"
+    executable = prefix / "python.exe"
+    payload = environment_location_manifest(
+        prefix=prefix,
+        selected_executable=executable,
+        base_executable=executable,
+        base_executable_selector=tmp_path / "absent-base-selector" / "python.exe",
+        roots=[prefix],
+        external_roots=[],
+        file_paths=[executable],
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("pure locator validation consulted the filesystem")
+
+    with monkeypatch.context() as patch:
+        for name in ("resolve", "stat", "lstat"):
+            patch.setattr(Path, name, forbidden)
+        assert location.validate_python_environment_location(payload) == payload
+
+
+@pytest.mark.parametrize("base_alias", [False, True])
+def test_environment_locator_keeps_import_archive_as_exact_input(
+    tmp_path, monkeypatch, base_alias
+):
     prefix = tmp_path / "environment"
     prefix.mkdir()
     executable = prefix / "python.exe"
     executable.write_bytes(b"selected interpreter")
+    base_selector = executable
+    if base_alias:
+        base_directory = tmp_path / "base-selector"
+        try:
+            base_directory.symlink_to(prefix, target_is_directory=True)
+        except OSError as exc:
+            if os.name == "nt" and exc.winerror == 1314:
+                pytest.skip("Windows host lacks symbolic-link creation privilege")
+            raise
+        base_selector = base_directory / executable.name
     stdlib = prefix / "stdlib"
     stdlib.mkdir()
     archive = tmp_path / "system" / "python312.zip"
@@ -1498,7 +1749,7 @@ def test_environment_locator_keeps_import_archive_as_exact_input(tmp_path, monke
         sys,
         location,
         executable=str(executable),
-        _base_executable=str(executable),
+        _base_executable=str(base_selector),
         base_prefix=str(prefix),
         exec_prefix=str(prefix),
         base_exec_prefix=str(prefix),
@@ -1526,6 +1777,8 @@ def test_environment_locator_keeps_import_archive_as_exact_input(tmp_path, monke
 
     assert located["roots"] == [str(prefix), str(stdlib)]
     assert located["file_paths"] == sorted([str(native), str(archive)])
+    assert located["base_executable"] == str(executable.resolve(strict=True))
+    assert located["base_executable_selector"] == str(base_selector)
     assert location.validate_python_environment_location(located) == located
 
 
@@ -1575,6 +1828,42 @@ def test_distribution_metadata_is_parsed_from_attested_file_nodes(tmp_path, muta
         ]
         assert "site/demo.py" in owned
         assert scripts == {}
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+def test_installed_wheel_projection_uses_record_bound_bytes(tmp_path, mutate):
+    _installed_fixture(tmp_path)
+    wheel = tmp_path / "site/demo-1.0.dist-info/WHEEL"
+    data = b"Wheel-Version: 1.0\nTag: cp313-cp313t-win_arm64\nBuild: 10a\n"
+    wheel.write_bytes(data)
+    record = wheel.with_name("RECORD")
+    digest = (
+        base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+    )
+    with record.open("a") as stream:
+        stream.write(f"demo-1.0.dist-info/WHEEL,sha256={digest},{len(data)}\n")
+    tree, pool = _tree(tmp_path, files.PythonFileCaptureContext())
+    if mutate:
+        wheel.write_bytes(data.replace(b"cp313t", b"cp313d"))
+    args = (
+        ["site"],
+        "scripts",
+        {row["path"]: row for row in tree["entries"]},
+        {row["id"]: row for row in pool.nodes},
+        pool,
+    )
+    if mutate:
+        with pytest.raises(PythonEnvironmentIdentityError):
+            environment._installed_distributions(*args)
+    else:
+        distributions, owned, _scripts = environment._installed_distributions(*args)
+        assert distributions[0]["wheel"] == {
+            "path": "site/demo-1.0.dist-info/WHEEL",
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "tags": ["cp313-cp313t-win_arm64"],
+            "build": "10a",
+        }
+        assert "site/demo-1.0.dist-info/WHEEL" in owned
 
 
 @pytest.mark.parametrize(
@@ -1722,7 +2011,7 @@ def test_owned_active_bytecode_keeps_source_and_tool_guards(tmp_path, fault):
             excluded_path_keys=frozenset(),
         )
 
-    if fault in {"none", "pytest"}:
+    if fault == "none":
         assert classify() is environment._BytecodeDisposition.OWNED
     else:
         with pytest.raises(PythonEnvironmentIdentityError):
@@ -2101,3 +2390,202 @@ def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     assert tmp_path / f"src/molt/{name}.py" in identity.python_capture_authority_paths(
         source_root=tmp_path
     )
+
+
+@pytest.mark.parametrize(
+    "fault", ["none", "forged-code", "rewrite", "image-prefix", "populated-prefix"]
+)
+def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault):
+    # Interpreter-wide cache policy belongs only to spawned children, never the
+    # pytest process with concurrently active guard and sentinel threads.
+    with identity.python_identity_verifier_prefix() as verifier_prefix:
+        command = [
+            sys.executable,
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={verifier_prefix}",
+            "-c",
+            "import sys; from pathlib import Path; "
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+            "from tests.test_python_environment_identity import _sealed_ordinary_prefix_control; "
+            "_sealed_ordinary_prefix_control(Path(sys.argv[1]), sys.argv[2])",
+            str(tmp_path),
+            fault,
+        ]
+        result = _COMMANDS.run(
+            command,
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
+    """py_compile and real pytest rewriting are independent producer controls."""
+    import ast
+    import importlib.util
+    import marshal
+    import struct
+    from _pytest.assertion.rewrite import rewrite_asserts
+
+    root = tmp_path / "image"
+    source = _installed_fixture(root)
+    prefix = location.environment_bytecode_prefix(root)
+    prefix.mkdir()
+    verifier_prefix = sys.pycache_prefix
+    assert verifier_prefix is not None
+    assert Path(verifier_prefix) != prefix
+    tree, pool = _tree(root, files.PythonFileCaptureContext())
+    entries = {row["path"]: row for row in tree["entries"]}
+    _, owned, _ = environment._installed_distributions(
+        ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
+    )
+    environment._ordinary_bytecode_projection(
+        root,
+        entries,
+        owned,
+        pool,
+        {"runtime_roots": []},
+        (),
+        pool,
+        {"trees": []},
+        (),
+        publish=True,
+    )
+    assert sys.pycache_prefix == verifier_prefix
+    assert not list(Path(verifier_prefix).iterdir())
+    # Ask a separate interpreter selecting the image namespace for its native
+    # paths; expected names do not use the receiver's suffix-rebasing helper.
+    mapped = _COMMANDS.run(
+        [
+            sys.executable,
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-c",
+            "import importlib.util,json,sys; "
+            "print(json.dumps([importlib.util.cache_from_source(sys.argv[1], "
+            "optimization=o) for o in ('',1,2)]))",
+            str(source),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert mapped.returncode == 0, mapped.stderr
+    cache_paths = [Path(value) for value in json.loads(mapped.stdout)]
+    for optimization in (0, 1, 2):
+        cache = cache_paths[optimization]
+        oracle = tmp_path / f"oracle-{optimization}.pyc"
+        py_compile.compile(
+            str(source),
+            cfile=str(oracle),
+            doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+            optimize=optimization,
+        )
+        assert cache.read_bytes() == oracle.read_bytes()
+    cache = cache_paths[0]
+    if fault == "forged-code":
+        # Keep the complete valid checked-hash header. A filename/header waiver
+        # would accept executable bytes that have never derived from this source.
+        cache.write_bytes(
+            cache.read_bytes()[:16]
+            + marshal.dumps(compile("VALUE = 99\n", str(source), "exec"))
+        )
+    elif fault == "rewrite":
+        tree = ast.parse("assert 1 == 2\n", filename=str(source))
+        rewrite_asserts(tree, b"assert 1 == 2\n", str(source))
+        rewritten = compile(tree, str(source), "exec", dont_inherit=True)
+        rewrite_cache = cache.with_name(
+            cache.stem + f"-pytest-{pytest.__version__}.pyc"
+        )
+        stamp = source.stat()
+        rewrite_cache.write_bytes(
+            importlib.util.MAGIC_NUMBER
+            + struct.pack("<III", 0, int(stamp.st_mtime), stamp.st_size)
+            + marshal.dumps(rewritten)
+        )
+    elif fault == "image-prefix":
+        sys.pycache_prefix = str(prefix)
+    elif fault == "populated-prefix":
+        (Path(verifier_prefix) / "unadmitted.pyc").write_bytes(b"foreign cache")
+    captured, captured_pool = _tree(root, files.PythonFileCaptureContext())
+
+    def admit():
+        environment._ordinary_bytecode_projection(
+            root,
+            {row["path"]: row for row in captured["entries"]},
+            owned,
+            captured_pool,
+            {"runtime_roots": []},
+            (),
+            captured_pool,
+            {"trees": []},
+            (),
+            publish=False,
+        )
+
+    if fault == "none":
+        admit()
+        assert sys.pycache_prefix == verifier_prefix
+        assert not list(Path(verifier_prefix).iterdir())
+        # A cache hit must remain usable under the mandatory pre-start policy.
+        # Making source compilation fail distinguishes an actual hit from a
+        # source execution that happens to return the same value.
+        command = [
+            sys.executable,
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-c",
+            "import importlib.machinery,sys; "
+            "importlib.machinery.SourceFileLoader.source_to_code = lambda *a,**k: (_ for _ in ()).throw(AssertionError('cache miss')); "
+            f"sys.path.insert(0, {str(source.parent)!r}); import demo; print(demo.VALUE)",
+        ]
+        result = _COMMANDS.run(
+            command,
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "1"
+    else:
+        with pytest.raises(PythonEnvironmentIdentityError):
+            admit()
+
+
+def test_immutable_image_excludes_only_mutable_editable_source_bytes():
+    from tests.python_environment_test_support import realized_environment_manifest
+
+    payload = realized_environment_manifest(runtime_identity_manifest(), [])
+    payload["external_import_custody"]["trees"] = [
+        {
+            "id": "external-tree-0",
+            "source_root": "source-0",
+            "source_path": "src",
+            "roles": [{"role": "sys-path", "path": "."}],
+            "entries": [{"path": "demo.py", "node": "old"}],
+            "file_nodes": [{"id": "old"}],
+            "manifest_sha256": "old",
+            "file_count": 1,
+        }
+    ]
+    original = environment.immutable_environment_image(payload)
+    changed = copy.deepcopy(payload)
+    changed["external_import_custody"]["trees"][0]["entries"][0]["node"] = "new"
+    changed["environment_closure_sha256"] = "new"
+    assert environment.immutable_environment_image(changed) == original
+    changed["external_import_custody"]["trees"][0]["source_path"] = "other"
+    assert environment.immutable_environment_image(changed) != original

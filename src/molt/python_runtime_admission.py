@@ -11,13 +11,14 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from molt import process_guard
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.python_environment_identity import (
     python_identity_probe_arguments,
+    python_identity_verifier_prefix,
     validate_python_capture,
 )
 from molt.python_runtime_identity import (
@@ -32,6 +33,9 @@ from molt.toolchain_identity import (
     stable_executable_probe,
     _stat_identity,
 )
+
+if TYPE_CHECKING:
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
 
 
 _RESPONSE_TIMEOUT = 30.0
@@ -114,6 +118,10 @@ class BuildPythonCleanupError(ValueError):
         evidence = admission.custody_path
         self.evidence_path = None if evidence is None else str(evidence)
         detail = f"; custody: {evidence}" if evidence is not None else ""
+        allocation = admission._verifier_prefix_owner
+        self.verifier_prefix = None if allocation is None else allocation.name
+        if self.verifier_prefix is not None:
+            detail += f"; verifier scratch retained: {self.verifier_prefix}"
         super().__init__(f"runtime build Python cleanup failed: {cause}{detail}")
 
 
@@ -136,6 +144,8 @@ class BuildPythonAdmission:
         self._executor = None
         self._stderr = None
         self._reader = None
+        self._reader_start_failed = False
+        self._verifier_prefix_owner: OwnedTemporaryDirectory | None = None
         self._responses: queue.Queue[str | BaseException] = queue.Queue(maxsize=2)
         self._entrypoint_generation: tuple[int, ...] | None = None
         self._entrypoint: Path | None = None
@@ -208,6 +218,8 @@ class BuildPythonAdmission:
         if self._protocol_failure is not None:
             raise ValueError(
                 "runtime build Python session emitted unsolicited output"
+                if isinstance(self._protocol_failure, queue.Full)
+                else "runtime build Python identity probe failed"
             ) from self._protocol_failure
         if isinstance(response, BaseException):
             raise ValueError("runtime build Python identity probe failed") from response
@@ -217,10 +229,21 @@ class BuildPythonAdmission:
 
     def _start(self, entrypoint: Path, env: ProcessEnvironment) -> dict[str, object]:
         from molt import input_report
+        from molt.temporary_artifacts import OwnedTemporaryDirectory
 
         self._input_log_dir = input_report.worker_log_dir()
         self._executor = process_guard.source_command_executor("MOLT_BUILD_PYTHON")
         self._stderr = tempfile.TemporaryFile(mode="w+b")
+        self._verifier_prefix_owner = OwnedTemporaryDirectory(
+            prefix="molt-python-verifier-"
+        )
+        # An unresolved guardian can outlive the caller and response reader.
+        # GC or interpreter shutdown must not delete its still-selected prefix;
+        # the same allocation owner retains explicit identity-fenced cleanup.
+        self._verifier_prefix_owner.retain()
+        verifier_prefix = Path(self._verifier_prefix_owner.name).resolve(strict=True)
+        # The guardian and response reader share this session's lifetime;
+        # retain its namespace owner until both finish and cleanup succeeds.
         try:
             self._process = self._executor.start_guarded(
                 [
@@ -233,6 +256,7 @@ class BuildPythonAdmission:
                             "--hash-workers",
                             "4",
                         ),
+                        verifier_bytecode_prefix=verifier_prefix,
                         no_site=True,
                     ),
                 ],
@@ -259,6 +283,10 @@ class BuildPythonAdmission:
                 assert process.stdout is not None
                 while True:
                     line = process.stdout.readline(_RESPONSE_LIMIT + 1)
+                    if not line and self._closed:
+                        # Orderly EOF after parent revocation has no failed
+                        # reader and keeps the ordinary HF-512 teardown path.
+                        return
                     if (
                         not line
                         or not line.endswith("\n")
@@ -266,21 +294,32 @@ class BuildPythonAdmission:
                     ):
                         raise ValueError("runtime build Python session lost framing")
                     self._responses.put_nowait(line)
-            except queue.Full as exc:
-                # Unsolicited output cannot grow memory or leave a blocked
-                # response thread after the operation revokes this session.
+            except BaseException as exc:
+                # Once this reader stops, a child still writing its capture can
+                # fill stdout. Publish guard cancellation here as well as in
+                # close(), covering a failure racing the parent's wait.
                 self._protocol_failure = exc
-                return
-            except (OSError, ValueError, UnicodeError) as exc:
+                try:
+                    process.request_cancel()
+                except BaseException as cancellation_error:
+                    exc.add_note(
+                        f"reader cancellation also failed: {cancellation_error}"
+                    )
                 try:
                     self._responses.put_nowait(exc)
                 except queue.Full:
-                    self._protocol_failure = exc
+                    pass
 
         self._reader = threading.Thread(
             target=read_responses, name="build-python-admission-response", daemon=True
         )
-        self._reader.start()
+        try:
+            self._reader.start()
+        except BaseException:
+            # Without a reader the initial capture can fill stdout and block
+            # graceful EOF teardown. The guard must cancel that failed launch.
+            self._reader_start_failed = True
+            raise
         try:
             payload = loads_exact(self._read_response(_ADMISSION_TIMEOUT))
             if not isinstance(payload, dict) or set(payload) != {
@@ -311,21 +350,24 @@ class BuildPythonAdmission:
         # A launcher can consult any environment key, and unchanged search
         # directories can acquire higher-precedence loader providers. Only a
         # fresh launch observes those selections. This mode does no tree scan.
-        completed = self._executor.run(
-            [
-                str(entrypoint),
-                *python_identity_probe_arguments(
-                    ("--runtime-selection",), no_site=True
-                ),
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            timeout=_RESPONSE_TIMEOUT,
-            check=True,
-        )
+        with python_identity_verifier_prefix() as verifier_prefix:
+            completed = self._executor.run(
+                [
+                    str(entrypoint),
+                    *python_identity_probe_arguments(
+                        ("--runtime-selection",),
+                        verifier_bytecode_prefix=verifier_prefix,
+                        no_site=True,
+                    ),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                timeout=_RESPONSE_TIMEOUT,
+                check=True,
+            )
         if len(completed.stdout) > _RESPONSE_LIMIT:
             raise ValueError(
                 "runtime build Python startup selection exceeds framing limit"
@@ -443,13 +485,23 @@ class BuildPythonAdmission:
             self._capture = None
             process = self._process
             if process is None:
-                if self._stderr is not None:
-                    self._stderr.close()
-                    self._stderr = None
+                try:
+                    if self._stderr is not None:
+                        self._stderr.close()
+                        self._stderr = None
+                    if self._verifier_prefix_owner is not None:
+                        self._verifier_prefix_owner.cleanup()
+                        self._verifier_prefix_owner = None
+                except BaseException as exc:
+                    cleanup = BuildPythonCleanupError(self, exc)
+                    self.cleanup_failure = cleanup
+                    raise cleanup from exc
                 return
             failure: BaseException | None = None
             result: int | None = None
             try:
+                if self._reader_start_failed or self._protocol_failure is not None:
+                    process.request_cancel()
                 if process.stdin is not None and not process.stdin.closed:
                     try:
                         process.stdin.close()
@@ -467,12 +519,19 @@ class BuildPythonAdmission:
             # Inspect the owner's terminal proof; wrapper exit alone is not it.
             terminal = bool(getattr(process, "terminal", False))
             if terminal and self._reader is not None:
-                self._reader.join(timeout=1.0)
-                if self._reader.is_alive():
+                try:
+                    self._reader.join(timeout=1.0)
+                    if self._reader.is_alive():
+                        raise RuntimeError(
+                            "response reader remains live after guardian closure"
+                        )
+                except BaseException as exc:
                     terminal = False
-                    failure = failure or RuntimeError(
-                        "response reader remains live after guardian closure"
-                    )
+                    if failure is not None:
+                        failure.add_note(f"response reader closure also failed: {exc}")
+                    else:
+                        failure = exc
+            failure = failure or self._protocol_failure
             if terminal:
                 try:
                     if process.stdout is not None:
@@ -488,9 +547,12 @@ class BuildPythonAdmission:
                         self._stderr.close()
                         self._stderr = None
                     self._process = None
+                    if self._verifier_prefix_owner is not None:
+                        self._verifier_prefix_owner.cleanup()
+                        self._verifier_prefix_owner = None
                 except BaseException as exc:
                     if failure is not None:
-                        failure.add_note(f"stream cleanup also failed: {exc}")
+                        failure.add_note(f"session cleanup also failed: {exc}")
                     else:
                         failure = exc
             else:

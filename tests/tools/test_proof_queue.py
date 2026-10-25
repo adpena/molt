@@ -32,6 +32,7 @@ import pytest
 from tools import proof_command_argv, proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.process_environment import NameRule, ProcessEnvironment
+from molt.python_interpreter import parse_python_invocation
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
 from molt import llvm_toolchain
@@ -41,6 +42,7 @@ from molt.exact_json import ExactJsonError, canonical_json_sha256
 from molt import process_model
 from tests.python_environment_test_support import (
     build_environment_manifest,
+    environment_location_manifest,
     create_owned_python_venv,
     create_test_venv,
 )
@@ -2222,7 +2224,7 @@ def test_execution_custody_failed_capture_drains_without_claiming_payload_ran(
             session.receipt()
 
 
-def test_python_probe_uses_shared_environment_authority() -> None:
+def test_python_probe_uses_shared_environment_authority(tmp_path: Path) -> None:
     for legacy_name in ("python_identity_probe.py", "python_toolchain_locator.py"):
         assert not (state.ROOT / "tools" / "proof_queue_pkg" / legacy_name).exists()
     exact = [sys.executable, "-c", "pass"]
@@ -2232,10 +2234,13 @@ def test_python_probe_uses_shared_environment_authority() -> None:
         exact,
         arguments=("--locate-active-environment",),
         no_site=True,
+        verifier_bytecode_prefix=tmp_path,
     ) == [
         sys.executable,
         "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={tmp_path}",
         "-S",
         str(Path(python_environment_identity.__file__).resolve()),
         "--locate-active-environment",
@@ -2263,24 +2268,35 @@ def test_python_probe_uses_shared_environment_authority() -> None:
 )
 @pytest.mark.parametrize("no_site", [False, True])
 def test_python_probe_launchers_preserve_shared_no_write_suffix(
-    python, exact, prefix, no_site
+    python, exact, prefix, no_site, tmp_path
 ):
     arguments = ("--capture-runtime", "--hash-workers", "4")
     assert command_identity._python_auxiliary_command(
-        {"python": python}, exact, arguments=arguments, no_site=no_site
+        {"python": python},
+        exact,
+        arguments=arguments,
+        no_site=no_site,
+        verifier_bytecode_prefix=tmp_path,
     ) == [
         *prefix,
         "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={tmp_path}",
         *(["-S"] if no_site else []),
         str(Path(python_environment_identity.__file__).resolve()),
         *arguments,
     ]
 
 
+@pytest.mark.parametrize("base_source", ["captured", "foreign-samebytes"])
 def test_python_process_images_use_canonical_external_root_forest(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, base_source
 ):
+    from molt.python_capture import python_capture_payload
+    from molt.python_file_node_custody import PythonFileCaptureContext, _FileNodePool
+    from tests.python_environment_test_support import runtime_identity_manifest
+
     source = tmp_path / "source"
     editable = source / "package"
     editable.mkdir(parents=True)
@@ -2306,13 +2322,41 @@ def test_python_process_images_use_canonical_external_root_forest(
         "prefix": str(prefix),
         "selected_executable": str(executable),
         "base_executable": str(executable),
+        "base_executable_selector": str(executable),
         "external_roots": [str(source), str(editable)],
     }
-    environment = {"external_roots": [{"id": "external-root-0", "path": str(source)}]}
+    context = PythonFileCaptureContext()
+    pool = _FileNodePool(capture_context=context)
+    pool.bind(executable, executable.stat(), label="captured base fixture")
+    runtime = runtime_identity_manifest()
+    runtime["file_nodes"] = pool.nodes
+    runtime["runtime_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in runtime.items()
+            if key != "runtime_closure_sha256"
+        }
+    )
+    captured = python_capture_payload(runtime, context)
+    environment = {
+        "runtime": runtime,
+        "external_roots": [{"id": "external-root-0", "path": str(source)}],
+    }
+    if base_source == "foreign-samebytes":
+        foreign = tmp_path / "foreign-base"
+        foreign.write_bytes(content)
+        assert foreign.read_bytes() == executable.read_bytes()
+        location["base_executable"] = str(foreign)
+        location["base_executable_selector"] = str(foreign)
+        with pytest.raises(ValueError, match="differs from runtime node custody"):
+            command_identity._python_process_images(
+                environment, location, source_root=source, capture=captured
+            )
+        return
     assert (
         len(
             command_identity._python_process_images(
-                environment, location, source_root=source
+                environment, location, source_root=source, capture=captured
             )
         )
         == 2
@@ -2322,7 +2366,7 @@ def test_python_process_images_use_canonical_external_root_forest(
     )
     with pytest.raises(ValueError, match="external roots differ"):
         command_identity._python_process_images(
-            environment, location, source_root=source
+            environment, location, source_root=source, capture=captured
         )
 
 
@@ -2347,7 +2391,11 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     prefix, effective = command_admission._canonical_uv_prefix(envelope, cwd=tmp_path)
     exact = ["C:/Tools/uv.exe", *prefix[1:], *command[command.index("python") :]]
     probe = command_identity._python_auxiliary_command(
-        envelope, exact, arguments=("--locate-active-environment",), no_site=True
+        envelope,
+        exact,
+        arguments=("--locate-active-environment",),
+        no_site=True,
+        verifier_bytecode_prefix=runtime,
     )
     assert probe is not None
     assert effective == runtime.resolve()
@@ -2356,6 +2404,8 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
         "python",
         "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={runtime.resolve()}",
         "-S",
         str(Path(python_environment_identity.__file__).resolve()),
         "--locate-active-environment",
@@ -2370,16 +2420,15 @@ def _selected_python_capture_fixture(tmp_path: Path) -> dict[str, object]:
     executable.write_bytes(b"selected lexical launcher fixture")
     base = (tmp_path / "base-python").resolve()
     base.write_bytes(b"base interpreter fixture")
-    location = {
-        "schema": "molt.python-environment-location.v1",
-        "prefix": str(prefix),
-        "selected_executable": str(executable),
-        "base_executable": str(base),
-        "roots": [str(prefix)],
-        "external_roots": [],
-        "file_paths": [str(base)],
-    }
-    location["identity_sha256"] = canonical_json_sha256(location)
+    location = environment_location_manifest(
+        prefix=prefix,
+        selected_executable=executable,
+        base_executable=base,
+        base_executable_selector=base,
+        roots=[prefix],
+        external_roots=[],
+        file_paths=[base],
+    )
     selection = {
         **command_identity.python_selection(location),
         "external_roots": [],
@@ -2396,6 +2445,37 @@ def _selected_python_capture_fixture(tmp_path: Path) -> dict[str, object]:
         == hashlib.sha256(base.read_bytes()).hexdigest()
     )
     return selection
+
+
+@pytest.mark.parametrize("target", ["captured", "foreign-samebytes"])
+def test_python_selection_binds_the_base_selector_before_full_capture(tmp_path, target):
+    selection = _selected_python_capture_fixture(tmp_path)
+    location = selection["location"]
+    base = Path(location["base_executable"])
+    foreign = tmp_path / "foreign-base"
+    foreign.write_bytes(base.read_bytes())
+    selector = tmp_path / "base-selector"
+    try:
+        selector.symlink_to(base if target == "captured" else foreign)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows host lacks symbolic-link creation privilege")
+        raise
+    assert selector.read_bytes() == base.read_bytes() == foreign.read_bytes()
+    location["base_executable_selector"] = str(selector)
+    location.pop("identity_sha256")
+    location["identity_sha256"] = canonical_json_sha256(location)
+    if target == "captured":
+        selected = command_identity.python_selection(location)
+        assert selected["base_executable_selector"] == str(selector)
+        assert selected["base_executable"] == str(base)
+        assert (
+            selected["base_executable_sha256"]
+            == hashlib.sha256(base.read_bytes()).hexdigest()
+        )
+    else:
+        with pytest.raises(ValueError, match="selector differs from its physical base"):
+            command_identity.python_selection(location)
 
 
 @pytest.mark.parametrize("kind", ["direct", "py-launcher", "uv", "uv-console-script"])
@@ -2420,6 +2500,11 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
         pass
 
     def capture(command, *, cwd, env, timeout):
+        verifier = Path(
+            command[command.index("-X") + 1].removeprefix("pycache_prefix=")
+        )
+        assert verifier.is_dir() and not any(verifier.iterdir())
+        assert verifier != Path(selection["location"]["prefix"]) / "bytecode"
         observed.append((command, cwd, env, timeout))
         raise CaptureBoundaryReached
 
@@ -2433,12 +2518,16 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
             selection=selection,
             hash_workers=4,
         )
+    verifier = Path(observed[0][0][4].removeprefix("pycache_prefix="))
+    assert not verifier.exists(), "verifier scratch outlives the actual child only"
     assert observed == [
         (
             [
                 selection["executable"],
                 "-B",
                 "-I",
+                "-X",
+                f"pycache_prefix={verifier}",
                 str(Path(python_environment_identity.__file__).resolve()),
                 "--capture-active-environment",
                 "--with-custody",
@@ -2453,7 +2542,10 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
             120.0,
         )
     ]
-    assert observed[0][2] is environment
+    assert dict(environment) == {
+        "PATH": "unchanged caller path",
+        "VIRTUAL_ENV": "caller-selection",
+    }
 
 
 @pytest.mark.parametrize("image", ["executable", "base_executable"])
@@ -3185,6 +3277,44 @@ def test_environment_override_policy_rejects_unbound_or_secret_behavior(
     )
 
 
+@pytest.mark.parametrize("name", ["PYTHONPYCACHEPREFIX", "pythonpycacheprefix"])
+def test_queue_cache_override_refuses_before_command_or_state(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign = str(tmp_path / "foreign-cache-must-not-be-observed")
+    error = policy._proof_env_policy_error({name: foreign})
+    assert error is not None and "queue-owned" in error
+    assert foreign not in error
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail(
+            "command admission ran before rejecting a queue-owned cache override"
+        )
+
+    monkeypatch.setattr(policy, "_proof_command_policy_error", forbidden)
+    args = argparse.Namespace(
+        db=tmp_path / "proof.sqlite3",
+        logs_root=tmp_path / "runs",
+        repo_root=state.ROOT,
+    )
+    rc, run_id = runner._queue_one(
+        args,
+        logical_id="foreign-cache",
+        reason="cache namespace admission",
+        command=[sys.executable, "-c", "pass"],
+        resource_family="python-tests",
+        contention_key="foreign-cache",
+        scopes=["tools/proof_queue_pkg/guarded_execution.py"],
+        env_overrides={name: foreign},
+        initial_notes=[],
+    )
+    assert (rc, run_id) == (2, None)
+    assert not args.db.exists() and not args.logs_root.exists()
+    assert not Path(foreign).exists()
+
+
 def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed() -> (
     None
 ):
@@ -3448,8 +3578,14 @@ def test_secret_input_is_rejected_before_database_log_or_evidence_projection(
 def _capture_probe_command(
     executable: Path, source_root: Path, *, hash_workers: int = 1
 ) -> list[str]:
+    # The test-owned source fixture retains scratch until every synchronous
+    # child closes; each invocation receives a new, empty read namespace.
+    from tempfile import mkdtemp
+
+    verifier_prefix = Path(mkdtemp(prefix=".verifier-", dir=source_root))
     return command_identity._python_probe_command(
         executable,
+        verifier_bytecode_prefix=verifier_prefix,
         source_root=source_root,
         hash_workers=hash_workers,
     )
@@ -4357,7 +4493,7 @@ def _rebind_cached_python_identity(
             if key != "environment_closure_sha256"
         }
     )
-    python_environment_identity.validate_python_capture(
+    capture = python_environment_identity.validate_python_capture(
         {
             "schema": python_environment_identity.PYTHON_CAPTURE_SCHEMA,
             "identity": environment,
@@ -4368,7 +4504,7 @@ def _rebind_cached_python_identity(
     )
     identity["source_root"] = str(source_root.resolve(strict=True))
     identity["process_images"] = command_identity._python_process_images(
-        environment, location, source_root=source_root
+        environment, location, source_root=source_root, capture=capture
     )
     identity["identity_sha256"] = canonical_json_sha256(
         {
@@ -5119,7 +5255,7 @@ def test_python_leaf_blocks_cargo_and_node_children_before_launch(
 
 
 def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> None:
-    invocation = proof_command_argv.parse_python_invocation(
+    invocation = parse_python_invocation(
         [
             "python",
             "-S",
@@ -5146,36 +5282,45 @@ def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> 
     assert invocation.arguments == ("--payload-flag",)
     envelope = {"python": {"kind": "direct"}}
     exact = [sys.executable, "-S", "-E", "-I", "-c", "pass", "argument"]
-    rewritten = command_admission._python_bootstrap_command(envelope, exact)
-    # The queue's canonical no-bytecode input rides along as -B so -E/-I
-    # cannot drop it; a payload that already carries B keeps its own spelling.
-    assert rewritten[:5] == [sys.executable, "-B", "-S", "-E", "-I"]
-    assert Path(rewritten[5]).name == "python_custody_bootstrap.py"
-    assert rewritten[6:] == ["command", "0", "pass", "argument"]
-    grouped = command_admission._python_bootstrap_command(
-        envelope, [sys.executable, "-IB", "-c", "pass"]
+    rewritten = command_admission._python_bootstrap_command(
+        envelope, exact, environment_root=Path(sys.prefix)
     )
-    assert grouped[:2] == [sys.executable, "-IB"]
-    assert Path(grouped[2]).name == "python_custody_bootstrap.py"
+    # Both read selection and no-write policy precede interpreter startup:
+    # -E/-I ignore their environment-variable projections.
+    policy = ["-B", "-X", f"pycache_prefix={Path(sys.prefix) / 'bytecode'}"]
+    assert rewritten[:7] == [sys.executable, *policy, "-S", "-E", "-I"]
+    assert Path(rewritten[7]).name == "python_custody_bootstrap.py"
+    assert rewritten[8:] == ["command", "0", "pass", "argument"]
+    grouped = command_admission._python_bootstrap_command(
+        envelope,
+        [sys.executable, "-IB", "-c", "pass"],
+        environment_root=Path(sys.prefix),
+    )
+    assert grouped[:5] == [sys.executable, *policy, "-IB"]
+    assert Path(grouped[5]).name == "python_custody_bootstrap.py"
     assert command_admission._python_bootstrap_command(
-        envelope, [sys.executable, "-Wignore::BytesWarning", "-c", "pass"]
-    )[:3] == [sys.executable, "-B", "-Wignore::BytesWarning"]
+        envelope,
+        [sys.executable, "-Wignore::BytesWarning", "-c", "pass"],
+        environment_root=Path(sys.prefix),
+    )[:5] == [sys.executable, *policy, "-Wignore::BytesWarning"]
 
     py_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "py-launcher", "selector": "-3.12"}},
         ["py.exe", "-3.12", "-I", "-m", "sample_package", "argument"],
+        environment_root=Path(sys.prefix),
     )
-    assert py_rewritten[:4] == ["py.exe", "-3.12", "-B", "-I"]
-    assert Path(py_rewritten[4]).name == "python_custody_bootstrap.py"
-    assert py_rewritten[5:] == ["module", "0", "sample_package", "argument"]
+    assert py_rewritten[:6] == ["py.exe", "-3.12", *policy, "-I"]
+    assert Path(py_rewritten[6]).name == "python_custody_bootstrap.py"
+    assert py_rewritten[7:] == ["module", "0", "sample_package", "argument"]
 
     uv_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "uv", "prefix": ["uv", "run"]}},
         ["uv.exe", "run", "python", "-S", "-c", "pass", "argument"],
+        environment_root=Path(sys.prefix),
     )
-    assert uv_rewritten[:5] == ["uv.exe", "run", "python", "-B", "-S"]
-    assert Path(uv_rewritten[5]).name == "python_custody_bootstrap.py"
-    assert uv_rewritten[6:] == ["command", "0", "pass", "argument"]
+    assert uv_rewritten[:7] == ["uv.exe", "run", "python", *policy, "-S"]
+    assert Path(uv_rewritten[7]).name == "python_custody_bootstrap.py"
+    assert uv_rewritten[8:] == ["command", "0", "pass", "argument"]
 
 
 @pytest.mark.parametrize(
@@ -5237,10 +5382,18 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
 
     envelope = {"python": {"kind": "direct"}}
     module_argv = command_admission._python_bootstrap_command(
-        envelope, [sys.executable, "-S", "-m", "sample_package", "payload"]
+        envelope,
+        [sys.executable, "-S", "-m", "sample_package", "payload"],
+        environment_root=Path(sys.prefix),
     )
-    assert module_argv[:3] == [sys.executable, "-B", "-S"]
-    assert module_argv[3] == str(bootstrap)
+    assert module_argv[:5] == [
+        sys.executable,
+        "-B",
+        "-X",
+        f"pycache_prefix={Path(sys.prefix) / 'bytecode'}",
+        "-S",
+    ]
+    assert module_argv[5] == str(bootstrap)
     module = run_custody_subject_process(
         module_argv,
         cwd=tmp_path,
@@ -5258,10 +5411,18 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
     assert module_payload["spec"] == "sample_package.__main__"
 
     script_argv = command_admission._python_bootstrap_command(
-        envelope, [sys.executable, "-I", str(script), "payload"]
+        envelope,
+        [sys.executable, "-I", str(script), "payload"],
+        environment_root=Path(sys.prefix),
     )
-    assert script_argv[:3] == [sys.executable, "-B", "-I"]
-    assert script_argv[3] == str(bootstrap)
+    assert script_argv[:5] == [
+        sys.executable,
+        "-B",
+        "-X",
+        f"pycache_prefix={Path(sys.prefix) / 'bytecode'}",
+        "-I",
+    ]
+    assert script_argv[5] == str(bootstrap)
     script_result = run_custody_subject_process(
         script_argv,
         cwd=tmp_path,
@@ -5329,9 +5490,16 @@ def test_python_bootstrap_honors_canonical_bytecode_policy_under_isolated_startu
         "'adapter': 'molt.pytest_memory_guard_bootstrap' in sys.modules}))"
     )
     rewritten = command_admission._python_bootstrap_command(
-        {"python": {"kind": "direct"}}, [sys.executable, "-I", "-c", probe]
+        {"python": {"kind": "direct"}},
+        [sys.executable, "-I", "-c", probe],
+        environment_root=Path(sys.prefix),
     )
-    assert rewritten[1:3] == ["-B", "-I"]
+    assert rewritten[1:5] == [
+        "-B",
+        "-X",
+        f"pycache_prefix={Path(sys.prefix) / 'bytecode'}",
+        "-I",
+    ]
     env = {
         key: value
         for key, value in os.environ.items()
@@ -5378,8 +5546,7 @@ def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
         str(test_file),
     ]
     rewritten = command_admission._python_bootstrap_command(
-        envelope,
-        declared,
+        envelope, declared, environment_root=Path(sys.prefix)
     )
     assert rewritten[-len(declared[3:]) :] == declared[3:]
     completed = run_custody_subject_process(
@@ -5410,6 +5577,7 @@ def test_python_bootstrap_pytest_keeps_cacheprovider_in_admitted_scratch(
             "no:cacheprovider",
             str(test_file),
         ],
+        environment_root=Path(sys.prefix),
     )
     assert already_disabled.count("no:cacheprovider") == 1
 
@@ -20096,7 +20264,7 @@ def test_cargo_check_rejects_compiler_forwarding():
 def test_python_invocation_grouped_consumed_option_boundaries(
     prefix, options, mode, target, arguments
 ):
-    invocation = proof_command_argv.parse_python_invocation(["python", *prefix])
+    invocation = parse_python_invocation(["python", *prefix])
     assert invocation.interpreter_options == options
     assert (invocation.mode, invocation.target, invocation.arguments) == (
         mode,
@@ -20108,14 +20276,14 @@ def test_python_invocation_grouped_consumed_option_boundaries(
 @pytest.mark.parametrize("flag", ["R", "E", "I", "B", "x"])
 @pytest.mark.parametrize("option", ["-W", "-X", "-BW", "-BX"])
 def test_python_option_values_never_become_interpreter_flags(flag, option):
-    invocation = proof_command_argv.parse_python_invocation(
-        ["python", option, "-" + flag, "-c", "pass"]
-    )
+    invocation = parse_python_invocation(["python", option, "-" + flag, "-c", "pass"])
     assert command_admission._interpreter_flag_present(
         invocation.interpreter_options, flag
     ) is (flag == "B" and option.startswith("-B"))
     rewritten = command_admission._python_bootstrap_command(
-        {"python": {"kind": "direct"}}, ["python", option, "-" + flag, "-c", "pass"]
+        {"python": {"kind": "direct"}},
+        ["python", option, "-" + flag, "-c", "pass"],
+        environment_root=Path(sys.prefix),
     )
     assert rewritten[-3:] == ["command", "0", "pass"]
     if not option.startswith("-B"):
@@ -20128,7 +20296,7 @@ def test_python_option_values_never_become_interpreter_flags(flag, option):
 )
 def test_python_grouped_options_require_their_actual_value(prefix):
     with pytest.raises(ValueError, match="requires"):
-        proof_command_argv.parse_python_invocation(["python", *prefix])
+        parse_python_invocation(["python", *prefix])
 
 
 @pytest.mark.parametrize(
@@ -20136,10 +20304,15 @@ def test_python_grouped_options_require_their_actual_value(prefix):
     [["-Oc"], ["-tOc"], ["-BW", "-x", "-c"], ["-X", "-R", "-c"], ["-IXdev", "-c"]],
 )
 def test_grouped_python_command_bootstrap_matches_actual_cpython(tmp_path, prefix):
-    code = "import sys;print((sys.flags.optimize,sys.flags.isolated,sys._xoptions,sys.argv))"
+    # Cache policy is the intentional wrapper delta; every user-provided -X
+    # option, option value and payload argument must retain CPython semantics.
+    code = (
+        "import sys;print((sys.flags.optimize,sys.flags.isolated,"
+        "{k:v for k,v in sys._xoptions.items() if k != 'pycache_prefix'},sys.argv))"
+    )
     command = [sys.executable, *prefix, code, "-E", "-R"]
     rewritten = command_admission._python_bootstrap_command(
-        {"python": {"kind": "direct"}}, command
+        {"python": {"kind": "direct"}}, command, environment_root=Path(sys.prefix)
     )
     direct = run_custody_subject_process(
         command,
@@ -20171,7 +20344,7 @@ def test_grouped_python_module_bootstrap_matches_actual_cpython(tmp_path, prefix
     )
     command = [sys.executable, prefix, "-E"]
     rewritten = command_admission._python_bootstrap_command(
-        {"python": {"kind": "direct"}}, command
+        {"python": {"kind": "direct"}}, command, environment_root=Path(sys.prefix)
     )
     direct = run_custody_subject_process(
         command,

@@ -1302,17 +1302,29 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     return payload
 
 
-def runtime_explicit_file_content(
+def runtime_explicit_file_node(
     runtime: Mapping[str, object], role: str
 ) -> Mapping[str, object] | None:
+    """Return the actual semantic node for joining retained capture custody."""
     explicit = cast(list[Mapping[str, object]], runtime["explicit_files"])
     selected = next((row for row in explicit if row.get("role") == role), None)
     if selected is None:
         return None
     nodes = cast(list[Mapping[str, object]], runtime["file_nodes"])
-    target = next((row for row in nodes if row.get("id") == selected.get("node")), None)
+    return next((row for row in nodes if row.get("id") == selected.get("node")), None)
+
+
+def runtime_explicit_file_content(
+    runtime: Mapping[str, object], role: str
+) -> Mapping[str, object] | None:
+    target = runtime_explicit_file_node(runtime, role)
     if target is None:
         return None
+    selected = next(
+        row
+        for row in cast(list[Mapping[str, object]], runtime["explicit_files"])
+        if row.get("role") == role
+    )
     return {
         "filename": (
             selected.get("filename")

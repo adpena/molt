@@ -153,6 +153,17 @@ armed. Full environment capture then executes that selected lexical interpreter
 directly, after checking the selection's image hashes, using the shared `-B -I`
 probe suffix, unchanged admitted environment and effective source cwd. The
 captured process-image closure must still agree with the pre-arm selection.
+
+The v2 location receipt keeps the raw absolute `base_executable_selector`
+separate from the physical `base_executable`. The locator binds their relation
+under executable generation custody. Pre-arm watches retain the selector,
+physical target and retargetable ancestors. Full capture projects a distinct
+selector through the existing `interpreter-alias:base-selector` role only after
+its physical target and runtime file node agree; a same-byte foreign target
+does not qualify. This preserves uv's
+[Python trampoline selection semantics](https://github.com/astral-sh/uv/blob/main/crates/uv-trampoline/src/bounce.rs)
+without resolving arbitrary launcher metadata into an admitted image.
+
 This avoids repeating uv synchronization during capture; the admitted payload
 invocation and options are unchanged by capture. The closed startup capability policy
 admits only reviewed hooks and absolute declarative `.pth` entries, so capture
@@ -775,9 +786,11 @@ bind the original serialized bytes; parent allocation records remain immutable.
 Keep human-readable run/platform identity in receipts, not every scratch path:
 native compiler/linker descendants still have classic path-length limits.
 Nested guards rebind an inherited guard-default pytest root to their new lease;
-explicit test/temp roots remain caller-owned. Managed UV environments use the
-durable `<artifact-root>/uv-project-envs/<purpose-python-source-key>` namespace;
-an explicit `UV_PROJECT_ENVIRONMENT` is honored without moving existing data.
+explicit test/temp roots remain caller-owned. Managed Python environments use
+the immutable development generations owned by
+[checkout provisioning](../ops/INTEGRATION.md#checkout-provisioning).
+An explicit `UV_PROJECT_ENVIRONMENT` selects a generation without moving data;
+operation admission validates its published recipe and captured bytes.
 
 The parent holds an OS lock and its original allocation identity through closure.
 Shared lock files are content-neutral: OS lock arbitration precedes any protected
@@ -1059,20 +1072,19 @@ This bootstrap intentionally does not use `uv`: on an explicit exFAT fallback
 checkout, `UV_LINK_MODE=copy` must be exported before uv creates or syncs
 `.venv`, otherwise uv first attempts hard links and emits slow fallback noise.
 Use an already-installed host Python 3.12+ for this dependency-free resolver
-script; after the env is imported, use `uv run --active --project . --python
-3.12 ...` for project commands. In `--dx` mode the resolver emits one durable,
-source-keyed project environment under `<MOLT_EXT_ROOT>/uv-project-envs/`, so
-repeated checks in one checkout reuse the same uv environment instead of
-creating per-session environments. A caller-owned explicit
-`UV_PROJECT_ENVIRONMENT` is preserved. Do not run two uv bootstrap/sync commands
-in parallel in the same fresh checkout; one process owns project-environment
-creation.
+script. In `--dx` mode the resolver projects the checkout's selected immutable
+development generation; it does not create or sync an environment. Provision
+missing declared inputs through
+[checkout provisioning](../ops/INTEGRATION.md#checkout-provisioning) before
+submitting managed commands. An explicit `UV_PROJECT_ENVIRONMENT` remains an
+exact selection and must pass the managed image boundary. A source bootstrap or
+explicit `MOLT_VENV` is external to that ownership; never sync a published image.
 
 The healthy default is `MOLT_EXT_ROOT=C:\Molt`,
 `CARGO_TARGET_DIR=C:\Molt\target`, and
-`MOLT_TARGET_ROOT=C:\Molt\target-root`, with `UV_PROJECT_ENVIRONMENT` stable at
-`C:\Molt\uv-project-envs\<dx-python-source-key>` for the standard Python 3.12
-DX lane.
+`MOLT_TARGET_ROOT=C:\Molt\target-root`, with `UV_PROJECT_ENVIRONMENT` selecting
+`C:\Molt\build-environments\development\<checkout_component>\<recipe_sha>`
+for the managed DX generation.
 Rows with any canonical run root on `D:` fail closed; there is no preservation
 flag or volume-label fallback. `MOLT_EXT_ROOT` may be explicitly configured for
 non-custodial output on approved volumes, but named inputs, package seals,
@@ -1499,12 +1511,14 @@ environment names. Ambient pytest injection, package-index controls,
 unclassified overrides, URL credentials, and secret-bearing names are rejected
 or omitted. Queue-owned `PYTHONDONTWRITEBYTECODE`, `PYTHONNOUSERSITE`, and the
 Node global-search-path policy are canonical inputs; `uv --no-config` prevents
-user or host configuration from silently changing resolution. The Python
-bootstrap argv also carries `-B`, because an admitted `-E`/`-I` payload makes
-the interpreter ignore that variable while site still imports the repository
-startup adapter from custody-inventoried source; without it an isolated
-child rewrote bytecode caches beside the admitted sources and turned its own
-row into `toolchain-frozen-manifest-changed` non-evidence. Receipts store
+user or host configuration from silently changing resolution. Managed Python
+payloads and admitted descendants select `-B -X pycache_prefix=<image>/bytecode`
+before startup, including when `-E`/`-I` ignores environment variables. The
+ordinary cache namespace is read-only. Admission verifiers instead start with
+the shared `-B -I -X` policy against fresh empty owned scratch and inspect the
+image's caches by explicit path; they never import through an unadmitted image
+cache. [Checkout provisioning](../ops/INTEGRATION.md#checkout-provisioning)
+owns this distinction and generation lifetime. Receipts store
 names, classes, and keyed fingerprints for every
 passed value, never plaintext values; queued logs and notebooks expose override
 names only.
@@ -1646,10 +1660,12 @@ state. Use either that shorthand or `run --queue-size N`, not both. The command
 surface also installs the canonical Molt DX environment around the child queue:
 `C:\Molt` artifact roots, target/cache/temp roots, `MOLT_TARGET_ROOT`, and
 `UV_LINK_MODE=copy` flow through the same RunContext authority as other build
-wrappers. When a warm project environment is visible, `molt queue` preserves it
-as `UV_PROJECT_ENVIRONMENT` instead of creating a fresh session venv. Resolution
-is explicit and ordered: existing `UV_PROJECT_ENVIRONMENT`, active
-`VIRTUAL_ENV`, checkout-local `.venv`, main-worktree `.venv`, then `MOLT_VENV`.
+wrappers. Managed commands use explicit `UV_PROJECT_ENVIRONMENT` or the
+checkout's bounded development-generation selection, followed by image
+admission. `MOLT_VENV` denotes an explicit external borrower where supported;
+an active interpreter or a checkout/main `.venv` does not implicitly select a
+managed image. Published generations retain their ordinary cache bytes and
+live process leases; a new selection cannot retire an older live reader.
 This keeps the NVMe root warm: use `C:\Molt` for shared build/cache/toolchain
 state, not as disposable cold worktree or backup churn.
 

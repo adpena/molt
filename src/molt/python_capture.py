@@ -167,3 +167,28 @@ def python_capture_payload(
             "inventory_profile": context.inventory_profile(),
         }
     )
+
+
+def captured_file_for_node(
+    capture: Mapping[str, object], node: Mapping[str, object]
+) -> Mapping[str, object]:
+    """Project one semantic node's exact file in an already validated capture.
+
+    Object identity retains the declared node/pool boundary. Equal content in
+    another pool or at another path cannot substitute for that binding.
+    """
+    pointers = [
+        pointer
+        for pointer, selected in _file_nodes(capture["identity"]).items()
+        if selected is node
+    ]
+    if len(pointers) != 1:
+        raise PythonEnvironmentIdentityError(
+            "Python semantic node has no unique capture custody binding"
+        )
+    bindings = cast(list[Mapping[str, object]], capture["node_custody"])
+    binding = next((row for row in bindings if row["node"] == pointers[0]), None)
+    if binding is None:
+        raise PythonEnvironmentIdentityError("Python semantic node has no file custody")
+    files = cast(list[Mapping[str, object]], capture["file_custody"])
+    return files[cast(int, binding["file_index"])]

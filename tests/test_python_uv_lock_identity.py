@@ -10,14 +10,258 @@ from typing import Any
 
 import pytest
 from packaging.markers import default_environment
+from tests.python_environment_test_support import wheel_target_manifest
 
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_uv_lock_identity import (
+    _locked_artifact,
     environment_matches_lock_closure,
     selected_uv_lock_group_closure,
     validate_uv_lock_group_closure,
 )
+
+
+def _wheel(filename: str, digest: str = "a") -> dict[str, object]:
+    return {
+        "url": f"https://example.invalid/{filename}",
+        "hash": f"sha256:{digest * 64}",
+        "size": 123,
+    }
+
+
+@pytest.mark.parametrize("reader_minor", ["312", "313"])
+@pytest.mark.parametrize(
+    "abi,platform",
+    [
+        ("cp313", "macosx_11_0_arm64"),
+        ("cp313t", "win_arm64"),
+        ("cp313", "manylinux_2_17_x86_64"),
+    ],
+)
+def test_selected_target_wheel_is_independent_of_reader_tags(
+    monkeypatch, reader_minor, abi, platform
+):
+    from packaging.tags import Tag
+
+    monkeypatch.setattr(
+        "packaging.tags.sys_tags",
+        lambda: iter([Tag("cp" + reader_minor, "cp" + reader_minor, "win_amd64")]),
+    )
+    expected = f"msgpack-1.2.3-cp313-{abi}-{platform}.whl"
+    row = {
+        "name": "msgpack",
+        "version": "1.2.3",
+        "wheels": [
+            _wheel("msgpack-1.2.3-cp312-cp312-win_amd64.whl", "b"),
+            _wheel(expected, "c"),
+        ],
+    }
+    assert _locked_artifact(row, [f"cp313-{abi}-{platform}"]) == {
+        "filename": expected,
+        "sha256": "c" * 64,
+        "size": 123,
+    }
+    with pytest.raises(PythonEnvironmentIdentityError, match="no wheel"):
+        _locked_artifact(row, ["cp314-cp314t-win_arm64"])
+
+
+def test_installed_wheel_tags_and_runtime_must_match_recipe(tmp_path):
+    closure = _select(tmp_path, _project(tmp_path))
+    actual = {
+        "runtime": {
+            "runtime_closure_sha256": closure["wheel_target"]["runtime_closure_sha256"]
+        },
+        "distributions": [
+            {
+                "name": "alpha",
+                "version": "1.0",
+                "wheel": {"tags": ["py3-none-any"], "build": None},
+            }
+        ],
+    }
+    assert environment_matches_lock_closure(actual, closure)
+    actual["distributions"][0]["wheel"]["tags"] = ["cp312-cp312-win_amd64"]
+    assert not environment_matches_lock_closure(actual, closure)
+    actual["distributions"][0]["wheel"]["tags"] = ["py3-none-any"]
+    actual["distributions"][0]["wheel"]["build"] = "1"
+    assert not environment_matches_lock_closure(actual, closure)
+    actual["distributions"][0]["wheel"]["build"] = None
+    actual["runtime"]["runtime_closure_sha256"] = "0" * 64
+    assert not environment_matches_lock_closure(actual, closure)
+
+
+def test_installed_compressed_wheel_may_record_narrower_supported_tags(tmp_path):
+    closure = _select(tmp_path, _project(tmp_path))
+    closure["packages"][0]["artifact"]["filename"] = "alpha-1.0-py2.py3-none-any.whl"
+    actual = {
+        "runtime": {
+            "runtime_closure_sha256": closure["wheel_target"]["runtime_closure_sha256"]
+        },
+        "distributions": [
+            {
+                "name": "alpha",
+                "version": "1.0",
+                "wheel": {"tags": ["py3-none-any"], "build": None},
+            }
+        ],
+    }
+    assert environment_matches_lock_closure(actual, closure)
+    actual["distributions"][0]["wheel"]["tags"] = ["py2-none-any"]
+    assert not environment_matches_lock_closure(actual, closure)
+
+
+def test_tag_capture_executes_bound_packaging_source_not_imported_parent(monkeypatch):
+    from packaging.tags import sys_tags
+    from molt.python_file_node_custody import PythonFileCaptureContext
+    from molt.python_uv_lock_identity import (
+        capture_python_wheel_target,
+        packaging_tag_source,
+    )
+    from tests.python_environment_test_support import runtime_identity_manifest
+
+    expected = [str(tag) for tag in sys_tags()]
+    monkeypatch.setattr(
+        "packaging.tags.sys_tags",
+        lambda: (_ for _ in ()).throw(AssertionError("parent tag implementation used")),
+    )
+    runtime = runtime_identity_manifest()
+    with PythonFileCaptureContext() as context:
+        target = capture_python_wheel_target(packaging_tag_source(), runtime, context)
+        context.verify()
+    assert target["tags"] == expected
+    assert target["runtime_closure_sha256"] == runtime["runtime_closure_sha256"]
+    assert set(target["packaging_sources"]) == {
+        "__init__.py",
+        "tags.py",
+        "_manylinux.py",
+        "_musllinux.py",
+        "_elffile.py",
+    }
+
+
+@pytest.mark.parametrize("failure", ["source-change", "algorithm"])
+def test_tag_capture_source_custody_and_private_namespace_cleanup(
+    tmp_path, monkeypatch, failure
+):
+    import shutil
+    import sys
+    from molt.python_file_node_custody import PythonFileCaptureContext, _FileNodePool
+    from molt.python_uv_lock_identity import (
+        capture_python_wheel_target,
+        packaging_tag_source,
+    )
+    from tests.python_environment_test_support import runtime_identity_manifest
+
+    for name in ("__init__", "_elffile", "_manylinux", "_musllinux", "tags"):
+        shutil.copyfile(
+            packaging_tag_source() / (name + ".py"), tmp_path / (name + ".py")
+        )
+    target = tmp_path / "tags.py"
+    if failure == "algorithm":
+        target.write_text("raise RuntimeError('independent algorithm failure')\n")
+    else:
+        original = _FileNodePool.read_bound
+
+        def read(pool, node, *, label):
+            contents = original(pool, node, label=label)
+            if b"def sys_tags(" in contents:
+                target.write_bytes(contents + b"\n# changed after binding\n")
+            return contents
+
+        monkeypatch.setattr(_FileNodePool, "read_bound", read)
+    with pytest.raises(
+        (PythonEnvironmentIdentityError, RuntimeError, ValueError)
+    ) as caught:
+        with PythonFileCaptureContext() as context:
+            capture_python_wheel_target(tmp_path, runtime_identity_manifest(), context)
+            context.verify()
+    if failure == "algorithm":
+        assert str(caught.value) == "independent algorithm failure"
+    assert not any(
+        name == "_molt_selected_wheel_packaging"
+        or name.startswith("_molt_selected_wheel_packaging.")
+        for name in sys.modules
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_locked_compressed_platform_tie_retains_uv_lock_order(monkeypatch, reverse):
+    from packaging.tags import Tag
+
+    monkeypatch.setattr(
+        "packaging.tags.sys_tags",
+        lambda: iter([Tag("py3", "none", "macosx_11_0_arm64")]),
+    )
+    # The real py-spy publication has these two distinct archives. Both expose
+    # the same best platform tag; uv keeps the first equally ranked lock entry.
+    names = [
+        "py_spy-0.4.2-py2.py3-none-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl",
+        "py_spy-0.4.2-py2.py3-none-macosx_11_0_arm64.whl",
+    ]
+    wheels = [_wheel(names[0], "a"), _wheel(names[1], "b")]
+    if reverse:
+        wheels.reverse()
+    artifact = _locked_artifact(
+        {"name": "py-spy", "version": "0.4.2", "wheels": wheels},
+        ["py3-none-macosx_11_0_arm64"],
+    )
+    assert artifact == {
+        "filename": names[1 if reverse else 0],
+        "size": 123,
+        "sha256": ("b" if reverse else "a") * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    "filenames,expected",
+    [
+        (["alpha-1.0-99-py3-none-any.whl", "alpha-1.0-py3-none-win_amd64.whl"], 1),
+        (["alpha-1.0-9-py3-none-any.whl", "alpha-1.0-10-py3-none-any.whl"], 1),
+        (["alpha-1.0-10b-py3-none-any.whl", "alpha-1.0-10a-py3-none-any.whl"], 0),
+        (["alpha-1.0-py3-none-any.whl", "alpha-1.0-0-py3-none-any.whl"], 1),
+    ],
+)
+def test_locked_wheel_tag_priority_precedes_numeric_then_text_build_tag(
+    monkeypatch, filenames, expected
+):
+    from packaging.tags import Tag
+
+    monkeypatch.setattr(
+        "packaging.tags.sys_tags",
+        lambda: iter([Tag("py3", "none", "win_amd64"), Tag("py3", "none", "any")]),
+    )
+    artifact = _locked_artifact(
+        {
+            "name": "alpha",
+            "version": "1.0",
+            "wheels": [_wheel(name) for name in filenames],
+        },
+        ["py3-none-win_amd64", "py3-none-any"],
+    )
+    assert artifact["filename"] == filenames[expected]
+
+
+def test_locked_wheel_winner_with_invalid_identity_never_falls_back(monkeypatch):
+    from packaging.tags import Tag
+
+    monkeypatch.setattr(
+        "packaging.tags.sys_tags", lambda: iter([Tag("py3", "none", "any")])
+    )
+    with pytest.raises(
+        PythonEnvironmentIdentityError, match="wheel identity is invalid"
+    ):
+        _locked_artifact(
+            {
+                "name": "alpha",
+                "version": "1.0",
+                "wheels": [
+                    _wheel("alpha-1.0-10-py3-none-any.whl", "invalid"),
+                    _wheel("alpha-1.0-9-py3-none-any.whl"),
+                ],
+            },
+            ["py3-none-any"],
+        )
 
 
 def _edge(name: str, *, extras: tuple[str, ...] = (), marker: str | None = None) -> str:
@@ -83,7 +327,9 @@ def _project(
 
 
 def _select(root: Path, requirements: tuple[str, ...]) -> dict[str, Any]:
-    return selected_uv_lock_group_closure(root, "source-build", requirements)
+    return selected_uv_lock_group_closure(
+        root, "source-build", requirements, wheel_target=wheel_target_manifest()
+    )
 
 
 def _reseal(payload: dict[str, Any]) -> None:
@@ -127,7 +373,19 @@ def test_sync_closure_includes_project_dependencies_and_late_extra_fixed_point(
         {"name": "leaf", "extras": ["nested"], "when_extra": "fast"},
     ]
     assert closure["project_requirements"] == ["cli-base==1.0"]
-    actual = {"distributions": [{"name": name, "version": "1.0"} for name in rows]}
+    actual = {
+        "runtime": {
+            "runtime_closure_sha256": closure["wheel_target"]["runtime_closure_sha256"]
+        },
+        "distributions": [
+            {
+                "name": name,
+                "version": "1.0",
+                "wheel": {"tags": ["py3-none-any"], "build": None},
+            }
+            for name in rows
+        ],
+    }
     assert environment_matches_lock_closure(actual, closure)
     actual["distributions"] = [
         row for row in actual["distributions"] if row["name"] != "cli-base"
@@ -244,7 +502,11 @@ def test_selector_rejects_non_string_marker_environment(tmp_path: Path) -> None:
         PythonEnvironmentIdentityError, match="marker environment shape"
     ):
         selected_uv_lock_group_closure(
-            tmp_path, "source-build", requirements, marker_environment=environment
+            tmp_path,
+            "source-build",
+            requirements,
+            marker_environment=environment,
+            wheel_target=wheel_target_manifest(),
         )
 
 
@@ -258,7 +520,17 @@ def test_all_inactive_roots_have_an_empty_realized_closure(tmp_path: Path) -> No
     )
     closure = _select(tmp_path, requirements)
     assert closure["packages"] == []
-    assert environment_matches_lock_closure({"distributions": []}, closure)
+    assert environment_matches_lock_closure(
+        {
+            "distributions": [],
+            "runtime": {
+                "runtime_closure_sha256": closure["wheel_target"][
+                    "runtime_closure_sha256"
+                ]
+            },
+        },
+        closure,
+    )
 
 
 def test_repository_lock_revision_is_supported_and_unknown_ones_fail_closed(

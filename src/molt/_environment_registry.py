@@ -5150,7 +5150,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_PROOF_CHILD_CUSTODY_JSON",
       "output_neutral": false,
       "owner": "tools/proof_queue_pkg/python_child_custody.py",
-      "summary": "JSON policy (schema molt.proof-child-custody.v1) that names the toolchain closure a proof child may execute; the guarded proof runner sets it, and the Python child custody bootstrap installs its audit hook only when the value is present.",
+      "summary": "JSON policy (schema molt.proof-child-custody.v2) that names the toolchain closure a proof child may execute; the guarded proof runner sets it, and the Python child custody bootstrap installs its audit hook only when the value is present.",
       "values": []
     },
     {

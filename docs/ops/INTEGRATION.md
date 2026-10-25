@@ -171,9 +171,10 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    keepalive line shows progress. A passing gate prints one line, and its
    `gate_finished` progress event names both files; a failed gate prints the file
    paths and each stream's bounded end.
-   Gates keep the canonical execution environment, except that bytecode goes
-   to the DX pycache prefix outside the checkout (`molt.dx.scratch_dir`,
-   `"pycache"`). A prefix inside the checkout is refused. No gate result is
+   Managed Python gates select the admitted image's read-only ordinary bytecode
+   namespace before startup and disable bytecode writes. Verifiers use a
+   separate fresh empty namespace; see [checkout provisioning](#checkout-provisioning).
+   No gate result is
    reused: the receipt is evidence, not a cache.
 7. **push** — `git push origin <captured-commit>:refs/heads/main`. Foreign Git
    hooks remain active and both rejection streams are retained. Git identity
@@ -300,7 +301,7 @@ out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
   registered worktree, is skipped untouched. It writes the record `logs/agents/lane-<slug>/coordination.json`
   in the main checkout through `tools/agent_coordination.py`, with the lane
   worktree as its source checkout. Then it provisions every checkout input
-  (`molt.checkout_provisioning`): the uv environment `<lane>/.venv`, the Acorn
+  (`molt.checkout_provisioning`): the lane's immutable development image, the Acorn
   tree, and the managed Git hooks. An inherited `UV_PROJECT_ENVIRONMENT`
   names the caller's environment, so provisioning drops it. It refuses an
   existing branch, an existing path and an active record. For a branch with
@@ -372,21 +373,48 @@ main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 
 ### Checkout provisioning
 
-`molt.checkout_provisioning` owns a checkout's lock-declared inputs, as
-`uv run` syncs before it runs. `ensure(<input>)` with a current stamp reads
-the stamp and the lock files; otherwise it runs one guarded command under a
-lock in the checkout's Git directory and writes the stamp only after success.
+`molt.checkout_provisioning` owns a checkout's lock-declared inputs.
 `python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
-hand. The memory guard fills unset variables with dx defaults, so the uv
-command names its target environment and the caller's uv cache explicitly;
-otherwise it would sync a managed environment instead, or copy 136 MB from
-the artifact volume where a clone costs 1 s. Toolchain admission ensures a selected tool's `checkout_input` (the
-Acorn tree), so `tools/generators.py`, the proof executor and `integrate`
-provision it on demand. Gate environment selection ensures the checkout's own
-uv environment (`UV_PROJECT_ENVIRONMENT`, else `.venv`) before it validates
-it: a missing environment is built with `uv sync --frozen`, and an unstamped
-one is confirmed by the same command. An explicit `MOLT_VENV` and a borrowed
-main-worktree environment are used as they are.
+hand from an existing bootstrap interpreter. Managed Python uses the existing
+source-build publisher and schema 7 recipe at
+`<artifact_root>/build-environments/development/<checkout_component>/<recipe_sha>`.
+The recipe binds the selected interpreter, lock closure, dependency groups and
+editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`
+currently selects `dev` and `bench`, together with root dependencies.
+
+Selection metadata lives in the checkout's Git control directory, outside the
+image, keyed by interpreter/group intent and the canonical producer contract.
+A producer contract upgrade selects a new record and image without opening or
+repairing a retired generation. An explicit image remains an exact selection
+and must satisfy the current contract. Reading that bounded projection does
+not admit executable bytes. `ensure uv-environment` publishes a missing
+generation under the existing address lock and records the selection only after
+success. Changed declared inputs select a new recipe; published images are never
+synced or repaired in place. Explicit `UV_PROJECT_ENVIRONMENT` must identify a
+matching published image at managed operation boundaries. `MOLT_VENV` (or
+`venv_exec --venv`) explicitly borrows an external environment without converting
+it to managed ownership. There is no implicit checkout `.venv`, active-venv or
+main-worktree fallback. Ordinary source bootstrap `uv sync` remains separate.
+
+Publication derives ordinary checked-hash caches at optimization levels 0, 1 and
+2 into the image's `bytecode` directory. Admission verifies those bytes against
+captured source and runtime inputs; pytest rewriting remains in memory. The
+verifier starts with `-B -I -X pycache_prefix=<fresh-empty-owned-prefix>` through
+the shared `python_identity_verifier_arguments` authority and retains that
+scratch owner through child closure. It validates the image namespace by
+explicit path without changing `sys.pycache_prefix`. After admission, payloads
+select `-B -X pycache_prefix=<image>/bytecode` before interpreter startup;
+environment variables alone cannot establish this policy under `-I` or `-E`.
+Existing process-state leases retain the selected generation until observed
+process closure, even when a newer generation is selected. Owner/use metadata
+stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
+retirement. Selection or publication alone is not release qualification.
+
+Other checkout inputs keep their existing protocols: current stamps read the
+declared locks; stale inputs run a guarded provisioner under the checkout lock
+and publish a stamp only after success. Toolchain admission ensures a selected
+tool's `checkout_input` (the Acorn tree), so `tools/generators.py`, the proof
+executor and `integrate` provision it on demand.
 
 ### The landing queue (`land`, `queue run`)
 
@@ -420,8 +448,8 @@ bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
    manual merge resolutions, including through the final citation amendment.
    A conflicting lane is aborted back to the preceding candidate and leaves the
    batch with result `conflict`; inability to restore that candidate stops the runner.
-2. Provision the sandbox's declared checkout-scoped inputs (its uv
-   environment and the Acorn tree) through `molt.checkout_provisioning`.
+2. Provision the sandbox's declared checkout-scoped inputs (its development
+   image and the Acorn tree) through `molt.checkout_provisioning`.
    Run `integrate` on the sandbox, waiting for the repository integration lock
    held by any other integrator. The union of the batch's selected gates runs
    once; change citations resolve across the batch.
