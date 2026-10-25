@@ -350,6 +350,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 kind=FunctionKind.ASYNC_GENERATOR,
                 symbol=poll_func_name,
                 decorated=bool(node.decorator_list),
+                has_closure=has_closure,
             )
             return None
         func_name = node.name
@@ -524,6 +525,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             kind=FunctionKind.ASYNC,
             symbol=poll_func_name,
             decorated=bool(node.decorator_list),
+            has_closure=has_closure,
         )
         return None
 

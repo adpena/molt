@@ -150,13 +150,33 @@ v0.1 recommendation: **host copies results** for simplicity and safety.
 Application callable exports (`molt.wasm.app-call`, declared in
 `src/molt/cli/app_export_contract.py` and published as
 `manifest.abi.app_exports`) pass tagged-i64 object references. An export adopts
-each argument, as every Python frame entry does: the host materializes one owned
+each explicit Python argument: the host materializes one owned
 reference per parameter and moves it into the call. The host never releases an
 argument after the call; it releases only the arguments it built before a
 conversion failed. The result is one owned reference, which the host releases
 after decoding it. The contract refuses an exported entry whose FunctionIR
 `parameter_custody` does not transfer every parameter. `invokeAppExport` in
 `wasm/runtime_lifecycle.js` is the one host implementation.
+
+The flat app-call ABI exports only entries requiring no hidden closure
+transport. The frontend's lexical capture producer passes that fact to its
+binding authority for every callable kind; a closure-bearing synchronous
+binding is recorded as excluded with
+`closure-callable-requires-module-dispatch`. Its internal code symbol stays in
+the exclusion set, and the linker must not restore it as a host export. Generic
+syntax alone does not exclude a function: an unused type parameter or a separate
+annotation evaluator does not add a closure argument to the function body.
+This preserves the distinction between code and a function's bound environment
+in [Python's function model](https://docs.python.org/3.14/reference/datamodel.html#user-defined-functions)
+and [CPython closure construction](https://github.com/python/cpython/blob/3.14/Python/codegen.c).
+
+Compiled Python calls still carry the callable's environment normally. Direct
+host calls to closure-bearing bindings require a future module-value dispatch
+boundary; this exclusion does not claim that such a host API exists. Hidden
+closure parameters remain borrowed and the ABI custody validator remains
+strict. The policy adds one compile-time boolean branch per source declaration,
+with no IR reanalysis, runtime call, allocation or new wire field; valid flat
+exports retain their existing direct-call cost.
 
 ---
 

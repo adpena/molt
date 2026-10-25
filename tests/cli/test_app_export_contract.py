@@ -17,6 +17,7 @@ from molt.cli.app_export_contract import (
     validate_app_export_contract,
 )
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend._types import _MOLT_CLOSURE_PARAM
 from molt.frontend.sema import collect_module_func_kinds
 
 
@@ -244,3 +245,90 @@ def test_app_contract_requires_one_owned_sidecar_table(defect: str) -> None:
             registry_digest="a" * 64,
         )
     assert ir == before
+
+
+def test_app_exports_use_body_capture_not_generic_syntax():
+    ir, contract = _frontend_ir_and_contract(
+        "def captured[T](value): return T\n"
+        "def closure_only[T](): return T\n"
+        "def uncaptured[T](value): return value\n"
+        "def annotations_only[T](value: T) -> T: return value\n"
+    )
+    bindings = {row["name"]: row for row in contract["bindings"]}
+    entries = {row["name"]: row for row in ir["functions"]}
+    assert exported_app_symbols(contract) == (
+        "probe__annotations_only",
+        "probe__uncaptured",
+    )
+    for name in ("captured", "closure_only"):
+        row = bindings[name]
+        assert row["disposition"] == "excluded"
+        assert row["reason"] == "closure-callable-requires-module-dispatch"
+        assert row["symbol"] in excluded_app_symbols(contract)
+        assert entries[row["symbol"]]["params"][0] == _MOLT_CLOSURE_PARAM
+    assert entries["probe__captured"]["parameter_custody"] == [
+        "borrowed",
+        "transferred",
+    ]
+    assert "parameter_custody" not in entries["probe__closure_only"]
+    for name in ("uncaptured", "annotations_only"):
+        assert _MOLT_CLOSURE_PARAM not in entries[bindings[name]["symbol"]]["params"]
+        assert entries[bindings[name]["symbol"]]["parameter_custody"] == ["transferred"]
+
+
+def test_forged_flat_export_of_closure_keeps_custody_refusal():
+    ir, _contract = _frontend_ir_and_contract("def captured[T](value): return T\n")
+    carrier = next(
+        row["app_callable_bindings"]
+        for row in ir["function_metadata"].values()
+        if "app_callable_bindings" in row
+    )
+    binding = next(row for row in carrier if row["name"] == "captured")
+    binding["disposition"] = "export"
+    binding["reason"] = None
+    with pytest.raises(ValueError, match="must adopt every parameter"):
+        build_app_export_contract(
+            entry_module="probe",
+            ir=ir,
+            function_metadata=ir["function_metadata"],
+            registry_digest="a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("prefix", "body", "kind", "reason"),
+    [
+        ("", "return T", "sync", "closure-callable-requires-module-dispatch"),
+        ("", "yield T", "gen", "stateful-callable-requires-module-dispatch"),
+        ("async ", "return T", "async", "stateful-callable-requires-module-dispatch"),
+        ("async ", "yield T", "asyncgen", "stateful-callable-requires-module-dispatch"),
+    ],
+)
+def test_each_source_callable_producer_preserves_context_exclusion(
+    prefix, body, kind, reason
+):
+    _ir, contract = _frontend_ir_and_contract(f"{prefix}def captured[T](): {body}\n")
+    (binding,) = contract["bindings"]
+    assert binding["kind"] == kind
+    assert binding["disposition"] == "excluded"
+    assert binding["reason"] == reason
+    assert exported_app_symbols(contract) == ()
+    assert binding["symbol"] in excluded_app_symbols(contract)
+
+
+@pytest.mark.parametrize("final_capture", [False, True])
+def test_closure_export_policy_follows_final_definition(final_capture):
+    closed = "def item[T](value): return T\n"
+    plain = "def item(value): return value\n"
+    _ir, contract = _frontend_ir_and_contract(
+        plain + closed if final_capture else closed + plain
+    )
+    (binding,) = contract["bindings"]
+    assert binding["symbol"] == "probe__item_1"
+    assert binding["superseded_symbols"] == ["probe__item"]
+    assert "probe__item" in excluded_app_symbols(contract)
+    assert exported_app_symbols(contract) == (
+        () if final_capture else ("probe__item_1",)
+    )
+    if final_capture:
+        assert binding["reason"] == "closure-callable-requires-module-dispatch"
