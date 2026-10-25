@@ -804,6 +804,7 @@ def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
             tier="module",
             source_key="key",
             cache_path=None,
+            stdlib_object_path=None,
             warnings=[],
             artifact_contract=contract,
         ),
@@ -1226,6 +1227,7 @@ def test_backend_publication_rejects_swapped_source_before_copy(
             tier="module",
             source_key="key",
             cache_path=None,
+            stdlib_object_path=None,
             warnings=warnings,
             artifact_contract=contract,
         )
@@ -1820,6 +1822,7 @@ def test_cached_artifact_input_failures_are_misses(
             tier="module",
             source_key="key",
             cache_path=None,
+            stdlib_object_path=None,
             warnings=warnings,
             artifact_contract=contract,
         )
