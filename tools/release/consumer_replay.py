@@ -299,7 +299,7 @@ def prepare(
                 _stage_wasm(rootfs, prefix, row["artifact"], row["manifest"])
             )
         command = guest_command(row, argv)
-        image = command[0].removeprefix("/")
+        image = execution_root.linux_root_relative_path(command[0]).as_posix()
         nonce = secrets.token_hex(32)
         policy_path = f"policies/{row['id']}.json"
         image_identity = next(item for item in admitted_files if item["path"] == image)
@@ -619,7 +619,7 @@ def validate(
             _equal_artifact(execution_root.file_identity(rootfs / name), descriptor)
             _equal_artifact(descriptor, wanted["artifact"])
             admitted.update({prefix + "manifest.json", name})
-        image = rootfs / command[0].removeprefix("/")
+        image = rootfs / execution_root.linux_root_relative_path(command[0])
         actual_policy = _artifact_json(
             rootfs / policy,
             root_files[policy],
@@ -1026,9 +1026,11 @@ def compilation_process_images(
     link = captured["link"]
     records = (
         link["links"].values()
-        if link["schema"] == "molt.wasm-link-inputs.v1"
+        if link["schema"] == "molt.wasm-link-inputs.v2"
         else (link,)
     )
+    for path, _digest, _size in (compiler_image, linker_image, *additional_images):
+        execution_root.linux_root_relative_path(path)
     if any(
         LinkInputObservation.from_record(row).linker_path != linker_image[0]
         for row in records
@@ -1244,9 +1246,10 @@ def _validate_compilation_inputs(
         controller_python=controller_python,
     )
     _validate_generation(compilation["supervisor_generation"], rootfs)
-    source_root = PurePosixPath(compilation["compiler_source_root"])
-    execution_root.relative_path(source_root.as_posix().removeprefix("/"))
-    installed = installed_compiler(rootfs / source_root.as_posix().removeprefix("/"))
+    source_root = execution_root.linux_root_relative_path(
+        compilation["compiler_source_root"]
+    )
+    installed = installed_compiler(rootfs / source_root)
     from dataclasses import replace
 
     if (
@@ -1459,7 +1462,7 @@ def _receive_compilation_cell(
     link = observation["link"]
     records = (
         link["links"].values()
-        if link["schema"] == "molt.wasm-link-inputs.v1"
+        if link["schema"] == "molt.wasm-link-inputs.v2"
         else (link,)
     )
     selected_linkers = {
@@ -1469,13 +1472,13 @@ def _receive_compilation_cell(
         raise ValueError("compilation family selected different linker producers")
     linker_path = selected_linkers.pop()
     linker_identity = execution_root.file_identity(
-        rootfs / linker_path.removeprefix("/")
+        rootfs / execution_root.linux_root_relative_path(linker_path)
     )
     additional_images = ()
     if lane.target == "native":
         driver = cell["outputs"]["preparation"]["driver"]
         observed_driver = execution_root.file_identity(
-            rootfs / driver["path"].removeprefix("/")
+            rootfs / execution_root.linux_root_relative_path(driver["path"])
         )
         _equal_artifact(observed_driver, driver)
         additional_images = ((driver["path"], driver["sha256"], driver["size"]),)
@@ -1695,14 +1698,11 @@ def validate_installed_compilation(
     )
     if not isinstance(compilation, dict):
         raise ValueError("installed compilation evidence is not an object")
-    source_root = PurePosixPath(compilation["compiler_source_root"])
-    if not source_root.is_absolute():
-        raise ValueError("installed compiler source coordinate is not absolute")
-    source = (
-        record_path.parent
-        / "rootfs"
-        / execution_root.relative_path(source_root.as_posix().removeprefix("/"))
+    source_relative = execution_root.linux_root_relative_path(
+        compilation["compiler_source_root"]
     )
+    source_root = PurePosixPath("/") / source_relative
+    source = record_path.parent / "rootfs" / source_relative
     installed = installed_compiler(source)
     if (
         installed is None
@@ -1725,7 +1725,7 @@ def validate_installed_compilation(
     interpreter_file = (
         record_path.parent
         / "rootfs"
-        / execution_root.relative_path(controller_python.as_posix().removeprefix("/"))
+        / execution_root.linux_root_relative_path(str(controller_python))
     )
     _equal_artifact(execution_root.file_identity(interpreter_file), interpreter)
     installed.verify_launcher()
@@ -2427,7 +2427,9 @@ def receive_compilation_outputs(
         raise ValueError("compile export final-link target differs")
     projected: dict[str, Path] = {}
     for role, row in family.items():
-        original = PurePosixPath(row["path"])
+        original = PurePosixPath("/") / execution_root.linux_root_relative_path(
+            row["path"]
+        )
         try:
             relative = original.relative_to("/work/output")
         except ValueError as exc:
@@ -2456,7 +2458,7 @@ def receive_compilation_outputs(
         reports = [("input_reproducer", link)]
         runtime_role = "runtime_archive"
     else:
-        if link["schema"] != "molt.wasm-link-inputs.v1":
+        if link["schema"] != "molt.wasm-link-inputs.v2":
             raise ValueError("WASM compilation has no source-buffer observation")
         reports = [
             (name + "_input_reproducer", item) for name, item in link["links"].items()
@@ -2509,10 +2511,8 @@ def receive_compilation_outputs(
         actual = capture_link_inputs(
             projected[role],
             dialect=declared.dialect,
-            linker_path=Path(declared.linker_path),
-            expected={
-                name: (Path(path), contents[path]) for name, path in declared.roles
-            },
+            linker_path=declared.linker_path,
+            expected={name: (path, contents[path]) for name, path in declared.roles},
             input_sink=verify_worker_buffer if worker_archives else None,
         )
         if actual != declared:
@@ -2663,9 +2663,9 @@ def _validate_compilation_plan(
     if compilation["source_sha256"] != hashlib.sha256(source).hexdigest():
         raise ValueError("compilation source belongs to another requested program")
     compiler_path = (
-        PurePosixPath(compilation["compiler_source_root"]).parent
-        / compilation["compiler"]["path"]
-    )
+        PurePosixPath("/")
+        / execution_root.linux_root_relative_path(compilation["compiler_source_root"])
+    ).parent / compilation["compiler"]["path"]
     executable = compilation["controller_python"]
     images = []
     for row in execution_root.root_inventory(rootfs):

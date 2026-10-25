@@ -35,7 +35,7 @@ from molt.process_environment import (  # noqa: E402
 from tools.cross_run import SealedExecutionProjection  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
-from tools.release import consumer_replay  # noqa: E402
+from tools.release import consumer_replay, execution_root  # noqa: E402
 from tools.release.archive import extract_zip_strict  # noqa: E402
 from tools.release.build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY  # noqa: E402
 from tools.release.release_authority import (  # noqa: E402
@@ -658,9 +658,10 @@ def _verify_guest_cells(
         observation, outputs = _preparation_link_inputs(output, target=lane.target)
         link = observation["link"]
         records = link["links"].values() if lane.target == "wasm" else (link,)
-        tools.extend(
-            Path(LinkInputObservation.from_record(row).linker_path) for row in records
-        )
+        for row in records:
+            linker_host = LinkInputObservation.from_record(row).linker_path
+            execution_root.linux_root_relative_path(linker_host)
+            tools.append(Path(linker_host))
         if lane.target == "native":
             if (
                 not {"driver_preparation", "driver_dependencies", "input_reproducer"}
@@ -677,7 +678,9 @@ def _verify_guest_cells(
                 )
             )
             native_inputs[lane.id] = (outputs["input_reproducer"], link, preparation)
-            tools.append(Path(preparation["driver"]["path"]))
+            driver_host = preparation["driver"]["path"]
+            execution_root.linux_root_relative_path(driver_host)
+            tools.append(Path(driver_host))
     if portable_bundle:
         uv = find_executable("uv", environment=env)
         if uv is None:

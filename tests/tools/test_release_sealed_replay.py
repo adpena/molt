@@ -1991,11 +1991,14 @@ def test_compilation_process_join_replays_native_receipt_before_origin_join(
     observation = compilation_input_observation(
         origin.payload(),
         {
-            "schema": "molt.link-input-observation.v1",
+            "schema": "molt.link-input-observation.v2",
             "dialect": "elf-gnu",
             "linker_path": "/ld.lld",
-            "inputs": [{"path": "/object", **output}, {"path": "/runtime", **runtime}],
-            "roles": {"compiler_output": "/object", "runtime": "/runtime"},
+            "inputs": [
+                {"archive_path": "object", **output},
+                {"archive_path": "runtime", **runtime},
+            ],
+            "roles": {"compiler_output": "object", "runtime": "runtime"},
             "reproducer": {"size": 2048, "sha256": "f" * 64},
         },
         stdlib=None,
@@ -2238,7 +2241,13 @@ def test_sealed_root_long_runtime_names_use_one_exact_pax_encoding(tmp_path, met
 
 
 def _compilation_export_fixture(
-    tmp_path, target, defect=None, *, worker_family=None, worker_defect=None
+    tmp_path,
+    target,
+    defect=None,
+    *,
+    worker_family=None,
+    worker_defect=None,
+    windows_coordinates=False,
 ):
     from molt.backend_protocol import (
         BackendEmissionOrigin,
@@ -2306,47 +2315,66 @@ def _compilation_export_fixture(
             stdlib_origin = BackendStdlibOrigin(
                 content(archive_bytes)["sha256"], len(archive_bytes), worker_origins
             )
-    buffers = {"/work/object": emitted, "/installed/runtime": runtime}
+    # Independent LLD archive coordinates: drive/UNC provenance cannot be
+    # reconstructed by prefixing '/'. Do not call the production projector.
+    object_coordinate = "C/work/object" if windows_coordinates else "work/object"
+    runtime_coordinate = (
+        "D/installed/runtime" if windows_coordinates else "installed/runtime"
+    )
+    stdlib_coordinate = "C/work/stdlib.a" if windows_coordinates else "work/stdlib.a"
+    crt_coordinate = (
+        "C/usr/lib/molt-capture-fixture-crt.o"
+        if windows_coordinates
+        else "usr/lib/molt-capture-fixture-crt.o"
+    )
+    buffers = {object_coordinate: emitted, runtime_coordinate: runtime}
     if worker_family == "stdlib":
-        buffers["/work/stdlib.a"] = archive_bytes
+        buffers[stdlib_coordinate] = archive_bytes
     if target == "native":
-        buffers["/usr/lib/molt-capture-fixture-crt.o"] = (
-            b"CRT input from the linker buffer"
-        )
+        buffers[crt_coordinate] = b"CRT input from the linker buffer"
     report = source / (program.name + ".molt-link-inputs.tar")
     with tarfile.open(report, "w") as archive:
         for name, data in {
-            "link/response.txt": b"/work/object /installed/runtime",
+            "link/response.txt": (
+                b"C:/work/object D:/installed/runtime"
+                if windows_coordinates
+                else b"/work/object /installed/runtime"
+            ),
             "link/version.txt": b"LLD",
-            **{"link" + name: data for name, data in buffers.items()},
+            **{"link/" + name: data for name, data in buffers.items()},
         }.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
     observed = {
-        "schema": "molt.link-input-observation.v1",
+        "schema": "molt.link-input-observation.v2",
         "dialect": "elf-gnu" if target == "native" else "wasm",
-        "linker_path": "/ld.lld" if target == "native" else "/wasm-ld",
+        "linker_path": (
+            r"C:\tools\ld.lld.exe" if target == "native" else r"C:\tools\wasm-ld.exe"
+        )
+        if windows_coordinates
+        else ("/ld.lld" if target == "native" else "/wasm-ld"),
         "inputs": [
-            {"path": name, **content(data)} for name, data in sorted(buffers.items())
+            {"archive_path": name, **content(data)}
+            for name, data in sorted(buffers.items())
         ],
         "roles": {
             "compiler_output"
             if target == "native"
-            else "compiler_rewritten": "/work/object",
-            "runtime": "/installed/runtime",
+            else "compiler_rewritten": object_coordinate,
+            "runtime": runtime_coordinate,
         },
         "reproducer": content(report.read_bytes()),
     }
     if worker_family == "stdlib":
-        observed["roles"]["stdlib"] = "/work/stdlib.a"
+        observed["roles"]["stdlib"] = stdlib_coordinate
     if defect == "forged-summary":
         observed["inputs"][0]["sha256"] = "f" * 64
     link = (
         observed
         if target == "native"
         else {
-            "schema": "molt.wasm-link-inputs.v1",
+            "schema": "molt.wasm-link-inputs.v2",
             "source_inputs": {
                 "compiler_output": content(emitted),
                 "runtime": content(runtime),
@@ -2386,7 +2414,7 @@ def _compilation_export_fixture(
     observation.write_text(
         json.dumps(
             {
-                "schema": "molt.compilation-inputs.v2",
+                "schema": "molt.compilation-inputs.v3",
                 "cache": {"compiler": None, "stdlib": None},
                 "stdlib": stdlib_payload,
                 "compiler": compiler_payload,
@@ -2401,23 +2429,35 @@ def _compilation_export_fixture(
         "input_reproducer" if target == "native" else "linked_input_reproducer": report,
     }
     if target == "native":
+        driver_host = r"C:\tools\clang.exe" if windows_coordinates else "/clang"
+        stub_host = (
+            r"C:\work\main_stub.c" if windows_coordinates else "/work/main_stub.c"
+        )
         dependency = source / "program.molt-native-inputs.d"
-        dependency.write_text("output: /work/main_stub.c\n", encoding="utf-8")
+        dependency.write_text(
+            (
+                r"output: C\:/work/main_stub.c"
+                if windows_coordinates
+                else "output: /work/main_stub.c"
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         preparation = source / "program.molt-native-inputs.json"
         preparation.write_text(
             json.dumps(
                 {
-                    "schema": "molt.native-link-preparation.v1",
+                    "schema": "molt.native-link-preparation.v2",
                     "driver": {
-                        "path": "/clang",
-                        "content_path": "/clang",
+                        "path": driver_host,
+                        "content_path": driver_host,
                         **content(b"driver"),
                     },
-                    "source": "/work/main_stub.c",
+                    "source": stub_host,
                     "files": [
                         {
-                            "path": "/work/main_stub.c",
-                            "content_path": "/work/main_stub.c",
+                            "path": stub_host,
+                            "content_path": stub_host,
                             **content(b"stub"),
                         }
                     ],
@@ -2947,7 +2987,7 @@ def test_compilation_native_resources_come_from_captured_buffers(tmp_path, defec
         raw[offset] ^= 1
         report.write_bytes(raw)
     elif defect == "forged-summary":
-        next(row for row in observation["inputs"] if row["path"] == "/" + crt)[
+        next(row for row in observation["inputs"] if row["archive_path"] == crt)[
             "sha256"
         ] = "0" * 64
     kwargs = dict(root=root, reproducer=report, observation=observation)
@@ -3011,6 +3051,13 @@ def test_native_preparation_stages_lexical_header_inputs_without_readmitting_cha
     captured = capture_native_link_preparation(
         dependencies, source=source, driver=driver, cwd=tmp_path
     )
+    if os.name == "nt":
+        with pytest.raises(ValueError, match="Linux host coordinate"):
+            execution_root.stage_compilation_driver_inputs(
+                tmp_path / "unsupported-root", preparation=captured
+            )
+        assert not (tmp_path / "unsupported-root").exists()
+        return
     row = next(row for row in captured["files"] if row["path"] == str(alias))
     assert row["content_path"] == str(header)
     root = tmp_path / "rootfs"
@@ -3101,3 +3148,99 @@ def test_repeated_warm_cache_selection_keeps_only_the_original_emission_scope(tm
     assert {
         path.name: path.read_bytes() for path in cold_dir.iterdir()
     } == original_bytes
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+def test_compilation_export_preserves_foreign_host_archive_coordinates(
+    tmp_path, target
+):
+    # This is a raw retained-byte replay on any test host, not Windows sealed
+    # execution. Literal LLD members deliberately omit their DOS drive colons.
+    args, content, emitted = _compilation_export_fixture(
+        tmp_path, target, windows_coordinates=True
+    )
+    received = consumer_replay.receive_compilation_outputs(**args)
+    link = received["observation"]["link"]
+    if target == "wasm":
+        assert link["schema"] == "molt.wasm-link-inputs.v2"
+        link = link["links"]["linked"]
+    assert link["schema"] == "molt.link-input-observation.v2"
+    assert link["linker_path"] == (
+        r"C:\tools\ld.lld.exe" if target == "native" else r"C:\tools\wasm-ld.exe"
+    )
+    expected = {
+        "C/work/object": content(emitted),
+        "D/installed/runtime": content(b"runtime"),
+    }
+    if target == "native":
+        expected["C/usr/lib/molt-capture-fixture-crt.o"] = content(
+            b"CRT input from the linker buffer"
+        )
+        assert received["preparation"]["driver"]["path"] == r"C:\tools\clang.exe"
+        assert received["preparation"]["source"] == r"C:\work\main_stub.c"
+    assert {
+        row["archive_path"]: {"size": row["size"], "sha256": row["sha256"]}
+        for row in link["inputs"]
+    } == expected
+    assert link["roles"] == {
+        "compiler_output"
+        if target == "native"
+        else "compiler_rewritten": "C/work/object",
+        "runtime": "D/installed/runtime",
+    }
+
+
+@pytest.mark.parametrize("projection", ["link", "driver"])
+def test_compilation_staging_rejects_foreign_host_before_writing(tmp_path, projection):
+    _compilation_export_fixture(tmp_path, "native", windows_coordinates=True)
+    source = tmp_path / "export"
+    root = tmp_path / "rootfs"
+    root.mkdir()
+    if projection == "link":
+        observation = json.loads(
+            (source / "program.molt-link-inputs.json").read_text(encoding="utf-8")
+        )["link"]
+        with pytest.raises(ValueError, match="Linux host coordinate"):
+            execution_root.stage_compilation_link_inputs(
+                root,
+                reproducer=source / "program.molt-link-inputs.tar",
+                observation=observation,
+            )
+    else:
+        preparation = json.loads(
+            (source / "program.molt-native-inputs.json").read_text(encoding="utf-8")
+        )
+        with pytest.raises(ValueError, match="Linux host coordinate"):
+            execution_root.stage_compilation_driver_inputs(
+                root, preparation=preparation
+            )
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "coordinate",
+    [
+        r"C:\tools\ld.lld.exe",
+        r"\\server\share\ld.lld.exe",
+        "C:/tools/ld.lld.exe",
+        "usr/lib/a.o",
+        "/usr/../lib/a.o",
+        "/usr//lib/a.o",
+        "/usr/./lib/a.o",
+        "/",
+    ],
+)
+def test_linux_root_projection_rejects_foreign_or_noncanonical_coordinates(coordinate):
+    with pytest.raises(ValueError):
+        execution_root.linux_root_relative_path(coordinate)
+
+
+def test_linux_root_projection_preserves_explicit_namespace():
+    assert (
+        execution_root.linux_root_relative_path("/usr/lib/a.o").as_posix()
+        == "usr/lib/a.o"
+    )
+    assert (
+        execution_root.linux_root_relative_path("/work/output/program").as_posix()
+        == "work/output/program"
+    )

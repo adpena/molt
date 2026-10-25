@@ -21,6 +21,7 @@ from tools.cross_run import SealedExecutionProjection, SEALED_REPLAY_EXECUTION
 
 from molt.file_publication import resolve_owned_path
 from molt.portable_paths import portable_relative_path
+from molt.python_identity_common import canonical_absolute_path
 from molt.cli.static_archive_identity import open_static_archive_members
 from molt.exact_json import canonical_json_sha256
 from molt.python_native_dependency_custody import _elf_dependencies, elf_interpreter
@@ -43,6 +44,19 @@ _EMPTY_DIRECTORIES = ("app", "dev", "etc", "proc", "sys", "tmp", "evidence", "po
 
 def relative_path(raw: object) -> PurePosixPath:
     return portable_relative_path(raw)
+
+
+def linux_root_relative_path(raw: object) -> PurePosixPath:
+    """Project a canonical Linux host coordinate into this sealed root.
+
+    Archive coordinates are already relative and must not pass through here.
+    Parsing retained host fields does not borrow the receiver's OS grammar;
+    the current sealed provider supports only the POSIX / namespace.
+    """
+    host = canonical_absolute_path(raw)
+    if not isinstance(host, PurePosixPath) or host.anchor != "/" or len(host.parts) < 2:
+        raise ValueError("sealed execution root requires a Linux host coordinate")
+    return relative_path(host.relative_to("/").as_posix())
 
 
 def file_identity(path: Path) -> dict[str, object]:
@@ -319,7 +333,7 @@ def _audit_native_closure(
         data = read_member(name)
         interpreter = elf_interpreter(data, architecture=arch)
         if interpreter:
-            loader = relative_path(interpreter.removeprefix("/")).as_posix()
+            loader = linux_root_relative_path(interpreter).as_posix()
             if loader not in members:
                 raise ValueError(
                     f"execution-root ELF loader is not admitted: {interpreter}"
@@ -542,9 +556,7 @@ def stage_compilation_inputs(
     ) -> None:
         if not source.is_absolute():
             raise ValueError("compilation input has no absolute custody coordinate")
-        name = relative_path(
-            (destination or source).as_posix().removeprefix("/")
-        ).as_posix()
+        name = linux_root_relative_path(str(destination or source)).as_posix()
         if PurePosixPath(name).parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
             raise ValueError(
                 "read-only compilation input intersects a writable or virtual root"
@@ -604,7 +616,7 @@ def stage_compilation_inputs(
             destination=lexical,
         )
     staged_compiler = installed_compiler(
-        root / compiler.source_root.as_posix().removeprefix("/")
+        root / linux_root_relative_path(str(compiler.source_root))
     )
     if (
         staged_compiler is None
@@ -741,9 +753,7 @@ def stage_compilation_runtime(
     if not isinstance(compiler, InstalledCompiler):
         raise TypeError("compilation retention requires an installed compiler")
     home = _default_molt_home(environ=environment, cwd=Path("/work"))
-    relative = relative_path(
-        (home / INSTALLED_RUNTIME_STORE).as_posix().removeprefix("/")
-    )
+    relative = linux_root_relative_path(str(home / INSTALLED_RUNTIME_STORE))
     if relative.parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
         raise ValueError(
             "retained runtime must remain outside the writable compile root"
@@ -796,6 +806,9 @@ def stage_compilation_link_inputs(
         raise ValueError(
             "compilation native resources require an exact native linker observation"
         )
+    # A foreign retained record is valid raw evidence, but cannot select a
+    # host image for this Linux-only execution root.
+    linux_root_relative_path(declared.linker_path)
     contents = {
         name: {"size": size, "sha256": digest} for name, size, digest in declared.inputs
     }
@@ -808,7 +821,7 @@ def stage_compilation_link_inputs(
         if name in excluded:
             yield None
             return
-        relative = relative_path(name.removeprefix("/"))
+        relative = relative_path(name)
         if relative.parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
             raise ValueError(
                 "preflight linker input intersects the writable or virtual compile root: "
@@ -838,8 +851,8 @@ def stage_compilation_link_inputs(
     captured = capture_link_inputs(
         reproducer,
         dialect=declared.dialect,
-        linker_path=Path(declared.linker_path),
-        expected={role: (Path(name), contents[name]) for role, name in declared.roles},
+        linker_path=declared.linker_path,
+        expected={role: (name, contents[name]) for role, name in declared.roles},
         input_sink=sink,
     )
     if captured != declared:
@@ -856,12 +869,17 @@ def stage_compilation_driver_inputs(
     from molt.cli.link_input_observation import validate_native_link_preparation
 
     selected = validate_native_link_preparation(preparation)
+    linux_root_relative_path(selected["source"])
+    entries = [selected["driver"], *selected["files"]]
+    projected = [(entry, linux_root_relative_path(entry["path"])) for entry in entries]
+    # Reject an unsupported host namespace before publishing any staged file.
+    for entry in entries:
+        linux_root_relative_path(entry["content_path"])
     existing = {row["path"]: row for row in root_inventory(root)}
     rows = []
-    for entry in [selected["driver"], *selected["files"]]:
+    for entry, relative in projected:
         if entry["path"] == selected["source"]:
             continue  # The fresh build generates its own C entrypoint.
-        relative = relative_path(entry["path"].removeprefix("/"))
         if relative.parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
             raise ValueError(
                 "native preparation input intersects a writable or virtual root"

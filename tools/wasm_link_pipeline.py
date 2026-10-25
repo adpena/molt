@@ -8,7 +8,10 @@ from collections.abc import Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
 import hashlib
-from molt.cli.link_input_observation import capture_link_inputs as observe_link_inputs
+from molt.cli.link_input_observation import (
+    capture_link_inputs as observe_link_inputs,
+    lld_archive_path,
+)
 from pathlib import Path
 import subprocess
 import sys
@@ -1329,7 +1332,7 @@ def _run_admitted_link(
     why_extract: Path,
     role: str,
     selection_roles: dict[str, Mapping[str, object]],
-    capture: tuple[Path, Mapping[str, tuple[Path, Mapping[str, object]]]] | None = None,
+    capture: tuple[Path, Mapping[str, tuple[str, Mapping[str, object]]]] | None = None,
     input_observations: dict[str, object] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     arguments = list(command)
@@ -1343,7 +1346,7 @@ def _run_admitted_link(
         input_observations[role] = observe_link_inputs(
             capture[0],
             dialect="wasm",
-            linker_path=Path(command[0]),
+            linker_path=str(command[0]),
             expected=capture[1],
         ).as_record()
     if result.returncode == 0 and selection is not None:
@@ -1368,7 +1371,7 @@ def _link_split_app_stage(
     selection: LinkSelectionAdmission | None,
     selection_roles: dict[str, Mapping[str, object]],
     why_extract: Path,
-    capture: tuple[Path, Mapping[str, tuple[Path, Mapping[str, object]]]] | None = None,
+    capture: tuple[Path, Mapping[str, tuple[str, Mapping[str, object]]]] | None = None,
     input_observations: dict[str, object] | None = None,
 ) -> _SplitAppLinkResult:
     """Run and admit the split-app native link as one typed transaction."""
@@ -2004,10 +2007,13 @@ def run_wasm_ld_with_custodied_inputs(
                 link_input_artifacts["linked_input_reproducer"][0],
                 {
                     "compiler_rewritten": (
-                        linked_rewritten_path.path,
+                        lld_archive_path(linked_rewritten_path.path),
                         content(linked_rewritten_path.data),
                     ),
-                    "runtime": (runtime, content(loaded_contract.runtime_data)),
+                    "runtime": (
+                        lld_archive_path(runtime),
+                        content(loaded_contract.runtime_data),
+                    ),
                 },
             )
             if capture_link_inputs
@@ -2124,7 +2130,7 @@ def run_wasm_ld_with_custodied_inputs(
                     link_input_artifacts["app_input_reproducer"][0],
                     {
                         "compiler_rewritten": (
-                            rewritten_path.path,
+                            lld_archive_path(rewritten_path.path),
                             content(rewritten_path.data),
                         )
                     },
@@ -2233,7 +2239,7 @@ def run_wasm_ld_with_custodied_inputs(
             )
         if capture_link_inputs:
             capture_record = {
-                "schema": "molt.wasm-link-inputs.v1",
+                "schema": "molt.wasm-link-inputs.v2",
                 "source_inputs": {
                     "compiler_output": content(output_data),
                     "runtime": content(loaded_contract.runtime_data),
