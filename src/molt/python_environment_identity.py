@@ -253,18 +253,31 @@ def python_identity_probe_arguments(
     *,
     verifier_bytecode_prefix: Path,
     no_site: bool = False,
+    source_root: Path | None = None,
 ) -> list[str]:
-    """Append the identity authority to the shared verifier startup contract."""
+    """Select the reader explicitly; external-root grants never choose code."""
     from molt import input_report
 
     log_dir = input_report.worker_log_dir()
+    probe_path = (
+        _python_capture_package_path(source_root) / "python_environment_identity.py"
+    ).resolve(strict=True)
     return [
         *python_identity_verifier_arguments(verifier_bytecode_prefix),
         *(["-S"] if no_site else []),
-        str(Path(__file__).resolve(strict=True)),
+        str(probe_path),
         *arguments,
         *(["--input-report-log-dir", log_dir] if log_dir is not None else []),
     ]
+
+
+def _python_capture_package_path(source_root: Path | None) -> Path:
+    """Select reader code independently of grants to captured external roots."""
+    return (
+        Path(__file__).resolve().parent
+        if source_root is None
+        else source_root / "src" / "molt"
+    )
 
 
 def python_capture_authority_paths(
@@ -336,11 +349,7 @@ def python_capture_authority_paths(
         "file_publication",
         "portable_paths",
     )
-    root = (
-        Path(__file__).resolve().parent
-        if source_root is None
-        else source_root / "src" / "molt"
-    )
+    root = _python_capture_package_path(source_root)
     # Standalone probes import the package bootstrap too. Its version resolver
     # consults this source-tree marker even when the proof's cwd is another repo.
     return (
