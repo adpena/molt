@@ -8,9 +8,20 @@ import json
 import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from io import TextIOWrapper
 from pathlib import Path
 from types import ModuleType
 from typing import NoReturn, cast
+
+
+if __name__ == "__main__":
+    # Probe receivers decode diagnostic pipes as UTF-8, including refusals
+    # before package admission. Windows redirected stderr otherwise uses the
+    # locale codec and can escape or corrupt a selected Unicode package home.
+    # This is the standalone wire contract, never an imported-facade side effect.
+    cast(TextIOWrapper, sys.stderr).reconfigure(
+        encoding="utf-8", errors="backslashreplace"
+    )
 
 
 def _load_package_import_custody(path: Path) -> ModuleType:

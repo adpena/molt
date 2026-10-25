@@ -413,6 +413,9 @@ The selected capture child performs published-manifest admission before final
 input verification; the guardian remains isolated from site packages. Guardian
 startup and prefix lifetime follow the same fresh-namespace rule through
 [existing command and run custody](../agent/PROOF_QUEUE.md).
+Standalone capture probes emit UTF-8 diagnostics before package admission,
+including through redirected Windows streams. Importing the facade leaves the
+caller's streams unchanged.
 
 The core `molt.source_build_environment` authority serves DX, proof capture and
 CLI producers; its schema and requirement owners also live under `molt`.
