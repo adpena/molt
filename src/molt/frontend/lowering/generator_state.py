@@ -30,6 +30,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     TypeHint,
+    TypeParameterBinding,
 )
 from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
 from molt.logical_source_paths import is_stdlib_logical_path
@@ -51,6 +52,7 @@ FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "frame_home_slots",
     "compiler_bindings",
     "parameter_bindings",
+    "type_parameter_bindings",
     "boxed_locals",
     "closure_locals",
     "comp_shadow_locals",
@@ -198,6 +200,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.frame_home_slots: dict[str, int] | None = None
         self.compiler_bindings: dict[str, MoltValue] = {}
         self.parameter_bindings: dict[str, str] = {}
+        self.type_parameter_bindings: dict[str, TypeParameterBinding] = {}
         self.boxed_locals = {}
         self.closure_locals = set()
         self.comp_shadow_locals = set()
@@ -412,7 +415,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.eager_annotations = target_python < (3, 14)
         self.parse_codec = parse_codec
         self.type_hint_policy = type_hint_policy
-        self.annotation_type_params: dict[str, MoltValue] = {}
         self.in_annotation = False
         self._reset_type_hint_scope_state(reset_bytearray_len=True)
         self.global_elem_hints: dict[str, TypeHint] = {}

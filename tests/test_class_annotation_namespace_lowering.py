@@ -1,12 +1,15 @@
 """Every class evaluator captures namespace custody instead of a class spelling."""
 
 import ast
+import sys
 
 import pytest
 
 from molt.frontend import SimpleTIRGenerator
 from molt.compat import CompatibilityError
-from molt.compiler_analysis.python_lexical_scope import class_annotation_syntax_error
+from molt.frontend.diagnostics import FrontendDiagnostic, FrontendRejection
+from molt.frontend._types import CodeSlotDeclaration
+from molt.compiler_analysis.python_lexical_scope import python_scope_syntax_error
 from tools.check_ir_structure import verify_frontend_tir
 
 
@@ -325,7 +328,7 @@ def test_nested_class_annotations_do_not_publish_module_bindings():
 def test_class_annotation_syntax_uses_target_and_lexical_region(
     source, forbidden, target
 ):
-    error = class_annotation_syntax_error(
+    error = python_scope_syntax_error(
         ast.parse(source),
         target_python=target,
         future_annotations=source.startswith("from __future__"),
@@ -469,3 +472,438 @@ def test_conditional_nested_generic_bound_captures_outer_class_owner(target):
         "    return Outer\n",
         target,
     )
+
+
+@pytest.mark.parametrize("parameters", ["", "[T]"])
+@pytest.mark.parametrize(
+    ("prefix", "finish"),
+    [
+        ("", "return Alias"),
+        ("", "yield Alias"),
+        ("async ", "return Alias"),
+        ("async ", "yield Alias"),
+    ],
+)
+def test_method_type_parameter_transport_covers_every_callable_frame(
+    parameters, prefix, finish
+):
+    _compile(
+        "class Outer[T]:\n"
+        f"    {prefix}def method{parameters}(self):\n"
+        "        type Alias = T\n"
+        f"        {finish}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def factory[T]():\n    type Alias = T\n    return Alias\n",
+        "class Outer[T]:\n    type Alias[T] = T\n",
+        "class Outer[T]:\n    type Alias[U: T] = U\n",
+        "class Outer[T]:\n    type Alias[U: (T, int)] = U\n",
+        "class ForwardBound[T: U, U]: pass\n",
+        "class ForwardConstraints[T: (U, int), U]: pass\n",
+        "class Outer[T]:\n    class Inner[T]:\n        value: T\n",
+        "class Outer[T]:\n    values = [T for _ in (0,)]\n",
+        "def factory(flag):\n"
+        "    class Outer[T]:\n"
+        "        if flag:\n"
+        "            type First = T\n"
+        "        else:\n"
+        "            type Second = T\n"
+        "        type Last = T\n"
+        "    return Outer\n",
+        "T = int\nclass Outer[T]:\n    T = str\n    value: T\n    type Alias = T\n",
+    ],
+)
+def test_type_parameter_capture_cells_dominate_nested_and_conditional_consumers(source):
+    # _compile invokes the independent executable-IR dominance verifier.
+    _compile(source)
+
+
+def test_type_parameter_body_and_annotation_share_one_declaration_cell():
+    ir = _compile("def shared[T](value: T) -> T:\n    return T\n")
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    definitions = {op["out"]: op for op in main if "out" in op}
+    (attachment,) = [op for op in main if op.get("s_value") == "__type_params__"]
+    (parameter,) = definitions[attachment["args"][-1]]["args"]
+    (cell,) = [
+        op
+        for op in main
+        if op.get("s_value") == "molt_cell_new" and op["args"] == [parameter]
+    ]
+    consumers = [
+        op
+        for op in main
+        if op["kind"] == "func_new_closure"
+        and cell["out"] in definitions[op["args"][0]]["args"]
+    ]
+    assert len(consumers) == 2, (
+        "body and deferred annotations must share the lexical cell"
+    )
+
+
+def test_direct_only_class_type_parameter_keeps_uncaptured_value_path():
+    ir = _compile("class Plain[T]:\n    direct = T\n")
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    definitions = {op["out"]: op for op in main if "out" in op}
+    (attachment,) = [op for op in main if op.get("s_value") == "__type_params__"]
+    (parameter,) = definitions[attachment["args"][-1]]["args"]
+    assert not any(
+        op.get("s_value") == "molt_cell_new" and op["args"] == [parameter]
+        for op in main
+    )
+
+
+def test_type_parameter_cell_read_stays_in_namespace_miss_arm():
+    ir = _compile("class Box[T]:\n    value: T\n")
+    evaluator = next(fn for fn in ir["functions"] if "__annotate__" in fn["name"])
+    ops = evaluator["ops"]
+    definitions = {op["out"]: op for op in ops if "out" in op}
+    (probe,) = [
+        op
+        for op in ops
+        if op.get("s_value") == "molt_namespace_get"
+        and definitions[op["args"][1]].get("s_value") == "T"
+    ]
+    absent = next(op for op in ops if op["kind"] == "is" and probe["out"] in op["args"])
+    branch = next(
+        i
+        for i, op in enumerate(ops)
+        if op["kind"] == "if" and op["args"] == [absent["out"]]
+    )
+    other_arm = next(i for i in range(branch + 1, len(ops)) if ops[i]["kind"] == "else")
+    (fallback,) = [
+        op for op in ops[branch + 1 : other_arm] if op.get("s_value") == "molt_cell_get"
+    ]
+    capture = definitions[fallback["args"][0]]
+    assert capture["kind"] == "index"
+    assert capture["args"][0] == "__molt_closure__"
+    assert ops.index(probe) < branch < ops.index(fallback) < other_arm
+
+
+def test_declared_type_parameter_capture_rejects_missing_transport(monkeypatch):
+    generator = SimpleTIRGenerator(target_python=(3, 14))
+    available = generator._free_var_cell_available
+    monkeypatch.setattr(
+        generator,
+        "_free_var_cell_available",
+        lambda name: name != "T" and available(name),
+    )
+    with pytest.raises(
+        CompatibilityError, match="Free variable 'T' has no closure transport"
+    ) as error:
+        generator.visit(ast.parse("class Box[T]:\n    value: T\n"))
+    _assert_internal_rejection(
+        error.value, "Free variable 'T' has no closure transport"
+    )
+    assert generator.current_func_name == "molt_main"
+    assert generator.current_ops is generator.funcs_map["molt_main"]["ops"]
+    assert generator._class_ns_stack == []
+    assert generator._class_body_depth == 0
+    assert generator.qualname_stack == []
+    assert generator.type_parameter_bindings == {}
+    assert generator.class_annotation_items == []
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 13),
+    reason="type parameter default syntax requires host 3.13+",
+)
+@pytest.mark.parametrize("target", [(3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "class Outer[T]:\n    type Alias[U = T] = U\n",
+        "class ForwardDefault[T = U, U = int]: pass\n",
+    ],
+)
+def test_type_parameter_default_evaluator_captures_its_own_frame(target, source):
+    _compile(source, target)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "T = int\nclass Outer[T]:\n    global T\n    value: T\n",
+        "def outer():\n"
+        "    T = int\n"
+        "    class Subject[U]:\n"
+        "        nonlocal T\n"
+        "        value: T\n"
+        "    return Subject\n",
+    ],
+)
+def test_type_parameter_overlay_preserves_explicit_global_and_nonlocal_storage(source):
+    _compile(source)
+
+
+def test_type_parameter_capture_rejects_missing_planned_cell(monkeypatch):
+    generator = SimpleTIRGenerator(target_python=(3, 14))
+    monkeypatch.setattr(
+        generator, "_type_parameter_capture_names", lambda owner: frozenset()
+    )
+    with pytest.raises(
+        CompatibilityError, match="Type parameter 'T' has no planned closure cell"
+    ) as error:
+        generator.visit(ast.parse("class Box[T]:\n    value: T\n"))
+    _assert_internal_rejection(
+        error.value, "Type parameter 'T' has no planned closure cell"
+    )
+    assert generator.type_parameter_bindings == {}
+    assert generator._class_ns_stack == []
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+def test_generic_class_local_name_controls_before_after_and_method_annotation(target):
+    _compile(
+        "T = 'global'\n"
+        "class C[T]:\n"
+        "    before = T\n"
+        "    T = 'class'\n"
+        "    after = T\n"
+        "    def method(self, value: T): pass\n",
+        target,
+    )
+
+
+def _assert_internal_rejection(error, message):
+    assert error.issue.diagnostic_code == "MOLT-FE008"
+    assert "frontend lowering invariant failed" in error.issue.detail
+    assert isinstance(error.__cause__, FrontendRejection)
+    assert error.__cause__.args == (FrontendDiagnostic.INTERNAL_INVARIANT, message)
+
+
+@pytest.mark.parametrize("method", [False, True])
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "def child(self):\n    broken\n",
+        "def child(self):\n    broken\n    yield 1\n",
+        "async def child(self):\n    broken\n",
+        "async def child(self):\n    broken\n    yield 1\n",
+        "def child(self):\n    return lambda: broken\n",
+        "def child(self):\n    return lambda: (yield broken)\n",
+        "def child(self):\n    return (broken for value in [1])\n",
+    ],
+)
+def test_rejected_function_family_restores_enclosing_frame(
+    monkeypatch, method, definition
+):
+    generator = SimpleTIRGenerator(target_python=(3, 14))
+    original_visit = generator.visit_Name
+    original_ops = generator.current_ops
+    original_scopes = generator._class_ns_stack
+    original_bindings = generator.type_parameter_bindings
+    original_annotations = generator.class_annotation_items
+    rejection = FrontendRejection(
+        FrontendDiagnostic.INTERNAL_INVARIANT, "injected child rejection"
+    )
+
+    def reject(node):
+        if node.id == "broken":
+            raise rejection
+        return original_visit(node)
+
+    monkeypatch.setattr(generator, "visit_Name", reject)
+    source = definition
+    if method:
+        source = "class Owner[T]:\n" + "".join(
+            "    " + line for line in definition.splitlines(keepends=True)
+        )
+    with pytest.raises(CompatibilityError, match="injected child rejection") as error:
+        generator.visit(ast.parse(source))
+    _assert_internal_rejection(error.value, "injected child rejection")
+    assert error.value.__cause__ is rejection
+    assert generator.current_func_name == "molt_main"
+    assert generator.current_ops is original_ops
+    assert generator._class_ns_stack is original_scopes
+    assert original_scopes == []
+    assert generator._class_body_depth == 0
+    assert generator.qualname_stack == []
+    assert generator.type_parameter_bindings is original_bindings
+    assert generator.class_annotation_items is original_annotations
+
+
+def test_failed_function_scope_restores_snapshot_without_finalization(monkeypatch):
+    generator = SimpleTIRGenerator()
+    original_function = generator.current_func_name
+    original_ops = generator.current_ops
+    original_state = generator._capture_function_state()
+    failure = RuntimeError("original lowering failure")
+    finalized = []
+    monkeypatch.setattr(
+        generator, "_emit_function_exception_handler", lambda: finalized.append(True)
+    )
+    with pytest.raises(RuntimeError) as error:
+        with generator._function_state_scope():
+            generator.start_function(
+                "rejected_child", code_slots=CodeSlotDeclaration((), (), (), ())
+            )
+            raise failure
+    assert error.value is failure
+    assert finalized == []
+    assert generator.current_func_name == original_function
+    assert generator.current_ops is original_ops
+    restored = generator._capture_function_state()
+    assert restored.keys() == original_state.keys()
+    assert all(restored[name] is value for name, value in original_state.items())
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    ("parameters", "name"), [("T", "T"), ("**P", "P"), ("*Ts", "Ts")]
+)
+@pytest.mark.parametrize("owner", ["function", "async_function", "class", "class_body"])
+def test_nonlocal_type_parameter_rejection_uses_lexical_binding_kind(
+    target, parameters, name, owner
+):
+    if owner == "class_body":
+        source = f"class Owner[{parameters}]:\n    nonlocal {name}\n"
+    elif owner == "class":
+        source = (
+            f"class Owner[{parameters}]:\n"
+            "    def inner(self):\n"
+            f"        nonlocal {name}\n"
+            f"        return {name}\n"
+        )
+    else:
+        prefix = "async " if owner == "async_function" else ""
+        source = (
+            f"{prefix}def owner[{parameters}]():\n"
+            "    def inner():\n"
+            f"        nonlocal {name}\n"
+            f"        return {name}\n"
+            "    return inner\n"
+        )
+    with pytest.raises(SyntaxError) as cpython:
+        compile(source, "<nonlocal-type-parameter>", "exec")
+    expected = f"nonlocal binding not allowed for type parameter {name!r}"
+    assert cpython.value.msg == expected
+    syntax_error = python_scope_syntax_error(
+        ast.parse(source), target_python=target, future_annotations=False
+    )
+    assert syntax_error is not None
+    assert isinstance(syntax_error.node, ast.Nonlocal)
+    assert syntax_error.node.lineno == cpython.value.lineno
+    assert syntax_error.message == expected
+    with pytest.raises(CompatibilityError) as molt:
+        _compile(source, target)
+    assert molt.value.issue.diagnostic_code == FrontendDiagnostic.SYNTAX_FORM.value
+    assert isinstance(molt.value.__cause__, FrontendRejection)
+    assert molt.value.__cause__.args == (
+        FrontendDiagnostic.SYNTAX_FORM,
+        expected,
+        syntax_error.alternative,
+    )
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def owner[T]():\n"
+        "    def middle():\n"
+        "        def inner():\n"
+        "            nonlocal T\n"
+        "            return T\n"
+        "        return inner\n"
+        "    return middle\n",
+        "from __future__ import annotations\n"
+        "def owner[T]():\n"
+        "    def inner():\n"
+        "        nonlocal T\n"
+        "        return T\n"
+        "    return inner\n",
+        "def owner[T]():\n"
+        "    type Alias[T] = T\n"
+        "    def inner():\n"
+        "        nonlocal T\n"
+        "        return T\n"
+        "    return inner\n",
+        "def owner[T]():\n"
+        "    class Shadow:\n"
+        "        T = int\n"
+        "        def middle[T]():\n"
+        "            def inner():\n"
+        "                nonlocal T\n"
+        "                return T\n"
+        "            return inner\n"
+        "    return Shadow\n",
+        "if False:\n"
+        "    def owner[T]():\n"
+        "        def inner():\n"
+        "            nonlocal T\n"
+        "            return T\n",
+    ],
+)
+def test_nonlocal_type_parameter_validation_precedes_source_pruning(
+    monkeypatch, target, source
+):
+    with pytest.raises(SyntaxError) as cpython:
+        compile(source, "<nonlocal-before-pruning>", "exec")
+    assert cpython.value.msg == "nonlocal binding not allowed for type parameter 'T'"
+    generator = SimpleTIRGenerator(target_python=target)
+
+    def refuse_pruning(node):
+        pytest.fail("invalid lexical source reached reachability pruning")
+
+    monkeypatch.setattr(
+        generator, "_prune_native_support_module_functions", refuse_pruning
+    )
+    with pytest.raises(CompatibilityError) as molt:
+        generator.visit(ast.parse(source))
+    assert molt.value.issue.diagnostic_code == FrontendDiagnostic.SYNTAX_FORM.value
+    assert isinstance(molt.value.__cause__, FrontendRejection)
+    assert molt.value.__cause__.args[1] == cpython.value.msg
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def owner[T]():\n"
+        "    def inner():\n"
+        "        nonlocal T\n"
+        "        return T\n"
+        "    T = int\n"
+        "    return inner\n",
+        "def owner[T]():\n"
+        "    ordinary = int\n"
+        "    def inner():\n"
+        "        nonlocal ordinary\n"
+        "        return ordinary\n"
+        "    return inner\n",
+        "class Owner[T]:\n"
+        "    T = int\n"
+        "    def inner(self):\n"
+        "        nonlocal T\n"
+        "        return T\n",
+        "def owner[T]():\n"
+        "    class Shadow:\n"
+        "        T = int\n"
+        "        def inner(self):\n"
+        "            nonlocal T\n"
+        "            return T\n"
+        "    return Shadow\n",
+        "def owner():\n"
+        "    T = int\n"
+        "    type Alias[T] = T\n"
+        "    def inner():\n"
+        "        nonlocal T\n"
+        "        return T\n"
+        "    return inner\n",
+    ],
+)
+def test_nonlocal_ordinary_shadow_and_alias_regions_preserve_cpython(source, target):
+    # The host compiler independently classifies these source bindings, including
+    # CPython's ordinary class shadow of an enclosing type-parameter restriction.
+    compile(source, "<ordinary-nonlocal-binding>", "exec")
+    assert (
+        python_scope_syntax_error(
+            ast.parse(source), target_python=target, future_annotations=False
+        )
+        is None
+    )
+    _compile(source, target)

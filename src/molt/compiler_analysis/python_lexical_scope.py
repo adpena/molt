@@ -510,39 +510,70 @@ def class_body_functions(
     return tuple(functions)
 
 
-def class_annotation_syntax_error(
-    node: ast.Module, *, target_python: tuple[int, int], future_annotations: bool
-) -> tuple[ast.AST, str] | None:
-    """CPython 3.12 forbids nested code in a class-visible annotation scope.
+@dataclass(frozen=True, slots=True)
+class PythonScopeSyntaxError:
+    node: ast.AST
+    message: str
+    alternative: str
 
-    This is a syntax property, including unreachable statements. Definition
-    regions distinguish generic annotations/bounds/bases from ordinary eager
-    annotations and defaults; function bodies stop class visibility.
+
+@dataclass(frozen=True, slots=True)
+class _SyntaxBindingScope:
+    kind: Literal["function", "class", "annotation", "comprehension", "type_parameters"]
+    declarations: PythonScopeDeclarations
+
+
+def python_scope_syntax_error(
+    node: ast.Module, *, target_python: tuple[int, int], future_annotations: bool
+) -> PythonScopeSyntaxError | None:
+    """Validate lexical syntax before reachability or execution pruning.
+
+    CPython 3.12 forbids nested code in class-visible annotation scopes. All
+    supported targets forbid nonlocal rebinding of a type-parameter binding.
+    Ordinary declarations, including class shadows, change that classification
+    for descendants; a same-spelled name alone does not identify its owner.
     """
-    if target_python >= (3, 13):
-        return None
+    eager_annotations = target_python < (3, 14) and not future_annotations
+    authority = PythonDependencyAuthority(
+        eager_annotations=eager_annotations, future_annotations=future_annotations
+    )
 
     class Validator(PythonLexicalScopeVisitor):
-        class_visible = False
-        annotation_scope = False
-        error: tuple[ast.AST, str] | None = None
+        def __init__(self) -> None:
+            super().__init__(eager_annotations=eager_annotations)
+            self.class_visible = False
+            self.annotation_scope = False
+            self.binding_scopes: list[_SyntaxBindingScope] = []
+            self.error: PythonScopeSyntaxError | None = None
 
         def visit(self, node: ast.AST) -> None:
             if self.error is None:
                 super().visit(node)
 
         def _region(
-            self, children: Sequence[ast.AST], *, class_visible: bool, annotation: bool
+            self,
+            children: Sequence[ast.AST],
+            *,
+            class_visible: bool,
+            annotation: bool,
+            binding_scope: _SyntaxBindingScope | None = None,
         ) -> None:
             saved = self.class_visible, self.annotation_scope
             self.class_visible, self.annotation_scope = class_visible, annotation
-            for child in children:
-                self.visit(child)
-            self.class_visible, self.annotation_scope = saved
+            if binding_scope is not None:
+                self.binding_scopes.append(binding_scope)
+            try:
+                for child in children:
+                    self.visit(child)
+            finally:
+                if binding_scope is not None:
+                    assert self.binding_scopes.pop() is binding_scope
+                self.class_visible, self.annotation_scope = saved
 
         def _visit_definition_header(self, node: LexicalDefinitionNode) -> None:
             if (
-                self.class_visible
+                target_python < (3, 13)
+                and self.class_visible
                 and self.annotation_scope
                 and isinstance(
                     node,
@@ -556,22 +587,79 @@ def class_annotation_syntax_error(
                 )
             ):
                 kind = "lambda" if isinstance(node, ast.Lambda) else "comprehension"
-                self.error = (
+                self.error = PythonScopeSyntaxError(
                     node,
                     f"Cannot use {kind} in annotation scope within class scope",
+                    "Use target Python 3.13+ or remove nested code from this annotation scope.",
                 )
                 return
-            regions = definition_lexical_regions(
-                node, eager_annotations=True, future_annotations=future_annotations
-            )
+            regions = authority.regions(node)
             for expression in regions.enclosing:
                 self.visit(expression)
-            self._region(
-                regions.annotations, class_visible=self.class_visible, annotation=True
+            parameter_scope = (
+                _SyntaxBindingScope(
+                    "type_parameters",
+                    PythonScopeDeclarations(
+                        regions.type_parameters, frozenset(), frozenset()
+                    ),
+                )
+                if regions.type_parameters
+                else None
             )
-            self._region(
-                regions.body, class_visible=regions.kind == "class", annotation=False
-            )
+            if parameter_scope is not None:
+                self.binding_scopes.append(parameter_scope)
+            try:
+                self._region(
+                    regions.annotations,
+                    class_visible=self.class_visible,
+                    annotation=True,
+                )
+                # Outside a type-parameter family there is no classification to
+                # shadow. Reuse the canonical, scope-local declaration census
+                # only while such a family is active.
+                body_scope = (
+                    _SyntaxBindingScope(regions.kind, authority.declarations(node))
+                    if self.binding_scopes and regions.body
+                    else None
+                )
+                self._region(
+                    regions.body,
+                    class_visible=regions.kind == "class",
+                    annotation=False,
+                    binding_scope=body_scope,
+                )
+            finally:
+                if parameter_scope is not None:
+                    assert self.binding_scopes.pop() is parameter_scope
+
+        def _nonlocal_binding_kind(
+            self, name: str
+        ) -> Literal["ordinary", "type_parameter"] | None:
+            # The directive belongs to the current body, so only outer scopes
+            # classify its binding. Whole-body declarations also cover later
+            # assignments and unreachable source.
+            for index in range(len(self.binding_scopes) - 2, -1, -1):
+                scope = self.binding_scopes[index]
+                if name in scope.declarations.bound:
+                    if scope.kind == "type_parameters":
+                        return "type_parameter"
+                    # CPython's class locals mask inherited type-parameter
+                    # classification for descendants, without supplying their
+                    # nonlocal storage. Ordinary binding analysis owns storage.
+                    return "ordinary"
+                if scope.kind != "class" and name in scope.declarations.globals:
+                    return None
+            return None
+
+        def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+            for name in node.names:
+                if self._nonlocal_binding_kind(name) == "type_parameter":
+                    self.error = PythonScopeSyntaxError(
+                        node,
+                        f"nonlocal binding not allowed for type parameter {name!r}",
+                        "Bind an ordinary local in an enclosing function, or remove the nonlocal declaration.",
+                    )
+                    return
 
         def visit_ListComp(self, node: ast.ListComp) -> None:
             self._visit_definition_header(node)
@@ -585,7 +673,7 @@ def class_annotation_syntax_error(
         def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
             self._visit_definition_header(node)
 
-    validator = Validator(eager_annotations=not future_annotations)
+    validator = Validator()
     validator.visit(node)
     return validator.error
 
@@ -937,6 +1025,7 @@ class PythonLexicalDependencies:
 class PythonDefinitionDependencies:
     body: PythonLexicalDependencies
     annotations: PythonLexicalDependencies
+    body_captures: frozenset[str]
     class_cell_required: bool = False
     contains_yield: bool = False
     contains_await: bool = False
@@ -1214,6 +1303,7 @@ class PythonDependencyAuthority:
                 annotations.lexical,
                 frozenset(annotations.globals),
             ),
+            body_captures=frozenset(body.nested),
             class_cell_required=(
                 regions.kind == "class" and "__class__" in body.nested
             ),

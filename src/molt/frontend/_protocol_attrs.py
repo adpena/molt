@@ -77,7 +77,6 @@ class _GeneratorProtocolAttrs(Protocol):
     _typing_import_aliases: set[str]
     active_exceptions: list[ActiveException]
     annotation_name_counter: Any
-    annotation_type_params: dict[str, MoltValue]
     app_callable_bindings: dict[str, dict[str, Any]]
     async_closure_offset: int | None
     async_frame_slots: list[AsyncFrameSlot]
@@ -147,3 +146,4 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
+    imported_module_attr_mutations: set[tuple[str, str]]

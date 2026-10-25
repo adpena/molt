@@ -122,14 +122,19 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 raise FrontendRejection(
                     Diagnostic.SYNTAX_FORM, "nonlocal binding not found"
                 )
+            # A current declaration overlay shadows an enclosing captured
+            # spelling. Function entry clears the overlay; inherited parameters
+            # are represented solely by this frame's ordinary free variables.
+            if node.id not in self.comp_shadow_locals:
+                parameter = self._load_type_parameter(node.id)
+                if parameter is not None:
+                    return parameter
             if node.id in self.free_vars:
                 free_val = self._emit_free_var_load(
                     node.id, binding_invalidated=binding_invalidated
                 )
                 if free_val is not None:
                     return free_val
-            if self.in_annotation and node.id in self.annotation_type_params:
-                return self.annotation_type_params[node.id]
             # Check locals BEFORE module_global_mutations: inline
             # comprehensions bind their iterator variable in self.locals,
             # which must shadow the module-level name (CPython scoping).

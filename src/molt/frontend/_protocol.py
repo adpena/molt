@@ -49,6 +49,7 @@ from molt.frontend._types import (
     ControlMaps,
     DeclaredClass,
     ExactClassFact,
+    FunctionDefinitionValues,
     LoopBoundFact,
     LoopScope,
     MethodDescriptor,
@@ -65,6 +66,7 @@ from molt.frontend._types import (
     SyncContextExit,
     TryScope,
     TypeHint,
+    TypeParameterBinding,
     _ClassNsScope,
     _TrackedOpsList,
 )
@@ -101,7 +103,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -197,6 +198,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     type_facts: Any
     type_facts_module: Any
     type_hint_policy: Any
+    type_parameter_bindings: dict[str, TypeParameterBinding]
     unbound_check_names: set[str]
     var_count: int
 
@@ -284,6 +286,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[FunctionKind, str] | None: ...
 
     def _apply_explicit_hint(self, name: str, value: MoltValue) -> None: ...
+
+    def _apply_function_decorators(
+        self, function: MoltValue, definition: FunctionDefinitionValues
+    ) -> MoltValue: ...
 
     def _apply_hint_to_value(
         self, _name: str | None, value: MoltValue, hint: TypeHint
@@ -443,7 +449,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         candidates: Iterable[str],
         *,
-        value_captures: dict[str, MoltValue] | None = ...,
         cell_captures: Mapping[str, MoltValue] | None = ...,
         class_scope: _ClassNsScope | None = ...,
     ) -> tuple[list[str], dict[str, TypeHint], MoltValue | None, bool]: ...
@@ -672,15 +677,24 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _compare_int_truth(self, op_kind: str, lhs: int, rhs: int) -> bool | None: ...
 
     def _compile_class_async_method(
-        self, class_node: ast.ClassDef, item: ast.AsyncFunctionDef
+        self,
+        class_node: ast.ClassDef,
+        item: ast.AsyncFunctionDef,
+        defaults: tuple[MoltValue, MoltValue],
     ) -> MethodInfo: ...
 
     def _compile_class_generator_method(
-        self, class_node: ast.ClassDef, item: ast.FunctionDef
+        self,
+        class_node: ast.ClassDef,
+        item: ast.FunctionDef,
+        defaults: tuple[MoltValue, MoltValue],
     ) -> MethodInfo: ...
 
     def _compile_class_method(
-        self, class_node: ast.ClassDef, item: ast.FunctionDef
+        self,
+        class_node: ast.ClassDef,
+        item: ast.FunctionDef,
+        defaults: tuple[MoltValue, MoltValue],
     ) -> MethodInfo: ...
 
     def _comprehension_binds_homes(self) -> bool: ...
@@ -821,8 +835,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target: ast.AST, value_node: MoltValue | None, source_expr: ast.AST | None
     ) -> None: ...
 
+    def _emit_async_function_definition(
+        self, node: ast.AsyncFunctionDef, definition: FunctionDefinitionValues
+    ) -> None: ...
+
     def _emit_attach_type_params(
-        self, owner: MoltValue, type_params: list[MoltValue]
+        self, owner: MoltValue, type_params: Sequence[MoltValue]
     ) -> None: ...
 
     def _emit_attribute_load(
@@ -938,6 +956,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_class_annotated_assignment(
         self, node: ast.AnnAssign, scope: _ClassNsScope
     ) -> None: ...
+
+    def _emit_class_definition(self, node: ast.ClassDef) -> None: ...
 
     def _emit_class_function_definition(
         self, scope: _ClassNsScope, item: ast.FunctionDef | ast.AsyncFunctionDef
@@ -1113,24 +1133,22 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_frozenset_from_iter(self, iterable: MoltValue) -> MoltValue: ...
 
     def _emit_function_annotate(
-        self, func_val: MoltValue, node: ast.FunctionDef | ast.AsyncFunctionDef
+        self,
+        func_val: MoltValue,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        type_param_vals: Sequence[MoltValue],
     ) -> None: ...
 
     def _emit_function_default_values(
         self,
-        func_val: MoltValue,
         default_exprs: list[ast.expr],
         kw_default_exprs: list[ast.expr | None],
         kwonly_params: list[str],
-    ) -> tuple[MoltValue, MoltValue, MoltValue]: ...
+    ) -> tuple[MoltValue, MoltValue]: ...
 
-    def _emit_function_defaults(
-        self,
-        func_val: MoltValue,
-        default_exprs: list[ast.expr],
-        kw_default_exprs: list[ast.expr | None],
-        kwonly_params: list[str],
-    ) -> MoltValue: ...
+    def _emit_function_definition(
+        self, node: ast.FunctionDef, definition: FunctionDefinitionValues
+    ) -> None: ...
 
     def _emit_function_exception_handler(
         self, *, inherited_execution_context: bool = ...
@@ -1150,8 +1168,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         kwonly_params: list[str],
         vararg: str | None,
         varkw: str | None,
-        default_exprs: list[ast.expr],
-        kw_default_exprs: list[ast.expr | None],
+        defaults: tuple[MoltValue, MoltValue],
         docstring: str | None,
         module_override: str | None = ...,
         execution_kind: FunctionKind = ...,
@@ -1680,10 +1697,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_type_params_values(
         self,
-        type_params: Sequence[ast.AST | ast.type_param] | None,
+        owner: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias,
         *,
         module_override: str | None = ...,
-    ) -> tuple[list[MoltValue], dict[str, MoltValue]]: ...
+    ) -> tuple[list[MoltValue], dict[str, TypeParameterBinding]]: ...
 
     def _emit_unbound_free_guard(self, value: MoltValue, name: str) -> None: ...
 
@@ -1747,7 +1764,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _exit_frame_restore_scope(self, scope: FrameRestoreScope) -> None: ...
 
     def _exit_python_frame_context_scope(
-        self, scope: PythonFrameContextScope
+        self, scope: PythonFrameContextScope, *, emit_cleanup: bool = ...
     ) -> None: ...
 
     def _expire_exact_class_facts(self) -> None: ...
@@ -1838,6 +1855,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _function_param_names(cls, args: ast.arguments) -> list[str]: ...
 
     def _function_result_hint(self, func_symbol: str) -> str: ...
+
+    @contextmanager
+    def _function_state_scope(self) -> Generator[dict[str, Any]]: ...
 
     def _function_symbol(
         self, name: str, *, kind: FunctionKind = ..., reuse_reserved: bool = ...
@@ -2085,6 +2105,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _load_scratch_cell(self, cell: ScratchCell) -> MoltValue: ...
 
+    def _load_type_parameter(self, name: str) -> MoltValue | None: ...
+
     def _local_name_shadows_import_binding(self, name: str) -> bool: ...
 
     def _log_degrade_levels(
@@ -2301,6 +2323,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def _prepare_exact_class_loop_entry(self, body: list[ast.stmt]) -> None: ...
+
+    def _prepare_function_definition(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> FunctionDefinitionValues: ...
 
     def _prepare_mutable_control_flow_bindings(self, names: set[str]) -> None: ...
 
@@ -2824,6 +2850,16 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_lower_local_intrinsic_wrapper_call(
         self, *, func_id: str, node: ast.Call
     ) -> MoltValue | None: ...
+
+    def _type_parameter_capture_names(
+        self,
+        owner: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias,
+    ) -> frozenset[str]: ...
+
+    @contextmanager
+    def _type_parameter_scope(
+        self, bindings: dict[str, TypeParameterBinding]
+    ) -> Generator[None]: ...
 
     def _unit_increment_read(self, stmt: ast.stmt, name: str) -> ast.Name | None: ...
 

@@ -9,8 +9,9 @@ exit emission shared by function, async, module, and control-flow visitors.
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Generator
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
@@ -136,9 +137,13 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         self._publish_python_frame_context()
         return scope
 
-    def _exit_python_frame_context_scope(self, scope: PythonFrameContextScope) -> None:
+    def _exit_python_frame_context_scope(
+        self, scope: PythonFrameContextScope, *, emit_cleanup: bool = True
+    ) -> None:
         assert self.try_end_labels.pop() == scope.cleanup_label
         self.python_class_body_context = scope.outer_class_body
+        if not emit_cleanup:
+            return
         # The caller has restored compiler scope before this emission. Both
         # normal and exceptional runtime edges restore that same outer frame.
         self._emit_scope_exits(
@@ -454,6 +459,25 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
 
     def _restore_function_state(self, state: dict[str, Any]) -> None:
         self._restore_function_scope_state(state)
+
+    @contextmanager
+    def _function_state_scope(self) -> Generator[dict[str, Any]]:
+        """Restore the enclosing compiler frame on every Python exit.
+
+        Runtime exception-handler IR belongs only to a successfully lowered
+        child. A rejected child must not emit finalization while its parent
+        class/function scopes unwind the original diagnostic.
+        """
+        previous_function = self.current_func_name
+        previous_ops = self.current_ops
+        previous_state = self._capture_function_state()
+        try:
+            yield previous_state
+            self.resume_function(previous_function)
+        finally:
+            self.current_func_name = previous_function
+            self.current_ops = previous_ops
+            self._restore_function_state(previous_state)
 
     def _inherit_free_var_import_resolution(
         self, free_vars: list[str], enclosing_state: dict[str, Any]

@@ -658,7 +658,11 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         return self._lexical_dependencies().summary(node).body.lexical
 
     def _free_vars_in_outer_scope(self, candidates: Iterable[str]) -> list[str]:
-        outer_scope = set(self.locals) | set(self.boxed_locals)
+        outer_scope = (
+            set(self.locals)
+            | set(self.boxed_locals)
+            | set(self.type_parameter_bindings)
+        )
         if self.is_async():
             outer_scope |= set(self.async_locals)
         outer_scope |= set(self.free_vars) | self.scope_assigned
