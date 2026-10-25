@@ -122,6 +122,22 @@ def test_structural_audit_producers_select_all_parser_consumers(source):
     }
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "tools/build_control_path.py",
+        "tools/harness_memory_guard.py",
+        "src/molt/build_state_layout.py",
+        "src/molt/memory_guard_paths.py",
+        "src/molt/dx.py",
+        "tests/test_build_state_layout.py",
+    ],
+)
+def test_build_control_path_producers_select_their_consumer_contract(source):
+    cfg = GateConfig.load(COMMITTED_GATES)
+    assert "tests/test_build_state_layout.py" in _selected_pytest_targets(cfg, [source])
+
+
 def test_unicode_source_facts_select_their_complete_pinned_source_owner():
     cfg = GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, ["tools/gen_unicode_width.py"]) == {

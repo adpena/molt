@@ -5074,6 +5074,22 @@ pytest_select = [
   { k = "base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker", targets = ["tests/test_demo_bench_memory_guard.py"] },
 ]
 
+# --- Build-control diagnostic paths ------------------------------------
+[[rule]]
+name = "build-control-paths"
+toolchains = ["python"]
+description = "Build-control and guard path producers select their real consumer contract."
+globs = [
+  "tools/build_control_path.py",
+  "tools/harness_memory_guard.py",
+  "src/molt/build_state_layout.py",
+  "src/molt/memory_guard_paths.py",
+  "src/molt/dx.py",
+  "tests/test_build_state_layout.py",
+]
+gates = []
+pytest = ["tests/test_build_state_layout.py"]
+
 # --- Repository scan records -------------------------------------------
 # Shared producers select every consumer. Leaf tools and tests select their
 # own semantic controls; a test change does not invalidate sibling scanners.
