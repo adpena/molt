@@ -380,6 +380,9 @@ def test_incomplete_previous_record_schema_cannot_reuse_output(tmp_path: Path) -
 
 
 def _capture_threaded_python_tree(root: Path) -> int:
+    assert sys.flags.dont_write_bytecode, (
+        "spawned capture must not create import caches"
+    )
     from molt.python_external_custody import _observe_startup_gate
     from molt.python_file_node_custody import (
         PythonFileCaptureContext,
@@ -404,6 +407,48 @@ def _capture_threaded_python_tree(root: Path) -> int:
 
 
 def test_threaded_python_capture_records_every_file_and_tree_dependency(
+    tmp_path: Path, transient: Path
+) -> None:
+    from molt.python_environment_identity import (
+        python_identity_verifier_arguments,
+        python_identity_verifier_prefix,
+    )
+    from tests.process_guard_common import run_guarded_test_process
+
+    # The initializer records imports before the worker unpickles the task.
+    # A cold ordinary import cache is an input lookup, not an allowed output.
+    # Start this fixture read-only; CPython spawn carries the explicit -B to
+    # the real capture worker. Intentional cache-writer tests remain separate.
+    root = Path(__file__).resolve().parents[1]
+    script = f"""
+import sys
+sys.path.insert(0, {str(root)!r})
+sys.path.insert(0, {str(root / "src")!r})
+from pathlib import Path
+import pytest
+from tests.test_build_record import _check_threaded_python_capture_dependencies
+assert sys.flags.dont_write_bytecode
+with pytest.MonkeyPatch.context() as monkeypatch:
+    _check_threaded_python_capture_dependencies(
+        Path(sys.argv[1]), Path(sys.argv[2]), monkeypatch
+    )
+"""
+    with python_identity_verifier_prefix() as prefix:
+        completed = run_guarded_test_process(
+            [
+                sys.executable,
+                *python_identity_verifier_arguments(prefix),
+                "-c",
+                script,
+                str(tmp_path),
+                str(transient),
+            ],
+            timeout=120,
+        )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def _check_threaded_python_capture_dependencies(
     tmp_path: Path, transient: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt.compiler_process import worker_context
