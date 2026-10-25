@@ -857,6 +857,7 @@ def ensure_input(spec: CheckoutInput) -> Ensured:
     """Make ``spec`` current; raise `ProvisioningError` when it cannot be."""
     started = time.monotonic()
     if isinstance(spec, DevelopmentEnvironment):
+        from molt.python_interpreter import is_python_version_selector
         from molt.source_build_environment import development_environment
         from molt.source_build_environment_schema import SourceBuildEnvironmentError
 
@@ -868,7 +869,7 @@ def ensure_input(spec: CheckoutInput) -> Ensured:
             # probe; bounded metadata alone cannot certify that executable.
             selected = (
                 _current_development_environment(spec)
-                if all(part.isdigit() for part in intent["python"].split("."))
+                if is_python_version_selector(intent["python"])
                 else None
             )
             if selected is not None:

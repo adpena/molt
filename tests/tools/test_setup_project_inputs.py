@@ -55,7 +55,7 @@ def test_bootstrap_rejects_option_shaped_atoms(tmp_path, inputs):
     assert outputs == {}
 
 
-def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\n"):
+def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.15.1\n"):
     """Exercise the real shell/bootstrap validator with finite external tools.
 
     The fake installer never downloads Python. Its interpreter driver executes
@@ -93,7 +93,7 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
         "sys.executable = os.environ['FAKE_SELECTED']\n"
         "if os.environ['FAILURE'] == 'alias' and os.environ['ALIAS'] == 'python3':\n"
         "    sys.executable = os.environ['FAKE_OTHER']\n"
-        "platform.python_version = lambda: '3.12.14' if os.environ['FAILURE'] == 'version' else '3.12.15'\n"
+        "platform.python_version = lambda: '3.15.0' if os.environ['FAILURE'] == 'version' else '3.15.1'\n"
         "platform.python_implementation = lambda: 'PyPy' if os.environ['FAILURE'] == 'implementation' else 'CPython'\n"
         "sysconfig.get_path = lambda name, *_a, **_k: os.environ['FAKE_STDLIB']\n"
         "kind = 'stdlib' if 'sysconfig' in code else 'validate'\n"
@@ -145,7 +145,7 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
         else "Linux",
         "FAKE_SELECTED": selected.as_posix(),
         "FAKE_OTHER": other.as_posix(),
-        "FAKE_STDLIB": (install / "lib" / "python3.12").as_posix(),
+        "FAKE_STDLIB": (install / "lib" / "python3.15").as_posix(),
         "EVENTS": events.as_posix(),
         "FAILURE": failure,
     }
@@ -173,8 +173,8 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
     result, events, exports = _python_bootstrap(tmp_path)
     assert result.returncode == 0, result.stderr
     assert events == [
-        "python install --default 3.12.15",
-        "python find --managed-python --no-project --no-python-downloads 3.12.15",
+        "python install --default 3.15.1",
+        "python find --managed-python --no-project --no-python-downloads 3.15.1",
         "python dir --bin",
         "validate:selected",
         "validate:python",
@@ -184,7 +184,7 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
     ]
     assert "UV_PYTHON_DOWNLOADS=never\n" in exports["GITHUB_ENV"]
     assert "UV_MANAGED_PYTHON=true\n" in exports["GITHUB_ENV"]
-    assert "python-version=3.12.15\n" in exports["GITHUB_OUTPUT"]
+    assert "python-version=3.15.1\n" in exports["GITHUB_OUTPUT"]
     assert exports["GITHUB_PATH"].rstrip().endswith("/custody/python-bin")
 
 
@@ -240,10 +240,10 @@ def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
 @pytest.mark.parametrize(
     ("failure", "last_event"),
     [
-        ("install", "python install --default 3.12.15"),
+        ("install", "python install --default 3.15.1"),
         (
             "find",
-            "python find --managed-python --no-project --no-python-downloads 3.12.15",
+            "python find --managed-python --no-project --no-python-downloads 3.15.1",
         ),
         ("multiline", "python dir --bin"),
         ("version", "validate:selected"),

@@ -212,6 +212,18 @@ Key flags:
 
 Purpose: Compare CPython vs Molt compiled output and timings (separates build vs run).
 
+The reference interpreter must report the effective admitted guest minor before
+payload execution. The compiler remains on the invoking frontend. Reference
+startup retains ordinary site/environment semantics, uses `-B` and an owned
+fresh empty cache read namespace, and reports that launch policy in JSON.
+The same typed verifier owner covers discovery, metadata and reference execution.
+Every launch resets closure before entering the core guard with an explicit
+policy. Cleanup requires proven process-tree closure; an uncertain outcome aborts
+discovery, retains the allocation and preserves its original error and receipt.
+A later successful child cannot replace that unresolved terminal fact.
+Its cold process timing is diagnostic; it is not canonical benchmark evidence
+or a comparison with matched image caches.
+
 Key flags:
 - `--python <exe|version>`
 - `--module <name>` (use `name.__main__` when present)

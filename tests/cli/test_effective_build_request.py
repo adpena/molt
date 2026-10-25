@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from molt.compilation_target import admit_target
 
 from molt.compilation_target import target_name
@@ -13,6 +15,391 @@ from molt.cli import build_inputs, wrapper_build
 from molt.cli import build_request_resolution as selection
 from molt.cli.entrypoint_parser import _build_entrypoint_parser
 from molt.target_python import _parse_target_python_version
+
+
+@pytest.mark.parametrize("guest", ["3.12", "3.13", "3.14"])
+@pytest.mark.parametrize("mode", ["file", "module"])
+def test_compare_default_oracle_follows_guest_while_frontend_stays_315(
+    tmp_path, monkeypatch, capsys, guest, mode
+):
+    from molt.cli import script_commands as scripts
+    from molt import python_environment_location as location
+    from molt.python_interpreter import PythonInterpreter
+
+    source = tmp_path / "program.py"
+    source.write_text("print('match')\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\nname="comparison"\nversion="1"\nrequires-python=">={guest}"\n',
+        encoding="utf-8",
+    )
+    output = tmp_path / "compiled"
+    output.write_bytes(b"not executed by this command-boundary fixture")
+    frontend = "independent-compiler-host"
+    monkeypatch.setattr(
+        scripts,
+        "sys",
+        SimpleNamespace(
+            **{
+                **vars(scripts.sys),
+                "executable": frontend,
+                "version_info": (3, 15, 1),
+                "prefix": str(tmp_path / "frontend-image"),
+            }
+        ),
+    )
+    monkeypatch.setattr(scripts, "_find_project_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(
+        location, "_active_environment_prefix", lambda: tmp_path / "frontend-image"
+    )
+    ambient = {
+        "PYTHONPYCACHEPREFIX": "foreign-parent-cache",
+        "PYTHONDONTWRITEBYTECODE": "0",
+        "PAYLOAD_ENV": "preserved",
+    }
+    monkeypatch.setattr(scripts, "_base_env", lambda *_a, **_k: dict(ambient))
+    calls = []
+    prefixes = []
+
+    def resolve(target, **kwargs):
+        assert target.short == guest
+        prefix = kwargs["verifier"].prefix
+        assert prefix.is_dir() and not list(prefix.iterdir())
+        prefixes.append(prefix)
+        calls.append("identity")
+        return PythonInterpreter(
+            ("matching-oracle",), "matching-oracle", guest + ".1", "CPython"
+        )
+
+    def execute(command, **kwargs):
+        calls.append(list(command))
+        assert kwargs["memory_guard_prefix"] == "MOLT_DIFF"
+        if command[0] == "matching-oracle":
+            assert prefixes[-1].is_dir() and not list(prefixes[-1].iterdir())
+            assert command[1:4] == [
+                "-B",
+                "-X",
+                f"pycache_prefix={prefixes[-1] / 'bytecode'}",
+            ]
+            expected_payload = [str(source)] if mode == "file" else ["-m", "program"]
+            assert command[4:] == [*expected_payload, "--payload-flag"]
+            assert dict(kwargs["env"]) == ambient
+            return SimpleNamespace(
+                returncode=0,
+                duration_s=0.01,
+                stdout="match\n",
+                stderr="",
+                descendants_closed=True,
+            )
+        if command[0] == frontend:
+            assert not prefixes[-1].exists()
+            assert command[1:8] == [
+                "-B",
+                "-X",
+                f"pycache_prefix={tmp_path / 'frontend-image' / 'bytecode'}",
+                "-m",
+                "molt.cli",
+                "build",
+                "--json",
+            ]
+            return SimpleNamespace(
+                returncode=0,
+                duration_s=0.01,
+                stdout=json.dumps({"output": str(output)}),
+                stderr="",
+                descendants_closed=True,
+            )
+        assert command == [str(output), "--payload-flag"]
+        return SimpleNamespace(
+            returncode=0,
+            duration_s=0.01,
+            stdout="match\n",
+            stderr="",
+            descendants_closed=True,
+        )
+
+    monkeypatch.setattr(scripts, "resolve_target_python", resolve)
+    monkeypatch.setattr(
+        scripts,
+        "resolve_python_selector",
+        lambda *_a, **_k: pytest.fail("default used ambient oracle selector"),
+    )
+    monkeypatch.setattr(scripts, "_run_command_timed", execute)
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", execute)
+    monkeypatch.setattr(scripts, "_resolve_binary_output", lambda *_a: output)
+    assert (
+        scripts.compare(
+            str(source) if mode == "file" else None,
+            "program" if mode == "module" else None,
+            None,
+            ["--payload-flag"],
+            json_output=True,
+        )
+        == 0
+    )
+    policy = json.loads(capsys.readouterr().out)["data"]["python_startup_policy"]
+    assert policy == {
+        "command": calls[1][:4],
+        "bytecode_namespace": "fresh-empty-read-only",
+        "timing_scope": "reference-process-with-empty-bytecode-cache",
+    }
+    assert calls[0] == "identity"
+    assert calls[1][0] == "matching-oracle"
+    assert calls[2][0] == frontend
+    assert prefixes and all(not p.exists() for p in prefixes)
+
+
+@pytest.mark.parametrize("reported", ["3.13.17", "3.15.1"])
+def test_compare_absolute_oracle_mismatch_refuses_before_either_payload(
+    tmp_path, monkeypatch, reported
+):
+    from molt.cli import script_commands as scripts
+    from molt.python_interpreter import PythonInterpreter
+
+    source = tmp_path / "program.py"
+    source.write_text(
+        "raise AssertionError('payload must not start')\n", encoding="utf-8"
+    )
+    oracle = str(tmp_path / "explicit-oracle")
+    monkeypatch.setattr(scripts, "_find_project_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(scripts, "_base_env", lambda *_a, **_k: {})
+    prefixes = []
+
+    def select(selector, **kwargs):
+        assert selector == oracle
+        prefix = kwargs["verifier"].prefix
+        assert prefix.is_dir() and not list(prefix.iterdir())
+        prefixes.append(prefix)
+        return (oracle,)
+
+    def probe(command, **kwargs):
+        assert command == (oracle,)
+        assert kwargs["verifier"].prefix == prefixes[-1]
+        return PythonInterpreter(command, oracle, reported, "CPython")
+
+    monkeypatch.setattr(scripts, "resolve_python_selector", select)
+    monkeypatch.setattr(scripts, "probe_python_command", probe)
+    monkeypatch.setattr(
+        scripts,
+        "_run_command_timed",
+        lambda *_a, **_k: pytest.fail("mismatched oracle reached payload"),
+    )
+    assert (
+        scripts.compare(
+            str(source), None, oracle, [], build_args=["--python-version=3.12"]
+        )
+        != 0
+    )
+    assert prefixes and all(not p.exists() for p in prefixes)
+
+
+def test_compare_refuses_unowned_frontend_prefix_before_either_payload(
+    tmp_path, monkeypatch
+):
+    from molt import python_environment_location as location
+    from molt.cli import script_commands as scripts
+    from molt.python_identity_common import PythonEnvironmentIdentityError
+    from molt.python_interpreter import PythonInterpreter
+
+    source = tmp_path / "never-run.py"
+    source.write_text("raise AssertionError('payload started')\n", encoding="utf-8")
+    monkeypatch.setattr(scripts, "_find_project_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(scripts, "_base_env", lambda *_a, **_k: {})
+    prefixes = []
+
+    def resolve(target, **kwargs):
+        assert target.short == "3.12"
+        prefixes.append(kwargs["verifier"].prefix)
+        return PythonInterpreter(
+            ("matching-oracle",), "matching-oracle", "3.12.15", "CPython"
+        )
+
+    def refuse():
+        raise PythonEnvironmentIdentityError("ambiguous frontend prefix ownership")
+
+    monkeypatch.setattr(scripts, "resolve_target_python", resolve)
+    monkeypatch.setattr(location, "_active_environment_prefix", refuse)
+    monkeypatch.setattr(
+        scripts,
+        "_run_command_timed",
+        lambda *_a, **_k: pytest.fail("unowned frontend reached a workload"),
+    )
+    assert (
+        scripts.compare(
+            str(source), None, None, [], build_args=["--python-version=3.12"]
+        )
+        != 0
+    )
+    assert len(prefixes) == 1 and not prefixes[0].exists()
+
+
+@pytest.mark.parametrize(
+    "kind,closed",
+    [
+        ("timeout", True),
+        ("timeout", False),
+        ("infrastructure", True),
+        ("infrastructure", False),
+        ("interrupt", True),
+        ("interrupt", False),
+        ("ordinary", None),
+    ],
+)
+def test_compare_reference_failure_retains_only_unclosed_owned_namespace(
+    tmp_path, monkeypatch, kind, closed
+):
+    import gc
+    import subprocess
+    import weakref
+
+    from molt import temporary_artifacts
+    from molt.cli import script_commands as scripts
+    from molt.process_guard import GuardInfrastructureError
+    from molt.python_interpreter import PythonInterpreter
+
+    source = tmp_path / "program.py"
+    source.write_text("pass\n", encoding="utf-8")
+    owners = []
+    identities = []
+    calls = []
+
+    original_allocation = temporary_artifacts.OwnedTemporaryDirectory
+
+    def allocate(**kwargs):
+        owner = original_allocation(dir=tmp_path, **kwargs)
+        owners.append(owner)
+        identities.append(temporary_artifacts._identity(Path(owner.name)))
+        return owner
+
+    receipt = SimpleNamespace(
+        descendants_closed=closed,
+        child_returncode=None,
+        infrastructure_failure=SimpleNamespace(
+            phase="drain", details=("independent guard failure",)
+        ),
+    )
+    if kind == "timeout":
+        failure = subprocess.TimeoutExpired(["reference-oracle"], 1)
+    elif kind == "infrastructure":
+        failure = GuardInfrastructureError(["reference-oracle"], receipt)
+    elif kind == "interrupt":
+        failure = KeyboardInterrupt()
+    else:
+        failure = RuntimeError("no terminal guard observation")
+    if closed is not None:
+        failure.guarded_result = receipt
+
+    def execute(command, **kwargs):
+        calls.append(command)
+        assert command[0] == "reference-oracle", "failure reached compiler build"
+        root = Path(owners[0].name)
+        (root / "still-used").write_bytes(b"reference namespace stays owned")
+        raise failure
+
+    monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)
+    monkeypatch.setattr(scripts, "_find_project_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(scripts, "_base_env", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        scripts,
+        "resolve_target_python",
+        lambda *_a, **_k: PythonInterpreter(
+            ("reference-oracle",), "reference-oracle", "3.12.15", "CPython"
+        ),
+    )
+    monkeypatch.setattr(scripts, "_run_command_timed", execute)
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", execute)
+    with pytest.raises(type(failure)) as caught:
+        scripts.compare(
+            str(source), None, None, [], build_args=["--python-version=3.12"]
+        )
+    assert caught.value is failure
+    if closed is not None:
+        assert caught.value.guarded_result is receipt
+    assert len(calls) == 1 and len(owners) == 1
+    path = Path(owners[0].name)
+    assert path.exists() is (closed is not True)
+    if closed is not True:
+        assert (path / "still-used").read_bytes() == b"reference namespace stays owned"
+        assert any(str(path) in note for note in failure.__notes__)
+    owner_ref = weakref.ref(owners[0])
+    # The primary traceback owns the compare frame too. Retire that test-owned
+    # observation only after asserting exception/receipt identity, then prove
+    # the resource survives the actual allocation owner's collection.
+    failure.__traceback__ = None
+    del caught
+    owners.clear()
+    gc.collect()
+    assert owner_ref() is None
+    assert path.exists() is (closed is not True)
+    if closed is not True:
+        # No real child was launched by this synthetic guard control. Retire
+        # using the inode receipt captured while the canonical owner was live.
+        temporary_artifacts._cleanup_temporary_directory(path, identities[0])
+
+
+def test_compare_refuses_unclosed_reference_result_and_retains_namespace(
+    tmp_path, monkeypatch
+):
+    import gc
+    import weakref
+
+    from molt import temporary_artifacts
+    from molt.cli import script_commands as scripts
+    from molt.cli.process_execution import _TimedResult
+    from molt.python_interpreter import PythonInterpreter
+
+    source = tmp_path / "program.py"
+    source.write_text("pass\n", encoding="utf-8")
+    owners = []
+    identities = []
+    calls = []
+
+    original_allocation = temporary_artifacts.OwnedTemporaryDirectory
+
+    def allocate(**kwargs):
+        owner = original_allocation(dir=tmp_path, **kwargs)
+        owners.append(owner)
+        identities.append(temporary_artifacts._identity(Path(owner.name)))
+        return owner
+
+    def execute(command, **kwargs):
+        calls.append(command)
+        assert command[0] == "reference-oracle", (
+            "unclosed result reached compiler build"
+        )
+        return _TimedResult(0, "apparent success", "", 0.1, descendants_closed=False)
+
+    monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)
+    monkeypatch.setattr(scripts, "_find_project_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(scripts, "_base_env", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        scripts,
+        "resolve_target_python",
+        lambda *_a, **_k: PythonInterpreter(
+            ("reference-oracle",), "reference-oracle", "3.12.15", "CPython"
+        ),
+    )
+    monkeypatch.setattr(scripts, "_run_command_timed", execute)
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", execute)
+    with pytest.raises(RuntimeError, match="process-tree closure") as caught:
+        scripts.compare(
+            str(source), None, None, [], build_args=["--python-version=3.12"]
+        )
+    assert len(calls) == 1 and len(owners) == 1
+    path = Path(owners[0].name)
+    assert path.is_dir() and any(str(path) in note for note in caught.value.__notes__)
+    owner_ref = weakref.ref(owners[0])
+    caught.value.__traceback__ = None
+    del caught
+    owners.clear()
+    gc.collect()
+    assert owner_ref() is None and path.is_dir()
+    temporary_artifacts._cleanup_temporary_directory(path, identities[0])
 
 
 @pytest.mark.parametrize(
@@ -422,23 +809,42 @@ def test_compare_capability_temporary_custody_and_preflight(
     monkeypatch.setattr(scripts, "_base_env", lambda *a, **kw: {})
     monkeypatch.setattr(scripts, "_find_project_root", lambda p: tmp_path)
     calls = []
+    prefixes = []
 
     def select(*a, **kw):
         calls.append("select")
+        prefix = kw["verifier"].prefix
+        assert prefix.is_dir() and not list(prefix.iterdir())
+        prefixes.append(prefix)
         if failure == "selector":
             raise ValueError("unavailable oracle")
-        return ("oracle-python",)
+        from molt.python_interpreter import PythonInterpreter
+
+        return PythonInterpreter(
+            ("oracle-python",), "oracle-python", "3.12.15", "CPython"
+        )
 
     def execute(argv, **kw):
         kind = "oracle" if argv[0] == "oracle-python" else "build"
         calls.append(kind)
         assert created[0].exists()
         if failure == kind:
-            raise RuntimeError(kind)
-        return SimpleNamespace(returncode=1, duration_s=0, stdout="", stderr="failed")
+            error = RuntimeError(kind)
+            error.guarded_result = SimpleNamespace(descendants_closed=True)
+            raise error
+        return SimpleNamespace(
+            returncode=1,
+            duration_s=0,
+            stdout="",
+            stderr="failed",
+            descendants_closed=True,
+        )
 
-    monkeypatch.setattr(scripts, "resolve_python_selector", select)
+    monkeypatch.setattr(scripts, "resolve_target_python", select)
     monkeypatch.setattr(scripts, "_run_command_timed", execute)
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", execute)
     flags = ["--unknown-option"] if failure == "invalid" else []
     if failure == "emit":
         flags = ["--emit=obj"]
@@ -461,6 +867,7 @@ def test_compare_capability_temporary_custody_and_preflight(
             invoke()
     else:
         assert invoke() != 0
+    assert all(not prefix.exists() for prefix in prefixes)
     assert len(created) == 1
     assert not created[0].exists()
     if failure in {"invalid", "python", "emit"}:
@@ -613,3 +1020,102 @@ def test_capability_materialization_failure_is_atomic(monkeypatch, tmp_path, fai
     assert len(created) == 1
     assert created[0].closed
     assert not Path(created[0].name).exists()
+
+
+@pytest.mark.parametrize("mode", ["default", "current", "numeric", "explicit"])
+@pytest.mark.parametrize(
+    "kind,closed", [("timeout", False), ("timeout", True), ("spawn", False)]
+)
+def test_compare_metadata_failure_aborts_before_next_candidate_or_payload(
+    tmp_path, monkeypatch, mode, kind, closed
+):
+    import gc
+    import subprocess
+    import sys
+    import weakref
+    from molt import process_guard, temporary_artifacts, toolchain_identity
+    from molt.cli import script_commands as scripts
+    from molt import python_interpreter
+
+    source = tmp_path / "program.py"
+    source.write_text(
+        "raise AssertionError('payload must not run')\n", encoding="utf-8"
+    )
+    executable = tmp_path / "selected-python"
+    executable.write_bytes(b"not executed by the synthetic core guard")
+    request = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if request not in {"3.12", "3.13", "3.14"}:
+        request = "3.12"
+    selector = {
+        "default": None,
+        "current": sys.executable,
+        "numeric": request,
+        "explicit": str(executable),
+    }[mode]
+    calls = []
+    owners = []
+    allocation_identities = []
+    original_allocation = temporary_artifacts.OwnedTemporaryDirectory
+
+    def allocate(**kwargs):
+        allocation = original_allocation(dir=tmp_path, **kwargs)
+        owners.append(allocation)
+        allocation_identities.append(
+            temporary_artifacts._identity(Path(allocation.name))
+        )
+        return allocation
+
+    receipt = SimpleNamespace(descendants_closed=closed)
+    failure = (
+        subprocess.TimeoutExpired(["first-metadata"], 1)
+        if kind == "timeout"
+        else FileNotFoundError("interpreter retired after selection")
+    )
+    if kind == "timeout":
+        failure.guarded_result = receipt
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+        assert "-B" in command and "-I" in command and "-S" in command
+        assert Path(owners[0].name).is_dir()
+        raise failure
+
+    monkeypatch.setattr(temporary_artifacts, "OwnedTemporaryDirectory", allocate)
+    monkeypatch.setattr(scripts, "_find_project_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(scripts, "_base_env", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        toolchain_identity,
+        "find_executable",
+        lambda name, **_k: None if name == "uv" else Path(name),
+    )
+    monkeypatch.setattr(
+        python_interpreter,
+        "python_command_candidates",
+        lambda *_a, **_k: [["first-candidate"], ["must-not-run"]],
+    )
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
+    monkeypatch.setattr(
+        scripts,
+        "_run_command_timed",
+        lambda *_a, **_k: pytest.fail("metadata failure reached payload/build"),
+    )
+    with pytest.raises(type(failure)) as caught:
+        scripts.compare(
+            str(source), None, selector, [], build_args=[f"--python-version={request}"]
+        )
+    assert caught.value is failure
+    if kind == "timeout":
+        assert caught.value.guarded_result is receipt
+    assert len(calls) == 1 and len(owners) == 1
+    path = Path(owners[0].name)
+    allocation_ref = weakref.ref(owners[0])
+    assert path.exists() is (not closed)
+    failure.__traceback__ = None
+    del caught
+    owners.clear()
+    gc.collect()
+    assert allocation_ref() is None
+    assert path.exists() is (not closed)
+    if not closed:
+        temporary_artifacts._cleanup_temporary_directory(path, allocation_identities[0])

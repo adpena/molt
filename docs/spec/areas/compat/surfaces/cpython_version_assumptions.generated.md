@@ -56,7 +56,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/host_capacity.py` | 1 | scattered-assumption | `3.13` |
 | `src/molt/llvm_wasi_tools.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/python_external_custody.py` | 1 | scattered-assumption | `3.10` |
-| `src/molt/python_interpreter.py` | 6 | authority-routed | `3.12` |
+| `src/molt/python_interpreter.py` | 5 | authority-routed | `3.12` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |
 | `src/molt/python_runtime_identity.py` | 4 | operational-tooling | `sys.version_info` |
 | `src/molt/release_matrix.py` | 3 | operational-tooling | `3.12` |

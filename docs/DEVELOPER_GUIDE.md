@@ -23,9 +23,22 @@ For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/a
   explicitly guarded and documented in the specs.
 
 ## Version Policy
-- Molt targets **Python 3.12+** semantics only.
-- Do not add compatibility for <=3.11.
-- When 3.12/3.13/3.14 diverge, document the target in specs/tests.
+- The repository development host is the exact CPython patch in `.python-version`
+  (currently 3.12.15). Host selection verifies an explicit patch through discovery,
+  captured runtime/marker agreement and image reuse; it does not grant compiled
+  guest support.
+- `src/molt/target_python_policy.py` admits guest semantics for 3.12, 3.13 and
+  3.14. Pending 3.15 sources and a 3.15 compiler host do not admit a 3.15 guest.
+- A comparison uses an independently verified CPython oracle matching the
+  effective guest minor. Its compiler frontend remains the invoking host.
+  Interpreter discovery, source-image capture and dependency-marker probes use
+  one typed verifier owner per operation and an explicit core process guard per
+  child. Unknown descendant closure aborts the operation and retains its owned
+  cache namespace; only proven-closed candidate failures may advance discovery.
+  This adds guard startup to existing metadata launches, not identity probes.
+  Pure argv projections acquire no lifetime: queue leases and long-lived runtime
+  guardians keep their existing namespace owners through terminal closure.
+- Do not add compatibility for <=3.11; document differences among admitted targets.
 
 ## Work Granularity
 

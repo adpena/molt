@@ -60,7 +60,7 @@ from molt.file_publication import durable_remove_path  # noqa: E402
 from molt.python_interpreter import probe_python_command  # noqa: E402
 from molt.python_environment_identity import (  # noqa: E402
     python_identity_verifier_arguments,
-    python_identity_verifier_prefix,
+    PythonIdentityVerifier,
 )
 from molt.rust_toolchain import rust_channel  # noqa: E402
 from molt.toolchain_identity import (  # noqa: E402
@@ -172,11 +172,15 @@ def _capture_python_execution(
     target: dict[str, object],
     reference_python: str,
 ) -> dict[str, object]:
-    with python_identity_verifier_prefix() as verifier_prefix:
-        command = [str(python), *python_identity_verifier_arguments(verifier_prefix)]
-        interpreter = probe_python_command(tuple(command), env=env, cwd=cwd)
-        result = _COMMANDS.run(
+    with PythonIdentityVerifier() as verifier:
+        command = [str(python), *python_identity_verifier_arguments(verifier.prefix)]
+        interpreter = probe_python_command(
+            (str(python),), verifier=verifier, env=env, cwd=cwd
+        )
+        result = verifier.run(
             [*command, "-c", _HOST_PROBE],
+            memory_guard_prefix=_COMMANDS.prefix,
+            guard_source_root=_COMMANDS.repo_root,
             env=env,
             cwd=cwd,
             capture_output=True,
@@ -216,15 +220,17 @@ def _capture_python_execution(
 
 
 def _absent_probe(python: Path, *, env: ProcessEnvironment, cwd: Path) -> None:
-    with python_identity_verifier_prefix() as verifier_prefix:
-        _COMMANDS.run(
+    with PythonIdentityVerifier() as verifier:
+        verifier.run(
             [
                 str(python),
-                *python_identity_verifier_arguments(verifier_prefix),
+                *python_identity_verifier_arguments(verifier.prefix),
                 "-c",
                 "import importlib.util; assert importlib.util.find_spec('molt') is None",
             ],
             cwd=cwd,
+            memory_guard_prefix=_COMMANDS.prefix,
+            guard_source_root=_COMMANDS.repo_root,
             env=env,
             capture_output=True,
             timeout=30,
@@ -449,14 +455,15 @@ def _compilation_captures(
 
     python_captures = []
     for interpreter in dict.fromkeys(interpreters):
-        with python_identity_verifier_prefix() as verifier_prefix:
+        with PythonIdentityVerifier() as verifier:
             python_captures.append(
                 validate_python_capture(
                     command_identity._parse_json_output(
-                        command_identity._run_captured(
+                        command_identity._run_python_captured(
+                            verifier,
                             command_identity._python_probe_command(
                                 interpreter,
-                                verifier_bytecode_prefix=verifier_prefix,
+                                verifier_bytecode_prefix=verifier.prefix,
                                 source_root=compiler.source_root,
                                 admit_published_environment=False,
                             ),
@@ -516,16 +523,18 @@ def _installed_frontend_python(
         "home,identity=m['_release_inputs'](root); "
         "print(json.dumps(str(home/'environments'/identity/'bin'/'python')))"
     )
-    with python_identity_verifier_prefix() as verifier_prefix:
-        result = _COMMANDS.run(
+    with PythonIdentityVerifier() as verifier:
+        result = verifier.run(
             [
                 str(python),
-                *python_identity_verifier_arguments(verifier_prefix),
+                *python_identity_verifier_arguments(verifier.prefix),
                 "-c",
                 code,
                 str(compiler.source_root.parent),
             ],
             cwd=cwd,
+            memory_guard_prefix=_COMMANDS.prefix,
+            guard_source_root=_COMMANDS.repo_root,
             env=env,
             capture_output=True,
             text=True,

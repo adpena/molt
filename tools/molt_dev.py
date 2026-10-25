@@ -1458,11 +1458,15 @@ def cmd_probe(args: argparse.Namespace) -> int:
 def cmd_python_oracle(args: argparse.Namespace) -> int:
     try:
         target = python_interpreter.parse_target_python_version(args.python_version)
-        resolved = python_interpreter.resolve_target_python(
-            target,
-            cwd=DEFAULT_REPO,
-            prefer_uv=not args.no_uv,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            resolved = python_interpreter.resolve_target_python(
+                target,
+                verifier=verifier,
+                cwd=DEFAULT_REPO,
+                prefer_uv=not args.no_uv,
+            )
     except (ValueError, python_interpreter.PythonInterpreterError) as exc:
         raise DriverError(str(exc), code=EXIT_USAGE) from exc
     exe = resolved.executable
@@ -1616,11 +1620,15 @@ def cmd_difftest(args: argparse.Namespace) -> int:
         target_python = python_interpreter.parse_target_python_version(
             args.python_version
         )
-        cpython_identity = python_interpreter.probe_python_command(
-            cpython_command,
-            cwd=root,
-            timeout=30.0,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            cpython_identity = python_interpreter.probe_python_command(
+                cpython_command,
+                verifier=verifier,
+                cwd=root,
+                timeout=30.0,
+            )
     except (ValueError, python_interpreter.PythonInterpreterError) as exc:
         raise DriverError(f"difftest: {exc}", code=EXIT_USAGE) from exc
     if cpython_identity.major_minor != target_python.short:

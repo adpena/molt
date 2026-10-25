@@ -411,9 +411,8 @@ def test_threaded_python_capture_records_every_file_and_tree_dependency(
 ) -> None:
     from molt.python_environment_identity import (
         python_identity_verifier_arguments,
-        python_identity_verifier_prefix,
+        PythonIdentityVerifier,
     )
-    from tests.process_guard_common import run_guarded_test_process
 
     # The initializer records imports before the worker unpickles the task.
     # A cold ordinary import cache is an input lookup, not an allowed output.
@@ -433,8 +432,9 @@ with pytest.MonkeyPatch.context() as monkeypatch:
         Path(sys.argv[1]), Path(sys.argv[2]), monkeypatch
     )
 """
-    with python_identity_verifier_prefix() as prefix:
-        completed = run_guarded_test_process(
+    with PythonIdentityVerifier() as verifier:
+        prefix = verifier.prefix
+        completed = verifier.run(
             [
                 sys.executable,
                 *python_identity_verifier_arguments(prefix),
@@ -444,6 +444,10 @@ with pytest.MonkeyPatch.context() as monkeypatch:
                 str(transient),
             ],
             timeout=120,
+            memory_guard_prefix="MOLT_PYTEST",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         )
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
