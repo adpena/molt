@@ -170,8 +170,11 @@ Implement `src/molt/harness_conformance.py` with exactly these focused helpers:
 
 ```python
 def build_molt_conformance_env(
-    project_root: Path, session_id: str | None, base: Mapping[str, str],
-    *, create_dirs: bool = False,
+    project_root: Path,
+    session_id: str | None,
+    base: Mapping[str, str],
+    *,
+    create_dirs: bool = False,
 ) -> ProcessEnvironment: ...
 def load_molt_conformance_suite(
     corpus_dir: Path, suite: str, smoke_manifest: Path
