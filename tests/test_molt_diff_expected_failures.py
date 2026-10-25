@@ -539,10 +539,6 @@ def test_run_diff_serial_emits_run_line_before_file_work(
     )
     calls: list[str] = []
 
-    class _FakeSuiteContext:
-        def start_repo_sentinel(self, **_kwargs):
-            return None
-
     _declare_cpython_oracle(module, monkeypatch, sys.executable)
     monkeypatch.setattr(module, "_ensure_diff_run_lock", lambda: None)
     monkeypatch.setattr(module, "_prune_orphan_diff_workers", lambda: None)
@@ -560,10 +556,12 @@ def test_run_diff_serial_emits_run_line_before_file_work(
     monkeypatch.setattr(
         module, "_constrain_jobs_for_memory_guard", lambda jobs, *, config: jobs
     )
+    # Suppress only the suite sentinel; selector admission still uses the
+    # canonical context factory and guarded run operation.
     monkeypatch.setattr(
         module.harness_memory_guard.HarnessExecutionContext,
-        "from_env",
-        staticmethod(lambda *_args, **_kwargs: _FakeSuiteContext()),
+        "start_repo_sentinel",
+        lambda _context, **_kwargs: None,
     )
     monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda _env=None: object())
     monkeypatch.setattr(module, "_order_test_files", lambda files, _jobs: list(files))

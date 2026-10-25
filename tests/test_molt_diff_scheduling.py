@@ -353,12 +353,20 @@ def suite(tmp_path, monkeypatch):
             else None
         ),
     )
+
+    def suite_sentinel(context, *, label, **_kwargs):
+        # The scheduler owns only this sentinel. Keep the real context factory
+        # and guarded run method available to fresh interpreter admission.
+        assert isinstance(
+            context, molt_diff.harness_memory_guard.HarnessExecutionContext
+        )
+        assert context.prefix == "MOLT_DIFF" and label == "molt_diff_suite"
+        return getattr(state, "sentinel", None)
+
     monkeypatch.setattr(
         molt_diff.harness_memory_guard.HarnessExecutionContext,
-        "from_env",
-        staticmethod(
-            lambda *a, **k: SimpleNamespace(start_repo_sentinel=lambda **k: None)
-        ),
+        "start_repo_sentinel",
+        suite_sentinel,
     )
 
     def payload(path):
@@ -822,17 +830,16 @@ def guarded_suite(suite, monkeypatch):
                 raise suite.close_error
 
     suite.sentinel = Sentinel()
-    monkeypatch.setattr(
-        molt_diff.harness_memory_guard.HarnessExecutionContext,
-        "from_env",
-        staticmethod(
-            lambda *a, **k: SimpleNamespace(
-                start_repo_sentinel=lambda **k: suite.sentinel
-            )
-        ),
+    # Observe only the suite's callback. Fresh guarded metadata children retain
+    # their real process-wide atexit custody through ProcessStateUse.
+    install_module_view(
+        monkeypatch,
+        "atexit",
+        molt_diff.atexit,
+        molt_diff,
+        register=suite.exit_callbacks.append,
+        unregister=suite.exit_callbacks.remove,
     )
-    monkeypatch.setattr(molt_diff.atexit, "register", suite.exit_callbacks.append)
-    monkeypatch.setattr(molt_diff.atexit, "unregister", suite.exit_callbacks.remove)
     return suite
 
 
