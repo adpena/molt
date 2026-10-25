@@ -316,6 +316,21 @@ lexical regions; inline class annotation storage keeps its existing namespace
 owner. Module/callable metadata oracles do not claim standalone class code-object
 support.
 
+Class statements publish their final value once through the same definition
+binding owner as functions and aliases. Static construction, dynamic metaclasses,
+dataclass rebuilding and ordinary decorators all feed that one publication.
+The active class namespace routes the store, including classes within compound
+statements and explicit global/nonlocal directives; no straight-line harvest
+from a separate local-value cache participates. Custom `__prepare__` mappings
+observe one final store after decorator application. This follows
+[CPython 3.14 `codegen_class`](https://github.com/python/cpython/blob/3.14/Python/codegen.c)
+and the [class definition binding rules](https://docs.python.org/3.14/reference/compound_stmts.html#class-definitions).
+The change removes premature/repeated stores and a host-side cache/harvest path;
+conditional classes pay the one mapping store their semantics require. Static
+class namespaces retain their existing SSA attribute projection. No new runtime
+helper, support structure, syscall or backend ABI is introduced; the newly
+required mapping store may allocate its entry through existing dictionary storage.
+
 Generic attribute reads keep boxed receivers and enter `molt_get_attr_object_ic`,
 which caches only an owned interned name before invoking `molt_get_attr_name`.
 Stable function/source-operation identity selects the name-cache site; the actual

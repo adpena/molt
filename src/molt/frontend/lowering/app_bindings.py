@@ -127,6 +127,7 @@ class AppBindingAuthorityMixin(GeneratorMixinBase):
         kind: FunctionKind,
         symbol: str,
         decorated: bool,
+        has_closure: bool,
     ) -> None:
         if not self._is_entry_app_binding_scope():
             return
@@ -140,6 +141,10 @@ class AppBindingAuthorityMixin(GeneratorMixinBase):
             final_symbol = None
         elif kind != FunctionKind.SYNC:
             reason = "stateful-callable-requires-module-dispatch"
+        elif has_closure:
+            # The lexical capture producer owns this fact. A flat host call
+            # cannot supply the bound callable's hidden borrowed environment.
+            reason = "closure-callable-requires-module-dispatch"
         elif self.control_flow_depth > 0:
             reason = "dynamic-module-binding-requires-module-dispatch"
         else:

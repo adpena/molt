@@ -1030,7 +1030,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def _emit_dataclass_application(
-        self, node: ast.ClassDef, class_info: ClassInfo, class_val: MoltValue
+        self, class_info: ClassInfo, class_val: MoltValue
     ) -> MoltValue: ...
 
     def _emit_dataclasses_field_call(
@@ -2362,8 +2362,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _publish_annotation_exec_map(self, name: str, exec_map: MoltValue) -> None: ...
 
-    def _publish_class_value(self, name: str, class_val: MoltValue) -> None: ...
-
     def _publish_definition_binding(self, name: str, value: MoltValue) -> None: ...
 
     def _publish_exact_local(self, name: str, class_id: ClassId) -> None: ...
@@ -2454,7 +2452,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _record_module_provenance_flow_state(self) -> None: ...
 
     def _record_source_app_callable(
-        self, name: str, *, kind: FunctionKind, symbol: str, decorated: bool
+        self,
+        name: str,
+        *,
+        kind: FunctionKind,
+        symbol: str,
+        decorated: bool,
+        has_closure: bool,
     ) -> None: ...
 
     def _refresh_midend_env_config_if_needed(self) -> None: ...

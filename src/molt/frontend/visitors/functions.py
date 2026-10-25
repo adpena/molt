@@ -310,6 +310,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 kind=FunctionKind.GENERATOR,
                 symbol=poll_func_name,
                 decorated=bool(node.decorator_list),
+                has_closure=has_closure,
             )
             return None
 
@@ -524,6 +525,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             kind=FunctionKind.SYNC,
             symbol=func_symbol,
             decorated=bool(node.decorator_list),
+            has_closure=has_closure,
         )
         return None
 
