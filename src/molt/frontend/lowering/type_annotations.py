@@ -8,12 +8,17 @@ application, container/dict/bytearray hint propagation, and runtime type guards.
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
+from molt.compiler_analysis.python_lexical_scope import (
+    function_annotation_expressions,
+    type_parameter_expressions,
+)
 from molt.python_private_names import (
     python_definition_name,
     python_source_field,
     python_source_unparse,
 )
-from typing import Sequence
+from typing import Generator, Sequence
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
@@ -23,6 +28,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     TypeHint,
+    TypeParameterBinding,
     normalize_type_hint,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -508,17 +514,71 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             items.append(("return", node.returns))
         return items
 
+    def _type_parameter_capture_names(
+        self,
+        owner: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias,
+    ) -> frozenset[str]:
+        authority = self._lexical_dependencies()
+        required = set(
+            authority.project(type_parameter_expressions(owner.type_params)).lexical
+        )
+        if isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            required.update(authority.summary(owner).body.lexical)
+            if not self.future_annotations:
+                annotations = authority.project(function_annotation_expressions(owner))
+                required.update(
+                    annotations.nested
+                    if self.eager_annotations
+                    else annotations.lexical
+                )
+        elif isinstance(owner, ast.ClassDef):
+            required.update(authority.summary(owner).body_captures)
+            # Bases and keyword expressions execute in this frame; only their
+            # nested callables need cells. Bounds/defaults were included above.
+            required.update(
+                authority.project(authority.regions(owner).annotations).nested
+            )
+        else:
+            required.update(authority.project((owner.value,)).lexical)
+        return frozenset(required & authority.regions(owner).type_parameters)
+
+    @contextmanager
+    def _type_parameter_scope(
+        self, bindings: dict[str, TypeParameterBinding]
+    ) -> Generator[None]:
+        if not bindings:
+            yield
+            return
+        previous = self.type_parameter_bindings
+        self.type_parameter_bindings = {**previous, **bindings}
+        try:
+            yield
+        finally:
+            self.type_parameter_bindings = previous
+
+    def _load_type_parameter(self, name: str) -> MoltValue | None:
+        binding = self.type_parameter_bindings.get(name)
+        if binding is None:
+            return None
+        if binding.cell is None:
+            return binding.value
+        value = self._emit_cell_get(binding.cell, type_hint="Any")
+        self._emit_unbound_free_guard(value, name)
+        return value
+
     def _emit_type_params_values(
         self,
-        type_params: Sequence[ast.AST | ast.type_param] | None,
+        owner: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias,
         *,
         module_override: str | None = None,
-    ) -> tuple[list[MoltValue], dict[str, MoltValue]]:
+    ) -> tuple[list[MoltValue], dict[str, TypeParameterBinding]]:
+        type_params = owner.type_params
         if not type_params:
             return [], {}
         type_param_func = self._emit_module_attr_get_on("typing", "_molt_type_param")
         values: list[MoltValue] = []
-        mapping: dict[str, MoltValue] = {}
+        mapping: dict[str, TypeParameterBinding] = {}
+        captured = self._type_parameter_capture_names(owner)
         for param in type_params:
             if isinstance(param, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple)):
                 name_val = MoltValue(self.next_var(), type_hint="str")
@@ -546,7 +606,9 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                     )
                 )
                 values.append(res)
-                mapping[param.name] = res
+                mapping[param.name] = TypeParameterBinding(
+                    res, self._emit_cell_new(res) if param.name in captured else None
+                )
                 continue
             raise FrontendRejection(
                 Diagnostic.TYPE_FORM,
@@ -555,10 +617,10 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         evaluator_setter = self._emit_module_attr_get_on(
             "typing", "_molt_type_param_set_evaluators"
         )
-        previous_type_params = self.annotation_type_params
+        previous_type_params = self.type_parameter_bindings
         merged = dict(previous_type_params)
         merged.update(mapping)
-        self.annotation_type_params = merged
+        self.type_parameter_bindings = merged
         try:
             for param, value in zip(type_params, values):
                 bound_expr = getattr(param, "bound", None)
@@ -612,7 +674,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                     )
                 )
         finally:
-            self.annotation_type_params = previous_type_params
+            self.type_parameter_bindings = previous_type_params
         return values, mapping
 
     def _emit_lazy_type_value_evaluator(
@@ -641,13 +703,13 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             )
         alias_fn = self._emit_module_attr_get_on("typing", "_molt_type_alias")
         type_param_values, type_param_map = self._emit_type_params_values(
-            node.type_params,
+            node,
             module_override=module_override,
         )
-        previous_type_params = self.annotation_type_params
+        previous_type_params = self.type_parameter_bindings
         merged = dict(previous_type_params)
         merged.update(type_param_map)
-        self.annotation_type_params = merged
+        self.type_parameter_bindings = merged
         try:
             evaluator = self._emit_lazy_type_value_evaluator(
                 node.value,
@@ -655,7 +717,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 module_override=module_override,
             )
         finally:
-            self.annotation_type_params = previous_type_params
+            self.type_parameter_bindings = previous_type_params
         name_value = MoltValue(self.next_var(), type_hint="str")
         self.emit(
             MoltOp(
@@ -677,12 +739,12 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         return alias_value
 
     def _emit_attach_type_params(
-        self, owner: MoltValue, type_params: list[MoltValue]
+        self, owner: MoltValue, type_params: Sequence[MoltValue]
     ) -> None:
         if not type_params:
             return
         tuple_val = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=type_params, result=tuple_val))
+        self.emit(MoltOp(kind="TUPLE_NEW", args=list(type_params), result=tuple_val))
         self.emit(
             MoltOp(
                 kind="SETATTR_GENERIC_OBJ",
@@ -751,7 +813,6 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         free_vars_list, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(
                 candidates,
-                value_captures=self.annotation_type_params,
                 cell_captures=cell_captures,
                 class_scope=class_scope,
             )
@@ -802,8 +863,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             kwonly_params=[],
             vararg=None,
             varkw=None,
-            default_exprs=[],
-            kw_default_exprs=[],
+            defaults=self._emit_function_default_values([], [], []),
             docstring=None,
             module_override=module_override,
             varnames=list(evaluator_varnames),
@@ -811,207 +871,209 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             cellvars=cell_plan.cellvars,
         )
 
-        prev_func = self.current_func_name
-        prev_state = self._capture_function_state()
-        params, parameter_bindings = self._function_transport_params(
-            ["format"],
-            has_closure=has_closure,
-        )
-        self.start_function(
-            func_symbol,
-            params=params,
-            type_facts_name="__annotate__",
-            # PEP 649/749 makes the evaluator format an actual Python argument.
-            # Earlier lazy type evaluators have no source positional arguments,
-            # even though Molt uses format as an internal transport parameter.
-            python_first_arg=(
-                MoltValue(parameter_bindings["format"], type_hint="Any")
-                if self.target_python >= (3, 14)
-                else None
-            ),
-            code_slots=code_slots,
-        )
-        self.parameter_bindings = parameter_bindings
-        if has_closure:
-            self.free_vars = {name: idx for idx, name in enumerate(free_vars_list)}
-            self.free_var_hints = free_var_hints
-            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
-                _MOLT_CLOSURE_PARAM, type_hint="tuple"
+        with self._function_state_scope():
+            params, parameter_bindings = self._function_transport_params(
+                ["format"],
+                has_closure=has_closure,
             )
-        if namespace_cell is not None and class_scope is not None:
-            captured_cell = self._load_free_var_cell(_ANNOTATION_NAMESPACE_CAPTURE)
-            if captured_cell is None:
-                raise FrontendRejection(
-                    Diagnostic.INTERNAL_INVARIANT,
-                    "Annotation namespace capture is missing from its closure",
+            self.start_function(
+                func_symbol,
+                params=params,
+                type_facts_name="__annotate__",
+                # PEP 649/749 makes the evaluator format an actual Python argument.
+                # Earlier lazy type evaluators have no source positional arguments,
+                # even though Molt uses format as an internal transport parameter.
+                python_first_arg=(
+                    MoltValue(parameter_bindings["format"], type_hint="Any")
+                    if self.target_python >= (3, 14)
+                    else None
+                ),
+                code_slots=code_slots,
+            )
+            self.parameter_bindings = parameter_bindings
+            if has_closure:
+                self.free_vars = {name: idx for idx, name in enumerate(free_vars_list)}
+                self.free_var_hints = free_var_hints
+                self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
+                    _MOLT_CLOSURE_PARAM, type_hint="tuple"
                 )
-            self._class_ns_stack = [
-                _ClassNsScope(
-                    ns=None,
-                    attr_values={},
-                    names=set(),
-                    class_name=class_scope.class_name,
-                    module_name=class_scope.module_name,
-                    local_names=class_scope.local_names,
-                    global_names=class_scope.global_names,
-                    nonlocal_names=class_scope.nonlocal_names,
-                    annotation_namespace_cell=captured_cell,
-                )
-            ]
-            self._class_body_depth = 1
-        self.global_decls = set()
-        self.nonlocal_decls = set()
-        self.scope_assigned = set()
-        self.del_targets = set()
-        self.unbound_check_names = set()
-        self.locals["format"] = self._parameter_value("format", type_hint="Any")
-        self._prebox_scope_cell_vars(
-            cell_plan.captured, private_cells=cell_plan.private
-        )
-        self._emit_frame_home_prologue(["format"])
-        # Source annotations may independently capture or resolve "format".
-        # Only the explicit parameter owns the evaluator's argument zero, its
-        # first code slot, and the format guard below reads that binding
-        # directly rather than through the class-annotation mapping.
-        format_cell = self.boxed_locals.get("format")
-        format_val = (
-            self.locals["format"]
-            if format_cell is None
-            else self._emit_cell_get(format_cell, type_hint="Any")
-        )
-        self._publish_python_frame_context()
+            if namespace_cell is not None and class_scope is not None:
+                captured_cell = self._load_free_var_cell(_ANNOTATION_NAMESPACE_CAPTURE)
+                if captured_cell is None:
+                    raise FrontendRejection(
+                        Diagnostic.INTERNAL_INVARIANT,
+                        "Annotation namespace capture is missing from its closure",
+                    )
+                self._class_ns_stack = [
+                    _ClassNsScope(
+                        ns=None,
+                        attr_values={},
+                        names=set(),
+                        class_name=class_scope.class_name,
+                        module_name=class_scope.module_name,
+                        local_names=class_scope.local_names,
+                        global_names=class_scope.global_names,
+                        nonlocal_names=class_scope.nonlocal_names,
+                        annotation_namespace_cell=captured_cell,
+                    )
+                ]
+                self._class_body_depth = 1
+            self.global_decls = set()
+            self.nonlocal_decls = set()
+            self.scope_assigned = set()
+            self.del_targets = set()
+            self.unbound_check_names = set()
+            self.locals["format"] = self._parameter_value("format", type_hint="Any")
+            self._prebox_scope_cell_vars(
+                cell_plan.captured, private_cells=cell_plan.private
+            )
+            self._emit_frame_home_prologue(["format"])
+            # Source annotations may independently capture or resolve "format".
+            # Only the explicit parameter owns the evaluator's argument zero, its
+            # first code slot, and the format guard below reads that binding
+            # directly rather than through the class-annotation mapping.
+            format_cell = self.boxed_locals.get("format")
+            format_val = (
+                self.locals["format"]
+                if format_cell is None
+                else self._emit_cell_get(format_cell, type_hint="Any")
+            )
+            self._publish_python_frame_context()
 
-        # CPython 3.14's generated evaluator guard accepts only a rich
-        # `format > 2` result that is the singleton False. It does not invoke
-        # __bool__ on a non-bool comparison result (unlike a source-level if).
-        two_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[2], result=two_val))
-        comparison = self._emit_compare_op(ast.Gt(), format_val, two_val)
-        false_val = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=false_val))
-        supported_format = self._emit_compare_op(ast.Is(), comparison, false_val)
-        exec_map_val: MoltValue | None = None
-        if exec_map is not None:
-            captured_exec_map = self._load_free_var_cell(_ANNOTATION_EXEC_MAP_CAPTURE)
-            if captured_exec_map is None:
-                raise FrontendRejection(
-                    Diagnostic.INTERNAL_INVARIANT,
-                    "Annotation execution-map capture is missing from its closure",
+            # CPython 3.14's generated evaluator guard accepts only a rich
+            # `format > 2` result that is the singleton False. It does not invoke
+            # __bool__ on a non-bool comparison result (unlike a source-level if).
+            two_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[2], result=two_val))
+            comparison = self._emit_compare_op(ast.Gt(), format_val, two_val)
+            false_val = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=false_val))
+            supported_format = self._emit_compare_op(ast.Is(), comparison, false_val)
+            exec_map_val: MoltValue | None = None
+            if exec_map is not None:
+                captured_exec_map = self._load_free_var_cell(
+                    _ANNOTATION_EXEC_MAP_CAPTURE
                 )
-            exec_map_val = self._emit_cell_get(captured_exec_map, type_hint="dict")
-        elif exec_map_name is not None:
-            exec_map_val = self.visit(ast.Name(id=exec_map_name, ctx=ast.Load()))
-        missing_val = MoltValue(self.next_var(), type_hint="missing")
-        self.emit(MoltOp(kind="MISSING", args=[], result=missing_val))
+                if captured_exec_map is None:
+                    raise FrontendRejection(
+                        Diagnostic.INTERNAL_INVARIANT,
+                        "Annotation execution-map capture is missing from its closure",
+                    )
+                exec_map_val = self._emit_cell_get(captured_exec_map, type_hint="dict")
+            elif exec_map_name is not None:
+                exec_map_val = self.visit(ast.Name(id=exec_map_name, ctx=ast.Load()))
+            missing_val = MoltValue(self.next_var(), type_hint="missing")
+            self.emit(MoltOp(kind="MISSING", args=[], result=missing_val))
 
-        def emit_annotation_body(use_stringize: bool) -> None:
-            res_dict = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(MoltOp(kind="DICT_NEW", args=[], result=res_dict))
-            for name, expr, exec_id in items:
-                if exec_map_val is not None:
-                    key_val = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[exec_id], result=key_val))
-                    exec_flag = MoltValue(self.next_var(), type_hint="Any")
+            def emit_annotation_body(use_stringize: bool) -> None:
+                res_dict = MoltValue(self.next_var(), type_hint="dict")
+                self.emit(MoltOp(kind="DICT_NEW", args=[], result=res_dict))
+                for name, expr, exec_id in items:
+                    if exec_map_val is not None:
+                        key_val = MoltValue(self.next_var(), type_hint="int")
+                        self.emit(MoltOp(kind="CONST", args=[exec_id], result=key_val))
+                        exec_flag = MoltValue(self.next_var(), type_hint="Any")
+                        self.emit(
+                            MoltOp(
+                                kind="DICT_GET",
+                                args=[exec_map_val, key_val, missing_val],
+                                result=exec_flag,
+                            )
+                        )
+                        is_missing = MoltValue(self.next_var(), type_hint="bool")
+                        self.emit(
+                            MoltOp(
+                                kind="IS",
+                                args=[exec_flag, missing_val],
+                                result=is_missing,
+                            )
+                        )
+                        self.emit(
+                            MoltOp(
+                                kind="IF", args=[is_missing], result=MoltValue("none")
+                            )
+                        )
+                        self.emit(
+                            MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
+                        )
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+                    value_val = self._emit_annotation_value(
+                        expr, stringize=use_stringize
+                    )
                     self.emit(
                         MoltOp(
-                            kind="DICT_GET",
-                            args=[exec_map_val, key_val, missing_val],
-                            result=exec_flag,
+                            kind="STORE_INDEX",
+                            args=[res_dict, key_val, value_val],
+                            result=MoltValue("none"),
                         )
                     )
-                    is_missing = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(
-                        MoltOp(
-                            kind="IS",
-                            args=[exec_flag, missing_val],
-                            result=is_missing,
+                    if exec_map_val is not None:
+                        self.emit(
+                            MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
                         )
-                    )
-                    self.emit(
-                        MoltOp(kind="IF", args=[is_missing], result=MoltValue("none"))
-                    )
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                value_val = self._emit_annotation_value(expr, stringize=use_stringize)
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[res_dict, key_val, value_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                if exec_map_val is not None:
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            self._emit_normal_return_terminator(res_dict)
+                self._emit_normal_return_terminator(res_dict)
 
-        # Emit the value body once and only after the public format guard.
-        self.emit(MoltOp(kind="IF", args=[supported_format], result=MoltValue("none")))
-        emit_annotation_body(stringize)
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        msg_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[""], result=msg_val))
-        err_val = self._emit_exception_new("NotImplementedError", msg_val)
-        self._emit_raise(err_val)
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
+            # Emit the value body once and only after the public format guard.
+            self.emit(
+                MoltOp(kind="IF", args=[supported_format], result=MoltValue("none"))
+            )
+            emit_annotation_body(stringize)
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            msg_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[""], result=msg_val))
+            err_val = self._emit_exception_new("NotImplementedError", msg_val)
+            self._emit_raise(err_val)
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return func_val
 
     def _emit_function_annotate(
-        self, func_val: MoltValue, node: ast.FunctionDef | ast.AsyncFunctionDef
+        self,
+        func_val: MoltValue,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        type_param_vals: Sequence[MoltValue],
     ) -> None:
         items = self._annotation_items_for_function(node)
-        type_params = getattr(node, "type_params", None)
-        type_param_vals, type_param_map = self._emit_type_params_values(type_params)
         if not items:
             self._emit_attach_type_params(func_val, type_param_vals)
             return
         annotated_items = [(name, expr, idx) for idx, (name, expr) in enumerate(items)]
-        prev_type_params = self.annotation_type_params
-        if type_param_map:
-            merged = dict(prev_type_params)
-            merged.update(type_param_map)
-            self.annotation_type_params = merged
-        try:
-            if not self.future_annotations and not self.eager_annotations:
-                annotate_val = self._emit_annotate_function_obj(
-                    items=annotated_items,
-                    exec_map_name=None,
-                    stringize=self.future_annotations,
+        if not self.future_annotations and not self.eager_annotations:
+            annotate_val = self._emit_annotate_function_obj(
+                items=annotated_items,
+                exec_map_name=None,
+                stringize=self.future_annotations,
+            )
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, "__annotate__", annotate_val],
+                    result=MoltValue("none"),
                 )
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[func_val, "__annotate__", annotate_val],
-                        result=MoltValue("none"),
-                    )
+            )
+        else:
+            # Build __annotations__ dict directly from the annotation
+            # items.  For future_annotations, all values are strings.
+            # For eager_annotations, they're evaluated types.
+            # Calling __annotate__(1) through CALL_FUNC has been unreliable
+            # for TIR-compiled functions, so we build the dict inline.
+            ann_items: list[MoltValue] = []
+            for name, expr in items:
+                key_val = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
+                val = self._emit_annotation_value(
+                    expr, stringize=self.future_annotations
                 )
-            else:
-                # Build __annotations__ dict directly from the annotation
-                # items.  For future_annotations, all values are strings.
-                # For eager_annotations, they're evaluated types.
-                # Calling __annotate__(1) through CALL_FUNC has been unreliable
-                # for TIR-compiled functions, so we build the dict inline.
-                ann_items: list[MoltValue] = []
-                for name, expr in items:
-                    key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[name], result=key_val))
-                    val = self._emit_annotation_value(
-                        expr, stringize=self.future_annotations
-                    )
-                    ann_items.extend([key_val, val])
-                ann_dict = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[func_val, "__annotations__", ann_dict],
-                        result=MoltValue("none"),
-                    )
+                ann_items.extend([key_val, val])
+            ann_dict = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=ann_items, result=ann_dict))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[func_val, "__annotations__", ann_dict],
+                    result=MoltValue("none"),
                 )
-        finally:
-            self.annotation_type_params = prev_type_params
+            )
         self._emit_attach_type_params(func_val, type_param_vals)
 
     def _guard_tag_for_hint(self, hint: str) -> int | None:

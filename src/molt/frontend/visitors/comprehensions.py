@@ -84,7 +84,6 @@ class ComprehensionMixin(GeneratorMixinBase):
         )
         cell_plan = self._callable_cell_plan(node)
         cell_vars = cell_plan.cellvars
-        prev_func = self.current_func_name
 
         module_namedexpr_targets: set[str] = set()
         if self.current_func_name == "molt_main":
@@ -126,59 +125,57 @@ class ComprehensionMixin(GeneratorMixinBase):
         body = self._build_comprehension_body(node.generators, [yield_stmt])
         assigned = self._collect_assigned_names(body)
         del_targets = self._collect_deleted_names(body)
-        prev_state = self._capture_function_state()
-        self.start_function(
-            poll_func_name,
-            stateful_frame_plan=frame_plan,
-            python_first_arg=".0",
-            params=["self"],
-            compiler_params={"self"},
-            type_facts_name=func_symbol,
-            needs_return_slot=False,
-        )
-        self.current_method_first_param = None
-        self.global_decls = set(module_namedexpr_targets)
-        self.del_targets = del_targets
-        self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
-        self.unbound_check_names = set(self.scope_assigned)
-        self.in_generator = True
-        self.async_locals_base = frame_plan.async_locals_base
-        if has_closure:
-            self.async_closure_offset = frame_plan.async_closure_offset
-            self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
-            self.free_var_hints = free_var_hints
-        # The Python-visible hidden parameter owns the payload slot. Do not
-        # fabricate a Name at outer.iter's source position: source-order facts
-        # describe that original expression, not this already-acquired iterator.
-        self.async_public_hints[".0"] = outer_iter.type_hint or "Any"
-        self._async_local_offset(".0")
-        self._store_return_slot_for_stateful()
-        self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-        self._prebox_scope_cell_vars(
-            cell_plan.captured, private_cells=cell_plan.private
-        )
-        self._publish_python_frame_context()
-        self._push_qualname("<genexpr>", True)
-        try:
-            iterator = self._load_local_value(".0", guard_unbound=False)
-            assert iterator is not None
-            (outer_loop,) = body
-            if isinstance(outer_loop, ast.AsyncFor):
-                self._visit_async_for(outer_loop, iterator=iterator)
-            else:
-                assert isinstance(outer_loop, ast.For)
-                self._visit_for(outer_loop, iterator=iterator)
-        finally:
-            self._pop_qualname()
-        self._emit_generator_falloff()
-        self._spill_async_temporaries()
-        locals_layout = self._stateful_locals_layout(frame_plan, [".0"], free_vars)
-        closure_size = self._task_closure_size(
-            frame_plan.payload_slots,
-            include_gen_control=frame_plan.include_gen_control,
-        )
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
+        with self._function_state_scope():
+            self.start_function(
+                poll_func_name,
+                stateful_frame_plan=frame_plan,
+                python_first_arg=".0",
+                params=["self"],
+                compiler_params={"self"},
+                type_facts_name=func_symbol,
+                needs_return_slot=False,
+            )
+            self.current_method_first_param = None
+            self.global_decls = set(module_namedexpr_targets)
+            self.del_targets = del_targets
+            self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
+            self.unbound_check_names = set(self.scope_assigned)
+            self.in_generator = True
+            self.async_locals_base = frame_plan.async_locals_base
+            if has_closure:
+                self.async_closure_offset = frame_plan.async_closure_offset
+                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                self.free_var_hints = free_var_hints
+            # The Python-visible hidden parameter owns the payload slot. Do not
+            # fabricate a Name at outer.iter's source position: source-order facts
+            # describe that original expression, not this already-acquired iterator.
+            self.async_public_hints[".0"] = outer_iter.type_hint or "Any"
+            self._async_local_offset(".0")
+            self._store_return_slot_for_stateful()
+            self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
+            self._prebox_scope_cell_vars(
+                cell_plan.captured, private_cells=cell_plan.private
+            )
+            self._publish_python_frame_context()
+            self._push_qualname("<genexpr>", True)
+            try:
+                iterator = self._load_local_value(".0", guard_unbound=False)
+                assert iterator is not None
+                (outer_loop,) = body
+                if isinstance(outer_loop, ast.AsyncFor):
+                    self._visit_async_for(outer_loop, iterator=iterator)
+                else:
+                    assert isinstance(outer_loop, ast.For)
+                    self._visit_for(outer_loop, iterator=iterator)
+            finally:
+                self._pop_qualname()
+            self._emit_generator_falloff()
+            self._spill_async_temporaries()
+            locals_layout = self._stateful_locals_layout(frame_plan, [".0"], free_vars)
+            closure_size = self._task_closure_size(
+                frame_plan.payload_slots,
+                include_gen_control=frame_plan.include_gen_control,
+            )
         callable_val = MoltValue(
             self.next_var(), type_hint=frame_plan.function_type_hint(closure_size)
         )
@@ -217,8 +214,7 @@ class ComprehensionMixin(GeneratorMixinBase):
             kwonly_params=[],
             vararg=None,
             varkw=None,
-            default_exprs=[],
-            kw_default_exprs=[],
+            defaults=self._emit_function_default_values([], [], []),
             docstring=None,
             execution_kind=frame_plan.kind,
             varnames=list(name_layout.varnames),

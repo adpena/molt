@@ -1428,3 +1428,92 @@ A new idiom requires:
 3. Lowering steps to IR primitives
 4. Guard/deopt plan
 5. Test suite additions
+
+
+## Type-parameter frame and cell ownership
+
+A generic declaration creates its type-parameter objects once. The frontend's
+`type_parameter_bindings` overlay contains only values and planned cells owned
+by the current execution frame; it participates in the ordinary function state
+snapshot and is cleared at every function entry. A nested function, method,
+annotation evaluator, lambda, or generator expression receives inherited
+parameters through the canonical lexical closure transport. It never retains
+an enclosing frame's SSA value as an alternate lookup path.
+
+`PythonDependencyAuthority` supplies capture demand. A demanded parameter's
+single cell is allocated with its declaration, before conditional descendants,
+and is forwarded to every body and annotation consumer. Direct-only parameters
+retain their value representation. The tuple published as `__type_params__`
+contains the original objects; the lexical cell remains the shared storage
+observed by bodies and deferred annotations if reflection changes that cell.
+New inner parameters replace the declaration overlay's binding for their name;
+ordinary inherited parameters are represented by the new frame's free variables.
+
+Class lookup follows canonical binding policy: probe the live class mapping
+first, then read an eligible lexical binding only in the miss arm. A declared
+class-local miss goes to globals; a same-spelled type parameter does not change
+that rule. Explicit globals/nonlocals retain their owning storage. Original
+class bodies and base expressions use the same declaration bindings, preserving
+generic class construction without a deferred-only lookup implementation.
+
+Function definition preparation evaluates decorator expressions in source order,
+then positional and keyword defaults outside the new parameter scope. It creates
+one parameter declaration, captures the body, and publishes metadata/annotations
+from those prepared values. Bounds, constraints and parameter defaults retain
+lazy evaluators. Decorators are applied in reverse order before publication of
+the final binding. Sync, generator, coroutine and async-generator definitions,
+including methods, share this preparation authority. Stateful liveness remains
+the authority for values crossing suspension during definition inputs.
+
+Nested frame compilation uses the function lifecycle's compiler-state scope.
+It snapshots the existing reset taxonomy once, restores parent function/operation
+ownership and every snapshot field on both normal and rejected exits, and emits
+child exception-handler IR only after successful lowering. Class namespace
+identity assertions remain active; deferred evaluator failures restore the parent
+before class cleanup. Class annotation/declaration overlays also unwind on every
+exit. Compiler rejection does not emit class runtime cleanup for an abandoned
+body. This is compiler exception safety, separate from runtime exception edges.
+The scope replaces twelve manual snapshot pairs; its extra cost is one host
+context-manager allocation per compiled child, with no additional snapshot copy
+or executed-program operation. The original rejection remains the public FE008
+compatibility diagnostic's cause.
+
+The design follows [PEP 695](https://peps.python.org/pep-0695/),
+[Python's annotation-scope rules](https://docs.python.org/3.14/reference/executionmodel.html#annotation-scopes),
+and [PEP 649](https://peps.python.org/pep-0649/). CPython's
+[`codegen_nameop` and closure construction](https://github.com/python/cpython/blob/3.14/Python/codegen.c)
+use lexical cells and class-dictionary-before-cell lookup rather than references
+to an enclosing frame's evaluation stack. Molt preserves that ownership through
+its existing closure tuple and free-variable metadata protocol.
+
+Source-level cost: definition preparation adds one small host-side record and a
+scoped context per compiled definition; nongeneric declarations avoid copying
+the overlay. These compile-time allocations require measurement alongside IR
+size and compile latency. Capture planning reuses memoized lexical summaries and scales
+with the definition's existing dependency graph. A captured parameter allocates
+one cell per executed declaration, independent of the number of descendant
+closures. Uncaptured parameters allocate no cell. Deferred mapping hits load no
+parameter cell; misses pay the existing closure-slot/cell read and unbound guard.
+There are no new syscalls, processes, locks, serialization passes, or backend ABI
+changes. Moving default evaluation before callable creation removes obsolete
+callable spills around those defaults. These are structural cost bounds, not
+benchmark measurements. Native and WASM consume the same frontend contract;
+version-matched differential execution remains required for support claims.
+
+The lexical-scope syntax validator runs before reachability pruning. It uses the
+whole-body declaration and definition-region authority to reject `nonlocal`
+bindings to type parameters on every supported Python minor. Ordinary function
+bindings and CPython's ordinary class shadow retain their behavior: a class
+shadow changes descendant classification without supplying nonlocal storage.
+Decorator, default, alias and type-parameter regions retain their lexical
+boundaries. This adds a source traversal and scope-local declaration census,
+with no executed-program work. The matching reference is CPython's
+[`analyze_name` and `analyze_block`](https://github.com/python/cpython/blob/3.14/Python/symtable.c).
+
+The syntax-safety trade is one linear source walk on targets 3.13 and later,
+which previously skipped this validation. A bounded CPython 3.14.9 measurement
+over four preparsed modules totaling 19,444 AST nodes took a median 6.4 ms;
+target 3.12 retained its existing 6.4 ms walk. Traced peak temporary allocation
+was below 128 KiB for that corpus, compared with 41 KiB for the old 3.12
+validator. This measures the validator alone, without parsing or lowering;
+it does not establish whole-compile latency or executed-program performance.

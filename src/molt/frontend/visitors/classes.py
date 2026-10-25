@@ -744,14 +744,24 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         return dataclass_opts, other_decorators
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        previous_annotations = self.class_annotation_items
+        previous_exec_map = self.class_annotation_exec_map
+        previous_exec_counter = self.class_annotation_exec_counter
+        previous_type_params = self.type_parameter_bindings
+        try:
+            self._emit_class_definition(node)
+        finally:
+            self.class_annotation_items = previous_annotations
+            self.class_annotation_exec_map = previous_exec_map
+            self.class_annotation_exec_counter = previous_exec_counter
+            self.type_parameter_bindings = previous_type_params
+
+    def _emit_class_definition(self, node: ast.ClassDef) -> None:
         class_id = self._class_id_for_definition(node)
         self.local_class_ids.append(class_id)
         # CPython 3.13 added __firstlineno__ and __static_attributes__ to every
         # class namespace; earlier targets never see either key.
         source_keys = self.target_python >= (3, 13)
-        prev_class_annotations = self.class_annotation_items
-        prev_class_exec_map = self.class_annotation_exec_map
-        prev_class_exec_counter = self.class_annotation_exec_counter
         self.class_annotation_items = []
         self.class_annotation_exec_map = None
         self.class_annotation_exec_counter = 0
@@ -771,14 +781,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     )
                 decorator_vals.append(decorator_val)
 
-        type_param_vals, type_param_map = self._emit_type_params_values(
-            getattr(node, "type_params", None)
-        )
-        prev_type_params = self.annotation_type_params
+        type_param_vals, type_param_map = self._emit_type_params_values(node)
         if type_param_map:
-            merged = dict(prev_type_params)
+            merged = dict(self.type_parameter_bindings)
             merged.update(type_param_map)
-            self.annotation_type_params = merged
+            self.type_parameter_bindings = merged
 
         base_vals: list[MoltValue] = []
         # Each base resolves through binding flow to a class statement or a
@@ -1427,6 +1434,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         self._class_ns_stack.append(class_ns_scope)
         self._push_qualname(python_definition_name(node), False, qualname=qualname)
         python_frame_scope = self._enter_python_frame_context_scope(class_body=True)
+        class_body_complete = False
         try:
             if dynamic_namespace is not None:
                 key_val = MoltValue(self.next_var(), type_hint="str")
@@ -1582,6 +1590,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     "__classdictcell__",
                     class_ns_scope.annotation_namespace_cell,
                 )
+            class_body_complete = True
         finally:
             self._pop_qualname()
             self._class_body_depth -= 1
@@ -1593,7 +1602,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 class_ns_scope.global_names,
                 class_ns_scope.nonlocal_names,
             )
-            self._exit_python_frame_context_scope(python_frame_scope)
+            self._exit_python_frame_context_scope(
+                python_frame_scope, emit_cleanup=class_body_complete
+            )
 
         if dynamic_build:
             if (
@@ -1843,8 +1854,4 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             class_info.pop("class_value_name", None)
             class_info.pop("constructor_fold_safe", None)
 
-        self.class_annotation_items = prev_class_annotations
-        self.class_annotation_exec_map = prev_class_exec_map
-        self.class_annotation_exec_counter = prev_class_exec_counter
-        self.annotation_type_params = prev_type_params
         return None

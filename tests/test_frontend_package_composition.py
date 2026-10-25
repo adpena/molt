@@ -35,7 +35,11 @@ from molt.frontend import (
     compile_to_tir,
 )
 from molt.frontend._protocol import _GeneratorProtocol
-from molt.frontend._types import CodeSlotDeclaration, _ClassNsScope
+from molt.frontend._types import (
+    CodeSlotDeclaration,
+    TypeParameterBinding,
+    _ClassNsScope,
+)
 from molt.frontend.lowering.generator_state import (
     FUNCTION_CONTEXT_STATE_ATTRS,
     FUNCTION_STATE_SNAPSHOT_ATTRS,
@@ -675,7 +679,12 @@ def test_function_state_isolates_and_restores_enclosing_class_storage() -> None:
         names=set(),
         class_name="Outer",
         module_name="__main__",
+        class_node=ast.parse("class Outer: pass").body[0],
     )
+    parameters = {
+        "T": TypeParameterBinding(MoltValue("outer_T"), MoltValue("outer_T_cell"))
+    }
+    gen.type_parameter_bindings = parameters
     scopes = [owner]
     gen._class_ns_stack = scopes
     gen._class_body_depth = 2
@@ -683,11 +692,13 @@ def test_function_state_isolates_and_restores_enclosing_class_storage() -> None:
 
     gen.start_function("nested", code_slots=CodeSlotDeclaration((), (), (), ()))
     assert gen._class_ns_stack == []
+    assert gen.type_parameter_bindings == {}
     assert gen._class_ns_stack is not scopes
     assert gen._class_body_depth == 0
 
     gen._restore_function_state(state)
     assert gen._class_ns_stack is scopes
+    assert gen.type_parameter_bindings is parameters
     assert gen._class_ns_stack == [owner]
     assert gen._class_body_depth == 2
 

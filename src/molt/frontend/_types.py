@@ -317,6 +317,24 @@ def loaded_method_self_name(op: MoltOp) -> str:
     return name
 
 
+@dataclass(frozen=True)
+class TypeParameterBinding:
+    """One current-frame declaration value and its planned shared lexical cell."""
+
+    value: MoltValue
+    cell: MoltValue | None
+
+
+@dataclass(frozen=True)
+class FunctionDefinitionValues:
+    """Definition inputs evaluated in Python order before the body closure."""
+
+    decorators: tuple[tuple[MoltValue, int | None], ...]
+    defaults: tuple[MoltValue, MoltValue]
+    type_params: tuple[MoltValue, ...]
+    type_parameter_bindings: dict[str, TypeParameterBinding]
+
+
 @dataclass
 class _ClassNsScope:
     """Active class-body namespace while the body is lowered as a block (P0 #50).

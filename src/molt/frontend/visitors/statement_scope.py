@@ -22,7 +22,7 @@ from molt.compiler_analysis.python_binding_flow import (
 )
 from molt.compiler_analysis.python_imports import resolve_relative_import
 from molt.compiler_analysis.python_syntax import require_python_syntax_target
-from molt.compiler_analysis.python_lexical_scope import class_annotation_syntax_error
+from molt.compiler_analysis.python_lexical_scope import python_scope_syntax_error
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
@@ -190,20 +190,19 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             self.module_name, node, self.target_python
         )
         future_annotations = self._module_has_future_annotations(node)
-        syntax_error = class_annotation_syntax_error(
+        syntax_error = python_scope_syntax_error(
             node,
             target_python=self.target_python,
             future_annotations=future_annotations,
         )
         if syntax_error is not None:
-            error_node, message = syntax_error
             raise_compatibility_error(
                 self.compat,
-                error_node,
+                syntax_error.node,
                 FrontendRejection(
                     Diagnostic.SYNTAX_FORM,
-                    message,
-                    "Use target Python 3.13+ or remove nested code from this annotation scope.",
+                    syntax_error.message,
+                    syntax_error.alternative,
                 ),
             )
         selected = self._prune_native_support_module_functions(node)
