@@ -717,7 +717,7 @@ def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> No
 def test_dev_py_uv_no_sync_uses_exact_projection_without_runtime_reprobe(
     monkeypatch, tmp_path
 ) -> None:
-    from molt.cli import source_build_environment as publisher
+    from molt import source_build_environment as publisher
     from molt.checkout_provisioning import ProvisioningError
 
     clone = _isolated_checkout(dev, monkeypatch, tmp_path)

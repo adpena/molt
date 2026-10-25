@@ -19,7 +19,6 @@ from typing import Mapping, TextIO, TypeGuard
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from molt import disk_capacity
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
-from molt.python_environment_location import environment_bytecode_prefix
 from molt.temporary_artifacts import new_temporary_directory
 from molt.exact_json import (
     ExactJsonError,
@@ -1764,9 +1763,6 @@ def _run_one(
             env.update(
                 {
                     "MOLT_MEMORY_GUARD_STATE_ROOT": str(proof_tmp / "memory_guard"),
-                    "PYTHONPYCACHEPREFIX": str(
-                        environment_bytecode_prefix(Path(env["UV_PROJECT_ENVIRONMENT"]))
-                    ),
                     "TEMP": str(payload_tmp),
                     "TMP": str(payload_tmp),
                     "TMPDIR": str(payload_tmp),

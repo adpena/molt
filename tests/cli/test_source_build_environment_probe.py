@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-from molt.cli import source_build_environment as authority
-from molt.cli import source_build_environment_schema as authority_schema
+from molt import source_build_environment as authority
+from molt import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import (
     copy_python_capture_authority,
     create_test_venv,
@@ -28,7 +28,7 @@ def test_cross_checkout_probe_admits_selected_editable_reader_and_refuses_foreig
     from molt import python_environment_identity as identity
     from molt.python_environment_location import _site_roots
 
-    selected = tmp_path / "selected"
+    selected = tmp_path / "selected-\u03bb"
     copy_python_capture_authority(selected)
     foreign = tmp_path / "foreign"
     shutil.copytree(selected, foreign)

@@ -169,8 +169,8 @@ def main(argv: list[str] | None = None) -> int:
         managed = not (args.venv or os.environ.get("MOLT_VENV"))
         if managed:
             from molt.dx import DxConfigError, DxProject
-            from molt.cli.source_build_environment import load_development_environment
-            from molt.cli.source_build_environment_schema import (
+            from molt.source_build_environment import load_development_environment
+            from molt.source_build_environment_schema import (
                 SourceBuildEnvironmentError,
             )
 

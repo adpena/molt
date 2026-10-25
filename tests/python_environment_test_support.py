@@ -14,7 +14,7 @@ import venv
 
 from molt import python_environment_identity
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
-from molt.cli import source_build_environment_schema
+from molt import source_build_environment_schema
 from molt.exact_json import canonical_json_sha256
 from molt.python_external_custody import empty_external_import_custody
 from tests.process_guard_common import run_guarded_test_process
@@ -586,7 +586,7 @@ def materialize_development_environment(
     import json
     import tomllib
 
-    from molt.cli import source_build_environment as owner
+    from molt import source_build_environment as owner
     from molt.dx import checkout_component
     from molt.python_environment_location import (
         environment_bytecode_prefix,

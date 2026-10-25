@@ -1879,8 +1879,8 @@ class DxProject:
         *,
         python: str | None,
     ) -> ProcessEnvironment:
-        from molt.cli.source_build_environment import load_development_environment
-        from molt.cli.source_build_environment_schema import SourceBuildEnvironmentError
+        from molt.source_build_environment import load_development_environment
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
         from molt.python_environment_location import environment_bytecode_prefix
 
         selected = self.uv_project_env_dir(env)

@@ -359,8 +359,8 @@ def _run(
 def _lock_digests(spec: LockedTree | DevelopmentEnvironment) -> dict[str, str]:
     digests: dict[str, str] = {}
     if isinstance(spec, DevelopmentEnvironment):
-        from molt.cli.source_build_environment import _editable_binding
-        from molt.cli.source_build_environment_schema import SourceBuildEnvironmentError
+        from molt.source_build_environment import _editable_binding
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
 
         try:
             binding = _editable_binding(spec.checkout)
@@ -438,7 +438,7 @@ def _lock_path(spec: CheckoutInput) -> Path:
 
 
 def _development_intent(spec: DevelopmentEnvironment) -> dict:
-    from molt.cli.source_build_environment_schema import (
+    from molt.source_build_environment_schema import (
         source_build_environment_contract,
     )
 
@@ -543,8 +543,8 @@ def selected_development_environment(
 
 def _current_development_environment(spec: DevelopmentEnvironment) -> Path | None:
     """Validate a selection's published recipe at an operation boundary."""
-    from molt.cli.source_build_environment import load_development_environment
-    from molt.cli.source_build_environment_schema import SourceBuildEnvironmentError
+    from molt.source_build_environment import load_development_environment
+    from molt.source_build_environment_schema import SourceBuildEnvironmentError
 
     selected = selected_development_environment(
         spec.checkout, spec.environment, python=spec.python, groups=spec.groups
@@ -857,8 +857,8 @@ def ensure_input(spec: CheckoutInput) -> Ensured:
     """Make ``spec`` current; raise `ProvisioningError` when it cannot be."""
     started = time.monotonic()
     if isinstance(spec, DevelopmentEnvironment):
-        from molt.cli.source_build_environment import development_environment
-        from molt.cli.source_build_environment_schema import SourceBuildEnvironmentError
+        from molt.source_build_environment import development_environment
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
 
         try:
             # Current selection is a cheap recipe projection, not a claim that

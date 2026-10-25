@@ -2602,8 +2602,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
 
     import packaging
 
-    from molt.cli import source_build_environment as publisher
-    from molt.cli import source_build_environment_schema as image_schema
+    from molt import source_build_environment as publisher
+    from molt import source_build_environment_schema as image_schema
     from molt.python_environment_location import environment_provisioning_record_path
     from molt.python_uv_lock_identity import selected_uv_lock_group_closure
 
@@ -11317,8 +11317,8 @@ def test_proof_queue_named_lane_can_detach_runner(
 
     # This test owns dispatch only. Prepared-environment custody is exercised
     # by named-lane tests; provisioning packages here leaks real checkout state.
-    from molt.cli import source_build_environment as environment_authority
-    from molt.cli.source_build_environment_schema import (
+    from molt import source_build_environment as environment_authority
+    from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
 
@@ -15119,7 +15119,7 @@ def test_proof_queue_diagnoses_missing_locked_source_build_environment(
         cwd=state.ROOT,
         resource_family="wasm-source-extension",
         contention_key="wasm:pact-seal-regen",
-        scopes=["src/molt/cli/source_build_environment.py"],
+        scopes=["src/molt/source_build_environment.py"],
         git_snapshot={
             "available": True,
             "head": "abc123",

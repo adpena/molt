@@ -636,8 +636,8 @@ def test_development_selection_distinguishes_new_intent_from_invalid_record(
 def test_development_contract_upgrade_selects_new_intent_without_repairing_old_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import source_build_environment as publisher
-    from molt.cli import source_build_environment_schema as schema
+    from molt import source_build_environment as publisher
+    from molt import source_build_environment_schema as schema
 
     root, artifacts = tmp_path / "project", tmp_path / "artifacts"
     _init_repo(root)

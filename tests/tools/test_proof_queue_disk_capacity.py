@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -287,12 +288,14 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
     assert derived["MOLT_TARGET_ROOT"] == str(requested_tools)
     assert derived["MOLT_SESSION_ID"] == session_id
     assert "RUSTC_WRAPPER" not in derived
+    # Cargo owns no Python selection. DX's ordinary scratch policy must reach
+    # launch without inventing an immutable Python image for this command.
+    assert "UV_PROJECT_ENVIRONMENT" not in derived
     output_names = (
         "CARGO_TARGET_DIR",
         "MOLT_DIFF_CARGO_TARGET_DIR",
         "MOLT_CACHE",
         "UV_CACHE_DIR",
-        "UV_PROJECT_ENVIRONMENT",
         "PIP_CACHE_DIR",
         "RUFF_CACHE_DIR",
         "SCCACHE_DIR",
@@ -319,6 +322,8 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
     assert launch_env["MOLT_SESSION_ID"] == session_id
     assert launch_env["MOLT_USE_SCCACHE"] == "0"
     assert "RUSTC_WRAPPER" not in launch_env
+    assert "UV_PROJECT_ENVIRONMENT" not in launch_env
+    assert launch_env["PYTHONPYCACHEPREFIX"] == derived["PYTHONPYCACHEPREFIX"]
     for name in output_names:
         assert Path(launch_env[name]).is_relative_to(requested_root), (
             name,
@@ -327,6 +332,58 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
     row = state._row_by_run_id(conn, "requested-env-unit")
     assert row is not None and row["status"] == "failed" and row["guard_pid"] is None
     conn.close()
+
+
+def test_typed_python_policy_uses_captured_prefix_without_uv_selection(
+    tmp_path,
+) -> None:
+    selected = tmp_path / "managed-image" / ("a" * 64)
+    environment = {
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "foreign-cache"),
+        "PYTHONDONTWRITEBYTECODE": "0",
+    }
+    command, updates = command_admission._supervised_execution_command(
+        {"python": {"kind": "direct"}},
+        [sys.executable, "-I", "-c", "pass"],
+        {
+            "python": {
+                "location": {"prefix": str(selected)},
+                "executable": sys.executable,
+                "base_executable": sys.executable,
+            }
+        },
+        environment=environment,
+        cwd=tmp_path,
+    )
+    assert command[1:5] == [
+        "-B",
+        "-X",
+        f"pycache_prefix={selected / 'bytecode'}",
+        "-I",
+    ]
+    assert updates["PYTHONPYCACHEPREFIX"] == str(selected / "bytecode")
+    assert updates["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "UV_PROJECT_ENVIRONMENT" not in updates
+    assert environment["PYTHONPYCACHEPREFIX"] == str(tmp_path / "foreign-cache")
+
+
+@pytest.mark.parametrize(
+    "located",
+    [{}, {"python": {}}, {"python": {"location": {"prefix": "relative-image"}}}],
+)
+def test_typed_python_policy_refuses_missing_captured_selection(
+    tmp_path, located
+) -> None:
+    with pytest.raises(
+        ValueError, match="no (located runtime|captured environment prefix)"
+    ):
+        command_admission._supervised_execution_command(
+            {"python": {"kind": "direct"}},
+            [sys.executable, "-c", "pass"],
+            located,
+            environment={"PYTHONPYCACHEPREFIX": str(tmp_path / "scratch")},
+            cwd=tmp_path,
+        )
 
 
 @pytest.mark.parametrize(

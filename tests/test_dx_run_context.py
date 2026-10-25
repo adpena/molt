@@ -1751,7 +1751,7 @@ def test_explicit_toolchain_root_is_preserved_independent_of_artifact_root(
 
 
 def test_uv_project_env_is_stable_across_sessions(tmp_path: Path, monkeypatch) -> None:
-    from molt.cli import source_build_environment
+    from molt import source_build_environment
 
     image = materialize_development_environment(tmp_path, tmp_path, select=True)
 

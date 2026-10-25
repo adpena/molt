@@ -145,7 +145,8 @@ The code that decides whether a change lands is never the change.
   queue run as services, not from the pull request.
 - **Design.** `integrate`, `land`, the queue runner, `queue withdraw`,
   `lane start` and `lane retire` fetch first. Then they run the driver from
-  main's tip: `git archive <tip>` of `tools`, `src/molt`, `config` (the data
+  main's tip: `git archive <tip>` of `tools`, `src/molt`, `src/sitecustomize.py`,
+  `config` (the data
   the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
   and `.python-version` extracts into
   `<git-common-dir>/molt/controllers/<key>`, where the key is the digest of

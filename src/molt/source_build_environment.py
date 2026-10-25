@@ -18,13 +18,18 @@ from typing import cast
 
 from packaging.requirements import InvalidRequirement, Requirement
 
-from molt.cli import source_build_environment_schema as _schema
-from molt.cli.atomic_io import _atomic_write_json, _remove_file_or_tree
+from molt import source_build_environment_schema as _schema
+from molt.file_deletion import delete_path
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.toolchain_identity import stable_executable_probe
 from molt.python_file_node_custody import PythonFileCaptureContext
 from molt.dx import checkout_custody, artifact_root, checkout_component, DxProject
-from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
+from molt.exact_json import (
+    ExactJsonError,
+    canonical_json_sha256,
+    loads_exact,
+    write_exact,
+)
 from molt import process_guard
 from molt import python_environment_identity
 from molt.python_uv_lock_identity import (
@@ -841,18 +846,18 @@ def _provision_source_build_environment(
                     "immutable source-build environment address exists without "
                     f"its exact attestation or sibling provisioning record: {root}"
                 )
-            _remove_file_or_tree(root)
+            removed, error = delete_path(root)
+            if not removed:
+                raise _schema.SourceBuildEnvironmentError(
+                    f"cannot recover unpublished source-build environment {root}: {error}"
+                )
         elif provisioning is not None and provisioning != expected_provisioning:
             raise _schema.SourceBuildEnvironmentError(
                 f"foreign source-build provisioning record: {provisioning_path}"
             )
         root.parent.mkdir(parents=True, exist_ok=True)
         if provisioning is None:
-            _atomic_write_json(
-                provisioning_path,
-                expected_provisioning,
-                sort_keys=True,
-            )
+            write_exact(provisioning_path, expected_provisioning)
 
         environment = ProcessEnvironmentBuilder(
             os.environ if environ is None else environ
@@ -916,11 +921,7 @@ def _provision_source_build_environment(
         manifest = _attested_environment(custody, realized)
         _validate_recipe_inputs(repo_root, custody)
         verify_inputs()
-        _atomic_write_json(
-            manifest_path,
-            manifest,
-            sort_keys=True,
-        )
+        write_exact(manifest_path, manifest)
         provisioning_path.unlink()
         return _schema.LockedSourceBuildEnvironment(
             root=root,
