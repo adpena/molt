@@ -1529,7 +1529,41 @@ def test_release_metadata_receivers_own_guarded_namespace(
     def unexpected_child(*_args, **_kwargs):
         pytest.fail("release metadata bypassed the mocked core guard")
 
-    monkeypatch.setattr(subprocess, "Popen", unexpected_child)
+    from molt import process_spawn
+    from tests.process_guard_common import install_thread_module_view
+    from tools import command_execution, memory_guard
+    from tools.proof_queue_pkg import command_identity
+
+    # CommandExecutor has a separate source-bound guard module. Fence its
+    # bounded-probe launch too, plus the guarded/native launch owners. A view
+    # of Popen alone cannot fence subprocess.run's original module globals.
+    launch_readers = (
+        python_interpreter,
+        command_identity,
+        process_guard,
+        command_execution._process_guard_authority(
+            str(verify_consumer._COMMANDS.repo_root)
+        ),
+        command_execution,
+        memory_guard,
+        process_spawn,
+    )
+    real_popen, real_run = subprocess.Popen, subprocess.run
+    install_thread_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        *launch_readers,
+        Popen=unexpected_child,
+        run=unexpected_child,
+    )
+    assert subprocess.Popen is real_popen and subprocess.run is real_run
+    for reader in launch_readers:
+        for launch in (reader.subprocess.Popen, reader.subprocess.run):
+            with pytest.raises(
+                pytest.fail.Exception, match="bypassed the mocked core guard"
+            ):
+                launch([str(python)])
 
     def invoke():
         if receiver.startswith("execution"):

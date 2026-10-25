@@ -482,8 +482,18 @@ def test_guest_oracle_cannot_admit_host_only_minor(verifier, monkeypatch):
 
 
 def test_minimum_host_request_does_not_use_guest_catalog(verifier, monkeypatch):
-    monkeypatch.setattr(
-        python_interpreter.platform, "python_implementation", lambda: "PyPy"
+    from tests.process_guard_common import install_module_view
+
+    install_module_view(
+        monkeypatch,
+        "platform",
+        python_interpreter.platform,
+        python_interpreter,
+        python_implementation=lambda: "PyPy",
+    )
+    # The host meets the version floor; its implementation must still exclude it.
+    install_module_view(
+        monkeypatch, "sys", sys, python_interpreter, version_info=(3, 15, 1)
     )
     calls = []
 
