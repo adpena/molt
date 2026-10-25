@@ -587,7 +587,7 @@ def _materialize_cached_backend_artifact(
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
     artifact_contract: BackendArtifactContract,
-    candidate_identity: StableRegularFileIdentity | None = None,
+    stdlib_object_path: Path | None,
     require_origin: bool = False,
 ) -> _SyncedBackendOutput | None:
     try:
@@ -598,8 +598,29 @@ def _materialize_cached_backend_artifact(
             candidate_identity = _validate_backend_cache_artifact(
                 candidate,
                 artifact_contract=artifact_contract,
-                identity=candidate_identity,
             )
+            # Eligibility belongs to this admitted generation, before origin
+            # requirements, synchronized-output reuse or any publication.
+            try:
+                unresolved_chunks = (
+                    artifact_contract.is_native
+                    and _native_object_has_unresolved_module_chunks(
+                        candidate,
+                        stdlib_object_path,
+                        target_triple=artifact_contract.target_triple,
+                        identity=candidate_identity,
+                    )
+                )
+            except _native_symbols.NativeSymbolArtifactError:
+                # A changed optional artifact is a miss; reader failures remain
+                # hard errors in the enclosing handler below.
+                return None
+            if unresolved_chunks:
+                warnings.append(
+                    "Ignoring native cache artifact with unresolved user module chunks: "
+                    f"{candidate}"
+                )
+                return None
             generation = _backend_cache_generation(
                 candidate, identity=candidate_identity
             )
@@ -959,55 +980,6 @@ def _try_cached_backend_candidates(
             stage_start,
         )
         stage_start = time.perf_counter()
-        try:
-            candidate_identity = _validate_backend_cache_artifact(
-                candidate, artifact_contract=artifact_contract
-            )
-        except BackendArtifactValidationError:
-            _record_backend_cache_stage_ms(
-                stage_timings_ms,
-                "backend_cache_try_artifact_valid",
-                stage_start,
-            )
-            warnings.append(f"Ignoring invalid cache artifact: {candidate}")
-            continue
-        _record_backend_cache_stage_ms(
-            stage_timings_ms,
-            "backend_cache_try_artifact_valid",
-            stage_start,
-        )
-        stage_start = time.perf_counter()
-        try:
-            unresolved_chunks = (
-                artifact_contract.is_native
-                and _native_object_has_unresolved_module_chunks(
-                    candidate,
-                    stdlib_object_path,
-                    target_triple=artifact_contract.target_triple,
-                    identity=candidate_identity,
-                )
-            )
-        except _native_symbols.NativeSymbolArtifactError:
-            # Optional candidate vanished/changed after admission. Reader/tool
-            # operational failures remain errors, not cache-miss retries.
-            continue
-        if unresolved_chunks:
-            _record_backend_cache_stage_ms(
-                stage_timings_ms,
-                "backend_cache_try_unresolved_chunks",
-                stage_start,
-            )
-            warnings.append(
-                "Ignoring native cache artifact with unresolved user module chunks: "
-                f"{candidate}"
-            )
-            continue
-        _record_backend_cache_stage_ms(
-            stage_timings_ms,
-            "backend_cache_try_unresolved_chunks",
-            stage_start,
-        )
-        stage_start = time.perf_counter()
         materialized = _materialize_cached_backend_artifact(
             project_root,
             candidate,
@@ -1031,7 +1003,7 @@ def _try_cached_backend_candidates(
             state=state,
             output_stat=output_stat,
             artifact_contract=artifact_contract,
-            candidate_identity=candidate_identity,
+            stdlib_object_path=stdlib_object_path,
             require_origin=require_origin,
         )
         if materialized is not None:

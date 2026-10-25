@@ -32785,6 +32785,7 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="function",
+        stdlib_object_path=None,
         source_key="function-key",
         cache_path=cache_path,
         warnings=warnings,
@@ -32990,7 +32991,8 @@ def test_try_cached_backend_candidates_preserves_invalid_candidate(
 
     assert hit is None
     assert candidate.exists()
-    assert warnings == [f"Ignoring invalid cache artifact: {candidate}"]
+    assert len(warnings) == 1 and "Cache candidate admission failed" in warnings[0]
+    assert not output_artifact.exists()
 
 
 def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
@@ -33041,6 +33043,7 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,
@@ -33061,6 +33064,7 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,
@@ -33097,6 +33101,7 @@ def test_materialize_cached_backend_artifact_isolates_mutable_output_from_immuta
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,
@@ -33153,6 +33158,7 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,

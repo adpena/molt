@@ -588,6 +588,17 @@ archive admission hashes current bytes before reusing parsed member semantics,
 and extracted members are rehashed before reuse. A supplied digest never
 authorizes different bytes merely because metadata matches.
 
+Backend cache candidate materialization owns fresh format/content admission and
+native module-chunk eligibility under the existing candidate publication lock.
+Eligibility precedes origin requirements, synchronized-output reuse and any
+copy or promotion; direct callers cannot bypass admission with a detached
+identity. Candidate selection does not repeat that admission. The
+`backend_cache_try_materialize` diagnostic measures the whole attempt, including
+lock wait and eligibility; the former selection-only `artifact_valid` and
+`unresolved_chunks` timing subphases are retired. Invalid present candidates now
+acquire the publication lock before rejection. Published output and runtime/link
+admission retain their separate content and semantic checks.
+
 WASM fact, linking-symbol and structural caches reuse parsing or validation
 results only after current member content matches. Cold structural validation
 retains the owned handle through the external validator. Final binding checks
