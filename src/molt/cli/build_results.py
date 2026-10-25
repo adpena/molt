@@ -423,9 +423,9 @@ def _native_publication_stage(
     is copied.
 
     Only a Mach-O image carries a code signature, and it must name the
-    published binary. Apple ld signs its stage that way at link time, so the
-    stage keeps that signature unless a tool rewrote the image after the
-    link. Every other Mach-O stage is re-signed (codesign cost 1.4-3.2 s on
+    published binary. When the selected linker signs its stage that way,
+    the stage keeps that signature unless a tool rewrote the image after
+    the link. Every other Mach-O stage is re-signed (codesign cost 1.4-3.2 s on
     the same binary).
     """
     macho = object_format is NativeObjectFormat.MACHO

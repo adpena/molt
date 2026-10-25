@@ -270,8 +270,10 @@ Canonical location:
 
 Minimum API boundary:
 
-- `build_molt_conformance_env(project_root: Path, session_id: str) -> dict[str, str]`
-- `ensure_molt_conformance_dirs(env: dict[str, str]) -> None`
+- `build_molt_conformance_env(project_root: Path, session_id: str | None, base: Mapping[str, str], *, create_dirs: bool = False) -> ProcessEnvironment`
+
+DX owns artifact directory creation. Environment selectors are preserved, and only
+the immutable image publisher creates managed Python/bytecode paths.
 - `load_molt_conformance_suite(corpus_dir: Path, suite: str, smoke_manifest: Path) -> list[Path]`
 - `write_molt_conformance_summary(path: Path, summary: dict[str, object]) -> None`
 - `conformance_exit_code(summary: dict[str, object]) -> int`

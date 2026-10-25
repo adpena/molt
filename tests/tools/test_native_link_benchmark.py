@@ -49,7 +49,7 @@ def _plan(tmp_path: Path) -> NativeLinkPlan:
             linker=NativeLinkerKind.LLD,
             object_format=NativeObjectFormat.COFF,
             explicit_no_icf_flag="identity-policy",
-            signs_as_final_output=False,
+            requests_adhoc_signature=False,
             strips_local_symbols=True,
         ),
         policy=NativeLinkPolicy(

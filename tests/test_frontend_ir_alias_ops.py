@@ -291,6 +291,70 @@ def _lowered_ops(source: str, **kwargs: object) -> list[dict]:
     return [op for fn in ir["functions"] for op in fn["ops"]]
 
 
+def _assert_loaded_method_call(
+    ops: list[dict], name: str, *, positional_count: int
+) -> tuple[dict, dict]:
+    """The call adopts the exact loaded pair, with no second receiver lookup."""
+    (load,) = [
+        op for op in ops if op["kind"] == "load_method" and op.get("s_value") == name
+    ]
+    (call,) = [
+        op
+        for op in ops
+        if op["kind"] == "call_loaded_method"
+        and op["args"][:2] == [load["var"], load["out"]]
+    ]
+    assert call["args"][:2] == [load["var"], load["out"]]
+    assert len(call["args"]) == positional_count + 2
+    assert call["argument_custody"] == ["transferred"] * (positional_count + 2)
+    assert [op for op in ops if load["out"] in op.get("args", ())] == [call]
+    assert ops.index(load) < ops.index(call)
+    return load, call
+
+
+def _assert_dotted_native_method_dispatch(ir: dict, imported_name: str) -> None:
+    """Export metadata neither replaces live attributes nor imports a child."""
+    from tests.test_frontend_builtin_call_lowering import (
+        _binding_reads,
+        _import_transaction_details,
+        _local_reads,
+    )
+
+    (function,) = [fn for fn in ir["functions"] if fn["name"] == "__main____f"]
+    ops = function["ops"]
+    load, call = _assert_loaded_method_call(
+        ops, "distance_transform_edt", positional_count=1
+    )
+    (name,) = [
+        op for op in ops if op["kind"] == "const_str" and op.get("s_value") == "ndimage"
+    ]
+    (child,) = [
+        op
+        for op in ops
+        if op["kind"] == "module_get_attr" and op["args"][1] == name["out"]
+    ]
+    assert load["args"] == [child["out"]]
+    assert ops.index(child) < ops.index(load) < ops.index(call)
+    assert call["args"][2] in _local_reads(ops[: ops.index(call)], "data")
+    assert set(call["args"]) <= (
+        _defined_before(ops, ops.index(call)) | set(function["params"])
+    )
+    (imported,) = [
+        op
+        for op in ops
+        if op["kind"] == "call"
+        and op.get("s_value") == "molt_importlib_import_transaction"
+    ]
+    assert _import_transaction_details(ops) == [(imported_name, (), 0)]
+    assert child["args"][0] in _binding_reads(
+        ops[: ops.index(child)], {imported["out"]}
+    )
+    assert ops.index(imported) < ops.index(child)
+    assert not any(
+        op["kind"] == "invoke_ffi" for fn in ir["functions"] for op in fn["ops"]
+    )
+
+
 def test_dead_static_module_branch_preserves_names_without_executing_import() -> None:
     source = (
         "from __future__ import annotations\n"
@@ -399,7 +463,7 @@ def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
 @pytest.mark.parametrize(
     "arguments,expected",
     [
-        ("1", "CALL_FUNC"),
+        ("1", "CALL_LOADED_METHOD"),
         ("value=1", "CALL_BIND"),
         ('*(1,), **{"value": 2}', "CALL_INDIRECT"),
     ],
@@ -407,17 +471,27 @@ def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
 def test_raw_generic_attr_call_uses_matching_argument_protocol(
     arguments, expected
 ) -> None:
-    kinds = _raw_kinds(
+    ops = _raw_ops(
         f"import discovered_mod\ndiscovered_mod.foo({arguments})\n",
         known_modules={"discovered_mod"},
     )
-    assert expected in kinds
+    assert expected in {op.kind for op in ops}
+    if expected == "CALL_LOADED_METHOD":
+        (load,) = [op for op in ops if op.kind == "LOAD_METHOD" and op.args[1] == "foo"]
+        (call,) = [op for op in ops if op.kind == "CALL_LOADED_METHOD"]
+        assert call.args[0] == load.result
+        assert len(call.args) == 2
+        assert call.metadata["self_or_null"] == load.metadata["self_or_null"]
+        assert call.metadata["argument_custody"] == ["transferred"] * 3
+        (argument,) = [op for op in ops if op.result.name == call.args[1].name]
+        assert argument.kind == "CONST" and argument.args == [1]
+        assert ops.index(load) < ops.index(argument) < ops.index(call)
 
 
 @pytest.mark.parametrize(
     "arguments,expected",
     [
-        ("1", "call_func"),
+        ("1", "call_loaded_method"),
         ("value=1", "call_bind"),
         ('*(1,), **{"value": 2}', "call_indirect"),
     ],
@@ -430,13 +504,33 @@ def test_lowered_generic_attr_call_uses_matching_argument_protocol(
         known_modules={"discovered_mod"},
     )
     assert expected in {op["kind"] for op in ops}
+    if expected == "call_loaded_method":
+        load, call = _assert_loaded_method_call(ops, "foo", positional_count=1)
+        (argument,) = [op for op in ops if op.get("out") == call["args"][2]]
+        assert argument["kind"] == "const" and argument["value"] == 1
+        # Lowering may hoist this pure literal; both operands must precede use.
+        assert ops.index(argument) < ops.index(call)
 
 
 def test_lowered_dynamic_noncallable_attr_uses_runtime_callable_check() -> None:
-    kinds = _lowered_kinds(
+    ops = _lowered_ops(
         "import types\nns = types.SimpleNamespace()\nns.fn = 7\nns.fn()\n"
     )
-    assert "call_func" in kinds
+    # A method-form lookup does not establish callability: the nullable pair
+    # retains the dynamic value for the runtime's ordinary binder to reject.
+    # call_indirect_noncallable_deopt.py independently checks the TypeError.
+    load, call = _assert_loaded_method_call(ops, "fn", positional_count=0)
+    assert len(load["args"]) == 1
+    (store,) = [
+        op
+        for op in ops
+        if op["kind"] == "set_attr_generic_obj" and op.get("s_value") == "fn"
+    ]
+    (value,) = [op for op in ops if op.get("out") == store["args"][1]]
+    assert value["kind"] == "const" and value["value"] == 7
+    assert ops.index(value) < ops.index(store) < ops.index(load)
+    assert not any(op["kind"] == "invoke_ffi" for op in ops)
+    assert ops.index(load) < ops.index(call)
 
 
 def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:
@@ -714,12 +808,7 @@ def test_native_callable_dotted_import_export_uses_normal_dispatch() -> None:
         )
     )
     ir = gen.to_json()
-    ops = [op for fn in ir["functions"] for op in fn["ops"]]
-    assert not any(op["kind"] == "invoke_ffi" for op in ops)
-    assert any(
-        op["kind"] in {"call_bind", "call_func", "call_indirect", "call_guarded"}
-        for op in ops
-    )
+    _assert_dotted_native_method_dispatch(ir, "nativepkg.ndimage")
 
 
 def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
@@ -743,11 +832,7 @@ def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
         )
     )
     ir = gen.to_json()
-
-    assert not any(
-        op["kind"] == "invoke_ffi" for fn in ir["functions"] for op in fn["ops"]
-    )
-    assert any(op["kind"] == "call_func" for fn in ir["functions"] for op in fn["ops"])
+    _assert_dotted_native_method_dispatch(ir, "nativepkg")
 
 
 def test_native_callable_module_attr_from_import_uses_captured_callable() -> None:
@@ -1249,8 +1334,7 @@ def test_method_receiver_prefix_is_consumed_before_source_arguments(
     (load,) = loads
     if not prefix:
         assert not prefixes
-        (call,) = [op for op in ops if op["kind"] == "call_loaded_method"]
-        assert call["args"][:2] == [load["var"], load["out"]]
+        _assert_loaded_method_call(ops, "m", positional_count=1)
         return
     (pushed,) = prefixes
     (builder,) = [op for op in ops if op["kind"] == "callargs_new"]

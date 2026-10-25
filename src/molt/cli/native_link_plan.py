@@ -57,10 +57,10 @@ class NativeLinkCapabilities:
     linker: NativeLinkerKind
     object_format: NativeObjectFormat
     explicit_no_icf_flag: str | None
-    # Apple ld signs a Mach-O image ad hoc under its -final_output name, so a
-    # private stage is signed as the published binary at link time. ld64.lld
-    # and zig name the signature after the -o operand instead.
-    signs_as_final_output: bool
+    # Request Apple's ad hoc signature and published-output hint. This is
+    # command intent, not proof of its signing identifier: Apple linker
+    # versions differ in whether -final_output names executable signatures.
+    requests_adhoc_signature: bool
     # The linker omits every non-global symbol on request. zig's Mach-O
     # linker keeps the local thunks it synthesizes under -x.
     strips_local_symbols: bool
@@ -288,13 +288,14 @@ def native_link_output_flags(
 ) -> tuple[str, ...]:
     """Name the published binary to a link that writes a private stage.
 
-    Apple ld then signs the stage ad hoc as ``output``: the bytes carry no
-    stage name and need no post-link codesign pass (1.4-3.2 s on a 68 MiB dev
-    binary). ``-adhoc_codesign`` signs x86_64 images too, which ld leaves
-    unsigned by default, so every Mach-O arch publishes the same way.
-    ``-Xlinker`` keeps a path with a comma intact.
+    ``-adhoc_codesign`` signs x86_64 images too, which ld leaves unsigned
+    by default. Classic Apple ld uses ``-final_output`` for the signing
+    identifier; other versions may retain the private -o name. Publication
+    inspects the actual signature and re-signs only when needed. This hint
+    alone promises neither stage-independent bytes nor a skipped codesign
+    pass. ``-Xlinker`` keeps a path with a comma intact.
     """
-    if not capabilities.signs_as_final_output:
+    if not capabilities.requests_adhoc_signature:
         return ()
     return ("-Wl,-adhoc_codesign", "-Xlinker", "-final_output", "-Xlinker", str(output))
 
@@ -330,7 +331,7 @@ def native_link_capabilities(
         linker=linker,
         object_format=target.object_format,
         explicit_no_icf_flag=no_icf,
-        signs_as_final_output=(
+        requests_adhoc_signature=(
             target.object_format is NativeObjectFormat.MACHO
             and linker is NativeLinkerKind.SYSTEM
         ),

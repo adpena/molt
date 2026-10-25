@@ -149,7 +149,7 @@ git commit -m "ci: split presubmit and hosted validation lanes"
 Create `tests/test_harness_conformance.py` covering:
 
 - `build_molt_conformance_env(...)` populates canonical roots and session ID;
-- `ensure_molt_conformance_dirs(...)` creates required directories;
+- `build_molt_conformance_env(..., create_dirs=True)` delegates writable directory creation to DX and never creates a managed Python image;
 - `load_molt_conformance_suite(..., suite=\"smoke\", ...)` preserves manifest order;
 - blank lines and `#` comments in `SMOKE.txt` are ignored;
 - `conformance_exit_code(...)` returns nonzero on failures/compile errors/timeouts.
@@ -170,9 +170,9 @@ Implement `src/molt/harness_conformance.py` with exactly these focused helpers:
 
 ```python
 def build_molt_conformance_env(
-    project_root: Path, session_id: str
-) -> dict[str, str]: ...
-def ensure_molt_conformance_dirs(env: dict[str, str]) -> None: ...
+    project_root: Path, session_id: str | None, base: Mapping[str, str],
+    *, create_dirs: bool = False,
+) -> ProcessEnvironment: ...
 def load_molt_conformance_suite(
     corpus_dir: Path, suite: str, smoke_manifest: Path
 ) -> list[Path]: ...
@@ -253,7 +253,7 @@ Implement:
 
 - `--suite smoke|full`;
 - optional `--json-out <path>`;
-- use of `build_molt_conformance_env`, `ensure_molt_conformance_dirs`,
+- use of `build_molt_conformance_env(create_dirs=True)`,
   `load_molt_conformance_suite`, `write_molt_conformance_summary`, and
   `conformance_exit_code`;
 - one canonical JSON summary shape:

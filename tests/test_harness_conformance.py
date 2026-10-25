@@ -4,6 +4,8 @@ import importlib
 import json
 from pathlib import Path
 
+import pytest
+
 import molt.dx as molt_dx
 from molt import custody_layout
 
@@ -33,11 +35,29 @@ def test_build_env_sets_canonical_roots_and_session_id(tmp_path: Path) -> None:
     assert env["MOLT_SESSION_ID"] == "smoke-suite"
 
 
-def test_ensure_dirs_creates_expected_paths(tmp_path: Path) -> None:
+@pytest.mark.parametrize("managed_python", [False, True])
+@pytest.mark.parametrize("create_dirs", [False, True])
+def test_build_env_creates_only_writable_artifact_paths(
+    tmp_path: Path, managed_python: bool, create_dirs: bool
+) -> None:
     module = _load_module()
-    env = module.build_molt_conformance_env(tmp_path, "suite", {})
-
-    module.ensure_molt_conformance_dirs(env)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    artifacts = tmp_path / "artifacts"
+    # An address alone does not publish an image. No consumer may mkdir it.
+    image = (
+        artifacts
+        / "build-environments"
+        / "development"
+        / "selected-0123456789ab"
+        / ("a" * 64)
+    )
+    base = {"MOLT_EXT_ROOT": str(artifacts), "MOLT_USE_SCCACHE": "0"}
+    if managed_python:
+        base["UV_PROJECT_ENVIRONMENT"] = str(image)
+    env = module.build_molt_conformance_env(
+        repo, "suite", base, create_dirs=create_dirs
+    )
 
     for key in (
         "CARGO_TARGET_DIR",
@@ -46,7 +66,16 @@ def test_ensure_dirs_creates_expected_paths(tmp_path: Path) -> None:
         "MOLT_DIFF_TMPDIR",
         "TMPDIR",
     ):
-        assert Path(env[key]).is_dir(), key
+        assert Path(env[key]).is_dir() is create_dirs, key
+    if managed_python:
+        assert env["UV_PROJECT_ENVIRONMENT"] == str(image)
+        assert env["PYTHONPYCACHEPREFIX"] == str(image / "bytecode")
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    else:
+        assert "UV_PROJECT_ENVIRONMENT" not in env
+        assert Path(env["PYTHONPYCACHEPREFIX"]).is_dir() is create_dirs
+    assert not image.exists()
+    assert not (image / "bytecode").exists()
 
 
 def test_smoke_suite_manifest_preserves_order_and_ignores_comments(

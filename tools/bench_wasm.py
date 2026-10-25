@@ -38,7 +38,6 @@ from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
-    ensure_molt_conformance_dirs,
 )
 from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
@@ -351,8 +350,11 @@ def _wasm_session_id(env: dict[str, str] | None = None) -> str | None:
 
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
-    env.update(build_molt_conformance_env(_repo_root(), _wasm_session_id(env), env))
-    ensure_molt_conformance_dirs(env)
+    env.update(
+        build_molt_conformance_env(
+            _repo_root(), _wasm_session_id(env), env, create_dirs=True
+        )
+    )
     env["PYTHONPATH"] = str(_repo_root() / "src")
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
