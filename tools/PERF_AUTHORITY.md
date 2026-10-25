@@ -153,6 +153,14 @@ not installed-user compile latency or E2 performance acceptance.
 
 ## Finding the limiter
 
+Development-loop latency is always P0: every faster edit, build, diagnosis and
+proof compounds across subsequent work. Keep the existing build phase diagnostics
+on during development, profile the current limiter, and compare the same unchanged
+or edited workload before and after each load-bearing change. Use
+`tools/dx_build_timer.py` for build-loop measurements and
+`MOLT_CLI_PROFILE` for attribution; keep instrumented timings separate from
+uninstrumented latency. Classify a new failure before repeating an expensive proof.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 

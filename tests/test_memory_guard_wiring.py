@@ -118,18 +118,6 @@ def test_guards_started_by_tests_keep_custody_out_of_the_host_root(
     assert roots.state_root.parent.joinpath("gs").is_dir()
 
 
-# Every call that starts a memory guard with a caller-chosen environment.
-_GUARD_LAUNCHERS = frozenset(
-    {
-        "run_guarded",
-        "guarded_completed_process",
-        "guarded_completed_process_to_tempfiles",
-        "run_guarded_test_process",
-        "check_output_guarded_test_process",
-    }
-)
-
-
 def test_session_children_recognize_the_outer_guard_by_its_marker(
     test_guard_custody_roots, monkeypatch
 ) -> None:
@@ -203,57 +191,18 @@ def test_tkinter_compile_helper_uses_admitted_proof_scratch(monkeypatch, tmp_pat
         consumer.test_tkinter_ttk_script_compiles_via_cli_build()
 
 
-def _minimal_guard_environments(source: str) -> list[int]:
-    """Lines where a test hands a guard a literal environment without custody."""
-    import ast
-
-    lines = []
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
-            continue
-        name = getattr(node.func, "attr", getattr(node.func, "id", ""))
-        if name not in _GUARD_LAUNCHERS:
-            continue
-        for keyword in node.keywords:
-            value = keyword.value
-            if keyword.arg != "env" or not isinstance(value, ast.Dict):
-                continue
-            spreads = [
-                ast.unparse(v) for k, v in zip(value.keys, value.values) if k is None
-            ]
-            keys = [ast.unparse(k) for k in value.keys if k is not None]
-            if not spreads and not any("STATE_ROOT" in key for key in keys):
-                lines.append(node.lineno)
-    return lines
-
-
-def test_minimal_guard_environments_carry_test_custody() -> None:
-    # Program fixtures under tests/ may use newer syntax; only host test code
-    # that names a guard launcher can start a guard here.
-    sources = {
-        path: path.read_text(encoding="utf-8")
-        for path in sorted((REPO_ROOT / "tests").rglob("*.py"))
-    }
-    offenders = {
-        str(path.relative_to(REPO_ROOT)): lines
-        for path, source in sources.items()
-        if any(launcher in source for launcher in _GUARD_LAUNCHERS)
-        and (lines := _minimal_guard_environments(source))
-    }
-    assert offenders == {}, (
-        "spread tests.process_guard_common.guard_custody_env() into these "
-        f"guard environments: {offenders}"
-    )
-
-
 def test_minimal_guard_environment_audit_has_teeth() -> None:
+    from tools.check_subprocess_guard_coverage import PythonSourceObservation
+
     source = (
         "memory_guard.run_guarded(cmd, env={'CARGO_TARGET_DIR': 't'})\n"
         "memory_guard.run_guarded(cmd, env={**guard_custody_env(), 'X': 'y'})\n"
         "memory_guard.run_guarded(cmd, env=dict(os.environ))\n"
         "harness.guarded_completed_process(cmd, env={'X': 'y'})\n"
     )
-    assert _minimal_guard_environments(source) == [1, 4]
+    assert check_memory_guard_wiring.minimal_guard_environment_lines(
+        PythonSourceObservation(source.encode(), "tests/example.py")
+    ) == (1, 4)
 
 
 def test_repository_plugin_exports_only_valid_pytest_hooks():
@@ -458,6 +407,7 @@ def test_memory_guard_wiring_uses_clean_raw_subprocess_audit() -> None:
     assert audit.required_sentinel_missing == ()
     assert audit.sentinel_drift == ()
     assert audit.direct_test_guard_missing == ()
+    assert audit.minimal_guard_environments == ()
     assert audit.subprocess_guard_unexpected == ()
     assert audit.subprocess_guard_stale_allowlist == ()
     assert audit.subprocess_guard_expanded_allowlist == ()
@@ -1224,7 +1174,7 @@ def test_direct_executable_test_audit_requires_path_local_sitecustomize(
         encoding="utf-8",
     )
 
-    missing = check_memory_guard_wiring._audit_direct_executable_test_guards(tmp_path)
+    missing = check_memory_guard_wiring.audit_repo(tmp_path).direct_test_guard_missing
 
     assert len(missing) == 1
     assert missing[0].path == "tests/e2e/test_direct.py"
@@ -1236,7 +1186,7 @@ def test_direct_executable_test_audit_requires_path_local_sitecustomize(
     )
 
     assert (
-        check_memory_guard_wiring._audit_direct_executable_test_guards(tmp_path) == ()
+        check_memory_guard_wiring.audit_repo(tmp_path).direct_test_guard_missing == ()
     )
 
 
