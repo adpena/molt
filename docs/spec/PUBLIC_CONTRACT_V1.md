@@ -13,8 +13,15 @@ this page explains them and never restates their content.
 - **CLI commands and their argument trees.** Every command the `molt`
   entrypoint exposes carries a stability tier in the declaration; the gate
   refuses an untiered command, so no command can ship without a stability
-  decision. The snapshot records each command's full argparse surface (flags,
-  destinations, arity, choices, scalar defaults, required-ness).
+  decision. The v2 surface snapshot retains the entrypoint and every nested
+  command in one recursive `cli` tree. It records flags (including global
+  `--version` and help), destinations, positional order, arity, typed scalar
+  choices, named converters, constants, scalar/list defaults, required subcommands,
+  mutually exclusive groups and parser abbreviation/prefix/error settings.
+  These fields follow [CPython's argparse grammar](https://docs.python.org/3.12/library/argparse.html),
+  rather than an alphabetically sorted list that loses positional meaning.
+  Converter identities name their implementation; changes inside that
+  implementation still require the actual command's behavioral tests.
   Scalar defaults here are parser values before configuration resolution. A
   `null` marks an omitted option when the request resolver must distinguish
   omission from an explicitly supplied value; it does not promise a null
