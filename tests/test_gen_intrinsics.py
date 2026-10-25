@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tools import gen_intrinsics
+from tools.check_rust_toolchain import RUST_EDITION
 from tools.import_file import molt_module_name
 from tools.intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
 
@@ -510,7 +511,7 @@ def test_absence_sentinels_have_exact_cfg_and_reject_surviving_definitions(
     result = run_guarded_test_process(
         [
             rustc,
-            "--edition=2021",
+            f"--edition={RUST_EDITION}",
             "--crate-type=lib",
             "--emit=metadata",
             "-Dwarnings",
