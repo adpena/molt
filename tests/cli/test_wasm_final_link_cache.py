@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from molt import artifact_publication
 from molt.cli import wasm_final_link_cache as cache
 
 
@@ -111,6 +112,36 @@ def test_result_roundtrips_and_a_tampered_entry_is_a_miss(
     assert not cache.restore_final_link_result(entry, again)
     assert not any(path.exists() for path in again.values())
     assert not entry.metadata.exists()
+
+
+@pytest.mark.parametrize("operation", ["publish", "restore"])
+def test_bundle_transfer_preserves_a_colliding_unowned_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    source = tmp_path / "source.wasm"
+    source.write_bytes(b"complete generation")
+    entry = cache.final_link_cache_entry("d" * 64)
+    cache.publish_final_link_result(entry, {"linked": source})
+    prior_metadata = entry.metadata.read_bytes()
+    destination = tmp_path / "result.wasm"
+    destination.write_bytes(b"previous output")
+    stage = tmp_path / "rival-stage"
+    stage.write_bytes(b"another owner's bytes")
+    prior_stage = stage.stat()
+    monkeypatch.setattr(
+        artifact_publication, "staged_output_path", lambda *_args, **_kwargs: stage
+    )
+    with pytest.raises(FileExistsError):
+        if operation == "publish":
+            cache.publish_final_link_result(entry, {"linked": source})
+        else:
+            cache.restore_final_link_result(entry, {"linked": destination})
+    assert stage.read_bytes() == b"another owner's bytes"
+    assert stage.stat().st_ino == prior_stage.st_ino
+    assert destination.read_bytes() == b"previous output"
+    assert source.read_bytes() == b"complete generation"
+    assert entry.metadata.read_bytes() == prior_metadata
 
 
 def test_failure_evidence_destination_is_not_a_link_content_input(
