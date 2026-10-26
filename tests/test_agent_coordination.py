@@ -237,6 +237,44 @@ def test_read_git_identity_preserves_command_failure_as_unknown(
     assert agent_coordination.read_git_identity(tmp_path) == ("unknown", "unknown")
 
 
+def test_agent_coordination_exports_managed_bytecode_write_policy(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tests.process_guard_common import run_custody_subject_process
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    repo = tmp_path / "repo"
+    artifacts = tmp_path / "artifacts"
+    image = materialize_development_environment(repo, artifacts)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "")
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    agent_coordination.create_task(
+        registry_root=repo, source_root=repo, task="managed-environment"
+    )
+    task = repo / "logs" / "agents" / "managed-environment"
+    record = json.loads((task / "coordination.json").read_text(encoding="utf-8"))
+    assert (
+        'export PYTHONDONTWRITEBYTECODE="1"'
+        in (task / "env.sh").read_text(encoding="utf-8").splitlines()
+    )
+    assert (
+        "$env:PYTHONDONTWRITEBYTECODE = '1'"
+        in (task / "env.ps1").read_text(encoding="utf-8").splitlines()
+    )
+    completed = run_custody_subject_process(
+        [sys.executable, "-S", "-c", "import sys; print(int(sys.dont_write_bytecode))"],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "", **record["dx_env"]},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert completed.stdout == "1\n"
+
+
 def test_agent_coordination_init_writes_report_and_json(
     monkeypatch,
     tmp_path: Path,
