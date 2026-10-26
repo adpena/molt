@@ -48,7 +48,9 @@ def _write_source(tmp_path: Path) -> Path:
         textwrap.dedent(
             """
             def selected(value):
-                return value + 1
+                99
+                value + 1
+                return 7
 
             def other(value):
                 return value * 2
@@ -99,6 +101,50 @@ def test_debug_ir_json_supports_pre_post_and_all_stages(tmp_path: Path) -> None:
         assert [
             entry["stage"] for entry in payload["data"]["snapshots"]
         ] == expected_stages
+
+        for snapshot in payload["data"]["snapshots"]:
+            [selected] = [
+                function
+                for function in snapshot["functions"]
+                if function["name"].split("__")[-1] == "selected"
+            ]
+            ops = selected["ops"]
+            # Only the unused literal is removable: value.__add__ may raise.
+            assert sum(op["kind"] == "const" and op["value"] == 99 for op in ops) == (
+                1 if snapshot["stage"] == "pre-midend" else 0
+            )
+            [parameter] = [
+                op
+                for op in ops
+                if op["kind"] == "frame_home_store" and op["args"] == ["value"]
+            ]
+            [one] = [op for op in ops if op["kind"] == "const" and op["value"] == 1]
+            [seven] = [op for op in ops if op["kind"] == "const" and op["value"] == 7]
+            [addition] = [op for op in ops if op["kind"] == "add"]
+            [normal_return] = [op for op in ops if op["kind"] == "ret"]
+            assert addition["args"] == [parameter["out"], one["out"]]
+            assert normal_return["args"] == [seven["out"]]
+            add_index, return_index = ops.index(addition), ops.index(normal_return)
+            [exception_check] = [
+                op
+                for op in ops[add_index + 1 : return_index]
+                if op["kind"] == "check_exception"
+            ]
+            assert (
+                add_index < ops.index(exception_check) < ops.index(seven) < return_index
+            )
+            failure_label = next(
+                index
+                for index, op in enumerate(ops)
+                if op["kind"] == "label" and op["value"] == exception_check["value"]
+            )
+            assert failure_label > return_index
+            assert [
+                op["kind"] for op in ops[failure_label + 1 : failure_label + 3]
+            ] == [
+                "trace_exit",
+                "ret_void",
+            ]
 
         manifest_payload = _load_manifest_from_stdout(res.stdout)
         assert manifest_payload["data"]["snapshots"] == payload["data"]["snapshots"]
