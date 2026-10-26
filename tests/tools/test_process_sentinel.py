@@ -216,19 +216,110 @@ def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
 
 
 def test_importing_the_sentinel_scans_no_sources() -> None:
-    # A build imports the guard only to launch a child; the 1,100-file
-    # entrypoint scan belongs to the first process classification.
+    # Import and fixed-signature discovery must not enumerate source files.
     probe = (
         "from tools import guarded_entrypoints, process_sentinel\n"
         "print(guarded_entrypoints._guarded_entrypoint_tokens.cache_info().misses)\n"
         "process_sentinel.molt_process_tokens()\n"
+        "print(guarded_entrypoints._guarded_entrypoint_tokens.cache_info().misses)\n"
+        "process_sentinel.guarded_entrypoint_tokens()\n"
         "print(guarded_entrypoints._guarded_entrypoint_tokens.cache_info().misses)\n"
     )
     result = run_guarded_test_process(
         [sys.executable, "-c", probe], cwd=REPO_ROOT, timeout=120
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["0", "1"]
+    assert result.stdout.split() == ["0", "0", "1"]
+
+
+@pytest.mark.parametrize(
+    ("windows_model", "command", "expected"),
+    [
+        (False, "/usr/bin/python -c pass", False),
+        (False, "/repo/molt/.venv/bin/python -m pytest", False),
+        (False, "/elsewhere/bench/harness.py", False),
+        (False, "git diff /repo/molt/bench/harness.py", False),
+        (False, "/repo/molt/tools/memory_guard.py --unit", True),
+        (False, "cd /repo/molt && python -m molt.cli build app.py", True),
+        (False, "/repo/molt/target/dev-fast/molt-backend", True),
+        (False, "/repo/molt/.molt_cache/home/bin/app_molt", True),
+        (True, r"C:\REPO\MOLT\TARGET\DEV-FAST\MOLT-BACKEND.EXE", True),
+        (False, r"C:\REPO\MOLT\TARGET\DEV-FAST\MOLT-BACKEND.EXE", False),
+    ],
+)
+def test_common_process_classification_reads_no_entrypoint_sources(
+    monkeypatch, windows_model: bool, command: str, expected: bool
+) -> None:
+    module = process_sentinel
+    monkeypatch.setattr(
+        process_model, "is_windows_process_model", lambda: windows_model
+    )
+
+    def forbidden_scan():
+        raise AssertionError("common command requested repository source discovery")
+
+    monkeypatch.setattr(module, "guarded_entrypoint_tokens", forbidden_scan)
+    sample = module.memory_guard.ProcessSample(10, 1, 10, command, started_at_ns=100)
+    root = WINDOWS_ROOT if command.startswith("C:") else Path("/repo/molt")
+    assert module.is_molt_process(sample, root=root) is expected
+
+
+@pytest.mark.parametrize("windows_model", [False, True])
+def test_demand_discovery_preserves_every_source_entrypoint(
+    monkeypatch, windows_model: bool
+) -> None:
+    module = process_sentinel
+    monkeypatch.setattr(
+        process_model, "is_windows_process_model", lambda: windows_model
+    )
+    root = Path("/repo with spaces/molt")
+    # Independent positive oracle: the scanner proves each import. Both joined
+    # paths and the existing generic substring rule must recognize every one.
+    for token in module.guarded_entrypoint_tokens():
+        for command in (
+            f'python "{root}{token}"',
+            f'python "/elsewhere{token}c" --repo="{root}"',
+        ):
+            if windows_model:
+                command = command.upper().replace("/", "\\")
+            sample = module.memory_guard.ProcessSample(10, 1, 10, command)
+            assert module.is_molt_process(sample, root=root), command
+
+
+def test_entrypoint_aperture_tracks_declared_discovery_scope(monkeypatch) -> None:
+    monkeypatch.setattr(
+        guarded_entrypoints, "GUARDED_ENTRYPOINT_SCAN_ROOTS", ("new/root",)
+    )
+    monkeypatch.setattr(
+        guarded_entrypoints, "EXPLICIT_GUARDED_ENTRYPOINTS", ("explicit/owner.py",)
+    )
+    for command in ("/new/root/nested/tool.py", "/explicit/owner.pyc"):
+        assert guarded_entrypoints.may_reference_guarded_entrypoint(
+            command, windows_model=False
+        )
+        assert guarded_entrypoints.may_reference_guarded_entrypoint(
+            command.upper(), windows_model=True
+        )
+        assert not guarded_entrypoints.may_reference_guarded_entrypoint(
+            command.upper(), windows_model=False
+        )
+
+
+def test_entrypoint_prefix_requires_discovered_guard_import(monkeypatch) -> None:
+    module = process_sentinel
+    discovered = []
+    original = module.guarded_entrypoint_tokens
+
+    def observe_discovery():
+        discovered.append(True)
+        return original()
+
+    monkeypatch.setattr(module, "guarded_entrypoint_tokens", observe_discovery)
+    sample = module.memory_guard.ProcessSample(
+        10, 1, 10, "/repo/molt/tools/not_a_guarded_program.py"
+    )
+    assert not module.is_molt_process(sample, root=Path("/repo/molt"))
+    assert discovered
 
 
 def test_guarded_entrypoint_scan_prefilters_non_candidates(

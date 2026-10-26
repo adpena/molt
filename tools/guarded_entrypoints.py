@@ -135,3 +135,24 @@ def _guarded_entrypoint_tokens(root: Path) -> tuple[str, ...]:
 def guarded_entrypoint_tokens(repo_root: Path | None = None) -> tuple[str, ...]:
     root = (repo_root or REPO_ROOT).resolve()
     return _guarded_entrypoint_tokens(root)
+
+
+def may_reference_guarded_entrypoint(
+    normalized_command: str, *, windows_model: bool
+) -> bool:
+    """Reject commands outside the discovery scope without reading sources.
+
+    This is only a necessary condition: a matching prefix still requires the
+    canonical import scan. Keep the prefixes derived from that scan's scope,
+    including explicit paths, so new discovery roots cannot be missed here.
+    The caller supplies the same slash-normalized text used for classification.
+    """
+    command = normalized_command.casefold() if windows_model else normalized_command
+    prefixes = (
+        *(f"/{root}/" for root in GUARDED_ENTRYPOINT_SCAN_ROOTS),
+        *(f"/{path}" for path in EXPLICIT_GUARDED_ENTRYPOINTS),
+    )
+    return any(
+        (prefix.casefold() if windows_model else prefix) in command
+        for prefix in prefixes
+    )

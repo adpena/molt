@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt.cli.wasm_deployment import WasmDeploymentGeneration, WasmDeploymentPlan
+from molt.cli import wasm_deployment
 from tools import wasm_link_fact_provider as provider
 
 
@@ -23,6 +24,29 @@ def _rejected_run(argv, *, input, **_kwargs):
         "error": "section out of order (at offset 0x8459)",
     }
     return subprocess.CompletedProcess(argv, 1, json.dumps(payload).encode(), b"")
+
+
+def test_deployment_collision_preserves_private_source_and_rival_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final = tmp_path / "app.wasm"
+    final.write_bytes(b"previous output")
+    stage = tmp_path / "rival-stage"
+    stage.write_bytes(b"rival bytes")
+    prior = stage.stat()
+    plan = WasmDeploymentPlan({"linked": final}, tmp_path, False, ())
+    with WasmDeploymentGeneration.prepare(plan) as generation:
+        private = generation.outputs["linked"]
+        private.write_bytes(b"new generation")
+        monkeypatch.setattr(
+            wasm_deployment, "staged_file_path", lambda *_args, **_kwargs: stage
+        )
+        with pytest.raises(FileExistsError):
+            generation.publish(None)
+        assert private.read_bytes() == b"new generation"
+        assert stage.read_bytes() == b"rival bytes"
+        assert stage.stat().st_ino == prior.st_ino
+        assert final.read_bytes() == b"previous output"
 
 
 def test_rejected_scan_input_outlives_scratch_and_private_generation(
