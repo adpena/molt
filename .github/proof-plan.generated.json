@@ -9481,6 +9481,8 @@
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "cargo test --locked --profile dev-fast -p molt-runtime --lib binding_guards",
       "local.builtin-binding-guard-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
+      "local.cargo-source-closure.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_runtime_source_closure.py tests/cli/test_cli_cache_fingerprint.py::test_backend_source_fingerprint_tracks_selected_leaf_sources tests/cli/test_cli_cache_fingerprint.py::test_jit_runner_fingerprint_tracks_the_runner_crate_and_its_codegen tests/cli/test_cli_cache_fingerprint.py::test_compiler_fingerprints_track_the_build_inputs_their_crates_declare tests/cli/test_cli_cache_fingerprint.py::test_a_cached_launch_misses_when_an_input_of_its_tier_changes tests/cli/test_cli_cache_fingerprint.py::test_the_real_closures_key_what_their_crates_read_outside_themselves tests/cli/test_cli_cache_fingerprint.py::test_source_graphs_follow_preserved_stat_transitive_manifest_replacements tests/cli/test_cli_cache_fingerprint.py::test_backend_lock_identity_tracks_only_reachable_dependency_content tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_fails_closed tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_resolves_same_name_version_by_source tests/cli/test_cli_cache_fingerprint.py::test_cargo_document_capture_bounds_actual_growth_before_parse tests/cli/test_compiler_identity.py::test_lock_projection_is_mandatory_without_raw_lock_in_source_paths tests/cli/test_compiler_identity.py::test_unreachable_bad_rows_do_not_become_a_second_lock_validator tests/cli/test_compiler_identity.py::test_cargo_git_reference_and_path_precedence",
+      "local.changed-clippy-selection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_check_changed_clippy.py",
       "local.checkout-output-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/test_custody_layout.py tests/test_dx_run_context.py tests/tools/test_proof_queue_output_layout.py tests/cli/test_llvm_wasi_tools.py tests/tools/test_disk_guard.py tests/tools/test_lane_maturity.py tests/tools/test_proof_queue_lane_maturity.py",
       "local.ci-wiring.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_codecs.py",
@@ -9488,7 +9490,7 @@
       "local.compression-stream-state.0": "cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-compression -p molt-lang-cpython-abi --lib --test test_numbers -- --test-threads=4",
       "local.cpython-abi-authorities.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4",
       "local.cpython-coverage-generation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_gen_cpython_coverage.py",
-      "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_committed_gate_policy.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
+      "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_committed_gate_policy.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
       "local.edgebox-typescript.0": "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- python -m molt.tool_releases run npm -- run check",
@@ -10553,14 +10555,12 @@
           "tools/dev.py",
           "tools/check_rust_toolchain.py",
           "tools/check_rustfmt.py",
-          "tools/check_changed_clippy.py",
           "src/molt/cargo_workspace.py",
           "tools/molt_dev.py",
           "tools/molt_dev_*.py",
           "src/molt/checkout_provisioning.py",
           "tests/tools/test_rust_toolchain_contract.py",
           "tests/tools/test_check_rustfmt.py",
-          "tests/tools/test_check_changed_clippy.py",
           "tests/test_cargo_workspace.py",
           "tests/test_molt_dev.py",
           "tests/integration_driver_fixture.py",
@@ -10579,8 +10579,67 @@
           "tests/test_checkout_provisioning.py",
           "tests/tools/test_rust_toolchain_contract.py",
           "tests/tools/test_check_rustfmt.py",
-          "tests/tools/test_check_changed_clippy.py",
           "tests/test_cargo_workspace.py"
+        ],
+        "toolchains": [
+          "python",
+          "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.changed-clippy-selection.pytest"
+        ],
+        "description": "Changed-package Clippy selection and its shared authority consumers.",
+        "gates": [],
+        "globs": [
+          "tools/check_changed_clippy.py",
+          "tests/tools/test_check_changed_clippy.py",
+          "src/molt/cargo_workspace.py",
+          "src/molt/cargo_execution_policy.py",
+          "src/molt/cli/cargo_source_closure.py",
+          "config/ci_resource_policy.toml",
+          "tools/git_identity.py",
+          "tools/command_execution.py",
+          "tools/proof_plan.py",
+          "tools/toolchain_env.py",
+          "tools/import_file.py"
+        ],
+        "name": "changed-clippy-selection",
+        "pytest": [
+          "tests/tools/test_check_changed_clippy.py"
+        ],
+        "toolchains": [
+          "python",
+          "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.cargo-source-closure.pytest"
+        ],
+        "description": "Canonical Cargo source-identity projection and its independent closure oracles.",
+        "gates": [],
+        "globs": [
+          "src/molt/cli/cargo_source_closure.py",
+          "tests/cli/test_runtime_source_closure.py"
+        ],
+        "name": "cargo-source-closure",
+        "pytest": [
+          "tests/cli/test_runtime_source_closure.py",
+          "tests/cli/test_cli_cache_fingerprint.py::test_backend_source_fingerprint_tracks_selected_leaf_sources",
+          "tests/cli/test_cli_cache_fingerprint.py::test_jit_runner_fingerprint_tracks_the_runner_crate_and_its_codegen",
+          "tests/cli/test_cli_cache_fingerprint.py::test_compiler_fingerprints_track_the_build_inputs_their_crates_declare",
+          "tests/cli/test_cli_cache_fingerprint.py::test_a_cached_launch_misses_when_an_input_of_its_tier_changes",
+          "tests/cli/test_cli_cache_fingerprint.py::test_the_real_closures_key_what_their_crates_read_outside_themselves",
+          "tests/cli/test_cli_cache_fingerprint.py::test_source_graphs_follow_preserved_stat_transitive_manifest_replacements",
+          "tests/cli/test_cli_cache_fingerprint.py::test_backend_lock_identity_tracks_only_reachable_dependency_content",
+          "tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_fails_closed",
+          "tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_resolves_same_name_version_by_source",
+          "tests/cli/test_cli_cache_fingerprint.py::test_cargo_document_capture_bounds_actual_growth_before_parse",
+          "tests/cli/test_compiler_identity.py::test_lock_projection_is_mandatory_without_raw_lock_in_source_paths",
+          "tests/cli/test_compiler_identity.py::test_unreachable_bad_rows_do_not_become_a_second_lock_validator",
+          "tests/cli/test_compiler_identity.py::test_cargo_git_reference_and_path_precedence"
         ],
         "toolchains": [
           "python",
@@ -12114,8 +12173,7 @@
           "runtime/molt-runtime/fuzz/Cargo.toml",
           "runtime/molt-runtime/fuzz/Cargo.lock",
           "runtime/molt-runtime-compression/Cargo.toml",
-          "runtime/molt-runtime-compression/src/zlib.rs",
-          "tests/cli/test_runtime_source_closure.py"
+          "runtime/molt-runtime-compression/src/zlib.rs"
         ],
         "name": "maintained-zlib-counters",
         "pytest": [
@@ -12931,6 +12989,14 @@
         "cargo",
         "git",
         "rustfmt"
+      ],
+      "local.cargo-source-closure.pytest": [
+        "python",
+        "uv"
+      ],
+      "local.changed-clippy-selection.pytest": [
+        "python",
+        "uv"
       ],
       "local.checkout-output-custody.pytest": [
         "python"

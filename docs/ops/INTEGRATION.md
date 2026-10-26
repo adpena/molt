@@ -178,6 +178,13 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    select the full workspace. Ordinary member edits retain reverse local-dependency
    reach. Selection preserves the proof plan's command arguments, feature sets,
    targets, profiles and order; Cargo writers remain serialized on their shared target.
+   Selector and source-closure leaf edits run their own test owners. Shared Cargo,
+   Git, command and toolchain authorities retain the union of consumer proofs;
+   plan-command edits retain selector tests through the committed-policy owner.
+   The source-closure owner also selects existing named backend-cache and compiler
+   identity checks, covering digest propagation and failure without unrelated suites.
+   Editing source-closure tests does not compile the compression provider; edits
+   to that provider still run its compiled native/WASI gates and source oracles.
    Managed Python gates select the admitted image's read-only ordinary bytecode
    namespace before startup and disable bytecode writes. Verifiers use a
    separate fresh empty namespace; see [checkout provisioning](#checkout-provisioning).
