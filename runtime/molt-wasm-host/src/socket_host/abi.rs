@@ -7,29 +7,33 @@ use windows_sys::Win32::Networking::WinSock as native;
 
 pub(super) fn native_family(family: i32) -> Result<i32, GuestErrno> {
     use guest::GuestAddressFamily as Family;
-    match Family::from_wire(family).ok_or(GuestErrno::EAFNOSUPPORT)? {
-        Family::AF_UNSPEC => Ok(native::AF_UNSPEC as i32),
-        Family::AF_INET => Ok(native::AF_INET as i32),
-        Family::AF_INET6 => Ok(native::AF_INET6 as i32),
+    let family = match Family::from_wire(family).ok_or(GuestErrno::EAFNOSUPPORT)? {
+        Family::AF_UNSPEC => native::AF_UNSPEC,
+        Family::AF_INET => native::AF_INET,
+        Family::AF_INET6 => native::AF_INET6,
         Family::AF_UNIX => {
             #[cfg(unix)]
             {
-                Ok(native::AF_UNIX as i32)
+                native::AF_UNIX
             }
             #[cfg(windows)]
             {
-                Err(GuestErrno::EAFNOSUPPORT)
+                return Err(GuestErrno::EAFNOSUPPORT);
             }
         }
-    }
+    };
+    // Winsock uses u16 ADDRESS_FAMILY; Unix already returns c_int.
+    #[cfg(windows)]
+    let family = i32::from(family);
+    Ok(family)
 }
 
 pub(super) fn native_type(kind: i32) -> Result<i32, GuestErrno> {
     use guest::GuestSocketType as Kind;
     match Kind::from_wire(kind).ok_or(GuestErrno::EPROTOTYPE)? {
-        Kind::SOCK_STREAM => Ok(native::SOCK_STREAM as i32),
-        Kind::SOCK_DGRAM => Ok(native::SOCK_DGRAM as i32),
-        Kind::SOCK_RAW => Ok(native::SOCK_RAW as i32),
+        Kind::SOCK_STREAM => Ok(native::SOCK_STREAM),
+        Kind::SOCK_DGRAM => Ok(native::SOCK_DGRAM),
+        Kind::SOCK_RAW => Ok(native::SOCK_RAW),
     }
 }
 
@@ -39,7 +43,7 @@ pub(super) fn native_protocol(protocol: i32) -> Result<Option<Protocol>, GuestEr
         ProtocolName::IPPROTO_IP => Ok(None),
         ProtocolName::IPPROTO_TCP => Ok(Some(Protocol::TCP)),
         ProtocolName::IPPROTO_UDP => Ok(Some(Protocol::UDP)),
-        ProtocolName::IPPROTO_IPV6 => Ok(Some(Protocol::from(native::IPPROTO_IPV6 as i32))),
+        ProtocolName::IPPROTO_IPV6 => Ok(Some(Protocol::from(native::IPPROTO_IPV6))),
     }
 }
 
@@ -64,12 +68,15 @@ pub(super) fn native_resolver_arguments(
     let mut translated = 0;
     for flag in flags {
         translated |= match flag {
-            Flag::AI_PASSIVE => native::AI_PASSIVE as i32,
-            Flag::AI_CANONNAME => native::AI_CANONNAME as i32,
-            Flag::AI_NUMERICHOST => native::AI_NUMERICHOST as i32,
-            Flag::AI_NUMERICSERV => native::AI_NUMERICSERV as i32,
+            Flag::AI_PASSIVE => native::AI_PASSIVE,
+            Flag::AI_CANONNAME => native::AI_CANONNAME,
+            Flag::AI_NUMERICHOST => native::AI_NUMERICHOST,
+            Flag::AI_NUMERICSERV => native::AI_NUMERICSERV,
         };
     }
+    // Winsock declares AI_* as u32, but ADDRINFOA.ai_flags is i32.
+    #[cfg(windows)]
+    let translated = i32::try_from(translated).map_err(|_| GuestResolverError::EAI_BADFLAGS)?;
     Ok((family, kind, protocol, translated))
 }
 
@@ -88,7 +95,7 @@ pub(super) fn native_message_flags(
     let mut translated = 0;
     for flag in flags {
         translated |= match (flag, direction) {
-            (Flag::MSG_PEEK, MessageDirection::Receive) => native::MSG_PEEK as i32,
+            (Flag::MSG_PEEK, MessageDirection::Receive) => native::MSG_PEEK,
             (Flag::MSG_PEEK, MessageDirection::Send) => return Err(GuestErrno::EOPNOTSUPP),
             (Flag::MSG_DONTWAIT, MessageDirection::Send | MessageDirection::Receive) => {
                 #[cfg(unix)]
@@ -116,8 +123,8 @@ pub(super) enum SocketOption {
 impl SocketOption {
     pub(super) fn native(self) -> (i32, i32) {
         match self {
-            Self::Error => (native::SOL_SOCKET as i32, native::SO_ERROR as i32),
-            Self::Linger => (native::SOL_SOCKET as i32, native::SO_LINGER as i32),
+            Self::Error => (native::SOL_SOCKET, native::SO_ERROR),
+            Self::Linger => (native::SOL_SOCKET, native::SO_LINGER),
             Self::Native(level, name) => (level, name),
         }
     }
@@ -147,10 +154,7 @@ pub(super) fn native_socket_option(level: i32, name: i32) -> Result<SocketOption
         OptionName::TCP_NODELAY => (native::IPPROTO_TCP, native::TCP_NODELAY),
         OptionName::IPV6_V6ONLY => (native::IPPROTO_IPV6, native::IPV6_V6ONLY),
     };
-    Ok(SocketOption::Native(
-        native_level as i32,
-        native_name as i32,
-    ))
+    Ok(SocketOption::Native(native_level, native_name))
 }
 
 pub(super) fn decode_guest_linger(data: &[u8]) -> Result<Option<Duration>, GuestErrno> {
