@@ -634,12 +634,19 @@ python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip --js
 
 `detached-run --json` returns `name`, `pid`, the per-run `state_dir`, and
 `verify_argv`: the argument array for the required later observation. It pins
-this interpreter, its isolation flag, the absolute driver, and the selected
+this interpreter, its startup policy, the absolute driver, and the selected
 state root through `--state-dir`, including when launch used the default.
 A later call can therefore use a different temporary environment or working
 directory. The landing queue's runners still live under
 `.git/molt/landing-queue/runners`; state placement and lookup defaults are
 unchanged. Observation does not restart the payload.
+
+The supervisor, queue runner, and verifier share `molt_dev_detached.python_command`.
+Each control helper preserves the parent's isolation, exact bytecode read prefix
+(including no prefix), and UTF-8 mode, and always disables bytecode writes with
+`-B` before startup imports. These are interpreter arguments because isolated
+Python ignores the corresponding environment variables. Payload arguments remain
+the caller's command.
 
 The human hint displays the same argv as a POSIX shell command on POSIX hosts
 and a labeled JSON argument array on Windows. Pass the array directly to a
