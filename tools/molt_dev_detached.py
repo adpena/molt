@@ -163,14 +163,26 @@ def _exec_wait_rc(
 
 
 def python_command(*arguments: str) -> list[str]:
-    """This interpreter, with this process's isolation, running ``arguments``.
+    """This interpreter's control-helper startup policy, running ``arguments``.
 
     The pinned controller runs as ``python -I``. A Python helper it starts
     without ``-I`` reads the caller's ``PYTHONPATH``; inside an integrate gate
     that names the candidate's import roots, so the helper imported the
     candidate's modules beside the controller's and died at startup.
+    Isolation also ignores Python environment variables, so carry the selected
+    bytecode read namespace and UTF-8 mode explicitly, and disable bytecode
+    writes before startup imports. An empty prefix preserves a selected None.
     """
-    return [sys.executable, *(["-I"] if sys.flags.isolated else []), *arguments]
+    return [
+        sys.executable,
+        *(["-I"] if sys.flags.isolated else []),
+        "-B",
+        "-X",
+        f"pycache_prefix={sys.pycache_prefix or ''}",
+        "-X",
+        f"utf8={sys.flags.utf8_mode}",
+        *arguments,
+    ]
 
 
 def _detached_daemonize(
