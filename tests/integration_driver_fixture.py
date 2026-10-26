@@ -14,6 +14,11 @@ never runs the generator that needs it, but a checkout that carries its lock
 declares the ``browser-acorn`` input, and every fixture sandbox then paid an
 ``npm ci`` of its own.
 
+The seed retains the real project dependencies and lock, but declares no DX
+development or benchmark groups. Driver-contract tests still exercise the real
+publisher; unrelated optional package workloads belong to their owning tests.
+Private seed declarations are preserved when cloning an existing seed.
+
 Fixture trees are copied many times per session, on whatever volume holds the
 session's temporary files. ``clone_tree`` shares file blocks where the
 filesystem can (APFS, btrfs, XFS) and copies elsewhere, and
@@ -109,6 +114,14 @@ def copy_driver_trees(target: Path, *, seed: Path | None = None) -> None:
             destination = target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             clone_file(source, destination)
+    from tools.pin_freshness import TableEdits, rewrite_toml_fields
+
+    project = target / "pyproject.toml"
+    edits: TableEdits = {"tool.molt.dx": {"dependency_groups": []}}
+    project.write_text(
+        rewrite_toml_fields(project.read_text(encoding="utf-8"), edits),
+        encoding="utf-8",
+    )
 
 
 def _darwin_clonefile() -> Callable[[bytes, bytes, int], int] | None:

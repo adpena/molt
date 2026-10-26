@@ -448,6 +448,41 @@ def driver_origin_and_clone(
     return _clone_origin(tmp_path, _driver_origin_seed, monkeypatch)
 
 
+def test_driver_seed_keeps_runtime_dependencies_without_optional_groups(
+    driver_seed: Path,
+) -> None:
+    import tomllib
+
+    from molt.dx import DxProject
+
+    expected = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    expected["tool"]["molt"]["dx"]["dependency_groups"] = []
+    actual = tomllib.loads((driver_seed / "pyproject.toml").read_text(encoding="utf-8"))
+    assert actual == expected
+    assert (driver_seed / "uv.lock").read_bytes() == (
+        REPO_ROOT / "uv.lock"
+    ).read_bytes()
+    assert DxProject(driver_seed).dependency_groups() == ()
+
+
+def test_private_driver_seed_retains_its_declared_groups(tmp_path: Path) -> None:
+    from molt.dx import DxProject
+
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "pyproject.toml").write_text(
+        '[tool.molt.dx]\ndependency_groups = ["fixture-workload"]\n'
+        "[dependency-groups]\nfixture-workload = []\n",
+        encoding="utf-8",
+    )
+    copied = tmp_path / "copied"
+    copy_driver_trees(copied, seed=private)
+    assert DxProject(copied).dependency_groups() == ("fixture-workload",)
+    assert (copied / "pyproject.toml").read_bytes() == (
+        private / "pyproject.toml"
+    ).read_bytes()
+
+
 def test_origin_fixture_copies_history_without_mutable_aliases(
     drv, tmp_path, _origin_seed, monkeypatch, request
 ):
