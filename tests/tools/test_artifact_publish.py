@@ -171,6 +171,45 @@ def test_abandoned_readonly_copy_reclaims_private_stage(tmp_path: Path) -> None:
     assert not source.stat().st_mode & stat.S_IWRITE
 
 
+def test_clone_collision_never_grants_stage_cleanup(tmp_path, monkeypatch) -> None:
+    source, final = tmp_path / "source", tmp_path / "final"
+    source.write_bytes(b"source")
+    final.write_bytes(b"previous")
+    clone = module.clone_file
+    collision = []
+
+    def collide(src, stage):
+        stage.write_bytes(b"rival")
+        collision.append(stage)
+        clone(src, stage)
+
+    monkeypatch.setattr(module, "clone_file", collide)
+    with pytest.raises(FileExistsError):
+        with module.staged_copy_file(source, final):
+            pytest.fail("a failed clone entered the consumer")
+    assert len(collision) == 1
+    assert collision[0].read_bytes() == b"rival"
+    assert final.read_bytes() == b"previous"
+
+
+def test_readonly_clone_is_writable_for_preparation_then_restores_mode(tmp_path):
+    source, final = tmp_path / "source", tmp_path / "final"
+    source.write_bytes(b"unsigned")
+    source.chmod(stat.S_IREAD)
+
+    def prepare(stage):
+        assert stage.stat().st_mode & stat.S_IWRITE
+        with stage.open("r+b") as handle:
+            handle.write(b"signed!!")
+
+    with module.staged_copy_file(source, final, prepare=prepare) as stage:
+        assert stage.read_bytes() == b"signed!!"
+        assert not stage.stat().st_mode & stat.S_IWRITE
+    assert not stage.exists()
+    assert source.read_bytes() == b"unsigned"
+    assert not source.stat().st_mode & stat.S_IWRITE
+
+
 @pytest.mark.parametrize("observed_source", [False, True])
 def test_staged_copy_collision_preserves_the_unowned_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observed_source: bool
