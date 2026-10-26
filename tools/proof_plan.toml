@@ -1007,6 +1007,18 @@ backend = "python-tooling"
 target = "host"
 profile = "test"
 
+# Compiled contracts own a runner rather than sharing its memory with unit
+# partitions. Preparation and execution stay in one dependency cell.
+[[matrix_cell]]
+id = "macos-arm64-py312-compiled"
+runner = "macos-14"
+os = "macos"
+arch = "aarch64"
+python = "3.12"
+backend = "python-tooling"
+target = "host"
+profile = "test"
+
 [[matrix_cell]]
 id = "linux-x86_64-py312-unit-collection"
 runner = "ubuntu-latest"
@@ -3308,7 +3320,7 @@ toolchains = ["python", "uv"]
 id = "python.unit.compiled-contracts.prepare.macos"
 cargo_native_units = { target = ["c", "c++"] }
 family = "python_unit"
-cell = "macos-arm64-py312-unit"
+cell = "macos-arm64-py312-compiled"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "cold"
@@ -3322,7 +3334,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 id = "python.unit.compiled-contracts.macos"
 cargo_native_units = { target = ["c", "c++"] }
 family = "python_unit"
-cell = "macos-arm64-py312-unit"
+cell = "macos-arm64-py312-compiled"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "integration"

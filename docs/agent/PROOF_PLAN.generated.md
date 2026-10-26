@@ -85,6 +85,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `linux-x86_64-py312-static` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `static` |
 | `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `macos-arm64-py312-unit` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
+| `macos-arm64-py312-compiled` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-unit-collection` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `dev` |
@@ -292,8 +293,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.cli.import-collection` | `python_unit_collection` | `linux-x86_64-py312-unit-collection` | `explicit` | 1320 s | `python-tests` | 0 |
 | `python.unit.surface-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.surface-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
-| `python.unit.compiled-contracts.prepare.macos` | `python_unit` | `macos-arm64-py312-unit` | `cold` | 1200 s | `compiler-build-resource` | 0 |
-| `python.unit.compiled-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `integration` | 600 s | `compiler-build-resource` | 1 |
+| `python.unit.compiled-contracts.prepare.macos` | `python_unit` | `macos-arm64-py312-compiled` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `python.unit.compiled-contracts.macos` | `python_unit` | `macos-arm64-py312-compiled` | `integration` | 600 s | `compiler-build-resource` | 1 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-library-boundary` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |

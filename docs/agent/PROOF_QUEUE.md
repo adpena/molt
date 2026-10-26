@@ -43,7 +43,7 @@ Cargo's [artifact messages](https://doc.rust-lang.org/cargo/reference/external-t
 bind observed images to that plan; a successful process exit alone does not.
 These are development proof contracts and add no work to emitted programs.
 
-The Mac compiled-contract owner retains its whole resource and WASM files, its
+The dedicated `macos-arm64-py312-compiled` matrix cell retains its whole resource and WASM files, its
 non-slow selection and its 600-second body. Its 1200-second prerequisite projects
 the existing WASM host recipe and builds both actual native resource witness
 inputs sequentially. Preparation and execution share one source/environment
@@ -60,8 +60,16 @@ execution with the earlier 10 GiB estimate observed a 17.98 GiB worker subtree
 and exceeded the 24 GiB aggregate guard with two workers. The canonical capacity
 planner now admits one worker under that grant; its minimum of one does not
 prove a worker fits a smaller hosted runner. No case, timeout or memory limit
-is relaxed. The 43-minute job, setup duration,
-three-slot memory sharing and cold completion still require actual qualification.
+is relaxed. The compiled prerequisite and body run in their own existing
+Python-unit matrix job, so ordinary unit partitions do not divide their memory
+slice. Local Mac family execution requires an explicit `--matrix-cell` because
+both tooling and compiled cells match that host. The additional job repeats
+setup and environment provisioning; its 43-minute budget, hosted capacity and
+cold completion still require actual qualification. The standard arm64
+[`macos-14` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+declares 7 GB of memory. Local execution under an equal byte cap can establish
+that bounded memory cell; runner speed, cold setup and hosted acceptance still
+require the real CI receipt.
 
 LLVM's local and registered unit proof uses the same complete implementation
 image and checked driver target under `release-fast`. Build, test, link and
