@@ -171,6 +171,13 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    keepalive line shows progress. A passing gate prints one line, and its
    `gate_finished` progress event names both files; a failed gate prints the file
    paths and each stream's bounded end.
+   Changed-package Clippy selection shares the compiler source-closure authority's
+   locked dependency projection. Lockfile changes and local patch edits reach the
+   union of consumers in the immutable base and current graphs, including removed
+   edges. Root policy changes, unknown patch identities and incomplete inventories
+   select the full workspace. Ordinary member edits retain reverse local-dependency
+   reach. Selection preserves the proof plan's command arguments, feature sets,
+   targets, profiles and order; Cargo writers remain serialized on their shared target.
    Managed Python gates select the admitted image's read-only ordinary bytecode
    namespace before startup and disable bytecode writes. Verifiers use a
    separate fresh empty namespace; see [checkout provisioning](#checkout-provisioning).

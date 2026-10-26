@@ -11,8 +11,9 @@ identity and execution budget; commands without one remain unchanged:
 * a changed path inside a workspace member touches that member, and the change
   reaches every member that depends on it (any dependency kind), since an API
   change can raise a lint in a dependent;
-* a root Cargo input, a patched crate, or Rust source outside every Cargo
-  project (shared `#[path]` build support) reaches the whole workspace;
+* lock and understood local-patch changes reach consumers in the union of the
+  base and current locked graphs; policy changes and unproven identities reach
+  the whole workspace, as does shared Rust source outside Cargo projects;
 * a path inside a separate Cargo project (excluded or standalone) reaches only
   that project; rust-toolchain.toml, clippy.toml and .cargo/ reach them all;
 * a `--workspace` command covers every member, a `-p` command its packages,
@@ -30,12 +31,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -55,7 +58,12 @@ from molt.cargo_workspace import (  # noqa: E402
     workspace_member_packages,
 )
 from tools.command_execution import CommandExecutor  # noqa: E402
-from tools.git_identity import branch_changed_paths  # noqa: E402
+from molt.cli.cargo_source_closure import cargo_locked_dependency_projection  # noqa: E402
+from tools.git_identity import (  # noqa: E402
+    branch_changed_paths,
+    immutable_git_environment,
+    require_git_object_id,
+)
 from tools.proof_plan import (  # noqa: E402
     ProofCommand,
     ProofPlan,
@@ -189,6 +197,136 @@ def reach(workspace: Workspace, paths: Iterable[str]) -> Reach:
     return Reach(packages, whole_workspace, toolchain, frozenset(projects))
 
 
+def dependency_reach(
+    workspace: Workspace, paths: Iterable[str], read_base: Callable[[str], str]
+) -> Reach:
+    """Refine root/patch changes using both conservative locked package closures.
+
+    Unclassified manifest policy or incomplete identity evidence remains global.
+    Command feature/target/profile contracts are never rewritten.
+    """
+    paths = tuple(paths)
+    ordinary = reach(workspace, paths)
+    if ordinary.toolchain:
+        return ordinary
+    if not any(
+        path in WORKSPACE_INPUTS
+        or any(path.startswith(directory + "/") for directory in workspace.patched)
+        or path.endswith("Cargo.toml")
+        or (ordinary.whole_workspace and path.endswith(".rs"))
+        for path in paths
+    ):
+        return ordinary
+
+    def current(path: str) -> str:
+        return (workspace.root / path).read_text(encoding="utf-8")
+
+    def patches(document: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+        result: dict[tuple[str, str], dict[str, Any]] = {}
+        for source, table in document.get("patch", {}).items():
+            for name, spec in table.items():
+                if not isinstance(spec, dict):
+                    raise ValueError("unclassified Cargo patch specification")
+                result[(source, name)] = spec
+        return result
+
+    def patch_path(spec: dict[str, Any]) -> str | None:
+        value = spec.get("path")
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("invalid patch path")
+        path = PurePosixPath(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("patch path outside source custody")
+        return path.as_posix()
+
+    try:
+        before = tomllib.loads(read_base("Cargo.toml"))
+        after = tomllib.loads(current("Cargo.toml"))
+        if {k: v for k, v in before.items() if k != "patch"} != {
+            k: v for k, v in after.items() if k != "patch"
+        }:
+            raise ValueError("workspace policy changed")
+        old_patches, new_patches = patches(before), patches(after)
+        directories: set[str] = set()
+        identities: set[tuple[str, str, str]] = set()
+        for key in old_patches.keys() | new_patches.keys():
+            old, new = old_patches.get(key, {}), new_patches.get(key, {})
+            old_path, new_path = patch_path(old), patch_path(new)
+            for directory in (old_path, new_path):
+                if directory is not None:
+                    directories.add(directory)
+            changed = old != new or any(
+                path.startswith(directory + "/")
+                for directory in (old_path, new_path)
+                if directory is not None
+                for path in paths
+            )
+            if not changed:
+                continue
+            for spec, directory, reader in (
+                (old, old_path, read_base),
+                (new, new_path, current),
+            ):
+                if not spec:
+                    continue
+                if directory is None:
+                    raise ValueError("changed nonlocal patch")
+                package = tomllib.loads(reader(directory + "/Cargo.toml"))["package"]
+                name, version = package.get("name"), package.get("version")
+                if not isinstance(name, str) or not isinstance(version, str):
+                    raise ValueError("patch package identity unavailable")
+                identities.add((name, version, ""))
+        remaining = [
+            path
+            for path in paths
+            if path not in WORKSPACE_INPUTS
+            and not any(path.startswith(directory + "/") for directory in directories)
+        ]
+        local = reach(workspace, remaining)
+        if local.whole_workspace:
+            return local
+        old_lock = tomllib.loads(read_base("Cargo.lock"))
+        new_lock = tomllib.loads(current("Cargo.lock"))
+        touched = set(local.packages)
+        found: set[tuple[str, str, str]] = set()
+        for directory, name in workspace.members.items():
+            manifest_path = directory + "/Cargo.toml"
+            old_projection = cargo_locked_dependency_projection(
+                tomllib.loads(read_base(manifest_path)), old_lock
+            )
+            new_projection = cargo_locked_dependency_projection(
+                tomllib.loads(current(manifest_path)), new_lock
+            )
+            keys = {
+                (record["name"], record["version"], record.get("source", ""))
+                for projection in (old_projection, new_projection)
+                for record in projection["packages"]
+            }
+            found.update(keys & identities)
+            if old_projection != new_projection or keys & identities:
+                touched.add(name)
+        if found != identities:
+            raise ValueError("changed patch has no proven locked consumer")
+        if old_lock != new_lock and not touched:
+            # The identity projection deliberately ignores unreachable records.
+            # Cargo still owns whole-lock validation, so an unclassified change
+            # must not turn into a successful gate without any Cargo command.
+            raise ValueError("lockfile changed outside proven consumer closures")
+        return Reach(frozenset(touched), False, False, local.projects)
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        subprocess.CalledProcessError,
+    ) as exc:
+        print(f"changed-clippy: conservative workspace reach: {exc}")
+        return reach(workspace, (*paths, "Cargo.lock"))
+
+
 def clippy_packages(command: ProofCommand) -> frozenset[str] | None:
     """Packages a workspace clippy command lints; None means every member."""
     argv = command.argv
@@ -292,6 +430,7 @@ def _git(arguments: list[str]) -> str:
         text=True,
         encoding="utf-8",
         timeout=GIT_TIMEOUT_SECONDS,
+        env=immutable_git_environment(os.environ),
     )
     if not isinstance(output, str):
         raise TypeError("git output must decode as text")
@@ -335,7 +474,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     plan = ProofPlan.load()
-    change = reach(Workspace.load(ROOT), changed_paths(args.base))
+    paths = changed_paths(args.base)
+    workspace = Workspace.load(ROOT)
+
+    def read_base(path: str) -> str:
+        nonlocal base_commit
+        if base_commit is None:
+            base_commit = require_git_object_id(
+                _git(["merge-base", args.base, "HEAD"]).strip()
+            )
+        return _git(["show", f"{base_commit}:{path}"])
+
+    base_commit: str | None = None
+    change = dependency_reach(workspace, paths, read_base)
     selected = select(local_clippy_commands(plan), change)
     if not selected:
         print("changed-clippy: no Cargo package reached; nothing to lint")

@@ -107,6 +107,9 @@ def test_all_selected_boundaries_are_checked_before_the_first_clippy(
         "changed_paths",
         lambda _base: ["Cargo.toml", "deploy/simd/Cargo.toml"],
     )
+    # This ownership fixture has no historical lock evidence; remain global
+    # without invoking Git outside the fixture's modeled boundary.
+    monkeypatch.setattr(gate, "_git", lambda _arguments: "")
     monkeypatch.setattr(gate, "local_clippy_commands", lambda _plan: COMMANDS)
     monkeypatch.setattr(gate.ProofPlan, "load", lambda: object())
 
@@ -391,3 +394,152 @@ def test_run_gives_a_cold_target_the_cargo_policy_cold_budget(monkeypatch) -> No
     # CI's warm budget is shorter than a landing's first cold run.
     assert int(command.data["timeout_seconds"]) < cold
     assert seen == [float(cold)]
+
+
+def _impact_documents(
+    *, patched: str | None, backend_dependency: str = "codec"
+) -> dict[str, str]:
+    root = '[workspace]\nmembers = ["backend", "runtime"]\n'
+    if patched is not None:
+        root += f'[patch.crates-io]\ncodec = {{ path = "{patched}" }}\n'
+    source = (
+        '\nsource = "registry+https://example.invalid/index"' if patched is None else ""
+    )
+    documents = {
+        "Cargo.toml": root,
+        "backend/Cargo.toml": '[package]\nname = "backend"\nversion = "1.0.0"\n',
+        "runtime/Cargo.toml": '[package]\nname = "runtime"\nversion = "1.0.0"\n',
+        "Cargo.lock": (
+            'version = 4\n[[package]]\nname = "backend"\nversion = "1.0.0"\n'
+            + (
+                f'dependencies = ["{backend_dependency}"]\n'
+                if backend_dependency
+                else ""
+            )
+            + '[[package]]\nname = "runtime"\nversion = "1.0.0"\n'
+            + '[[package]]\nname = "codec"\nversion = "2.0.0"'
+            + source
+            + "\n"
+        ),
+    }
+    if patched is not None:
+        documents[patched + "/Cargo.toml"] = (
+            '[package]\nname = "codec"\nversion = "2.0.0"\n'
+        )
+    return documents
+
+
+def _impact_selection(tmp_path, before, after, paths):
+    for relative, text in after.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    workspace = gate.Workspace.load(tmp_path)
+    change = gate.dependency_reach(workspace, paths, before.__getitem__)
+    return change, tuple(command for command, _ in gate.select(COMMANDS, change))
+
+
+@pytest.mark.parametrize("old_path", [None, "vendor/old-codec"])
+def test_patch_source_transition_reaches_consumers_without_runtime(tmp_path, old_path):
+    before = _impact_documents(patched=old_path)
+    after = _impact_documents(patched="vendor/codec")
+    change, selected = _impact_selection(
+        tmp_path, before, after, ["Cargo.toml", "Cargo.lock", "vendor/codec/src/lib.rs"]
+    )
+    assert change.packages == {"backend"}
+    assert not change.whole_workspace
+    assert selected == (COMMANDS[0], COMMANDS[2])
+
+
+def test_patch_source_only_preserves_declared_commands(tmp_path):
+    documents = _impact_documents(patched="vendor/codec")
+    change, selected = _impact_selection(
+        tmp_path, documents, documents, ["vendor/codec/src/lib.rs"]
+    )
+    assert change.packages == {"backend"}
+    assert selected == (COMMANDS[0], COMMANDS[2])
+    assert selected[0] is COMMANDS[0]  # --workspace/features are not rewritten.
+
+
+def test_removed_dependency_uses_base_and_current_closures(tmp_path):
+    before = _impact_documents(patched="vendor/codec")
+    after = _impact_documents(patched="vendor/codec", backend_dependency="")
+    change, selected = _impact_selection(tmp_path, before, after, ["Cargo.lock"])
+    assert change.packages == {"backend"}
+    assert selected == (COMMANDS[0], COMMANDS[2])
+
+
+def test_lock_projection_disambiguates_versions_and_git_source_refs(tmp_path):
+    before = _impact_documents(patched=None)
+    before["Cargo.lock"] = (
+        before["Cargo.lock"]
+        .replace(
+            'dependencies = ["codec"]',
+            'dependencies = ["codec 2.0.0 (git+https://example.invalid/codec?branch=main)"]',
+        )
+        .replace(
+            "registry+https://example.invalid/index",
+            "git+https://example.invalid/codec?branch=main#aaaaaaaa",
+        )
+        + '[[package]]\nname = "codec"\nversion = "1.0.0"\n'
+    )
+    after = dict(before)
+    after["Cargo.lock"] = before["Cargo.lock"].replace("#aaaaaaaa", "#bbbbbbbb")
+    change, selected = _impact_selection(tmp_path, before, after, ["Cargo.lock"])
+    assert change.packages == {"backend"}
+    assert selected == (COMMANDS[0], COMMANDS[2])
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing-lock", "malformed-lock", "missing-package", "policy"]
+)
+def test_unproven_or_global_changes_keep_workspace_coverage(tmp_path, defect):
+    before = _impact_documents(patched="vendor/codec")
+    after = dict(before)
+    paths = ["Cargo.lock"]
+    if defect == "missing-lock":
+        del before["Cargo.lock"]
+    elif defect == "malformed-lock":
+        after["Cargo.lock"] = 'version = 4\npackage = "invalid"\n'
+    elif defect == "missing-package":
+        after["Cargo.lock"] = (
+            'version = 4\n[[package]]\nname = "runtime"\nversion = "1.0.0"\n'
+        )
+    else:
+        after["Cargo.toml"] += "[profile.release]\nopt-level = 2\n"
+        paths = ["Cargo.toml"]
+    change, selected = _impact_selection(tmp_path, before, after, paths)
+    assert change.whole_workspace
+    assert selected == COMMANDS[:3]
+
+
+@pytest.mark.parametrize("dependencies", ['"stale"', "[]"])
+def test_unclassified_lock_changes_keep_cargo_validation(tmp_path, dependencies):
+    before = _impact_documents(patched="vendor/codec")
+    after = dict(before)
+    after["Cargo.lock"] += (
+        '[[package]]\nname = "unrelated"\nversion = "1.0.0"\n'
+        f"dependencies = {dependencies}\n"
+    )
+    change, selected = _impact_selection(tmp_path, before, after, ["Cargo.lock"])
+    assert change.whole_workspace
+    assert selected == COMMANDS[:3]
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '[dependencies]\ncodec = { version = "2", optional = true }\n',
+        '[dev-dependencies]\ncodec = "2"\n',
+        '[build-dependencies]\ncodec = "2"\n',
+        "[target.'cfg(windows)'.dependencies]\ncodec = \"2\"\n",
+    ],
+)
+def test_patch_reach_retains_optional_dev_build_and_target_edges(tmp_path, declaration):
+    documents = _impact_documents(patched="vendor/codec")
+    documents["backend/Cargo.toml"] += declaration
+    change, selected = _impact_selection(
+        tmp_path, documents, documents, ["vendor/codec/src/lib.rs"]
+    )
+    assert change.packages == {"backend"}
+    assert selected == (COMMANDS[0], COMMANDS[2])
