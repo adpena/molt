@@ -4754,7 +4754,9 @@ def frozen_files(payload: object) -> list[FrozenFile]:
             return
         normalized = _image_path_key(path)
         size = raw_size if isinstance(raw_size, int) and raw_size >= 0 else None
-        row = FrozenFile(str(path), digest, size)
+        # Store the same lexical coordinate used for deduplication. Canonical
+        # JSON can reorder callers with different spellings of that entry.
+        row = FrozenFile(normalized, digest, size)
         prior = files.get(normalized)
         if prior is not None and prior.sha256 != digest:
             raise ValueError(f"captured file has conflicting identities: {path}")
