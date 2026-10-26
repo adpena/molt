@@ -648,7 +648,7 @@ def run_captured_gate(
                     )
         raise
     return GateOutcome(
-        *_run_captured_gate(
+        _run_captured_gate(
             cmd,
             repo=repo,
             env=env,
@@ -875,6 +875,8 @@ def _gate_runtime(
     toolchains: dict[str, dict],
     receipt_kind: str = "gates",
 ) -> GateRuntime:
+    from tools.proof_plan import load_toolchain_policies
+
     def source_changes() -> tuple[str, ...]:
         status = git._run(list(clean_checkout_status_arguments(null_terminated=True)))
         return tuple(entry for entry in status.stdout.split("\0") if entry)
@@ -913,6 +915,9 @@ def _gate_runtime(
         observe_capacity=observe_gate_capacity,
         say=_say,
         ok=_ok,
+        toolchain_policies=load_toolchain_policies(
+            config.prerequisite_policy, root=config.root, names=tuple(toolchains)
+        ),
     )
 
 
