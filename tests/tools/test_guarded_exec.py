@@ -95,7 +95,7 @@ def test_guarded_exec_collects_after_published_standalone_result(
     observed = []
 
     def collect(_env, *, cwd):
-        payload = json.loads(metrics.read_text())
+        payload = json.loads(metrics.read_text(encoding="utf-8"))
         assert payload["returncode"] == 7
         assert payload["descendants_closed"] is closed
         assert cwd == guarded_exec.ROOT

@@ -1517,7 +1517,7 @@ def test_outer_completion_publishes_payload_before_real_collection(
     command = [
         sys.executable,
         "-c",
-        f"from pathlib import Path; Path({str(marker)!r}).write_text('closed payload'); raise SystemExit(7)",
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('closed payload', encoding='utf-8'); raise SystemExit(7)",
     ]
     if owner == "nested_guarded_exec":
         # The real outer guard supplies ACTIVE to the standalone nested
@@ -1539,9 +1539,9 @@ def test_outer_completion_publishes_payload_before_real_collection(
     observations = []
 
     def collect(**kwargs):
-        assert marker.read_text() == "closed payload"
+        assert marker.read_text(encoding="utf-8") == "closed payload"
         if owner != "dx_run":
-            payload = json.loads(summary.read_text())
+            payload = json.loads(summary.read_text(encoding="utf-8"))
             assert payload["returncode"] == 7
             assert payload["descendants_closed"] is True
         observations.append(owner)
@@ -1626,7 +1626,7 @@ def test_published_nonzero_result_collects_selected_root_alongside_live_use(
     observations = []
 
     def collect(**kwargs):
-        assert marker.read_text() == "7"
+        assert marker.read_text(encoding="utf-8") == "7"
         assert "published result 7" in capsys.readouterr().out
         assert kwargs["root"] == ext
         assert kwargs["env"]["MOLT_EXT_ROOT"] == str(ext)
@@ -1641,7 +1641,7 @@ def test_published_nonzero_result_collects_selected_root_alongside_live_use(
                 sys.executable,
                 "-c",
                 (
-                    f"from pathlib import Path; Path({str(marker)!r}).write_text('7'); "
+                    f"from pathlib import Path; Path({str(marker)!r}).write_text('7', encoding='utf-8'); "
                     "raise SystemExit(7)"
                 ),
             ],
@@ -1720,7 +1720,7 @@ def test_terminal_output_reaches_real_pipe_before_blocked_maintenance(tmp_path, 
 
     entered = tmp_path / "maintenance-entered"
     program = tmp_path / "app.py"
-    program.write_text("print('ok')\n")
+    program.write_text("print('ok')\n", encoding="utf-8")
     source = f"""
 import json, sys
 from pathlib import Path
@@ -1729,7 +1729,7 @@ sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / "src")!r}]
 from molt import dx
 assert not sys.stdout.line_buffering, "the oracle needs a buffered real pipe"
 def block(env, *, cwd):
-    Path({str(entered)!r}).write_text("entered")
+    Path({str(entered)!r}).write_text("entered", encoding="utf-8")
     assert sys.stdin.buffer.read(1) == b"r"
 dx.collect_checkout_state_after_result = block
 if {owner!r}.startswith("build-"):
