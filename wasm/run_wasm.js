@@ -481,27 +481,34 @@ const TAG_MASK = 0x0007000000000000n;
 const MAX_DB_FRAME_SIZE = 64 * 1024 * 1024;
 const CANCEL_POLL_MS = 10;
 const DB_WORKER_CLOSE_TIMEOUT_MS = 250;
-const ERRNO = (os.constants && os.constants.errno) || {};
-const errnoValue = (name, fallback) =>
-  Number.isInteger(ERRNO[name]) ? ERRNO[name] : fallback;
-const ENOSYS = errnoValue('ENOSYS', 38);
-const EINVAL = errnoValue('EINVAL', 22);
-const ENOMEM = errnoValue('ENOMEM', 12);
-const EBADF = errnoValue('EBADF', 9);
-const ENOENT = errnoValue('ENOENT', 2);
-const EPIPE = errnoValue('EPIPE', 32);
-const EWOULDBLOCK = errnoValue('EWOULDBLOCK', errnoValue('EAGAIN', 11));
-const EINPROGRESS = errnoValue('EINPROGRESS', 115);
-const ETIMEDOUT = errnoValue('ETIMEDOUT', 110);
-const ENOTCONN = errnoValue('ENOTCONN', 107);
-const ENOTSOCK = errnoValue('ENOTSOCK', 88);
-const EAFNOSUPPORT = errnoValue('EAFNOSUPPORT', 97);
-const EADDRINUSE = errnoValue('EADDRINUSE', 98);
-const ECONNRESET = errnoValue('ECONNRESET', 104);
-const ECONNREFUSED = errnoValue('ECONNREFUSED', 111);
-const ENOPROTOOPT = errnoValue('ENOPROTOOPT', 92);
-const EOPNOTSUPP = errnoValue('EOPNOTSUPP', errnoValue('ENOTSUP', 95));
-const EISCONN = errnoValue('EISCONN', 106);
+// The guest reads WASI errno codes, its libc's numbering on wasm32-wasip1
+// (runtime/molt-backend-wasm/src/wasm_abi_manifest.toml [wasi_errno]). A host
+// error crosses by name, never by this platform's own errno number.
+const WASI_ERRNO = require('./wasi_errno_generated.js');
+// This platform's numbers serve only to read a numeric error back to its name.
+const HOST_ERRNO_NAMES = new Map(
+  Object.entries((os.constants && os.constants.errno) || {}).map(([name, value]) => [value, name])
+);
+const {
+  ENOSYS,
+  EINVAL,
+  ENOMEM,
+  EBADF,
+  ENOENT,
+  EPIPE,
+  EWOULDBLOCK,
+  EINPROGRESS,
+  ETIMEDOUT,
+  ENOTCONN,
+  ENOTSOCK,
+  EAFNOSUPPORT,
+  EADDRINUSE,
+  ECONNRESET,
+  ECONNREFUSED,
+  ENOPROTOOPT,
+  EOPNOTSUPP,
+  EISCONN,
+} = WASI_ERRNO;
 const IO_EVENT_READ = 1;
 const IO_EVENT_WRITE = 1 << 1;
 const IO_EVENT_ERROR = 1 << 2;
@@ -2281,36 +2288,11 @@ const decodeRecvmsgExtra = (extra) => {
 
 const mapSocketError = (err) => {
   if (!err) return EINVAL;
-  if (typeof err.errno === 'number') {
-    return Math.abs(err.errno) || EINVAL;
+  let name = typeof err.code === 'string' ? err.code : undefined;
+  if (!Object.hasOwn(WASI_ERRNO, name) && typeof err.errno === 'number') {
+    name = HOST_ERRNO_NAMES.get(Math.abs(err.errno));
   }
-  if (err.code && ERRNO[err.code]) {
-    return ERRNO[err.code];
-  }
-  switch (err.code) {
-    case 'EAGAIN':
-    case 'EWOULDBLOCK':
-      return EWOULDBLOCK;
-    case 'EINPROGRESS':
-      return EINPROGRESS;
-    case 'ECONNRESET':
-      return ECONNRESET;
-    case 'ECONNREFUSED':
-      return ECONNREFUSED;
-    case 'ETIMEDOUT':
-      return ETIMEDOUT;
-    case 'ENOTCONN':
-      return ENOTCONN;
-    case 'EISCONN':
-      return EISCONN;
-    case 'ENOTSUP':
-    case 'EOPNOTSUPP':
-      return EOPNOTSUPP;
-    case 'EPIPE':
-      return EPIPE;
-    default:
-      return EINVAL;
-  }
+  return Object.hasOwn(WASI_ERRNO, name) ? WASI_ERRNO[name] : EINVAL;
 };
 
 const writeHandleParts = (view, index, value) => {
@@ -5906,6 +5888,7 @@ if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
 
 module.exports = {
   extractWasmTableBase,
+  mapSocketError,
   parseWasmImports,
   resolveManifestModulePath,
   resolveWasmPaths,

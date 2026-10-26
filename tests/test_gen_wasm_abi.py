@@ -282,6 +282,29 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
         manifest.runtime_raw_abi_specs(drifted)
 
 
+def test_wasi_errno_table_is_one_code_per_name_and_projects_to_every_host() -> None:
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    table = manifest.wasi_errno_table(data)
+    # WASI preview1's errno enum: 76 codes plus libc's two alias names.
+    assert sorted(set(table.values())) == list(range(1, 77))
+    assert table["EWOULDBLOCK"] == table["EAGAIN"] == 6
+    assert table["EOPNOTSUPP"] == table["ENOTSUP"] == 58
+    js = gen_wasm_abi.render_js_wasi_errno(data)
+    assert json.loads(js[js.index("() => (") + 7 : js.rindex("));")]) == table
+    rust = gen_wasm_abi.render_runtime_wasi_errno_rs(data)
+    assert "assert!(libc::EINPROGRESS == 26);" in rust
+    assert rust.count("assert!(libc::") == len(table)
+
+    duplicate = copy.deepcopy(data)
+    duplicate["wasi_errno"]["EFAKE"] = 26
+    with pytest.raises(manifest.WasmAbiManifestError, match="repeats code 26"):
+        manifest._validate_wasi_errno(duplicate)
+    dangling = copy.deepcopy(data)
+    dangling["wasi_errno_alias"]["EFAKE"] = "EMISSING"
+    with pytest.raises(manifest.WasmAbiManifestError, match="undeclared code"):
+        manifest._validate_wasi_errno(dangling)
+
+
 def test_runtime_callable_abi_rejects_transport_arity_drift() -> None:
     data = copy.deepcopy(gen_wasm_abi.load_manifest())
     entry = next(

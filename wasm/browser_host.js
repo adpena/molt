@@ -8,24 +8,33 @@ import {
 } from './browser_target_features.js';
 import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
 import { EXPLICIT_CAPABILITY_TIER } from './host_capabilities_generated.js';
+import './wasi_errno_generated.js';
 
-const ENOSYS = 38;
-const EINVAL = 22;
-const ENOMEM = 12;
-const EBADF = 9;
-const EAFNOSUPPORT = 97;
-const EPROTONOSUPPORT = 93;
-const ENOPROTOOPT = 92;
-const EOPNOTSUPP = 95;
-const ENOTCONN = 107;
-const ECONNREFUSED = 111;
-const ECONNRESET = 104;
-const EPIPE = 32;
-const EINPROGRESS = 115;
-const EALREADY = 114;
-const EWOULDBLOCK = 11;
-const ETIMEDOUT = 110;
-const ENOENT = 2;
+// The guest reads WASI errno codes, its libc's numbering on wasm32-wasip1
+// (runtime/molt-backend-wasm/src/wasm_abi_manifest.toml [wasi_errno]).
+const {
+  ENOSYS,
+  EINVAL,
+  ENOMEM,
+  EBADF,
+  EAFNOSUPPORT,
+  EPROTONOSUPPORT,
+  ENOPROTOOPT,
+  EOPNOTSUPP,
+  ENOTCONN,
+  ECONNREFUSED,
+  ECONNRESET,
+  EPIPE,
+  EINPROGRESS,
+  EALREADY,
+  EWOULDBLOCK,
+  ETIMEDOUT,
+  ENOENT,
+  EROFS,
+  EISDIR,
+  ENOTDIR,
+  ESPIPE,
+} = globalThis.MoltWasiErrno;
 const IO_EVENT_READ = 1;
 const IO_EVENT_WRITE = 1 << 1;
 const IO_EVENT_ERROR = 1 << 2;
@@ -48,10 +57,6 @@ const IPPROTO_TCP = 6;
 const IPPROTO_UDP = 17;
 const TCP_NODELAY = 1;
 const MSG_PEEK = 2;
-const EROFS = 30;
-const EISDIR = 21;
-const ENOTDIR = 20;
-const ESPIPE = 29;
 const WASI_FILETYPE_CHARACTER_DEVICE = 2;
 const WASI_FILETYPE_DIRECTORY = 3;
 const WASI_FILETYPE_REGULAR_FILE = 4;
@@ -2751,14 +2756,6 @@ export const createBrowserWebSocketHost = (state, options) => {
 const buildWasiStub = (state, logFn, options = {}) => {
   const stdio = createStdIoEmitter(logFn);
   state.stdio = stdio;
-  const WASI_ERRNO_BADF = 8;
-  const WASI_ERRNO_INVAL = 28;
-  const WASI_ERRNO_ISDIR = 31;
-  const WASI_ERRNO_NOENT = 44;
-  const WASI_ERRNO_NOSYS = 52;
-  const WASI_ERRNO_NOTDIR = 54;
-  const WASI_ERRNO_ROFS = 69;
-  const WASI_ERRNO_SPIPE = 70;
   if (!state.wasiFiles) {
     state.wasiFiles = new Map();
   }
@@ -2824,7 +2821,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     view.setBigUint64(base + 56, 0n, true);
     return true;
   };
-  const wasiUnsupported = () => WASI_ERRNO_NOSYS;
+  const wasiUnsupported = () => ENOSYS;
   const preopenByFd = (fdNum) =>
     state.wasiPreopens.find((entry) => entry.fd === fdNum) || null;
   const readGuestPath = (ptr, len) => {
@@ -2871,22 +2868,22 @@ const buildWasiStub = (state, logFn, options = {}) => {
     let info = statResolvedPath(absolutePath);
     if (!info) {
       if ((oflags & WASI_OFLAGS_CREAT) === 0) {
-        return { errno: WASI_ERRNO_NOENT };
+        return { errno: ENOENT };
       }
       if (preopen.path !== '/tmp' || !state.vfs || !state.vfs.tmp) {
-        return { errno: WASI_ERRNO_ROFS };
+        return { errno: EROFS };
       }
       state.vfs.tmp.write(relativePath, new Uint8Array(0));
       info = statResolvedPath(absolutePath);
       if (!info) {
-        return { errno: WASI_ERRNO_NOENT };
+        return { errno: ENOENT };
       }
     } else if ((oflags & WASI_OFLAGS_EXCL) !== 0 && (oflags & WASI_OFLAGS_CREAT) !== 0) {
-      return { errno: WASI_ERRNO_INVAL };
+      return { errno: EINVAL };
     }
     if (info.stat.isDir) {
       if (!wantDirectory) {
-        return { errno: WASI_ERRNO_ISDIR };
+        return { errno: EISDIR };
       }
       const fd = state.wasiNextFd++;
       state.wasiFiles.set(fd, {
@@ -2900,23 +2897,23 @@ const buildWasiStub = (state, logFn, options = {}) => {
       return { errno: 0, fd };
     }
     if (wantDirectory) {
-      return { errno: WASI_ERRNO_NOTDIR };
+      return { errno: ENOTDIR };
     }
     if ((oflags & WASI_OFLAGS_TRUNC) !== 0) {
       if (info.resolved.prefix !== '/tmp') {
-        return { errno: WASI_ERRNO_ROFS };
+        return { errno: EROFS };
       }
       info.resolved.mount.write(info.resolved.rel, new Uint8Array(0));
       info = statResolvedPath(absolutePath);
       if (!info) {
-        return { errno: WASI_ERRNO_NOENT };
+        return { errno: ENOENT };
       }
     }
     let buffer;
     try {
       buffer = info.resolved.mount.read(info.resolved.rel);
     } catch {
-      return { errno: WASI_ERRNO_NOENT };
+      return { errno: ENOENT };
     }
     const fd = state.wasiNextFd++;
     state.wasiFiles.set(fd, {
@@ -2938,7 +2935,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       entry.resolved.mount.write(entry.resolved.rel, entry.buffer);
       return 0;
     } catch (err) {
-      return WASI_ERRNO_INVAL;
+      return EINVAL;
     }
   };
   const writeBytesToFileEntry = (entry, bytes) => {
@@ -2954,7 +2951,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
   };
   const writeFdstat = (statPtr, filetype) => {
     const memory = state.memory;
-    if (!memory) return WASI_ERRNO_NOSYS;
+    if (!memory) return ENOSYS;
     const view = new DataView(memory.buffer);
     const base = Number(statPtr);
     view.setUint8(base, filetype);
@@ -2979,20 +2976,20 @@ const buildWasiStub = (state, logFn, options = {}) => {
       throw new Error(`WASM proc_raise ${sig}`);
     },
     args_sizes_get: (argcPtr, argvBufSizePtr) => {
-      if (!writeWasiU32(argcPtr, 0)) return WASI_ERRNO_NOSYS;
-      if (!writeWasiU32(argvBufSizePtr, 0)) return WASI_ERRNO_NOSYS;
+      if (!writeWasiU32(argcPtr, 0)) return ENOSYS;
+      if (!writeWasiU32(argvBufSizePtr, 0)) return ENOSYS;
       return 0;
     },
     args_get: () => 0,
     environ_sizes_get: (countPtr, bufSizePtr) => {
-      if (!writeWasiU32(countPtr, wasiEnvEntries.length)) return WASI_ERRNO_NOSYS;
+      if (!writeWasiU32(countPtr, wasiEnvEntries.length)) return ENOSYS;
       const totalSize = wasiEnvBytes.reduce((sum, bytes) => sum + bytes.length, 0);
-      if (!writeWasiU32(bufSizePtr, totalSize)) return WASI_ERRNO_NOSYS;
+      if (!writeWasiU32(bufSizePtr, totalSize)) return ENOSYS;
       return 0;
     },
     environ_get: (environPtr, bufPtr) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return ENOSYS;
       const view = new DataView(memory.buffer);
       let entryPtr = Number(environPtr);
       let dataPtr = Number(bufPtr);
@@ -3006,7 +3003,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     },
     fd_write: (fd, iovsPtr, iovsLen, outWrittenPtr) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return ENOSYS;
       const view = new DataView(memory.buffer);
       const fdNum = toNumber(fd);
       const basePtr = typeof iovsPtr === 'bigint' ? Number(iovsPtr) : Number(iovsPtr >>> 0);
@@ -3015,7 +3012,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       if (fdNum !== 1 && fdNum !== 2) {
         const entry = state.wasiFiles.get(fdNum);
         if (!entry || entry.kind !== 'file' || !entry.writable) {
-          return WASI_ERRNO_BADF;
+          return EBADF;
         }
         for (let index = 0; index < count; index += 1) {
           const ptr = view.getUint32(basePtr + index * 8, true);
@@ -3049,7 +3046,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     },
     fd_read: (fd, iovsPtr, iovsLen, outReadPtr) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return ENOSYS;
       const fdNum = toNumber(fd);
       const view = new DataView(memory.buffer);
       if (fdNum === 0 && state.vfs && state.vfs.dev) {
@@ -3076,7 +3073,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       }
       const entry = state.wasiFiles.get(fdNum);
       if (!entry || entry.kind !== 'file' || !entry.readable) {
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       const basePtr = toNumber(iovsPtr);
       const count = toNumber(iovsLen);
@@ -3117,7 +3114,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       const fdNum = toNumber(fd);
       const entry = state.wasiFiles.get(fdNum);
       if (!entry || entry.kind !== 'file') {
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       const delta = typeof offset === 'bigint' ? Number(offset) : Number(offset);
       let next = 0;
@@ -3128,10 +3125,10 @@ const buildWasiStub = (state, logFn, options = {}) => {
       } else if (whence === WASI_WHENCE_END) {
         next = entry.buffer.length + delta;
       } else {
-        return WASI_ERRNO_INVAL;
+        return EINVAL;
       }
       if (next < 0) {
-        return WASI_ERRNO_INVAL;
+        return EINVAL;
       }
       entry.pos = next;
       if (outOffsetPtr) {
@@ -3143,9 +3140,9 @@ const buildWasiStub = (state, logFn, options = {}) => {
       const fdNum = toNumber(fd);
       const entry = state.wasiFiles.get(fdNum);
       if (!entry || entry.kind !== 'file') {
-        return WASI_ERRNO_SPIPE;
+        return ESPIPE;
       }
-      return writeWasiU64(outOffsetPtr, BigInt(entry.pos)) ? 0 : WASI_ERRNO_NOSYS;
+      return writeWasiU64(outOffsetPtr, BigInt(entry.pos)) ? 0 : ENOSYS;
     },
     fd_fdstat_get: (fd, statPtr) => {
       const fdNum = toNumber(fd);
@@ -3157,7 +3154,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       }
       const entry = state.wasiFiles.get(fdNum);
       if (!entry) {
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       return writeFdstat(
         statPtr,
@@ -3170,30 +3167,30 @@ const buildWasiStub = (state, logFn, options = {}) => {
       if (preopenByFd(fdNum)) {
         return writeFilestat(bufPtr, { isDir: true, isFile: false, size: 0 })
           ? 0
-          : WASI_ERRNO_NOSYS;
+          : ENOSYS;
       }
       const entry = state.wasiFiles.get(fdNum);
       if (!entry) {
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       const stat =
         entry.kind === 'dir'
           ? { isDir: true, isFile: false, size: 0 }
           : { isDir: false, isFile: true, size: entry.buffer.length };
-      return writeFilestat(bufPtr, stat) ? 0 : WASI_ERRNO_NOSYS;
+      return writeFilestat(bufPtr, stat) ? 0 : ENOSYS;
     },
     fd_filestat_set_size: wasiUnsupported,
     fd_readdir: wasiUnsupported,
     fd_prestat_get: (fd, prestatPtr) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return ENOSYS;
       const fdNum = toNumber(fd);
       const preopen = preopenByFd(fdNum);
       if (!preopen) {
         if (traceBrowserWasi) {
           console.error(`[molt browser wasi] fd_prestat_get fd=${fdNum} -> EBADF`);
         }
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       const view = new DataView(memory.buffer);
       view.setUint8(Number(prestatPtr), WASI_PREOPENTYPE_DIR);
@@ -3210,25 +3207,25 @@ const buildWasiStub = (state, logFn, options = {}) => {
     },
     fd_prestat_dir_name: (fd, pathPtr, pathLen) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return ENOSYS;
       const fdNum = toNumber(fd);
       const preopen = preopenByFd(fdNum);
       if (!preopen) {
         if (traceBrowserWasi) {
           console.error(`[molt browser wasi] fd_prestat_dir_name fd=${fdNum} -> EBADF`);
         }
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       const bytes = UTF8_ENCODER.encode(preopen.path);
       if (toNumber(pathLen) < bytes.length) {
-        return WASI_ERRNO_INVAL;
+        return EINVAL;
       }
       if (traceBrowserWasi) {
         console.error(
           `[molt browser wasi] fd_prestat_dir_name fd=${fdNum} path=${preopen.path}`
         );
       }
-      return writeBytesToMemory(memory, pathPtr, bytes) ? 0 : WASI_ERRNO_INVAL;
+      return writeBytesToMemory(memory, pathPtr, bytes) ? 0 : EINVAL;
     },
     path_open: (fd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, _fdflags, openedFdPtr) => {
       const fdNum = toNumber(fd);
@@ -3237,15 +3234,15 @@ const buildWasiStub = (state, logFn, options = {}) => {
         if (traceBrowserWasi) {
           console.error(`[molt browser wasi] path_open fd=${fdNum} -> EBADF`);
         }
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       const rawPath = readGuestPath(pathPtr, pathLen);
       if (rawPath === null) {
-        return WASI_ERRNO_NOSYS;
+        return ENOSYS;
       }
       const relativePath = normalizeRelativePath(rawPath);
       if (relativePath === null) {
-        return WASI_ERRNO_INVAL;
+        return EINVAL;
       }
       const opened = openResolvedPath(preopen, relativePath, toNumber(oflags));
       if (traceBrowserWasi) {
@@ -3256,27 +3253,27 @@ const buildWasiStub = (state, logFn, options = {}) => {
       if (opened.errno !== 0) {
         return opened.errno;
       }
-      return writeWasiU32(openedFdPtr, opened.fd) ? 0 : WASI_ERRNO_NOSYS;
+      return writeWasiU32(openedFdPtr, opened.fd) ? 0 : ENOSYS;
     },
     path_filestat_get: (fd, _flags, pathPtr, pathLen, bufPtr) => {
       const fdNum = toNumber(fd);
       const preopen = preopenByFd(fdNum);
       if (!preopen) {
-        return WASI_ERRNO_BADF;
+        return EBADF;
       }
       const rawPath = readGuestPath(pathPtr, pathLen);
       if (rawPath === null) {
-        return WASI_ERRNO_NOSYS;
+        return ENOSYS;
       }
       const relativePath = normalizeRelativePath(rawPath);
       if (relativePath === null) {
-        return WASI_ERRNO_INVAL;
+        return EINVAL;
       }
       const info = statResolvedPath(absoluteVfsPath(preopen, relativePath));
       if (!info) {
-        return WASI_ERRNO_NOENT;
+        return ENOENT;
       }
-      return writeFilestat(bufPtr, info.stat) ? 0 : WASI_ERRNO_NOSYS;
+      return writeFilestat(bufPtr, info.stat) ? 0 : ENOSYS;
     },
     path_create_directory: wasiUnsupported,
     path_remove_directory: wasiUnsupported,
@@ -3285,7 +3282,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     path_readlink: wasiUnsupported,
     random_get: (bufPtr, bufLen) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return ENOSYS;
       const ptr = typeof bufPtr === 'bigint' ? Number(bufPtr) : Number(bufPtr >>> 0);
       const len = typeof bufLen === 'bigint' ? Number(bufLen) : Number(bufLen >>> 0);
       const bytes = new Uint8Array(memory.buffer, ptr, len);
@@ -3299,13 +3296,13 @@ const buildWasiStub = (state, logFn, options = {}) => {
       return 0;
     },
     poll_oneoff: (_inPtr, _outPtr, _nsubscriptions, outEventsPtr) => {
-      if (outEventsPtr && !writeWasiU32(outEventsPtr, 0)) return WASI_ERRNO_NOSYS;
+      if (outEventsPtr && !writeWasiU32(outEventsPtr, 0)) return ENOSYS;
       return 0;
     },
     sched_yield: () => 0,
     clock_time_get: (clockIdRaw, _precisionRaw, outPtr) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return ENOSYS;
       const clockId =
         typeof clockIdRaw === 'bigint' ? Number(clockIdRaw) : Number(clockIdRaw >>> 0);
       let nanos;
@@ -3318,7 +3315,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
             : Date.now();
         nanos = BigInt(Math.trunc(now * 1000000));
       } else {
-        return WASI_ERRNO_NOSYS;
+        return ENOSYS;
       }
       new DataView(memory.buffer).setBigUint64(Number(outPtr), nanos, true);
       return 0;
