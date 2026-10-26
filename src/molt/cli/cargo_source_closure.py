@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, TypedDict
 
 
 def _dedupe_source_paths(paths: Sequence[Path]) -> list[Path]:
@@ -392,18 +392,38 @@ def _project_cargo_locked_dependencies(project_root: Path, crate_root: Path) -> 
     )
 
 
+class CargoLockedProjection(TypedDict):
+    schema: str
+    root: tuple[str, str, str]
+    lock_version: int
+    packages: list[dict[str, Any]]
+
+
 def _cargo_locked_dependency_projection(
     project_root: Path, crate_root: Path, *, lock: dict[str, Any] | None = None
-) -> dict[str, Any]:
+) -> CargoLockedProjection:
     """Content identity of the root package's conservative Cargo.lock closure.
 
     Cargo remains the dependency resolver. Follow every recorded dependency,
     including optional, development and target edges; never infer active Cargo
     features from the lockfile. Unrelated workspace roots are not compiler inputs.
     """
+    manifest = _read_cargo_document(crate_root / "Cargo.toml")
+    if lock is None:
+        lock = _read_cargo_document(project_root / "Cargo.lock")
+    return cargo_locked_dependency_projection(manifest, lock)
+
+
+def cargo_locked_dependency_projection(
+    manifest: dict[str, Any], lock: dict[str, Any]
+) -> CargoLockedProjection:
+    """Project supplied immutable documents with the same source-identity rules.
+
+    Historical callers supply Git objects; live source custody supplies files.
+    The serialized schema and digest input are identical in both cases.
+    """
     import re
 
-    manifest = _read_cargo_document(crate_root / "Cargo.toml")
     root_package = manifest.get("package")
     if not isinstance(root_package, dict):
         raise ValueError("Cargo dependency root has no package identity")
@@ -411,8 +431,6 @@ def _cargo_locked_dependency_projection(
     if not isinstance(name, str) or not isinstance(version, str):
         raise ValueError("Cargo dependency root requires an explicit name and version")
     root_key = (name, version, "")
-    if lock is None:
-        lock = _read_cargo_document(project_root / "Cargo.lock")
     if type(lock.get("version")) is not int or lock["version"] not in {3, 4}:
         raise ValueError("Unsupported Cargo.lock version")
     packages = lock.get("package")

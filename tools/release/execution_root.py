@@ -8,18 +8,20 @@ the explicit compilation projection stages its captured frontend inputs.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable
+from contextlib import contextmanager
+from dataclasses import dataclass
 import hashlib
 import io
 from pathlib import Path, PurePosixPath
 import stat
 import tarfile
 import tomllib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tools.cross_run import SealedExecutionProjection, SEALED_REPLAY_EXECUTION
 
-from molt.file_publication import resolve_owned_path
+from molt.file_publication import resolve_owned_path, durable_remove_path
 from molt.portable_paths import portable_relative_path
 from molt.python_identity_common import canonical_absolute_path
 from molt.cli.static_archive_identity import open_static_archive_members
@@ -36,7 +38,10 @@ from molt.toolchain_identity import (
 )
 from .release_model import ROOT
 
-ROOT_SCHEMA = "molt.release-execution-root.v1"
+if TYPE_CHECKING:
+    from tools.proof_queue_pkg.custody_cas import FileRef
+
+ROOT_SCHEMA = "molt.release-execution-root.v2"
 _MAX_MEMBER = 256 * 1024 * 1024
 _MAX_ARCHIVE_MEMBERS = 65536
 _EMPTY_DIRECTORIES = ("app", "dev", "etc", "proc", "sys", "tmp", "evidence", "policies")
@@ -351,14 +356,21 @@ def _audit_native_closure(
     return sorted(edges, key=lambda row: (row["from"], row["to"], row["kind"]))
 
 
-def root_inventory(root: Path) -> list[dict[str, Any]]:
+def root_inventory(
+    root: Path, *, excluded_names: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
     if resolve_owned_path(root) != root.absolute() or not root.is_dir():
         raise ValueError("execution-root is not a directly owned directory")
+    if any(len(relative_path(name).parts) != 1 for name in excluded_names):
+        raise ValueError("inventory exclusion must name a top-level owner")
     rows = []
-    for path in sorted(root.rglob("*")):
+    pending = [path for path in root.iterdir() if path.name not in excluded_names]
+    while pending:
+        path = pending.pop()
         relative_path(path.relative_to(root).as_posix())
         mode = path.lstat().st_mode
         if stat.S_ISDIR(mode):
+            pending.extend(path.iterdir())
             continue
         if not stat.S_ISREG(mode) or path.is_symlink():
             raise ValueError("execution-root contains a link or special file")
@@ -369,7 +381,7 @@ def root_inventory(root: Path) -> list[dict[str, Any]]:
                 "mode": 0o555 if mode & 0o111 else 0o444,
             }
         )
-    return rows
+    return sorted(rows, key=lambda row: row["path"])
 
 
 def seal_root(
@@ -389,7 +401,9 @@ def seal_root(
         raise ValueError("execution-root differs from admitted payloads before sealing")
     by_path = {row["path"]: row for row in rows}
     with tarfile.open(archive, "x", format=tarfile.PAX_FORMAT) as handle:
-        for path in sorted(root.rglob("*")):
+        for path in sorted(
+            root.rglob("*"), key=lambda path: path.relative_to(root).as_posix()
+        ):
             name = path.relative_to(root).as_posix()
             info = tarfile.TarInfo(name)
             info.uid = info.gid = info.mtime = 0
@@ -420,6 +434,183 @@ def seal_root(
         "files_sha256": canonical_json_sha256(rows),
         "archive": file_identity(archive),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class RootResource:
+    """One root.files row; destination mode is independent of shared bytes."""
+
+    path: PurePosixPath
+    sha256: str
+    size: int
+    mode: int
+
+    @classmethod
+    def from_record(cls, row: object) -> RootResource:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"path", "filename", "sha256", "size", "mode"}
+            or type(row["mode"]) is not int
+            or row["mode"] not in {0o444, 0o555}
+            or type(row["size"]) is not int
+            or row["size"] < 0
+            or not isinstance(row["sha256"], str)
+            or len(row["sha256"]) != 64
+            or any(c not in "0123456789abcdef" for c in row["sha256"])
+            or row["filename"] != relative_path(row["path"]).name
+        ):
+            raise ValueError("sealed root resource row is invalid")
+        return cls(relative_path(row["path"]), row["sha256"], row["size"], row["mode"])
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "path": self.path.as_posix(),
+            "filename": self.path.name,
+            "sha256": self.sha256,
+            "size": self.size,
+            "mode": self.mode,
+        }
+
+    def reference(self, resources: Path) -> FileRef:
+        from tools.proof_queue_pkg import custody_cas
+
+        return custody_cas.file_reference(
+            resources, sha256=self.sha256, size_bytes=self.size, logical_name="payload"
+        )
+
+
+def validate_root_record(sealed: dict[str, Any]) -> tuple[RootResource, ...]:
+    """The file list alone owns lexical paths, modes and resource identities."""
+    if (
+        not isinstance(sealed, dict)
+        or set(sealed) != {"schema", "files", "files_sha256", "archive"}
+        or sealed["schema"] != ROOT_SCHEMA
+        or not isinstance(sealed["files"], list)
+        or len(sealed["files"]) > _MAX_ARCHIVE_MEMBERS
+        or canonical_json_sha256(sealed["files"]) != sealed["files_sha256"]
+    ):
+        raise ValueError("sealed root resource record is invalid")
+    rows = tuple(RootResource.from_record(row) for row in sealed["files"])
+    names = [row.path.as_posix() for row in rows]
+    if names != sorted(set(names)):
+        raise ValueError("sealed root resource paths are not unique and ordered")
+    archive = sealed["archive"]
+    if not isinstance(archive, dict) or set(archive) != {"filename", "sha256", "size"}:
+        raise ValueError("sealed root archive identity is invalid")
+    identity = RootResource.from_record(
+        {**archive, "path": archive["filename"], "mode": 0o444}
+    )
+    if len(identity.path.parts) != 1 or identity.size < 10240 or identity.size % 10240:
+        raise ValueError("sealed root archive size or name is noncanonical")
+    return rows
+
+
+def retain_root(
+    root: Path,
+    archive: Path,
+    *,
+    sealed: dict[str, Any],
+    resources: Path,
+    projection: SealedExecutionProjection = SEALED_REPLAY_EXECUTION,
+) -> dict[str, int]:
+    """Retain each closed root payload once in the existing custody CAS.
+
+    All content is stored as data named payload. Destination executable modes
+    belong to root.files, so two lexical uses of the same bytes share storage.
+    Call only after native execution and teardown have closed successfully.
+    This does not delete materializations. The caller must durably publish its
+    complete root/evidence record before retiring the recoverable originals.
+    """
+    from tools.proof_queue_pkg import custody_cas
+
+    inputs = validate_root_record(sealed)
+    rows = [row.as_record() for row in inputs]
+    if root_inventory(root) != rows:
+        raise ValueError("closed root differs from admitted resources")
+    validate_sealed_tar(
+        archive, root, expected_archive=sealed["archive"], projection=projection
+    )
+    retained = {"new_files": 0, "new_bytes": 0, "reused_files": 0, "reused_bytes": 0}
+    for resource in inputs:
+        row = resource.as_record()
+        reference = resource.reference(resources)
+        if Path(reference.path).exists():
+            custody_cas.verify_file_ref(reference.as_dict(), expected_root=resources)
+            retained["reused_files"] += 1
+            retained["reused_bytes"] += row["size"]
+        else:
+            reference = custody_cas.put_file(
+                resources, root / row["path"], logical_name="payload", executable=False
+            )
+            retained["new_files"] += 1
+            retained["new_bytes"] += row["size"]
+        if (reference.sha256, reference.size_bytes) != (row["sha256"], row["size"]):
+            raise ValueError("closed root resource changed during retention")
+    if root_inventory(root) != rows:
+        raise ValueError("closed root changed during retention")
+    return retained
+
+
+def retire_root(
+    root: Path,
+    archive: Path,
+    *,
+    sealed: dict[str, Any],
+    projection: SealedExecutionProjection = SEALED_REPLAY_EXECUTION,
+) -> None:
+    """Retire a materialization only after its caller commits retained custody."""
+    rows = [row.as_record() for row in validate_root_record(sealed)]
+    if root_inventory(root) != rows:
+        raise ValueError("materialized root changed before retirement")
+    validate_sealed_tar(
+        archive, root, expected_archive=sealed["archive"], projection=projection
+    )
+    durable_remove_path(archive)
+    durable_remove_path(root)
+
+
+@contextmanager
+def materialized_root(
+    root: Path,
+    archive: Path,
+    *,
+    sealed: dict[str, Any],
+    resources: Path,
+    projection: SealedExecutionProjection = SEALED_REPLAY_EXECUTION,
+) -> Generator[Path]:
+    """Recreate the exact original root/tar; preserve failed replay material.
+
+    Resource hashes select buffers, not evidence admission. The caller still
+    verifies independent candidate, capture and original native receipt owners.
+    """
+    from tools.proof_queue_pkg import custody_cas
+
+    inputs = validate_root_record(sealed)
+    rows = [row.as_record() for row in inputs]
+    if root.exists() or archive.exists():
+        raise ValueError("retained root materialization destination already exists")
+    root.mkdir(parents=True)
+    for resource in inputs:
+        row = resource.as_record()
+        reference = resource.reference(resources)
+        custody_cas.verify_file_ref(reference.as_dict(), expected_root=resources)
+        actual = stage_file(
+            root,
+            row["path"],
+            Path(reference.path),
+            executable=bool(row["mode"] & 0o111),
+            max_bytes=max(1, row["size"]),
+        )
+        if actual != row:
+            raise ValueError("retained root resource differs from admitted payload")
+    reconstructed = seal_root(root, archive, expected_files=rows, projection=projection)
+    if reconstructed != sealed:
+        raise ValueError(
+            "retained resources do not reconstruct the original sealed tar"
+        )
+    yield root
+    # Exceptions deliberately retain the materialized root and tar for recovery.
+    retire_root(root, archive, sealed=sealed, projection=projection)
 
 
 def validate_sealed_tar(

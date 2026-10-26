@@ -161,6 +161,54 @@ or edited workload before and after each load-bearing change. Use
 `MOLT_CLI_PROFILE` for attribution; keep instrumented timings separate from
 uninstrumented latency. Classify a new failure before repeating an expensive proof.
 
+The shared `regalloc2` move planner uses one maintained source for native
+Cranelift and the Wasmtime host (pin and invariants:
+[`MOLT_PATCHES.md`](../vendor/rust/regalloc2/MOLT_PATCHES.md)). A captured
+212,627-byte WASM workload exposed 1,664,708,150 incoming-parameter comparisons
+and 40,826,978,304 usable-capacity units at nonempty source-map clears. A
+range-local monotone cursor reduced the comparisons to 18,967,661; typed vreg
+stamps remove per-vreg clears. An instrumented allocator replay changed from
+17.67 to 15.04 seconds with identical ordered allocations, offsets, edits,
+spill-slot counts and debug locations.
+
+One subsequent uninstrumented macOS arm64 `dev-fast` host precompile/serialize
+pair took 28.24 seconds before and 26.67 seconds after. Both produced the same
+36,371,064-byte serialized module (SHA-256
+`b325859c3d4e1f987ec91df04a51f7942b7986300cefdf9272ce26c71a52f345`).
+Direct-child rusage peaks were 3.374 and 3.372 GiB respectively; this does not
+establish a material memory reduction.
+This is one captured-workload component pair, not a repeated-sample, public CLI,
+installed compiler or cross-platform latency qualification. The complete symbolic
+checker on the large input exceeded its 90-second diagnostic budget; exact
+output differential and focused independent unit oracles are the executed claims.
+The source cache initializes lazily and uses bounded `O(blocks)` storage; sparse
+large graphs can use more storage than the old sparse map. Stable managed slots
+retain the dependency build across lanes. Keep cold dependency rebuild cost,
+compiler execution latency and ordinary edit-to-test latency separate.
+
+A measured allocator landing spent 277.31 seconds in changed-package Clippy
+selection and execution; the Python cohorts already overlapped that work. The
+old root-manifest/local-patch rule selected all ten declared Clippy cells. The
+shared locked dependency projection now selects five unchanged cells for that
+same change, omitting unrelated runtime and WASI checks that consumed over 100
+seconds in the recorded run. This is verified selection reduction, not a measured
+new end-to-end gate speedup. No Cargo feature sets are merged and no additional
+Cargo writers contend for the shared target. Both base and current dependency
+closures participate; unknown identities retain full coverage. This follows
+[Cargo's locked package graph](https://doc.rust-lang.org/cargo/reference/resolver.html)
+and the [rustc incremental model](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html):
+make dependencies explicit and avoid work whose inputs cannot have changed.
+
+That selector landing also exposed a 759-test development-driver cohort taking
+149.39 seconds: changing the leaf selector selected lane-claim, checkout and
+landing simulations. The proof plan now assigns selector and source-closure
+leaves their own test owners. The selector cohort contains its 49 owning tests;
+shared authorities still select the union of consumer tests. The source-closure
+producer now explicitly selects its own oracles, named backend-cache and compiler
+identity consumers, and the selector consumer, closing missing producer triggers. Test-only source-closure edits no longer
+compile zlib, while provider edits keep both compiled gates and source oracles.
+These are verified obligation changes, not an end-to-end latency comparison.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 

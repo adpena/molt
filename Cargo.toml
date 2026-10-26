@@ -74,6 +74,7 @@ resolver = "2"
 object = { path = "vendor/rust/object" }
 cranelift-object = { path = "vendor/rust/cranelift-object" }
 zlib-rs = { path = "vendor/rust/zlib-rs" }
+regalloc2 = { path = "vendor/rust/regalloc2" }
 
 [workspace.package]
 edition = "2024"

@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 402 |
-| Local path rules | 35 | 93 |
-| Unique local commands | 73 | 79 |
+| Local path rules | 35 | 96 |
+| Unique local commands | 73 | 80 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -46,13 +46,13 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 231 |
-| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 54 |
+| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 55 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
-| `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 37 |
+| `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 38 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 342 min | 20280 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 342 min | 20280 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 23 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
@@ -377,7 +377,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 1 |
-| `dev-tooling` | 20 | 0 |
+| `dev-tooling` | 18 | 0 |
+| `changed-clippy-selection` | 11 | 0 |
+| `cargo-source-closure` | 2 | 0 |
 | `committed-gate-policy` | 1 | 0 |
 | `managed-git-hooks` | 8 | 0 |
 | `checkout-output-custody` | 13 | 0 |
@@ -425,8 +427,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm-facts-host-tool` | 7 | 2 |
 | `backend-daemon-cache` | 12 | 2 |
 | `backend-ir-framing` | 4 | 1 |
+| `maintained-regalloc-moves` | 1 | 1 |
 | `native-object-emission` | 5 | 1 |
-| `maintained-zlib-counters` | 14 | 2 |
+| `maintained-zlib-counters` | 13 | 2 |
 | `backend-luau` | 3 | 1 |
 | `backend-rust` | 2 | 1 |
 | `backend-llvm` | 6 | 1 |
