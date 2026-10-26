@@ -15,7 +15,6 @@ impl WasmConstOpPolicy {
         backend: &mut WasmBackend,
         func: &mut Function,
         op: &OpIR,
-        locals: &WasmFrameLocals,
         func_index: u32,
         reloc_enabled: bool,
         import_ids: &TrackedImportIds,
@@ -26,7 +25,7 @@ impl WasmConstOpPolicy {
         if self.inline_seed_bits(op).is_some() {
             panic!("inline const op {} does not need a runtime anchor", op.kind);
         }
-        self.simple_ir_materialization_into(op, locals, region.temporary())
+        self.simple_ir_materialization_into(op, region.temporary())
             .emit_with_imports(
                 backend,
                 func,
@@ -44,7 +43,6 @@ pub(in crate::wasm) fn emit_const_anchor_materialization(
     backend: &mut WasmBackend,
     func: &mut Function,
     op: &OpIR,
-    locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
     import_ids: &TrackedImportIds,
@@ -63,7 +61,6 @@ pub(in crate::wasm) fn emit_const_anchor_materialization(
         backend,
         func,
         op,
-        locals,
         func_index,
         reloc_enabled,
         import_ids,

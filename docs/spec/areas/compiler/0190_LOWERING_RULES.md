@@ -162,7 +162,18 @@ in anchor count. This trades one allocation/free pair and linear memory traffic
 per invocation for fewer invocation-long WASM anchor locals; tiny-literal hot
 paths and compiler memory/latency are separate performance obligations. LIR-fast
 literals retain their per-operation result ownership and native anchors retain
-their native stack-slot storage. Statically known forward WASM edges use their
+their native stack-slot storage. Both WASM materializers place the relocated
+payload address and exact byte length directly on the operand stack for the
+constructor. These raw operands have no frame storage or per-output aliases;
+the independent mutable constructor-output segment is reloaded immediately
+after its call. This follows WebAssembly's
+[operand-stack call semantics](https://webassembly.github.io/spec/core/exec/instructions.html)
+and the direct constant SSA values used by
+[Cranelift](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md).
+Compared with staging, this removes two declared locals per literal output,
+their stores/loads and duplicate-anchor copies, without another allocation or
+runtime call. It does not by itself establish lower register-allocation time.
+Statically known forward WASM edges use their
 enclosing block labels directly, including
 pending-error checks and ready await continuations. One pure control plan projects
 `molt-ir`'s executable operation edges and implicit exits onto the generated WASM
