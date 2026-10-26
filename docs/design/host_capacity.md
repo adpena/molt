@@ -138,6 +138,15 @@ selectors and parameter IDs keep their meaning. Repository-entry spelling
 and symlink refusal occur at admission; queries and grouping perform linear
 trie work without filesystem access or test collection.
 
+Filtered selectors inherit their rule's prerequisites unless they declare an
+explicit `toolchains` list. The canonical local-command projection carries
+that resolved list into selection and execution; identical commands union
+their owners' requirements. A proven Python-only selector can therefore run
+beside its rule's Cargo producer. This metadata does not change the session
+ceiling, worker-memory envelope or serialization of actual Cargo writers.
+This follows [LLVM lit's named parallelism groups](https://github.com/llvm/llvm-project/blob/main/llvm/utils/lit/lit/run.py):
+apply a concurrency restriction to its actual resource users.
+
 The existing executor still bounds pytest sessions and serializes all gates
 that can mutate the shared Cargo target. This adds no scheduler or result
 cache. Extra interpreter/collection cost, actual parallelism, memory peaks,

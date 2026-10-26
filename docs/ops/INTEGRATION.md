@@ -137,6 +137,13 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    largest declared memory envelope in each cohort. Every contributing owner
    retains its requirements; a Cargo
    requirement on one request does not serialize unrelated Python-only work.
+   A `pytest_select` entry may declare its own nonempty, unique `toolchains`
+   list using names from the plan. Omission inherits the rule's prerequisites;
+   an explicit list replaces them for that selector only. Identical selected
+   commands still union every contributing owner's requirements. The rule's
+   explicit gates and unfiltered tests retain their own requirements. This
+   lets a proven Python-only selector overlap real Cargo writers without
+   changing its targets, filters, worker-memory envelope or writer custody.
    Literal targets and parameter IDs retain their order within a cohort.
    Canonical repository-entry admission happens once when the policy loads;
    cohort selection uses tries without collection or filesystem probing.
