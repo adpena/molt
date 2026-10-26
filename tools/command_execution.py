@@ -187,12 +187,12 @@ def detached_command_use(
     use_token: str,
 ) -> Generator[None]:
     """Acknowledge only after acquiring the detached worker's actual use."""
-    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
 
     if not ready_path.is_absolute() or re.fullmatch(r"[0-9a-f]{32}", use_token) is None:
         raise ValueError("invalid detached use handoff descriptor")
     with checkout_state_use(
-        checkout_state_command_roots(source_root, environment, cwd=cwd)
+        checkout_state_environment_roots(source_root, environment, cwd=cwd)
     ):
         temporary = ready_path.with_name(f".{ready_path.name}.{use_token}.tmp")
         try:
@@ -508,7 +508,12 @@ class CommandExecutor:
         creationflags: int = 0,
         start_new_session: bool = False,
     ) -> subprocess.Popen[Any]:
-        """Start one explicitly caller-owned typed-argv process."""
+        """Start one explicitly caller-owned typed-argv process.
+
+        The caller retains its command-aware ProcessStateUse (or equivalent
+        guard/exec/detached owner) through observed child closure. This low-level
+        method does not add a background waiter or take that lifetime ownership.
+        """
 
         if isinstance(args, (str, bytes)):
             raise TypeError("command must be typed argv, not shell text")
@@ -746,6 +751,7 @@ class CommandExecutor:
                 checkout_state_command_roots(
                     self.repo_root,
                     launch_environment,
+                    command,
                     cwd=cwd,
                 )
             )

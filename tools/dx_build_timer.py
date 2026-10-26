@@ -265,7 +265,9 @@ def _run_completed_inside_active_guard(
     primary_error: BaseException | None = None
     try:
         use.enter_context(
-            checkout_state_use(checkout_state_command_roots(REPO_ROOT, env, cwd=cwd))
+            checkout_state_use(
+                checkout_state_command_roots(REPO_ROOT, env, cmd, cwd=cwd)
+            )
         )
         with (
             tempfile.TemporaryFile(

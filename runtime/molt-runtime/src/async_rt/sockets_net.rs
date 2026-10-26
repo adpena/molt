@@ -440,21 +440,33 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
             hints.ai_flags = flags;
 
             let mut res: *mut libc::addrinfo = std::ptr::null_mut();
-            let err = libc::getaddrinfo(
-                host_cstr
-                    .as_ref()
-                    .map(|s| s.as_ptr())
-                    .unwrap_or(std::ptr::null()),
-                service_cstr
-                    .as_ref()
-                    .map(|s| s.as_ptr())
-                    .unwrap_or(std::ptr::null()),
-                &hints as *const libc::addrinfo,
-                &mut res as *mut *mut libc::addrinfo,
-            );
+            let (err, system_error) = {
+                // Only Rust-owned CStrings, hints and output storage cross
+                // the blocking C call; no Python sequence/string is borrowed.
+                let _release = crate::GilReleaseGuard::suspend();
+                let err = libc::getaddrinfo(
+                    host_cstr
+                        .as_ref()
+                        .map(|s| s.as_ptr())
+                        .unwrap_or(std::ptr::null()),
+                    service_cstr
+                        .as_ref()
+                        .map(|s| s.as_ptr())
+                        .unwrap_or(std::ptr::null()),
+                    &hints as *const libc::addrinfo,
+                    &mut res as *mut *mut libc::addrinfo,
+                );
+                // Capture EAI_SYSTEM's native errno before reacquiring the GIL.
+                let system_error = (err != 0).then(std::io::Error::last_os_error);
+                (err, system_error)
+            };
             if err != 0 {
-                let system_error = std::io::Error::last_os_error();
-                return raise_native_resolver_error(_py, err, system_error, "getaddrinfo");
+                return raise_native_resolver_error(
+                    _py,
+                    err,
+                    system_error.expect("failed resolver call captured its native error"),
+                    "getaddrinfo",
+                );
             }
 
             let builder_bits = molt_list_builder_new(MoltObject::from_int(0).bits());
@@ -820,18 +832,28 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
             };
             let mut host_buf = vec![0u8; libc::NI_MAXHOST as usize + 1];
             let mut serv_buf = vec![0u8; getnameinfo_service_buffer_len()];
-            let ret = libc::getnameinfo(
-                sockaddr.as_ptr() as *const libc::sockaddr,
-                sockaddr.len(),
-                host_buf.as_mut_ptr() as *mut libc::c_char,
-                host_buf.len() as libc::socklen_t,
-                serv_buf.as_mut_ptr() as *mut libc::c_char,
-                serv_buf.len() as libc::socklen_t,
-                flags,
-            );
+            let (ret, system_error) = {
+                // SockAddr and both destination buffers own their Rust storage.
+                let _release = crate::GilReleaseGuard::suspend();
+                let ret = libc::getnameinfo(
+                    sockaddr.as_ptr() as *const libc::sockaddr,
+                    sockaddr.len(),
+                    host_buf.as_mut_ptr() as *mut libc::c_char,
+                    host_buf.len() as libc::socklen_t,
+                    serv_buf.as_mut_ptr() as *mut libc::c_char,
+                    serv_buf.len() as libc::socklen_t,
+                    flags,
+                );
+                let system_error = (ret != 0).then(std::io::Error::last_os_error);
+                (ret, system_error)
+            };
             if ret != 0 {
-                let system_error = std::io::Error::last_os_error();
-                return raise_native_resolver_error(_py, ret, system_error, "getnameinfo");
+                return raise_native_resolver_error(
+                    _py,
+                    ret,
+                    system_error.expect("failed resolver call captured its native error"),
+                    "getnameinfo",
+                );
             }
             let host = CStr::from_ptr(host_buf.as_ptr() as *const libc::c_char).to_string_lossy();
             let serv = CStr::from_ptr(serv_buf.as_ptr() as *const libc::c_char).to_string_lossy();

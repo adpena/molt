@@ -2018,6 +2018,7 @@ MANIFEST_FIELDS = frozenset(
         "wasi_errno_alias",
         "synthetic_errno",
         "errno_adoption",
+        "deployment_manifest",
         "wasi_errno_disposition",
         "resolver_error",
         "resolver_status",
@@ -2296,6 +2297,16 @@ def validate_loaded_manifest(
         raise WasmAbiManifestError(f"unknown manifest fields: {sorted(unknown_fields)}")
     for field in DERIVED_MANIFEST_FIELDS:
         data.pop(field, None)
+    deployment = data.get("deployment_manifest")
+    if (
+        not isinstance(deployment, dict)
+        or set(deployment) != {"version"}
+        or type(deployment["version"]) is not int
+        or not 0 < deployment["version"] < 2**32
+    ):
+        raise WasmAbiManifestError(
+            "deployment_manifest requires a positive u32 version"
+        )
     _validate_wasi_errno(data)
     synthetic_errno_table(data)
     resolver_error_table(data)

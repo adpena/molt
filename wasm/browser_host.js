@@ -2325,35 +2325,35 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const socketHostGetsockopt = (handle, level, optname, valPtr, valLen, outLenPtr) => {
+    if (valLen < 0) return -EINVAL;
     if (!SOCKET_ABI.isKnownOption(level, optname)) return -ENOPROTOOPT;
     const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     const memory = state.memory;
     if (!memory) return -ENOSYS;
-    if (level === SOL_SOCKET && optname === SO_ERROR) {
-      const view = new DataView(new ArrayBuffer(4));
-      view.setInt32(0, core.lastError || 0, true);
-      const bytes = new Uint8Array(view.buffer);
-      if (bytes.length > valLen) {
-        if (outLenPtr) writeU32ToMemory(memory, outLenPtr, bytes.length);
+    try {
+      if (level === SOL_SOCKET && optname === SO_ERROR) {
+        const view = new DataView(new ArrayBuffer(4));
+        view.setInt32(0, core.lastError || 0, true);
+        const bytes = new Uint8Array(view.buffer).subarray(0, Math.min(valLen, 4));
+        if (!writeBytesToMemory(memory, valPtr, bytes)) return -globalThis.MoltSyntheticErrno.errno.EFAULT;
+        if (!writeU32ToMemory(memory, outLenPtr, bytes.length)) return -globalThis.MoltSyntheticErrno.errno.EFAULT;
+        return 0;
+      }
+      const key = `${level}:${optname}`;
+      const stored = core.sockopts.get(key);
+      if (!stored) return -ENOPROTOOPT;
+      if (stored.length > valLen) {
+        if (!writeU32ToMemory(memory, outLenPtr, stored.length)) return -globalThis.MoltSyntheticErrno.errno.EFAULT;
         return -ENOMEM;
       }
-      if (!writeBytesToMemory(memory, valPtr, bytes)) return -EINVAL;
-      if (outLenPtr) writeU32ToMemory(memory, outLenPtr, bytes.length);
+      if (!writeBytesToMemory(memory, valPtr, stored)) return -globalThis.MoltSyntheticErrno.errno.EFAULT;
+      if (!writeU32ToMemory(memory, outLenPtr, stored.length)) return -globalThis.MoltSyntheticErrno.errno.EFAULT;
       return 0;
+    } catch (error) {
+      if (error instanceof RangeError) return -globalThis.MoltSyntheticErrno.errno.EFAULT;
+      throw error;
     }
-    const key = `${level}:${optname}`;
-    const stored = core.sockopts.get(key);
-    if (!stored) {
-      return -ENOPROTOOPT;
-    }
-    if (stored.length > valLen) {
-      if (outLenPtr) writeU32ToMemory(memory, outLenPtr, stored.length);
-      return -ENOMEM;
-    }
-    if (!writeBytesToMemory(memory, valPtr, stored)) return -EINVAL;
-    if (outLenPtr) writeU32ToMemory(memory, outLenPtr, stored.length);
-    return 0;
   };
 
   const socketHostDetach = (handle) => {
@@ -2457,19 +2457,23 @@ export const createBrowserSocketHost = (state, options) => {
     pushU32(encodedAddr.length);
     chunks.push(encodedAddr);
     const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    if (total > outCap) {
-      if (outLenPtr) writeU32ToMemory(memory, outLenPtr, total);
-      return -ENOMEM;
+    const status = total > outCap ? globalThis.MoltSyntheticErrno.encodeSystemError(ENOMEM) : 0;
+    try {
+      if (status === 0) {
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          out.set(chunk, offset);
+          offset += chunk.length;
+        }
+        if (!writeBytesToMemory(memory, outPtr, out)) return globalThis.MoltSyntheticErrno.encodeSystemError(globalThis.MoltSyntheticErrno.errno.EFAULT);
+      }
+      if (!writeU32ToMemory(memory, outLenPtr, total)) return globalThis.MoltSyntheticErrno.encodeSystemError(globalThis.MoltSyntheticErrno.errno.EFAULT);
+    } catch (error) {
+      if (error instanceof RangeError) return globalThis.MoltSyntheticErrno.encodeSystemError(globalThis.MoltSyntheticErrno.errno.EFAULT);
+      throw error;
     }
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-    }
-    if (!writeBytesToMemory(memory, outPtr, out)) return -EINVAL;
-    if (outLenPtr) writeU32ToMemory(memory, outLenPtr, total);
-    return 0;
+    return status;
   };
 
   const socketHostGethostname = (bufPtr, bufCap, outLenPtr) => {
@@ -3388,93 +3392,27 @@ const tryFetchJson = async (url) => {
   }
 };
 
-export const verifyManifestModuleBytes = async (
-  bytes,
-  descriptor,
-  label,
-  requestedUrl,
-  cryptoAuthority = globalThis.crypto,
-  manifestUrl = null,
-) => {
-  if (
-    !descriptor ||
-    typeof descriptor !== 'object' ||
-    typeof descriptor.path !== 'string' ||
-    descriptor.path.length === 0 ||
-    !Number.isSafeInteger(descriptor.size) ||
-    descriptor.size < 0 ||
-    typeof descriptor.sha256 !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(descriptor.sha256)
-  ) {
-    throw new Error(`${label} manifest module descriptor is invalid`);
-  }
-  let requestedHref;
-  let manifestHref;
-  try {
-    requestedHref = new URL(requestedUrl, import.meta.url).href;
-    manifestHref = manifestUrl
-      ? new URL(descriptor.path, manifestUrl).href
-      : new URL(descriptor.path, requestedHref).href;
-  } catch {
-    throw new Error(`${label} requested module URL is invalid`);
-  }
-  if (requestedHref !== manifestHref) {
-    throw new Error(
-      `${label} path mismatch: manifest=${manifestHref} requested=${requestedHref}`,
-    );
-  }
-  if (!(bytes instanceof ArrayBuffer)) {
-    throw new Error(`${label} fetch did not return an ArrayBuffer`);
-  }
-  if (bytes.byteLength !== descriptor.size) {
-    throw new Error(
-      `${label} size mismatch: manifest=${descriptor.size} fetched=${bytes.byteLength}`,
-    );
-  }
-  const subtle = cryptoAuthority?.subtle;
-  if (!subtle || typeof subtle.digest !== 'function') {
-    throw new Error(`${label} integrity verification requires WebCrypto SHA-256`);
-  }
-  let digest;
-  try {
-    digest = await subtle.digest('SHA-256', bytes);
-  } catch (error) {
-    throw new Error(`${label} SHA-256 verification failed`, { cause: error });
-  }
-  const actual = Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
-  if (actual !== descriptor.sha256) {
-    throw new Error(
-      `${label} SHA-256 mismatch: manifest=${descriptor.sha256} fetched=${actual}`,
-    );
-  }
-};
+export const verifyManifestModuleBytes = (bytes, descriptor, label, requestedUrl,
+  cryptoAuthority = globalThis.crypto, manifestUrl = null) =>
+  globalThis.MoltWasmLoaderBridge.verifyManifestModuleBytes(bytes, descriptor, label,
+    requestedUrl, cryptoAuthority, manifestUrl, import.meta.url);
 
 const resolveRuntimeManifestUrl = (options = {}, moduleUrl = import.meta.url) =>
   new URL(options.manifestUrl || '../dist/manifest.json', moduleUrl).href;
 
 const loadRuntimeManifest = async (options, moduleUrl = import.meta.url) => {
   const manifestUrl = resolveRuntimeManifestUrl(options, moduleUrl);
-  const manifest = options.manifest || await tryFetchJson(manifestUrl);
-  if (!manifest) {
-    throw new Error(`browser host failed to load runtime manifest at ${manifestUrl}`);
-  }
+  const supplied = Object.hasOwn(options, 'manifest');
+  const manifest = supplied ? options.manifest : await tryFetchJson(manifestUrl);
+  if (!supplied && !manifest) throw new Error(`browser host failed to load runtime manifest at ${manifestUrl}`);
+  globalThis.MoltWasmLoaderBridge.requireMoltDeploymentManifest(manifest);
   return { manifest, manifestUrl };
 };
 
-const resolveManifestModuleUrl = (manifestUrl, descriptor, label) => {
-  if (!descriptor || typeof descriptor.path !== 'string' || !descriptor.path) {
-    throw new Error(`browser host manifest missing modules.${label}.path`);
-  }
-  try {
-    return new URL(descriptor.path, manifestUrl).href;
-  } catch {
-    throw new Error(`browser host manifest has invalid modules.${label}.path`);
-  }
-};
+const resolveManifestModuleUrl = globalThis.MoltWasmLoaderBridge.manifestModuleUrl;
 
 export const resolveMoltWasmUrls = (manifest, manifestUrl) => {
+  globalThis.MoltWasmLoaderBridge.requireMoltDeploymentManifest(manifest);
   if (!manifest || typeof manifest !== 'object') {
     throw new Error('browser host requires a runtime manifest');
   }

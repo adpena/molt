@@ -1317,7 +1317,91 @@
     }
   };
 
+  const requireMoltDeploymentManifest = manifest => {
+    if (!Number.isInteger(callableTableAbi.execution_manifest_version) || callableTableAbi.execution_manifest_version <= 0) {
+      throw new Error('Molt host deployment ABI projection is missing; rebuild host assets');
+    }
+    if (!manifest || typeof manifest !== 'object' || manifest.version !== callableTableAbi.execution_manifest_version) {
+      throw new Error(`Molt deployment manifest version must be ${callableTableAbi.execution_manifest_version}; rebuild this deployment with the current Molt compiler`);
+    }
+    return manifest;
+  };
+
+  const manifestModuleUrl = (manifestUrl, descriptor, label) => {
+    if (!descriptor || typeof descriptor.path !== 'string' || descriptor.path.length === 0) {
+      throw new Error(`Molt deployment manifest missing modules.${label}.path`);
+    }
+    try { return new URL(descriptor.path, manifestUrl).href; }
+    catch { throw new Error(`Molt deployment manifest has invalid modules.${label}.path`); }
+  };
+
+  const verifyManifestModuleBytes = async (
+    bytes,
+    descriptor,
+    label,
+    requestedUrl,
+    cryptoAuthority = globalThis.crypto,
+    manifestUrl = null,
+    moduleUrl = manifestUrl || requestedUrl,
+  ) => {
+    if (
+      !descriptor ||
+      typeof descriptor !== 'object' ||
+      typeof descriptor.path !== 'string' ||
+      descriptor.path.length === 0 ||
+      !Number.isSafeInteger(descriptor.size) ||
+      descriptor.size < 0 ||
+      typeof descriptor.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(descriptor.sha256)
+    ) {
+      throw new Error(`${label} manifest module descriptor is invalid`);
+    }
+    let requestedHref;
+    let manifestHref;
+    try {
+      requestedHref = new URL(requestedUrl, moduleUrl).href;
+      manifestHref = manifestUrl
+        ? new URL(descriptor.path, manifestUrl).href
+        : new URL(descriptor.path, requestedHref).href;
+    } catch {
+      throw new Error(`${label} requested module URL is invalid`);
+    }
+    if (requestedHref !== manifestHref) {
+      throw new Error(
+        `${label} path mismatch: manifest=${manifestHref} requested=${requestedHref}`,
+      );
+    }
+    if (!(bytes instanceof ArrayBuffer)) {
+      throw new Error(`${label} fetch did not return an ArrayBuffer`);
+    }
+    if (bytes.byteLength !== descriptor.size) {
+      throw new Error(
+        `${label} size mismatch: manifest=${descriptor.size} fetched=${bytes.byteLength}`,
+      );
+    }
+    const subtle = cryptoAuthority?.subtle;
+    if (!subtle || typeof subtle.digest !== 'function') {
+      throw new Error(`${label} integrity verification requires WebCrypto SHA-256`);
+    }
+    let digest;
+    try {
+      digest = await subtle.digest('SHA-256', bytes);
+    } catch (error) {
+      throw new Error(`${label} SHA-256 verification failed`, { cause: error });
+    }
+    const actual = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+    if (actual !== descriptor.sha256) {
+      throw new Error(
+        `${label} SHA-256 mismatch: manifest=${descriptor.sha256} fetched=${actual}`,
+      );
+    }
+  };
   return {
+    requireMoltDeploymentManifest,
+    manifestModuleUrl,
+    verifyManifestModuleBytes,
     CALLABLE_TABLE_SECTION_NAME,
     bindRuntimeFunctionImports,
     callableTableFromModule,

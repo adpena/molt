@@ -1419,12 +1419,12 @@ def test_guard_resource_owner_survives_gc_after_unresolved_wait(
     import json
     import weakref
     from contextlib import ExitStack
-    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
 
     environment, roots = _managed_command_roots(tmp_path)
     stack = ExitStack()
     stack.enter_context(
-        checkout_state_use(checkout_state_command_roots(ROOT, environment))
+        checkout_state_use(checkout_state_environment_roots(ROOT, environment))
     )
     executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
     process = executor.start_owned(

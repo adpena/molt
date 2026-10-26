@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import (
+    EMPTY_WASM_MODULE,
+    split_wasm_execution_manifest,
+)
+
 import importlib
 import ast
 import json
@@ -294,6 +299,9 @@ def test_generated_split_worker_is_default_deny() -> None:
     from molt.capability_manifest import CapabilityManifest
 
     source = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
+        ),
         resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=1,
         shared_table_initial=1,
@@ -326,6 +334,9 @@ def test_generated_split_worker_embeds_complete_resolved_policy() -> None:
     ]
 
     source = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
+        ),
         resolved_capability_policy=policy,
         shared_memory_initial_pages=1,
         shared_table_initial=1,

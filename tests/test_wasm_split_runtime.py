@@ -11,6 +11,12 @@ Exercises the full --split-runtime pipeline:
 
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import (
+    EMPTY_WASM_MODULE,
+    split_wasm_execution_manifest,
+)
+
+from collections.abc import Mapping
 import gzip
 import hashlib
 import json
@@ -116,7 +122,7 @@ def test_build_split_uses_wasm_test_memory_guard(
     assert "--split-runtime" in args
     assert kwargs["cwd"] == ROOT
     env = kwargs["env"]
-    assert isinstance(env, dict)
+    assert isinstance(env, Mapping)
     assert env.get("CARGO_BUILD_JOBS") != "1"
     assert "timeout" not in kwargs
 
@@ -182,6 +188,9 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     from molt.capability_manifest import CapabilityManifest
 
     worker_js = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
+        ),
         resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,

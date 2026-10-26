@@ -344,6 +344,7 @@
     "tools/mutation_test.py",
     "tools/process_sentinel.py",
     "src/molt/process_spawn.py",
+    "src/molt/process_launch.py",
     "tools/win_job.py",
     "src/molt/windows_process_api.py",
     "tools/run_cargo_test_truth.py",
@@ -365,6 +366,7 @@
     "tests/process_guard_common.py",
     "tests/native_process_guard.py",
     "tests/wasm_linked_runner.py",
+    "tests/wasm_runtime_heavy_witnesses.py",
     "tests/test_ci_workflow_topology.py",
     "tests/test_ci_cargo_cache.py",
     "tools/ci_cargo_cache.py",
@@ -709,6 +711,7 @@
         "tools/wasm_*.py",
         "tests/test_wasm_*.py",
         "tests/wasm_linked_runner.py",
+        "tests/wasm_runtime_heavy_witnesses.py",
         "wasm/**",
         "examples/*.py",
         "tools/compat/**",
@@ -882,6 +885,7 @@
         "src/**",
         "tests/test_bench_harness.py",
         "tests/cli/test_native_link_*.py",
+        "tests/wasm_runtime_heavy_witnesses.py",
         "tests/llvm_sdk_test_support.py",
         "tests/proof_queue_custody_test_support.py",
         "tests/python_environment_test_support.py",
@@ -1245,6 +1249,7 @@
         "tools/memory_guard.py",
         "tools/memory_guard_core/**",
         "src/molt/process_spawn.py",
+        "src/molt/process_launch.py",
         "src/molt/custody_layout.py",
         "src/molt/memory_guard_paths.py",
         "src/molt/pytest_memory_guard_bootstrap.py",
@@ -6380,7 +6385,8 @@
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "node"
       ]
     },
     {
@@ -6750,7 +6756,8 @@
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "node"
       ]
     },
     {
@@ -6790,7 +6797,12 @@
         "python",
         "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "node",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -6819,6 +6831,9 @@
       "dependencies": [
         "python.unit.compiled-contracts.prepare.macos"
       ],
+      "env": {
+        "MOLT_WASM_COMPILE_FAST": "1"
+      },
       "family": "python_unit",
       "id": "python.unit.compiled-contracts.macos",
       "pytest": [
@@ -7677,6 +7692,8 @@
         "rust_transpiler_preview",
         "--test",
         "wasm_link_facts_cli",
+        "--test",
+        "host_diagnostics",
         "-p",
         "object@0.40.0",
         "-p",
@@ -7795,7 +7812,7 @@
         "zlib-rs@0.6.8",
         "--no-default-features",
         "--features",
-        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
+        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_net,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
         "--",
         "errno_build_tests::",
         "socket_constants::tests::",
@@ -7803,6 +7820,9 @@
         "synthetic_errno::",
         "async_rt::sockets::wait::tests::",
         "async_rt::sockets_net::tests::",
+        "builtins::io::tests::physical_write_blocking_errno_preserves_target_public_domain",
+        "builtins::io::tests::text_tell_adopts_real_file_seek_error_without_treating_bad_fd_as_pipe",
+        "builtins::io::tests::append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pipe",
         "counter_wrap",
         "memory_budget::",
         "tir::",
@@ -9619,7 +9639,7 @@
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
-      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: --nocapture --test-threads=1",
+      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ --nocapture --test-threads=1",
       "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
     "rules": [
@@ -11160,6 +11180,7 @@
           "src/molt/flag_strings.py",
           "src/molt/python_runtime_admission.py",
           "src/molt/python_environment_identity.py",
+          "src/molt/process_launch.py",
           "src/molt/toolchain_identity.py",
           "src/molt/toolchain_facts.py",
           "src/molt/rust_toolchain.py",
@@ -11237,7 +11258,9 @@
         "globs": [
           "tests/native_process_guard.py",
           "tests/test_native_process_guard.py",
-          "tests/test_native_lir_loop_join_semantics.py"
+          "tests/test_native_lir_loop_join_semantics.py",
+          "tools/prepare_compiled_contracts.py",
+          "tests/wasm_runtime_heavy_witnesses.py"
         ],
         "name": "native-test-failure-diagnostics",
         "pytest": [
@@ -12247,7 +12270,7 @@
         "description": "Wasmtime host Rust: release-fast link build and actual host-error ABI binary tests.",
         "gates": [
           "cargo build --locked --profile release-fast -p molt-wasm-host",
-          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: --nocapture --test-threads=1"
+          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ --nocapture --test-threads=1"
         ],
         "globs": [
           "runtime/molt-wasm-host/**/*.rs",

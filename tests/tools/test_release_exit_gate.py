@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import datetime as dt
 import hashlib
 import json
@@ -208,7 +210,7 @@ def _write_e1_receipt(
         manifest.write_text(
             json.dumps(
                 {
-                    "version": 2,
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
                     "mode": "split-runtime",
                     "modules": {
                         "app": {

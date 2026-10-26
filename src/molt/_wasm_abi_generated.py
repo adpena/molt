@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Literal
 
+WASM_EXECUTION_MANIFEST_VERSION: int = 3
+
 WasmSyntheticErrnoName = Literal[
     "EACCES",
     "EALREADY",

@@ -43,6 +43,13 @@ Cargo's [artifact messages](https://doc.rust-lang.org/cargo/reference/external-t
 bind observed images to that plan; a successful process exit alone does not.
 These are development proof contracts and add no work to emitted programs.
 
+Both Linux and Mac unit surface-contract owners declare pinned Node for the
+generated Worker tests that compile and instantiate tiny Wasm modules. The
+existing Python-unit setup provisions Node once per selected matrix cell that
+declares it. This adds Node setup and capture to those unit cells without a
+Cargo dependency or build. WASI SDK, optimizer and validator setup remain in the
+dedicated compiled cell; command and job budgets are unchanged.
+
 The dedicated `macos-arm64-py312-compiled` matrix cell retains its whole resource and WASM files, its
 non-slow selection and its 600-second body. Its 1200-second prerequisite projects
 the existing WASM host recipe and builds both actual native resource witness

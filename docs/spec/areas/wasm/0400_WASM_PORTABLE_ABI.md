@@ -712,3 +712,49 @@ minimum 256-byte payload when the caller supplies less; there is still one
 shared-buffer allocation and one IPC request, and ordinary 4096-byte resolver
 calls add no storage. Stderr remains best-effort observability rather than the
 failure protocol.
+
+
+### Deployment semantic compatibility
+
+Linked and split Molt deployments use execution manifest version 3. The version
+is declared once in the existing WASM ABI manifest and projected into the
+Python producer, shared Rust facts and Node/browser ABI assets. Host entry
+loaders reject old or absent versions before fetching/reading a module or
+instantiating it. This closes the unchanged-signature resolver status migration:
+a version 2 receiver cannot interpret version 3 positive resolver failures as its
+old negative-errno protocol. Module size/SHA integrity alone does not prove that
+semantic compatibility. Existing runtime provider/source identities still own
+cache and explicit prebuilt-runtime admission; no second digest or custom
+section is introduced. Callable table version 1, browser asset schema 2 and snapshot
+metadata template version 2 are distinct contracts and keep their current versions.
+
+Browser embed URLs must identify the modules named by the current manifest,
+and their fetched bytes undergo the same shared descriptor/size/SHA admission
+as the full browser host. There is no unversioned raw-byte/module loader path.
+Rust's explicit pure WASI-command mode remains separate and refuses Molt host,
+runtime or native imports; Molt modules must enter through their manifest.
+
+Workers preserve static module compilation. The CLI passes its already-built
+in-memory manifest to its split worker generator inside the existing deployment
+publication; fixed lexical app/runtime files are the same manifest-bound files
+bundled atomically by the compiler/deployer. The standalone worker generator
+requires a current adjacent linked manifest and hashes its selected file once
+before emission, derives its default filename from the descriptor, and embeds
+only the existing version/mode/module identity fields. Opaque arbitrary Module
+bindings are unsupported. Dynamic static-content bytes must match that embedded
+descriptor before compilation. Version checks are constant-time; new linked
+generation admission costs one file hash, and dynamic content costs one WebCrypto
+hash over the bytes already fetched. Shared existing bridge/ABI script bytes are
+inlined once in the simple worker rather than adding another validator or cache.
+Static imports retain their platform compilation and add no per-request hash.
+These checks establish admission; applicable Workers/platform execution remains
+a separate qualification coordinate.
+
+The Worker branches supply an admitted WebAssembly.Module and use the direct
+Instance result specified by the
+[WebAssembly JavaScript API](https://www.w3.org/TR/wasm-js-api-2/#dom-webassembly-instantiate).
+The existing byte-input loaders retain their corresponding byte-input result
+shape. This is the platform overload contract, with no wrapper or alternate
+runtime lane. Deployment version admission is enforced by current hosts;
+deployments require their matching runner assets rather than an older runner
+that did not enforce manifest versions.

@@ -952,13 +952,16 @@ class SuiteDaemonLease:
         from molt.checkout_state import (
             bound_project_build_state_root,
             checkout_state_command_roots,
+            checkout_state_environment_roots,
             checkout_state_use,
         )
 
         state_use = contextlib.ExitStack()
         state_use.enter_context(
             checkout_state_use(
-                checkout_state_command_roots(project_root, environ, cwd=project_root)
+                checkout_state_environment_roots(
+                    project_root, environ, cwd=project_root
+                )
             )
         )
         atexit.register(state_use.close)
@@ -1002,17 +1005,25 @@ class SuiteDaemonLease:
                 # The guardian owns this new lease, never an outer suite's lease.
                 env.pop(LEASE_ENV, None)
                 env["PYTHONPATH"] = _guardian_import_path(env.get("PYTHONPATH"))
+                command = [
+                    sys.executable,
+                    "-m",
+                    "molt.backend_daemon_suite_custody",
+                    "--watch",
+                    str(path),
+                    "--read-fd",
+                    str(read_fd),
+                ]
+                state_use.enter_context(
+                    checkout_state_use(
+                        checkout_state_command_roots(
+                            project_root, env, command, cwd=project_root
+                        )
+                    )
+                )
                 with (directory / "guardian.log").open("ab") as log:
                     guardian = subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-m",
-                            "molt.backend_daemon_suite_custody",
-                            "--watch",
-                            str(path),
-                            "--read-fd",
-                            str(read_fd),
-                        ],
+                        command,
                         cwd=project_root,
                         env=env,
                         pass_fds=(read_fd,),
@@ -1453,7 +1464,7 @@ def main():
     parser.add_argument("--watch", type=Path, required=True)
     parser.add_argument("--read-fd", type=int, required=True)
     args = parser.parse_args()
-    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
 
     deadline = time.perf_counter() + 2.0
     lease = read_lease(args.watch)
@@ -1466,7 +1477,7 @@ def main():
     state_use = contextlib.ExitStack()
     state_use.enter_context(
         checkout_state_use(
-            checkout_state_command_roots(project_root, os.environ, cwd=project_root)
+            checkout_state_environment_roots(project_root, os.environ, cwd=project_root)
         )
     )
     atexit.register(state_use.close)
