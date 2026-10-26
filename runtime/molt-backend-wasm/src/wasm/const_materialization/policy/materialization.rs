@@ -1,4 +1,4 @@
-use super::super::{WasmConstMaterialization, WasmConstMaterializationScratch};
+use super::super::WasmConstMaterialization;
 use super::WasmConstOpPolicy;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
@@ -15,19 +15,14 @@ impl WasmConstOpPolicy {
             .out
             .as_ref()
             .unwrap_or_else(|| panic!("const op {} requires an output", self.0.kind));
-        self.simple_ir_materialization_into(op, locals, locals.result_slot(out_name))
+        self.simple_ir_materialization_into(op, locals.result_slot(out_name))
     }
 
     pub(in crate::wasm) fn simple_ir_materialization_into(
         self,
         op: &OpIR,
-        locals: &WasmFrameLocals,
         out_local: u32,
     ) -> WasmConstMaterialization {
-        let out_name = op
-            .out
-            .as_ref()
-            .unwrap_or_else(|| panic!("const op {} requires an output", self.0.kind));
         match self.literal_payload() {
             None if matches!(self.inline_seed(), WasmConstInlineSeed::Int) => {
                 WasmConstMaterialization::scalar_i64(
@@ -47,7 +42,6 @@ impl WasmConstOpPolicy {
                 out_local,
                 payload,
                 self.required_simple_ir_literal_bytes(op),
-                locals.literal_scratch(out_name).into(),
             ),
         }
     }
@@ -56,7 +50,6 @@ impl WasmConstOpPolicy {
         self,
         op: &TirOp,
         out_local: u32,
-        scratch: Option<WasmConstMaterializationScratch>,
     ) -> WasmConstMaterialization {
         match self.literal_payload() {
             None if matches!(self.inline_seed(), WasmConstInlineSeed::Int) => {
@@ -82,9 +75,6 @@ impl WasmConstOpPolicy {
                 out_local,
                 payload,
                 self.required_tir_literal_bytes(op),
-                scratch.unwrap_or_else(|| {
-                    panic!("const op {} requires literal scratch locals", self.0.kind)
-                }),
             ),
         }
     }
