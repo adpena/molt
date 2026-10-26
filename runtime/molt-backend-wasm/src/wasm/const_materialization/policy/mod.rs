@@ -50,10 +50,6 @@ impl WasmConstOpPolicy {
         self.0.lir_fast
     }
 
-    pub(in crate::wasm) fn needs_literal_scratch(self) -> bool {
-        self.literal_payload().is_some()
-    }
-
     pub(in crate::wasm) fn needs_runtime_anchor(self) -> bool {
         self.0.dispatch_runtime_seed
     }
