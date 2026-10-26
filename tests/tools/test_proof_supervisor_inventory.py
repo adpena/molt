@@ -818,12 +818,18 @@ def test_windows_case_distinct_ancestor_aliases_and_missing_entries(tmp_path):
     first = process_image_capture._image_path_key(selected)
     second = process_image_capture._image_path_key(other)
     assert first != second
+    broad = execution_custody.WatchSpec(upper)
+    assert broad.owns(upper) and broad.owns(selected)
+    assert not broad.owns(lower) and not broad.owns(other)
+    assert not broad.owns(target / "tool.exe")
     rows = [
         process_image_capture.capture_image("tool", p, preserve_path=True)
         for p in (selected, other)
     ]
     assert len(process_image_capture.canonical_images(rows)) == 2
     upper.unlink()
+    assert broad.owns(upper) and broad.owns(selected)
+    assert not broad.owns(lower) and not broad.owns(other)
     with pytest.raises((OSError, ValueError)):
         process_image_capture._image_path_key(selected)
     with pytest.raises((OSError, ValueError)):
