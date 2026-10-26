@@ -5931,6 +5931,64 @@ def test_source_bound_commands_bind_one_whole_placeholder_in_ci_tiers() -> None:
     ]
 
 
+def test_docs_profile_is_command_owned_and_transported_with_proof_receipt() -> None:
+    profiled = [
+        command
+        for command in PLAN.commands
+        if any(argument.startswith("--molt-profile") for argument in command.argv)
+    ]
+    assert [command.id for command in profiled] == ["repository.docs-tests"]
+    command = profiled[0]
+    assert command.data["argv"] == [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "-p",
+        "tools.pytest_profile",
+        "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json",
+    ]
+    # The directory owns controller and worker siblings for cleanup and hashing.
+    assert command.evidence_outputs == (
+        "proof-receipts/evidence/repository-docs-tests",
+    )
+    assert command.data["timeout_seconds"] == 900
+    assert command.data["pytest_worker_memory_gb"] == 1.75
+    root = Path(__file__).resolve().parents[1]
+    job = proof_plan._workflow_job_block(
+        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        "docs-gates",
+    )
+    assert job is not None
+    assert (
+        "python3 tools/proof_plan.py --run-family repository_policy "
+        "--receipt proof-receipts/repository_policy.json"
+    ) in job
+    # A diagnostics-only upload passes the broad path-presence validator but
+    # neither real receipt receiver downloads it. Bind the actual upload step.
+    uploads = [
+        step
+        for step in re.split(r"(?m)^      - name: ", job)
+        if "          name: proof-receipt-repository-policy\n" in step
+    ]
+    assert len(uploads) == 1
+    upload = uploads[0]
+    assert "uses: actions/upload-artifact@" in upload
+    assert (
+        "          path: |\n"
+        "            proof-receipts/repository_policy.json\n"
+        "            proof-receipts/evidence/repository-docs-tests\n"
+    ) in upload
+    assert (
+        "if: always() && (hashFiles('proof-receipts/repository_policy.json') != '' "
+        "|| hashFiles('proof-receipts/evidence/repository-docs-tests/*.json') != '')"
+    ) in upload
+
+
 def test_every_family_transports_its_declared_evidence() -> None:
     row = next(
         command

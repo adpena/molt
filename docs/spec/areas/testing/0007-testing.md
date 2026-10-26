@@ -156,7 +156,19 @@ percentages. Required conformance and release matrix gates still apply.
   --molt-profile=run.json ...` records every phase's wall, CPU, child CPU,
   spawns and waiting, and `python tools/pytest_profile.py report run.json`
   shows what bounds the run (the busiest worker, the exit tail, the tests that
-  wait). Reuse immutable fixture inputs without sharing
+  wait). Profiling is opt-in: the controller atomically publishes an initial
+  snapshot, its first completed phase, and then at most one checkpoint per ten
+  seconds on report callbacks. A long phase can leave the checkpoint older than
+  ten seconds. An interrupted profile contains only observed phase durations;
+  its observed phase-duration totals are lower bounds, while derived waiting
+  and imbalance remain provisional. `compare` refuses it as a completed run.
+  A session-finish record completes pytest phase reporting even when process
+  exit is still unknown; neither session completion nor exit implies proof
+  acceptance. Use a fresh output path per run, including its worker metadata
+  siblings, to prevent final reports from mixing metadata from older runs.
+  Retain the exact profile and worker metadata through the owning diagnostic
+  artifact upload; a receipt naming an output does not transport its bytes.
+  Reuse immutable fixture inputs without sharing
   mutable state across tests; batch integration builds and keep them out of the
   fast unit loop. Real Cargo fixtures use actual filesystem measurements with
   invocation-owned headroom appropriate to their dependency graph; modeled

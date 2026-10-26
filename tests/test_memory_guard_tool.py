@@ -1858,7 +1858,7 @@ def _install_darwin_host(
     resident_kb: Callable[[int], int] | None = None,
     viewer_uid: int = _DARWIN_VIEWER_UID,
 ) -> dict[str, list[int]]:
-    """Fake the Darwin kernel through the sampler's own module seams."""
+    """Fake the Darwin kernel only for the synchronous fixture reader."""
     model = memory_guard._process_model
     reads: dict[str, list[int]] = {"argv": [], "kernel_row": [], "resident_kb": []}
 
@@ -1874,11 +1874,31 @@ def _install_darwin_host(
         reads["resident_kb"].append(pid)
         return 2048 if resident_kb is None else resident_kb(pid)
 
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: dict(table))
-    monkeypatch.setattr(model, "_darwin_proc_argv", read_argv)
-    monkeypatch.setattr(model, "_darwin_proc_kernel_row", read_kernel_row)
-    monkeypatch.setattr(model, "_darwin_proc_resident_kb", read_resident_kb)
-    monkeypatch.setattr(model, "_darwin_viewer_uid", lambda: viewer_uid)
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_table",
+        current_thread_only(lambda: dict(table), model._darwin_proc_table),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_argv",
+        current_thread_only(read_argv, model._darwin_proc_argv),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_kernel_row",
+        current_thread_only(read_kernel_row, model._darwin_proc_kernel_row),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_resident_kb",
+        current_thread_only(read_resident_kb, model._darwin_proc_resident_kb),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_viewer_uid",
+        current_thread_only(lambda: viewer_uid, model._darwin_viewer_uid),
+    )
     return reads
 
 
@@ -2022,22 +2042,43 @@ def test_darwin_sampler_binds_zero_rss_after_sampled_instance_exits(
     assert reads["argv"] == []
 
 
-def test_native_resident_binding_runs_once_across_readers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_native_resident_binding_runs_once_across_readers() -> None:
     from concurrent.futures import ThreadPoolExecutor
 
-    model = memory_guard._process_model
-    reads = _install_darwin_host(
-        monkeypatch,
-        {7: _darwin_kernel_row()},
-        argv=lambda _pid: ("worker",),
+    # Bind probes to this one row: real guard readers on other threads must
+    # continue using their native host authority while these readers overlap.
+    reads: dict[str, list[int]] = {"resident_kb": [], "command": []}
+
+    def resident_kb() -> int:
+        reads["resident_kb"].append(7)
+        return 2048
+
+    def command() -> tuple[str, tuple[str, ...], str]:
+        reads["command"].append(7)
+        return "worker", ("worker",), "full"
+
+    sample = process_model.native_process_sample(
+        pid=7,
+        ppid=3,
+        rss_kb=resident_kb,
+        pgid=7,
+        elapsed_sec=0,
+        started_at_ns=123_000_000,
+        bind_command=command,
     )
-    sample = model._sample_processes_darwin()[7]
+    assert (sample.pid, sample.ppid, sample.pgid, sample.started_at_ns) == (
+        7,
+        3,
+        7,
+        123_000_000,
+    )
+    assert reads == {"resident_kb": [], "command": []}
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(lambda _: sample.rss_kb, range(16))) == [2048] * 16
-    assert reads["resident_kb"] == [7]
-    assert reads["argv"] == []
+    assert reads == {"resident_kb": [7], "command": []}
+    assert sample.argv == ("worker",)
+    assert sample.command == "worker"
+    assert reads == {"resident_kb": [7], "command": [7]}
 
 
 @pytest.mark.parametrize(
