@@ -1220,7 +1220,7 @@ def test_sealed_archive_snapshot_rejects_mutation_and_closes_fd(
                 replacement.write_bytes(b"original snapshot bytes")
                 os.replace(replacement, archive)
 
-    monkeypatch.setattr(os, "memfd_create", memfd)
+    install_module_view(monkeypatch, "os", os, cross_run, memfd_create=memfd)
     monkeypatch.setattr(toolchain_identity, "iter_stable_regular_file_chunks", chunks)
     with pytest.raises((ValueError, OSError)):
         cross_run._sealed_archive_snapshot(
@@ -1236,10 +1236,12 @@ def test_sealed_archive_snapshot_checks_bound_before_allocating(monkeypatch, tmp
     archive = tmp_path / "archive"
     with archive.open("wb") as output:
         output.truncate(1024**3 + 1)
-    monkeypatch.setattr(
+    install_module_view(
+        monkeypatch,
+        "os",
         os,
-        "memfd_create",
-        lambda *a: pytest.fail("oversized source allocated a snapshot"),
+        cross_run,
+        memfd_create=lambda *a: pytest.fail("oversized source allocated a snapshot"),
     )
     with pytest.raises(ValueError, match="size limit"):
         cross_run._sealed_archive_snapshot(archive, sha256="a" * 64)
