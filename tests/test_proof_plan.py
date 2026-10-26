@@ -6248,7 +6248,7 @@ def test_executor_cancellation_policy_stops_active_and_queued_work_in_either_ord
     )
     assert live_closed.is_set()
     assert set(started) == {live.id, failure.id}
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     records = {row["id"]: row for row in receipt["commands"]}
     assert [row["id"] for row in receipt["commands"]] == [
         command.id for command in commands
@@ -6336,7 +6336,7 @@ def test_executor_cancellation_policy_preserves_racing_failures_and_trigger_retu
         )
         == 7
     )
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert [row["status"] for row in receipt["commands"]] == [
         "failure",
         "failure",
@@ -6390,7 +6390,7 @@ def test_executor_cancellation_policy_does_not_invent_a_failure_from_a_stopped_r
         == 2
     )
     assert started == [command.id for command in commands]
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["execution"]["failure_trigger"] is None
     assert receipt["execution"]["global_stop_triggered"] is False
     assert receipt["commands"][-1]["status"] == "success"
@@ -6420,7 +6420,7 @@ def test_executor_default_policy_keeps_independent_partitions_collecting(tmp_pat
     receipt_path = tmp_path / "receipt.json"
     assert _execute_synthetic_policy_commands(plan, commands, receipt_path, run) == 7
     assert started == [command.id for command in commands]
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["execution"]["failure_policy"] == "collect_independent"
     assert receipt["execution"]["failure_trigger"] == {
         "command_id": "synthetic.fail",
