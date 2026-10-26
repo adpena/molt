@@ -2864,13 +2864,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     )
     # Compile through the real unpublished-image owner, then capture and attest
     # the actual bytes. The full capture's runtime must retain recipe identity.
-    publisher._publish_environment_bytecode(
-        executable,
-        root,
-        external_root=reader_root,
-        source_root=source if development else None,
-    )
-    realized = publisher._probe_environment_identity(
+    realized = publisher._publish_environment_bytecode(
         executable,
         root,
         external_root=reader_root,

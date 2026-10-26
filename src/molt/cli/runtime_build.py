@@ -184,6 +184,7 @@ def _prebuild_runtime_wasm(
     if not _ensure_runtime_wasm_both(
         runtime_state,
         json_output=json_output,
+        build_profile=build_profile,
         cargo_profile=cargo_profile,
         cargo_timeout=cargo_timeout,
         project_root=project_root,

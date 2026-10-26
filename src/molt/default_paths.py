@@ -398,6 +398,22 @@ def _default_molt_home(
     )
 
 
+def _default_installed_runtime_store(
+    *, environ: Mapping[str, str] | None = None, cwd: Path | None = None
+) -> Path:
+    """Mutable installed runtime payloads, independent of frontend provisioning."""
+    env = os.environ if environ is None else environ
+    selected = _path_override(env, "MOLT_INSTALLED_RUNTIME_STORE")
+    if selected is None:
+        return _default_molt_home(environ=environ, cwd=cwd) / "installed-runtime"
+    path = Path(selected)
+    return (
+        path
+        if path.is_absolute()
+        else ((Path.cwd() if cwd is None else cwd) / path).absolute()
+    )
+
+
 @functools.lru_cache(maxsize=128)
 def _default_molt_bin_cached(path: str, cwd_str: str) -> Path:
     selected = Path(path)

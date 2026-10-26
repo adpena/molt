@@ -10,7 +10,8 @@ generation manifest. Their ``RuntimeBuildIdentity`` must agree with the cell
 key (target, profile, tier/features, SIMD/freestanding, C-API surface). Native
 cells also ship the archive-derived callable projection code generation
 consumes, so installed compilation never runs a symbol reader. One
-content-addressed generation is retained under ``MOLT_HOME``. Each build
+content-addressed generation is retained in the configured installed runtime store,
+defaulting to ``MOLT_HOME/installed-runtime``. Each build
 operation admits it once; code generation and final link reuse that admission
 through stable-file mutation fences and re-derive only the cell selection, so
 the shipped cell is never admitted again beneath compiled code. Nothing here
@@ -35,7 +36,7 @@ from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_name
 from molt.cli import installed_runtime_contract as _runtime_contract
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
-from molt.default_paths import _default_molt_home
+from molt.default_paths import _default_installed_runtime_store
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
     NativeLinkCustodyAdmission,
@@ -98,7 +99,6 @@ from molt.toolchain_identity import (
 from molt.verified_subset import current_host_coordinate
 
 WASM_RUNTIME_TARGET = "wasm32-wasip1"
-INSTALLED_RUNTIME_STORE = "installed-runtime"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
 _RELOC_RUNTIME_NAME = "molt_runtime_reloc.wasm"
 # Source-checkout runtime coordinates. An installed CLI never consults them, so
@@ -142,14 +142,12 @@ def installed_runtime_store(
 ) -> Path:
     """Mutable retention root; never inside the immutable installation."""
     store = resolve_owned_path(
-        _default_molt_home() / INSTALLED_RUNTIME_STORE
-        if selected_store is None
-        else selected_store
+        _default_installed_runtime_store() if selected_store is None else selected_store
     )
     bundle = resolve_owned_path(installed.source_root.parent)
     if store == bundle or bundle in store.parents:
         raise _runtime_contract.InstalledRuntimeError(
-            "MOLT_HOME must be outside the immutable Molt installation"
+            f"installed runtime store {store} must be outside the immutable Molt installation"
         )
     return store
 

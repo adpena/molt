@@ -437,7 +437,20 @@ unavailable optional coordinates do not change native executable search errors.
 Publication derives ordinary checked-hash caches at optimization levels 0, 1 and
 2 into the image's `bytecode` directory. Admission verifies those bytes against
 captured source and runtime inputs; pytest rewriting remains in memory. The
-verifier starts with `-B -I -X pycache_prefix=<fresh-empty-owned-prefix>` through
+producer retains each CPython-derived cache destination and initializes each
+output directory once. It compiles every optimization independently from captured
+source bytes, keeps source buffers bounded to one module, and creates outputs
+exclusively, following [CPython's checked-hash cache contract](https://docs.python.org/3.12/library/py_compile.html).
+Cold publication uses one isolated reader action: the producer retains hashes of
+its exact derived bytes, keyed by source digest, literal filename and optimization
+and bound to the captured runtime identity. A distinct receiver capture freshly
+inventories and reads all source, runtime and cache bytes. Matching derivations
+avoid a second compile; unmatched inputs derive independently and never populate
+the trusted table. Both capture contexts verify and close, and the private table
+is revoked before the populated payload returns for attestation. This removes one
+child launch and JSON round trip. Existing-image and incoming-artifact admission
+have no producer proof and independently derive every present ordinary cache.
+The verifier starts with `-B -I -X pycache_prefix=<fresh-empty-owned-prefix>` through
 the shared `python_identity_verifier_arguments` authority and retains that
 scratch owner through child closure. It validates the image namespace by
 explicit path without changing `sys.pycache_prefix`. After admission, payloads
@@ -621,12 +634,19 @@ python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip --js
 
 `detached-run --json` returns `name`, `pid`, the per-run `state_dir`, and
 `verify_argv`: the argument array for the required later observation. It pins
-this interpreter, its isolation flag, the absolute driver, and the selected
+this interpreter, its startup policy, the absolute driver, and the selected
 state root through `--state-dir`, including when launch used the default.
 A later call can therefore use a different temporary environment or working
 directory. The landing queue's runners still live under
 `.git/molt/landing-queue/runners`; state placement and lookup defaults are
 unchanged. Observation does not restart the payload.
+
+The supervisor, queue runner, and verifier share `molt_dev_detached.python_command`.
+Each control helper preserves the parent's isolation, exact bytecode read prefix
+(including no prefix), and UTF-8 mode, and always disables bytecode writes with
+`-B` before startup imports. These are interpreter arguments because isolated
+Python ignores the corresponding environment variables. Payload arguments remain
+the caller's command.
 
 The human hint displays the same argv as a POSIX shell command on POSIX hosts
 and a labeled JSON argument array on Windows. Pass the array directly to a

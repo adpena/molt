@@ -249,12 +249,20 @@ def _synthetic_cargo_plan(
     return resolve
 
 
-def _specs(root: Path):
+def _specs(root: Path, *, build_profile="release"):
     shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
-        root, root / "wasm" / "molt_runtime.wasm", reloc=False, **_COMMON
+        root,
+        root / "wasm" / "molt_runtime.wasm",
+        build_profile=build_profile,
+        reloc=False,
+        **_COMMON,
     )
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
-        root, root / "wasm" / "molt_runtime_reloc.wasm", reloc=True, **_COMMON
+        root,
+        root / "wasm" / "molt_runtime_reloc.wasm",
+        build_profile=build_profile,
+        reloc=True,
+        **_COMMON,
     )
     return _bind_specs(shared, reloc, root=root)
 
@@ -296,6 +304,7 @@ def test_public_profile_request_reaches_shared_and_reloc_build_specs(
     spec = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "runtime.wasm",
+        build_profile=build_profile,
         reloc=reloc,
         **{**_COMMON, "cargo_profile": profile_request, "freestanding": freestanding},
     )
@@ -335,12 +344,14 @@ def test_codegen_pair_retains_public_abi_without_enabling_unrequested_domains(
     shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "molt_runtime.wasm",
+        build_profile="release",
         reloc=False,
         **common,
     )
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "molt_runtime_reloc.wasm",
+        build_profile="release",
         reloc=True,
         **common,
     )
@@ -436,6 +447,7 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
                 runtime_wasm=tmp_path / "molt_runtime.wasm",
                 runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
             ),
+            build_profile="release",
             json_output=True,
             cargo_profile="release",
             cargo_timeout=30,
@@ -581,7 +593,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         freestanding=False,
     )
     assert runtime_wasm_pair_build._ensure_runtime_wasm_both(
-        state, bind_for_codegen=True, **kwargs
+        state, build_profile="release", bind_for_codegen=True, **kwargs
     )
     binding = state.runtime_wasm_codegen_binding
     assert binding is not None
@@ -591,6 +603,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         generation.manifest.write_text("{}", encoding="utf-8")
     passed = runtime_wasm_pair_build._ensure_runtime_wasm_both(
         state,
+        build_profile="release",
         required_exports={"add", "hash_builtin"},
         **kwargs,
     )
@@ -838,6 +851,7 @@ def test_native_plan_is_the_pre_staging_runtime_export_authority(
         runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             tmp_path,
             tmp_path / name,
+            build_profile="release",
             reloc=reloc,
             **{
                 **_COMMON,
@@ -874,24 +888,28 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
     early = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         tmp_path / "early_reloc.wasm",
+        build_profile="release",
         reloc=True,
         **{**common, "required_exports": {"add"}},
     )
     final = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         tmp_path / "final_reloc.wasm",
+        build_profile="release",
         reloc=True,
         **{**common, "required_exports": {"add", "typing_get_origin"}},
     )
     early_shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         tmp_path / "early_shared.wasm",
+        build_profile="release",
         reloc=False,
         **{**common, "required_exports": {"add"}},
     )
     final_shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         tmp_path / "final_shared.wasm",
+        build_profile="release",
         reloc=False,
         **{**common, "required_exports": {"add", "typing_get_origin"}},
     )
@@ -1004,12 +1022,14 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             root,
             tmp_path / f"{label}_shared.wasm",
+            build_profile="release",
             reloc=False,
             **{**common, "required_exports": required_exports},
         )
         reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             root,
             tmp_path / f"{label}_reloc.wasm",
+            build_profile="release",
             reloc=True,
             **{**common, "required_exports": required_exports},
         )
@@ -1204,6 +1224,7 @@ def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
                 runtime_wasm=tmp_path / "shared.wasm",
                 runtime_reloc_wasm=tmp_path / "reloc.wasm",
             ),
+            build_profile="release",
             project_root=root,
             json_output=True,
             cargo_timeout=5,
@@ -1355,6 +1376,7 @@ def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
     shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         root / "wasm" / "molt_runtime.wasm",
+        build_profile="release",
         reloc=False,
         **{
             **_COMMON,
@@ -1365,6 +1387,7 @@ def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
         root / "wasm" / "molt_runtime_reloc.wasm",
+        build_profile="release",
         reloc=True,
         **{
             **_COMMON,
@@ -2636,3 +2659,119 @@ def test_shared_finalizer_consumes_identity_publication(monkeypatch, tmp_path):
             },
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "intent,physical,explicit_incremental,expected_incremental,publish",
+    [
+        ("dev", "dev-fast", None, "disabled", True),
+        ("dev", "dev-fast", "0", "disabled", True),
+        ("dev", "release", None, "disabled", True),
+        ("release", "release", None, "disabled", True),
+        ("release", "release", "1", "enabled", False),
+    ],
+)
+def test_wasm_bound_policy_tracks_actual_cargo_environment(
+    monkeypatch, intent, physical, explicit_incremental, expected_incremental, publish
+):
+    from molt.cli.runtime_wasm_build_policy import RuntimeWasmTargetLayout
+
+    for name in (
+        "MOLT_RUNTIME_WASM_INCREMENTAL",
+        "MOLT_RUNTIME_BUILD_PROFILE",
+        "MOLT_WASM_CARGO_PROFILE",
+        "CARGO_INCREMENTAL",
+        "SOURCE_DATE_EPOCH",
+        "MOLT_PROOF_SCRATCH_ROOT",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
+    if explicit_incremental is not None:
+        monkeypatch.setenv("CARGO_INCREMENTAL", explicit_incremental)
+    monkeypatch.setitem(_COMMON, "cargo_profile", physical)
+    shared, reloc = _specs(_compiler_root(), build_profile=intent)
+    assert shared.cargo_plan is reloc.cargo_plan
+    assert shared.build_policy == reloc.build_policy
+    assert shared.build_policy.incrementality.value == expected_incremental
+    assert shared.build_policy.publish_shared_cache is publish
+    assert shared.env["CARGO_INCREMENTAL"] == (
+        "1" if expected_incremental == "enabled" else "0"
+    )
+    assert shared.build_policy.layout is not RuntimeWasmTargetLayout.FAMILY
+
+
+@pytest.mark.parametrize(
+    "physical,explicit,profile_override,expected",
+    [
+        ("dev-fast", "1", None, "enabled"),
+        ("dev-fast", "0", None, "disabled"),
+        ("dev-fast", "1", "false", "disabled"),
+        ("release", "1", None, "disabled"),
+    ],
+)
+def test_wasm_policy_binds_sccache_normalized_profile_fact(
+    monkeypatch, tmp_path, physical, explicit, profile_override, expected
+):
+    from molt.cargo_execution_policy import normalize_cargo_environment
+    from molt.cli.runtime_wasm_build_policy import resolve_runtime_wasm_build_policy
+
+    for name in (
+        "MOLT_RUNTIME_WASM_INCREMENTAL",
+        "MOLT_RUNTIME_BUILD_PROFILE",
+        "MOLT_WASM_CARGO_PROFILE",
+        "SOURCE_DATE_EPOCH",
+        "MOLT_PROOF_SCRATCH_ROOT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "0")
+    monkeypatch.setitem(_COMMON, "cargo_profile", physical)
+    shared, _ = _specs(_compiler_root(), build_profile="dev")
+    plan = shared.cargo_plan
+    assert plan is not None
+    controls = {
+        "CARGO_INCREMENTAL": explicit,
+        "RUSTC_WRAPPER": "sccache",
+        "SCCACHE_DIR": str(tmp_path / "sccache"),
+    }
+    if profile_override is not None:
+        controls["CARGO_PROFILE_DEV_FAST_INCREMENTAL"] = profile_override
+    normalized, _ = normalize_cargo_environment(
+        plan.environment.updated(controls), cwd=plan.project_root, admit_c_tools=False
+    )
+    if explicit == "0":
+        assert normalized["CARGO_INCREMENTAL"] == "0"
+    else:
+        assert "CARGO_INCREMENTAL" not in normalized
+    policy = resolve_runtime_wasm_build_policy(
+        "dev", {"CARGO_INCREMENTAL": explicit}
+    ).bind(replace(plan, environment=normalized))
+    assert policy.incrementality.value == expected
+    assert policy.publish_shared_cache is (expected == "disabled")
+    assert f"incremental={expected}" in policy.diagnostic_detail
+
+
+def test_explicit_wasm_incremental_on_reaches_direct_cargo(monkeypatch):
+    for name in (
+        "CARGO_INCREMENTAL",
+        "MOLT_RUNTIME_BUILD_PROFILE",
+        "MOLT_WASM_CARGO_PROFILE",
+        "SOURCE_DATE_EPOCH",
+        "MOLT_PROOF_SCRATCH_ROOT",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
+    monkeypatch.setenv("MOLT_RUNTIME_WASM_INCREMENTAL", "1")
+    monkeypatch.setitem(_COMMON, "cargo_profile", "release")
+    shared, reloc = _specs(_compiler_root(), build_profile="release")
+    assert shared.env["CARGO_INCREMENTAL"] == reloc.env["CARGO_INCREMENTAL"] == "1"
+    assert shared.build_policy.incrementality.value == "enabled"
+    assert not shared.build_policy.publish_shared_cache

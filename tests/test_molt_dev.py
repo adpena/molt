@@ -5722,6 +5722,11 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
     expected_prefix = [
         sys.executable,
         *(["-I"] if sys.flags.isolated else []),
+        "-B",
+        "-X",
+        f"pycache_prefix={sys.pycache_prefix or ''}",
+        "-X",
+        f"utf8={sys.flags.utf8_mode}",
         str(SCRIPT_PATH),
     ]
     assert argv == [
@@ -5780,6 +5785,68 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
     assert marker.read_text(encoding="utf-8") == "ran once\n"
 
 
+@pytest.mark.parametrize("prefix_selected", [False, True])
+@pytest.mark.parametrize("utf8", [0, 1])
+def test_detached_python_child_preserves_startup_policy_without_writes(
+    tmp_path, prefix_selected, utf8
+):
+    from tools.command_execution import CommandExecutor
+
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "owned_probe.py").write_text("value = 37\n", encoding="utf-8")
+    prefix = str(tmp_path / "selected bytecode") if prefix_selected else ""
+    # -S prevents this deliberately unsafe old-helper control from importing
+    # site packages before the owned fixture. The child's only source import
+    # is ours; no immutable environment can acquire baseline bytecode writes.
+    child = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import owned_probe; "
+        "print(repr((sys.flags.isolated, sys.dont_write_bytecode, "
+        "sys.pycache_prefix, sys.flags.utf8_mode, owned_probe.value)))"
+    )
+    parent = (
+        "import json, subprocess, sys; sys.path.insert(0, sys.argv[1]); "
+        "from tools.molt_dev_detached import python_command; "
+        "result = subprocess.check_output(python_command('-S', '-c', sys.argv[2], sys.argv[3]), text=True, encoding='utf-8'); "
+        "print(json.dumps({'child': result, 'prefix': sys.pycache_prefix}))"
+    )
+    env = dict(
+        os.environ,
+        PYTHONDONTWRITEBYTECODE="1",
+        PYTHONPYCACHEPREFIX=str(tmp_path / "ambient bytecode"),
+        PYTHONUTF8=str(1 - utf8),
+    )
+    completed = CommandExecutor.for_file(__file__).run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-X",
+            f"utf8={utf8}",
+            "-c",
+            parent,
+            str(REPO_ROOT),
+            child,
+            str(fixture),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=30,
+    )
+    observed = json.loads(completed.stdout)
+    expected_prefix = prefix if prefix_selected else None
+    assert observed["prefix"] == expected_prefix
+    assert not list(tmp_path.rglob("*.pyc")), observed
+    assert (fixture / "owned_probe.py").read_bytes() == b"value = 37\n"
+    assert observed["child"].strip() == repr((1, True, expected_prefix, utf8, 37))
+
+
 @pytest.mark.parametrize(("isolated", "expected_flags"), [(0, []), (1, ["-I"])])
 def test_detached_verify_argv_preserves_interpreter_isolation(
     tmp_path, monkeypatch, isolated, expected_flags
@@ -5793,12 +5860,18 @@ def test_detached_verify_argv_preserves_interpreter_isolation(
         "sys",
         sys,
         detached,
-        flags=SimpleNamespace(isolated=isolated),
+        flags=SimpleNamespace(isolated=isolated, utf8_mode=1),
+        pycache_prefix="/selected bytecode",
     )
     state_root = tmp_path / "state root"
     assert detached.verify_command("retained", state_root, 31) == [
         sys.executable,
         *expected_flags,
+        "-B",
+        "-X",
+        "pycache_prefix=/selected bytecode",
+        "-X",
+        "utf8=1",
         str(SCRIPT_PATH),
         "detached-verify",
         "--name",

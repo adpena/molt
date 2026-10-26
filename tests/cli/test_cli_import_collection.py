@@ -22873,6 +22873,7 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
     )
 
     runtime_context, failure = cli_backend_compile._prepare_backend_runtime_context(
+        profile="dev",
         prepared_backend_setup=prepared_backend_setup,
         is_wasm_freestanding=False,
         json_output=True,
@@ -22945,6 +22946,7 @@ def test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest(
     )
 
     runtime_context, failure = cli_backend_compile._prepare_backend_runtime_context(
+        profile="dev",
         prepared_backend_setup=prepared_backend_setup,
         is_wasm_freestanding=False,
         json_output=True,
@@ -23010,6 +23012,7 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
     )
 
     runtime_context, failure = cli_backend_compile._prepare_backend_runtime_context(
+        profile="dev",
         prepared_backend_setup=prepared_backend_setup,
         is_wasm_freestanding=False,
         json_output=True,
@@ -23041,6 +23044,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
     first = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "runtime.wasm",
+        build_profile="release",
         resolved_modules={"json"},
         required_exports={"runtime_init"},
         **common,
@@ -23048,6 +23052,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
     second = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "runtime.wasm",
+        build_profile="release",
         resolved_modules={"ssl"},
         required_exports={"fast_list_append"},
         **common,
@@ -23112,6 +23117,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     spec = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "runtime_reloc.wasm",
+        build_profile="release",
         reloc=True,
         cargo_profile="dev-fast",
         simd_enabled=True,

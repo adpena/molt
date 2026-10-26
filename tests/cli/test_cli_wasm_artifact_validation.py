@@ -169,6 +169,7 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     def fake_ensure_runtime_wasm_both(
         runtime_state,
         *,
+        build_profile,
         json_output,
         cargo_profile,
         cargo_timeout,
@@ -411,6 +412,7 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
     )
     assert RUNTIME_WASM_PAIR._ensure_runtime_wasm_both(
         runtime_state,
+        build_profile="release",
         json_output=True,
         cargo_profile="dev-fast",
         cargo_timeout=300.0,
@@ -797,10 +799,18 @@ def validation_specs(
             required_exports=required_exports,
         )
         shared = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
-            root, root / "molt_runtime.wasm", reloc=False, **common
+            root,
+            root / "molt_runtime.wasm",
+            build_profile="release",
+            reloc=False,
+            **common,
         )
         reloc = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
-            root, root / "molt_runtime_reloc.wasm", reloc=True, **common
+            root,
+            root / "molt_runtime_reloc.wasm",
+            build_profile="release",
+            reloc=True,
+            **common,
         )
         shared, reloc = bind_runtime_wasm_specs(
             shared._replace(target_root=target),
@@ -1066,6 +1076,7 @@ def test_missing_validator_is_a_prerequisite_not_a_cache_miss(
     elif entrypoint == "pair":
         assert not RUNTIME_WASM_PAIR._ensure_runtime_wasm_both(
             state,
+            build_profile="release",
             json_output=True,
             cargo_profile="dev-fast",
             cargo_timeout=5.0,
@@ -1125,6 +1136,7 @@ def test_validator_discovery_is_request_owned_and_execution_still_reattests(
         )
         assert not RUNTIME_WASM_PAIR._ensure_runtime_wasm_both(
             state,
+            build_profile="release",
             json_output=True,
             cargo_profile="dev-fast",
             cargo_timeout=5.0,

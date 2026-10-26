@@ -50,6 +50,7 @@ from molt.cli.runtime_identity_schema import (
 from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
+from molt.cli.build_request import BuildProfile
 from molt.cli.runtime_wasm_build import _materialize_runtime_wasm_member_from_target
 from molt.cli.runtime_wasm_build_spec import (
     _compute_runtime_wasm_build_spec,
@@ -381,11 +382,7 @@ def _prepopulate_combined_runtime_wasm_target(
         time.perf_counter() - started,
         kind="combined",
         mode="build",
-        detail=(
-            "target_dir=stable-incremental (cross-session dep cache)"
-            if shared_spec.incremental_enabled
-            else "target_dir=session"
-        ),
+        detail=shared_spec.build_policy.diagnostic_detail,
     )
     return _publish_combined_runtime_wasm_target(ctx, build, reported_cdylib)
 
@@ -646,6 +643,7 @@ def _prepare_runtime_wasm_pair_build(
     runtime_state: _RuntimeArtifactState,
     *,
     json_output: bool,
+    build_profile: BuildProfile,
     cargo_profile: str,
     cargo_timeout: float | None,
     project_root: Path,
@@ -674,6 +672,7 @@ def _prepare_runtime_wasm_pair_build(
             project_root,
             path,
             reloc=reloc,
+            build_profile=build_profile,
             cargo_profile=cargo_profile,
             simd_enabled=simd_enabled,
             freestanding=freestanding,
@@ -839,7 +838,7 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
             "generation-publication",
             f"Runtime WASM pair publication failed: {exc}",
         )
-    if not post_shared.incremental_enabled:
+    if post_shared.build_policy.publish_shared_cache:
         _warn_runtime_wasm_cache_publish_failure(
             publish_runtime_wasm_pair_to_shared_cache(
                 shared=published.shared,
@@ -951,6 +950,7 @@ def _ensure_runtime_wasm_both(
     runtime_state: _RuntimeArtifactState,
     *,
     json_output: bool,
+    build_profile: BuildProfile,
     cargo_profile: str,
     cargo_timeout: float | None,
     project_root: Path,
@@ -1005,6 +1005,7 @@ def _ensure_runtime_wasm_both(
     ctx = _prepare_runtime_wasm_pair_build(
         runtime_state,
         json_output=json_output,
+        build_profile=build_profile,
         cargo_profile=cargo_profile,
         cargo_timeout=cargo_timeout,
         project_root=project_root,

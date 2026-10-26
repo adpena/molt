@@ -1097,6 +1097,36 @@ def _require_cargo_build_directory(
     require_cargo_build_directory_version(result.stdout)
 
 
+def _cargo_profile_package_selector_name(spec: str) -> str | None:
+    """Proven package-name projection of Cargo's package-ID specification.
+
+    Only the name is needed to exclude sibling controls. A matching qualified
+    selector still needs resolved version/source identity before it can govern
+    a target package. Grammar: https://doc.rust-lang.org/cargo/reference/pkgid-spec.html
+    """
+    from urllib.parse import urlsplit
+
+    name_pattern = r"[A-Za-z0-9_-]+"
+    version_pattern = (
+        r"[0-9]+(?:\.[0-9]+){0,2}(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?"
+    )
+    if "://" not in spec:
+        match = re.fullmatch(rf"({name_pattern})(?:[:@]{version_pattern})?", spec)
+        return match.group(1) if match is not None else None
+    try:
+        url = urlsplit(spec)
+    except ValueError:
+        return None
+    fragment = url.fragment
+    if fragment and re.fullmatch(version_pattern, fragment) is None:
+        match = re.fullmatch(rf"({name_pattern})(?:[:@]{version_pattern})?", fragment)
+        return match.group(1) if match is not None else None
+    # Version-only and absent fragments inherit the terminal URL path segment.
+    # Encoded or non-package segments remain unproven rather than guessed.
+    tail = url.path.rsplit("/", 1)[-1]
+    return tail if re.fullmatch(name_pattern, tail) is not None else None
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeCargoPlan:
     project_root: Path
@@ -1637,6 +1667,90 @@ class RuntimeCargoPlan:
                     f"unsupported output-bearing Cargo profile override: {name}"
                 )
         return result
+
+    def incremental_for_profile(
+        self, cargo_profile: str, *, package_name: str, workspace_package: bool
+    ) -> bool:
+        """Effective incrementality for one package in this captured Cargo plan.
+
+        CARGO_INCREMENTAL overrides build.incremental and all profile settings.
+        Named package overrides precede wildcard and base-profile settings;
+        Cargo's wildcard excludes workspace packages. Qualified package IDs need
+        resolved package identity, so refuse those controls rather than guess.
+        """
+        global_incremental = self.environment.get("CARGO_INCREMENTAL")
+        if global_incremental is not None:
+            # Cargo's global switch enables only the literal "1"; profile
+            # and build configuration use their separate boolean grammar.
+            return global_incremental == "1"
+        value = cargo_selected_value(
+            self.profile_configuration,
+            self.cli_configuration,
+            self.environment,
+            ("build", "incremental"),
+            ("CARGO_BUILD_INCREMENTAL",),
+        )
+        ancestry = self.profile_ancestry(cargo_profile) if value is None else ()
+        if value is None:
+            for profile in ancestry:
+                overrides = cargo_selected_value(
+                    self.profile_configuration,
+                    self.cli_configuration,
+                    {},
+                    ("profile", profile, "package"),
+                    (),
+                    {},
+                )
+                for spec, settings in _table(
+                    overrides, label="profile.package"
+                ).items():
+                    settings = _table(settings, label="profile.package settings")
+                    selected_name = _cargo_profile_package_selector_name(spec)
+                    if selected_name is not None and selected_name != package_name:
+                        # A version qualification cannot change the named package.
+                        # These sibling settings do not govern this package.
+                        continue
+                    if "incremental" in settings and (
+                        not isinstance(spec, str)
+                        or any(character in spec for character in ":/@#")
+                    ):
+                        raise ValueError(
+                            "runtime Cargo incremental package-ID override requires "
+                            f"resolved package identity: {spec!r}"
+                        )
+            for selector in (
+                (package_name,) if workspace_package else (package_name, "*")
+            ):
+                for profile in ancestry:
+                    value = cargo_selected_value(
+                        self.profile_configuration,
+                        self.cli_configuration,
+                        {},
+                        ("profile", profile, "package", selector, "incremental"),
+                        (),
+                    )
+                    if value is not None:
+                        break
+                if value is not None:
+                    break
+        if value is None:
+            for profile in ancestry:
+                value = cargo_selected_value(
+                    self.profile_configuration,
+                    self.cli_configuration,
+                    self.environment,
+                    ("profile", profile, "incremental"),
+                    (_profile_environment_prefix(profile) + "INCREMENTAL",),
+                )
+                if value is not None:
+                    break
+        if value is None:
+            return ancestry[-1] == "dev"
+        if value in (True, "true", "1"):
+            return True
+        if value in (False, "false", "0"):
+            return False
+        raise ValueError(f"runtime Cargo incremental setting is invalid: {value!r}")
 
     def preserve_debug_for_profile(self, cargo_profile: str) -> bool:
         """Resolve Cargo profile inheritance and overrides, never name substrings."""

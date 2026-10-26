@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.cargo_execution_policy import cargo_profile_directory
+from molt.cli.build_request import BuildProfile
 
 from molt.process_environment import ProcessEnvironment
 
@@ -73,9 +74,12 @@ from molt.cli.runtime_fingerprints import (
 from molt.cli.runtime_paths import _cargo_target_root
 from molt.cli.runtime_wasm_build_policy import (
     _resolve_wasm_cargo_profile,
-    _runtime_wasm_incremental_enabled,
-    _runtime_wasm_incremental_family_key,
-    _runtime_wasm_incremental_target_root,
+    RuntimeWasmBuildPolicy,
+    RuntimeWasmIncrementality,
+    RuntimeWasmTargetLayout,
+    resolve_runtime_wasm_build_policy,
+    _runtime_wasm_family_key,
+    _runtime_wasm_family_target_root,
 )
 from molt.cli.runtime_wasm_build_support import (
     runtime_reloc_publication_action,
@@ -104,7 +108,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     requested_cargo_profile: str
     cargo_profile: str
     profile_dir: str
-    incremental_enabled: bool
+    build_policy: RuntimeWasmBuildPolicy
     env: ProcessEnvironment
     artifact_selection: RuntimeArtifactSelection
     runtime_exports: tuple[str, ...]
@@ -124,6 +128,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     def with_cargo_plan(self, plan: RuntimeCargoPlan) -> _RuntimeWasmBuildSpec:
         return self._replace(
             cargo_plan=plan,
+            build_policy=self.build_policy.bind(plan),
             env=plan.environment,
             cargo_rustflags=plan.rustflags,
             fingerprint_rustflags=(*plan.rustflags, *self.link_flags),
@@ -164,6 +169,13 @@ def _resolve_runtime_wasm_cargo_specs(
     freestanding: bool,
 ) -> tuple[_RuntimeWasmBuildSpec, _RuntimeWasmBuildSpec]:
     """Resolve the one command/environment consumed by capture and execution."""
+    if (
+        shared.build_policy != reloc.build_policy
+        or shared.target_root != reloc.target_root
+    ):
+        raise ValueError(
+            "runtime WASM members disagree on execution policy or target custody"
+        )
     env = shared.env.updated({"CARGO_TARGET_DIR": str(shared.target_root)})
     command = _runtime_wasm_combined_cargo_command(shared)
     command[0] = env.get("CARGO", command[0])
@@ -358,6 +370,7 @@ def _compute_runtime_wasm_build_spec(
     runtime_wasm: Path,
     *,
     reloc: bool,
+    build_profile: BuildProfile,
     cargo_profile: str,
     simd_enabled: bool,
     freestanding: bool,
@@ -381,10 +394,10 @@ def _compute_runtime_wasm_build_spec(
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = cargo_profile_directory(cargo_profile)
-    incremental_enabled = _runtime_wasm_incremental_enabled()
+    build_policy = resolve_runtime_wasm_build_policy(build_profile, os.environ)
     env = _cargo_build_env()
-    if "CARGO_INCREMENTAL" not in os.environ:
-        env["CARGO_INCREMENTAL"] = "1" if incremental_enabled else "0"
+    if build_policy.incrementality is RuntimeWasmIncrementality.FORCED_OFF:
+        env["CARGO_INCREMENTAL"] = "0"
     cpython_abi_requested_exports = wasm_cpython_abi_requested_export_names(
         required_exports
     )
@@ -441,10 +454,10 @@ def _compute_runtime_wasm_build_spec(
     fingerprint_path = _runtime_fingerprint_path(
         root, runtime_wasm, cargo_profile, "wasm32-wasip1"
     )
-    if incremental_enabled:
-        target_root = _runtime_wasm_incremental_target_root(
+    if build_policy.layout is RuntimeWasmTargetLayout.FAMILY:
+        target_root = _runtime_wasm_family_target_root(
             root,
-            _runtime_wasm_incremental_family_key(
+            _runtime_wasm_family_key(
                 cargo_profile=cargo_profile,
                 target_triple="wasm32-wasip1",
                 features=tuple(fingerprint_features),
@@ -460,7 +473,7 @@ def _compute_runtime_wasm_build_spec(
         requested_cargo_profile=requested_cargo_profile,
         cargo_profile=cargo_profile,
         profile_dir=profile_dir,
-        incremental_enabled=incremental_enabled,
+        build_policy=build_policy,
         env=ProcessEnvironment(env),
         artifact_selection=artifact_selection,
         runtime_exports=runtime_exports,

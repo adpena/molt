@@ -646,6 +646,105 @@ def _runtime_cells(root: Path, *, platform: str, arch: str, snapshot) -> Path:
     return root
 
 
+@pytest.fixture
+def runtime_projection_compiler(tmp_path, monkeypatch, release_source):
+    """Real installed manifest/bytes; no native receipt or execution claim."""
+    from molt import compiler_distribution as distribution
+    from molt.exact_json import read_exact
+    from tools.release.runtime_cells import INVENTORY_NAME
+
+    root = tmp_path / "installed"
+    runtime_root = _runtime_cells(
+        root / distribution.RUNTIME_ROOT,
+        platform="linux",
+        arch="x86_64",
+        snapshot=release_source,
+    )
+    runtime = read_exact(
+        runtime_root / INVENTORY_NAME, max_bytes=65536, label="fixture runtime"
+    )
+    (runtime_root / INVENTORY_NAME).unlink()
+    native = runtime["cells"][0]
+    unused = copy.deepcopy(native)
+    unused["key"]["cargo_profile"] = "dev-fast"
+    payloads = {
+        row["name"]: (runtime_root / native["id"] / row["name"]).read_bytes()
+        for row in native["files"]
+    }
+    archive = next(row for row in unused["files"] if row["role"] == "runtime_archive")
+    payloads[archive["name"]] = b"unselected runtime buffer\n" * 16_384
+    archive.update(
+        size=len(payloads[archive["name"]]),
+        sha256=hashlib.sha256(payloads[archive["name"]]).hexdigest(),
+    )
+    unused["id"] = distribution.runtime_cell_id(
+        unused["kind"], unused["key"], unused["files"]
+    )
+    for name, data in payloads.items():
+        path = runtime_root / unused["id"] / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    wasm_payloads = {
+        "manifest.json": ("wasm_generation_manifest", b"{}"),
+        "runtime.wasm": ("wasm_shared_member", b"\0asm\x01\0\0\0"),
+        "runtime.o": ("wasm_reloc_member", b"relocatable fixture"),
+    }
+    wasm = {
+        "kind": distribution.WASM_RUNTIME_CELL,
+        "key": {
+            "target_triple": "wasm32-wasip1",
+            "cargo_profile": "dev-fast",
+            "stdlib_profile": "micro",
+            "runtime_features": ["stdlib_micro"],
+            "simd": False,
+            "freestanding": False,
+        },
+        "files": [
+            {
+                "role": role,
+                "name": name,
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            for name, (role, data) in sorted(wasm_payloads.items())
+        ],
+    }
+    wasm["id"] = distribution.runtime_cell_id(wasm["kind"], wasm["key"], wasm["files"])
+    for name, (_, data) in wasm_payloads.items():
+        path = runtime_root / wasm["id"] / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    runtime["cells"] = sorted((native, unused, wasm), key=lambda row: row["id"])
+    records = []
+    for name, producer in (
+        ("molt-backend", compiler_payload.compiler_record),
+        ("molt", compiler_payload.launcher_record),
+        ("molt-wasm-facts", compiler_payload.wasm_facts_record),
+    ):
+        path = root / "bin" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes((name + " fixture bytes").encode())
+        path.chmod(0o755)
+        records.append(producer(path, platform="linux", arch="x86_64"))
+    source = compiler_payload.materialize_sources(
+        root,
+        repo_root=build_bundle.ROOT,
+        snapshot=release_source,
+        compiler=records[0],
+        launcher=records[1],
+        wasm_facts=records[2],
+        runtime=runtime,
+    )
+    monkeypatch.setattr(
+        distribution, "current_host_coordinate", lambda: ("linux", "x86_64")
+    )
+    installed = distribution.installed_compiler(source)
+    assert installed is not None
+    installed.verify_sources()
+    installed.verify_runtime()
+    return installed, native, wasm, unused
+
+
 def test_release_target_and_download_authority_is_complete_and_exact() -> None:
     targets = release_model.release_targets()
     assert {(target.platform, target.arch) for target in targets} == {
