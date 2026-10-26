@@ -1,8 +1,7 @@
-import './wasi_errno_generated.js';
+import './synthetic_errno_generated.js';
 
-// The guest reads WASI errno codes, its libc's numbering on wasm32-wasip1
-// (runtime/molt-backend-wasm/src/wasm_abi_manifest.toml [wasi_errno]).
-const { ENOSYS, EINVAL, ETIMEDOUT } = globalThis.MoltWasiErrno;
+// Molt env imports consume the generated synthetic POSIX domain.
+const { ENOSYS, EINVAL, ETIMEDOUT } = globalThis.MoltSyntheticErrno.errno;
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 

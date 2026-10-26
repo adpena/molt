@@ -102,8 +102,19 @@ fn actual_c_expression_presence_aliases_and_generated_versioned_consumer() {
     let owner = CargoTestArtifacts::new("errno-target-header").unwrap();
     // Deliberately neither Linux11 nor Darwin35: host errno substitution fails.
     fs::write(owner.path().join("errno.h"),
-        "#define EARETRY (111 + 12)\n#define EZALIAS EARETRY\n#define EHWPOISON (7 * 9)\n#define EFALLBACK (10000 + 64)\n").unwrap();
-    let declaration = Declaration::parse(concat!(
+        "#define EARETRY (111 + 12)\n#define EZALIAS EARETRY\n#define EHWPOISON (7 * 9)\n#define EFALLBACK (10000 + 64)\n#define EORDINARY (8 * 9)\n#define WSAEEXAMPLE (10000 + 99)\n").unwrap();
+    // The same object carries resolver expressions. Absent symbols have no
+    // numeric fallback, and adding raw resolver rows never publishes errno.
+    let resolver_header = concat!(
+        "#undef EAI_AGAIN\n#define EAI_AGAIN (-100 - 23)\n",
+        "#undef EAI_NONAME\n#define EAI_NONAME EAI_AGAIN\n",
+        "#undef EAI_SYSTEM\n#define EAI_SYSTEM (6000 + 67)\n",
+        "#undef EAI_MAX\n",
+    );
+    for header in ["netdb.h", "ws2tcpip.h"] {
+        fs::write(owner.path().join(header), resolver_header).unwrap();
+    }
+    let mut declaration = Declaration::parse(concat!(
         "EZALIAS\t-\tnative\t312\n",
         "EARETRY\t-\tnative\t312\n",
         "EZALIAS\t-\tnative\t312\n",
@@ -112,6 +123,17 @@ fn actual_c_expression_presence_aliases_and_generated_versioned_consumer() {
         "EHWPOISON\t-\tnative\t314\n",
     ))
     .unwrap();
+    let public_before = declaration.public.clone();
+    let error_names = [
+        "EAI_AGAIN",
+        "EAI_NONAME",
+        "EAI_SYSTEM",
+        "EAI_MAX",
+        "EORDINARY",
+        "WSAEEXAMPLE",
+    ];
+    declaration.add_native_error_symbols(&error_names).unwrap();
+    assert_eq!(declaration.public, public_before);
     let values = target_errno::evaluate(
         &declaration,
         &target(),
@@ -124,11 +146,14 @@ fn actual_c_expression_presence_aliases_and_generated_versioned_consumer() {
         [Some(123), Some(123), Some(123), Some(10064), None, Some(63)]
     );
     let generated = declaration.rust_source(&values).unwrap();
+    let native_generated = declaration
+        .native_error_rust_source(&values, &error_names)
+        .unwrap();
     let source = owner.path().join("consumer.rs");
     fs::write(
         &source,
         format!(
-            "{generated}\n{}",
+            "{generated}\n{native_generated}\n{}",
             r#"
 fn main() {
     let expected = vec![("EZALIAS",123), ("EARETRY",123), ("EZALIAS",123), ("EHOSTDOWN",10064)];
@@ -140,6 +165,14 @@ fn main() {
     let reverse: std::collections::HashMap<_,_> = errno_constants(312)
         .map(|(name, value)| (value, name)).collect();
     assert_eq!(reverse.get(&123), Some(&"EZALIAS"));
+    assert_eq!(EAI_AGAIN, Some(-123));
+    assert_eq!(EAI_NONAME, Some(-123));
+    assert_eq!(EAI_SYSTEM, Some(6067));
+    assert_eq!(EAI_MAX, None);
+    assert_eq!(EORDINARY, Some(72));
+    assert_eq!(WSAEEXAMPLE, Some(10099));
+    assert_eq!(EAI_CONSTANTS, &[("EAI_AGAIN",-123), ("EAI_NONAME",-123), ("EAI_SYSTEM",6067)]);
+    assert!(errno_constants(315).all(|(name, _)| !name.starts_with("EAI_")));
 }
 "#
         ),
@@ -229,6 +262,18 @@ fn malformed_declarations_and_record_words_fail_closed() {
         "EIO\t-\tnative\t312\nEIO\t-\tnative\t315\n",
     ] {
         assert!(Declaration::parse(text).is_err());
+    }
+    for names in [
+        vec![],
+        vec!["EAI_"],
+        vec!["EAI_NONAME", "EAI_NONAME"],
+        vec!["EAI_noname"],
+        vec!["EAI_NONAME) + 1"],
+    ] {
+        let mut declaration = Declaration::parse("EIO\t-\tnative\t312\n").unwrap();
+        let before = declaration.raw.clone();
+        assert!(declaration.add_native_error_symbols(&names).is_err());
+        assert_eq!(declaration.raw, before);
     }
     let declaration = Declaration::parse("EIO\t-\tnative\t312\n").unwrap();
     // Independent wire witness: magic/version/counts; raw row then public row.

@@ -112,6 +112,8 @@ def test_generate_worker_capabilities_substituted(tmp_path):
     assert "{{CAPABILITIES}}" not in content
     assert "{{TMP_QUOTA_MB}}" not in content
     assert "{{WASM_FILENAME}}" not in content
+    assert "{{SYNTHETIC_ERRNO}}" not in content
+    assert "{{WASI_PREVIEW1_ERRNO}}" not in content
 
 
 def test_generate_worker_custom_wasm_filename(tmp_path):
@@ -232,8 +234,9 @@ def test_generate_split_worker_defines_wasi_vfs_errno_and_preopen_state() -> Non
         shared_table_base=None,
     )
 
-    assert "const WASI_ERRNO_NOENT = 44;" in content
-    assert "const WASI_ERRNO_NOSYS = 52;" in content
+    assert "ENOENT: WASI_ERRNO_NOENT" in content
+    assert "ENOSYS: WASI_ERRNO_NOSYS" in content
+    assert "} = WASI_ERRNO;" in content
     assert "const WASI_OFLAGS_CREAT = 1;" in content
     assert "const wasiFiles = new Map();" in content
     assert "const wasiPreopens = [" in content
@@ -1287,3 +1290,156 @@ def test_cli_does_not_expose_table_ref_export_synthesis() -> None:
     import molt.cli as cli
 
     assert not hasattr(cli, "_export_wasm_table_refs")
+
+
+def _worker_errno_fixture_wasm() -> bytes:
+    """Three real imports with independently specified protocol observations."""
+    import molt.wasm_artifact as wasm_artifact
+
+    types = _wasm_vec(
+        [
+            _wasm_function_type([0x7F, 0x7F], [0x7F]),
+            _wasm_function_type([0x7F, 0x7E], [0x7F]),
+            _wasm_function_type([0x7E, 0x7F, 0x7F], [0x7F]),
+            _wasm_function_type([], [0x7F]),
+        ]
+    )
+    imports = _wasm_vec(
+        [
+            _wasm_function_import("wasi_snapshot_preview1", "fd_prestat_get", 0),
+            _wasm_function_import("wasi_snapshot_preview1", "fd_filestat_set_size", 1),
+            _wasm_function_import("env", "molt_socket_connect_host", 2),
+        ]
+    )
+    bodies = [
+        b"\x00\x41\x00\x41\x10\x10\x00\x0b",
+        b"\x00\x41\x00\x42\x00\x10\x01\x0b",
+        b"\x00\x42\x7f\x41\x10\x41\x00\x10\x02\x0b",
+    ]
+    return wasm_artifact._build_wasm_sections(
+        [
+            (1, types),
+            (2, imports),
+            (3, _wasm_vec([wasm_artifact._write_wasm_varuint(3)] * 3)),
+            (
+                7,
+                _wasm_vec(
+                    [
+                        _wasm_function_export("raw_badf", 3),
+                        _wasm_function_export("raw_unsupported", 4),
+                        _wasm_function_export("molt_unsupported", 5),
+                    ]
+                ),
+            ),
+            (
+                10,
+                _wasm_vec(
+                    [
+                        wasm_artifact._write_wasm_varuint(len(body)) + body
+                        for body in bodies
+                    ]
+                ),
+            ),
+        ]
+    )
+
+
+def test_generated_workers_keep_actual_wasi_and_molt_error_imports_separate(
+    tmp_path: Path,
+) -> None:
+    import pytest
+    from molt.cli.wasm import _generate_split_worker_js
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tools.generate_worker import generate_worker
+
+    if shutil.which("node") is None:
+        pytest.skip("Node is required for actual generated-worker host imports")
+    root = Path(__file__).resolve().parents[1]
+    static = tmp_path / "static-worker.js"
+    generate_worker(static, [])
+    split = tmp_path / "split-worker.js"
+    split.write_text(
+        _generate_split_worker_js(
+            resolved_capability_policy=_default_runtime_policy(),
+            shared_memory_initial_pages=8,
+            shared_table_initial=16,
+            shared_table_base=None,
+        ),
+        encoding="utf-8",
+    )
+    fixture = tmp_path / "errno-probe.wasm"
+    fixture.write_bytes(_worker_errno_fixture_wasm())
+    empty = tmp_path / "empty-attested.wasm"
+    empty.write_bytes(attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00"))
+    script = tmp_path / "worker-errno.cjs"
+    script.write_text(
+        r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const [root, staticPath, splitPath, fixturePath, emptyPath] = process.argv.slice(2);
+const fixture = new WebAssembly.Module(fs.readFileSync(fixturePath));
+const empty = new WebAssembly.Module(fs.readFileSync(emptyPath));
+const bridge = require(path.join(root, 'wasm/loader_bridge.js'));
+const lifetime = require(path.join(root, 'wasm/runtime_lifecycle.js'));
+const {MoltVfs} = require(path.join(root, 'wasm/molt_vfs_browser.js'));
+async function observe(source, kind) {
+  const context = vm.createContext({
+    WebAssembly, TextEncoder, TextDecoder, URL, Response, console, performance,
+    MoltWasmLoaderBridge: bridge, MoltRuntimeLifecycle: lifetime, MoltVfs,
+    runtimeModule: empty, appModule: empty,
+  });
+  if (kind === 'static') {
+    // Keep the actual host/WASI factories; the request/runtime lifetime is not under test.
+    const boundary = source.indexOf('export default {');
+    assert.ok(boundary > 0);
+    vm.runInContext(source.slice(0, boundary) + `
+      const state = {memory:new WebAssembly.Memory({initial:1})};
+      const tmp = new TmpFs(1024); const stdio = new StdioCapture();
+      globalThis.probeImports = {env:createHostImports(state,tmp,stdio),
+        wasi_snapshot_preview1:buildWasiShim(state,stdio)};`, context);
+  } else {
+    // Execute the real request-owned import construction, stopping before runtime instantiation.
+    const boundary = '    // Shared table for indirect calls';
+    assert.ok(source.includes(boundary));
+    source = source.replace(/^import .*;$/gm, '')
+      .replace('export default {', 'globalThis.worker = {')
+      .replace(boundary, '    return {env:hostEnv,wasi_snapshot_preview1:wasi};\n' + boundary);
+    vm.runInContext(source, context);
+    context.probeImports = await context.worker.fetch({url:'https://worker.example/'}, {}, {});
+  }
+  const instance = new WebAssembly.Instance(fixture, context.probeImports);
+  return [instance.exports.raw_badf(), instance.exports.raw_unsupported(),
+    instance.exports.molt_unsupported()];
+}
+(async () => {
+  for (const [kind, filename] of [['static', staticPath], ['split', splitPath]]) {
+    const source = fs.readFileSync(filename, 'utf8');
+    assert.deepEqual(await observe(source, kind), [8, 52, -38], kind);
+    // A plausible cross-domain substitution must fail the same independent oracle.
+    const crossed = source.replace('= GUEST_ERRNO;', '= WASI_ERRNO;');
+    assert.notEqual(crossed, source);
+    assert.notDeepEqual(await observe(crossed, kind), [8, 52, -38], `${kind} crossed domains`);
+  }
+  console.log('actual generated-worker error domains');
+})().catch(error => { console.error(error); process.exitCode=1; });
+""",
+        encoding="utf-8",
+    )
+    result = run_guarded_test_process(
+        [
+            "node",
+            str(script),
+            str(root),
+            str(static),
+            str(split),
+            str(fixture),
+            str(empty),
+        ],
+        cwd=root,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.descendants_closed
+    assert result.stdout.strip() == "actual generated-worker error domains"

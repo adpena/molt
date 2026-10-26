@@ -30,6 +30,12 @@ def generate_worker(
             "runtime_shutdown",
         )
     }
+    template = template.replace(
+        "{{SYNTHETIC_ERRNO}}", json.dumps(abi["synthetic_errno"])
+    )
+    template = template.replace(
+        "{{WASI_PREVIEW1_ERRNO}}", json.dumps(abi["wasi_preview1_errno"])
+    )
     template = template.replace("{{RUNTIME_LIFECYCLE}}", lifetime)
     template = template.replace(
         "{{RUNTIME_LIFETIME_EXPORTS}}", json.dumps(lifetime_exports)

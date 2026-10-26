@@ -1,6 +1,6 @@
 use crate::libc_compat as libc;
 use crate::*;
-use std::io::ErrorKind;
+use molt_runtime_platform::synthetic_errno::GuestErrno;
 use std::time::Duration;
 
 use super::address::{decode_sockaddr, encode_sockaddr};
@@ -309,13 +309,13 @@ pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
                     );
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "accept");
+                    return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "accept");
                 }
                 continue;
             }
@@ -362,10 +362,10 @@ pub extern "C" fn molt_socket_connect(_sock_bits: u64, _addr_bits: u64) -> u64 {
                 );
             }
             if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
-                if wait_err.kind() == ErrorKind::TimedOut {
+                if wait_err == GuestErrno::ETIMEDOUT {
                     return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                 }
-                return raise_os_error::<u64>(_py, wait_err, "connect");
+                return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "connect");
             }
             let rc = unsafe { crate::molt_socket_connect_ex_host(handle) };
             if rc == 0 {
@@ -422,14 +422,13 @@ pub extern "C" fn molt_socket_connect_ex(_sock_bits: u64, _addr_bits: u64) -> u6
                 return MoltObject::from_int(errno as i64).bits();
             }
             if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
-                if wait_err.kind() == ErrorKind::TimedOut {
+                if wait_err == GuestErrno::ETIMEDOUT {
                     return MoltObject::from_int(libc::ETIMEDOUT as i64).bits();
                 }
-                if wait_err.kind() == ErrorKind::WouldBlock {
+                if wait_err == GuestErrno::EAGAIN {
                     return MoltObject::from_int(libc::EINPROGRESS as i64).bits();
                 }
-                return MoltObject::from_int(wait_err.raw_os_error().unwrap_or(libc::EIO) as i64)
-                    .bits();
+                return MoltObject::from_int(i64::from(wait_err.code())).bits();
             }
             let rc = unsafe { crate::molt_socket_connect_ex_host(handle) };
             let err = errno_from_rc(rc);
@@ -486,13 +485,13 @@ pub extern "C" fn molt_socket_recv(_sock_bits: u64, _size_bits: u64, _flags_bits
                     return raise_os_error_errno::<u64>(_py, errno as i64, "recv: would block");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "recv");
+                    return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "recv");
                 }
                 continue;
             }
@@ -544,13 +543,17 @@ pub extern "C" fn molt_socket_recv_into(
                     return raise_os_error_errno::<u64>(_py, errno as i64, "recv_into");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "recv_into");
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        i64::from(wait_err.code()),
+                        "recv_into",
+                    );
                 }
                 continue;
             }
@@ -602,13 +605,13 @@ pub extern "C" fn molt_socket_send(_sock_bits: u64, _data_bits: u64, _flags_bits
                     return raise_os_error_errno::<u64>(_py, errno as i64, "send");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "send");
+                    return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "send");
                 }
                 continue;
             }
@@ -664,13 +667,13 @@ pub extern "C" fn molt_socket_sendall(_sock_bits: u64, _data_bits: u64, _flags_b
                     return raise_os_error_errno::<u64>(_py, errno as i64, "sendall");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "sendall");
+                    return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "sendall");
                 }
                 continue;
             }
@@ -743,13 +746,13 @@ pub extern "C" fn molt_socket_sendto(
                     return raise_os_error_errno::<u64>(_py, errno as i64, "sendto");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "sendto");
+                    return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "sendto");
                 }
                 continue;
             }
@@ -827,13 +830,17 @@ pub extern "C" fn molt_socket_recvfrom(_sock_bits: u64, _size_bits: u64, _flags_
                     return raise_os_error_errno::<u64>(_py, errno as i64, "recvfrom");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "recvfrom");
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        i64::from(wait_err.code()),
+                        "recvfrom",
+                    );
                 }
                 continue;
             }
@@ -905,13 +912,17 @@ pub extern "C" fn molt_socket_recvfrom_into(
                     return raise_os_error_errno::<u64>(_py, errno as i64, "recvfrom_into");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "recvfrom_into");
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        i64::from(wait_err.code()),
+                        "recvfrom_into",
+                    );
                 }
                 continue;
             }
@@ -1003,13 +1014,13 @@ pub extern "C" fn molt_socket_sendmsg(
                     return raise_os_error_errno::<u64>(_py, errno as i64, "sendmsg");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "sendmsg");
+                    return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "sendmsg");
                 }
                 continue;
             }
@@ -1117,13 +1128,13 @@ pub extern "C" fn molt_socket_recvmsg(
                     return raise_os_error_errno::<u64>(_py, errno as i64, "recvmsg");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "recvmsg");
+                    return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "recvmsg");
                 }
                 continue;
             }
@@ -1237,13 +1248,17 @@ pub extern "C" fn molt_socket_recvmsg_into(
                     return raise_os_error_errno::<u64>(_py, errno as i64, "recvmsg_into");
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
-                    if wait_err.kind() == ErrorKind::TimedOut {
+                    if wait_err == GuestErrno::ETIMEDOUT {
                         return raise_exception::<u64>(_py, "TimeoutError", "timed out");
                     }
-                    if wait_err.kind() == ErrorKind::WouldBlock {
+                    if wait_err == GuestErrno::EAGAIN {
                         continue;
                     }
-                    return raise_os_error::<u64>(_py, wait_err, "recvmsg_into");
+                    return raise_os_error_errno::<u64>(
+                        _py,
+                        i64::from(wait_err.code()),
+                        "recvmsg_into",
+                    );
                 }
                 continue;
             }

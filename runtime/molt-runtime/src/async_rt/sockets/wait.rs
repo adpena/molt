@@ -87,33 +87,37 @@ pub(crate) fn socket_wait_ready_poll(
     Ok(())
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn guest_wait_result(
+    status: i32,
+) -> Result<(), molt_runtime_platform::synthetic_errno::GuestErrno> {
+    use molt_runtime_platform::synthetic_errno::GuestErrno;
+    if status == 0 {
+        return Ok(());
+    }
+    // Unknown statuses become an explicit guest I/O error, never a raw SDK
+    // integer or a synthetic std::io::Error.
+    Err(status
+        .checked_neg()
+        .and_then(GuestErrno::from_code)
+        .unwrap_or(GuestErrno::EIO))
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn socket_wait_ready(
     _py: &PyToken<'_>,
     handle: i64,
     events: u32,
-) -> Result<(), std::io::Error> {
-    let timeout = socket_timeout(handle);
-    if let Some(timeout) = timeout {
-        if timeout == Duration::ZERO {
-            return Err(std::io::Error::from_raw_os_error(libc::EWOULDBLOCK));
-        }
-        let ms = timeout.as_millis().min(i64::MAX as u128) as i64;
-        let rc = unsafe { crate::molt_socket_wait_host(handle, events, ms) };
-        if rc == 0 {
-            return Ok(());
-        }
-        if rc == -libc::ETIMEDOUT {
-            return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
-        }
-        return Err(std::io::Error::from_raw_os_error(-rc));
-    }
-    let rc = unsafe { crate::molt_socket_wait_host(handle, events, -1) };
-    if rc == 0 {
-        return Ok(());
-    }
-    if rc == -libc::ETIMEDOUT {
-        return Err(std::io::Error::new(ErrorKind::TimedOut, "timed out"));
-    }
-    Err(std::io::Error::from_raw_os_error(-rc))
+) -> Result<(), molt_runtime_platform::synthetic_errno::GuestErrno> {
+    use molt_runtime_platform::synthetic_errno::GuestErrno;
+    let timeout_ms = match socket_timeout(handle) {
+        Some(timeout) if timeout == Duration::ZERO => return Err(GuestErrno::EAGAIN),
+        Some(timeout) => timeout.as_millis().min(i64::MAX as u128) as i64,
+        None => -1,
+    };
+    let status = unsafe { crate::molt_socket_wait_host(handle, events, timeout_ms) };
+    guest_wait_result(status)
 }
+
+#[cfg(test)]
+mod tests;

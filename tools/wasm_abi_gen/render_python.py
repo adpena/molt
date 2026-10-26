@@ -13,6 +13,10 @@ from tools.wasm_abi_gen.manifest import (
     generator_external_native_artifact_function_signatures,
     generator_external_native_artifact_import_shapes,
     reserved_runtime_callable_base,
+    synthetic_errno_table,
+    resolver_error_table,
+    wasm_socket_constant_table,
+    wasi_errno_table,
 )
 
 
@@ -27,6 +31,29 @@ def render_py(
     _split_runtime_external_export_name: Callable[[str], str],
 ) -> str:
     lines: list[str] = [_header("#")]
+    lines.append(
+        "from collections.abc import Mapping\nfrom types import MappingProxyType\nfrom typing import Literal\n\n"
+    )
+    for constant, alias, values in (
+        ("WASM_SYNTHETIC_ERRNO", "WasmSyntheticErrnoName", synthetic_errno_table(data)),
+        ("WASM_RESOLVER_ERROR", "WasmResolverErrorName", resolver_error_table(data)),
+        (
+            "WASM_SOCKET_CONSTANTS",
+            "WasmSocketConstantName",
+            wasm_socket_constant_table(data),
+        ),
+        (
+            "WASM_WASI_PREVIEW1_ERRNO",
+            "WasmWasiPreview1ErrnoName",
+            wasi_errno_table(data),
+        ),
+    ):
+        lines.append(f"{alias} = Literal[\n")
+        lines.extend(f'    "{name}",\n' for name in values)
+        lines.append("]\n")
+        lines.append(f"{constant}: Mapping[{alias}, int] = MappingProxyType({{\n")
+        lines.extend(f'    "{name}": {value},\n' for name, value in values.items())
+        lines.append("})\n\n")
     reserved_callables = _shared_runtime_callables(data)
     non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
     lines.append(

@@ -197,6 +197,16 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
     errno: i64,
     message: &str,
 ) -> T {
+    let class_bits = exception_type_bits_from_name(_py, "OSError");
+    raise_os_error_errno_with_class(_py, class_bits, errno, message)
+}
+
+pub(crate) fn raise_os_error_errno_with_class<T: ExceptionSentinel>(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    errno: i64,
+    message: &str,
+) -> T {
     let errno_bits = MoltObject::from_int(errno).bits();
     let msg_ptr = alloc_string(_py, message.as_bytes());
     if msg_ptr.is_null() {
@@ -209,7 +219,6 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
         return T::exception_sentinel();
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    let class_bits = exception_type_bits_from_name(_py, "OSError");
     let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
     dec_ref_bits(_py, args_bits);
     if !ptr.is_null() {
@@ -223,6 +232,9 @@ pub(crate) fn raise_os_error<T: ExceptionSentinel>(
     err: std::io::Error,
     context: &str,
 ) -> T {
+    #[cfg(target_arch = "wasm32")]
+    let errno = molt_runtime_platform::synthetic_errno::from_io_error(&err).code() as i64;
+    #[cfg(not(target_arch = "wasm32"))]
     let errno = err
         .raw_os_error()
         .map(|val| val as i64)

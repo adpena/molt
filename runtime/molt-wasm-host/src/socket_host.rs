@@ -1,14 +1,53 @@
 use super::*;
+mod abi;
+use abi::*;
 
 type AddrInfoEntry = (i32, i32, i32, Vec<u8>, Vec<u8>);
+
+#[derive(Debug)]
+enum HostResolverError {
+    Failure(guest_errno::ResolverFailure),
+    InvalidNativeStatus(guest_errno::InvalidNativeResolverStatus),
+    UnsupportedNativeCode(guest_errno::UnknownNativeResolverError),
+}
+impl From<GuestResolverError> for HostResolverError {
+    fn from(error: GuestResolverError) -> Self {
+        Self::Failure(error.into())
+    }
+}
+fn host_resolver_failure(code: i32, system_error: std::io::Error) -> HostResolverError {
+    use guest_errno::{NativeResolverError, ResolverFailure};
+    match guest_errno::from_native_resolver_error(code) {
+        Ok(NativeResolverError::System) => {
+            HostResolverError::Failure(ResolverFailure::System(map_io_error(&system_error)))
+        }
+        Ok(NativeResolverError::Resolver(code)) => {
+            match guest_errno::project_guest_resolver_error(code) {
+                Ok(error) => HostResolverError::Failure(ResolverFailure::Resolver(error)),
+                Err(error) => HostResolverError::UnsupportedNativeCode(error),
+            }
+        }
+        Err(error) => HostResolverError::InvalidNativeStatus(error),
+    }
+}
 
 fn decode_sockaddr(buf: &[u8]) -> Result<SockAddr> {
     if buf.len() < 4 {
         bail!("sockaddr buffer too small");
     }
     let family = u16::from_le_bytes([buf[0], buf[1]]) as i32;
+    use guest_socket_abi::GuestAddressFamily as Family;
+    let family = match Family::from_wire(family) {
+        Some(family) => family,
+        None => bail!("unknown guest address family"),
+    };
+    let family = match family {
+        Family::AF_INET => guest_socket_abi::AF_INET,
+        Family::AF_INET6 => guest_socket_abi::AF_INET6,
+        Family::AF_UNIX | Family::AF_UNSPEC => bail!("unsupported guest sockaddr family"),
+    };
     let port = u16::from_le_bytes([buf[2], buf[3]]);
-    if family == HOST_AF_INET {
+    if family == guest_socket_abi::AF_INET {
         if buf.len() < 8 {
             bail!("invalid IPv4 sockaddr");
         }
@@ -17,7 +56,7 @@ fn decode_sockaddr(buf: &[u8]) -> Result<SockAddr> {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(octets), port));
         return Ok(SockAddr::from(addr));
     }
-    if family == HOST_AF_INET6 {
+    if family == guest_socket_abi::AF_INET6 {
         if buf.len() < 28 {
             bail!("invalid IPv6 sockaddr");
         }
@@ -43,12 +82,12 @@ fn encode_sockaddr(addr: &SockAddr) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     match socket_addr {
         SocketAddr::V4(addr) => {
-            out.extend_from_slice(&(HOST_AF_INET as u16).to_le_bytes());
+            out.extend_from_slice(&(guest_socket_abi::AF_INET as u16).to_le_bytes());
             out.extend_from_slice(&addr.port().to_le_bytes());
             out.extend_from_slice(&addr.ip().octets());
         }
         SocketAddr::V6(addr) => {
-            out.extend_from_slice(&(HOST_AF_INET6 as u16).to_le_bytes());
+            out.extend_from_slice(&(guest_socket_abi::AF_INET6 as u16).to_le_bytes());
             out.extend_from_slice(&addr.port().to_le_bytes());
             out.extend_from_slice(&addr.flowinfo().to_le_bytes());
             out.extend_from_slice(&addr.scope_id().to_le_bytes());
@@ -81,7 +120,9 @@ fn host_getaddrinfo_payload(
     sock_type: i32,
     proto: i32,
     flags: i32,
-) -> std::result::Result<Vec<u8>, i32> {
+) -> std::result::Result<Vec<u8>, HostResolverError> {
+    let (family, sock_type, proto, flags) =
+        native_resolver_arguments(family, sock_type, proto, flags)?;
     let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
     hints.ai_family = family;
     hints.ai_socktype = sock_type;
@@ -97,7 +138,9 @@ fn host_getaddrinfo_payload(
         )
     };
     if err != 0 {
-        return Err(err);
+        // EAI_SYSTEM refers to this call's OS error, captured before any helper.
+        let system_error = std::io::Error::last_os_error();
+        return Err(host_resolver_failure(err, system_error));
     }
     let mut entries: Vec<AddrInfoEntry> = Vec::new();
     let mut cur = res;
@@ -107,7 +150,7 @@ fn host_getaddrinfo_payload(
             cur = ai.ai_next;
             continue;
         }
-        if ai.ai_family != HOST_AF_INET && ai.ai_family != HOST_AF_INET6 {
+        if ai.ai_family != libc::AF_INET && ai.ai_family != libc::AF_INET6 {
             cur = ai.ai_next;
             continue;
         }
@@ -136,7 +179,11 @@ fn host_getaddrinfo_payload(
             Vec::new()
         };
         entries.push((
-            ai.ai_family,
+            if sockaddr.as_socket().is_some_and(|addr| addr.is_ipv6()) {
+                guest_socket_abi::AF_INET6
+            } else {
+                guest_socket_abi::AF_INET
+            },
             ai.ai_socktype,
             ai.ai_protocol,
             canon,
@@ -145,6 +192,10 @@ fn host_getaddrinfo_payload(
         cur = ai.ai_next;
     }
     unsafe { libc::freeaddrinfo(res) };
+    for (_, kind, protocol, _, _) in &mut entries {
+        *kind = guest_resolver_type(*kind)?;
+        *protocol = guest_resolver_protocol(*protocol)?;
+    }
     Ok(encode_addrinfo_entries(entries))
 }
 
@@ -156,7 +207,9 @@ fn host_getaddrinfo_payload(
     sock_type: i32,
     proto: i32,
     flags: i32,
-) -> std::result::Result<Vec<u8>, i32> {
+) -> std::result::Result<Vec<u8>, HostResolverError> {
+    let (family, sock_type, proto, flags) =
+        native_resolver_arguments(family, sock_type, proto, flags)?;
     let mut hints = winsock::ADDRINFOA {
         ai_flags: flags,
         ai_family: family,
@@ -181,7 +234,9 @@ fn host_getaddrinfo_payload(
         )
     };
     if err != 0 {
-        return Err(err);
+        // EAI_SYSTEM refers to this call's OS error, captured before any helper.
+        let system_error = std::io::Error::last_os_error();
+        return Err(host_resolver_failure(err, system_error));
     }
     let mut entries: Vec<AddrInfoEntry> = Vec::new();
     let mut cur = res;
@@ -191,7 +246,7 @@ fn host_getaddrinfo_payload(
             cur = ai.ai_next;
             continue;
         }
-        if ai.ai_family != HOST_AF_INET && ai.ai_family != HOST_AF_INET6 {
+        if ai.ai_family != winsock::AF_INET as i32 && ai.ai_family != winsock::AF_INET6 as i32 {
             cur = ai.ai_next;
             continue;
         }
@@ -220,7 +275,11 @@ fn host_getaddrinfo_payload(
             Vec::new()
         };
         entries.push((
-            ai.ai_family,
+            if sockaddr.as_socket().is_some_and(|addr| addr.is_ipv6()) {
+                guest_socket_abi::AF_INET6
+            } else {
+                guest_socket_abi::AF_INET
+            },
             ai.ai_socktype,
             ai.ai_protocol,
             canon,
@@ -229,15 +288,19 @@ fn host_getaddrinfo_payload(
         cur = ai.ai_next;
     }
     unsafe { winsock::freeaddrinfo(res) };
+    for (_, kind, protocol, _, _) in &mut entries {
+        *kind = guest_resolver_type(*kind)?;
+        *protocol = guest_resolver_protocol(*protocol)?;
+    }
     Ok(encode_addrinfo_entries(entries))
 }
 
 #[cfg(unix)]
-fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, i32> {
+fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, GuestErrno> {
     let mut buf = vec![0u8; 256];
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
     if rc != 0 {
-        return Err(map_io_error(&std::io::Error::last_os_error()));
+        return Err(last_socket_error());
     }
     let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     buf.truncate(len);
@@ -245,11 +308,11 @@ fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, i32> {
 }
 
 #[cfg(windows)]
-fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, i32> {
+fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, GuestErrno> {
     let mut buf = vec![0u8; 256];
     let rc = unsafe { winsock::gethostname(buf.as_mut_ptr(), buf.len() as i32) };
     if rc != 0 {
-        return Err(map_io_error(&std::io::Error::last_os_error()));
+        return Err(last_socket_error());
     }
     let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     buf.truncate(len);
@@ -260,7 +323,7 @@ fn host_gethostname_bytes() -> std::result::Result<Vec<u8>, i32> {
 fn host_getservbyname_port(
     name_cstr: &CString,
     proto_cstr: Option<&CString>,
-) -> std::result::Result<i32, i32> {
+) -> std::result::Result<i32, GuestErrno> {
     let serv = unsafe {
         libc::getservbyname(
             name_cstr.as_ptr(),
@@ -268,7 +331,7 @@ fn host_getservbyname_port(
         )
     };
     if serv.is_null() {
-        return Err(libc::ENOENT);
+        return Err(GuestErrno::ENOENT);
     }
     Ok(unsafe { libc::ntohs((*serv).s_port as u16) as i32 })
 }
@@ -277,7 +340,7 @@ fn host_getservbyname_port(
 fn host_getservbyname_port(
     name_cstr: &CString,
     proto_cstr: Option<&CString>,
-) -> std::result::Result<i32, i32> {
+) -> std::result::Result<i32, GuestErrno> {
     let serv = unsafe {
         winsock::getservbyname(
             name_cstr.as_ptr().cast(),
@@ -287,7 +350,7 @@ fn host_getservbyname_port(
         )
     };
     if serv.is_null() {
-        return Err(libc::ENOENT);
+        return Err(GuestErrno::ENOENT);
     }
     Ok(unsafe { winsock::ntohs((*serv).s_port as u16) as i32 })
 }
@@ -296,7 +359,7 @@ fn host_getservbyname_port(
 fn host_getservbyport_name(
     port: i32,
     proto_cstr: Option<&CString>,
-) -> std::result::Result<Vec<u8>, i32> {
+) -> std::result::Result<Vec<u8>, GuestErrno> {
     let serv = unsafe {
         libc::getservbyport(
             libc::htons(port as u16) as i32,
@@ -304,7 +367,7 @@ fn host_getservbyport_name(
         )
     };
     if serv.is_null() {
-        return Err(libc::ENOENT);
+        return Err(GuestErrno::ENOENT);
     }
     Ok(unsafe { CStr::from_ptr((*serv).s_name) }
         .to_bytes()
@@ -315,7 +378,7 @@ fn host_getservbyport_name(
 fn host_getservbyport_name(
     port: i32,
     proto_cstr: Option<&CString>,
-) -> std::result::Result<Vec<u8>, i32> {
+) -> std::result::Result<Vec<u8>, GuestErrno> {
     let serv = unsafe {
         winsock::getservbyport(
             winsock::htons(port as u16) as i32,
@@ -325,24 +388,24 @@ fn host_getservbyport_name(
         )
     };
     if serv.is_null() {
-        return Err(libc::ENOENT);
+        return Err(GuestErrno::ENOENT);
     }
     Ok(unsafe { CStr::from_ptr((*serv).s_name.cast()) }
         .to_bytes()
         .to_vec())
 }
 
-fn socket_get_mut(state: &mut HostState, handle: i64) -> Result<&mut Socket, i32> {
+fn socket_get_mut(state: &mut HostState, handle: i64) -> Result<&mut Socket, GuestErrno> {
     if handle <= 0 {
-        return Err(libc::EBADF);
+        return Err(GuestErrno::EBADF);
     }
     state
         .socket_manager
         .get_mut(handle as u64)
-        .ok_or(libc::EBADF)
+        .ok_or(GuestErrno::EBADF)
 }
 
-fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, i32> {
+fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, GuestErrno> {
     let mut poll_events: i16 = 0;
     if (events & 1) != 0 {
         poll_events |= HOST_POLLIN;
@@ -363,7 +426,7 @@ fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, i32
         };
         let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
         if rc < 0 {
-            return Err(map_io_error(&std::io::Error::last_os_error()));
+            return Err(last_socket_error());
         }
         if rc == 0 {
             return Ok(0);
@@ -395,7 +458,7 @@ fn poll_socket(socket: &Socket, events: u32, timeout_ms: i32) -> Result<u32, i32
         };
         let rc = unsafe { winsock::WSAPoll(&mut pfd, 1, timeout_ms) };
         if rc < 0 {
-            return Err(map_io_error(&std::io::Error::last_os_error()));
+            return Err(last_socket_error());
         }
         if rc == 0 {
             return Ok(0);
@@ -431,26 +494,33 @@ pub(super) fn define_socket_host(
          proto: i32,
          fileno: i64|
          -> i64 {
+            use guest_socket_abi::GuestAddressFamily as Family;
+            let family = match Family::from_wire(family) {
+                Some(family) => family,
+                None => return -(GuestErrno::EAFNOSUPPORT as i64),
+            };
             let domain = match family {
-                x if x == HOST_AF_INET => Domain::IPV4,
-                x if x == HOST_AF_INET6 => Domain::IPV6,
-                x if x == HOST_AF_UNIX => {
+                Family::AF_INET => Domain::IPV4,
+                Family::AF_INET6 => Domain::IPV6,
+                Family::AF_UNIX => {
                     #[cfg(unix)]
                     {
                         Domain::UNIX
                     }
                     #[cfg(not(unix))]
                     {
-                        return -(libc::EAFNOSUPPORT as i64);
+                        return -(GuestErrno::EAFNOSUPPORT as i64);
                     }
                 }
-                _ => return -(libc::EAFNOSUPPORT as i64),
+                Family::AF_UNSPEC => return -(GuestErrno::EAFNOSUPPORT as i64),
             };
-            let ty = Type::from(sock_type);
-            let protocol = if proto == 0 {
-                None
-            } else {
-                Some(Protocol::from(proto))
+            let ty = match native_type(sock_type) {
+                Ok(kind) => Type::from(kind),
+                Err(error) => return -(error as i64),
+            };
+            let protocol = match native_protocol(proto) {
+                Ok(protocol) => protocol,
+                Err(error) => return -(error as i64),
             };
             let socket = if fileno >= 0 {
                 #[cfg(unix)]
@@ -483,7 +553,7 @@ pub(super) fn define_socket_host(
                 .remove(handle as u64)
                 .is_none()
             {
-                return -libc::EBADF;
+                return -GuestErrno::EBADF;
             }
             0
         },
@@ -511,15 +581,15 @@ pub(super) fn define_socket_host(
         |mut caller: Caller<'_, HostState>, handle: i64, addr_ptr: i32, addr_len: i32| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let addr_bytes = match read_bytes(&mut caller, &memory, addr_ptr, addr_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let addr = match decode_sockaddr(&addr_bytes) {
                 Ok(addr) => addr,
-                Err(_) => return -libc::EAFNOSUPPORT,
+                Err(_) => return -GuestErrno::EAFNOSUPPORT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -554,7 +624,7 @@ pub(super) fn define_socket_host(
          -> i64 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -(libc::EFAULT as i64),
+                Err(_) => return -(GuestErrno::EFAULT as i64),
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -570,10 +640,10 @@ pub(super) fn define_socket_host(
             let encoded = encode_sockaddr(&addr).unwrap_or_default();
             if encoded.len() > addr_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
-                return -(libc::ENOMEM as i64);
+                return -(GuestErrno::ENOMEM as i64);
             }
             if write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err() {
-                return -(libc::EFAULT as i64);
+                return -(GuestErrno::EFAULT as i64);
             }
             let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
             let id = caller.data_mut().socket_manager.insert(accepted);
@@ -585,15 +655,15 @@ pub(super) fn define_socket_host(
         |mut caller: Caller<'_, HostState>, handle: i64, addr_ptr: i32, addr_len: i32| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let addr_bytes = match read_bytes(&mut caller, &memory, addr_ptr, addr_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let addr = match decode_sockaddr(&addr_bytes) {
                 Ok(addr) => addr,
-                Err(_) => return -libc::EAFNOSUPPORT,
+                Err(_) => return -GuestErrno::EAFNOSUPPORT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -614,8 +684,8 @@ pub(super) fn define_socket_host(
             };
             match socket.take_error() {
                 Ok(None) => 0,
-                Ok(Some(err)) => map_io_error(&err),
-                Err(err) => map_io_error(&err),
+                Ok(Some(err)) => map_io_error(&err).code(),
+                Err(err) => map_io_error(&err).code(),
             }
         },
     );
@@ -627,9 +697,13 @@ pub(super) fn define_socket_host(
          buf_len: i32,
          flags: i32|
          -> i32 {
+            let flags = match native_message_flags(flags, MessageDirection::Receive) {
+                Ok(flags) => flags,
+                Err(error) => return -error,
+            };
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -640,7 +714,7 @@ pub(super) fn define_socket_host(
                 Ok(n) => {
                     let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), n) };
                     if write_bytes(&mut caller, &memory, buf_ptr, bytes).is_err() {
-                        return -libc::EFAULT;
+                        return -GuestErrno::EFAULT;
                     }
                     n as i32
                 }
@@ -656,13 +730,17 @@ pub(super) fn define_socket_host(
          buf_len: i32,
          flags: i32|
          -> i32 {
+            let flags = match native_message_flags(flags, MessageDirection::Send) {
+                Ok(flags) => flags,
+                Err(error) => return -error,
+            };
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let data = match read_bytes(&mut caller, &memory, buf_ptr, buf_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -684,21 +762,25 @@ pub(super) fn define_socket_host(
          addr_ptr: i32,
          addr_len: i32|
          -> i32 {
+            let flags = match native_message_flags(flags, MessageDirection::Send) {
+                Ok(flags) => flags,
+                Err(error) => return -error,
+            };
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let data = match read_bytes(&mut caller, &memory, buf_ptr, buf_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let addr_bytes = match read_bytes(&mut caller, &memory, addr_ptr, addr_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let addr = match decode_sockaddr(&addr_bytes) {
                 Ok(addr) => addr,
-                Err(_) => return -libc::EAFNOSUPPORT,
+                Err(_) => return -GuestErrno::EAFNOSUPPORT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -722,22 +804,26 @@ pub(super) fn define_socket_host(
          anc_ptr: i32,
          anc_len: i32|
          -> i32 {
+            let flags = match native_message_flags(flags, MessageDirection::Send) {
+                Ok(flags) => flags,
+                Err(error) => return -error,
+            };
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let data = match read_bytes(&mut caller, &memory, buf_ptr, buf_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let addr = if addr_len > 0 {
                 let addr_bytes = match read_bytes(&mut caller, &memory, addr_ptr, addr_len) {
                     Ok(buf) => buf,
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 };
                 match decode_sockaddr(&addr_bytes) {
                     Ok(addr) => Some(addr),
-                    Err(_) => return -libc::EAFNOSUPPORT,
+                    Err(_) => return -GuestErrno::EAFNOSUPPORT,
                 }
             } else {
                 None
@@ -745,7 +831,7 @@ pub(super) fn define_socket_host(
             let ancillary = if anc_len > 0 {
                 match read_bytes(&mut caller, &memory, anc_ptr, anc_len) {
                     Ok(buf) => buf,
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 }
             } else {
                 Vec::new()
@@ -759,7 +845,7 @@ pub(super) fn define_socket_host(
             #[cfg(windows)]
             {
                 let _ = (socket, data, addr, ancillary, flags);
-                -libc::ENOSYS
+                -GuestErrno::ENOSYS
             }
             #[cfg(unix)]
             {
@@ -781,7 +867,7 @@ pub(super) fn define_socket_host(
                         msg.msg_controllen =
                             match molt_runtime_platform::msghdr::msg_controllen(ancillary.len()) {
                                 Some(len) => len,
-                                None => return -libc::EOVERFLOW,
+                                None => return -GuestErrno::EOVERFLOW,
                             };
                     }
                     unsafe { libc::sendmsg(fd, &msg as *const libc::msghdr, flags) }
@@ -789,7 +875,7 @@ pub(super) fn define_socket_host(
                 if rc >= 0 {
                     return rc as i32;
                 }
-                -map_io_error(&std::io::Error::last_os_error())
+                -last_socket_error()
             }
         },
     );
@@ -804,9 +890,13 @@ pub(super) fn define_socket_host(
          addr_cap: i32,
          out_len_ptr: i32|
          -> i32 {
+            let flags = match native_message_flags(flags, MessageDirection::Receive) {
+                Ok(flags) => flags,
+                Err(error) => return -error,
+            };
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -817,15 +907,15 @@ pub(super) fn define_socket_host(
                 Ok((n, addr)) => {
                     let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), n) };
                     if write_bytes(&mut caller, &memory, buf_ptr, bytes).is_err() {
-                        return -libc::EFAULT;
+                        return -GuestErrno::EFAULT;
                     }
                     let encoded = encode_sockaddr(&addr).unwrap_or_default();
                     if encoded.len() > addr_cap as usize {
                         let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
-                        return -libc::ENOMEM;
+                        return -GuestErrno::ENOMEM;
                     }
                     if write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err() {
-                        return -libc::EFAULT;
+                        return -GuestErrno::EFAULT;
                     }
                     let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
                     n as i32
@@ -849,9 +939,13 @@ pub(super) fn define_socket_host(
          out_anc_len_ptr: i32,
          out_msg_flags_ptr: i32|
          -> i32 {
+            let flags = match native_message_flags(flags, MessageDirection::Receive) {
+                Ok(flags) => flags,
+                Err(error) => return -error,
+            };
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -881,7 +975,7 @@ pub(super) fn define_socket_host(
                 if out_msg_flags_ptr != 0 {
                     let _ = write_u32(&mut caller, &memory, out_msg_flags_ptr, 0);
                 }
-                -libc::ENOSYS
+                -GuestErrno::ENOSYS
             }
             #[cfg(unix)]
             {
@@ -905,24 +999,24 @@ pub(super) fn define_socket_host(
                         msg.msg_controllen =
                             match molt_runtime_platform::msghdr::msg_controllen(ancillary.len()) {
                                 Some(len) => len,
-                                None => return -libc::EOVERFLOW,
+                                None => return -GuestErrno::EOVERFLOW,
                             };
                     }
                     let rc = unsafe { libc::recvmsg(fd, &mut msg as *mut libc::msghdr, flags) };
                     name_len = msg.msg_namelen;
+                    let msg_flags = match guest_message_result_flags(msg.msg_flags) {
+                        Ok(flags) => flags,
+                        Err(error) => return -error,
+                    };
                     if out_msg_flags_ptr != 0 {
-                        let _ = write_u32(
-                            &mut caller,
-                            &memory,
-                            out_msg_flags_ptr,
-                            msg.msg_flags as u32,
-                        );
+                        let _ =
+                            write_u32(&mut caller, &memory, out_msg_flags_ptr, msg_flags as u32);
                     }
                     if out_anc_len_ptr != 0 {
                         let Some(guest_anc_len) =
                             molt_runtime_platform::msghdr::control_len_u32(msg.msg_controllen)
                         else {
-                            return -libc::EOVERFLOW;
+                            return -GuestErrno::EOVERFLOW;
                         };
                         let _ = write_u32(&mut caller, &memory, out_anc_len_ptr, guest_anc_len);
                     }
@@ -931,7 +1025,7 @@ pub(super) fn define_socket_host(
                 if rc >= 0 {
                     let n = rc as usize;
                     if write_bytes(&mut caller, &memory, buf_ptr, &buf[..n]).is_err() {
-                        return -libc::EFAULT;
+                        return -GuestErrno::EFAULT;
                     }
                     let mut addr_storage = SockAddrStorage::zeroed();
                     unsafe {
@@ -944,23 +1038,23 @@ pub(super) fn define_socket_host(
                             write_u32(&mut caller, &memory, out_addr_len_ptr, encoded.len() as u32);
                     }
                     if encoded.len() > addr_cap.max(0) as usize {
-                        return -libc::ENOMEM;
+                        return -GuestErrno::ENOMEM;
                     }
                     if !encoded.is_empty()
                         && write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err()
                     {
-                        return -libc::EFAULT;
+                        return -GuestErrno::EFAULT;
                     }
                     let anc_len_usize = ancillary.len().min(anc_cap.max(0) as usize);
                     if anc_len_usize > 0
                         && write_bytes(&mut caller, &memory, anc_ptr, &ancillary[..anc_len_usize])
                             .is_err()
                     {
-                        return -libc::EFAULT;
+                        return -GuestErrno::EFAULT;
                     }
                     return n as i32;
                 }
-                -map_io_error(&std::io::Error::last_os_error())
+                -last_socket_error()
             }
         },
     );
@@ -971,10 +1065,14 @@ pub(super) fn define_socket_host(
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
+            let how = match guest_socket_abi::GuestShutdown::from_wire(how) {
+                Some(how) => how,
+                None => return -GuestErrno::EINVAL,
+            };
             let how = match how {
-                x if x == HOST_SHUT_RD => std::net::Shutdown::Read,
-                x if x == HOST_SHUT_WR => std::net::Shutdown::Write,
-                _ => std::net::Shutdown::Both,
+                guest_socket_abi::GuestShutdown::SHUT_RD => std::net::Shutdown::Read,
+                guest_socket_abi::GuestShutdown::SHUT_WR => std::net::Shutdown::Write,
+                guest_socket_abi::GuestShutdown::SHUT_RDWR => std::net::Shutdown::Both,
             };
             match socket.shutdown(how) {
                 Ok(()) => 0,
@@ -992,7 +1090,7 @@ pub(super) fn define_socket_host(
          -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -1005,10 +1103,10 @@ pub(super) fn define_socket_host(
             let encoded = encode_sockaddr(&addr).unwrap_or_default();
             if encoded.len() > addr_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
-                return -libc::ENOMEM;
+                return -GuestErrno::ENOMEM;
             }
             if write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err() {
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
             0
@@ -1024,7 +1122,7 @@ pub(super) fn define_socket_host(
          -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
@@ -1037,10 +1135,10 @@ pub(super) fn define_socket_host(
             let encoded = encode_sockaddr(&addr).unwrap_or_default();
             if encoded.len() > addr_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
-                return -libc::ENOMEM;
+                return -GuestErrno::ENOMEM;
             }
             if write_bytes(&mut caller, &memory, addr_ptr, &encoded).is_err() {
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             let _ = write_u32(&mut caller, &memory, out_len_ptr, encoded.len() as u32);
             0
@@ -1055,18 +1153,33 @@ pub(super) fn define_socket_host(
          val_ptr: i32,
          val_len: i32|
          -> i32 {
+            let option = match native_socket_option(level, optname) {
+                Ok(option) => option,
+                Err(error) => return -error,
+            };
+            let (level, optname) = option.native();
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let data = match read_bytes(&mut caller, &memory, val_ptr, val_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
+            if matches!(option, SocketOption::Linger) {
+                let duration = match decode_guest_linger(&data) {
+                    Ok(duration) => duration,
+                    Err(error) => return -error,
+                };
+                return match socket.set_linger(duration) {
+                    Ok(()) => 0,
+                    Err(error) => -map_io_error(&error),
+                };
+            }
             let rc = {
                 #[cfg(unix)]
                 {
@@ -1095,11 +1208,7 @@ pub(super) fn define_socket_host(
                     }
                 }
             };
-            if rc == 0 {
-                0
-            } else {
-                -map_io_error(&std::io::Error::last_os_error())
-            }
+            if rc == 0 { 0 } else { -last_socket_error() }
         },
     );
     let socket_getsockopt = Func::wrap(
@@ -1112,15 +1221,56 @@ pub(super) fn define_socket_host(
          val_len: i32,
          out_len_ptr: i32|
          -> i32 {
+            let option = match native_socket_option(level, optname) {
+                Ok(option) => option,
+                Err(error) => return -error,
+            };
+            let (level, optname) = option.native();
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let socket = match socket_get_mut(caller.data_mut(), handle) {
                 Ok(sock) => sock,
                 Err(errno) => return -errno,
             };
-            let mut buf = vec![0u8; val_len.max(0) as usize];
+            if matches!(option, SocketOption::Error) {
+                if val_len < 4 {
+                    let _ = write_u32(&mut caller, &memory, out_len_ptr, 4);
+                    return -GuestErrno::ENOMEM;
+                }
+                let error = match socket.take_error() {
+                    Ok(None) => 0,
+                    Ok(Some(error)) => map_io_error(&error).code(),
+                    Err(error) => return -map_io_error(&error),
+                };
+                if write_bytes(&mut caller, &memory, val_ptr, &error.to_le_bytes()).is_err() {
+                    return -GuestErrno::EFAULT;
+                }
+                let _ = write_u32(&mut caller, &memory, out_len_ptr, 4);
+                return 0;
+            }
+            if matches!(option, SocketOption::Linger) {
+                let duration = match socket.linger() {
+                    Ok(duration) => duration,
+                    Err(error) => return -map_io_error(&error),
+                };
+                let data = match encode_guest_linger(duration) {
+                    Ok(data) => data,
+                    Err(error) => return -error,
+                };
+                if val_len < 0 {
+                    return -GuestErrno::EINVAL;
+                }
+                let length = (val_len as usize).min(data.len());
+                if write_bytes(&mut caller, &memory, val_ptr, &data[..length]).is_err() {
+                    return -GuestErrno::EFAULT;
+                }
+                let _ = write_u32(&mut caller, &memory, out_len_ptr, length as u32);
+                return 0;
+            }
+            let guest_capacity = val_len.max(0) as usize;
+            let mut buf = vec![0u8; guest_capacity];
             let mut len = buf.len() as socklen_t;
             let rc = {
                 #[cfg(unix)]
@@ -1151,12 +1301,14 @@ pub(super) fn define_socket_host(
                 }
             };
             if rc != 0 {
-                return -map_io_error(&std::io::Error::last_os_error());
+                return -last_socket_error();
             }
-            if write_bytes(&mut caller, &memory, val_ptr, &buf[..len as usize]).is_err() {
-                return -libc::EFAULT;
+            buf.truncate(len as usize);
+
+            if write_bytes(&mut caller, &memory, val_ptr, &buf).is_err() {
+                return -GuestErrno::EFAULT;
             }
-            let _ = write_u32(&mut caller, &memory, out_len_ptr, len as u32);
+            let _ = write_u32(&mut caller, &memory, out_len_ptr, buf.len() as u32);
             0
         },
     );
@@ -1165,7 +1317,7 @@ pub(super) fn define_socket_host(
         |mut caller: Caller<'_, HostState>, handle: i64| -> i64 {
             let socket = match caller.data_mut().socket_manager.remove(handle as u64) {
                 Some(sock) => sock,
-                None => return -(libc::EBADF as i64),
+                None => return -(GuestErrno::EBADF as i64),
             };
             #[cfg(unix)]
             {
@@ -1183,7 +1335,7 @@ pub(super) fn define_socket_host(
         &mut *store,
         |_caller: Caller<'_, HostState>, fd: i64| -> i32 {
             if fd < 0 {
-                return -libc::EBADF;
+                return -GuestErrno::EBADF;
             }
             #[cfg(unix)]
             {
@@ -1205,9 +1357,11 @@ pub(super) fn define_socket_host(
                     if rc == 0 {
                         return 0;
                     }
-                    return -map_io_error(&std::io::Error::last_os_error());
+                    return -guest_errno::from_native_errno(unsafe {
+                        *molt_runtime_platform::windows_abi::_errno()
+                    });
                 }
-                -(sock_err as i32)
+                -guest_errno::from_native_errno(sock_err)
             }
         },
     );
@@ -1223,26 +1377,33 @@ pub(super) fn define_socket_host(
             #[cfg(not(unix))]
             {
                 let _ = (family, sock_type, proto, out_left_ptr, out_right_ptr);
-                -libc::ENOSYS
+                -GuestErrno::ENOSYS
             }
             #[cfg(unix)]
             {
                 let mut caller = _caller;
                 let memory = match ensure_memory(&mut caller) {
                     Ok(mem) => mem,
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
+                };
+                use guest_socket_abi::GuestAddressFamily as Family;
+                let family = match Family::from_wire(family) {
+                    Some(family) => family,
+                    None => return -GuestErrno::EAFNOSUPPORT,
                 };
                 let domain = match family {
-                    x if x == HOST_AF_UNIX => Domain::UNIX,
-                    x if x == HOST_AF_INET => Domain::IPV4,
-                    x if x == HOST_AF_INET6 => Domain::IPV6,
-                    _ => return -libc::EAFNOSUPPORT,
+                    Family::AF_UNIX => Domain::UNIX,
+                    Family::AF_INET => Domain::IPV4,
+                    Family::AF_INET6 => Domain::IPV6,
+                    Family::AF_UNSPEC => return -GuestErrno::EAFNOSUPPORT,
                 };
-                let ty = Type::from(sock_type);
-                let protocol = if proto == 0 {
-                    None
-                } else {
-                    Some(Protocol::from(proto))
+                let ty = match native_type(sock_type) {
+                    Ok(kind) => Type::from(kind),
+                    Err(error) => return -error,
+                };
+                let protocol = match native_protocol(proto) {
+                    Ok(protocol) => protocol,
+                    Err(error) => return -error,
                 };
                 let (left, right) = match Socket::pair(domain, ty, protocol) {
                     Ok(pair) => pair,
@@ -1272,15 +1433,15 @@ pub(super) fn define_socket_host(
          out_ptr: i32,
          out_cap: i32,
          out_len_ptr: i32|
-         -> i32 {
+         -> Result<i32> {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return Ok(-GuestErrno::EFAULT),
             };
             let host = if host_len > 0 {
                 match read_bytes(&mut caller, &memory, host_ptr, host_len) {
                     Ok(buf) => Some(buf),
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return Ok(-GuestErrno::EFAULT),
                 }
             } else {
                 None
@@ -1288,7 +1449,7 @@ pub(super) fn define_socket_host(
             let service = if serv_len > 0 {
                 match read_bytes(&mut caller, &memory, serv_ptr, serv_len) {
                     Ok(buf) => Some(buf),
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return Ok(-GuestErrno::EFAULT),
                 }
             } else {
                 None
@@ -1297,19 +1458,19 @@ pub(super) fn define_socket_host(
                 .as_ref()
                 .map(|val| CString::new(val.as_slice()))
                 .transpose()
-                .map_err(|_| -libc::EINVAL);
+                .map_err(|_| -GuestErrno::EINVAL);
             let serv_cstr = service
                 .as_ref()
                 .map(|val| CString::new(val.as_slice()))
                 .transpose()
-                .map_err(|_| -libc::EINVAL);
+                .map_err(|_| -GuestErrno::EINVAL);
             let host_cstr = match host_cstr {
                 Ok(val) => val,
-                Err(err) => return err,
+                Err(err) => return Ok(err),
             };
             let serv_cstr = match serv_cstr {
                 Ok(val) => val,
-                Err(err) => return err,
+                Err(err) => return Ok(err),
             };
             let payload = match host_getaddrinfo_payload(
                 host_cstr.as_ref(),
@@ -1320,17 +1481,24 @@ pub(super) fn define_socket_host(
                 flags,
             ) {
                 Ok(payload) => payload,
-                Err(err) => return -err,
+                Err(HostResolverError::Failure(error)) => return Ok(error.encode()),
+                Err(HostResolverError::InvalidNativeStatus(error)) => {
+                    bail!("invalid native resolver status {}", error.0)
+                }
+                Err(HostResolverError::UnsupportedNativeCode(error)) => bail!(
+                    "native resolver code {} has no guest ABI representation",
+                    error.0
+                ),
             };
             if payload.len() > out_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, payload.len() as u32);
-                return -libc::ENOMEM;
+                return Ok(-GuestErrno::ENOMEM);
             }
             if write_bytes(&mut caller, &memory, out_ptr, &payload).is_err() {
-                return -libc::EFAULT;
+                return Ok(-GuestErrno::EFAULT);
             }
             let _ = write_u32(&mut caller, &memory, out_len_ptr, payload.len() as u32);
-            0
+            Ok(0)
         },
     );
     let socket_gethostname = Func::wrap(
@@ -1338,7 +1506,7 @@ pub(super) fn define_socket_host(
         |mut caller: Caller<'_, HostState>, buf_ptr: i32, buf_cap: i32, out_len_ptr: i32| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let bytes = match host_gethostname_bytes() {
                 Ok(bytes) => bytes,
@@ -1346,10 +1514,10 @@ pub(super) fn define_socket_host(
             };
             if bytes.len() > buf_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);
-                return -libc::ENOMEM;
+                return -GuestErrno::ENOMEM;
             }
             if write_bytes(&mut caller, &memory, buf_ptr, &bytes).is_err() {
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);
             0
@@ -1365,28 +1533,28 @@ pub(super) fn define_socket_host(
          -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let name = match read_bytes(&mut caller, &memory, name_ptr, name_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let proto = if proto_len > 0 {
                 match read_bytes(&mut caller, &memory, proto_ptr, proto_len) {
                     Ok(buf) => Some(buf),
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 }
             } else {
                 None
             };
             let name_cstr = match CString::new(name) {
                 Ok(val) => val,
-                Err(_) => return -libc::EINVAL,
+                Err(_) => return -GuestErrno::EINVAL,
             };
             let proto_cstr = match proto {
                 Some(buf) => match CString::new(buf) {
                     Ok(val) => Some(val),
-                    Err(_) => return -libc::EINVAL,
+                    Err(_) => return -GuestErrno::EINVAL,
                 },
                 None => None,
             };
@@ -1408,12 +1576,12 @@ pub(super) fn define_socket_host(
          -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let proto = if proto_len > 0 {
                 match read_bytes(&mut caller, &memory, proto_ptr, proto_len) {
                     Ok(buf) => Some(buf),
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 }
             } else {
                 None
@@ -1421,7 +1589,7 @@ pub(super) fn define_socket_host(
             let proto_cstr = match proto {
                 Some(buf) => match CString::new(buf) {
                     Ok(val) => Some(val),
-                    Err(_) => return -libc::EINVAL,
+                    Err(_) => return -GuestErrno::EINVAL,
                 },
                 None => None,
             };
@@ -1431,10 +1599,10 @@ pub(super) fn define_socket_host(
             };
             if bytes.len() > buf_cap as usize {
                 let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);
-                return -libc::ENOMEM;
+                return -GuestErrno::ENOMEM;
             }
             if write_bytes(&mut caller, &memory, buf_ptr, &bytes).is_err() {
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             let _ = write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32);
             0
@@ -1470,7 +1638,7 @@ pub(super) fn define_socket_host(
             match poll_socket(socket, events as u32, timeout) {
                 Ok(mask) => {
                     if mask == 0 {
-                        return -libc::ETIMEDOUT;
+                        return -GuestErrno::ETIMEDOUT;
                     }
                     0
                 }
@@ -1594,3 +1762,6 @@ pub(super) fn define_socket_host(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -306,7 +306,7 @@ impl PathIoError {
             .map(crate::windows_abi::winerror_to_errno)
             .unwrap_or(libc::EIO);
         #[cfg(target_arch = "wasm32")]
-        let errno = libc::metadata_error_errno(&error);
+        let errno = molt_runtime_platform::synthetic_errno::from_io_error(&error).code();
         #[cfg(all(not(windows), not(target_arch = "wasm32")))]
         let errno = raw.unwrap_or(libc::EIO);
         Self {

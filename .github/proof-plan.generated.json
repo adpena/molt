@@ -7682,6 +7682,8 @@
         "molt-backend-luau",
         "-p",
         "molt-backend-rust",
+        "-p",
+        "molt-wasm-host",
         "--no-default-features",
         "--features",
         "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool",
@@ -7775,6 +7777,9 @@
         "errno_build_tests::",
         "socket_constants::tests::",
         "libc_compat::tests::synthetic_errno_",
+        "synthetic_errno::",
+        "async_rt::sockets::wait::tests::",
+        "async_rt::sockets_net::tests::",
         "counter_wrap",
         "memory_budget::",
         "tir::",
@@ -9580,6 +9585,7 @@
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
+      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: --nocapture --test-threads=1",
       "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
     "rules": [
@@ -12201,14 +12207,20 @@
       },
       {
         "command_ids": [
-          "local.wasm-host.0"
+          "local.wasm-host.0",
+          "local.wasm-host.1"
         ],
-        "description": "Wasmtime host Rust: release-fast link build.",
+        "description": "Wasmtime host Rust: release-fast link build and actual host-error ABI binary tests.",
         "gates": [
-          "cargo build --locked --profile release-fast -p molt-wasm-host"
+          "cargo build --locked --profile release-fast -p molt-wasm-host",
+          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: --nocapture --test-threads=1"
         ],
         "globs": [
           "runtime/molt-wasm-host/**/*.rs",
+          "runtime/molt-runtime-platform/src/synthetic_errno*.rs",
+          "runtime/molt-runtime-platform/src/synthetic_errno/**/*.rs",
+          "runtime/molt-runtime-platform/src/wasm_socket_abi*.rs",
+          "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
           "runtime/molt-wasm-host/**/*.toml",
           "runtime/molt-wasm-host/Cargo.toml",
           "runtime/molt-artifact-publish/**/*.rs",
@@ -13393,6 +13405,12 @@
         "git"
       ],
       "local.wasm-host.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.wasm-host.1": [
         "python",
         "rustc",
         "cargo",

@@ -61,12 +61,8 @@ error = OSError
 timeout = TimeoutError
 
 
-class gaierror(OSError):
-    pass
-
-
-class herror(OSError):
-    pass
+gaierror = _require_intrinsic("molt_builtin_class_lookup")("gaierror")
+herror = _require_intrinsic("molt_builtin_class_lookup")("herror")
 
 
 _molt_socket_constants = _require_intrinsic("molt_socket_constants")
@@ -163,27 +159,25 @@ if isinstance(_module_dict, dict):
 else:
     # Fallback for early bootstrap/import edge paths.
     globals().update(_CONSTANTS)
-_EAI_CODES = {val for key, val in _CONSTANTS.items() if key.startswith("EAI_")}
 _HAS_CMSG = "SCM_RIGHTS" in _CONSTANTS
 
 # --- IntEnum / IntFlag wrappers for CPython >= 3.12 parity ---
 from enum import IntEnum, IntFlag
 
-_EnumMeta = type(IntEnum)
-AddressFamily = _EnumMeta(
+AddressFamily = IntEnum(
     "AddressFamily",
-    (IntEnum,),
-    {k: v for k, v in _CONSTANTS.items() if k.startswith("AF_")},
+    [(k, v) for k, v in _CONSTANTS.items() if k.startswith("AF_")],
+    module=__name__,
 )
-SocketKind = _EnumMeta(
+SocketKind = IntEnum(
     "SocketKind",
-    (IntEnum,),
-    {k: v for k, v in _CONSTANTS.items() if k.startswith("SOCK_")},
+    [(k, v) for k, v in _CONSTANTS.items() if k.startswith("SOCK_")],
+    module=__name__,
 )
-MsgFlag = type(IntFlag)(
+MsgFlag = IntFlag(
     "MsgFlag",
-    (IntFlag,),
-    {k: v for k, v in _CONSTANTS.items() if k.startswith("MSG_")},
+    [(k, v) for k, v in _CONSTANTS.items() if k.startswith("MSG_")],
+    module=__name__,
 )
 
 if _molt_socket_has_ipv6 is None:
@@ -217,26 +211,6 @@ def _coerce_timeout(timeout: float | None) -> float | None:
 def setdefaulttimeout(timeout: float | None) -> None:
     global _DEFAULT_TIMEOUT
     _DEFAULT_TIMEOUT = _coerce_timeout(timeout)
-
-
-def _map_gaierror(exc: OSError) -> gaierror:
-    code = _exc_errno(exc)
-    return gaierror(0 if code is None else code, str(exc))
-
-
-def _map_herror(exc: OSError) -> herror:
-    code = _exc_errno(exc)
-    return herror(0 if code is None else code, str(exc))
-
-
-def _exc_errno(exc: OSError) -> int | None:
-    value = getattr(exc, "errno", None)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
 
 
 def _require_socket_intrinsic(fn: Any | None, name: str) -> Any:
@@ -809,25 +783,15 @@ def getaddrinfo(
     proto: int = 0,
     flags: int = 0,
 ) -> list[tuple[int, int, int, str | None, Any]]:
-    try:
-        return _require_socket_intrinsic(_molt_socket_getaddrinfo, "getaddrinfo")(
-            host, port, family, type, proto, flags
-        )
-    except OSError as exc:
-        if _exc_errno(exc) in _EAI_CODES:
-            raise _map_gaierror(exc) from None
-        raise
+    return _require_socket_intrinsic(_molt_socket_getaddrinfo, "getaddrinfo")(
+        host, port, family, type, proto, flags
+    )
 
 
 def getnameinfo(addr: Any, flags: int) -> tuple[str, str]:
-    try:
-        return _require_socket_intrinsic(_molt_socket_getnameinfo, "getnameinfo")(
-            addr, flags
-        )
-    except OSError as exc:
-        if _exc_errno(exc) in _EAI_CODES:
-            raise _map_gaierror(exc) from None
-        raise
+    return _require_socket_intrinsic(_molt_socket_getnameinfo, "getnameinfo")(
+        addr, flags
+    )
 
 
 def gethostname() -> str:
@@ -835,34 +799,19 @@ def gethostname() -> str:
 
 
 def gethostbyname(hostname: str) -> str:
-    try:
-        return _require_socket_intrinsic(_molt_socket_gethostbyname, "gethostbyname")(
-            hostname
-        )
-    except OSError as exc:
-        if _exc_errno(exc) in _EAI_CODES:
-            raise _map_gaierror(exc) from None
-        raise
+    return _require_socket_intrinsic(_molt_socket_gethostbyname, "gethostbyname")(
+        hostname
+    )
 
 
 def gethostbyaddr(hostname: str) -> tuple[str, list[str], list[str]]:
-    try:
-        return _require_socket_intrinsic(_molt_socket_gethostbyaddr, "gethostbyaddr")(
-            hostname
-        )
-    except OSError as exc:
-        if _exc_errno(exc) in _EAI_CODES:
-            raise _map_gaierror(exc) from None
-        raise _map_herror(exc) from None
+    return _require_socket_intrinsic(_molt_socket_gethostbyaddr, "gethostbyaddr")(
+        hostname
+    )
 
 
 def getfqdn(name: str | None = None) -> str:
-    try:
-        return _require_socket_intrinsic(_molt_socket_getfqdn, "getfqdn")(name)
-    except OSError as exc:
-        if _exc_errno(exc) in _EAI_CODES:
-            raise _map_gaierror(exc) from None
-        raise
+    return _require_socket_intrinsic(_molt_socket_getfqdn, "getfqdn")(name)
 
 
 def getservbyname(name: str, proto: str | None = None) -> int:
@@ -926,14 +875,9 @@ def getprotobyname(name: str) -> int:
 
 
 def gethostbyname_ex(hostname: str) -> tuple[str, list[str], list[str]]:
-    try:
-        return _require_socket_intrinsic(
-            _molt_socket_gethostbyname_ex, "gethostbyname_ex"
-        )(hostname)
-    except OSError as exc:
-        if _exc_errno(exc) in _EAI_CODES:
-            raise _map_gaierror(exc) from None
-        raise _map_herror(exc) from None
+    return _require_socket_intrinsic(
+        _molt_socket_gethostbyname_ex, "gethostbyname_ex"
+    )(hostname)
 
 
 def sethostname(name: str) -> None:

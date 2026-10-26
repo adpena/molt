@@ -1062,6 +1062,9 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "errno_build_tests::",
         "socket_constants::tests::",
         "libc_compat::tests::synthetic_errno_",
+        "synthetic_errno::",
+        "async_rt::sockets::wait::tests::",
+        "async_rt::sockets_net::tests::",
         "wasm_abi::",
         "async_rt::channels::",
         "concurrency::gil::tests::",
@@ -10764,3 +10767,22 @@ def test_ci_selection_transport_joins_real_selection_zip_and_receipt_owners(
         assert downloaded == [101, 102]
         assert observed_runs == ([42] if fault == "final-read-source-mutation" else [])
         assert source.read_bytes() == b"VALUE = 2\n"
+
+
+def test_host_error_abi_laws_have_binary_execution_ownership() -> None:
+    command = next(
+        command
+        for command in PLAN.commands
+        if command.id == "rust.test.compiler-authorities"
+    )
+    assert command.family == "rust"
+    assert "--bins" in command.argv
+    packages = {
+        command.argv[index + 1]
+        for index, argument in enumerate(command.argv[:-1])
+        if argument == "-p"
+    }
+    assert "molt-wasm-host" in packages
+    assert "c" in proof_plan.cargo_native_units(command.data)["target"]
+    selection = PLAN.select(["runtime/molt-wasm-host/src/socket_host/tests.rs"])
+    assert "rust" in {family.name for family in selection.selected}
