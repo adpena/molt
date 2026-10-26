@@ -1123,10 +1123,18 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         required_link_features=frozenset(),
     )
     shared = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
-        root, root / "out/molt_runtime.wasm", reloc=False, **common
+        root,
+        root / "out/molt_runtime.wasm",
+        build_profile="release",
+        reloc=False,
+        **common,
     )
     relative = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
-        root, root / "out/molt_runtime_reloc.wasm", reloc=True, **common
+        root,
+        root / "out/molt_runtime_reloc.wasm",
+        build_profile="release",
+        reloc=True,
+        **common,
     )
     shared, relative = bind_runtime_wasm_specs(shared, relative, root=root)
     spec = relative if reloc else shared

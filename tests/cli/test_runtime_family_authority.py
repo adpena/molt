@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.runtime_wasm_build_policy import resolve_runtime_wasm_build_policy
+
 from molt.cargo_execution_policy import cargo_command_options
 
 from molt.process_environment import (
@@ -3106,12 +3108,15 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         environment[flag_origin] = separator.join(
             ("-C", "target-feature=-reference-types")
         )
+    environment["CARGO_INCREMENTAL"] = "0"
     shared = specs._RuntimeWasmBuildSpec(
         publication_name="runtime.wasm",
         requested_cargo_profile="dev-fast",
         cargo_profile="dev-fast",
         profile_dir="dev-fast",
-        incremental_enabled=False,
+        build_policy=resolve_runtime_wasm_build_policy(
+            "dev", {"MOLT_RUNTIME_WASM_INCREMENTAL": "0"}
+        ),
         env=ProcessEnvironment(environment),
         artifact_selection=specs.RUNTIME_CDYLIB_ARTIFACTS,
         runtime_exports=(),
@@ -3690,3 +3695,126 @@ def test_wasi_duplicate_explicit_modes_inside_one_lane_still_fail(
             args=("--target", "wasm32-wasip1", *(("--", *duplicate) if final else ())),
             env={} if final else {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(duplicate)},
         )
+
+
+@pytest.mark.parametrize(
+    "configuration,environment,workspace,expected",
+    [
+        ("", {}, True, True),
+        ("[profile.dev]\nincremental=false\n", {}, True, False),
+        (
+            "[profile.dev]\nincremental=false\n",
+            {"CARGO_PROFILE_DEV_INCREMENTAL": "true"},
+            True,
+            True,
+        ),
+        ("[profile.dev.package.molt-runtime]\nincremental=false\n", {}, True, False),
+        ('[profile.dev.package."*"]\nincremental=false\n', {}, True, True),
+        ('[profile.dev.package."*"]\nincremental=false\n', {}, False, False),
+        ("[build]\nincremental=false\n", {}, True, False),
+        ("[build]\nincremental=false\n", {"CARGO_INCREMENTAL": "1"}, True, True),
+        ("[build]\nincremental=true\n", {"CARGO_INCREMENTAL": "0"}, True, False),
+        (
+            "[build]\nincremental=false\n",
+            {"CARGO_BUILD_INCREMENTAL": "true"},
+            True,
+            True,
+        ),
+    ],
+)
+def test_captured_incrementality_obeys_cargo_precedence(
+    plan_root, configuration, environment, workspace, expected
+):
+    _config(plan_root, configuration)
+    plan = _plan(plan_root, env=environment)
+    assert (
+        plan.incremental_for_profile(
+            "dev", package_name="molt-runtime", workspace_package=workspace
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "molt-runtime:0.1.0",
+        "molt-runtime@0.1.0",
+        "https://example.invalid/runtime#molt-runtime@0.1.0",
+    ],
+)
+def test_incremental_package_id_override_requires_resolved_identity(plan_root, spec):
+    _config(plan_root, f'[profile.dev.package."{spec}"]\nincremental=false\n')
+    plan = _plan(plan_root)
+    with pytest.raises(
+        ValueError, match="package-ID override requires resolved package identity"
+    ):
+        plan.incremental_for_profile(
+            "dev", package_name="molt-runtime", workspace_package=True
+        )
+    # The global switch overrides even qualified package settings.
+    explicit = _plan(plan_root, env={"CARGO_INCREMENTAL": "0"})
+    assert not explicit.incremental_for_profile(
+        "dev", package_name="molt-runtime", workspace_package=True
+    )
+
+
+def test_incremental_profile_inheritance_and_global_override_of_cli(plan_root):
+    (plan_root / "Cargo.toml").write_text(
+        '[profile.iteration]\ninherits="dev"\n[profile.not_debug]\ninherits="release"\n',
+        encoding="utf-8",
+    )
+    plan = _plan(plan_root)
+    assert plan.incremental_for_profile(
+        "iteration", package_name="molt-runtime", workspace_package=True
+    )
+    assert not plan.incremental_for_profile(
+        "not_debug", package_name="molt-runtime", workspace_package=True
+    )
+    disabled = _plan(
+        plan_root,
+        env={"CARGO_INCREMENTAL": "0"},
+        args=("--config", "build.incremental=true"),
+    )
+    assert not disabled.incremental_for_profile(
+        "iteration", package_name="molt-runtime", workspace_package=True
+    )
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "regex:1.12.2",
+        "regex@1.12.2",
+        "registry+https://github.com/rust-lang/crates.io-index#regex@1.12.2",
+        "git+ssh://git@github.com/rust-lang/regex.git?branch=dev#regex@1.12.2",
+        "https://github.com/rust-lang/regex#1.12.2",
+        "path+file:///source/regex#1.12.2",
+    ],
+)
+def test_qualified_sibling_incrementality_does_not_govern_runtime(plan_root, selector):
+    _config(plan_root, f'[profile.dev.package."{selector}"]\nincremental=false\n')
+    assert _plan(plan_root).incremental_for_profile(
+        "dev", package_name="molt-runtime", workspace_package=True
+    )
+
+
+def test_global_incrementality_does_not_require_unselected_profile_ancestry(plan_root):
+    plan = _plan(plan_root, env={"CARGO_INCREMENTAL": "0"})
+    assert not plan.incremental_for_profile(
+        "not-the-selected-profile", package_name="molt-runtime", workspace_package=True
+    )
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("0", False), ("1", True), ("false", False), ("true", False), ("2", False)],
+)
+def test_global_incrementality_uses_cargo_switch_grammar(plan_root, value, expected):
+    plan = _plan(plan_root, env={"CARGO_INCREMENTAL": value})
+    assert (
+        plan.incremental_for_profile(
+            "dev", package_name="molt-runtime", workspace_package=True
+        )
+        is expected
+    )
