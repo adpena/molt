@@ -94,6 +94,8 @@ fn emit_loop_continue(context: &ControlOpContext<'_>, func: &mut Function) {
 }
 
 fn emit_loop_end(context: &mut ControlOpContext<'_>, func: &mut Function) {
+    // A reachable lexical closer takes the canonical loop latch.
+    func.instruction(&Instruction::Br(0));
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::End);
     context.control_stack.pop();

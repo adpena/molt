@@ -297,7 +297,11 @@ impl RustBackend {
         } else {
             func.ops.clone()
         };
-        let flow = dispatch.then(|| molt_ir::simple_verify::simple_ir_logical_flow(&ops));
+        let flow = dispatch.then(|| {
+            molt_ir::ir_schema::validate_normalized_simple_ir_ops(&func.name, &ops)
+                .unwrap_or_else(|error| panic!("Rust normalized flow admission failed: {error}"));
+            molt_ir::simple_verify::simple_ir_logical_flow(&ops)
+        });
         // An unchanged stream can reuse admission's plan. SSA normalization can
         // rename values, so its facts must be projected from that exact stream.
         self.current_scalar_plan = Some(if !dispatch && let Some(plan) = admitted_plan {

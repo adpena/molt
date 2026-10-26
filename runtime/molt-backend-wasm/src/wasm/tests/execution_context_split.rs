@@ -20,7 +20,8 @@ function reset(label, inherited = false, exceptionAt = 0, failEntry = false) {
   state = {label, depth: inherited ? 1 : 0, enters: 0, exits: 0,
            initialDepth: inherited ? 1 : 0, attempts: [], failEntry,
            lines: [], polls: 0, exceptionAt, pending: false,
-           taskReads: 0, expectsTask: false};
+           taskReads: 0, expectsTask: false, homeCase: false,
+           homeLends: 0, homeOwners: new Map(), homeRetains: 0, homeReleases: 0};
 }
 function ensure(condition, message) {
   assert.ok(condition, state.label + ': ' + message + '; state=' + JSON.stringify(state));
@@ -28,10 +29,27 @@ function ensure(condition, message) {
 function instantiate(path) {
   const module = new WebAssembly.Module(fs.readFileSync(path));
   const imports = {env: {
-    memory: new WebAssembly.Memory({initial: config.memory_pages}),
+    memory: new WebAssembly.Memory({initial: config.memory_pages + Number(state.homeCase)}),
     __indirect_function_table: new WebAssembly.Table({initial: config.table_entries, element: 'anyfunc'}),
   }};
   const hooks = {
+    frame_homes(count) {
+      ensure(state.homeCase && count === 2n, 'wrong home layout request');
+      ensure(state.enters === 1 && state.attempts.length === 1, 'homes lent before frame entry');
+      state.homeLends++;
+      if (state.failEntry || state.failLend) { state.pending = true; return 0n; }
+      ensure(state.depth === state.initialDepth + 1, 'homes lent outside owned frame');
+      // Two public ABI pairs in an extra host page, disjoint from application
+      // data and dispatcher maps. The decoy catches wrong-slot/base reads.
+      state.homeBase = config.memory_pages * 65536 + 16;
+      const view = new DataView(imports.env.memory.buffer);
+      for (const [slot, bits] of [[0,888n],[1,777n]]) {
+        view.setBigInt64(state.homeBase + 16*slot,1n,true);
+        view.setBigInt64(state.homeBase + 16*slot + 8,bits,true);
+        state.homeOwners.set(bits,1);
+      }
+      return BigInt(state.homeBase);
+    },
     obj_get_state(task) {
       ensure(state.expectsTask && task === 64n, 'unexpected task state read');
       state.taskReads++;
@@ -82,6 +100,22 @@ function instantiate(path) {
       ensure(state.depth === state.initialDepth + Number(pushed),
              'frame depth does not match the owned entry attempt');
       if (pushed) state.depth--;
+      if (state.homeCase && state.homeOwners.size) {
+        // The runtime owns the homes. Exit unlinks the frame before releasing
+        // bindings; compiled borrowed views must not release those bindings.
+        const view = new DataView(imports.env.memory.buffer);
+        for (const [slot, bits] of [[0,888n],[1,777n]]) {
+          ensure(view.getBigInt64(state.homeBase+16*slot,true) === 1n
+                 && view.getBigInt64(state.homeBase+16*slot+8,true) === bits,
+                 'borrowed load changed its home');
+          const expected = bits === 777n ? 1 + state.homeRetains : 1;
+          ensure(state.homeOwners.get(bits) === expected, 'home lost or gained an owner');
+          state.homeOwners.set(bits,expected-1);
+          state.homeReleases++;
+          view.setBigInt64(state.homeBase+16*slot,0n,true);
+          view.setBigInt64(state.homeBase+16*slot+8,0n,true);
+        }
+      }
       state.exits++; return boxedNone;
     },
     trace_set_line(line) {
@@ -100,10 +134,19 @@ function instantiate(path) {
       return hooks.exception_pending();
     },
     inc_ref_obj(value) {
+      if (state.homeCase && state.homeOwners.has(value)) {
+        ensure(value === 777n && state.homeRetains === 0 && state.homeOwners.get(value) === 1,
+               'only the explicit borrowed return may retain a home binding');
+        state.homeRetains++;
+        state.homeOwners.set(value,2);
+        return;
+      }
       ensure(value === boxedNone || value === boxedFalse || value === boxedTrue,
              'unexpected heap retain in scalar split fixture');
     },
     dec_ref_obj(value) {
+      ensure(!state.homeCase || !state.homeOwners.has(value),
+             'compiled borrowed view released its home owner');
       ensure(value === boxedNone || value === boxedFalse || value === boxedTrue,
              'unexpected heap release in scalar split fixture');
     },
@@ -200,6 +243,41 @@ for (const test of config.activation_modules) {
            && state.attempts.length === 0, 'activation leaked or consumed caller frame');
     assert.deepEqual(state.lines, [index + 1], state.label + ': resumed body');
     resumeState = state.resumeState;
+  }
+}
+// These are exact codegen-mode witnesses over synchronous binding homes.
+// Actual generator/coroutine bindings use the distinct task-payload authority.
+for (const test of config.home_modules) {
+  const states = test.stateful ? [0,5] : [0];
+  for (const resume of states) for (const [failure,failEntry,failLend] of [
+    [0,false,false], [1,false,false], [2,false,false], [0,true,false], [0,false,true],
+  ]) {
+    reset('borrowed home '+test.lane+' state='+resume+' failure='+failure
+          +' entry='+failEntry+' lend='+failLend,true,failure,failEntry);
+    state.homeCase = true;
+    state.failLend = failLend;
+    state.expectsTask = test.stateful;
+    state.resumeState = resume;
+    const homeApp = instantiate(test.module);
+    const result = test.stateful ? homeApp.molt_main(64n) : homeApp.molt_main();
+    const failed = failure !== 0 || failEntry || failLend;
+    assert.equal(result,failed ? boxedNone : 777n,state.label);
+    ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
+           && state.attempts.length === 0,'home return lost frame-attempt custody');
+    assert.equal(state.homeLends,1,state.label);
+    assert.equal(state.taskReads,test.stateful ? 1 : 0,state.label);
+    assert.equal(state.polls,failEntry || failLend || failure===1 ? 1 : 2,state.label);
+    assert.deepEqual(state.lines,failEntry || failLend || failure===1 ? [] : [resume ? 2 : 1],state.label);
+    assert.equal(state.pending,failed,state.label);
+    assert.equal(state.homeRetains,failed ? 0 : 1,state.label);
+    assert.equal(state.homeReleases,failEntry || failLend ? 0 : 2,state.label);
+    if (!failed) {
+      // Frame exit released the home's owner; the returned alias alone lives.
+      assert.equal(state.homeOwners.get(777n),1,state.label);
+      state.homeOwners.set(777n,0); // caller releases its returned owner
+    }
+    ensure([...state.homeOwners.values()].every(count => count === 0),
+           'borrowed home or returned owner leaked');
   }
 }
 reset('Python exception returns through framed caller ABI', true);
@@ -711,6 +789,90 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             json!({"lane": mode, "module": module, "expected": expected, "stateful": stateful}),
         );
     }
+    let mut home_modules = Vec::new();
+    for stateful in [false, true] {
+        let marked = |kind: &str, value| OpIR {
+            value: Some(value),
+            ..wasm_test_op(kind, None, vec![])
+        };
+        let mut ops = vec![
+            OpIR {
+                s_value: Some("molt_main".into()),
+                ..wasm_test_op("trace_enter_slot", None, vec![])
+            },
+            marked("check_exception", 90),
+        ];
+        if stateful {
+            ops.push(OpIR {
+                state_targets: Some(vec![(5, 50)]),
+                ..wasm_test_op("state_switch", None, vec![])
+            });
+        } else {
+            ops.push(marked("label", 0));
+        }
+        for (line, result) in [(1, "initial_home"), (2, "resumed_home")] {
+            if line == 2 {
+                if !stateful {
+                    break;
+                }
+                ops.push(marked("state_label", 50));
+            }
+            ops.extend([
+                marked("line", line),
+                OpIR {
+                    value: Some(1),
+                    ..wasm_test_op("frame_home_load", Some(result), vec![])
+                },
+                marked("check_exception", 90),
+                // Final ownership IR makes the escaping result an owner. The
+                // borrowed load itself must emit no retain or release.
+                wasm_test_op("inc_ref", None, vec![result]),
+                wasm_test_op("trace_exit", None, vec![]),
+                wasm_test_op("ret", None, vec![result]),
+            ]);
+        }
+        ops.extend([
+            marked("label", 90),
+            wasm_test_op("trace_exit", None, vec![]),
+            wasm_test_op("ret_void", None, vec![]),
+        ]);
+        let mut function = wasm_test_function(
+            "molt_main",
+            if stateful { vec!["task"] } else { vec![] },
+            None,
+            ops,
+        );
+        function.execution_context = ExecutionContextPolicy::Local;
+        let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
+            SimpleIR {
+                functions: vec![function],
+                profile: None,
+            },
+            molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+                "molt_main".into(),
+                0,
+            )]))
+            .unwrap(),
+        );
+        wasmparser::Validator::new()
+            .validate_all(&output.wasm)
+            .unwrap();
+        if !stateful {
+            let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
+            assert!(
+                operators
+                    .iter()
+                    .all(|op| !op.starts_with("Loop") && !op.starts_with("BrTable"))
+            );
+        }
+        let (pages, entries) = wasm_import_minimums(&output.wasm);
+        memory_pages = memory_pages.max(pages);
+        table_entries = table_entries.max(entries);
+        let lane = if stateful { "stateful" } else { "forward" };
+        let module = temp.join(format!("borrowed_home_{lane}.wasm"));
+        fs::write(&module, output.wasm).expect("write borrowed home module");
+        home_modules.push(json!({"lane":lane,"module":module,"stateful":stateful}));
+    }
     // A Python throw from an inherited callee returns pending state across
     // the call ABI, so the caller retires its activation and call guards.
     let mut unwind_owner = wasm_test_function(
@@ -803,6 +965,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "cases": cases,
             "return_modules": return_modules,
             "activation_modules": activation_modules,
+            "home_modules": home_modules,
             "unwind_module": unwind_path,
         }))
         .unwrap(),

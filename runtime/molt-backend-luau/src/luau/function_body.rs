@@ -11,8 +11,7 @@ impl LuauBackend {
         let ops = if dispatch {
             let mut ops = func.ops.clone();
             molt_tir::ir_rewrites::rewrite_phi_to_store_load(&mut ops);
-            let rewritten = crate::tir::lower_from_simple::rewrite_loop_index_to_store_load(&ops);
-            if rewritten.is_empty() { ops } else { rewritten }
+            crate::tir::lower_from_simple::normalize_loop_indices(&func.name, ops)
         } else {
             strip_dead_after_return(&func.ops)
         };
@@ -23,7 +22,11 @@ impl LuauBackend {
         } else {
             lower_exception_captures(&ops)
         };
-        let flow = dispatch.then(|| molt_ir::simple_verify::simple_ir_logical_flow(&ops));
+        let flow = dispatch.then(|| {
+            molt_ir::ir_schema::validate_normalized_simple_ir_ops(&func.name, &ops)
+                .unwrap_or_else(|error| panic!("Luau normalized flow admission failed: {error}"));
+            molt_ir::simple_verify::simple_ir_logical_flow(&ops)
+        });
         let scalar_func = FunctionIR {
             return_abi: func.return_abi,
             name: func.name.clone(),

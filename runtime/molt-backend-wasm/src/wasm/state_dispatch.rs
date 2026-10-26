@@ -11,5 +11,5 @@ enum DispatchMode {
     Jumpful,
 }
 
-pub(super) use emit::{emit_jumpful_dispatch, emit_stateful_dispatch};
-pub(super) use plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+pub(super) use emit::emit_non_linear_control;
+pub(super) use plan::NonLinearControlPlan;

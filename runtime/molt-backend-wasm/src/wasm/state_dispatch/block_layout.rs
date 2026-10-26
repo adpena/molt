@@ -1,5 +1,5 @@
-use super::NonLinearDispatchLocals;
 use crate::OpIR;
+use crate::wasm::frame_locals::WasmDispatchFrameLocals;
 use molt_tir::tir::op_kinds_generated::{
     simpleir_kind_is_wasm_dispatch_block_leader, simpleir_kind_is_wasm_dispatch_block_terminator,
 };
@@ -43,10 +43,14 @@ pub(super) fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     (starts, block_for_op)
 }
 
-pub(super) fn build_dispatch_block_map(block_for_op: &[usize]) -> Vec<u8> {
+pub(super) fn build_dispatch_block_map(block_for_op: &[usize], targets: &[usize]) -> Vec<u8> {
+    let mut ordinals = vec![u32::MAX; block_for_op.iter().max().map_or(0, |block| block + 1)];
+    for (ordinal, &block) in targets.iter().enumerate() {
+        ordinals[block] = ordinal as u32;
+    }
     let mut bytes = Vec::with_capacity(block_for_op.len() * 4);
     for &block_idx in block_for_op {
-        bytes.extend_from_slice(&(block_idx as u32).to_le_bytes());
+        bytes.extend_from_slice(&ordinals[block_idx].to_le_bytes());
     }
     bytes
 }
@@ -54,8 +58,8 @@ pub(super) fn build_dispatch_block_map(block_for_op: &[usize]) -> Vec<u8> {
 pub(super) fn emit_dispatch_block_lookup(
     func: &mut Function,
     op_count: usize,
-    block_count: usize,
-    locals: NonLinearDispatchLocals,
+    targets: &[usize],
+    locals: WasmDispatchFrameLocals,
 ) {
     // An invalid operation or block index must trap, never become a loop
     // backedge. The innermost block is only the br_table failure destination;
@@ -79,7 +83,7 @@ pub(super) fn emit_dispatch_block_lookup(
         offset: 0,
         memory_index: 0,
     }));
-    let targets: Vec<u32> = (0..block_count).map(|idx| idx as u32 + 1).collect();
+    let targets: Vec<u32> = targets.iter().map(|&block| block as u32 + 1).collect();
     func.instruction(&Instruction::BrTable(targets.into(), 0));
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::Unreachable);
