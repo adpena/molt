@@ -26,6 +26,43 @@ from tools.proof_queue_pkg import (
 )
 
 
+def test_relative_runtime_nodes_do_not_select_working_directory_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installation = tmp_path / "installation"
+    installation.mkdir()
+    owned = installation / "unicodedata-provider.pyd"
+    owned.write_bytes(b"selected runtime input")
+    # A same-named cwd file is not the root-reference's target.
+    decoy = tmp_path / owned.name
+    decoy.write_bytes(b"unrelated working directory input")
+    monkeypatch.chdir(tmp_path)
+    identity = {
+        "runtime": {
+            "explicit_files": [
+                {
+                    "kind": "root-reference",
+                    "root": "runtime-0",
+                    "path": owned.name,
+                    "node": "file-0",
+                }
+            ]
+        },
+        "file_custody": [{"path": str(owned)}],
+    }
+    source = tmp_path / "source"
+    source.mkdir()
+    for decoy_present in (True, False):
+        if not decoy_present:
+            decoy.unlink()
+        assert set(execution_custody._identity_paths(identity)) == {owned}
+        specs = execution_custody.watch_specs(
+            source_root=source, tracked_paths=[], identities=[identity], broad_roots=[]
+        )
+        assert any(spec.owns(owned) for spec in specs)
+        assert not any(spec.owns(decoy) for spec in specs)
+
+
 def _run_windows_raw_python_subject(command_line, *, executable, tmp_path, **kwargs):
     """Observe raw CreateProcess syntax inside the existing typed subject.
 
@@ -2557,7 +2594,38 @@ def test_environment_rust_proxy_component_reaches_both_custody_consumers(
         supervisor_custody._supervisor_fixed_images({}, incomplete, [sys.executable])
 
 
-def test_vanished_watch_entries_keep_their_own_key(tmp_path, monkeypatch):
+@pytest.mark.parametrize("broad", [False, True])
+def test_watch_ownership_requires_its_exact_root(tmp_path, broad):
+    root = tmp_path / "source"
+    root.mkdir()
+    nested = root / "nested"
+    nested.mkdir()
+    selected = nested / "input.py"
+    selected.write_bytes(b"selected")
+    sibling = tmp_path / "source-extra"
+    sibling.mkdir()
+    outside = sibling / selected.name
+    outside.write_bytes(selected.read_bytes())
+    spec = execution_custody.WatchSpec(
+        root, None if broad else frozenset({execution_custody._norm(selected)})
+    )
+    assert spec.owns(root)
+    assert spec.owns(nested)
+    assert spec.owns(selected)
+    assert not spec.owns(tmp_path)
+    assert not spec.owns(outside)
+    outside.unlink()
+    assert not spec.owns(outside)
+    selected.unlink()
+    assert spec.owns(selected)
+    with pytest.raises(ValueError, match="absolute"):
+        spec.owns(Path("input.py"))
+    with pytest.raises(ValueError, match="parent traversal"):
+        spec.owns(root / ".." / sibling.name / selected.name)
+
+
+@pytest.mark.parametrize("broad", [False, True])
+def test_vanished_watch_entries_keep_their_own_key(tmp_path, monkeypatch, broad):
     # HF-169: Windows custody raises for an absent entry, and the watcher
     # reports the whole subtree, so a staging file renamed away under a watched
     # directory once counted as an input mutation. Emulate that lookup here.
@@ -2571,16 +2639,27 @@ def test_vanished_watch_entries_keep_their_own_key(tmp_path, monkeypatch):
     monkeypatch.setattr(execution_custody, "_norm", windows_norm)
     watched = tmp_path / "pyproject.toml"
     watched.write_text("[project]\n", encoding="utf-8")
-    spec = execution_custody.WatchSpec(tmp_path, frozenset({real_norm(watched)}))
+    spec = execution_custody.WatchSpec(
+        tmp_path, None if broad else frozenset({real_norm(watched)})
+    )
     staged = tmp_path / "proof-receipts" / ".molt-stage-0.tmp"
     staged.parent.mkdir()
     staged.write_text("receipt", encoding="utf-8")
     staged.rename(staged.with_name("receipt.json"))
-    assert not spec.owns(staged)
+    assert spec.owns(staged) is broad
     watched.unlink()
     assert spec.owns(watched), "a removed watched file must remain an input event"
-    # Windows may report a deleted entry by its 8.3 short name; stay owned.
-    assert spec.owns(tmp_path / "PYPROJ~1.TOM")
+    # A vanished 8.3 spelling cannot establish admission. Its uncertainty must
+    # survive observation as an error, rather than being ignored or accepted.
+    ambiguous = tmp_path / "PYPROJ~1.TOM"
+    with pytest.raises(ValueError, match="short name"):
+        spec.owns(ambiguous)
+    monitor = execution_custody.LiveCustodyMonitor([spec])
+    assert not monitor._record_event(spec, "windows:2", ambiguous)
+    receipt = monitor.receipt()
+    assert receipt["stable"] is False
+    assert any("short name" in error for error in receipt["errors"])
+    assert receipt["events"] == []
 
 
 @pytest.mark.parametrize("identity_kind", ["image", "python-location"])
