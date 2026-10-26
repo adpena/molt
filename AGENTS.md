@@ -17,7 +17,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   Proceed with safe, reversible work that follows from the request.
 - Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
   useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
-- Ground claims in current-run evidence; state passes, failures, skips and unknowns.
+- Ground claims in current evidence; state passes, failures, skips and unknowns. Prioritize the user's
+  outcome and measured critical path over activity; close owned WIP before adjacent investigations.
 - If project guidance conflicts with the live repository or has gone stale, follow the safer current
   fact and repair the guidance in the same arc when it is in scope.
 
@@ -127,9 +128,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Before designing, implementing or deleting, search canonical authority, history, handoffs and WIP.
   Report the invariant's owner and what to reuse, reconcile or retire, including preserved donors.
   Verify task messages and memory as leads; ask the integrator about unclear ownership or custody.
-- Use subagents for bounded exploration, audits, log analysis, review and disjoint/mechanical changes.
-  Keep working, redirect drifting lanes and integrate evidence. Avoid overlapping writers or proofs;
-  the parent owns architecture, integration, verification and cleanup.
+- Dispatch bounded, disjoint work through `tools/dispatch_prompt.py` with validated `DispatchBounds`;
+  `docs/ops/MULTI_AGENT_COORDINATION.md` owns required outcome, ownership, scope, proof, budget and stop rules.
+  Workers return at their deliverable/budget; the parent reassesses the critical path before any expansion.
 - Record active worker ownership and handoff state in the coordination records described in
   `docs/ops/MULTI_AGENT_COORDINATION.md`; task messages and worktree names are not source locks.
 - Match model and effort: strongest reasoning for architecture/correctness, faster workers for
@@ -142,10 +143,10 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Tests must distinguish correct behavior from a plausible defect using an independent oracle.
   Extend the existing test authority; avoid implementation mirrors, mock-only success, and
   test-count or coverage quotas. Follow `docs/spec/areas/testing/0007-testing.md` when adding or reviewing tests.
-- Prove the exact changed contract first, then widen in proportion to the claim (static checks,
-  unit, differential and integration tests, target execution, profiling, benchmarks). One green
-  cell does not prove a family-wide claim; a narrow check that fully proves the owned invariant
-  needs no broad suite. Repeat checks only for changed inputs, a new failure or an open claim.
+- Prove the changed contract with one proof owner; widen only for the actual claim. A sufficient
+  narrow proof needs no broad suite; one green cell cannot prove a family. Review matching receipts
+  instead of reproducing every PASS. Reruns need changed inputs, a new failure or a named uncovered
+  obligation. Run required integration gates once; skip duplicate prechecks, benchmarks and proof fanout.
 - Preflight selected toolchains, targets and runtime prerequisites through their owners with the full
   child environment before expensive work; parser acceptance alone does not prove readiness. Validate
   mutation targets canonically and turn mistakes into checks at that boundary, without duplicate gates.
