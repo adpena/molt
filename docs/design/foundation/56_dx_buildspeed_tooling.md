@@ -278,12 +278,26 @@ names; `tools/molt_dev_gates.py` owns gate execution. The executor's admission
 bounds the block: the plan's `executor_max_workers` and the `repository-policy`
 resource class, each capped by `molt.host_capacity` at one GiB per gate (the
 largest gate tree peaks at 0.69 GB). Each gate's streams print in declared
-order. A gate failure and a moot gate are partition-scoped, so the executor never
-cancels a gate declared before the failure, and the first failure in declared
-order is the one reported. Later gates are skipped or cancelled through the
-guard. Each landing leaves an executor receipt with every gate's duration, peak
+order. Integration explicitly selects the executor's `CANCEL_REMAINING` failure
+policy: the first observed failure stops scheduling and cancels active siblings
+through their existing guards, regardless of declared order. The receipt keeps
+that immutable trigger and every actual outcome; cancellation cannot erase a
+racing failure or uncertain guard closure. Generic proofs retain the default
+`COLLECT_INDEPENDENT` policy, including dependency blocking and global safety stops.
+This follows the explicit collection choice in
+[Cargo's `--keep-going`](https://doc.rust-lang.org/cargo/commands/cargo-build.html#miscellaneous-options)
+and the in-flight test cancellation of
+[Bazel's `--notest_keep_going`](https://github.com/bazelbuild/bazel/blob/7.0.0/site/en/docs/user-manual.md#L1341-L1346).
+The scheduler policy adds one failed-outcome enum comparison and receipt fields.
+Gate admission also retains the selected toolchain policies and projects each
+actual terminal guard result through the existing safety classifier; declared
+Windows linker helpers keep the same admission rule. This adds one selected-policy
+decode per runtime and a bounded outcome projection per gate, with no new poller,
+process scan or cancellation implementation. Each landing leaves an executor
+receipt with every gate's duration, peak
 RSS and outcome beside the integration lock in the Git common directory. Rule
-gates, pytest batches and Cargo gates still run alone; every gate writes its
+gates and pytest batches can overlap; Cargo gates share one target and serialize.
+Every gate writes its
 streams to files while it runs (section 2.9, item 6).
 
 `CANONICAL_EXECUTION_ENV` forbids bytecode writes so a gate cannot change the
