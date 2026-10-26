@@ -633,7 +633,7 @@ fn sum_reduction_detects_canonical_pattern() {
         OpIR {
             kind: "loop_index_next".to_string(),
             args: Some(vec!["idx".to_string()]),
-            out: Some("idx_next".to_string()),
+            out: Some("idx".to_string()),
             ..OpIR::default()
         },
         // 6: loop_continue
@@ -708,7 +708,7 @@ fn sum_reduction_detects_reversed_add_operands() {
         OpIR {
             kind: "loop_index_next".to_string(),
             args: Some(vec!["i".to_string()]),
-            out: Some("i_next".to_string()),
+            out: Some("i".to_string()),
             ..OpIR::default()
         },
         op_kind("loop_continue"),
@@ -735,6 +735,7 @@ fn sum_reduction_rejects_non_bce_safe() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -768,7 +769,7 @@ fn sum_reduction_rejects_non_bce_safe() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 4, "i", &plan).is_none(),
         "non-bce_safe index must disqualify sum reduction"
     );
 }
@@ -779,6 +780,7 @@ fn sum_reduction_rejects_call_in_body() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -819,7 +821,7 @@ fn sum_reduction_rejects_call_in_body() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 4, "i", &plan).is_none(),
         "call in loop body must disqualify sum reduction"
     );
 }
@@ -830,6 +832,7 @@ fn sum_reduction_rejects_nested_loop() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -872,7 +875,7 @@ fn sum_reduction_rejects_nested_loop() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 4, "i", &plan).is_none(),
         "nested loop must disqualify sum reduction"
     );
 }
@@ -884,6 +887,7 @@ fn sum_reduction_rejects_wrong_index_var() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -917,7 +921,7 @@ fn sum_reduction_rejects_wrong_index_var() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 4, "i", &plan).is_none(),
         "index with non-induction variable must disqualify"
     );
 }
@@ -925,6 +929,8 @@ fn sum_reduction_rejects_wrong_index_var() {
 #[test]
 fn sum_reduction_rejects_non_list_int() {
     let ops = vec![
+        storage_const("zero", 0),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -959,7 +965,7 @@ fn sum_reduction_rejects_non_list_int() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        match_loop_int_sum_shape(&ops, 0, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 2, "i", &plan).is_none(),
         "non-list_int container must disqualify"
     );
 }
@@ -970,6 +976,7 @@ fn sum_reduction_rejects_multiple_stores() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -1009,7 +1016,7 @@ fn sum_reduction_rejects_multiple_stores() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 4, "i", &plan).is_none(),
         "multiple store_var ops must disqualify"
     );
 }
@@ -1021,6 +1028,7 @@ fn sum_reduction_rejects_add_elem_mismatch() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -1054,7 +1062,7 @@ fn sum_reduction_rejects_add_elem_mismatch() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 4, "i", &plan).is_none(),
         "add operand mismatch must disqualify"
     );
 }
