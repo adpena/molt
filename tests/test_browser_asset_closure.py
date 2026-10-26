@@ -303,13 +303,18 @@ def test_canonical_browser_and_node_entries_close_over_declared_roles() -> None:
         "molt_vfs_browser.js",
         "native_callable_abi_generated.js",
         "runtime_lifecycle.js",
+        "socket_abi_generated.js",
+        "synthetic_errno_generated.js",
         "target_feature_constants.generated.js",
+        "wasi_errno_generated.js",
     )
     assert wasm_loader_asset_closure(ROOT / "wasm", NODE_RUNNER_ENTRY_ASSETS) == (
         "callable_table_abi_generated.js",
         "loader_bridge.js",
         "run_wasm.js",
         "runtime_lifecycle.js",
+        "socket_abi_generated.js",
+        "synthetic_errno_generated.js",
         "target_feature_manifest.json",
         "wasm_abi_generated.json",
     )

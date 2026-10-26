@@ -14,6 +14,11 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v11 includes current WASM deployment admission and typed resolver/OS
+error domains. The runner refuses incompatible manifests before loading modules
+and preserves resolver-versus-OS failure outcomes. These change execution
+verdicts, so v10 boards remain historical in their original comparison class.
+
 Methodology v10 separates requested profile labels from the build producer's
 observed compiler/runtime selections. Baseline and trend comparisons refuse
 missing or different observations, including historical records labelled
@@ -776,7 +781,7 @@ observation. A new Molt metric requires a declared policy. Exact native triples
 and all admitted WASM/WASI intents preserve their target distinctions; no
 runtime profile is inferred from a metric name or target.
 
-Methodology v10 governs the shared comparison policy and each comparison
+The current methodology governs the shared comparison policy and each comparison
 verdict owner (`bench_reporting`, `bench_diff`, `bench_dashboard`,
 `perf_regression` and the legacy harness), including the target-admission
 dependencies. They are not unlocked report-formatting mechanics. The canonical
