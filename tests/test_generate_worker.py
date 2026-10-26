@@ -29,7 +29,9 @@ def _default_runtime_policy():
     return CapabilityManifest().resolve()
 
 
-@pytest.mark.parametrize("version", ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0])
+@pytest.mark.parametrize(
+    "version", ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0]
+)
 def test_worker_generators_reject_incompatible_receiver_before_module_read(
     tmp_path: Path, version: object
 ) -> None:
@@ -1496,18 +1498,38 @@ def _worker_fetch_fixture_wasm() -> bytes:
         ],
     ]
     payload = b"".join(messages)
-    return attested_empty_callable_table(wasm_artifact._build_wasm_sections([
-        (1, _wasm_vec(types)),
-        (2, _wasm_vec([_wasm_function_import("wasi_snapshot_preview1", "fd_write", 0)])),
-        (3, _wasm_vec([bytes([kind]) for kind in [4, 1, 3, 1, 2, 1, 1]])),
-        (5, b"\x01\x00\x01"),
-        (6, b"\x01\x7f\x01\x41\x00\x0b"),
-        (7, _wasm_vec(exports)),
-        (10, _wasm_vec([
-            wasm_artifact._write_wasm_varuint(len(code)) + code for code in bodies
-        ])),
-        (11, b"\x01\x00\x41\x10\x0b" + wasm_artifact._write_wasm_varuint(len(payload)) + payload),
-    ]))
+    return attested_empty_callable_table(
+        wasm_artifact._build_wasm_sections(
+            [
+                (1, _wasm_vec(types)),
+                (
+                    2,
+                    _wasm_vec(
+                        [_wasm_function_import("wasi_snapshot_preview1", "fd_write", 0)]
+                    ),
+                ),
+                (3, _wasm_vec([bytes([kind]) for kind in [4, 1, 3, 1, 2, 1, 1]])),
+                (5, b"\x01\x00\x01"),
+                (6, b"\x01\x7f\x01\x41\x00\x0b"),
+                (7, _wasm_vec(exports)),
+                (
+                    10,
+                    _wasm_vec(
+                        [
+                            wasm_artifact._write_wasm_varuint(len(code)) + code
+                            for code in bodies
+                        ]
+                    ),
+                ),
+                (
+                    11,
+                    b"\x01\x00\x41\x10\x0b"
+                    + wasm_artifact._write_wasm_varuint(len(payload))
+                    + payload,
+                ),
+            ]
+        )
+    )
 
 
 def test_generated_worker_fetch_uses_real_module_instance_and_cleans_up(

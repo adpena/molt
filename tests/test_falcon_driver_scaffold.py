@@ -1192,7 +1192,9 @@ def test_falcon_deploy_rejects_incompatible_version_before_module_read(
         else:
             manifest["version"] = version
         path.write_text(json.dumps(manifest), encoding="utf-8")
-        with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
+        with pytest.raises(
+            ValueError, match="Molt deployment manifest version must be 3"
+        ):
             execution_artifact_records(tmp_path)
 
 
