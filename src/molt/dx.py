@@ -390,7 +390,7 @@ def _source_disk_guard():  # noqa: ANN202 - tools.disk_guard loads lazily
 
 
 def prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
-    """The artifact preference shared by guarded and completed commands."""
+    """The artifact preference shared by guards and maintenance policy."""
     if development_artifacts_requested(env):
         return True
     try:
@@ -402,11 +402,14 @@ def prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
 def checkout_state_maintenance_environment(
     source_root: Path, env: Mapping[str, str]
 ) -> ProcessEnvironment | None:
-    """Capture a command's artifact selection without importing source tools.
+    """Capture an initial maintenance-policy selection without source tools.
 
-    Use the same root selection as a guarded child, including a cache-hit
-    command that launches none. Installed compilers have no source collector.
-    Maintenance selection failures cannot replace the command's result.
+    This uses the guarded child's canonical root policy, including for a
+    cache-hit build that launches none. It does not pin subsequent payload
+    selection: changing external-root availability can make a child choose a
+    different default, whose maintenance waits for its next eligible owner.
+    Installed compilers have no source collector. Selection failures cannot
+    replace the command's result.
     """
     try:
         if not (compiler_source_root() / "tools" / "disk_guard.py").is_file():

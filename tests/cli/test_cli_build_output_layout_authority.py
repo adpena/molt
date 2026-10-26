@@ -99,25 +99,46 @@ def test_build_scope_owns_cached_managed_target_and_control(tmp_path, monkeypatc
         assert allowed is True
 
 
-def test_build_scope_captures_guard_artifact_default_and_cwd_before_work(
+def test_build_scope_retains_initial_maintenance_choice_as_guard_default_drifts(
     tmp_path, monkeypatch
 ):
     import os
     from molt import dx
+    from molt.disk_capacity import DiskCapacityProbe
     from molt.process_environment import ProcessEnvironment
     from molt.source_root import compiler_source_root
     from tools.harness_memory_guard import canonical_harness_env
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    first, later = tmp_path / "first", tmp_path / "later"
+    first.mkdir()
+    later.mkdir()
+    monkeypatch.setenv(
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS", os.pathsep.join((str(first), str(later)))
+    )
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
+    first_ready = True
+
+    def capacity(path, *, required_bytes):
+        ready = path != first or first_ready
+        return DiskCapacityProbe(
+            path, path, required_bytes + 1 if ready else 0, required_bytes
+        )
+
+    monkeypatch.setattr(dx, "probe_capacity", capacity)
     captured = ProcessEnvironment(os.environ)
     expected = canonical_harness_env(captured, repo_root=compiler_source_root())
+    assert expected["MOLT_EXT_ROOT"] == str(first)
     cwd = os.getcwd()
     with build_output_layout.build_scope() as scope:
         assert scope.maintenance_environment is not None
         assert (
             scope.maintenance_environment["MOLT_EXT_ROOT"] == expected["MOLT_EXT_ROOT"]
         )
-        monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "later-selection"))
+        first_ready = False
+        payload = canonical_harness_env(captured, repo_root=compiler_source_root())
+        assert payload["MOLT_EXT_ROOT"] == str(later)
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(later))
         monkeypatch.chdir(tmp_path)
     assert str(scope.cwd) == cwd
     assert scope.maintenance_environment["MOLT_EXT_ROOT"] == expected["MOLT_EXT_ROOT"]

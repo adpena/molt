@@ -1572,7 +1572,22 @@ def test_outer_completion_publishes_payload_before_real_collection(
     assert not any(path.exists() for path in roots.values())
 
 
-@pytest.mark.parametrize("owner", ["build", "driver-fix"])
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "build",
+        "driver-fix",
+        "cli-run",
+        "cli-compare",
+        "cli-test",
+        "cli-diff",
+        "cli-bench",
+        "cli-profile",
+        "cli-lint",
+        "cli-harness",
+        "cli-deploy",
+    ],
+)
 def test_published_nonzero_result_collects_selected_root_alongside_live_use(
     tmp_path, monkeypatch, capsys, owner
 ):
@@ -1645,7 +1660,7 @@ def test_published_nonzero_result_collects_selected_root_alongside_live_use(
             return command(BuildRequest(file_path="app.py", cache=False))
 
         expected = 7
-    else:
+    elif owner == "driver-fix":
         context = GateEnvironment(selected, None, False)
         monkeypatch.setattr(
             molt_dev, "prepare_gate_environment", lambda *_a, **_k: context
@@ -1657,6 +1672,24 @@ def test_published_nonzero_result_collects_selected_root_alongside_live_use(
             return molt_dev.cmd_fix(args)
 
         expected = 1
+    else:
+        from types import SimpleNamespace
+        from molt.cli import entrypoint, entrypoint_dispatch
+
+        args = SimpleNamespace(command=owner.removeprefix("cli-"), json=True)
+        monkeypatch.setattr(entrypoint, "os", ModuleView(os, environ=selected))
+        monkeypatch.setattr(
+            entrypoint,
+            "_build_entrypoint_parser",
+            lambda: SimpleNamespace(parse_args=lambda: args),
+        )
+        monkeypatch.setattr(
+            entrypoint_dispatch,
+            "_dispatch_entrypoint_command",
+            lambda *_a, **_kw: payload(),
+        )
+        run = entrypoint.main
+        expected = 7
     chosen = live_roots["cargo-target"]
     bound = checkout_state.bound_checkout_owner(chosen, ext)
     with checkout_state.checkout_state_use(((chosen, bound),)):
@@ -1670,6 +1703,144 @@ def test_published_nonzero_result_collects_selected_root_alongside_live_use(
         assert not any(path.exists() for path in gone_roots.values())
     assert observations == ["publication precedes maintenance"]
     assert valuable.read_bytes() == b"ambient is not the selected root"
+
+
+@pytest.mark.parametrize(
+    "owner", ["build-json", "build-human", "difftest", "queue", "cli-harness"]
+)
+def test_terminal_output_reaches_real_pipe_before_blocked_maintenance(tmp_path, owner):
+    import queue
+    import subprocess
+    import threading
+    import time
+    from tests.process_guard_common import start_owned_test_process
+
+    entered = tmp_path / "maintenance-entered"
+    program = tmp_path / "app.py"
+    program.write_text("print('ok')\n")
+    source = f"""
+import json, sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / "src")!r}]
+from molt import dx
+assert not sys.stdout.line_buffering, "the oracle needs a buffered real pipe"
+def block(env, *, cwd):
+    Path({str(entered)!r}).write_text("entered")
+    assert sys.stdin.buffer.read(1) == b"r"
+dx.collect_checkout_state_after_result = block
+if {owner!r}.startswith("build-"):
+    from molt.cli import build_command, output
+    from molt.cli.build_request import BuildRequest
+    def body(request):
+        if {owner!r} == "build-json":
+            output.emit_json({{"returncode": 7}}, True)
+        else:
+            output.success("human result 7")
+        return 7
+    rc = build_command._in_build_scope(body)(BuildRequest(file_path={str(program)!r}, cache=False))
+elif {owner!r} == "cli-harness":
+    from molt.cli import entrypoint, entrypoint_dispatch
+    args = SimpleNamespace(command="harness", json=True)
+    entrypoint._build_entrypoint_parser = lambda: SimpleNamespace(parse_args=lambda: args)
+    def dispatch(*args, **kwargs):
+        print(json.dumps({{"returncode": 7}}))
+        return 7
+    entrypoint_dispatch._dispatch_entrypoint_command = dispatch
+    rc = entrypoint.main()
+elif {owner!r} == "queue":
+    from tools.proof_queue_pkg import runner
+    runner._publish_terminal_result("failed", "fixture", 7, 1.0, Path("fixture.log"))
+    block({{}}, cwd=Path.cwd())
+    rc = 7
+else:
+    from tools import molt_dev
+    molt_dev.python_interpreter.probe_python_command = lambda command, **kw: molt_dev.python_interpreter.PythonInterpreter(tuple(command), command[0], "3.12.0", "CPython")
+    molt_dev._run_driver_command = lambda *a, **kw: SimpleNamespace(returncode=0)
+    def capture(command, **kwargs):
+        if command[1:3] == ["-m", "molt"]:
+            Path(command[command.index("--output") + 1]).write_bytes(b"fixture")
+        return 0, b"ok\\n", b""
+    molt_dev._difftest_capture = capture
+    args = molt_dev.build_parser().parse_args(["difftest", {str(program)!r}, "--root", {str(ROOT)!r}, "--target", "native", "--python-version", "3.12", "--out-dir", {str(tmp_path)!r}, "--json"])
+    rc = molt_dev.cmd_difftest(args)
+raise SystemExit(rc)
+"""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper()
+        not in {
+            "PYTHONUNBUFFERED",
+            "PYTEST_CURRENT_TEST",
+            "PYTEST_VERSION",
+            "MOLT_MEMORY_GUARD_ACTIVE",
+            "MOLT_MEMORY_GUARD_STARTUP_JSON",
+            "MOLT_PROOF_QUEUE",
+            "MOLT_PYTEST_OUTER_GUARD_REEXEC",
+        }
+    }
+    env.update(
+        {
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "guards"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    proc = start_owned_test_process(
+        [sys.executable, "-c", source],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    observed = queue.Queue()
+    reader = threading.Thread(
+        target=lambda: observed.put(proc.stdout.readline()), daemon=True
+    )
+    reader.start()
+    try:
+        deadline = time.monotonic() + 5
+        while (
+            not entered.exists() and proc.poll() is None and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert entered.exists(), "the command did not reach maintenance"
+        try:
+            line = observed.get(timeout=3)
+        except queue.Empty:
+            pytest.fail("terminal output stayed buffered while maintenance blocked")
+        if owner == "build-human":
+            assert line == b"human result 7\n"
+        elif owner == "queue":
+            assert line == b"failed fixture rc=7 elapsed=1.0s\n"
+        else:
+            payload = json.loads(line)
+            assert (
+                payload == {"returncode": 7}
+                if owner != "difftest"
+                else payload["passed"] is True
+            )
+        assert proc.poll() is None, (
+            "publication must be visible before maintenance returns"
+        )
+    finally:
+        try:
+            proc.stdin.write(b"r")
+            proc.stdin.flush()
+        except BrokenPipeError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        reader.join(timeout=2)
+        proc.stdin.close()
+        proc.stdout.close()
+        diagnostic = proc.stderr.read().decode("utf-8", "replace")
+        proc.stderr.close()
+    assert proc.returncode == (0 if owner == "difftest" else 7), diagnostic
 
 
 def test_the_daily_collection_also_relieves_disk_pressure(tmp_path):

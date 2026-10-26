@@ -149,6 +149,7 @@ def artifacts_identity(
 class _BuildScope:
     stack: ExitStack
     cwd: Path
+    # Scheduling policy only; this does not freeze later payload selection.
     maintenance_environment: ProcessEnvironment | None
     claimed: set[Path] = field(default_factory=set)
     state_claimed: set[Path] = field(default_factory=set)

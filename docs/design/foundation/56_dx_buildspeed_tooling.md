@@ -549,12 +549,23 @@ preserves its result, reports ordinary collection failures (including returned
 reclaim errors), and defers to an enclosing memory guard's completion.
 
 The automatic owners are the CLI build scope after its artifact claims release
-(including a cached build), DX run after its returned result, standalone
+(including a cached build), outer CLI source work after dispatch publication
+(`run`, `compare`, `test`, `diff`, `bench`, `profile`, `lint`, `harness`, `deploy`),
+DX run after its returned result, standalone
 `memory_guard` and `guarded_exec` after terminal publication, synchronous `molt_dev`
 integration/difftest/fix completion, and the proof-queue runner after source
-verification and persisted terminal custody. The build scope and driver gate
-selections capture an immutable artifact environment and cwd before work;
-maintenance does not reconstruct them from the ambient environment after work.
+verification and persisted terminal custody. The build scope captures an
+immutable initial maintenance-policy environment and cwd before work. The
+outer CLI source-work owner does the same; its guarded wrapper builds
+defer to that outer result. Initial maintenance selection uses
+the guarded child's canonical artifact-root policy, including for no-child
+cache hits, and does not pin later payload selection. If external-root
+availability changes during a build, a child can choose a different default;
+that root waits for its next eligible maintenance owner. Other command owners
+retain their actual selected environments. Maintenance does not reconstruct
+either selection from the ambient environment after work.
+Terminal JSON and human output, including the proof queue's final status,
+flush to their output streams before synchronous maintenance can block.
 Published failures are eligible too. Startup-report workers and proof
 payload workers defer to their verifying caller; the timed guarded-execution
 phase never runs this global sweep. Result publication grants scheduling only:
@@ -563,6 +574,10 @@ operations retain their existing shared checkout-state use; every candidate
 still requires a fresh policy check under its nonblocking exclusive retirement
 lock. No collector runs in low-level process/probe helpers, directory
 materialization, checkout provisioning or environment-only library APIs.
+The outer CLI hook excludes metadata/configuration, provisioning, persistent
+services, CPython-only parity execution and commands without an old automatic
+GC producer. Build/factgraph library builds retain their build-scope owner;
+the outer hook adds no duplicate build scheduling.
 Exec-forwarding wrappers have no post-exec result; raw detached launch and its
 direct `wait()` have no terminal publication owner. Those facades do not
 collect: their guarded command's eligible outer owner does. Long-lived

@@ -15,12 +15,12 @@ def success(message: str, *, file: TextIO | None = None) -> None:
     """Emit human success text without crossing JSON or quiet presentation."""
     progress.finish()
     if progress.success_is_visible():
-        print(message, file=file)
+        print(message, file=file, flush=True)
 
 
 def emit_json(payload: dict[str, Any], json_output: bool) -> None:
     if json_output:
-        print(json.dumps(payload))
+        print(json.dumps(payload), flush=True)
 
 
 def json_payload(
