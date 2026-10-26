@@ -386,6 +386,284 @@ def test_forwarded_exec_retains_native_reader_without_a_python_registry(tmp_path
     assert result.stdout.strip() == "exec-reader-kept-without-registry"
 
 
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "argument",
+        "environment",
+        "absolute",
+        "relative",
+        "path",
+        "empty-path",
+        "traversal",
+    ],
+)
+def test_forwarded_borrowed_image_retains_foreign_owner_until_child_closes(
+    tmp_path, selection
+):
+    _assert_forwarded_image_lifetime(tmp_path, selection, omit_command=False)
+
+
+def test_forwarded_image_retirement_oracle_detects_an_omitted_command(tmp_path):
+    _assert_forwarded_image_lifetime(tmp_path, "absolute", omit_command=True)
+
+
+def _assert_forwarded_image_lifetime(tmp_path, selection, *, omit_command):
+    from molt import checkout_state
+
+    # Lifetime custody is independent of live-byte admission: the existing
+    # runnable fixture supplies a real venv and the canonical state owner.
+    owner = tmp_path / "foreign-checkout"
+    artifact = tmp_path / "artifacts"
+    image = materialize_development_environment(owner, artifact, runnable=True)
+    selected = image.root
+    if selection == "traversal":
+        from tests.python_environment_test_support import create_test_venv
+
+        selected = image.root.parent / ("b" * 64)
+        create_test_venv(selected)
+        checkout_state.record_checkout_owner(
+            selected, owner=owner, kind="python-environment"
+        )
+    scripts = selected / ("Scripts" if os.name == "nt" else "bin")
+    if selection not in {"argument", "environment"}:
+        import shutil
+
+        alias = scripts / ("lease-runtime.exe" if os.name == "nt" else "lease-runtime")
+        python = scripts / ("python.exe" if os.name == "nt" else "python")
+        if os.name == "nt":
+            shutil.copyfile(python, alias)
+        else:
+            alias.symlink_to(python)
+    checkout_state.record_checkout_owner(
+        image.root, owner=owner, kind="python-environment"
+    )
+    expected_owner = checkout_state.CheckoutOwner(owner, "python-environment")
+    assert checkout_state.bound_checkout_owner(image.root, artifact) == expected_owner
+    assert Path(sys.prefix) != image.root
+    child = (
+        "import sys; from pathlib import Path; "
+        "assert Path(sys.prefix)==Path(sys.argv[1]); "
+        "sys.path.insert(0,sys.argv[2]); "
+        "from molt.checkout_state import checkout_state_retirement; "
+        "holds=[checkout_state_retirement(Path(root)) for root in dict.fromkeys((sys.argv[1],sys.argv[4]))]; "
+        "admitted=[hold.__enter__() for hold in holds]; "
+        "assert admitted==[sys.argv[3]=='True']*len(holds), (admitted,sys.prefix); "
+        "[hold.__exit__(None,None,None) for hold in reversed(holds)]; "
+        "print('live-child-retirement-observed')"
+    )
+    payload = [
+        "-B",
+        "-I",
+        "-c",
+        child,
+        str(selected),
+        str(ROOT / "src"),
+        str(omit_command),
+        str(image.root),
+    ]
+    environment = ProcessEnvironment(os.environ).without(
+        (
+            "MOLT_VENV",
+            "VIRTUAL_ENV",
+            "UV_PROJECT_ENVIRONMENT",
+            "PYTHONPYCACHEPREFIX",
+            "PYTHONDONTWRITEBYTECODE",
+            "PYTHONPATH",
+        )
+    )
+    if selection in {"argument", "environment"}:
+        command = [
+            sys.executable,
+            "-B",
+            "-I",
+            "-S",
+            str(ROOT / "tools/venv_exec.py"),
+            *(["--venv", str(image.root)] if selection == "argument" else []),
+            "python",
+            *payload,
+        ]
+        # A conflicting MOLT selector must not replace an explicit --venv.
+        environment = environment.updated(
+            {
+                "MOLT_VENV": str(
+                    image.root if selection == "environment" else tmp_path / "unused"
+                )
+            }
+        )
+    else:
+        # The outer guard sees only its bootstrap outside the image. Actual
+        # PATH/cwd selection happens inside that process, at forward_command.
+        before = """
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from molt import checkout_state
+from molt.process_spawn import forward_command
+image, mode = Path(sys.argv[2]), sys.argv[3]
+scripts = image / ('Scripts' if os.name == 'nt' else 'bin')
+python = scripts / ('lease-runtime.exe' if os.name == 'nt' else 'lease-runtime')
+env = dict(os.environ)
+working = Path.cwd()
+if mode == 'relative':
+    executable = os.path.relpath(python, working)
+elif mode == 'traversal':
+    working = scripts
+    sibling = image.parent / ('b'*64) / scripts.name / python.name
+    executable = os.path.relpath(sibling, working)
+elif mode in {'path', 'empty-path'}:
+    executable = python.name
+    env['PATH'] = str(scripts) if mode == 'path' else ''
+    if os.name == 'nt':
+        # CreateProcess searches its calling process's native PATH.
+        os.environ['PATH'] = env['PATH']
+        os.environ.pop('NoDefaultCurrentDirectoryInExePath', None)
+    if mode == 'empty-path':
+        working = scripts
+        # Windows searches its parent process cwd, not child's cwd.
+        os.chdir(working)
+else:
+    executable = str(python)
+if sys.argv[4] == 'True':
+    # Controlled original defect: omit argv resources while keeping the real
+    # lease/retirement authorities and actual forwarded child unchanged.
+    checkout_state.checkout_state_command_roots = (
+        lambda source, environment, command, **kw:
+        checkout_state.checkout_state_environment_roots(source, environment, **kw)
+    )
+forward_command([executable, *sys.argv[5:]], env=env, cwd=working)
+"""
+        command = [
+            sys.executable,
+            "-B",
+            "-I",
+            "-S",
+            "-c",
+            before,
+            str(ROOT / "src"),
+            str(image.root),
+            selection,
+            str(omit_command),
+            *payload,
+        ]
+    result = run_guarded_test_process(
+        command, cwd=tmp_path, env=environment, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "live-child-retirement-observed"
+    with checkout_state.checkout_state_retirement(image.root) as admitted:
+        assert admitted is True
+    with checkout_state.checkout_state_retirement(selected) as admitted:
+        assert admitted is True
+    assert checkout_state.bound_checkout_owner(image.root, artifact) == expected_owner
+
+
+def test_command_resource_projection_preserves_native_posix_path_semantics(tmp_path):
+    from molt import process_launch
+
+    if os.name == "nt":
+        pytest.skip("POSIX exec search; Windows uses native caller facts")
+    assert tuple(
+        resource.path
+        for resource in process_launch.command_resources(["missing"], {}, cwd=tmp_path)
+    ) == tuple(
+        Path(entry) if Path(entry).is_absolute() else tmp_path / entry
+        for entry in os.get_exec_path({})
+    )
+    assert tuple(
+        resource.path
+        for resource in process_launch.command_resources(
+            ["missing"], {"PATH": ""}, cwd=tmp_path
+        )
+    ) == (tmp_path,)
+    assert tuple(
+        resource.path
+        for resource in process_launch.command_resources(
+            ["./relative/missing"], {"PATH": "/unused"}, cwd=tmp_path
+        )
+    ) == (tmp_path / "relative/missing",)
+
+
+def test_absolute_windows_resource_needs_no_native_search_facts(tmp_path, monkeypatch):
+    from molt import process_launch
+
+    def forbidden():
+        raise AssertionError("absolute entrypoint performed native search work")
+
+    install_module_os_view(monkeypatch, process_launch, name="nt")
+    monkeypatch.setattr(process_launch, "native_environment_reader", forbidden)
+    executable = tmp_path / "arbitrary-entrypoint"
+    assert process_launch.command_resources([str(executable)], {}, cwd=ROOT) == (
+        process_launch.NativeLaunchResource(executable, "entrypoint"),
+    )
+
+
+def test_ordinary_command_resource_projection_does_not_probe_filesystem(
+    tmp_path, monkeypatch
+):
+    from molt.checkout_state import checkout_state_command_roots
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("ordinary unmanaged launch coordinate was probed")
+
+    with monkeypatch.context() as patch:
+        for name in ("lstat", "stat", "resolve"):
+            patch.setattr(Path, name, forbidden)
+        roots = checkout_state_command_roots(
+            ROOT,
+            {"PATH": os.pathsep.join(str(tmp_path / f"path-{i}") for i in range(16))},
+            ["missing-command"],
+            cwd=tmp_path,
+        )
+    assert roots == ((Path(sys.prefix).absolute(), None),)
+
+
+@pytest.mark.parametrize("unused", ["absent", "unowned", "indirect", "inaccessible"])
+def test_optional_launch_coordinates_preserve_native_failure_policy(
+    tmp_path, monkeypatch, unused
+):
+    from molt import checkout_state
+
+    owner = tmp_path / "owner"
+    artifact = tmp_path / "unused-artifacts"
+    candidate = (
+        artifact
+        / "build-environments/development"
+        / dx.checkout_component(owner)
+        / ("a" * 64)
+    )
+    if unused != "absent":
+        if unused == "indirect":
+            outside = tmp_path / "unmanaged"
+            outside.mkdir()
+            candidate.parent.mkdir(parents=True)
+            try:
+                candidate.symlink_to(outside, target_is_directory=True)
+            except OSError:
+                pytest.skip("directory symlink unavailable")
+        else:
+            candidate.mkdir(parents=True)
+    if unused == "inaccessible":
+        original = checkout_state._managed_coordinate
+
+        def denied(path):
+            if path == candidate:
+                raise PermissionError("unused candidate cannot be inspected")
+            return original(path)
+
+        monkeypatch.setattr(checkout_state, "_managed_coordinate", denied)
+    env = {
+        "PATH": os.pathsep.join((str(tmp_path / "ordinary"), str(candidate / "bin"))),
+        "VIRTUAL_ENV": str(candidate),
+    }
+    roots = checkout_state.checkout_state_command_roots(
+        ROOT, env, ["missing-command"], cwd=tmp_path
+    )
+    assert roots == ((Path(sys.prefix).absolute(), None),)
+    with checkout_state.checkout_state_use(roots):
+        assert not (artifact / "target").exists()
+
+
 @pytest.mark.parametrize("failure", [None, "spawn", "wait"])
 def test_windows_forward_retains_actual_child_use_after_failed_cleanup_and_gc(
     tmp_path, monkeypatch, failure

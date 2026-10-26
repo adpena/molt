@@ -17,7 +17,7 @@ shorter idle limit (`is_session_target`).
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager, ExitStack, suppress
 from dataclasses import dataclass
 import os
@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal, get_args
 
 if TYPE_CHECKING:
     from .file_locks import _FileLockHandle
+    from .process_launch import NativeLaunchResource
 
 from .custody_layout import SCRATCH_DIRNAME
 from .exact_json import ExactJsonError, read_exact, write_exact
@@ -496,13 +497,18 @@ def checkout_state_retirement(
                     metadata.rmdir()
 
 
-def checkout_state_command_roots(
+def checkout_state_environment_roots(
     source_root: Path,
     environment: Mapping[str, str],
     *,
     cwd: str | os.PathLike[str] | None = None,
 ) -> tuple[tuple[Path, CheckoutOwner | None], ...]:
-    """Finite actual selections of a command, with no sibling discovery."""
+    """Declared state and this process's environment, without a child command.
+
+    Suite owners and a detached worker acknowledging its own use hold this
+    explicit projection. Launch owners must use ``checkout_state_command_roots``.
+    Activation is a declared resource selection, never interpreter identity.
+    """
     from .build_state_layout import build_state_root
 
     roots: dict[Path, CheckoutOwner | None] = {}
@@ -558,7 +564,115 @@ def checkout_state_command_roots(
                 project_root=source_root, cargo_target=target, environment=environment
             )
         roots[control] = CheckoutOwner(target, "build-control")
+    if raw_virtual := environment.get("VIRTUAL_ENV", "").strip():
+        from .process_launch import NativeLaunchResource
+
+        virtual = Path(raw_virtual).expanduser()
+        if not virtual.is_absolute():
+            virtual = working / virtual
+        _retain_python_resources(roots, (NativeLaunchResource(virtual, "directory"),))
     return tuple(roots.items())
+
+
+def checkout_state_command_roots(
+    source_root: Path,
+    environment: Mapping[str, str],
+    command: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+) -> tuple[tuple[Path, CheckoutOwner | None], ...]:
+    """Retain finite declared and possible native command resources.
+
+    Candidate directories conservatively retain a published environment even
+    when another PATH entry wins. This does not select or admit an executable.
+    Ordinary unmanaged coordinates receive no filesystem probe; only a bounded
+    enclosing published-image coordinate enters the existing custody authority.
+    """
+    from .process_launch import command_resources
+
+    roots = dict(checkout_state_environment_roots(source_root, environment, cwd=cwd))
+    working = Path.cwd() if cwd is None else Path(cwd).absolute()
+    _retain_python_resources(
+        roots, command_resources(command, environment, cwd=working)
+    )
+    return tuple(roots.items())
+
+
+def _retain_python_resources(
+    roots: dict[Path, CheckoutOwner | None],
+    resources: Iterable[NativeLaunchResource],
+) -> None:
+    """Optional launch resources confer use only on existing bound images.
+
+    Missing, foreign, unowned or inaccessible search coordinates impose no new
+    launch refusal or materialization intent. Strict admission and retirement
+    retain their existing no-link checks. Resolve only enclosing directories,
+    preserving the environment's lexical interpreter entrypoint symlink.
+    """
+    container = CHECKOUT_STATE_CONTAINERS["python-environment"]
+    qualified: dict[Path, tuple[Path, CheckoutOwner | None] | None] = {}
+
+    def prefixes(member: Path) -> Generator[Path, None, None]:
+        parts = member.parts
+        names = tuple(os.path.normcase(part) for part in parts)
+        for start in range(len(parts) - len(container) - 1):
+            end = start + len(container) + 2
+            if (
+                names[start : start + len(container)] == container
+                and _COMPONENT.fullmatch(names[end - 2]) is not None
+                and _ADDRESS.fullmatch(names[end - 1]) is not None
+            ):
+                yield Path(*parts[:end])
+
+    def retain(root: Path) -> bool:
+        if root in roots:
+            return True  # Already retained by this operation's explicit intent.
+        if root not in qualified:
+            qualified[root] = None
+            try:
+                physical = root.resolve(strict=True)
+                if physical in roots:
+                    qualified[root] = (physical, roots[physical])
+                    return True
+                coordinate = _managed_coordinate(physical)
+                if (
+                    coordinate is not None
+                    and coordinate.kind == "python-environment"
+                    and physical.is_dir()
+                ):
+                    owner = bound_checkout_owner(physical, coordinate.artifact)
+                    if owner is not None and owner.kind == "python-environment":
+                        qualified[root] = (physical, owner)
+            except (OSError, ValueError, RuntimeError):
+                # Optional search membership is not a stricter executable
+                # resolver. The unchanged native launch decides these errors.
+                pass
+        selected = qualified[root]
+        if selected is None:
+            return False
+        physical, owner = selected
+        roots.setdefault(physical, owner)
+        return True
+
+    for resource in resources:
+        member = resource.path
+        names = tuple(os.path.normcase(part) for part in member.parts)
+        if any(part not in names for part in container):
+            continue  # No filesystem probe for an ordinary unmanaged coordinate.
+        normalized = Path(os.path.abspath(member))
+        present = False
+        for lexical in dict.fromkeys((member, normalized)):
+            for root in prefixes(lexical):
+                present = retain(root) or present
+        if not present:
+            continue
+        directory = member if resource.kind == "directory" else member.parent
+        try:
+            physical_directory = directory.resolve(strict=True)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        for root in prefixes(physical_directory):
+            retain(root)
 
 
 def checkout_scratch_state_dir(
