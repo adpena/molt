@@ -1005,6 +1005,53 @@ class SealedExecutionProjection:
 SEALED_REPLAY_EXECUTION = SealedExecutionProjection("replay", 1073741824, 67108864, 60)
 
 
+def _sealed_archive_snapshot(archive: Path, *, sha256: str) -> tuple[int, int]:
+    """Return a caller-owned sealed descriptor without buffering the archive."""
+    import fcntl
+    from molt.toolchain_identity import (
+        iter_stable_regular_file_chunks,
+        open_stable_regular_file,
+    )
+
+    # Linux UAPI include/uapi/{asm-generic,linux}/fcntl.h. Python builds using
+    # older build headers can omit these names while the running kernel fully
+    # supports memfd sealing. Bind the Linux ABI directly, then verify the seals.
+    add_seals, get_seals = 1024 + 9, 1024 + 10
+    seals = 0x0001 | 0x0002 | 0x0004 | 0x0008  # SEAL, SHRINK, GROW, WRITE
+    descriptor = None
+    try:
+        with open_stable_regular_file(archive, label="sealed archive") as opened:
+            size = opened.stat.st_size
+            if size > 1024 * 1024 * 1024:
+                raise ValueError(f"sealed archive exceeds size limit: {archive}")
+            descriptor = os.memfd_create(
+                "molt-sealed-root", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+            )
+            digest = hashlib.sha256()
+            with os.fdopen(os.dup(descriptor), "wb") as stream:
+                for chunk in iter_stable_regular_file_chunks(
+                    opened, chunk_bytes=1024 * 1024
+                ):
+                    if stream.write(chunk) != len(chunk):
+                        raise OSError("short write while snapshotting sealed archive")
+                    digest.update(chunk)
+                    del chunk
+            if digest.hexdigest() != sha256:
+                raise ValueError("sealed archive changed before immutable import")
+        # Source pathname/handle/change-time fences close before the immutable
+        # descriptor crosses the import boundary. Later source edits cannot
+        # change the snapshot supplied to the system manager.
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        fcntl.fcntl(descriptor, add_seals, seals)
+        if fcntl.fcntl(descriptor, get_seals) != seals:
+            raise ValueError("sealed archive is not immutable")
+        return descriptor, size
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+
+
 def _sealed_nonce(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value):
         raise ValueError("sealed systemd nonce is invalid")
@@ -1771,7 +1818,6 @@ class SealedRootTransport:
         evidence: Path,
         projection: SealedExecutionProjection = SEALED_REPLAY_EXECUTION,
     ) -> dict:
-        from molt.toolchain_identity import capture_stable_regular_file
         from tools.release import execution_root
 
         if type(projection) is not SealedExecutionProjection:
@@ -1789,43 +1835,24 @@ class SealedRootTransport:
             )
         self._provider_identity = self._provider()
         validate_sealed_systemd_provider(self._provider_identity, arch=arch)
-        identity, data = capture_stable_regular_file(
-            archive, label="sealed archive", max_bytes=1024 * 1024 * 1024
-        )
-        if identity.sha256 != sha256:
-            raise ValueError("sealed archive changed before immutable import")
-        self._source_root = archive.parent / "rootfs"
-        self._files = execution_root.root_inventory(self._source_root)
-        execution_root.validate_sealed_tar(
-            archive,
-            self._source_root,
-            expected_archive={"sha256": sha256, "size": identity.size},
-            projection=projection,
-        )
-        nonce = secrets.token_hex(16)
-        unit = f"molt-release-import-{nonce}.service"
-        description = f"molt-sealed-import:{nonce}:{sha256}"
-        self._root = f"/run/molt-release-{nonce}/rootfs"
-        if Path(self._root).exists():
-            raise ValueError("sealed import runtime directory already exists")
-        evidence.mkdir(parents=True, exist_ok=False)
-        self._evidence = evidence
-        import fcntl
-
-        fd = os.memfd_create("molt-sealed-root", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+        fd, archive_size = _sealed_archive_snapshot(archive, sha256=sha256)
         try:
-            with os.fdopen(os.dup(fd), "wb") as stream:
-                stream.write(data)
-            os.lseek(fd, 0, os.SEEK_SET)
-            seals = (
-                fcntl.F_SEAL_SEAL
-                | fcntl.F_SEAL_SHRINK
-                | fcntl.F_SEAL_GROW
-                | fcntl.F_SEAL_WRITE
+            self._source_root = archive.parent / "rootfs"
+            self._files = execution_root.root_inventory(self._source_root)
+            execution_root.validate_sealed_tar(
+                archive,
+                self._source_root,
+                expected_archive={"sha256": sha256, "size": archive_size},
+                projection=projection,
             )
-            fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
-            if fcntl.fcntl(fd, fcntl.F_GET_SEALS) != seals:
-                raise ValueError("sealed archive is not immutable")
+            nonce = secrets.token_hex(16)
+            unit = f"molt-release-import-{nonce}.service"
+            description = f"molt-sealed-import:{nonce}:{sha256}"
+            self._root = f"/run/molt-release-{nonce}/rootfs"
+            if Path(self._root).exists():
+                raise ValueError("sealed import runtime directory already exists")
+            evidence.mkdir(parents=True, exist_ok=False)
+            self._evidence = evidence
             properties = sealed_systemd_import_properties(
                 nonce, sha256, f"/proc/{os.getpid()}/fd/{fd}"
             )
