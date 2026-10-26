@@ -78,7 +78,7 @@ fn const_policy_routes_full_i64_outside_inline_payload_to_runtime_anchor() {
 }
 
 #[test]
-fn const_policy_classifies_runtime_seed_and_literal_scratch() {
+fn const_policy_classifies_runtime_seed_and_literal_payload() {
     for (kind, payload, import, lir_policy) in [
         (
             "const_str",
@@ -100,10 +100,6 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
         ),
     ] {
         let policy = WasmConstOpPolicy::for_kind(kind).expect("literal const policy");
-        assert!(
-            policy.needs_literal_scratch(),
-            "{kind} must allocate literal scratch"
-        );
         assert_eq!(policy.literal_payload(), Some(payload));
         assert_eq!(policy.materializer_import(), Some(import));
         assert_eq!(policy.lir_fast_policy(), lir_policy);
@@ -115,10 +111,6 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
 
     for kind in ["const_not_implemented", "const_ellipsis"] {
         let policy = WasmConstOpPolicy::for_kind(kind).expect("runtime singleton policy");
-        assert!(
-            !policy.needs_literal_scratch(),
-            "{kind} must not allocate literal scratch"
-        );
         assert_eq!(policy.literal_payload(), None);
         assert!(policy.materializer_import().is_some());
         assert_eq!(

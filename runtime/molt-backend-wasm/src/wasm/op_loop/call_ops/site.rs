@@ -220,7 +220,6 @@ mod tests {
     use crate::OpIR;
     use crate::wasm::local_analysis::ValueOccupancy;
     use crate::wasm::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
-    use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 
     fn op(kind: &str, out: Option<&str>, args: &[&str]) -> OpIR {
         OpIR {
@@ -287,20 +286,10 @@ mod tests {
             &mut local_types,
             &mut local_count,
         );
-        locals.ensure_literal_scratch(
-            "payload",
-            OwnedLiteralPayloadKind::String,
-            &mut local_types,
-            &mut local_count,
-        );
 
         let liveness = linear_region(&[
             op("call", Some("result"), &[]),
-            op(
-                "tuple_new",
-                Some("later"),
-                &["value", "__molt_tmp0", "payload_ptr", "payload_len"],
-            ),
+            op("tuple_new", Some("later"), &["value", "__molt_tmp0"]),
         ]);
         assert_eq!(
             collect_live_object_locals_for_call(&locals, &liveness, 0, None,),

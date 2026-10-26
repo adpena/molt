@@ -103,7 +103,6 @@ impl WasmFunctionFrame {
                 backend,
                 func,
                 &anchor.op,
-                &self.locals,
                 func_index,
                 reloc_enabled,
                 import_ids,
@@ -125,14 +124,6 @@ impl WasmFunctionFrame {
                 self.const_cache.emit_none(func);
                 self.emit_return(func, 1);
                 func.instruction(&Instruction::End);
-            }
-            if let Some((source, aliases)) = anchor.scratch_aliases.split_first() {
-                for alias in aliases {
-                    func.instruction(&Instruction::LocalGet(source.ptr_local()));
-                    func.instruction(&Instruction::LocalSet(alias.ptr_local()));
-                    func.instruction(&Instruction::LocalGet(source.len_local()));
-                    func.instruction(&Instruction::LocalSet(alias.len_local()));
-                }
             }
         }
 

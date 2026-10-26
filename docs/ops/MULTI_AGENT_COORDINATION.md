@@ -94,6 +94,28 @@ tooling rules and add no work to emitted programs.
 
 ## Startup Discovery
 
+Every dispatch uses `tools.dispatch_prompt.DispatchBounds` (or the CLI's required
+`--bounds` JSON file). Specify `outcome`, `deliverable`, `integration_owner`,
+`proof_owner`, `owned_paths`, `proof_commands`, `budget_minutes` and `stop_when`.
+There are no inferred defaults: empty path and command arrays explicitly mean
+read-only work and no proof launches. Workers return when their deliverable or
+budget is reached, closing owned commands through their existing custody owner.
+Only the parent can assign expanded scope, research, proofs or delegation after
+reassessing the critical path. These are validated dispatch inputs and supervisory
+rules, not a sandbox or a mechanism that terminates arbitrary agent processes.
+
+Use one proof owner and inspect matching retained evidence before requesting a
+run. An independent reviewer challenges the changed contract and oracle; it does
+not automatically rerun a passing proof. Read-only findings are valid deliverables.
+The integration owner lands and retires source work; workers have no per-turn
+commit, proof-run or landing quota. `AGENTS.md` is the standing policy and
+`CLAUDE.md` imports that same authority.
+
+Classify facts and identities with typed structures, declared schemas and
+canonical deterministic parsers first. If genuine ambiguity remains, `fmtools`
+may assist classification on macOS as a fallback. It is not a cross-platform
+prerequisite or an authority that overrides typed identities and execution evidence.
+
 Every agent that may run builds, differential tests, conformance, regrtest,
 benchmarks, or long validation must do this before the first heavy command:
 
