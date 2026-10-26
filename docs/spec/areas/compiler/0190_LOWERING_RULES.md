@@ -148,8 +148,21 @@ runtime exception pending; they never unwind through caller invocation, recursio
 reference-count or Rust runtime guards. Native EH does not replace runtime
 exception push/pop state or pending-error checks. Foreign exceptions retain their
 identity when propagated through activation cleanup. Ordinary return, suspension
-and failed construction share one boxed-result epilogue, so anchor cleanup grows
-with the number of anchors rather than anchors times exits. Statically known
+and failed construction share one boxed-result epilogue. SimpleIR WASM heap
+literal anchors occupy an invocation-private scratch region: one checked `8*A`
+byte allocation for `A > 0`, no region or allocator calls for `A = 0`. The
+existing resource-accounted scratch ABI owns allocation failure and freeing.
+Every slot is initialized to boxed `None` before construction, then published
+before checking pending failure. Each literal use retains its separate result
+owner. Reverse cleanup clears each slot before decref and frees the region
+once after the last release; a null allocation skips all region accesses and
+returns through the same epilogue without claiming Python frame entry. Counted
+initialization and cleanup loops keep emitted storage-management code constant
+in anchor count. This trades one allocation/free pair and linear memory traffic
+per invocation for fewer long-lived WASM SSA values; tiny-literal hot paths and
+compiler memory/latency are separate performance obligations. LIR-fast literals
+retain their per-operation result ownership and native anchors retain their
+native stack-slot storage. Statically known
 forward WASM dispatch edges use their enclosing block labels directly, including
 pending-error checks and ready await continuations. The operation-to-block map
 also owns saved-state lookup; only backward or dynamic resume edges reenter the

@@ -15,7 +15,8 @@ pub(in crate::wasm) enum WasmFrameAnonymousLocal {
     ConstNoneBits,
     ConstQnanTagMask,
     ConstQnanTagPtr,
-    ConstLiteralAnchor,
+    ConstAnchorRegionBase,
+    ConstAnchorTemporary,
 }
 
 impl WasmFrameAnonymousLocal {
