@@ -559,15 +559,30 @@ def test_incident_capsules_in_active_directory_do_not_claim_guard_custody(tmp_pa
 # --- 2c. a lock-held dir is never reclaimed (real held lock) ----------------
 
 
-def test_lock_held_dir_never_reclaimed(tmp_path):
+@pytest.mark.parametrize("lock_name", [".cargo-lock", ".cargo-build-lock"])
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "",
+        "debug",
+        "wasm32-wasip1/release",
+        "sessions/shard-7/debug",
+        "sessions/shard-7/wasm32-wasip1/release",
+        ".molt-toolchains/0123abcd/dev-fast",
+        ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast",
+        "sessions/shard-7/.molt-toolchains/0123abcd/dev-fast",
+        "sessions/shard-7/.molt-toolchains/0123abcd/wasm32-wasip1/dev-fast",
+    ],
+)
+def test_lock_held_dir_never_reclaimed(tmp_path, profile, lock_name):
     now = 2_000_000.0
     d = tmp_path / "target" / "codex-building"
     d.mkdir(parents=True)
     (d / "artifact.bin").write_bytes(b"\0" * 4096)
-    lock_path = d / ".cargo-lock"
+    lock_path = d / profile / lock_name
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_bytes(b"\0")
-    stamp = now - 100_000  # otherwise-stale
-    os.utime(d, (stamp, stamp))
+    _last_used([d], 100_000, now)  # The held lock is the only live signal.
 
     handle = open(lock_path, "a+b")
     got_lock = False
@@ -615,6 +630,16 @@ def test_lock_held_dir_never_reclaimed(tmp_path):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+    assert dg._lock_held(d) is False
+    released = dg.ensure_free(
+        root=str(tmp_path),
+        config=_cfg(),
+        free_bytes_fn=vol,
+        now_fn=lambda: now,
+        env={},
+    )
+    assert str(d.resolve()) in _reclaimed(released)
+    assert not d.exists()
 
 
 # --- 3. AGENT-SAFETY source scan: zero process-actuation tokens -------------
@@ -1886,6 +1911,34 @@ def test_the_daily_collection_also_relieves_disk_pressure(tmp_path):
         ("cargo-target", "wasm32-wasip1/dev-fast/.cargo-lock"),
         ("cargo-target", "sessions/shard-7/debug/.cargo-lock"),
         ("cargo-target", "sessions/shard-7/wasm32-wasip1/release/.cargo-lock"),
+        ("cargo-target", ".molt-toolchains/0123abcd/dev-fast/.cargo-lock"),
+        (
+            "cargo-target",
+            ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/dev-fast/.cargo-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/"
+            "wasm32-wasip1/dev-fast/.cargo-lock",
+        ),
+        ("cargo-target", ".molt-toolchains/0123abcd/dev-fast/.cargo-build-lock"),
+        (
+            "cargo-target",
+            ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-build-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/dev-fast/.cargo-build-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/"
+            "wasm32-wasip1/dev-fast/.cargo-build-lock",
+        ),
         ("build-control", "build_locks/runtime.dev-fast.native.lock"),
         ("build-control", "diff_run.lock"),
         ("build-control", "backend_daemon/suite-leases/0123abcd/owner.lock"),
@@ -2176,6 +2229,13 @@ def test_pressure_evicts_session_targets_by_last_use_outside_the_window(tmp_path
         ("target", ".cargo-lock"),
         ("target", "debug/.cargo-lock"),
         ("target", "wasm32-wasip1/release/.cargo-lock"),
+        ("target", ".molt-toolchains/0123abcd/dev-fast/.cargo-lock"),
+        ("target", ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-lock"),
+        ("target", ".molt-toolchains/0123abcd/dev-fast/.cargo-build-lock"),
+        (
+            "target",
+            ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-build-lock",
+        ),
         ("control", "build_locks/runtime.dev-fast.native.lock"),
         ("control", "diff_run.lock"),
         ("control", "backend_daemon/suite-leases/0123abcd/owner.lock"),
