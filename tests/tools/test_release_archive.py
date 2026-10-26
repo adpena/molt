@@ -97,6 +97,66 @@ def test_timestamp_is_clamped(tmp_path: Path, epoch: int, year: int) -> None:
         assert {member.date_time[0] for member in archive.infolist()} == {year}
 
 
+def test_selected_archive_streams_owned_inputs_and_preserves_readonly_mode(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    (source / "resources").mkdir(parents=True)
+    (source / "resources/payload").write_bytes(b"immutable input")
+    (source / "unselected").symlink_to(tmp_path / "absent")
+    archive = source / "retained.zip"
+    release_archive.write_reproducible_zip(
+        source,
+        archive,
+        source_date_epoch=1_700_000_000,
+        selected=("resources",),
+        mode_resolver=lambda _: 0o444,
+    )
+    with zipfile.ZipFile(archive) as handle:
+        assert handle.namelist() == ["resources/payload"]
+        assert handle.read("resources/payload") == b"immutable input"
+    extracted = tmp_path / "extracted"
+    release_archive.extract_zip_strict(archive, extracted)
+    assert stat.S_IMODE((extracted / "resources/payload").stat().st_mode) == 0o444
+
+
+def test_selected_in_tree_output_rejects_replaced_parent_before_streaming(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "payload").write_bytes(b"original")
+    real_stage = release_archive.tempfile.mkdtemp
+    real_zip = release_archive.zipfile.ZipFile
+    started = []
+
+    def replace_parent(*args, **kwargs):
+        staged = Path(real_stage(*args, **kwargs))
+        displaced = tmp_path / "displaced"
+        source.rename(displaced)
+        source.mkdir()
+        (displaced / "payload").rename(source / "payload")
+        (displaced / staged.name).rename(source / staged.name)
+        return str(staged)
+
+    def start_archive(*args, **kwargs):
+        started.append(args[0])
+        return real_zip(*args, **kwargs)
+
+    monkeypatch.setattr(release_archive.tempfile, "mkdtemp", replace_parent)
+    monkeypatch.setattr(release_archive.zipfile, "ZipFile", start_archive)
+    with pytest.raises(ValueError, match="directory changed"):
+        release_archive.write_reproducible_zip(
+            source,
+            source / "archive.zip",
+            source_date_epoch=1_700_000_000,
+            selected=("payload",),
+        )
+    assert started == []
+    assert (source / "payload").read_bytes() == b"original"
+    assert not (source / "archive.zip").exists()
+
+
 def test_prefix_and_mode_resolver_have_one_authority(tmp_path: Path) -> None:
     output = tmp_path / "archive.zip"
     release_archive.write_reproducible_zip(
