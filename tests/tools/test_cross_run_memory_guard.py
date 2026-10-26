@@ -1097,8 +1097,7 @@ def test_sealed_execution_rejects_projection_substitution_before_observation(
 def test_sealed_import_passes_projection_to_archive_admission(
     monkeypatch, tmp_path, compilation
 ):
-    from types import SimpleNamespace
-    from molt import toolchain_identity
+    import hashlib
     from tools.release import execution_root
 
     projection = (
@@ -1108,17 +1107,22 @@ def test_sealed_import_passes_projection_to_archive_admission(
     )
     transport = cross_run.SealedRootTransport()
     archive = tmp_path / "rootfs.tar"
-    digest = "a" * 64
+    archive.write_bytes(b"archive")
+    digest = hashlib.sha256(b"archive").hexdigest()
     install_module_view(monkeypatch, "sys", cross_run.sys, cross_run, platform="linux")
     monkeypatch.setattr(transport, "_provider", lambda: {})
     monkeypatch.setattr(
         cross_run, "validate_sealed_systemd_provider", lambda *a, **k: None
     )
-    monkeypatch.setattr(
-        toolchain_identity,
-        "capture_stable_regular_file",
-        lambda *a, **k: (SimpleNamespace(sha256=digest, size=7), b"archive"),
-    )
+    descriptors = []
+
+    def snapshot(path, *, sha256):
+        assert path == archive and sha256 == digest
+        descriptor = os.open(path, os.O_RDONLY)
+        descriptors.append(descriptor)
+        return descriptor, 7
+
+    monkeypatch.setattr(cross_run, "_sealed_archive_snapshot", snapshot)
     monkeypatch.setattr(execution_root, "root_inventory", lambda _: [])
 
     class ArchiveBoundaryReached(Exception):
@@ -1138,8 +1142,8 @@ def test_sealed_import_passes_projection_to_archive_admission(
                 "runtime_max_seconds": 60,
             }
         )
-        # Stop at the real archive-admission boundary, before memfd, directory
-        # creation or service dispatch. Failed admission must not arm execution.
+        # Stop at the archive-admission boundary, before evidence creation or
+        # service dispatch. Failed admission must close its private snapshot.
         raise ArchiveBoundaryReached
 
     monkeypatch.setattr(execution_root, "validate_sealed_tar", admit)
@@ -1158,6 +1162,87 @@ def test_sealed_import_passes_projection_to_archive_admission(
         )
     assert transport._execution is None
     assert not (tmp_path / "evidence").exists()
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+@pytest.mark.skipif(not hasattr(os, "memfd_create"), reason="Linux sealed memfd")
+def test_sealed_archive_snapshot_keeps_original_bytes_and_refuses_writes(tmp_path):
+    import hashlib
+
+    archive = tmp_path / "archive"
+    archive.write_bytes(b"original snapshot bytes")
+    descriptor, size = cross_run._sealed_archive_snapshot(
+        archive, sha256=hashlib.sha256(b"original snapshot bytes").hexdigest()
+    )
+    try:
+        archive.write_bytes(b"changed source")
+        assert size == len(b"original snapshot bytes")
+        assert os.read(descriptor, size + 1) == b"original snapshot bytes"
+        with pytest.raises(OSError):
+            os.write(descriptor, b"replacement")
+        with pytest.raises(OSError):
+            os.ftruncate(descriptor, 0)
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.skipif(not hasattr(os, "memfd_create"), reason="Linux sealed memfd")
+@pytest.mark.parametrize("change", ["grow", "rewrite", "replace"])
+def test_sealed_archive_snapshot_rejects_mutation_and_closes_fd(
+    monkeypatch, tmp_path, change
+):
+    import hashlib
+    from molt import toolchain_identity
+
+    archive = tmp_path / "archive"
+    archive.write_bytes(b"original snapshot bytes")
+    real_chunks = toolchain_identity.iter_stable_regular_file_chunks
+    real_memfd = os.memfd_create
+    descriptors = []
+
+    def memfd(*args):
+        descriptor = real_memfd(*args)
+        descriptors.append(descriptor)
+        return descriptor
+
+    def chunks(opened, **kwargs):
+        for chunk in real_chunks(opened, **kwargs):
+            yield chunk
+            if change == "grow":
+                with archive.open("ab") as target:
+                    target.write(b"extra")
+            elif change == "rewrite":
+                archive.write_bytes(b"original snapshot bytes")
+            else:
+                replacement = tmp_path / "replacement"
+                replacement.write_bytes(b"original snapshot bytes")
+                os.replace(replacement, archive)
+
+    monkeypatch.setattr(os, "memfd_create", memfd)
+    monkeypatch.setattr(toolchain_identity, "iter_stable_regular_file_chunks", chunks)
+    with pytest.raises((ValueError, OSError)):
+        cross_run._sealed_archive_snapshot(
+            archive, sha256=hashlib.sha256(b"original snapshot bytes").hexdigest()
+        )
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+@pytest.mark.skipif(not hasattr(os, "memfd_create"), reason="Linux sealed memfd")
+def test_sealed_archive_snapshot_checks_bound_before_allocating(monkeypatch, tmp_path):
+    archive = tmp_path / "archive"
+    with archive.open("wb") as output:
+        output.truncate(1024**3 + 1)
+    monkeypatch.setattr(
+        os,
+        "memfd_create",
+        lambda *a: pytest.fail("oversized source allocated a snapshot"),
+    )
+    with pytest.raises(ValueError, match="size limit"):
+        cross_run._sealed_archive_snapshot(archive, sha256="a" * 64)
 
 
 def test_sealed_import_rejects_replacement_of_active_projection(monkeypatch, tmp_path):
