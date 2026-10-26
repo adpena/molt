@@ -101,6 +101,7 @@ def prepare(plan: proof_plan.ProofPlan, output: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         stdout_capture_path=output / "host.stdout.log",
         stderr_capture_path=output / "host.stderr.log",
     )
@@ -134,6 +135,7 @@ def prepare(plan: proof_plan.ProofPlan, output: Path) -> None:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 stdout_capture_path=output / f"{name}.build.json",
                 stderr_capture_path=output / f"{name}.stderr.log",
             )
