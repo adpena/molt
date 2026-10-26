@@ -134,6 +134,30 @@ the declaration that would cover them. Covering only a directory's present files
 insufficient: adding its first header could otherwise leave the identity
 unchanged. The parser is itself part of the runtime tooling identity.
 
+Admission and publication normalize their declared roots at the existing
+`realpath` boundary, then build one operation-local immutable hash index.
+Coverage checks the input itself and each ancestor against that index, using
+the host's `Path` equality and hashing for drive/case semantics. It preserves
+exact-root, descendant and watched-directory coverage, rejects sibling prefixes,
+and adds no filesystem observation, process spawn or persistent cache. Every
+Cargo publication consumer uses this same coverage owner.
+
+For N observed inputs, R roots and maximum path depth D, the index stores R root
+entries and queries perform at most N(D+1) hash-membership probes, instead of
+N times R path-containment checks. Normalization and initial root hashing still
+scale with root path bytes. Each query constructs and hashes at most D ancestor
+paths, so its copying/hashing cost includes their component and byte lengths;
+the probe count is not a linear-time claim for arbitrary path lengths. A fixed
+1,000-input/256-root fixture with half its paths
+uncovered took median 2.336 seconds before and 25.654 milliseconds after over
+three uninstrumented observations per revision on macOS arm64/CPython 3.12.15.
+Traced peak memory rose from 179,108 to 194,528 bytes in separate observations.
+These are helper costs, not a full-build speedup or platform qualification.
+Independent operation-count controls reject the former root scan in both read
+admission and publication without timing thresholds. The original Cargo
+transcript, watched-directory, publication refusal and source-stability oracles
+remain in force; this changes membership lookup, not what the build must prove.
+
 The existing native build owner has these transitions:
 
 ```text
