@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -211,13 +212,21 @@ def wasm_test_build_env(
     return env
 
 
-def build_wasm_linked(
+@dataclass(frozen=True)
+class WasmTestBuildCommand:
+    argv: tuple[str, ...]
+    cwd: Path
+    environment: Mapping[str, str]
+    output: Path | None
+
+
+def wasm_linked_build_command(
     root: Path,
     src: Path,
     out_dir: Path,
     *,
     extra_args: list[str] | None = None,
-) -> Path:
+) -> WasmTestBuildCommand:
     out_dir = _select_out_dir(out_dir, root)
     test_artifact_root = _linked_test_artifact_root(root, out_dir)
     env = wasm_test_build_env(
@@ -250,11 +259,22 @@ def build_wasm_linked(
     ]
     if extra_args:
         args.extend(extra_args)
+    return WasmTestBuildCommand(tuple(args), root, env, out_dir / "output_linked.wasm")
+
+
+def build_wasm_linked(
+    root: Path,
+    src: Path,
+    out_dir: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> Path:
+    command = wasm_linked_build_command(root, src, out_dir, extra_args=extra_args)
     try:
         build = _run_wasm_test_process(
-            args,
-            cwd=root,
-            env=env,
+            list(command.argv),
+            cwd=command.cwd,
+            env=command.environment,
         )
     except subprocess.TimeoutExpired as exc:
         stderr = exc.stderr or ""
@@ -262,12 +282,14 @@ def build_wasm_linked(
         raise AssertionError(
             "WASM build timed out "
             f"after {exc.timeout}s for {src}; "
-            f"CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}\n"
+            f"CARGO_TARGET_DIR={command.environment['CARGO_TARGET_DIR']}\n"
             f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
         ) from exc
     assert build.returncode == 0, build.stderr
-    output_wasm = out_dir / "output_linked.wasm"
-    assert output_wasm.exists(), "linked wasm output missing"
+    output_wasm = command.output
+    assert output_wasm is not None and output_wasm.exists(), (
+        "linked wasm output missing"
+    )
     return output_wasm
 
 

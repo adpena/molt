@@ -316,6 +316,23 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
+      # The dedicated Mac compiled cell preserves native and WASM witnesses.
+      # Its native compiler uses Xcode custody; only the WASI SDK is needed here.
+      - name: Setup Mac unit WASI SDK
+        if: matrix.cell == 'macos-arm64-py312-compiled'
+        uses: ./.github/actions/setup-llvm
+        with:
+          profile: wasm
+          wasi: "true"
+      - name: Setup Mac unit WASM optimizer
+        if: matrix.cell == 'macos-arm64-py312-compiled'
+        uses: ./.github/actions/setup-binaryen
+      - name: Provision Mac unit pinned Node
+        if: matrix.cell == 'macos-arm64-py312-compiled'
+        run: uv run --no-sync python -m molt.tool_releases provision node
+      - name: Provision Mac unit pinned WASM validator
+        if: matrix.cell == 'macos-arm64-py312-compiled'
+        run: uv run --no-sync python -m molt.tool_releases provision wasm-tools
       - name: Execute selected Python unit partitions
         run: >-
           python3 tools/proof_plan.py
@@ -334,7 +351,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-python-unit-${{ matrix.cell }}
-          path: proof-receipts/python-unit-${{ matrix.cell }}.json
+          path: |
+            proof-receipts/python-unit-${{ matrix.cell }}.json
+            proof-results/compiled-contracts/macos
           if-no-files-found: error
 
   python-unit-collection:

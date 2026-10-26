@@ -43,6 +43,57 @@ Cargo's [artifact messages](https://doc.rust-lang.org/cargo/reference/external-t
 bind observed images to that plan; a successful process exit alone does not.
 These are development proof contracts and add no work to emitted programs.
 
+The dedicated `macos-arm64-py312-compiled` matrix cell retains its whole resource and WASM files, its
+non-slow selection and its 600-second body. Its 1200-second prerequisite projects
+the existing WASM host recipe and builds both actual native resource witness
+inputs and the selected heavy-WASM source/layout inputs sequentially. Shared
+test materializers own the source bytes; linked, split and CLI-run command
+constructors preserve their actual profiles and environments. Final-IR
+reachability and the existing runtime provider select and admit each runtime
+pair. The tests retain their independent oracles, native `molt run` capability
+policy and runtime-product admission. Guest profile defaults and iteration
+profile overrides remain separate. A generic hello build or a raw Cargo
+runtime cannot substitute for these source-selected generations.
+
+The prerequisite's child guards share one elapsed-time budget and retain source
+bytes and build JSON outside temporary scratch. Published WASM products also
+remain under the artifact root for exact-input diagnostics. Preparation builds
+applications as well as runtime pairs; the body still performs its normal build
+and admission. This deliberately repeats frontend/cache work and application
+generation to reuse the existing supported compiler path. For N selected build
+coordinates and K derived runtime identities, that cost scales with their source
+graphs and application bytes; the existing provider deduplicates equal runtime
+identities. There is no second feature planner, cache or guest run in preparation.
+Actual cold preparation, body and whole-job time and memory must be measured;
+successful preparation alone is not semantic execution acceptance.
+
+The Mac semantic body explicitly sets `MOLT_WASM_COMPILE_FAST=1`, using the
+host's existing Cranelift optimization-off policy. This can reduce compilation
+time at the expense of guest throughput; the original complete body must still
+pass. Wasmtime's [fast-compilation guide](https://docs.wasmtime.dev/examples-fast-compilation.html)
+describes the compilation/execution tradeoff, precompilation, compilation caching
+and parallel compilation. Choosing Molt's existing flag for these semantic
+witnesses is a local policy decision, not a new Wasmtime backend or product
+default. The full Linux `wasm.integration.host-boundaries` owner retains the
+default optimizing host policy. A Mac fast-policy pass does not qualify the
+large default-optimization Mac coordinate. No host cache or telemetry is added.
+
+The worker estimate is 20 GiB: the retained
+execution with the earlier 10 GiB estimate observed a 17.98 GiB worker subtree
+and exceeded the 24 GiB aggregate guard with two workers. The canonical capacity
+planner now admits one worker under that grant; its minimum of one does not
+prove a worker fits a smaller hosted runner. No case, timeout or memory limit
+is relaxed. The compiled prerequisite and body run in their own existing
+Python-unit matrix job, so ordinary unit partitions do not divide their memory
+slice. Local Mac family execution requires an explicit `--matrix-cell` because
+both tooling and compiled cells match that host. The additional job repeats
+setup and environment provisioning; its 43-minute budget, hosted capacity and
+cold completion still require actual qualification. The standard arm64
+[`macos-14` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+declares 7 GB of memory. Local execution under an equal byte cap can establish
+that bounded memory cell; runner speed, cold setup and hosted acceptance still
+require the real CI receipt.
+
 LLVM's local and registered unit proof uses the same complete implementation
 image and checked driver target under `release-fast`. Build, test, link and
 Clippy share that profile. The unused string-based LLVM PGO prototype is removed;

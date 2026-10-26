@@ -18,6 +18,35 @@ table, then keeps the few rows of its custody tree:
 The cost scales with the host, not with the tree, and thousands of guarded
 test commands pay it.
 
+## Demand-driven command classification
+
+The sentinel rejects inspection commands and commands without repository context
+before loading source-derived signatures. Fixed Molt signatures and artifact
+paths are checked next. Only an unresolved command containing a possible source
+entrypoint reaches discovery. The necessary path prefixes come from the same
+scan roots and explicit paths as `tools/guarded_entrypoints.py`; they grant no
+ownership. The existing import scan and wiring audit remain the complete source
+authority. Matching retains Windows case folding, normalized separators, shell
+wrappers, separate repository arguments and the existing substring rules.
+PID birth fences and host-process protection still decide custody separately.
+
+Common classifications perform no source reads or directory enumeration. The
+remaining cold source case still scans the repository once per process. The
+additional eligibility cache holds at most 2,048 command/root/model/token keys;
+it stores no PID-derived verdict. Warm unresolved source classification adds
+bounded prefix checks and token-tuple construction. On macOS arm64, a diagnostic
+measured this trade at about 0.8 to 3.0 microseconds per warm source lookup while
+avoiding a 483 ms cold scan for a repository Python command with no guarded
+entrypoint. Warm foreign and fixed classifications became slightly cheaper.
+This changes developer tooling only; emitted programs do no extra work.
+
+`tests/tools/test_process_sentinel.py` covers no-discovery common commands,
+every discovered entrypoint under both process models, prefixes that are not
+guarded programs, token changes, PID reuse and protected groups. The wiring
+audit still enumerates the complete inventory. Command latency and full build
+latency remain separate measurements; removing this scan does not establish a
+compiler throughput or release qualification result.
+
 ## What a poll needs
 
 `ProcessTreeTracker.update(samples)` admits a process when its parent is a

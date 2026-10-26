@@ -18,7 +18,7 @@ from molt.artifact_publication import (
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest, publish_link_outputs
 from molt.cli.models import _PreparedNonNativeResult
 from molt.file_deletion import delete_path
-from molt.file_publication import clone_file, staged_file_path
+from molt.file_publication import clone_file, namespace_move_exclusive, staged_file_path
 from molt.link_outputs import validate_link_output_paths
 from molt.toolchain_identity import (
     StableRegularFileVersion,
@@ -198,14 +198,14 @@ class WasmDeploymentGeneration:
                 final = self.plan.outputs[role]
                 final.parent.mkdir(parents=True, exist_ok=True)
                 stage = staged_file_path(final, purpose="wasm-deployment")
-                candidates[role] = (stage, final)
                 # This private generation is retired once it publishes, so a
                 # stage on its volume takes the file itself: no 60 MB copy. A
                 # destination on another volume gets a platform copy.
                 if private.stat().st_dev == stage.parent.stat().st_dev:
-                    os.rename(private, stage)
+                    namespace_move_exclusive(private, stage)
                 else:
                     clone_file(private, stage)
+                candidates[role] = (stage, final)
             publish_link_outputs(
                 candidates,
                 receipt=receipt,

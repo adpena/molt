@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 
 import pytest
 
 from molt.node_runtime import resolve_node_runtime
 from molt.wasm_artifact import wasm_runtime_manifest_path
+from tests.wasm_runtime_heavy_witnesses import WasmWitnessLayout, heavy_wasm_witness
 from tests.wasm_linked_runner import (
     _run_wasm_test_process,
     build_wasm_linked,
-    require_wasm_toolchain,
     run_wasm_linked,
 )
 
@@ -32,44 +31,13 @@ def test_wasm_imported_syntax_errors_keep_native_identity_and_payload(
 def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
     tmp_path: Path,
 ) -> None:
-    require_wasm_toolchain()
-
     root = Path(__file__).resolve().parents[1]
-    src = tmp_path / "wasm_asyncio_task_basic.py"
-    src.write_text(
-        textwrap.dedent(
-            """\
-            import asyncio
-            import contextvars
+    witness = heavy_wasm_witness("asyncio", "linked")
+    src = witness.materialize(root, tmp_path)
 
-            var = contextvars.ContextVar("var", default="none")
-
-
-            async def child() -> int:
-                print("child", var.get())
-                print(asyncio.current_task() is not None)
-                var.set("child")
-                await asyncio.sleep(0)
-                print("child2", var.get())
-                return 5
-
-
-            async def main() -> None:
-                var.set("main")
-                task = asyncio.create_task(child())
-                var.set("main2")
-                res = await task
-                print("res", res)
-                print("main", var.get())
-
-
-            asyncio.run(main())
-            """
-        ),
-        encoding="utf-8",
+    output_wasm = build_wasm_linked(
+        root, src, tmp_path, extra_args=list(witness.extra_args)
     )
-
-    output_wasm = build_wasm_linked(root, src, tmp_path)
     run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -85,23 +53,30 @@ def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
 
 
 def _run_wasm_layout(
-    root: Path, src: Path, tmp_path: Path, layout: str
+    root: Path,
+    src: Path,
+    tmp_path: Path,
+    layout: WasmWitnessLayout,
+    *,
+    extra_args: tuple[str, ...],
 ) -> subprocess.CompletedProcess[str]:
     node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
     if layout == "linked":
-        output = build_wasm_linked(root, src, tmp_path, extra_args=["--no-trusted"])
+        output = build_wasm_linked(root, src, tmp_path, extra_args=list(extra_args))
         manifest = wasm_runtime_manifest_path(output)
-    else:
+    elif layout == "split":
         from tests.test_wasm_split_runtime import _build_split
 
         output_dir = tmp_path / "split"
         build = _build_split(
             src,
             output_dir,
-            extra_args=["--build-profile", "dev", "--no-trusted"],
+            extra_args=list(extra_args),
         )
         assert build.returncode == 0, build.stdout + build.stderr
         manifest = output_dir / "manifest.json"
+    else:
+        raise ValueError(f"Unsupported heavy WASM execution layout: {layout!r}")
     env = os.environ.copy()
     for key in (
         "MOLT_WASM_TABLE_BASE",
@@ -127,34 +102,13 @@ def _run_wasm_layout(
 @pytest.mark.parametrize("layout", ["linked", "split"])
 def test_wasm_compiled_finder_describes_module_before_initialization(
     tmp_path: Path,
-    layout: str,
+    layout: WasmWitnessLayout,
 ) -> None:
     root = Path(__file__).resolve().parents[1]
-    (tmp_path / "_molt_wasm_catalog_subject.py").write_text(
-        "print('subject-exec')\nvalue = 297\n", encoding="utf-8"
-    )
-    src = tmp_path / "catalog_probe.py"
-    src.write_text(
-        "import importlib.machinery\n"
-        "import importlib.util\n"
-        "import sys\n"
-        "print('package-metadata', importlib.__path__ is\n"
-        "      importlib.__spec__.submodule_search_locations)\n"
-        "name = '_molt_wasm_catalog_subject'\n"
-        "print('absent', name not in sys.modules)\n"
-        "spec = importlib.util.find_spec(name)\n"
-        "print('spec', spec.name == name,\n"
-        "      spec.loader is importlib.machinery._MOLT_LOADER)\n"
-        "print('unpublished', name not in sys.modules)\n"
-        "import _molt_wasm_catalog_subject\n"
-        "print('ready', _molt_wasm_catalog_subject.value == 297)\n"
-        + (
-            root
-            / "tests/differential/stdlib/importlib_find_spec_invalidate_caches_intrinsic.py"
-        ).read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    run = _run_wasm_layout(root, src, tmp_path, layout)
+    witness = heavy_wasm_witness("finder", layout)
+    src = witness.materialize(root, tmp_path)
+
+    run = _run_wasm_layout(root, src, tmp_path, layout, extra_args=witness.extra_args)
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.splitlines() == [
         "package-metadata True",
@@ -177,44 +131,13 @@ def test_wasm_compiled_finder_describes_module_before_initialization(
 
 @pytest.mark.parametrize("layout", ["linked", "split"])
 def test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls(
-    tmp_path: Path, layout: str
+    tmp_path: Path, layout: WasmWitnessLayout
 ) -> None:
     root = Path(__file__).resolve().parents[1]
-    (tmp_path / "_molt_facts_unused.py").write_text(
-        "print('unused-init')\n", encoding="utf-8"
-    )
-    (tmp_path / "_molt_facts_from.py").write_text(
-        "print('from-init')\ntoken = 47\n", encoding="utf-8"
-    )
-    (tmp_path / "_molt_facts_subject.py").write_text(
-        "def scalar(flag, value):\n"
-        "    if flag:\n"
-        "        result = value + 2\n"
-        "    else:\n"
-        "        result = value - 3\n"
-        "    return result * 3\n"
-        "def checked(value):\n"
-        "    return value + 1\n"
-        "def make_escaped(base):\n"
-        "    def escaped(value):\n"
-        "        return base + value\n"
-        "    return escaped\n",
-        encoding="utf-8",
-    )
-    src = tmp_path / "facts_probe.py"
-    src.write_text(
-        "from _molt_facts_subject import scalar, checked, make_escaped\n"
-        "def load_unused():\n"
-        "    import _molt_facts_unused as unused\n"
-        "    from _molt_facts_from import token as unused_token\n"
-        "load_unused()\n"
-        "print('branch', scalar(True, 7), scalar(False, 7))\n"
-        "print('checked', checked((1 << 46) - 1), checked((1 << 63) - 1))\n"
-        "escaped = make_escaped(11)\n"
-        "print('escaped', escaped(2), callable(escaped))\n",
-        encoding="utf-8",
-    )
-    run = _run_wasm_layout(root, src, tmp_path, layout)
+    witness = heavy_wasm_witness("final-tir", layout)
+    src = witness.materialize(root, tmp_path)
+
+    run = _run_wasm_layout(root, src, tmp_path, layout, extra_args=witness.extra_args)
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.splitlines() == [
         "unused-init",
@@ -228,40 +151,13 @@ def test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls(
 def test_wasm_zipimport_package_lookup_parity(
     tmp_path: Path,
 ) -> None:
-    require_wasm_toolchain()
-
     root = Path(__file__).resolve().parents[1]
-    src = tmp_path / "wasm_zipimport_basic.py"
-    src.write_text(
-        textwrap.dedent(
-            """\
-            import os
-            import tempfile
-            import zipfile
-            import zipimport
+    witness = heavy_wasm_witness("zipimport", "linked")
+    src = witness.materialize(root, tmp_path)
 
-            root = tempfile.mkdtemp()
-            zip_path = os.path.join(root, "pkg.zip")
-            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("pkg/__init__.py", "value = 1")
-                zf.writestr("pkg/mod.py", "value = 2")
-                zf.writestr("nested/m.py", "value = 3")
-
-            importer = zipimport.zipimporter(zip_path)
-            pkg = importer.load_module("pkg")
-            mod = importer.load_module("pkg.mod")
-            print(pkg.value)
-            print(mod.value)
-
-            subimporter = zipimport.zipimporter(f"{zip_path}/nested")
-            submod = subimporter.load_module("m")
-            print(submod.value)
-            """
-        ),
-        encoding="utf-8",
+    output_wasm = build_wasm_linked(
+        root, src, tmp_path, extra_args=list(witness.extra_args)
     )
-
-    output_wasm = build_wasm_linked(root, src, tmp_path)
     run = run_wasm_linked(
         root,
         output_wasm,
@@ -277,43 +173,13 @@ def test_wasm_zipimport_package_lookup_parity(
 def test_wasm_smtplib_thread_dependent_paths_fail_fast(
     tmp_path: Path,
 ) -> None:
-    require_wasm_toolchain()
-
     root = Path(__file__).resolve().parents[1]
-    src = tmp_path / "wasm_smtplib_thread_gate.py"
-    src.write_text(
-        textwrap.dedent(
-            """\
-            import smtplib
-            import socketserver
-            import threading
+    witness = heavy_wasm_witness("smtplib", "linked")
+    src = witness.materialize(root, tmp_path)
 
-
-            class Handler(socketserver.StreamRequestHandler):
-                def handle(self):
-                    self.wfile.write(b"220 ready\\r\\n")
-
-
-            server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-
-            try:
-                thread.start()
-                print("unexpected-thread-success")
-            except Exception as exc:
-                print(type(exc).__name__)
-                print(str(exc))
-                print("caught")
-            finally:
-                server.server_close()
-
-            _ = smtplib.SMTP
-            """
-        ),
-        encoding="utf-8",
+    output_wasm = build_wasm_linked(
+        root, src, tmp_path, extra_args=list(witness.extra_args)
     )
-
-    output_wasm = build_wasm_linked(root, src, tmp_path)
     run = run_wasm_linked(
         root,
         output_wasm,
@@ -330,40 +196,18 @@ def test_wasm_smtplib_thread_dependent_paths_fail_fast(
     _assert_no_recursive_mutex_panic(run.stderr)
 
 
-@pytest.mark.slow
+@heavy_wasm_witness("missing-grants").mark_test
 def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     # This is an actual Node/WASI proof. Required tools fail selection/build;
     # a missing host must not turn the security assertion into a skipped test.
     node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
-    src = tmp_path / "wasm_operation_permissions.py"
-    src.write_text(
-        textwrap.dedent(
-            """\
-            from _intrinsics import require_intrinsic
+    witness = heavy_wasm_witness("missing-grants", "linked")
+    src = witness.materialize(root, tmp_path)
 
-            require_operation = require_intrinsic("molt_capabilities_require_operation")
-            try:
-                with open("destination.bin", "w+b") as destination:
-                    with open("source.bin", "rb") as source:
-                        destination.write(source.read())
-            except PermissionError as exc:
-                print(type(exc).__name__, str(exc))
-            else:
-                print("copied")
-
-            for name in ("unknown.operation", b"io.open.readwrite"):
-                try:
-                    require_operation(name)
-                except (ValueError, TypeError) as exc:
-                    print(type(exc).__name__, str(exc))
-                else:
-                    print("unexpected operation admission")
-            """
-        ),
-        encoding="utf-8",
+    output_wasm = build_wasm_linked(
+        root, src, tmp_path, extra_args=list(witness.extra_args)
     )
-    output_wasm = build_wasm_linked(root, src, tmp_path)
     manifest = wasm_runtime_manifest_path(output_wasm)
     payload_dir = tmp_path / "payload"
     payload_dir.mkdir()
