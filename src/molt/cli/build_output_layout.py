@@ -25,6 +25,7 @@ from molt.default_paths import (
     _default_molt_home,
 )
 from molt.dx import configured_artifact_root, project_cargo_target_dir
+from molt.process_environment import ProcessEnvironment
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,8 @@ def artifacts_identity(
 @dataclass
 class _BuildScope:
     stack: ExitStack
+    cwd: Path
+    maintenance_environment: ProcessEnvironment | None
     claimed: set[Path] = field(default_factory=set)
     state_claimed: set[Path] = field(default_factory=set)
 
@@ -157,13 +160,23 @@ _BUILD_SCOPE: ContextVar[_BuildScope | None] = ContextVar(
 
 
 @contextmanager
-def build_scope() -> Generator[None]:
+def build_scope() -> Generator[_BuildScope]:
     """Hold one build's claims on its artifacts roots until the build returns."""
     with ExitStack() as stack:
-        token = _BUILD_SCOPE.set(_BuildScope(stack))
+        from molt.dx import checkout_state_maintenance_environment
+        from molt.source_root import compiler_source_root
+
+        scope = _BuildScope(
+            stack,
+            Path.cwd(),
+            checkout_state_maintenance_environment(
+                compiler_source_root(), ProcessEnvironment(os.environ)
+            ),
+        )
+        token = _BUILD_SCOPE.set(scope)
         try:
             _claim_checkout_state(Path(sys.prefix))
-            yield
+            yield scope
         finally:
             _BUILD_SCOPE.reset(token)
 

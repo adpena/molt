@@ -55,6 +55,27 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
     assert "ArgumentParser(" not in root_module_source
 
 
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_dispatcher_leaves_maintenance_to_build_scope(monkeypatch, returncode):
+    from molt import dx
+
+    order = []
+
+    def build(_request):
+        order.append("returned")
+        return returncode
+
+    def collect(_env, *, cwd):
+        pytest.fail("the dispatcher cannot schedule an opaque library build")
+
+    monkeypatch.setattr(build_command, "build", build)
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    assert (
+        entrypoint._build(BuildRequest(file_path="app.py", cache=False)) == returncode
+    )
+    assert order == ["returned"]
+
+
 @pytest.mark.parametrize(
     "command", [["build", "app.py"], ["factgraph", "app.py", "main"]]
 )
