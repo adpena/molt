@@ -10978,7 +10978,9 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
         assert row["status"] == ("passed" if returncode == 0 else "failed")
         assert row["returncode"] == returncode
         context = json.loads(row["receipt_context_json"])
-        summary = json.loads(Path(context["guard_receipt"]["path"]).read_text())
+        summary = json.loads(
+            Path(context["guard_receipt"]["path"]).read_text(encoding="utf-8")
+        )
         closure = summary["temporary_artifacts"]["closure"]
         assert closure["closed"] is True
         assert closure["direct_child_reaped"] is True
