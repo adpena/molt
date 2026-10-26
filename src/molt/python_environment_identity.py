@@ -177,6 +177,7 @@ else:
         PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA as PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA,
         PYTHON_ENVIRONMENT_IDENTITY_SCHEMA as PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
         capture_current_python_environment,
+        publish_current_python_environment,
         python_environment_executable_files as python_environment_executable_files,
         validate_python_environment_identity as validate_python_environment_identity,
         virtualenv_site_bootstrap_relative_paths as virtualenv_site_bootstrap_relative_paths,
@@ -554,6 +555,19 @@ def _main() -> None:
         payload = locate_current_python_environment()
     elif args.runtime_selection:
         payload = current_python_runtime_selection()
+    elif args.publish_bytecode:
+        root = args.capture_environment
+        assert root is not None  # The argument contract requires an explicit image.
+        bootstrap = list(args.admit_site_bootstrap)
+        if args.admit_virtualenv_bootstrap:
+            bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
+        payload = publish_current_python_environment(
+            root,
+            excluded_relative_paths=(SOURCE_BUILD_ENVIRONMENT_MANIFEST,),
+            admitted_site_bootstrap_paths=bootstrap,
+            admitted_external_roots=args.admit_external_root,
+            hash_workers=args.hash_workers,
+        )
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
 
@@ -586,7 +600,6 @@ def _main() -> None:
                     admitted_external_roots=args.admit_external_root,
                     capture_context=context,
                     with_custody=args.with_custody,
-                    publish_bytecode=args.publish_bytecode,
                 )
                 if args.admit_published_environment:
                     # The source-bound guardian has no site dependencies. This

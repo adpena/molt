@@ -41,6 +41,39 @@ from tests.tools.test_release_native_build import llvm_input_fixture
 _TAG = "manylinux_2_39_x86_64"
 
 
+def test_wasm_runtime_cell_keeps_release_intent_at_real_builder_boundary(
+    tmp_path, monkeypatch
+):
+    import inspect
+    from molt.cli import runtime_build, runtime_wasm_pair_build, runtime_wasm_build_spec
+    from tools.release import runtime_cells
+
+    class BuilderReached(Exception):
+        pass
+
+    signature = inspect.signature(runtime_wasm_pair_build._ensure_runtime_wasm_both)
+
+    def builder(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        assert bound.arguments["build_profile"] == "release"
+        raise BuilderReached
+
+    monkeypatch.setattr(
+        runtime_build, "_initialize_runtime_artifact_state", lambda **kwargs: object()
+    )
+    monkeypatch.setattr(
+        runtime_wasm_build_spec,
+        "runtime_wasm_distribution_surface",
+        lambda _profile: ((), frozenset()),
+    )
+    monkeypatch.setattr(runtime_wasm_pair_build, "_ensure_runtime_wasm_both", builder)
+    request = runtime_cells.RuntimeCellRequest("wasm", "wasm-release", "full")
+    with pytest.raises(BuilderReached):
+        runtime_cells._produce_wasm(
+            request, tmp_path / "source", tmp_path / "output", None
+        )
+
+
 @pytest.mark.parametrize("component", [False, True])
 @pytest.mark.parametrize("outcome", ["success", "failed-admission", "rival"])
 def test_runtime_inventory_publication_is_one_exclusive_commit(

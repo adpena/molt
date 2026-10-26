@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.runtime_wasm_build_policy import resolve_runtime_wasm_build_policy
+
 import os
 
 from tests.compiler_identity_helper import (
@@ -463,8 +465,10 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
         requested_cargo_profile="dev-fast",
         cargo_profile="dev-fast",
         profile_dir="dev-fast",
-        incremental_enabled=False,
-        env=ProcessEnvironment({}),
+        build_policy=resolve_runtime_wasm_build_policy(
+            "dev", {"MOLT_RUNTIME_WASM_INCREMENTAL": "0"}
+        ),
+        env=ProcessEnvironment({"CARGO_INCREMENTAL": "0"}),
         artifact_selection=RUNTIME_CDYLIB_ARTIFACTS,
         runtime_exports=(),
         link_flags=(),

@@ -35,7 +35,7 @@ bind_repository_imports(__file__)
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 
 import argparse  # noqa: E402
-from collections.abc import Iterator  # noqa: E402
+from collections.abc import Generator  # noqa: E402
 import contextlib  # noqa: E402
 from dataclasses import dataclass, fields  # noqa: E402
 import json  # noqa: E402
@@ -128,10 +128,11 @@ def _read_component_requests(path: Path) -> tuple[RuntimeCellRequest, ...]:
             )
         requests.append(
             RuntimeCellRequest(
-                **{
-                    **record,
-                    "extra_runtime_features": tuple(record["extra_runtime_features"]),
-                }
+                kind=record["kind"],
+                runtime_profile=record["runtime_profile"],
+                stdlib_profile=record["stdlib_profile"],
+                extra_runtime_features=tuple(record["extra_runtime_features"]),
+                freestanding=record["freestanding"],
             )
         )
     return tuple(requests)
@@ -331,7 +332,10 @@ def _produce_native(
         (runtime_lib, runtime_lib.name, "runtime_archive"),
         (manifest_path, manifest_path.name, "native_link_manifest"),
     ]
-    custody = native_link_custody_archive_path(runtime_lib, manifest["custody"])  # type: ignore[arg-type]
+    custody_record = manifest["custody"]
+    if not isinstance(custody_record, Mapping):
+        raise ValueError("native runtime manifest custody must be a mapping")
+    custody = native_link_custody_archive_path(runtime_lib, custody_record)
     if custody is not None:
         members.append((custody, custody.name, "native_link_custody_archive"))
     # The same content-addressed projection source-checkout codegen admits; the
@@ -388,6 +392,7 @@ def _produce_wasm(
         not _ensure_runtime_wasm_both(
             state,
             json_output=True,
+            build_profile="release",
             cargo_profile=cargo_profile,
             cargo_timeout=timeout,
             project_root=source_root,
@@ -425,7 +430,9 @@ def _produce_wasm(
 
 
 @contextlib.contextmanager
-def _isolated_build_environment(work: Path, *, epoch: int) -> Iterator[None]:
+def _isolated_build_environment(
+    work: Path, *, epoch: int
+) -> Generator[None, None, None]:
     """Keep release metadata deterministic and outputs outside the source snapshot."""
     from tools.release.compiler_payload import reproducible_build_environment
 
