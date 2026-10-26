@@ -4,11 +4,16 @@ import os
 import sys
 import textwrap
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from molt.dx import development_artifact_env
-from tests.native_process_guard import run_native_test_process
+from tests.native_process_guard import (
+    observe_native_test_executable,
+    retain_native_test_failure,
+    run_native_test_process,
+)
 from tests import process_guard_common
 from molt.cli import setup_readiness as cli_setup_readiness
 
@@ -22,7 +27,8 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
     ) as tmp_path:
         module_stem = f"loop_join_semantics_{tmp_path.name}"
         src_path = tmp_path / f"{module_stem}.py"
-        src_path.write_text(source, encoding="utf-8")
+        source_bytes = source.encode("utf-8")
+        src_path.write_bytes(source_bytes)
         binary_path = tmp_path / f"{module_stem}_molt"
 
         env = development_artifact_env(
@@ -33,35 +39,59 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
         )
         env = env.updated({"PYTHONPATH": str(SRC_DIR)})
 
-        build = run_native_test_process(
-            [
-                sys.executable,
-                "-m",
-                "molt.cli",
-                "build",
-                "--build-profile",
-                profile,
-                *([] if backend is None else ["--backend", backend]),
-                str(src_path),
-                "--out-dir",
-                str(tmp_path),
-            ],
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-        assert build.returncode == 0, build.stderr
-        assert binary_path.exists(), f"expected binary at {binary_path}"
-
-        run = run_native_test_process(
-            [str(binary_path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert run.returncode == 0, run.stderr
-        return run.stdout.strip()
+        build_command = [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--build-profile",
+            profile,
+            *([] if backend is None else ["--backend", backend]),
+            str(src_path),
+            "--out-dir",
+            str(tmp_path),
+        ]
+        run_command = [str(binary_path)]
+        build = run = executable = None
+        phase: Literal["build", "run"] = "build"
+        try:
+            build = run_native_test_process(
+                build_command, cwd=ROOT, env=env, capture_output=True, text=False
+            )
+            assert build.returncode == 0, build.stderr.decode("utf-8", errors="replace")
+            assert binary_path.exists(), f"expected binary at {binary_path}"
+            executable = observe_native_test_executable(binary_path, env)
+            phase = "run"
+            run = run_native_test_process(
+                run_command, capture_output=True, text=False, timeout=30
+            )
+            assert run.returncode == 0, run.stderr.decode("utf-8", errors="replace")
+            # Preserve subprocess text mode's universal-newline return contract;
+            # the failure bundle retains the original captured bytes.
+            return (
+                run.stdout.decode("utf-8", errors="replace")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .strip()
+            )
+        except Exception as exc:
+            retain_native_test_failure(
+                exc,
+                phase=phase,
+                source=source_bytes,
+                source_path=src_path,
+                executable_path=binary_path,
+                executable=executable,
+                backend=backend,
+                profile=profile,
+                build_command=build_command,
+                build_cwd=ROOT,
+                run_command=run_command,
+                build=build,
+                run=run,
+                env=env,
+            )
+            raise
 
 
 def _llvm_backend_available() -> bool:
