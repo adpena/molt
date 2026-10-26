@@ -586,7 +586,7 @@ def _python_capture_envelope(
 
 
 def _capture_toolchains(
-    envelope: Mapping[str, object],
+    envelope: Mapping[str, object] | admission.SelectedToolInput,
     exact: Sequence[str],
     *,
     cwd: Path,
@@ -597,7 +597,18 @@ def _capture_toolchains(
 ) -> tuple[dict[str, object] | None, dict[str, object]]:
     env = ProcessEnvironment(env)
     plan = proof_plan.ProofPlan.load()
-    requested_raw = envelope.get("toolchains")
+    execution: Mapping[str, object] | None
+    requested_raw: object
+    if isinstance(envelope, admission.SelectedToolInput):
+        selected = envelope
+        if exact or selected != admission.selected_tool_input(selected.executable):
+            raise ValueError("selected input has noncanonical capture authority")
+        requested_raw = list(selected.toolchains)
+        execution = None
+    else:
+        selected = None
+        execution = envelope
+        requested_raw = envelope.get("toolchains")
     if (
         not isinstance(requested_raw, list)
         or not requested_raw
@@ -617,7 +628,8 @@ def _capture_toolchains(
         raise ValueError("located Python selection identity is unavailable")
     proof_python = None
     if "python" in requested:
-        python_envelope, _ = _python_capture_envelope(envelope, exact, env)
+        assert execution is not None
+        python_envelope, _ = _python_capture_envelope(execution, exact, env)
         proof_python = command_identity._python_identity(
             python_envelope,
             cwd=cwd,
@@ -638,6 +650,13 @@ def _capture_toolchains(
         if not isinstance(located, Mapping):
             raise ValueError(f"located {name} toolchain identity is unavailable")
         located = dict(located)
+        if selected is not None and name == selected.policy:
+            if located.get("path") != str(
+                process_image_capture.custody_path(selected.executable)
+            ):
+                raise ValueError(
+                    "located toolchain differs from selected input executable"
+                )
         selected_runtime = located.get("python_runtime")
         if policies[name].python_identity_role == "runtime":
             if not isinstance(selected_runtime, Mapping):
@@ -724,12 +743,13 @@ def _capture_toolchains(
             located["identity_sha256"] = canonical_json_sha256(material)
         verified_images = []
         if name == "rustc":
+            assert execution is not None
             verified_images, selection = (
                 toolchain_capture.revalidate_rust_link_process_images(
                     located,
-                    target=command_identity._rust_target(envelope, env, cwd=cwd),
+                    target=command_identity._rust_target(execution, env, cwd=cwd),
                     command_argv=admission._nested_command(exact) or exact,
-                    required_native_units=envelope.get("cargo_native_units", {}),
+                    required_native_units=execution.get("cargo_native_units", {}),
                 )
             )
             located["link_selection"] = selection
@@ -791,7 +811,7 @@ def _capture_toolchains(
         located["identity_sha256"] = canonical_json_sha256(material)
         if policies[name].python_identity_role == "runtime":
             command_identity._validate_toolchain_identity(
-                plan, name, located, full_capture=True, envelope=envelope
+                plan, name, located, full_capture=True, envelope=execution
             )
         toolchains[name] = dict(located)
     if set(toolchains) != set(requested):
@@ -822,7 +842,7 @@ def validate_typed_source_root(
 
 
 def _locate_toolchain_watch_roots(
-    envelope: Mapping[str, object],
+    envelope: Mapping[str, object] | admission.SelectedToolInput,
     exact: Sequence[str],
     *,
     cwd: Path,
@@ -834,7 +854,22 @@ def _locate_toolchain_watch_roots(
     started = time.perf_counter()
     reuse_telemetry: list[dict[str, object]] = []
     plan = proof_plan.ProofPlan.load()
-    requested_raw = envelope.get("toolchains")
+    execution: Mapping[str, object] | None
+    requested_raw: object
+    if isinstance(envelope, admission.SelectedToolInput):
+        selected = envelope
+        if (
+            exact
+            or reuse_root is not None
+            or selected != admission.selected_tool_input(selected.executable)
+        ):
+            raise ValueError("selected input has noncanonical capture authority")
+        requested_raw = list(selected.toolchains)
+        execution = None
+    else:
+        selected = None
+        execution = envelope
+        requested_raw = envelope.get("toolchains")
     if not isinstance(requested_raw, list) or not all(
         isinstance(name, str) and name for name in requested_raw
     ):
@@ -850,7 +885,7 @@ def _locate_toolchain_watch_roots(
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     roots: list[Path] = []
     policy_identities: dict[str, object] = {}
-    typed = envelope.get("typed_command")
+    typed = execution.get("typed_command") if execution is not None else None
     if (
         isinstance(typed, Mapping)
         and typed.get("family") == "source-extension-producer"
@@ -860,7 +895,8 @@ def _locate_toolchain_watch_roots(
             raise ValueError("source-extension source watch root is not a directory")
         roots.append(source)
     if "python" in requested:
-        python_envelope, python_exact = _python_capture_envelope(envelope, exact, env)
+        assert execution is not None
+        python_envelope, python_exact = _python_capture_envelope(execution, exact, env)
         with PythonIdentityVerifier() as verifier:
             command = command_identity._python_auxiliary_command(
                 python_envelope,
@@ -909,12 +945,13 @@ def _locate_toolchain_watch_roots(
         identity = command_identity._tool_identity(
             plan,
             name,
-            envelope,
+            execution,
             exact,
             cwd=cwd,
             env=env,
             reuse_root=reuse_root,
             reuse_telemetry=reuse_telemetry,
+            **({"selected_input": selected} if selected is not None else {}),
         )
         if name in {"rustc", "cargo"}:
             # Tool roles name canonical selectors; this is not an environment lookup.
@@ -971,7 +1008,7 @@ def _locate_toolchain_watch_roots(
             identity_without_digest.pop("identity_sha256", None)
             identity["identity_sha256"] = canonical_json_sha256(identity_without_digest)
         command_identity._validate_toolchain_identity(
-            plan, name, identity, envelope=envelope
+            plan, name, identity, envelope=execution
         )
         policy_identities[name] = identity
         roots.extend(_broad_toolchain_roots({name: identity}))
@@ -986,6 +1023,33 @@ def _locate_toolchain_watch_roots(
         "tool_identity_reuse": reuse_telemetry,
     }
     return roots, policy_identities, telemetry, selected_updates
+
+
+def capture_selected_tool_input(
+    executable: Path,
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    source_root: Path,
+    supervisor_binary: Path,
+) -> dict[str, object]:
+    """Capture policy-owned input probes without admitting a command payload."""
+    selected = admission.selected_tool_input(executable)
+    _, located, _, updates = _locate_toolchain_watch_roots(
+        selected, (), cwd=cwd, env=env, supervisor_binary=supervisor_binary
+    )
+    if updates:
+        raise ValueError("selected tool input capture changed the selected environment")
+    _, captured = _capture_toolchains(
+        selected,
+        (),
+        cwd=cwd,
+        env=env,
+        source_root=source_root,
+        hash_workers=1,
+        located_toolchains=located,
+    )
+    return captured
 
 
 def _python_editable_ineligible_reasons(

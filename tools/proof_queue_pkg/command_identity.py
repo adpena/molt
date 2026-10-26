@@ -1098,9 +1098,9 @@ def validate_structured_test_counts(
 
 
 def _in_python_environment(
-    envelope: Mapping[str, object], exact: Sequence[str], payload: Sequence[str]
+    envelope: Mapping[str, object] | None, exact: Sequence[str], payload: Sequence[str]
 ) -> list[str]:
-    python = envelope.get("python")
+    python = envelope.get("python") if envelope is not None else None
     if isinstance(python, Mapping) and python.get("kind") in {
         "uv",
         "uv-console-script",
@@ -1113,7 +1113,7 @@ def _in_python_environment(
 
 def _which_in_command_environment(
     name: str,
-    envelope: Mapping[str, object],
+    envelope: Mapping[str, object] | None,
     exact: Sequence[str],
     *,
     cwd: Path,
@@ -1124,7 +1124,7 @@ def _which_in_command_environment(
         # uv's PATH is not a different authority for a manifest-owned SDK role.
         # The returned absolute entrypoint is used for both launch and capture.
         return _resolve_outer_executable(name, cwd=cwd, env=env)
-    python = envelope.get("python")
+    python = envelope.get("python") if envelope is not None else None
     if isinstance(python, Mapping) and python.get("kind") in {
         "uv",
         "uv-console-script",
@@ -1592,13 +1592,14 @@ def _reused_identity_is_current(
 def _tool_identity(
     plan: proof_plan.ProofPlan,
     name: str,
-    envelope: Mapping[str, object],
+    envelope: Mapping[str, object] | None,
     exact: Sequence[str],
     *,
     cwd: Path,
     env: Mapping[str, str],
     reuse_root: Path | None = None,
     reuse_telemetry: list[dict[str, object]] | None = None,
+    selected_input: admission.SelectedToolInput | None = None,
 ) -> dict[str, object]:
     """Capture one toolchain identity, reusing a content-addressed record.
 
@@ -1610,12 +1611,22 @@ def _tool_identity(
     reuse anything; only deterministic version and link probes are skipped.
     """
     env = ProcessEnvironment(env)
+    if selected_input is not None:
+        if envelope is not None or exact or reuse_root is not None:
+            raise ValueError("selected input cannot carry execution or reuse authority")
+        if selected_input != admission.selected_tool_input(selected_input.executable):
+            raise ValueError("selected input differs from canonical toolchain policy")
+        if name not in selected_input.toolchains:
+            raise ValueError("selected input does not own this toolchain")
+    elif envelope is None:
+        raise ValueError("toolchain capture requires input or execution authority")
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     try:
         policy = policies[name]
     except KeyError as exc:
         raise ValueError(f"proof plan has no {name!r} toolchain policy") from exc
     if policy.identity_kind == "target-derived":
+        assert envelope is not None
         from tools.proof_queue_pkg.target_derived_toolchains import capture_identity
 
         return capture_identity(policy, envelope, environment=env)
@@ -1631,7 +1642,13 @@ def _tool_identity(
         if relative_probe_cwd.is_absolute():
             raise ValueError(f"{name} toolchain probe cwd must be repository-relative")
         probe_cwd = (policy.root / relative_probe_cwd).resolve(strict=True)
-    bound_payload = _bound_tool_payload(envelope, exact, requested)
+    bound_payload = (
+        str(selected_input.executable)
+        if selected_input is not None and name == selected_input.policy
+        else _bound_tool_payload(envelope, exact, requested)
+        if envelope is not None
+        else None
+    )
     compiler_path = (
         proof_plan.compiler_tool_path(policy, environment=env, cwd=probe_cwd)
         if bound_payload is None
@@ -1643,6 +1660,7 @@ def _tool_identity(
 
         path = resolve_wasi_sdk_tool(proof_plan.ROOT, sdk_role, environ=env, cwd=cwd)
     elif name == "cargo":
+        assert envelope is not None
         path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
     elif bound_payload is not None:
         path = _resolve_outer_executable(bound_payload, cwd=probe_cwd, env=env)
@@ -1721,9 +1739,13 @@ def _tool_identity(
         )
         proof_plan.validate_selected_python_runtime(policy, selected_python_runtime)
     path_dependency_images: list[dict[str, object]] = []
-    delegated = envelope.get("delegated")
+    delegated = envelope.get("delegated") if envelope is not None else None
     owner = delegated if isinstance(delegated, Mapping) else envelope
-    if name == "rustc" and isinstance(owner.get("python"), Mapping):
+    if (
+        name == "rustc"
+        and owner is not None
+        and isinstance(owner.get("python"), Mapping)
+    ):
         # Registered Python build drivers query literal PATH rustc for host
         # metadata even when Cargo uses an explicit compiler. Capture those
         # executable bytes separately; the primary compiler still owns all
@@ -1750,7 +1772,11 @@ def _tool_identity(
                 path_dependency_images
             )
     clippy_paths = None
-    if name == "rustc" and toolchain_capture.command_requires_clippy(envelope):
+    if (
+        name == "rustc"
+        and envelope is not None
+        and toolchain_capture.command_requires_clippy(envelope)
+    ):
         clippy_paths = toolchain_capture.select_clippy_component_paths(
             cwd=probe_cwd, env=env
         )
@@ -1784,11 +1810,16 @@ def _tool_identity(
     policy_sha256 = hashlib.sha256(
         json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    command_argv = admission._nested_command(exact) or [str(value) for value in exact]
+    command_argv = (
+        [str(selected_input.executable)]
+        if selected_input is not None
+        else admission._nested_command(exact) or [str(value) for value in exact]
+    )
     record_path: Path | None = None
     key: dict[str, object] | None = None
     key_sha256 = ""
     if reuse_root is not None:
+        assert envelope is not None
         key = _tool_identity_reuse_key(
             name=name,
             policy_sha256=policy_sha256,
@@ -1865,6 +1896,7 @@ def _tool_identity(
         policy_sha256=policy_sha256,
         cwd=cwd,
         env=env,
+        command_argv=command_argv,
     )
     if clippy_paths is not None:
         material["clippy_selection"] = toolchain_capture.capture_clippy_selection(
@@ -1898,7 +1930,7 @@ def _tool_identity(
 def _capture_tool_identity(
     policy: proof_plan.ToolchainPolicy,
     name: str,
-    envelope: Mapping[str, object],
+    envelope: Mapping[str, object] | None,
     exact: Sequence[str],
     *,
     path: Path,
@@ -1908,6 +1940,7 @@ def _capture_tool_identity(
     policy_sha256: str,
     cwd: Path,
     env: ProcessEnvironment,
+    command_argv: Sequence[str],
     selected_python_runtime: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     raw_version_args = policy.data.get("version_args")
@@ -1969,12 +2002,13 @@ def _capture_tool_identity(
             name,
             cwd=cwd,
             env=env,
-            command_argv=admission._nested_command(exact) or exact,
+            command_argv=command_argv,
         ),
     }
     if content_resolver_identity is not None:
         material["content_resolver"] = content_resolver_identity
     if name == "rustc":
+        assert envelope is not None
         requested_toolchains = envelope.get("toolchains")
         cargo_path = None
         if isinstance(requested_toolchains, list) and "cargo" in requested_toolchains:
@@ -1989,7 +2023,7 @@ def _capture_tool_identity(
                 cwd=probe_cwd,
                 env=env,
                 target=_rust_target(envelope, env, cwd=probe_cwd),
-                command_argv=admission._nested_command(exact) or exact,
+                command_argv=command_argv,
                 linker_process_helpers=(
                     policy.data.get("linker_process_helpers")
                     if isinstance(policy.data.get("linker_process_helpers"), Mapping)

@@ -48,6 +48,50 @@ ENVELOPE_SCHEMA = "molt.proof-command-envelope.v8"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
 
+
+@dataclass(frozen=True)
+class SelectedToolInput:
+    """An immutable input selection, never permission to execute a payload."""
+
+    executable: Path
+    policy: str
+    toolchains: tuple[str, ...]
+
+
+def _executable_toolchain(token: str) -> str:
+    registry = _proof_command_registry()["policy_executables"]
+    assert isinstance(registry, dict)
+    name = registry.get(_basename(token))
+    if not isinstance(name, str):
+        raise ValueError(
+            f"unknown proof executable kind {token!r}; add it to the proof-plan "
+            "toolchain registry or invoke a registered typed command family"
+        )
+    return name
+
+
+def selected_tool_input(executable: Path) -> SelectedToolInput:
+    """Project an exact selected image through the existing executable registry."""
+    if not executable.is_absolute():
+        raise ValueError("selected tool input requires an absolute executable")
+    name = _executable_toolchain(str(executable))
+    closure = tuple(_toolchain_dependency_closure([name]))
+    plan = _proof_command_registry()["plan"]
+    assert isinstance(plan, proof_plan.ProofPlan)
+    policies = {policy.name: policy for policy in plan.toolchain_policies}
+    for member in closure:
+        policy = policies[member]
+        if (
+            policy.identity_kind != "executable"
+            or policy.python_identity_role is not None
+            or policy.data.get("fingerprint_domain") == "rustup"
+        ):
+            raise ValueError(
+                f"{member} toolchain input requires its typed execution context"
+            )
+    return SelectedToolInput(executable, name, closure)
+
+
 _SHELL_LAUNCHERS = frozenset(
     {
         "bash",
@@ -384,15 +428,7 @@ def _command_registration(
 
     if not argv:
         raise ValueError("proof command has no executable registration")
-    first = _basename(argv[0])
-    policy_executables = registry["policy_executables"]
-    assert isinstance(policy_executables, dict)
-    policy_name = policy_executables.get(first)
-    if not isinstance(policy_name, str):
-        raise ValueError(
-            f"unknown proof executable kind {argv[0]!r}; add it to the proof-plan "
-            "toolchain registry or invoke a registered typed command family"
-        )
+    policy_name = _executable_toolchain(argv[0])
     add(policy_name)
     if policy_name == "cargo":
         invocation = parse_cargo_invocation(argv)
