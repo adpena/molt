@@ -255,7 +255,33 @@ module completed in 113.276 s, including 103.693 s for the function's compilatio
 with 4.965 GiB peak sampled/direct-child RSS. The timeout is censored, not a finite
 whole-compile speedup. These are unlinked component observations with diagnostic
 logging, not linked-module execution, installed-user latency, quiescent medians
-or full-module/release acceptance. Remaining codegen cost needs separate profiling.
+or full-module/release acceptance.
+
+Replacing per-literal WASM anchor locals with one invocation-owned scratch region
+further reduced this same component from 4,488 to 3,546 locals and from 246,843 to
+228,793 bytes. Its 944 anchors occupy 7,552 checked bytes. The other 91 function
+bodies, all non-code sections, constructor inputs and the 1,179-target dispatch
+table remain identical. With the same retained host, cache-disabled engine policy,
+diagnostic logging and 180 s bound, single compile-only observations measured
+113.276 s before and 28.575 s after: function translation fell from 8.292 to
+4.625 s and compilation from 103.693 to 22.627 s. Peak sampled/direct-child RSS
+fell from 4.965 to 3.396 GiB; serialized native artifacts shrank from 41,569,600
+to 36,371,200 bytes. The earlier receipt does not retain exhaustive ambient
+environment or numeric guard limits, so these are development observations rather
+than a fully controlled benchmark or canonical performance score.
+
+This accepts a compile-latency/runtime-allocation trade: a literal-bearing
+invocation or poll performs one resource-accounted allocation/free pair, uses
+8 bytes per anchor plus allocator overhead and linear initialization/cleanup
+traffic, and can fail resource admission. A function without anchors allocates
+nothing for this storage. A historical one-anchor, two-million-call Node
+diagnostic measured literal process-wall medians of 5.340 and 5.447 s. Every sample
+started a fresh process, and the after-sample spread exceeded the estimated
+control-adjusted signal; it establishes neither isolated allocator latency nor a
+current runtime regression percentage. Cold/steady runtime, retained memory,
+concurrency, linked-module execution and the wider release matrix remain
+unqualified. Ownership and failure cleanup follow
+`docs/spec/areas/compiler/0190_LOWERING_RULES.md`.
 
 Build-Python capture now binds inventory rows within the shared stable-file
 transaction and batches capture and final verification. An isolated Windows
