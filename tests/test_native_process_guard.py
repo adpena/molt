@@ -227,10 +227,34 @@ def test_prepared_native_environment_matches_actual_run_policy(
         assert environment["MOLT_RUNTIME_FEEDBACK"] == "0"
 
 
+def _compiled_preparation_result(args, **kwargs):
+    """A build boundary double that materializes its advertised output/streams."""
+    if "molt.cli" in args:
+        source = next(Path(arg) for arg in args if str(arg).endswith(".py"))
+        assert source.is_file()
+        output = source
+        if "--out-dir" in args:
+            directory = Path(args[args.index("--out-dir") + 1])
+            directory.mkdir(parents=True, exist_ok=True)
+            output = directory / (
+                "output.wasm" if "--split-runtime" in args else "output_linked.wasm"
+            )
+            output.write_bytes(b"\0asm\x01\0\0\0")
+            if "--split-runtime" in args:
+                (directory / "manifest.json").write_text("{}", encoding="utf-8")
+        payload = {"status": "ok", "data": {"output": str(output)}}
+    else:
+        payload = {}
+    stdout = json.dumps(payload)
+    for key, content in (("stdout_capture_path", stdout), ("stderr_capture_path", "")):
+        if path := kwargs.get(key):
+            Path(path).write_text(content, encoding="utf-8")
+    return subprocess.CompletedProcess(args, 0, stdout, "")
+
+
 def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import json
     from dataclasses import replace
     from tools import prepare_compiled_contracts as preparation
 
@@ -244,7 +268,10 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
         commands=tuple(changed if row.id == host.id else row for row in plan.commands),
     )
     monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
-    times = iter([0.0, 1.0, 200.0, 500.0])
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    times = iter(
+        [0.0, 1.0, 200.0, 500.0, 550.0, 600.0, 650.0, 700.0, 750.0, 800.0, 850.0, 900.0]
+    )
     monkeypatch.setattr(preparation, "monotonic", lambda: next(times))
     calls = []
     source_paths = []
@@ -252,14 +279,10 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     def record(args, **kwargs):
         calls.append((tuple(args), kwargs))
         if "molt.cli" in args:
-            source = Path(args[-1])
+            source = next(Path(arg) for arg in args if str(arg).endswith(".py"))
             source_paths.append(source)
             assert source.is_file()
-        if "molt.cli" in args:
-            payload = {"status": "ok", "data": {"output": str(source)}}
-        else:
-            payload = {}
-        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+        return _compiled_preparation_result(args, **kwargs)
 
     monkeypatch.setattr(
         preparation._COMMANDS.__class__,
@@ -269,9 +292,21 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     output = tmp_path / "evidence"
     preparation.prepare(plan, output)
     assert calls[0][0] == (*host.argv, "--verbose")
-    assert [kw["timeout"] for _, kw in calls] == [1199.0, 1000.0, 700.0]
+    assert [kw["timeout"] for _, kw in calls] == [
+        1199.0,
+        1000.0,
+        700.0,
+        650.0,
+        600.0,
+        550.0,
+        500.0,
+        450.0,
+        400.0,
+        350.0,
+        300.0,
+    ]
     assert all(kw["check"] and kw["capture_output"] for _, kw in calls)
-    for args, _ in calls[1:]:
+    for args, _ in calls[1:3]:
         assert args[:5] == (
             preparation.sys.executable,
             "-m",
@@ -287,9 +322,31 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     assert 'os.putenv("MOLT_RUNTIME_FEEDBACK", "1")' in feedback
     assert 'os.environ["MOLT_RUNTIME_FEEDBACK_FILE"]' in feedback
     assert all(not source.exists() for source in source_paths)
+    records = [
+        json.loads(path.read_text()) for path in output.glob("wasm-*/command.json")
+    ]
+    assert {Path(record["source"]).parent.name for record in records} == {
+        "wasm-syntax-run",
+        "wasm-asyncio-linked",
+        "wasm-finder-linked",
+        "wasm-finder-split",
+        "wasm-final-tir-linked",
+        "wasm-final-tir-split",
+        "wasm-zipimport-linked",
+        "wasm-smtplib-linked",
+    }
+    for record in records:
+        retained = Path(record["retained_sources"])
+        assert (retained / Path(record["source"]).name).is_file()
+        payload = json.loads((retained.parent / "build.json").read_text())
+        assert Path(payload["data"]["output"]).is_file()
+        assert not Path(record["products"]).is_relative_to(
+            Path(record["source"]).parent
+        )
+        assert "--runtime-feature" not in record["argv"]
 
 
-@pytest.mark.parametrize("stage", [0, 1, 2])
+@pytest.mark.parametrize("stage", [0, 1, 2, 3, 10])
 @pytest.mark.parametrize("failure", ["timeout", "exit"])
 def test_compiled_preparation_preserves_failure_and_never_runs_later_stage(
     monkeypatch, tmp_path: Path, stage: int, failure: str
@@ -298,6 +355,7 @@ def test_compiled_preparation_preserves_failure_and_never_runs_later_stage(
 
     plan = preparation.proof_plan.ProofPlan.load()
     monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     error = (
         subprocess.TimeoutExpired(["selected-child"], 17, output="out", stderr="err")
         if failure == "timeout"
@@ -314,13 +372,10 @@ def test_compiled_preparation_preserves_failure_and_never_runs_later_stage(
     def run(self, args, **kwargs):
         calls.append(tuple(args))
         if "molt.cli" in args:
-            sources.append(Path(args[-1]))
+            sources.append(next(Path(arg) for arg in args if str(arg).endswith(".py")))
         if len(calls) == stage + 1:
             raise error
-        import json
-
-        payload = {"status": "ok", "data": {"output": str(args[-1])}}
-        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+        return _compiled_preparation_result(args, **kwargs)
 
     monkeypatch.setattr(preparation._COMMANDS.__class__, "run", run)
     with pytest.raises(type(error)) as caught:
@@ -331,6 +386,107 @@ def test_compiled_preparation_preserves_failure_and_never_runs_later_stage(
     assert caught.value.__notes__ == ["original closed guard"]
     assert len(calls) == stage + 1
     assert all(not source.exists() for source in sources)
+    if stage >= 3:
+        retained = list((tmp_path / "evidence").glob("wasm-*/sources/*.py"))
+        assert retained, "failed WASM build must retain its actual source inputs"
+
+
+def test_compiled_preparation_uses_changed_linked_and_split_command_authorities(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tools import prepare_compiled_contracts as preparation
+    from tests.wasm_runtime_heavy_witnesses import heavy_wasm_witness
+
+    selected = preparation.WasmTestBuildCommand(
+        ("changed-authority", "--new-contract"),
+        tmp_path,
+        {"authority": "changed"},
+        tmp_path / "published",
+    )
+    calls = []
+
+    def linked(root, source, output, *, extra_args):
+        calls.append((root, source, output, extra_args))
+        return selected
+
+    def split(source, output, *, extra_args):
+        calls.append((source, output, extra_args))
+        return selected
+
+    monkeypatch.setattr(preparation, "wasm_linked_build_command", linked)
+    monkeypatch.setattr(preparation, "wasm_split_build_command", split)
+    root, source, output = tmp_path / "root", tmp_path / "entry.py", tmp_path / "out"
+    assert (
+        preparation.wasm_build_command(
+            root, heavy_wasm_witness("finder"), source, output
+        )
+        is selected
+    )
+    assert (
+        preparation.wasm_build_command(
+            root, heavy_wasm_witness("finder", "split"), source, output
+        )
+        is selected
+    )
+    assert calls == [
+        (root, source, output, ["--no-trusted", "--json"]),
+        (source, output, ["--build-profile", "dev", "--no-trusted", "--json"]),
+    ]
+
+
+def test_compiled_policy_retains_budgets_and_default_linux_host_coverage() -> None:
+    from tools import prepare_compiled_contracts as preparation
+
+    plan = preparation.proof_plan.ProofPlan.load()
+    rows = {row.id: row for row in plan.commands}
+    owner = rows["python.unit.compiled-contracts.prepare.macos"]
+    body = rows["python.unit.compiled-contracts.macos"]
+    linux = rows["wasm.integration.host-boundaries"]
+    assert owner.data["timeout_seconds"] == 1200
+    assert body.data["timeout_seconds"] == 600
+    assert body.data["env"] == {"MOLT_WASM_COMPILE_FAST": "1"}
+    assert "MOLT_WASM_COMPILE_FAST" not in linux.data.get("env", {})
+    assert body.data["pytest"] == [
+        "tests/test_resource_enforcement_e2e.py",
+        "tests/test_wasm_runtime_heavy_regressions.py",
+    ]
+    assert "tests/test_wasm_runtime_heavy_regressions.py" in linux.data["pytest"]
+    assert set(plan.required_toolchains(body)) <= set(plan.required_toolchains(owner))
+    family = next(family for family in plan.families if family.name == "python_unit")
+    assert family.data["timeout_minutes"] == 43
+
+
+def test_compiled_preparation_refuses_missing_wasm_toolchain_before_children(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+    from tools import prepare_compiled_contracts as preparation
+
+    plan = preparation.proof_plan.ProofPlan.load()
+    owner = next(
+        row
+        for row in plan.commands
+        if row.id == "python.unit.compiled-contracts.prepare.macos"
+    )
+    changed = replace(
+        owner,
+        data={
+            **owner.data,
+            "toolchains": [tool for tool in owner.toolchains if tool != "wasm-tools"],
+        },
+    )
+    plan = replace(
+        plan,
+        commands=tuple(changed if row.id == owner.id else row for row in plan.commands),
+    )
+    monkeypatch.setattr(
+        preparation._COMMANDS.__class__,
+        "run",
+        lambda *args, **kwargs: pytest.fail("missing WASM closure launched a child"),
+    )
+    with pytest.raises(ValueError, match="WASM toolchain closure"):
+        preparation.prepare(plan, tmp_path / "evidence")
+    assert not (tmp_path / "evidence").exists()
 
 
 @pytest.mark.parametrize("budget", [None, "600", "1201", "nan"])
@@ -408,7 +564,7 @@ def test_compiled_preparation_rejects_unprojected_host_requirements(
     if mutation == "dependency":
         data["dependencies"] = ["wasm.build.backend"]
     else:
-        data["toolchains"] = [*host.toolchains, "node"]
+        data["toolchains"] = [*host.toolchains, "rustfmt"]
     changed = replace(host, data=data)
     plan = replace(
         plan,

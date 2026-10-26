@@ -22,6 +22,10 @@ from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import toolchain_validation
 
 from tests.cli.process_guard import run_cli_test_process
+from tests.wasm_runtime_heavy_witnesses import (
+    materialize_syntax_error_payload,
+    syntax_error_run_arguments,
+)
 from tests.process_guard_common import install_module_view
 from tests.runtime_profile_fixtures import process_profile_payload
 from molt.cli import compiler_target as cli_compiler_target
@@ -2587,43 +2591,7 @@ def test_cli_imported_syntax_errors_keep_native_identity_and_payload(
 
 
 def _assert_imported_syntax_error_payload(tmp_path: Path, *, target: str) -> None:
-    sources = {
-        "bad_syntax": b"def broken(:\n    pass\n",
-        "bad_indent": b"if True:\npass\n",
-        "bad_tabs": b"if True:\n\tpass\n        pass\n",
-        "bad_cookie": b"# coding: not-a-real-encoding\nvalue = 1\n",
-        "bad_bytes": b"# coding: utf-8\nvalue = '\xff'\n",
-        "bad_bom_bytes": b"\xef\xbb\xbfvalue = '\xff'\n",
-        "bad_bytes_crlf": b"# coding: utf-8\r\nvalue = '\xff'\r\n",
-        "bad_unicode": "value = ('α',\n         ) +\n".encode("utf-8"),
-        "good_cookie": b"# coding: latin-1\nvalue = 'caf\xe9'\n",
-    }
-    for name, content in sources.items():
-        (tmp_path / f"{name}.py").write_bytes(content)
-    script = tmp_path / "entry.py"
-    imports = "\n".join(
-        f"try:\n    import {name}\nexcept saved_syntax as error:\n    report(error)"
-        for name in sources
-        if name != "good_cookie"
-    )
-    script.write_text(
-        "import builtins\n"
-        "saved_syntax = builtins.SyntaxError\n"
-        "saved_indent = builtins.IndentationError\n"
-        "saved_tabs = builtins.TabError\n"
-        "def report(error):\n"
-        "    print(type(error).__name__, error.args, error.msg, error.filename, "
-        "error.lineno, error.offset, repr(error.text), error.end_lineno, "
-        "error.end_offset, error.print_file_and_line, str(error))\n"
-        "builtins.SyntaxError = ValueError\n"
-        "builtins.IndentationError = ValueError\n"
-        "builtins.TabError = ValueError\n" + imports + "\n"
-        "builtins.SyntaxError = saved_syntax\n"
-        "builtins.IndentationError = saved_indent\n"
-        "builtins.TabError = saved_tabs\n"
-        "import good_cookie\nprint('valid', good_cookie.value)\n",
-        encoding="utf-8",
-    )
+    script, expected_lines = materialize_syntax_error_payload(tmp_path)
     oracle = run_cli_test_process(
         [_python_executable(), str(script)],
         cwd=tmp_path,
@@ -2634,21 +2602,11 @@ def _assert_imported_syntax_error_payload(tmp_path: Path, *, target: str) -> Non
     )
     assert oracle.returncode == 0, oracle.stderr
     assert oracle.stderr == ""
-    assert len(oracle.stdout.splitlines()) == len(sources)
+    assert len(oracle.stdout.splitlines()) == expected_lines
     # Check both the initial build and repeated CLI execution. The run wrapper
     # may reuse its artifact; serial lowering-cache replay has its own witness.
     for _ in range(2):
-        result = _run_cli(
-            [
-                "run",
-                "--json",
-                "--target",
-                target,
-                "--python-version",
-                f"{sys.version_info.major}.{sys.version_info.minor}",
-                str(script),
-            ]
-        )
+        result = _run_cli(syntax_error_run_arguments(script, target=target))
         assert result.returncode == 0, (
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
