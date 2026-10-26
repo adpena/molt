@@ -20,11 +20,14 @@ from molt.default_paths import (
 from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
 from molt.artifact_publication import staged_copy_file
 from molt.exact_json import loads_exact
-from molt.file_hashing import _sha256_file_with_size
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.file_publication import (
     PublicationDurability,
     atomic_replace,
+)
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    stable_regular_file_identity,
 )
 
 WASM_LINK_CACHE_ENTRY_SCHEMA = "molt.wasm-link-cache-entry.v4"
@@ -53,7 +56,7 @@ class WasmLinkCacheEntry:
 class WasmLinkCacheBundleHit:
     """Verified role files of one bundle; read and transfer them under its lock."""
 
-    files: Mapping[str, Path]
+    files: Mapping[str, StableRegularFileIdentity]
     bytes_read: int
 
 
@@ -230,7 +233,7 @@ def _read_wasm_link_cache_bundle(
         or set(metadata["roles"]) != set(roles)
     ):
         return WasmLinkCacheBundleMiss(WasmLinkCacheBundleMissReason.CORRUPT, 0)
-    files: dict[str, Path] = {}
+    files: dict[str, StableRegularFileIdentity] = {}
     bytes_read = 0
     for role, record in metadata["roles"].items():
         if not isinstance(record, dict) or set(record) != {"bytes", "sha256"}:
@@ -239,22 +242,22 @@ def _read_wasm_link_cache_bundle(
             )
         try:
             path = _bundle_role_path(entry, role)
-            digest, size = _sha256_file_with_size(path)
+            identity = stable_regular_file_identity(path, label="WASM link cache role")
         except (OSError, ValueError):
             return WasmLinkCacheBundleMiss(
                 WasmLinkCacheBundleMissReason.CORRUPT, bytes_read
             )
-        bytes_read += size
-        if record["bytes"] != size or record["sha256"] != digest:
+        bytes_read += identity.size
+        if record["bytes"] != identity.size or record["sha256"] != identity.sha256:
             return WasmLinkCacheBundleMiss(
                 WasmLinkCacheBundleMissReason.CORRUPT, bytes_read
             )
-        files[role] = path
+        files[role] = identity
     refresh_cache_entry_recency(entry.root)
     return WasmLinkCacheBundleHit(files, bytes_read)
 
 
-def _transfer_file(source: Path, destination: Path) -> None:
+def _transfer_file(source: StableRegularFileIdentity, destination: Path) -> None:
     """Replace `destination` with a clone of `source` (see ``clone_file``).
 
     A clone shares the source's blocks, so publishing or restoring a 60 MB
@@ -263,7 +266,9 @@ def _transfer_file(source: Path, destination: Path) -> None:
     """
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with staged_copy_file(source, destination) as stage:
+    with staged_copy_file(
+        source.path, destination, expected_sha256=source.sha256
+    ) as stage:
         atomic_replace(
             stage, destination, durability=PublicationDurability.RECONSTRUCTIBLE
         )
@@ -278,9 +283,9 @@ def _publish_wasm_link_cache_bundle(
         raise ValueError("refusing to cache an empty wasm linker bundle")
     roles = {}
     for role, source in files.items():
-        digest, size = _sha256_file_with_size(source)
-        _transfer_file(source, _bundle_role_path(entry, role))
-        roles[role] = {"bytes": size, "sha256": digest}
+        identity = stable_regular_file_identity(source, label="WASM link output")
+        _transfer_file(identity, _bundle_role_path(entry, role))
+        roles[role] = {"bytes": identity.size, "sha256": identity.sha256}
     _atomic_write_json(
         entry.metadata,
         {
