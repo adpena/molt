@@ -752,13 +752,16 @@ mod resolver_tests {
                         .bits(),
                     class
                 );
+                // Pending ownership is proven above. Ordinary descriptor lookup
+                // requires a clear error slot; `original` retains the exception.
+                clear_exception(py);
                 let errno_name = crate::attr_name_bits_from_bytes(py, b"errno").unwrap();
                 let errno =
                     crate::molt_getattr_builtin(original, errno_name, MoltObject::none().bits());
+                assert!(!exception_pending(py));
                 assert_eq!(to_i64(obj_from_bits(errno)), Some(code));
                 dec_ref_bits(py, errno_name);
                 dec_ref_bits(py, errno);
-                clear_exception(py);
                 dec_ref_bits(py, original);
             }
         });
