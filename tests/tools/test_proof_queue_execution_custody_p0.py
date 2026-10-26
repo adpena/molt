@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from molt import process_launch
 
 from tests.process_guard_common import (
     install_module_view,
@@ -598,8 +599,8 @@ def test_windows_python_doubled_quote_warning_cannot_grant_hidden_flags(tmp_path
             "sha256": policy["allowed"][0]["sha256"],
         },
     )
-    facts = python_child_custody._windows_caller_facts(
-        python_child_custody._native_environment_reader()
+    facts = process_launch.windows_caller_facts(
+        process_launch.native_environment_reader()
     )()
     intent = {
         **facts,
@@ -999,8 +1000,8 @@ def test_windows_python_forwarder_cannot_remove_observed_startup_options(
     actual_argv, actual_prefix, actual_readonly = json.loads(ordinary.stdout)
     assert actual_argv[1].startswith("-c")
     assert (actual_prefix, actual_readonly) == (foreign, False)
-    facts = python_child_custody._windows_caller_facts(
-        python_child_custody._native_environment_reader()
+    facts = process_launch.windows_caller_facts(
+        process_launch.native_environment_reader()
     )()
     intent = {
         **facts,
@@ -1334,7 +1335,7 @@ def _createprocess_image(
         "_entry_kind",
         lambda location: entries.get(location.casefold()),
     )
-    search = windows_createprocess.CallerSearch(
+    search = process_launch.CallerSearch(
         image_directory=_APP,
         current_directory=_CWD,
         path=path,

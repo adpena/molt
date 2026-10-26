@@ -443,6 +443,7 @@ def python_capture_authority_paths(
         "custody_layout",
         "memory_guard_paths",
         "process_spawn",
+        "process_launch",
         "process_model",
         "windows_process_snapshot",
         "backend_executable_names",
