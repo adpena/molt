@@ -2569,9 +2569,10 @@ def test_explicit_legacy_target_lifetime_and_timed_retention(
             log=False,
         )
 
-    with ProcessStateUse(ROOT, command_env, ROOT) as owner:
+    command = [sys.executable, "-I", "-S", "-c", "import sys;sys.stdin.buffer.read(1)"]
+    with ProcessStateUse(ROOT, command_env, ROOT, command) as owner:
         with subprocess.Popen(
-            [sys.executable, "-I", "-S", "-c", "import sys;sys.stdin.buffer.read(1)"],
+            command,
             stdin=subprocess.PIPE,
         ) as child:
             owner.process = child

@@ -26,11 +26,14 @@ class ProcessStateUse:
     bound method keeps this exact owner, child and entered use alive when a
     failed wait and its exception are collected. Verified handoffs may release
     the same owner explicitly; no parallel handoff/release flag is needed.
+    The actual command is required: activation variables alone cannot retain
+    an unactivated foreign environment selected by its executable or PATH.
     """
 
     source_root: Path
     environment: Mapping[str, str]
     cwd: str | os.PathLike[str] | None
+    command: Sequence[str]
     process: subprocess.Popen[Any] | None = field(default=None, init=False)
     state_use: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
     released: bool = field(default=False, init=False)
@@ -45,7 +48,7 @@ class ProcessStateUse:
             self.state_use.enter_context(
                 checkout_state_use(
                     checkout_state_command_roots(
-                        self.source_root, self.environment, cwd=self.cwd
+                        self.source_root, self.environment, self.command, cwd=self.cwd
                     )
                 )
             )
@@ -250,7 +253,7 @@ def forward_command(
     child_env = dict(env)
     source = compiler_source_root()
     if os.name == "nt":
-        with ProcessStateUse(source, child_env, cwd) as state_owner:
+        with ProcessStateUse(source, child_env, cwd, argv) as state_owner:
             process = subprocess.Popen(
                 native_popen_command(argv), cwd=cwd, env=child_env
             )
@@ -286,7 +289,7 @@ def forward_command(
                         raise
                     error.add_note(f"child context cleanup failed: {cleanup_error!r}")
     with checkout_state_use(
-        checkout_state_command_roots(source, child_env, cwd=cwd)
+        checkout_state_command_roots(source, child_env, argv, cwd=cwd)
     ) as handles:
         with ExitStack() as custody:
             for handle in handles:

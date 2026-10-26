@@ -301,9 +301,10 @@ def test_batch_lifetime_uses_compiler_source_independently_of_server_cwd(
     original = checkout_state.checkout_state_command_roots
     captured = []
 
-    def observe(source_root, child_environment, *, cwd):
+    def observe(source_root, child_environment, command, *, cwd):
         assert source_root == compiler and cwd == checkout
-        selected = original(source_root, child_environment, cwd=cwd)
+        assert command == [sys.executable, str(script)]
+        selected = original(source_root, child_environment, command, cwd=cwd)
         target = Path(child_environment["CARGO_TARGET_DIR"])
         assert (
             build_state_root(

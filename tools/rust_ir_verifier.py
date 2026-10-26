@@ -27,6 +27,7 @@ from molt.cargo_execution_policy import require_cargo_build_capacity  # noqa: E4
 from molt.dx import development_artifact_env  # noqa: E402
 from molt.checkout_state import (  # noqa: E402
     checkout_state_command_roots,
+    checkout_state_environment_roots,
     checkout_state_use,
 )
 from tools.command_execution import CommandExecutor  # noqa: E402
@@ -237,10 +238,17 @@ class RustIrVerifier:
         atexit.register(self.close)
         try:
             self._state_use.enter_context(
-                checkout_state_use(checkout_state_command_roots(ROOT, env, cwd=ROOT))
+                checkout_state_use(
+                    checkout_state_environment_roots(ROOT, env, cwd=ROOT)
+                )
             )
             if resolved_command is None:
                 resolved_command = [str(verifier_binary(env=env))]
+            self._state_use.enter_context(
+                checkout_state_use(
+                    checkout_state_command_roots(ROOT, env, resolved_command, cwd=ROOT)
+                )
+            )
             self._process = _COMMANDS.start_owned(
                 resolved_command,
                 cwd=ROOT,

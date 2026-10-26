@@ -137,9 +137,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (ProvisioningError, DxConfigError) as exc:
         parser.error(str(exc))
-    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
 
-    with checkout_state_use(checkout_state_command_roots(ROOT, env)):
+    with checkout_state_use(checkout_state_environment_roots(ROOT, env)):
         if args.print_env:
             print(env["UV_PROJECT_ENVIRONMENT"], flush=True)
         command = _parse_command(args.command)

@@ -128,7 +128,7 @@ def _exec_wait_rc(
 
     state_use = ExitStack()
     state_use.enter_context(
-        checkout_state_use(checkout_state_command_roots(_REPO_ROOT, env))
+        checkout_state_use(checkout_state_command_roots(_REPO_ROOT, env, command))
     )
     # Keep the generator-backed hold durable if waiting fails and this frame
     # unwinds. The existing child wait runs first at process shutdown.
@@ -193,7 +193,7 @@ def _detached_daemonize(
         str(Path(__file__).resolve()), "--detached-worker", str(payload_path)
     )
     with DetachedStateHandoff(
-        _REPO_ROOT, env, cwd, state / "state-use-ready.json", token
+        _REPO_ROOT, env, cwd, worker, state / "state-use-ready.json", token
     ) as handoff:
         handoff.process = _COMMANDS.start_owned(
             worker,

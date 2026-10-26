@@ -1123,11 +1123,13 @@ def run_guarded(
     state_use = contextlib.ExitStack()
     state_closed = False
     try:
+        command = _resolve_relative_executable(command)
         state_use.enter_context(
             checkout_state_use(
                 checkout_state_command_roots(
                     ROOT,
                     child_env,
+                    command,
                     cwd=cwd if logical_cwd is None else logical_cwd,
                 )
             )

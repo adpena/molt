@@ -93,7 +93,7 @@ def _run_supervisor_with_transcripts(
 
     paths = command_identity.execution_transcript_paths(result_path)
     with (
-        ProcessStateUse(_REPO_ROOT, env, cwd) as state_owner,
+        ProcessStateUse(_REPO_ROOT, env, cwd, command) as state_owner,
         paths["stdout"].open("xb") as stdout_handle,
         paths["stderr"].open("xb") as stderr_handle,
     ):
@@ -618,6 +618,7 @@ def execute_guarded_request(request_path: Path) -> int:
             Path(file_locks.__file__).resolve(strict=True),
             Path(cache_eviction.__file__).resolve(strict=True),
             Path(default_paths.__file__).resolve(strict=True),
+            (admission._REPO_ROOT / "src/molt/process_launch.py").resolve(strict=True),
             Path(file_publication.__file__).resolve(strict=True),
             Path(supervisor.__file__).resolve(strict=True),
             supervisor_binary,
