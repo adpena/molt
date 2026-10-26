@@ -1713,7 +1713,10 @@ def test_terminal_output_reaches_real_pipe_before_blocked_maintenance(tmp_path, 
     import subprocess
     import threading
     import time
-    from tests.process_guard_common import start_owned_test_process
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
 
     entered = tmp_path / "maintenance-entered"
     program = tmp_path / "app.py"
@@ -1833,8 +1836,7 @@ raise SystemExit(rc)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+            close_owned_test_process(proc)
         reader.join(timeout=2)
         proc.stdin.close()
         proc.stdout.close()
