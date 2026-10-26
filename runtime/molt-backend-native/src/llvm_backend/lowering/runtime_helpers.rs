@@ -437,17 +437,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.inline_int_constant(site_id)
     }
 
-    pub(super) fn generator_self_bits(&self) -> inkwell::values::IntValue<'ctx> {
-        let idx = self
-            .func
-            .param_names
-            .iter()
-            .position(|name| name == "self")
-            .unwrap_or(0);
-        let value = self
-            .llvm_fn
-            .get_nth_param(idx as u32)
-            .unwrap_or_else(|| self.backend.context.i64_type().const_zero().into());
-        self.ensure_i64(value)
+    /// Compiled polls receive exactly one raw frame address, independent of
+    /// Python-visible parameter names and constructor arity.
+    pub(super) fn poll_frame_address(&self) -> inkwell::values::IntValue<'ctx> {
+        assert_eq!(
+            self.llvm_fn.count_params(),
+            1,
+            "compiled poll requires one frame parameter"
+        );
+        self.llvm_fn
+            .get_first_param()
+            .expect("compiled poll requires its frame address")
+            .into_int_value()
     }
 }

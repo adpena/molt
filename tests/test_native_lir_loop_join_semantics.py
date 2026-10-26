@@ -762,6 +762,30 @@ def test_native_llvm_integer_carrier_matrix_matches_cpython(
         print(absolute(-crosses_47_bits()))
         print(absolute(-overflows_i64()))
         print(absolute(-17))
+
+        # The same executable also exercises a deferred callable constructor:
+        # its Python argument is an iterator, never the raw poll frame.
+        events = []
+        def outer_values():
+            events.append("outer")
+            return [1, 2]
+        def element(value):
+            events.append(value)
+            return value + 10
+        generated = (element(value) for value in outer_values())
+        print(events)
+        print(next(generated), events)
+        print(list(generated), events)
+
+        def capture(value):
+            def deferred(first, second, third):
+                events.append("body")
+                yield (value, first, second, third)
+            return deferred
+        make_generator = capture("captured")
+        deferred = make_generator(7, 8, 9)
+        print(events)
+        print(next(deferred), events)
         """
     )
     expected = _cpython_output(source)
@@ -772,5 +796,12 @@ def test_native_llvm_integer_carrier_matrix_matches_cpython(
     ]
     assert int(expected_lines[2]) > (1 << 47)
     assert expected_lines[3:5] == ["499500", "73"]
-    assert expected_lines[5:] == [*expected_lines[:2], "17"]
+    assert expected_lines[5:8] == [*expected_lines[:2], "17"]
+    assert expected_lines[8:] == [
+        "['outer']",
+        "11 ['outer', 1]",
+        "[12] ['outer', 1, 2]",
+        "['outer', 1, 2]",
+        "('captured', 7, 8, 9) ['outer', 1, 2, 'body']",
+    ]
     assert _compile_and_run(source, profile, backend=backend) == expected

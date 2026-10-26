@@ -30,39 +30,47 @@ fn state_attr(state: i64) -> AttrDict {
 }
 
 /// The wait `drop_insertion::activation` exposes, over the poll frame
-/// (parameter 0) and a borrowed future (parameter 1): save state 7, poll, test
+/// (the sole raw parameter) and a future loaded from its payload: save state 7, poll, test
 /// the poll word, then a pending exit that registers the wait and returns the
 /// poll word and a ready exit that saves the running state 9 and returns it.
 /// State 7 is the dispatch case that resumes the poll block; no case resumes
 /// state 9. With `poll_call` the poll is the normalized `molt_future_poll`
-/// Call; otherwise the poll word is borrowed parameter 2.
+/// Call; otherwise the owned poll word is loaded from the next payload slot.
 fn normalized_wait(name: &str, poll_call: bool) -> NormalizedWait {
-    let params = vec![TirType::DynBox; if poll_call { 2 } else { 3 }];
+    let params = vec![TirType::DynBox];
     let mut func = TirFunction::new(
         name.into(),
         params,
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    func.param_names[0] = "self".into();
-    let future = ValueId(1);
-    let polled = if poll_call {
-        func.fresh_value()
-    } else {
-        ValueId(2)
-    };
+    func.param_names[0] = "frame".into();
+    let future = func.fresh_value();
+    func.value_types.insert(future, TirType::DynBox);
+    let polled = func.fresh_value();
     func.value_types.insert(polled, TirType::DynBox);
     let waiting = func.fresh_value();
     func.value_types.insert(waiting, TirType::Bool);
     let poll = func.fresh_block();
     let pending = func.fresh_block();
     let ready = func.fresh_block();
-    let mut poll_ops = vec![tir_op(
-        OpCode::StateSet,
-        vec![],
-        vec![],
-        state_attr(RESUME_STATE),
-    )];
+    let mut poll_ops = vec![
+        tir_op(
+            OpCode::ClosureLoad,
+            vec![ValueId(0)],
+            vec![future],
+            state_attr(0),
+        ),
+        tir_op(OpCode::StateSet, vec![], vec![], state_attr(RESUME_STATE)),
+    ];
+    if !poll_call {
+        poll_ops.push(tir_op(
+            OpCode::ClosureLoad,
+            vec![ValueId(0)],
+            vec![polled],
+            state_attr(8),
+        ));
+    }
     if poll_call {
         poll_ops.push(tir_op(
             OpCode::Call,
@@ -102,12 +110,10 @@ fn normalized_wait(name: &str, poll_call: bool) -> NormalizedWait {
         TirBlock {
             id: pending,
             args: vec![],
-            ops: vec![tir_op(
-                OpCode::TaskWait,
-                vec![future],
-                vec![],
-                AttrDict::new(),
-            )],
+            ops: vec![
+                tir_op(OpCode::TaskWait, vec![future], vec![], AttrDict::new()),
+                tir_op(OpCode::DecRef, vec![future], vec![], AttrDict::new()),
+            ],
             terminator: Terminator::Return {
                 values: vec![polled],
             },
@@ -118,12 +124,10 @@ fn normalized_wait(name: &str, poll_call: bool) -> NormalizedWait {
         TirBlock {
             id: ready,
             args: vec![],
-            ops: vec![tir_op(
-                OpCode::StateSet,
-                vec![],
-                vec![],
-                state_attr(RUNNING_STATE),
-            )],
+            ops: vec![
+                tir_op(OpCode::StateSet, vec![], vec![], state_attr(RUNNING_STATE)),
+                tir_op(OpCode::DecRef, vec![future], vec![], AttrDict::new()),
+            ],
             terminator: Terminator::Return {
                 values: vec![polled],
             },
@@ -159,7 +163,9 @@ fn activation_ops_save_state_test_the_exact_sentinel_and_register_the_frame() {
     // IsPending compares the poll word itself with the sentinel, and the
     // branch consumes that bit: no truthiness, no callback.
     assert!(
-        ir.contains(&format!("%is_pending = icmp eq i64 %2, {pending}")),
+        ir.contains(&format!(
+            "%is_pending = icmp eq i64 %closure_load2, {pending}"
+        )),
         "{ir}"
     );
     assert!(
@@ -176,17 +182,22 @@ fn activation_ops_save_state_test_the_exact_sentinel_and_register_the_frame() {
         "{ir}"
     );
     assert!(
-        ir.contains(&format!("and i64 %1, {}", nanbox::POINTER_MASK)),
+        ir.contains(&format!("and i64 %closure_load, {}", nanbox::POINTER_MASK)),
         "{ir}"
     );
     assert!(
         ir.contains("@molt_sleep_register(ptr %task_wait_frame, ptr %task_wait_future)"),
         "{ir}"
     );
-    // Both exits transfer the one poll owner: no retain and no release.
+    // Both exits transfer the poll owner and release the payload-loaded future.
     assert!(!ir.contains("@molt_inc_ref_obj("), "{ir}");
-    assert!(!ir.contains("@molt_dec_ref_obj("), "{ir}");
-    assert_eq!(ir.matches("ret i64 %2\n").count(), 2, "{ir}");
+    assert_eq!(
+        ir.matches("call void @molt_dec_ref_obj(i64 %closure_load)")
+            .count(),
+        2,
+        "{ir}"
+    );
+    assert_eq!(ir.matches("ret i64 %closure_load2\n").count(), 2, "{ir}");
 }
 
 /// A first-class TIR `Call` names its static target in `s_value`. With a
@@ -258,7 +269,7 @@ fn normalized_wait_polls_through_the_canonical_poll_row() {
     // The poll borrows the future word; its owned result is the word tested
     // and returned, with no retain or release on either exit.
     assert_eq!(
-        ir.matches("%molt_future_poll = call i64 @molt_future_poll(i64 %1)")
+        ir.matches("%molt_future_poll = call i64 @molt_future_poll(i64 %closure_load)")
             .count(),
         1,
         "{ir}"
@@ -270,7 +281,12 @@ fn normalized_wait_polls_through_the_canonical_poll_row() {
         "{ir}"
     );
     assert!(!ir.contains("@molt_inc_ref_obj("), "{ir}");
-    assert!(!ir.contains("@molt_dec_ref_obj("), "{ir}");
+    assert_eq!(
+        ir.matches("call void @molt_dec_ref_obj(i64 %closure_load)")
+            .count(),
+        2,
+        "{ir}"
+    );
     assert_eq!(ir.matches("ret i64 %molt_future_poll\n").count(), 2, "{ir}");
 }
 
@@ -281,17 +297,22 @@ fn drop_inserted_lowering_rejects_a_hidden_suspension() {
     let backend = make_backend(&ctx);
     let mut func = TirFunction::new(
         "hidden_suspension".into(),
-        vec![TirType::DynBox, TirType::DynBox],
+        vec![TirType::DynBox],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    func.param_names[0] = "self".into();
+    func.param_names[0] = "frame".into();
     func.attrs.insert(
         crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.into(),
         AttrValue::Bool(true),
     );
     let first = func.fresh_block();
     let resume = func.fresh_block();
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .push(const_none_def(ValueId(1)));
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
         cases: vec![(RESUME_STATE, resume, vec![])],
         default: first,
