@@ -1497,3 +1497,210 @@ def test_agent_context_uses_actual_read_only_queue_audit(
         assert errors[0]["return_code"] == 2
         assert "active_runs" not in payload
     assert queue_files() == before
+
+
+@pytest.mark.parametrize("blocked_first", [False, True])
+@pytest.mark.parametrize("denial", ["permission", "untrusted-mount"])
+def test_optional_discovery_rejects_untraversable_candidates(
+    tmp_path: Path, monkeypatch, blocked_first: bool, denial: str
+) -> None:
+    from molt import toolchain_identity
+    from tests.process_guard_common import current_thread_only
+
+    blocked = tmp_path / "blocked"
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    executable = selected / ("python.exe" if os.name == "nt" else "python")
+    executable.write_bytes(b"discovery only; never executed")
+    executable.chmod(0o755)
+    failure = PermissionError("denied") if denial == "permission" else OSError("mount")
+    if denial == "untrusted-mount":
+        setattr(failure, "winerror", 448)
+
+    def is_file(path):
+        if path.parent == blocked:
+            raise failure
+        return Path.is_file(path)
+
+    class DiscoveryPath(Path):
+        pass
+
+    # Only the module's Path constructor changes; stdlib Path remains intact,
+    # and background users of the authority receive the real is_file behavior.
+    DiscoveryPath.is_file = current_thread_only(is_file, Path.is_file)
+    monkeypatch.setattr(toolchain_identity, "Path", DiscoveryPath)
+    roots = (blocked, selected) if blocked_first else (selected, blocked)
+    env = {"PATH": os.pathsep.join(map(str, roots)), "PATHEXT": ".EXE"}
+    assert agent_coordination.command_paths("python", env) == [str(executable)]
+    assert agent_coordination.command_path("python", env) == str(executable)
+    snapshot = agent_coordination.environment_snapshot(tmp_path, environ=env)
+    assert snapshot["python"] == str(executable)
+    assert snapshot["python_usable"] is True
+    assert snapshot["recommended_python_command"] == "python"
+    explicit = agent_coordination.environment_snapshot(
+        tmp_path, environ={**env, "PYTHON": "explicit-python"}
+    )
+    assert explicit["recommended_python_command"] == "explicit-python"
+    if denial == "untrusted-mount" and blocked_first:
+        from molt.process_environment import ProcessEnvironment
+        from tests.process_guard_common import install_thread_module_view
+
+        # Exercise actual task-record construction/publication. Git identity and
+        # DX paths are independent inputs; environment discovery remains real.
+        monkeypatch.setattr(
+            agent_coordination,
+            "read_git_identity",
+            lambda _root: ("lane/test", "abc123"),
+        )
+        monkeypatch.setattr(
+            agent_coordination,
+            "development_artifact_env",
+            lambda *_args, **_kwargs: ProcessEnvironment({}),
+        )
+        install_thread_module_view(
+            monkeypatch, "os", os, agent_coordination, environ=env
+        )
+        record = agent_coordination.create_task(
+            registry_root=tmp_path, source_root=tmp_path, task="discovery"
+        )
+        saved = json.loads(
+            (tmp_path / "logs/agents/discovery/coordination.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert saved == record
+        assert saved["environment"]["python"] == str(executable)
+        assert saved["environment"]["python_usable"] is True
+
+
+def test_optional_discovery_propagates_unexpected_io_error(tmp_path, monkeypatch):
+    import errno
+    from molt import toolchain_identity
+    from tests.process_guard_common import current_thread_only
+
+    failure = OSError(errno.EIO, "unexpected input/output failure")
+
+    def is_file(path):
+        if path.parent == tmp_path:
+            raise failure
+        return Path.is_file(path)
+
+    class DiscoveryPath(Path):
+        pass
+
+    DiscoveryPath.is_file = current_thread_only(is_file, Path.is_file)
+    monkeypatch.setattr(toolchain_identity, "Path", DiscoveryPath)
+    with pytest.raises(OSError) as caught:
+        agent_coordination.environment_snapshot(
+            tmp_path, environ={"PATH": str(tmp_path), "PATHEXT": ".EXE"}
+        )
+    assert caught.value is failure
+
+
+def test_optional_discovery_uses_captured_windows_search_policy(tmp_path, monkeypatch):
+    from molt import toolchain_identity
+    from molt.process_environment import NameRule, ProcessEnvironment
+    from tests.process_guard_common import install_thread_module_view
+
+    current = tmp_path / "cwd"
+    selected = tmp_path / "selected"
+    current.mkdir()
+    selected.mkdir()
+    for path in (current / "probe.ALT", selected / "probe.ALT", selected / "probe.EXE"):
+        path.write_bytes(b"never executed")
+        path.chmod(0o755)
+    from tests.process_guard_common import ModuleView, current_thread_only
+
+    selected_name = current_thread_only(lambda: "nt", lambda: os.name)
+
+    class WindowsView(ModuleView):
+        @property
+        def name(self):
+            return selected_name()
+
+    install_thread_module_view(monkeypatch, "os", WindowsView(os), toolchain_identity)
+    monkeypatch.chdir(current)
+    env = ProcessEnvironment(
+        {
+            "Path": str(selected),
+            "PathExt": ".ALT;.EXE",
+            "NoDefaultCurrentDirectoryInExePath": "",
+        },
+        rule=NameRule.WINDOWS,
+    )
+    # Real Windows proves these leaf spellings name the same entry and emits
+    # lowercase. The simulated policy on POSIX preserves the created spelling.
+    alt_leaf = "probe.alt" if os.name == "nt" else "probe.ALT"
+    exe_leaf = "probe.exe" if os.name == "nt" else "probe.EXE"
+    assert agent_coordination.command_paths("probe", env) == [
+        str(selected / alt_leaf),
+        str(selected / exe_leaf),
+    ]
+    assert agent_coordination.command_path("probe", env) == str(selected / alt_leaf)
+    with_cwd = ProcessEnvironment(
+        {"Path": str(selected), "PathExt": ".ALT;.EXE"}, rule=NameRule.WINDOWS
+    )
+    assert agent_coordination.command_path("probe", with_cwd) == str(current / alt_leaf)
+    assert agent_coordination.command_paths("probe", {}) == []
+    assert agent_coordination.command_paths("probe", {"PATH": ""}) == []
+
+
+def test_optional_git_bash_probes_keep_exact_paths_and_skip_denied_mount(
+    monkeypatch,
+) -> None:
+    from molt import toolchain_identity
+    from tests.process_guard_common import (
+        current_thread_only,
+        install_thread_module_view,
+    )
+
+    denied = Path("C:/Program Files/Git/bin/bash.exe")
+    selected = Path("C:/Program Files/Git/usr/bin/bash.exe")
+    observed = []
+    failure = OSError("untrusted mount")
+    setattr(failure, "winerror", 448)
+
+    def is_file(path):
+        observed.append(path)
+        if path == denied:
+            raise failure
+        return path == selected
+
+    class DiscoveryPath(Path):
+        pass
+
+    DiscoveryPath.is_file = current_thread_only(is_file, Path.is_file)
+    monkeypatch.setattr(agent_coordination, "Path", DiscoveryPath)
+    from tests.process_guard_common import ModuleView
+
+    selected_name = current_thread_only(lambda: "nt", lambda: os.name)
+
+    class WindowsView(ModuleView):
+        @property
+        def name(self):
+            return selected_name()
+
+    install_thread_module_view(monkeypatch, "os", WindowsView(os), agent_coordination)
+    install_thread_module_view(
+        monkeypatch,
+        "os",
+        os,
+        toolchain_identity,
+        access=lambda path, mode: path == selected,
+    )
+    assert agent_coordination.bash_candidates({"PATH": ""}) == [str(selected)]
+    assert observed == [
+        denied,
+        selected,
+        Path("C:/Program Files (x86)/Git/bin/bash.exe"),
+        Path("C:/Program Files (x86)/Git/usr/bin/bash.exe"),
+    ]
+    assert agent_coordination.choose_bash({"PATH": ""}) == str(selected)
+
+
+def test_optional_discovery_reports_unavailable_without_implicit_path(tmp_path):
+    snapshot = agent_coordination.environment_snapshot(tmp_path, environ={})
+    for name in ("python", "python3", "py"):
+        assert snapshot[name] is None
+        assert snapshot[name + "_usable"] is False
+    assert snapshot["recommended_python_command"] == sys.executable

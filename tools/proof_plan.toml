@@ -9,6 +9,14 @@
 schema = "molt.proof-plan.v6"
 
 authority_inputs = [
+  "bench/harness.py",
+  "src/molt/compilation_target.py",
+  "src/molt/native_target.py",
+  "tools/bench_dashboard.py",
+  "tools/bench_diff.py",
+  "tools/bench_evidence.py",
+  "tools/bench_reporting.py",
+  "tools/perf_regression.py",
   "src/molt/binaryen_identity.py",
   "src/molt/binaryen_toolchain.py",
   "src/molt/llvm_wasi_tools.py",
@@ -370,6 +378,7 @@ authority_inputs = [
   "tests/test_ci_cargo_cache.py",
   "tools/ci_cargo_cache.py",
   "tools/ci_triage.py",
+  "tools/ci_proof_evidence.py",
   "tests/tools/test_ci_triage.py",
   "tests/test_cpython_regrtest_memory_guard.py",
   "tests/test_generator_manifest.py",
@@ -2577,7 +2586,8 @@ resource_class = "repository-policy"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage", "repository.perf-methodology"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-p", "tools.pytest_profile", "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"]
+evidence_outputs = ["proof-receipts/evidence/repository-docs-tests"]
 pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_committed_gate_policy.py", "tests/test_molt_dev_lanes.py", "tests/test_checkout_provisioning.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
 pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv", "rustc", "rustfmt"]
@@ -3123,8 +3133,9 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
 pytest = ["tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_native_locations.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3136,8 +3147,9 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
 pytest = ["tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_native_locations.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3318,9 +3330,10 @@ cache_domain = "cargo-workspace"
 dependencies = ["python.unit.compiled-contracts.prepare.macos"]
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
 pytest = ["tests/test_resource_enforcement_e2e.py", "tests/test_wasm_runtime_heavy_regressions.py"]
-# One actual WASM worker reached 8.59 GiB; 10 GiB includes worker/guard margin.
-# The previous 4 GiB declaration admitted six workers and exceeded 24 GiB.
-pytest_worker_memory_gb = 10.0
+# One actual worker subtree reached 17.98 GiB with the 10 GiB estimate.
+# A 20 GiB unit includes headroom and admits one worker under a 24 GiB grant.
+# This estimate does not prove a worker fits a smaller hosted runner grant.
+pytest_worker_memory_gb = 20.0
 toolchains = ["python", "uv", "rustc", "cargo", "node", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 
 
@@ -4589,6 +4602,7 @@ toolchains = ["python", "uv", "rustfmt"]
 description = "Text codec registry and generated single-byte charmap tables."
 globs = [
   "tools/gen_codecs.py",
+  "config/codec_aliases.toml",
   "runtime/molt-runtime/src/object/ops_encoding.rs",
   "runtime/molt-stdlib-text/src/codec_registry.rs",
   "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
@@ -5067,6 +5081,22 @@ pytest_select = [
   { k = "base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker", targets = ["tests/test_demo_bench_memory_guard.py"] },
 ]
 
+# --- Build-control diagnostic paths ------------------------------------
+[[rule]]
+name = "build-control-paths"
+toolchains = ["python"]
+description = "Build-control and guard path producers select their real consumer contract."
+globs = [
+  "tools/build_control_path.py",
+  "tools/harness_memory_guard.py",
+  "src/molt/build_state_layout.py",
+  "src/molt/memory_guard_paths.py",
+  "src/molt/dx.py",
+  "tests/test_build_state_layout.py",
+]
+gates = []
+pytest = ["tests/test_build_state_layout.py"]
+
 # --- Repository scan records -------------------------------------------
 # Shared producers select every consumer. Leaf tools and tests select their
 # own semantic controls; a test change does not invalidate sibling scanners.
@@ -5313,6 +5343,20 @@ pytest_select = [
   ] },
 ]
 
+# Native compile/run diagnostics own a Python-only seam proof. The LLVM matrix
+# remains in its existing execution family; local witness changes need no LLVM.
+[[rule]]
+name = "native-test-failure-diagnostics"
+toolchains = ["python"]
+description = "Native compile/run failure retention, byte identity and original failure preservation."
+globs = [
+  "tests/native_process_guard.py",
+  "tests/test_native_process_guard.py",
+  "tests/test_native_lir_loop_join_semantics.py",
+]
+gates = []
+pytest = ["tests/test_native_process_guard.py"]
+
 # --- Rust toolchain authority -------------------------------------------
 [[rule]]
 name = "rust-toolchain"
@@ -5498,6 +5542,7 @@ globs = [
   "tests/test_ci_cargo_cache.py",
   "tools/ci_cargo_cache.py",
   "tools/ci_triage.py",
+  "tools/ci_proof_evidence.py",
   "tests/tools/test_ci_triage.py",
   "tests/test_resource_pressure.py",
   "tests/test_translation_validate_roots.py",

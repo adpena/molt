@@ -34,7 +34,7 @@ from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
     python_environment_executable_files,
     python_identity_probe_arguments,
-    python_identity_verifier_prefix,
+    PythonIdentityVerifier,
     validate_python_capture,
     validate_python_environment_location,
 )
@@ -378,14 +378,42 @@ def _run_captured(
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
     process_image_capture.require_custody_coordinate(Path(command[0]))
-    return admission._COMMANDS.run(
+    from molt import process_guard
+
+    return process_guard.run_completed_command(
         list(command),
+        memory_guard_prefix=admission._COMMANDS.prefix,
+        guard_source_root=admission._COMMANDS.repo_root,
         cwd=cwd,
         env=env,
         check=False,
         capture_output=True,
         text=text,
         timeout=timeout,
+    )
+
+
+def _run_python_captured(
+    verifier: PythonIdentityVerifier,
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: ProcessEnvironment,
+    timeout: float = 30.0,
+) -> Any:
+    """Keep image admission and the Python namespace's terminal guard together."""
+    process_image_capture.require_custody_coordinate(Path(command[0]))
+    return verifier.run(
+        command,
+        memory_guard_prefix=admission._COMMANDS.prefix,
+        guard_source_root=admission._COMMANDS.repo_root,
+        cwd=cwd,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        encoding="utf-8",
     )
 
 
@@ -830,10 +858,10 @@ def _python_identity(
     # here can sync or close its writable environment lock before full capture
     # has admitted that lock. Preserve the lexical venv launcher (not its base
     # image), isolated no-write suffix, admitted environment and effective cwd.
-    with python_identity_verifier_prefix() as verifier_prefix:
+    with PythonIdentityVerifier() as verifier:
         command = _python_probe_command(
             Path(executable_raw),
-            verifier_bytecode_prefix=verifier_prefix,
+            verifier_bytecode_prefix=verifier.prefix,
             source_root=source_root,
             admit_published_environment=published_admission,
             development_admission=_development_admission(
@@ -845,7 +873,8 @@ def _python_identity(
             hash_workers=hash_workers,
         )
         payload = _parse_json_output(
-            _run_captured(
+            _run_python_captured(
+                verifier,
                 command,
                 cwd=admission._execution_source_paths(envelope, cwd=cwd),
                 env=env,

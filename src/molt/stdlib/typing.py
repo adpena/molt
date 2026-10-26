@@ -14,6 +14,7 @@ import builtins as _builtins
 from types import BuiltinFunctionType as _BuiltinFunctionType
 from types import FunctionType as _FunctionType
 from types import ModuleType
+from types import GenericAlias as _RuntimeGenericAlias
 
 
 def _typing_cast(_tp: object, value: object) -> object:
@@ -188,19 +189,45 @@ def _format_args(args: tuple[object, ...]) -> str:
     return ", ".join([_type_repr(arg) for arg in args])
 
 
-def _collect_type_parameters(args: tuple[object, ...]) -> tuple[object, ...]:
-    """Collect residual free type parameters in stable first-use order."""
-
+def _collect_type_parameters(
+    args: tuple[object, ...], *, enforce_default_ordering: bool = True
+) -> tuple[object, ...]:
+    """Typing's equality-based declaration/residual policy, not native alias policy."""
     parameters: list[object] = []
+    default_seen = False
+    unpacked_seen = False
     for arg in args:
-        if isinstance(arg, (_TypeVarLike, _TypeVarTuple)):
-            candidates = (arg,)
-        else:
-            candidates = getattr(arg, "__parameters__", ())
-            if not isinstance(candidates, tuple):
-                candidates = ()
-        for candidate in candidates:
-            if all(candidate is not parameter for parameter in parameters):
+        if isinstance(arg, type):
+            continue
+        if isinstance(arg, tuple):
+            # Each substituted tuple element is a separate collection, including
+            # its declaration-order boundary, as in CPython typing.
+            for item in arg:
+                for candidate in _collect_type_parameters((item,)):
+                    if candidate not in parameters:
+                        parameters.append(candidate)
+            continue
+        elif hasattr(arg, "__typing_subst__"):
+            if arg in parameters:
+                continue
+            if _SUPPORTS_TYPEVAR_DEFAULTS and enforce_default_ordering:
+                if unpacked_seen and arg.has_default():
+                    raise TypeError("Type parameter with a default follows TypeVarTuple")
+                if arg.has_default():
+                    default_seen = True
+                elif default_seen:
+                    raise TypeError(
+                        f"Type parameter {arg!r} without a default follows type parameter with a default"
+                    )
+            parameters.append(arg)
+            continue
+        if (
+            _SUPPORTS_TYPEVAR_DEFAULTS
+            and getattr(arg, "__typing_is_unpacked_typevartuple__", False) is True
+        ):
+            unpacked_seen = True
+        for candidate in getattr(arg, "__parameters__", ()):
+            if candidate not in parameters:
                 parameters.append(candidate)
     return tuple(parameters)
 
@@ -314,7 +341,9 @@ class _GenericAlias(_TypingBase):
     def __init__(self, origin: object, args: object, name: str | None = None) -> None:
         self.__origin__ = origin
         self.__args__ = _as_tuple(args)
-        self.__parameters__ = _collect_type_parameters(self.__args__)
+        self.__parameters__ = _collect_type_parameters(
+            self.__args__, enforce_default_ordering=origin in (Generic, Protocol)
+        )
         self._name = name
 
     def __repr__(self) -> str:
@@ -444,7 +473,7 @@ class _MoltTypeAliasApplied(_TypingBase):
         self._alias = alias
         self.__args__ = args
         self.__origin__ = alias
-        self.__parameters__ = _collect_type_parameters(args)
+        self.__parameters__ = _MOLT_GENERIC_ALIAS_NEW(alias, args).__parameters__
 
     @property
     def __value__(self) -> object:
@@ -460,7 +489,11 @@ class _UnionGenericAlias(_TypingBase):
     def __init__(self, args: tuple[object, ...]) -> None:
         self.__args__ = args
         self.__origin__ = Union
-        self.__parameters__ = _collect_type_parameters(args)
+        self.__parameters__ = (
+            _MOLT_GENERIC_ALIAS_NEW(Union, args).__parameters__
+            if _TYPING_REPR_314
+            else _collect_type_parameters(args, enforce_default_ordering=False)
+        )
 
     def __repr__(self) -> str:
         args = self.__args__
@@ -502,11 +535,12 @@ _UnionAlias = _UnionGenericAlias
 
 
 class _LiteralAlias(_TypingBase):
-    __slots__ = ("__args__", "__origin__")
+    __slots__ = ("__args__", "__origin__", "__parameters__")
 
     def __init__(self, args: tuple[object, ...]) -> None:
         self.__args__ = args
         self.__origin__ = Literal
+        self.__parameters__ = _collect_type_parameters(self.__args__, enforce_default_ordering=False)
 
     def __repr__(self) -> str:
         return f"typing.Literal[{_format_args(self.__args__)}]"
@@ -524,12 +558,13 @@ class _LiteralAlias(_TypingBase):
 
 
 class _AnnotatedAlias(_TypingBase):
-    __slots__ = ("__origin__", "__args__", "__metadata__")
+    __slots__ = ("__origin__", "__args__", "__metadata__", "__parameters__")
 
     def __init__(self, origin: object, metadata: tuple[object, ...]) -> None:
         self.__origin__ = origin
         self.__args__ = (origin,)
         self.__metadata__ = metadata
+        self.__parameters__ = _collect_type_parameters((origin,), enforce_default_ordering=False)
 
     def __repr__(self) -> str:
         args = (self.__origin__,) + self.__metadata__
@@ -548,11 +583,12 @@ class _AnnotatedAlias(_TypingBase):
 
 
 class _ConcatenateAlias(_TypingBase):
-    __slots__ = ("__args__", "__origin__")
+    __slots__ = ("__args__", "__origin__", "__parameters__")
 
     def __init__(self, args: tuple[object, ...]) -> None:
         self.__args__ = args
         self.__origin__ = Concatenate
+        self.__parameters__ = _collect_type_parameters(self.__args__, enforce_default_ordering=False)
 
     def __repr__(self) -> str:
         return f"typing.Concatenate[{_format_args(self.__args__)}]"
@@ -560,14 +596,11 @@ class _ConcatenateAlias(_TypingBase):
 
 def _callable_args_are_param_expr(args: tuple[object, ...]) -> bool:
     """CPython's ``_is_param_expr`` test on ``Callable`` arguments."""
-    return len(args) == 2 and (
-        args[0] is Ellipsis
-        or isinstance(args[0], (tuple, list, _ParamSpec, _ConcatenateAlias))
-    )
+    return len(args) == 2 and _collections_abc_module._is_param_expr(args[0])
 
 
 class _CallableAlias(_TypingBase):
-    __slots__ = ("__args__", "__origin__")
+    __slots__ = ("__args__", "__origin__", "__parameters__")
 
     def __init__(self, arglist: object, ret: object) -> None:
         self.__origin__ = getattr(_load_collections_abc(), "Callable")
@@ -577,6 +610,7 @@ class _CallableAlias(_TypingBase):
             self.__args__ = tuple(arglist) + (ret,)
         else:
             self.__args__ = _as_tuple(arglist) + (ret,)
+        self.__parameters__ = _collect_type_parameters(self.__args__, enforce_default_ordering=False)
 
     def __repr__(self) -> str:
         args = self.__args__
@@ -956,9 +990,32 @@ if _SUPPORTS_TYPEVAR_DEFAULTS:
     _TypeVarLike.has_default = _typevarlike_has_default  # type: ignore[attr-defined]
 
 
+def _type_check(arg: object, message: str) -> object:
+    """CPython's type-argument validation shared by real substitution methods."""
+    if arg is None:
+        arg = _NoneType
+    elif isinstance(arg, str):
+        arg = ForwardRef(arg)
+    if isinstance(arg, _GenericAlias) and arg.__origin__ in (Generic, Protocol, ClassVar, Final):
+        raise TypeError(f"{arg} is not valid as type argument")
+    if arg in (Any, LiteralString, NoReturn, Never, Self, TypeAlias):
+        return arg
+    if isinstance(arg, _SpecialForm) or arg in (Generic, Protocol):
+        raise TypeError(f"Plain {arg} is not valid as type argument")
+    if type(arg) is tuple:
+        raise TypeError(f"{message} Got {arg!r:.100}.")
+    return arg
+
+
 class _TypeVar(_TypeVarLike):
     __slots__ = ()
     __qualname__ = "TypeVar"
+
+    def __typing_subst__(self, arg: object, /) -> object:
+        arg = _type_check(arg, "Parameters to generic types must be types.")
+        if isinstance(arg, _RuntimeGenericAlias) and getattr(arg, "__unpacked__", False):
+            raise TypeError(f"{arg} is not valid as type argument")
+        return arg
 
     def __repr__(self) -> str:
         if self._pep695:
@@ -981,6 +1038,9 @@ class _TypeVarTuple(_TypingBase):
         "_default",
     )
     __qualname__ = "TypeVarTuple"
+
+    def __typing_subst__(self, arg: object, /) -> object:
+        raise TypeError("Substitution of bare TypeVarTuple is not supported")
 
     def __init__(self, name: str) -> None:
         self.__name__ = name
@@ -1016,6 +1076,16 @@ class _TypeVarTuple(_TypingBase):
 class _ParamSpec(_TypeVarLike):
     __slots__ = ("args", "kwargs")
     __qualname__ = "ParamSpec"
+
+    def __typing_subst__(self, arg: object, /) -> object:
+        if isinstance(arg, (list, tuple)):
+            return tuple([_type_check(item, "Expected a type.") for item in arg])
+        if not _collections_abc_module._is_param_expr(arg):
+            raise TypeError(
+                "Expected a list of types, an ellipsis, "
+                f"ParamSpec, or Concatenate. Got {arg}"
+            )
+        return arg
 
     def __init__(
         self,

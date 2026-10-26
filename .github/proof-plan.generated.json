@@ -1,6 +1,14 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "bench/harness.py",
+    "src/molt/compilation_target.py",
+    "src/molt/native_target.py",
+    "tools/bench_dashboard.py",
+    "tools/bench_diff.py",
+    "tools/bench_evidence.py",
+    "tools/bench_reporting.py",
+    "tools/perf_regression.py",
     "src/molt/binaryen_identity.py",
     "src/molt/binaryen_toolchain.py",
     "src/molt/llvm_wasi_tools.py",
@@ -361,6 +369,7 @@
     "tests/test_ci_cargo_cache.py",
     "tools/ci_cargo_cache.py",
     "tools/ci_triage.py",
+    "tools/ci_proof_evidence.py",
     "tests/tools/test_ci_triage.py",
     "tests/test_cpython_regrtest_memory_guard.py",
     "tests/test_generator_manifest.py",
@@ -3482,7 +3491,10 @@
         "pytest",
         "-q",
         "-n",
-        "auto"
+        "auto",
+        "-p",
+        "tools.pytest_profile",
+        "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -3493,6 +3505,9 @@
         "repository.canonicalization",
         "repository.call-fact-coverage",
         "repository.perf-methodology"
+      ],
+      "evidence_outputs": [
+        "proof-receipts/evidence/repository-docs-tests"
       ],
       "family": "repository_policy",
       "id": "repository.docs-tests",
@@ -5288,6 +5303,8 @@
         "-m",
         "pytest",
         "-q",
+        "-n",
+        "auto",
         "-m",
         "not slow"
       ],
@@ -5308,6 +5325,7 @@
         "tests/test_python_runtime_identity.py",
         "tests/tools/test_toolchain_capture.py"
       ],
+      "pytest_worker_memory_gb": 1.75,
       "resource_class": "python-tests",
       "tiers": [
         "pre-push",
@@ -5330,6 +5348,8 @@
         "-m",
         "pytest",
         "-q",
+        "-n",
+        "auto",
         "-m",
         "not slow"
       ],
@@ -5350,6 +5370,7 @@
         "tests/test_python_runtime_identity.py",
         "tests/tools/test_toolchain_capture.py"
       ],
+      "pytest_worker_memory_gb": 1.75,
       "resource_class": "python-tests",
       "tiers": [
         "pre-push",
@@ -6804,7 +6825,7 @@
         "tests/test_resource_enforcement_e2e.py",
         "tests/test_wasm_runtime_heavy_regressions.py"
       ],
-      "pytest_worker_memory_gb": 10.0,
+      "pytest_worker_memory_gb": 20.0,
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pre-push",
@@ -9473,6 +9494,7 @@
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.browser-simd.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_build_browser_simd.py tests/e2e/test_simd_differential.py tests/test_browser_compute_backend_semantics.py",
+      "local.build-control-paths.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_build_state_layout.py",
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "cargo test --locked --profile dev-fast -p molt-runtime --lib binding_guards",
       "local.builtin-binding-guard-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
@@ -9525,6 +9547,7 @@
       "local.native-launch-abi.0": "cargo test --locked --profile dev-fast -p molt-jit --test runner_launch",
       "local.native-launch-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_native_launch_abi.py",
       "local.native-object-emission.0": "cargo test --locked --profile dev-fast -p object@0.40.0 -p cranelift-object@0.137.0 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho --skip read::macho::test_macho_load_command_offset",
+      "local.native-test-failure-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_native_process_guard.py",
       "local.op-kind-registry.0": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
       "local.performance-measurement.0": "python tools/perf_methodology.py --check",
@@ -9542,8 +9565,8 @@
       "local.python-source-dependencies.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_python_namespace_graph.py tests/cli/test_cli_python_source_closure.py tests/cli/test_cli_python_import_authority.py tests/cli/test_cli_lowering_cache_tooling_scope.py tests/cli/test_source_pure_import_requests.py",
       "local.release-work-state.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_agent_coordination.py tests/tools/test_release_outcomes.py",
       "local.repository-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_encoding_gate.py tests/tools/test_signed_ratio.py tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_environment_registry.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_structural_audit_records.py tests/test_structural_audit.py tests/test_generator_manifest.py tests/test_gen_stringprep_tables.py",
-      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_cargo_search_path.py tests/cli/test_product_store.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py tests/test_toolchain_facts.py tests/tools/test_tool_identity_reuse.py",
-      "local.runtime-cargo-input-custody.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy' tests/tools/test_toolchain_capture.py tests/tools/test_cargo_bindgen_toolchain.py tests/tools/test_proof_queue_execution_custody_p0.py tests/test_platform_toolchain.py",
+      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_cargo_search_path.py tests/cli/test_product_store.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py tests/test_toolchain_facts.py tests/tools/test_tool_identity_reuse.py",
+      "local.runtime-cargo-input-custody.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 -k 'rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy' tests/tools/test_toolchain_capture.py tests/tools/test_cargo_bindgen_toolchain.py tests/tools/test_proof_queue_execution_custody_p0.py tests/test_platform_toolchain.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
       "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-lang-obj-model -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
@@ -10214,6 +10237,7 @@
         "gates": [],
         "globs": [
           "tools/gen_codecs.py",
+          "config/codec_aliases.toml",
           "runtime/molt-runtime/src/object/ops_encoding.rs",
           "runtime/molt-stdlib-text/src/codec_registry.rs",
           "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
@@ -10831,6 +10855,28 @@
       },
       {
         "command_ids": [
+          "local.build-control-paths.pytest"
+        ],
+        "description": "Build-control and guard path producers select their real consumer contract.",
+        "gates": [],
+        "globs": [
+          "tools/build_control_path.py",
+          "tools/harness_memory_guard.py",
+          "src/molt/build_state_layout.py",
+          "src/molt/memory_guard_paths.py",
+          "src/molt/dx.py",
+          "tests/test_build_state_layout.py"
+        ],
+        "name": "build-control-paths",
+        "pytest": [
+          "tests/test_build_state_layout.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.repository-scan-records.pytest"
         ],
         "description": "Shared scan-record storage and replay select all scanner consumers.",
@@ -11168,6 +11214,25 @@
       },
       {
         "command_ids": [
+          "local.native-test-failure-diagnostics.pytest"
+        ],
+        "description": "Native compile/run failure retention, byte identity and original failure preservation.",
+        "gates": [],
+        "globs": [
+          "tests/native_process_guard.py",
+          "tests/test_native_process_guard.py",
+          "tests/test_native_lir_loop_join_semantics.py"
+        ],
+        "name": "native-test-failure-diagnostics",
+        "pytest": [
+          "tests/test_native_process_guard.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.rust-toolchain.0",
           "local.rust-toolchain.pytest"
         ],
@@ -11368,6 +11433,7 @@
           "tests/test_ci_cargo_cache.py",
           "tools/ci_cargo_cache.py",
           "tools/ci_triage.py",
+          "tools/ci_proof_evidence.py",
           "tests/tools/test_ci_triage.py",
           "tests/test_resource_pressure.py",
           "tests/test_translation_validate_roots.py",
@@ -12838,6 +12904,9 @@
         "git",
         "node"
       ],
+      "local.build-control-paths.pytest": [
+        "python"
+      ],
       "local.build-output-identity.pytest": [
         "python",
         "uv",
@@ -13080,6 +13149,9 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.native-test-failure-diagnostics.pytest": [
+        "python"
       ],
       "local.op-kind-registry.0": [
         "python",

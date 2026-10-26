@@ -9,6 +9,7 @@ from molt.cli.link_input_observation import (
     capture_link_inputs as observe_link_inputs,
     compilation_input_observation,
     capture_native_link_preparation,
+    lld_archive_path,
 )
 from molt.toolchain_identity import stable_regular_file_content_identity
 from molt.cli.native_link_plan import NativeLinkerKind
@@ -477,14 +478,14 @@ def _prepare_native_link(
                 }
                 capture_expected = {
                     "compiler_output": (
-                        output_obj,
+                        lld_archive_path(output_obj),
                         {
                             "size": emission_origin.output_size,
                             "sha256": emission_origin.output_sha256,
                         },
                     ),
                     "runtime": (
-                        resolved_runtime_lib,
+                        lld_archive_path(resolved_runtime_lib),
                         {
                             k: v
                             for k, v in stable_regular_file_content_identity(
@@ -509,7 +510,7 @@ def _prepare_native_link(
                         )
                         stdlib_origin.verify_output(link_stdlib_obj)
                     capture_expected["stdlib"] = (
-                        link_stdlib_obj,
+                        lld_archive_path(link_stdlib_obj),
                         {
                             "size": stdlib_origin.output_size,
                             "sha256": stdlib_origin.output_sha256,
@@ -568,7 +569,7 @@ def _prepare_native_link(
                     observed_inputs = observe_link_inputs(
                         link_input_artifacts["input_reproducer"][0],
                         dialect="elf-gnu",
-                        linker_path=selected_linker,
+                        linker_path=str(selected_linker),
                         expected=capture_expected,
                     ).as_record()
                     assert emission_origin is not None

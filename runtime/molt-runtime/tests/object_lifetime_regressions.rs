@@ -262,13 +262,19 @@ fn module_del_global_releases_owned_list_builder_literal_element() {
 }
 
 #[test]
-fn string_join_singleton_list_mints_fresh_owned_string() {
+fn string_join_singleton_list_returns_owned_exact_string() {
     let _guard = init();
 
-    let sep_bits = unsafe { molt_string_from(b".".as_ptr(), 1) };
-    let elem_bits = unsafe { molt_string_from(b"math".as_ptr(), 4) };
+    // Avoid immortal ASCII-character and identifier interns: this fixture must
+    // observe real ownership changes, including the final surviving reference.
+    let sep_bits = unsafe { molt_string_from(b"::".as_ptr(), 2) };
+    let elem_bits = unsafe { molt_string_from(b"math value".as_ptr(), 10) };
+    let expected_bits = unsafe { molt_string_from(b"math value".as_ptr(), 10) };
     assert_ne!(sep_bits, none());
     assert_ne!(elem_bits, none());
+    assert_ne!(expected_bits, none());
+    assert_eq!(refcount(sep_bits), 1);
+    assert_eq!(refcount(elem_bits), 1);
 
     let builder_bits = unsafe { molt_list_builder_new(MoltObject::from_int(1).bits()) };
     assert_ne!(builder_bits, none());
@@ -277,17 +283,34 @@ fn string_join_singleton_list_mints_fresh_owned_string() {
     }
     let list_bits = unsafe { molt_list_builder_finish(builder_bits) };
     assert_ne!(list_bits, none());
+    assert_eq!(refcount(list_bits), 1);
+    assert_eq!(refcount(elem_bits), 2);
+
+    // CPython's exact-str singleton result is the same object with a new owned
+    // reference. Identity alone would also accept an unsafe borrowed return.
+    let joined_bits = unsafe { molt_string_join(sep_bits, list_bits) };
+    assert_ne!(joined_bits, none());
+    assert_eq!(object_ptr(joined_bits), object_ptr(elem_bits));
+    assert_eq!(refcount(elem_bits), 3);
+    assert_eq!(refcount(list_bits), 1);
+    assert_eq!(refcount(sep_bits), 1);
+    assert_string_eq(joined_bits, expected_bits);
+
+    molt_runtime::molt_dec_ref_obj(joined_bits);
+    assert_eq!(refcount(elem_bits), 2);
+    assert_string_eq(elem_bits, expected_bits);
 
     let joined_bits = unsafe { molt_string_join(sep_bits, list_bits) };
     assert_ne!(joined_bits, none());
-    assert_ne!(object_ptr(joined_bits), object_ptr(elem_bits));
-    assert_string_eq(joined_bits, elem_bits);
+    assert_eq!(object_ptr(joined_bits), object_ptr(elem_bits));
+    assert_eq!(refcount(elem_bits), 3);
+    assert_eq!(refcount(list_bits), 1);
+    assert_eq!(refcount(sep_bits), 1);
 
     molt_runtime::molt_dec_ref_obj(list_bits);
+    assert_eq!(refcount(joined_bits), 2);
     molt_runtime::molt_dec_ref_obj(elem_bits);
-
-    let expected_bits = unsafe { molt_string_from(b"math".as_ptr(), 4) };
-    assert_ne!(expected_bits, none());
+    assert_eq!(refcount(joined_bits), 1);
     assert_string_eq(joined_bits, expected_bits);
 
     molt_runtime::molt_dec_ref_obj(expected_bits);

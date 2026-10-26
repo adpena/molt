@@ -24,6 +24,7 @@ from molt.cli.static_archive_identity import (
 from molt.file_hashing import _hash_source_tree_metadata, _iter_source_fingerprint_files
 from molt.exact_json import encode_exact, read_exact
 from molt.link_outputs import validate_link_output_paths
+from molt.python_identity_common import canonical_absolute_path
 
 
 def _link_receipt_is_valid(payload: object) -> bool:
@@ -45,12 +46,8 @@ def _link_receipt_is_valid(payload: object) -> bool:
             return False
         if set(output) != {"path", "identity"}:
             return False
-        if (
-            not isinstance(output["path"], str)
-            or not Path(output["path"]).is_absolute()
-        ):
-            return False
         try:
+            canonical_absolute_path(output["path"])
             validate_artifact_content_identity(output["identity"])
         except ValueError:
             return False

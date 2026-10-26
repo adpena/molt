@@ -2517,7 +2517,7 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
     class CaptureBoundaryReached(Exception):
         pass
 
-    def capture(command, *, cwd, env, timeout):
+    def capture(verifier, command, *, cwd, env, timeout):
         verifier = Path(
             command[command.index("-X") + 1].removeprefix("pycache_prefix=")
         )
@@ -2526,7 +2526,7 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
         observed.append((command, cwd, env, timeout))
         raise CaptureBoundaryReached
 
-    monkeypatch.setattr(command_identity, "_run_captured", capture)
+    monkeypatch.setattr(command_identity, "_run_python_captured", capture)
     with pytest.raises(CaptureBoundaryReached):
         command_identity._python_identity(
             envelope,
@@ -2581,7 +2581,7 @@ def test_full_python_capture_rejects_changed_selection_before_launch(
     def forbidden(*args, **kwargs):
         pytest.fail("changed interpreter must not be launched")
 
-    monkeypatch.setattr(command_identity, "_run_captured", forbidden)
+    monkeypatch.setattr(command_identity, "_run_python_captured", forbidden)
     with pytest.raises(ValueError, match="selection differs from its location receipt"):
         command_identity._python_identity(
             {"python": {"kind": "uv", "prefix": ["uv", "run"]}},
@@ -2918,8 +2918,9 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     environment["UV_PROJECT_ENVIRONMENT"] = str(root)
 
     def read(*arguments):
-        with python_environment_identity.python_identity_verifier_prefix() as prefix:
-            return run_custody_subject_process(
+        with python_environment_identity.PythonIdentityVerifier() as verifier:
+            prefix = verifier.prefix
+            return verifier.run(
                 [
                     sys.executable,
                     *python_environment_identity.python_identity_verifier_arguments(
@@ -2935,6 +2936,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
                 text=True,
                 timeout=120,
                 check=False,
+                memory_guard_prefix="MOLT_PYTEST",
+                encoding="utf-8",
             )
 
     accepted = read()
@@ -2942,8 +2945,9 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     assert json.loads(accepted.stdout) == {"runtime": runtime["runtime_closure_sha256"]}
 
     def direct_wrapper():
-        with python_environment_identity.python_identity_verifier_prefix() as prefix:
-            return run_custody_subject_process(
+        with python_environment_identity.PythonIdentityVerifier() as verifier:
+            prefix = verifier.prefix
+            return verifier.run(
                 [
                     sys.executable,
                     *python_environment_identity.python_identity_verifier_arguments(
@@ -2963,6 +2967,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
                 text=True,
                 timeout=120,
                 check=False,
+                memory_guard_prefix="MOLT_PYTEST",
+                encoding="utf-8",
             )
 
     if development:
@@ -4897,11 +4903,11 @@ def test_python_selection_location_join_preserves_coordinate_and_content(
     }
     probes = []
 
-    def replay(command, **_kwargs):
+    def replay(verifier, command, **_kwargs):
         probes.append(command)
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(command_identity, "_run_captured", replay)
+    monkeypatch.setattr(command_identity, "_run_python_captured", replay)
     location_before = copy.deepcopy(location)
 
     def receive():
@@ -22024,3 +22030,51 @@ def test_detached_handoff_error_preserves_actual_child_row(
                 process.wait(timeout=5)
                 raise
         conn.close()
+
+
+@pytest.mark.parametrize("arguments", [("--version",), ("-V",), ("--help",)])
+def test_metadata_capture_uses_explicit_core_guard_even_for_version_flags(
+    tmp_path, monkeypatch, arguments
+):
+    from types import SimpleNamespace
+    from molt import process_guard
+    from molt.process_environment import ProcessEnvironment
+    from tools.proof_queue_pkg import command_admission, command_identity
+    from tests.process_guard_common import guard_result_for_test
+
+    selected = tmp_path / "selected-python"
+    command = [str(selected), *arguments]
+    executor = command_admission._COMMANDS
+    admitted = []
+    calls = []
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("identity metadata reached CommandExecutor's bounded-probe bypass")
+
+    def core(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert admitted == [selected]
+        assert kwargs["memory_guard_prefix"] == executor.prefix
+        assert kwargs["guard_source_root"] == executor.repo_root
+        return guard_result_for_test(argv, 0, "identity", "", descendants_closed=True)
+
+    monkeypatch.setattr(
+        command_admission,
+        "_COMMANDS",
+        SimpleNamespace(
+            prefix=executor.prefix,
+            repo_root=executor.repo_root,
+            run=forbidden,
+        ),
+    )
+    monkeypatch.setattr(
+        command_identity.process_image_capture,
+        "require_custody_coordinate",
+        admitted.append,
+    )
+    monkeypatch.setattr(process_guard, "run_completed_command", core)
+    result = command_identity._run_captured(
+        command, cwd=tmp_path, env=ProcessEnvironment({})
+    )
+    assert result.stdout == "identity" and result.descendants_closed is True
+    assert len(calls) == 1 and calls[0][0] == command

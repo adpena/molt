@@ -1494,3 +1494,28 @@ def test_path_search_skips_a_directory_it_cannot_traverse(tmp_path):
         assert found == tool
     finally:
         blocked.chmod(0o755)
+
+
+@pytest.mark.parametrize("denial", ["permission", "untrusted-mount", "io"])
+def test_searchable_executable_has_narrow_error_classification(denial):
+    import errno
+
+    failure = (
+        PermissionError("untraversable")
+        if denial == "permission"
+        else OSError(errno.EIO, "candidate cannot be inspected")
+    )
+    if denial == "untrusted-mount":
+        setattr(failure, "winerror", 448)
+
+    class UnreadablePath(Path):
+        def is_file(self):
+            raise failure
+
+    candidate = UnreadablePath("unreadable-candidate")
+    if denial == "io":
+        with pytest.raises(OSError) as caught:
+            identity.is_searchable_executable(candidate)
+        assert caught.value is failure
+    else:
+        assert identity.is_searchable_executable(candidate) is False

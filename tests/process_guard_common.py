@@ -717,3 +717,25 @@ def close_owned_multiprocessing_child(child: BaseProcess) -> None:
         child.join(10)
     assert not child.is_alive(), "owned multiprocessing observer did not stop"
     child.close()
+
+
+def guard_result_for_test(
+    command: Sequence[str],
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    *,
+    descendants_closed: bool,
+    elapsed_s: float | None = None,
+) -> harness_memory_guard.GuardedCompletedProcess[str]:
+    """Declare a synthetic terminal guard fact explicitly at a mock boundary."""
+    return harness_memory_guard.GuardedCompletedProcess(
+        command,
+        returncode,
+        stdout,
+        stderr,
+        elapsed_s=elapsed_s,
+        child_stderr=stderr,
+        descendants_closed=descendants_closed,
+        child_returncode=returncode,
+    )

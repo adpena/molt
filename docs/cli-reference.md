@@ -462,13 +462,26 @@ molt compare --python 3.13 app.py
 molt compare app.py -- --flag
 ```
 
-`--python` accepts an explicit executable path/command or a supported CPython
-minor. Version selectors use one identity-verified resolver: an already-matching
-current interpreter is retained, otherwise `uv python find`, the Windows `py`
-launcher, and versioned `pythonX.Y` commands are tried in deterministic platform
-order. A candidate is accepted only when it reports the requested CPython minor.
-Put compare options before the file; everything after the file belongs to the
-script argument remainder.
+Without `--python`, the oracle is selected for the effective guest target.
+An explicit executable/command must report that same admitted guest minor;
+mismatches fail before either workload runs. A numeric selector also selects
+that guest minor unless `--build-arg --python-version=...` overrides it. Physical
+requests retain an explicit patch; guest admission remains 3.12–3.14. Resolution
+uses the matching current interpreter, `uv python find`, the Windows `py` launcher
+and versioned commands in deterministic order, verifying each candidate's identity.
+The compiler frontend remains the invoking interpreter.
+
+The oracle starts with `-B` and an owned fresh empty bytecode read namespace,
+shared by interpreter discovery, identity probes and the reference payload until
+process-tree closure is proven. Every metadata launch uses the core process
+guard with an explicit policy. An uncertain timeout, cancellation or guard failure
+aborts discovery, preserves the original guard error and receipt, and retains the
+owned namespace with its path; a later child cannot authorize its cleanup. Its site and environment behavior is preserved;
+it does not borrow the frontend's image cache. JSON records this launch policy in
+`python_startup_policy`. The displayed CPython duration includes a cold reference
+process and source imports. It is a diagnostic timing, not a canonical benchmark
+or a matched-cache performance comparison. Put compare options before the file;
+everything after it belongs to the script argument remainder.
 
 #### `molt diff`
 

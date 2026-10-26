@@ -214,7 +214,7 @@ from tools.molt_dev_gates import (  # noqa: E402
     retire_gate_logs,
     run_selected_gates,
 )
-from tools.molt_dev_policy import GateConfig, select_landing_gates  # noqa: E402
+from tools.molt_dev_policy import GateConfig, GateEnvironment, select_landing_gates  # noqa: E402
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
@@ -547,7 +547,60 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
         raise DriverError(f"managed development image refused: {exc}") from exc
 
 
-def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) -> int:
+def prepare_gate_environment(
+    repo: Path, env: ProcessEnvironment, *, requires_python: bool
+) -> GateEnvironment:
+    """Select once by declared demand; explicit selectors always validate."""
+    explicit = bool(
+        env.get("MOLT_VENV") or env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+    )
+    venv = _resolve_repo_venv(repo, env) if requires_python or explicit else None
+    if venv is None:
+        if requires_python:
+            raise DriverError(
+                "development image not selected; run "
+                "`python -m molt.checkout_provisioning ensure uv-environment`"
+            )
+        return GateEnvironment(env, None, False)
+    managed = not bool(env.get("MOLT_VENV"))
+    try:
+        venv_exec.venv_python(venv)
+        activated = venv_exec.venv_env(venv=venv, env=env, managed=managed)
+        if not managed:
+            activated = activated.updated({"MOLT_VENV": str(venv)})
+    except (venv_exec.VenvExecError, ValueError) as exc:
+        raise DriverError(str(exc)) from exc
+    return GateEnvironment(activated, venv, managed)
+
+
+def _validate_gate_image(repo: Path, context: GateEnvironment) -> None:
+    """Recheck the selected recipe and entrypoint before guarded admission.
+
+    This cheap check is not a physical image attestation. The existing guarded
+    command boundary still owns fresh admission for the actual launch.
+    """
+    if context.python_root is None:
+        return
+    if context.managed:
+        from molt.dx import DxConfigError, DxProject
+        from molt.source_build_environment import load_development_environment
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+
+        try:
+            load_development_environment(
+                context.python_root,
+                repo_root=repo,
+                groups=DxProject(repo).dependency_groups(),
+            )
+        except (DxConfigError, SourceBuildEnvironmentError, OSError, ValueError) as exc:
+            raise DriverError(f"managed development image refused: {exc}") from exc
+    try:
+        venv_exec.venv_python(context.python_root)
+    except (venv_exec.VenvExecError, ValueError) as exc:
+        raise DriverError(str(exc)) from exc
+
+
+def run_gate(cmd: str | tuple[str, ...], repo: Path, context: GateEnvironment) -> int:
     """Run one shell gate or structured argument vector in the selected environment.
 
     The command is a shell string from the manifest (so it can use
@@ -560,21 +613,21 @@ def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) ->
     a substitute. Explicit invalid selections always fail before shell launch.
     """
     _say(f"    gate: {cmd if isinstance(cmd, str) else shlex.join(cmd)}")
-    cmd, env = _gate_environment(cmd, repo, env)
+    cmd, env = _gate_environment(cmd, repo, context)
     return _run_live_gate(cmd, repo=repo, env=env)
 
 
 def run_captured_gate(
     cmd: str | tuple[str, ...],
     repo: Path,
-    env: ProcessEnvironment,
+    context: GateEnvironment,
     cancelled: Callable[[], bool],
     streams: tuple[Path, Path] | None = None,
 ) -> GateOutcome:
     """Run one landing gate in ``run_gate``'s environment, writing its streams
     to ``streams`` while it runs, under the executor's cancellation."""
     try:
-        cmd, env = _gate_environment(cmd, repo, env)
+        cmd, env = _gate_environment(cmd, repo, context)
     except BaseException as error:
         # The guard exclusively creates streams for admitted gates. A refusal
         # before that handoff still needs the empty evidence paths its event
@@ -603,8 +656,10 @@ def run_captured_gate(
 
 
 def _gate_environment(
-    cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment
+    cmd: str | tuple[str, ...], repo: Path, context: GateEnvironment
 ) -> tuple[str | tuple[str, ...], ProcessEnvironment]:
+    _validate_gate_image(repo, context)
+    env = context.environment
     shell_syntax = False
     if isinstance(cmd, str):
         try:
@@ -651,7 +706,7 @@ def _gate_environment(
                     len(words),
                 )
                 shell_python.append(words[index:end])
-    venv = _resolve_repo_venv(repo, env)
+    venv = context.python_root
     if venv is None:
         if python_gate or shell_python:
             raise DriverError(
@@ -659,7 +714,7 @@ def _gate_environment(
                 "`python -m molt.checkout_provisioning ensure uv-environment`"
             )
         return cmd, env
-    managed = not bool(env.get("MOLT_VENV"))
+    managed = context.managed
     try:
         venv_exec.venv_python(venv)
         env = venv_exec.venv_env(venv=venv, env=env, managed=managed)
@@ -808,7 +863,7 @@ def _gate_runtime(
     repo: Path,
     policy: str,
     config: GateConfig,
-    environments: dict[tuple[str, ...], ProcessEnvironment],
+    environments: dict[tuple[str, ...], GateEnvironment],
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]],
     capacity_requirements: dict[tuple[str, ...], int],
     progress: _IntegrationProgress,
@@ -1176,10 +1231,15 @@ def _integrate_exclusive(
     capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry:
         _assert_integration_source(git, selected_commit)
-        toolchains = config.admit(
-            touched, matched_rules, list(args.extra_gate or []), environ=env
+        prepared = config.prepare(
+            gate_cmds,
+            baseline=env,
+            prepare_python=lambda baseline, needed: prepare_gate_environment(
+                repo, baseline, requires_python=needed
+            ),
         )
-        environments = config.environments(gate_cmds, baseline=env)
+        toolchains = prepared.fingerprints
+        environments = prepared.environments
         try:
             cargo_outputs = config.cargo_outputs(environments)
             capacity_requirements = admit_selected_output_capacity(
@@ -1458,11 +1518,15 @@ def cmd_probe(args: argparse.Namespace) -> int:
 def cmd_python_oracle(args: argparse.Namespace) -> int:
     try:
         target = python_interpreter.parse_target_python_version(args.python_version)
-        resolved = python_interpreter.resolve_target_python(
-            target,
-            cwd=DEFAULT_REPO,
-            prefer_uv=not args.no_uv,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            resolved = python_interpreter.resolve_target_python(
+                target,
+                verifier=verifier,
+                cwd=DEFAULT_REPO,
+                prefer_uv=not args.no_uv,
+            )
     except (ValueError, python_interpreter.PythonInterpreterError) as exc:
         raise DriverError(str(exc), code=EXIT_USAGE) from exc
     exe = resolved.executable
@@ -1616,11 +1680,15 @@ def cmd_difftest(args: argparse.Namespace) -> int:
         target_python = python_interpreter.parse_target_python_version(
             args.python_version
         )
-        cpython_identity = python_interpreter.probe_python_command(
-            cpython_command,
-            cwd=root,
-            timeout=30.0,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            cpython_identity = python_interpreter.probe_python_command(
+                cpython_command,
+                verifier=verifier,
+                cwd=root,
+                timeout=30.0,
+            )
     except (ValueError, python_interpreter.PythonInterpreterError) as exc:
         raise DriverError(f"difftest: {exc}", code=EXIT_USAGE) from exc
     if cpython_identity.major_minor != target_python.short:
@@ -1773,7 +1841,9 @@ def cmd_fix(args: argparse.Namespace) -> int:
     unstaged work); this is the one command their failures point to.
     """
     repo = Path(args.repo).resolve()
-    env = ProcessEnvironment(os.environ)
+    context = prepare_gate_environment(
+        repo, ProcessEnvironment(os.environ), requires_python=True
+    )
     python = "python"
     steps = (
         ("pin text encodings", f"{python} tools/encoding_gate.py --fix"),
@@ -1785,7 +1855,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
     )
     for name, command in steps:
         _step(name)
-        if run_gate(command, repo, env) != 0:
+        if run_gate(command, repo, context) != 0:
             return 1
     _say("fix: encodings pinned, formatted, every generated output current")
     return 0
@@ -1967,7 +2037,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=30,
         help="min-age-s echoed into the printed detached-verify instruction",
     )
-    p_dr.add_argument("--json", action="store_true", help="emit JSON to stdout")
+    p_dr.add_argument(
+        "--json",
+        action="store_true",
+        help="emit launch state and verify_argv for the required later call",
+    )
     p_dr.add_argument(
         "argv",
         nargs=argparse.REMAINDER,

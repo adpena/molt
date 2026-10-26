@@ -246,8 +246,13 @@ suppress a lost source generation.
 One operation-local import topology starts at entry/root selection and remains
 with the graph resolver and frontend catalog. Positive and negative lookups,
 exact-case names, selected namespace portions and package-child inventories
-retain their original observations. CLI and tooling share the segmented resolver:
-a regular parent package or module shadows later namespace portions, following
+retain their original observations. The resolver validates a name before admitting
+its result or derived prefixes to its operation-local cache. Exact hits, including
+recorded misses, reuse that validation under the same resolver lock; uncached
+names are validated before any cached-prefix shortcut. This does not replace the
+operation's topology fence or extend cache lifetime. CLI and tooling share the
+segmented resolver: a regular parent package or module shadows later namespace
+portions, following
 [CPython's PathFinder](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap_external.py).
 Relative selectors are anchored without collapsing `..` before symlink traversal.
 Directory tokens avoid unnecessary repeated enumeration; changed, racy and
@@ -317,6 +322,21 @@ frontend assets remain fingerprint inputs. Captured semantic inputs use their
 byte identity directly without a redundant Git query; uncaptured backend/runtime
 trees retain the clean-pathspec shortcut. Receipts retain neither source bytes
 nor ASTs and may be reused only within the explicit immutable tooling operation.
+
+The existing tooling graph transaction owns source domains distinguished by
+project root, ordered search roots, admitted source roots, cache destination and
+manifest bytes. Queries in one domain share the resolver's topology observations,
+captured raw bytes, lexical relative-path keys, package-child facts and
+policy-specific source inventories. Each seed set and import policy retains its
+own receipt and converges its own namespace-writer premise; a sibling query's
+writers or reached modules cannot become its authority. Failed queries do not
+publish tentative analysis rows through later successful queries. Analysis misses
+still use temporary AST views, so retaining raw bytes until transaction exit does
+not retain parsed trees. Every new query validates its shared topology before
+returning a receipt; an already completed query remains frozen for that operation.
+A new operation, including an explicitly fresh nested transaction, captures live
+bytes and topology again. No filesystem observation survives through a global or
+persistent source-domain cache. Application-source content fences remain separate.
 
 Path admission belongs to discovery: missing candidates stop at the filesystem
 probe; existing candidates retain their kind and resolve symlinks before search

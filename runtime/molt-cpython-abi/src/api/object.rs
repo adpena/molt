@@ -7,9 +7,8 @@
 
 use crate::abi_types::{
     _PyErr_StackItem, Py_False, Py_None, Py_TPFLAGS_HAVE_VECTORCALL, Py_True, Py_ssize_t,
-    PyCFunction, PyCFunctionObject, PyCodeObject, PyFrameObject, PyGenericAliasObject,
-    PyInterpreterState, PyMethodDef, PyMethodObject, PyMutex, PyObject, PyThreadState,
-    PyTypeObject, PyVarObject, PyVectorcallFunc,
+    PyCFunction, PyCFunctionObject, PyCodeObject, PyFrameObject, PyInterpreterState, PyMethodDef,
+    PyMethodObject, PyMutex, PyObject, PyThreadState, PyTypeObject, PyVarObject, PyVectorcallFunc,
 };
 use crate::api::callback::CallbackOperands;
 use crate::api::errors::raised_error_pending as exception_already_pending;
@@ -2825,31 +2824,28 @@ pub unsafe extern "C" fn Py_GenericAlias(
         }
         return ptr::null_mut();
     }
-    unsafe {
-        crate::api::refcount::Py_INCREF(origin);
-        crate::api::refcount::Py_INCREF(args);
+    let constructor = (&raw mut crate::abi_types::Py_GenericAliasType).cast::<PyObject>();
+    if !unsafe { runtime_call_authority(constructor, true) } {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                c"generic alias construction requires initialized runtime authority".as_ptr(),
+            );
+        }
+        return ptr::null_mut();
     }
-    let alias = Box::new(PyGenericAliasObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut crate::abi_types::Py_GenericAliasType,
-        },
-        origin,
-        args,
-    });
-    Box::into_raw(alias).cast::<PyObject>()
-}
-
-pub unsafe extern "C" fn molt_generic_alias_dealloc(op: *mut PyObject) {
-    if op.is_null() {
-        return;
-    }
-    let alias = op.cast::<PyGenericAliasObject>();
-    unsafe {
-        crate::api::refcount::Py_XDECREF((*alias).origin);
-        crate::api::refcount::Py_XDECREF((*alias).args);
-        drop(Box::from_raw(alias));
-    }
+    // The C API and Python constructor publish one runtime owner. The ordinary
+    // type-call boundary validates the actual constructor and preserves errors.
+    let values = [origin, args];
+    let Some(packed) = (unsafe {
+        crate::api::cfunction::TupleDictArguments::from_vector(&values, 2, ptr::null_mut())
+    }) else {
+        return ptr::null_mut();
+    };
+    let result =
+        unsafe { crate::api::typeobj::molt_type_call(constructor, packed.tuple, packed.dict) };
+    crate::api::errors::with_preserved_error(|| drop(packed));
+    result
 }
 
 #[unsafe(no_mangle)]

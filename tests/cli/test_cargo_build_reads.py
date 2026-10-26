@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -140,6 +140,119 @@ def _read(workspace, *messages: str, toolchain_roots=(), environment=None):
 
 def _relative(root: Path, paths) -> list[str]:
     return [path.relative_to(os.path.realpath(root)).as_posix() for path in paths]
+
+
+def test_coverage_preserves_boundaries_order_duplicates_and_normalized_roots(tmp_path):
+    root = tmp_path.resolve()
+    paths = (
+        root / "api" / "present.h",
+        root / "api2" / "sibling.h",
+        root / "api",
+        root / "empty",
+        root / "api2" / "sibling.h",
+        root / "loose.rs",
+    )
+    # A root covers itself and future contents, including an empty watched
+    # directory. A file root does not cover its sibling. Inputs retain order.
+    assert reads.paths_outside(
+        paths,
+        root,
+        (root / "api" / ".." / "api", root / "api" / "nested", root / "loose.rs"),
+    ) == ("api2/sibling.h", "empty", "api2/sibling.h")
+    assert reads.paths_outside(paths, root, ()) == (
+        "api/present.h",
+        "api2/sibling.h",
+        "api",
+        "empty",
+        "api2/sibling.h",
+        "loose.rs",
+    )
+    assert reads.paths_outside(paths, root, (root,)) == ()
+
+
+def test_coverage_normalizes_root_aliases_once(tmp_path):
+    root = tmp_path.resolve()
+    real = root / "headers"
+    real.mkdir()
+    alias = root / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks unavailable: {error}")
+    assert reads.paths_outside(
+        (real, real / "future.h", root / "headers2" / "future.h"), root, (alias,)
+    ) == ("headers2/future.h",)
+
+
+@pytest.mark.parametrize("boundary", ["publication", "read-admission"])
+def test_coverage_query_work_does_not_multiply_by_declared_roots(
+    workspace, tmp_path, monkeypatch, boundary
+):
+    root, crate, target = workspace
+    root = root.resolve()
+    tmp_path = tmp_path.resolve()
+    paths = tuple(_write(crate / "src" / f"unit-{i}.rs").resolve() for i in range(32))
+    header = _write(tmp_path / "toolchain" / "header.h").resolve()
+    roots = tuple(tmp_path / f"unrelated-{i}" for i in range(512)) + (root / "runtime",)
+    toolchain_roots = (*roots[:-1], header)
+    unit = _unit(
+        target / "deps", crate, "crate", [os.fspath(p) for p in (*paths, header)]
+    )
+    comparisons = 0
+    original_equal = PurePath.__eq__
+    original_relative = PurePath.is_relative_to
+
+    def equal(path, other):
+        nonlocal comparisons
+        comparisons += 1
+        return original_equal(path, other)
+
+    def relative(path, *other):
+        nonlocal comparisons
+        comparisons += 1
+        return original_relative(path, *other)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(PurePath, "__eq__", equal)
+        patch.setattr(PurePath, "is_relative_to", relative)
+        if boundary == "publication":
+            actual = reads.paths_outside(paths, root, roots)
+        else:
+            observed = _read(workspace, unit, toolchain_roots=toolchain_roots)
+            actual = _relative(root, observed.files)
+    assert actual == (
+        ()
+        if boundary == "publication"
+        else [
+            f"runtime/crate/src/unit-{i}.rs"
+            for i in sorted(range(32), key=lambda i: f"unit-{i}.rs")
+        ]
+    )
+    # The independent result is literal; this work bound rejects the former
+    # Cartesian scan without a wall-clock threshold or a prescribed index.
+    assert comparisons < len(roots) + 16 * sum(len(path.parts) for path in paths)
+
+
+@pytest.mark.parametrize(
+    "path, root, covered",
+    [
+        ("C:/SDK/INCLUDE/a.h", "c:/sdk/include", True),
+        ("c:/sdk/include", "C:/SDK/INCLUDE", True),
+        ("c:/sdk/include2/a.h", "C:/SDK/INCLUDE", False),
+        ("d:/sdk/include/a.h", "C:/SDK/INCLUDE", False),
+        ("//SERVER/SHARE/include/a.h", "//server/share/INCLUDE", True),
+        ("//server/share2/include/a.h", "//server/share/include", False),
+    ],
+)
+def test_coverage_retains_windows_drive_case_and_unc_boundaries(path, root, covered):
+    # The lookup is pure: exercise WindowsPath's equality grammar in every
+    # owning proof cell. Native realpath admission remains platform work.
+    assert (
+        reads._covered_by_roots(
+            PureWindowsPath(path), frozenset({PureWindowsPath(root)})
+        )
+        is covered
+    )
 
 
 def test_each_local_unit_contributes_what_rustc_read(workspace) -> None:

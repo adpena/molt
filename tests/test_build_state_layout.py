@@ -82,6 +82,7 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
     assert outputs == {
         "root": str(expected),
         "profile_log": str(expected_profile),
+        "incident_root": str(expected_profile.parent / "incidents"),
         "guard_state_root": str(memory_guard_state_root(repo, admitted)),
         "pytest_guard_root": str(pytest_guard_summary_dir(repo, admitted)),
         "proof_scratch_root": str(tmp_path / "canonical" / "tmp"),

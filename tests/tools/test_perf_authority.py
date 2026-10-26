@@ -89,12 +89,12 @@ def test_non_canonical_stamp_is_never_authoritative() -> None:
         ("bench/harness.py", "release"),
     ]:
         prov = pa.non_canonical_provenance(
-            profile=profile, source=source, git_rev="deadbeef"
+            requested_profile=profile, source=source, git_rev="deadbeef"
         )
         assert prov["authoritative"] is False
         assert prov["source"] == "non-canonical"
         assert prov["lane"] == source
-        assert prov["profile"] == profile
+        assert prov["requested_profile"] == profile
         assert "perf_scoreboard.py" in str(prov["canonical_gate"])
         assert "release-fast" in str(prov["canonical_gate"])
         assert prov["git_rev"] == "deadbeef"
@@ -103,7 +103,9 @@ def test_non_canonical_stamp_is_never_authoritative() -> None:
 
 
 def test_non_canonical_stamp_resolves_rev_when_omitted() -> None:
-    prov = pa.non_canonical_provenance(profile="dev", source="bench/harness.py")
+    prov = pa.non_canonical_provenance(
+        requested_profile="dev", source="bench/harness.py"
+    )
     # git_rev is auto-filled from HEAD (or "unknown" if git unavailable) -
     # never missing.
     assert isinstance(prov["git_rev"], str) and prov["git_rev"]
@@ -111,7 +113,9 @@ def test_non_canonical_stamp_resolves_rev_when_omitted() -> None:
 
 def test_non_canonical_stamp_validation_is_fail_closed() -> None:
     prov = pa.non_canonical_provenance(
-        profile="manifest-defined", source="tools/bench_friends.py", git_rev="deadbeef"
+        requested_profile="manifest-defined",
+        source="tools/bench_friends.py",
+        git_rev="deadbeef",
     )
     assert pa.is_non_canonical_provenance(prov)
 
@@ -120,13 +124,24 @@ def test_non_canonical_stamp_validation_is_fail_closed() -> None:
         "authoritative_reason",
         "source",
         "lane",
-        "profile",
+        "requested_profile",
         "git_rev",
         "canonical_gate",
     ):
         malformed = dict(prov)
         malformed.pop(key)
         assert not pa.is_non_canonical_provenance(malformed)
+
+
+def test_non_canonical_profile_label_never_upgrades_legacy_physical_claim():
+    current = pa.non_canonical_provenance(
+        requested_profile="release", source="tools/bench.py", git_rev="a" * 40
+    )
+    assert current["requested_profile"] == "release" and "profile" not in current
+    legacy = dict(current)
+    legacy["profile"] = legacy.pop("requested_profile")
+    assert not pa.is_non_canonical_provenance(legacy)
+    assert not pa.is_non_canonical_provenance({**current, "profile": "release-fast"})
 
 
 def test_canonical_gate_names_full_release_fast_backend_contract() -> None:
@@ -645,7 +660,7 @@ def test_freshness_non_canonical_json_never_ages_into_hazard(tmp_path: Path) -> 
             "generated_at": "2026-01-01",
             "git_rev": "unknown",
             "provenance": pa.non_canonical_provenance(
-                profile="manifest-defined",
+                requested_profile="manifest-defined",
                 source="tools/bench_friends.py",
                 git_rev="unknown",
             ),

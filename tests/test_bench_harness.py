@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -167,3 +168,63 @@ def test_bench_harness_uses_canonical_defaults() -> None:
     assert bench_harness.DEFAULT_BASELINE == (
         bench_harness.BENCH_DIR / "results" / "harness-baseline.json"
     )
+
+
+@pytest.mark.parametrize("current_time", [0.01, 2.0])
+def test_legacy_harness_refuses_unbound_timing_comparison_and_keeps_raw_measurement(
+    tmp_path: Path, current_time: float
+) -> None:
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "provenance": {"profile": "release-fast"},
+                "benchmarks": {"sample.py": {"molt_ok": True, "molt_time_s": 1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = bench_harness.TestResult(
+        name="sample.py",
+        suite="bench",
+        status="pass",
+        molt_time_s=current_time,
+        cpython_time_s=1.0,
+    )
+    before = result.to_dict()
+    findings = bench_harness.detect_regressions([result], baseline)
+    assert len(findings) == 1
+    assert findings[0]["type"] == "incompatible_timing"
+    assert "selected build profiles unbound" in findings[0]["detail"]
+    assert result.to_dict() == before
+
+    report = bench_harness.build_json_report(
+        [result], [], findings, molt_profile="release"
+    )
+    assert report["provenance"]["requested_profile"] == "release"
+    assert report["provenance"]["authoritative"] is False
+    cell = report["benchmarks"]["sample.py"]
+    assert cell["molt_time_s"] == current_time
+    assert cell["requested_profile"] == "release" and cell["build_observation"] is None
+
+
+def test_legacy_harness_keeps_status_regression_independent_of_unbound_profiles(
+    tmp_path: Path,
+) -> None:
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {"benchmarks": {"sample.py": {"status": "pass", "molt_time_s": 1.0}}}
+        ),
+        encoding="utf-8",
+    )
+    result = bench_harness.TestResult(
+        name="sample.py", suite="bench", status="fail", molt_time_s=2.0
+    )
+    assert bench_harness.detect_regressions([result], baseline) == [
+        {
+            "name": "sample.py",
+            "type": "status",
+            "detail": "was passing, now fail",
+        }
+    ]

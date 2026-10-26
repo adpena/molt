@@ -165,6 +165,7 @@ def admit_generators(
         owners=owners,
         python_admissions=admissions or None,
         root=root,
+        python_executable=Path(sys.executable),
     )
     fingerprints = admitted.fingerprints
     bindings: dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]] = {

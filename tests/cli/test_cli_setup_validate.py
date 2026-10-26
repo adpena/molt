@@ -915,15 +915,20 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         prefixes.append(kwargs.get("memory_guard_prefix"))
         commands.append(list(cmd))
         if len(prefixes) == 1:
-            return process_execution._TimedResult(0, "ok\n", "", 0.01)
+            return process_execution._TimedResult(
+                0, "ok\n", "", 0.01, descendants_closed=True
+            )
         if len(prefixes) == 2:
             return process_execution._TimedResult(
                 0,
                 json.dumps({"data": {"output": str(built_binary)}}),
                 "",
                 0.02,
+                descendants_closed=True,
             )
-        return process_execution._TimedResult(0, "ok\n", "", 0.01)
+        return process_execution._TimedResult(
+            0, "ok\n", "", 0.01, descendants_closed=True
+        )
 
     monkeypatch.setattr(
         script_commands, "_find_project_root", lambda start: project, raising=True
@@ -940,6 +945,16 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         lambda exe, **_kwargs: ("py", "-3.14"),
         raising=True,
     )
+    from molt.python_interpreter import PythonInterpreter
+    from molt.python_environment_location import _active_environment_prefix
+
+    monkeypatch.setattr(
+        script_commands,
+        "probe_python_command",
+        lambda command, **kwargs: PythonInterpreter(
+            tuple(command), "oracle-python", "3.14.9", "CPython"
+        ),
+    )
     monkeypatch.setattr(
         script_commands,
         "_resolve_binary_output",
@@ -952,13 +967,27 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         fake_run_command_timed,
         raising=True,
     )
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", fake_run_command_timed)
 
     rc = script_commands.compare(str(entry), None, "3.14", [])
 
     assert rc == 0
     assert prefixes == ["MOLT_DIFF", "MOLT_DIFF", "MOLT_DIFF"]
-    assert commands[0] == ["py", "-3.14", str(entry)]
-    assert commands[1][:5] == ["py", "-3.14", "-m", "molt.cli", "build"]
+    assert commands[0][:4] == ["py", "-3.14", "-B", "-X"]
+    assert commands[0][4].startswith("pycache_prefix=")
+    assert not Path(commands[0][4].split("=", 1)[1]).parent.exists()
+    assert commands[0][5:] == [str(entry)]
+    assert commands[1][:7] == [
+        sys.executable,
+        "-B",
+        "-X",
+        f"pycache_prefix={_active_environment_prefix() / 'bytecode'}",
+        "-m",
+        "molt.cli",
+        "build",
+    ]
 
 
 @pytest.mark.parametrize(

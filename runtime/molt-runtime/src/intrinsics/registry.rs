@@ -1810,13 +1810,13 @@ mod tests {
         });
     }
 
-    #[cfg(not(feature = "stdlib_net"))]
     #[test]
-    fn ssl_intrinsics_resolve_when_stdlib_net_is_disabled() {
+    fn ssl_intrinsic_presence_matches_the_network_provider() {
         assert!(resolve_symbol("molt_ssl_cert_none").is_some());
         assert!(resolve_symbol("molt_ssl_context_new").is_some());
-        assert!(resolve_symbol("molt_ssl_wrap_socket").is_some());
-        assert!(resolve_symbol("molt_ssl_socket_read").is_some());
+        for name in ["molt_ssl_wrap_socket", "molt_ssl_socket_read"] {
+            assert_eq!(resolve_symbol(name).is_some(), cfg!(molt_net), "{name}");
+        }
     }
 
     #[cfg(not(feature = "stdlib_http"))]

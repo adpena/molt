@@ -10,6 +10,7 @@ import tomllib
 import pytest
 
 from molt import tool_releases
+from molt.python_environment_identity import python_identity_verifier_arguments
 
 from tests.process_guard_common import run_guarded_test_process
 
@@ -54,7 +55,7 @@ def test_bootstrap_rejects_option_shaped_atoms(tmp_path, inputs):
     assert outputs == {}
 
 
-def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\n"):
+def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.15.1\n"):
     """Exercise the real shell/bootstrap validator with finite external tools.
 
     The fake installer never downloads Python. Its interpreter driver executes
@@ -92,7 +93,7 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
         "sys.executable = os.environ['FAKE_SELECTED']\n"
         "if os.environ['FAILURE'] == 'alias' and os.environ['ALIAS'] == 'python3':\n"
         "    sys.executable = os.environ['FAKE_OTHER']\n"
-        "platform.python_version = lambda: '3.12.14' if os.environ['FAILURE'] == 'version' else '3.12.15'\n"
+        "platform.python_version = lambda: '3.15.0' if os.environ['FAILURE'] == 'version' else '3.15.1'\n"
         "platform.python_implementation = lambda: 'PyPy' if os.environ['FAILURE'] == 'implementation' else 'CPython'\n"
         "sysconfig.get_path = lambda name, *_a, **_k: os.environ['FAKE_STDLIB']\n"
         "kind = 'stdlib' if 'sysconfig' in code else 'validate'\n"
@@ -144,7 +145,7 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
         else "Linux",
         "FAKE_SELECTED": selected.as_posix(),
         "FAKE_OTHER": other.as_posix(),
-        "FAKE_STDLIB": (install / "lib" / "python3.12").as_posix(),
+        "FAKE_STDLIB": (install / "lib" / "python3.15").as_posix(),
         "EVENTS": events.as_posix(),
         "FAILURE": failure,
     }
@@ -172,8 +173,8 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
     result, events, exports = _python_bootstrap(tmp_path)
     assert result.returncode == 0, result.stderr
     assert events == [
-        "python install --default 3.12.15",
-        "python find --managed-python --no-project --no-python-downloads 3.12.15",
+        "python install --default 3.15.1",
+        "python find --managed-python --no-project --no-python-downloads 3.15.1",
         "python dir --bin",
         "validate:selected",
         "validate:python",
@@ -183,7 +184,7 @@ def test_python_bootstrap_selects_and_validates_before_publishing(
     ]
     assert "UV_PYTHON_DOWNLOADS=never\n" in exports["GITHUB_ENV"]
     assert "UV_MANAGED_PYTHON=true\n" in exports["GITHUB_ENV"]
-    assert "python-version=3.12.15\n" in exports["GITHUB_OUTPUT"]
+    assert "python-version=3.15.1\n" in exports["GITHUB_OUTPUT"]
     assert exports["GITHUB_PATH"].rstrip().endswith("/custody/python-bin")
 
 
@@ -198,24 +199,40 @@ def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
     (compile_event,) = [event for event in events if event.startswith("compileall:")]
     options = compile_event.split(":")[2].split()
     source_root = Path(sysconfig.get_path("stdlib"))
-    module = tmp_path / "stdlib" / "_strptime.py"
-    module.parent.mkdir()
-    module.write_bytes((source_root / "_strptime.py").read_bytes())
+    source = (source_root / "_strptime.py").read_bytes()
+    active = tmp_path / "active"
+    module = active / "stdlib" / "_strptime.py"
     compiled: list[dict[str, bytes]] = []
     for install_time in (1_700_000_000, 1_800_000_000):
+        assert not active.exists()
+        module.parent.mkdir(parents=True)
+        module.write_bytes(source)
         os.utime(module, (install_time, install_time))
-        cache = module.parent / "__pycache__"
-        if cache.exists():
-            cache.rename(tmp_path / f"cache-{install_time}")
+        # Compileall's parallel workers need not inherit the parent's cache
+        # prefix. Give every explicit output one fresh test-owned tree while
+        # keeping the source path stable for the independent bytecode oracle.
+        cache = active / "imports"
+        cache.mkdir()
         completed = run_guarded_test_process(
-            [sys.executable, "-I", "-m", "compileall", *options, str(module.parent)],
+            [
+                sys.executable,
+                *python_identity_verifier_arguments(cache),
+                "-m",
+                "compileall",
+                *options,
+                str(module.parent),
+            ],
             prefix="MOLT_SETUP_PYTHON_BYTECODE_TEST",
             capture_output=True,
             text=True,
             check=False,
         )
         assert completed.returncode == 0, completed.stderr
-        compiled.append({path.name: path.read_bytes() for path in cache.iterdir()})
+        bytecode = tuple(active.rglob("*.pyc"))
+        assert all(path.name.startswith(f"{module.stem}.") for path in bytecode)
+        compiled.append({path.name: path.read_bytes() for path in bytecode})
+        assert len(bytecode) == 3
+        active.rename(tmp_path / f"cache-{install_time}")
     assert len(compiled[0]) == 3
     assert compiled[0] == compiled[1]
 
@@ -223,10 +240,10 @@ def test_python_bootstrap_bytecode_does_not_depend_on_install_time(
 @pytest.mark.parametrize(
     ("failure", "last_event"),
     [
-        ("install", "python install --default 3.12.15"),
+        ("install", "python install --default 3.15.1"),
         (
             "find",
-            "python find --managed-python --no-project --no-python-downloads 3.12.15",
+            "python find --managed-python --no-project --no-python-downloads 3.15.1",
         ),
         ("multiline", "python dir --bin"),
         ("version", "validate:selected"),
@@ -512,7 +529,12 @@ def _run_target_python_setup(tmp_path: Path, failure: str):
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "target_python_policy.py").write_text(
-        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.14', '3.12')\n",
+        (
+            "import sys\nsys.stdout.reconfigure(newline='\\r\\n')\n"
+            if failure == "crlf"
+            else ""
+        )
+        + "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.14', '3.12')\n",
         encoding="utf-8",
     )
     (package / "target_python.py").write_text(
@@ -568,20 +590,23 @@ def _run_target_python_setup(tmp_path: Path, failure: str):
         text=True,
         check=False,
     )
+    # Preserve literal CR bytes in the install argv; splitlines would hide them.
     records = [
-        path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        path.read_bytes().decode("utf-8").removesuffix("\n").split("\n")
+        if path.exists()
+        else []
         for path in (events, installed, selection)
     ]
     return result, records, selected
 
 
-@pytest.mark.parametrize("failure", ["", "query", "empty"])
+@pytest.mark.parametrize("failure", ["", "crlf", "query", "empty"])
 def test_target_python_setup_requires_catalog_before_install(tmp_path: Path, failure):
     result, (events, installed, selection), selected = _run_target_python_setup(
         tmp_path, failure
     )
     assert selection[:2] == [selected, "never"]
-    if failure:
+    if failure in {"query", "empty"}:
         assert result.returncode == (43 if failure == "query" else 2), result.stderr
         assert events == ["query"]
         assert installed == []
@@ -748,7 +773,7 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
     )
     uv.chmod(0o755)
     cwd = ROOT
-    if mode in {"changed", "invalid", "framing"}:
+    if mode in {"changed", "invalid", "framing", "crlf"}:
         cwd = tmp_path / "different project"
         package = cwd / "src/molt"
         package.mkdir(parents=True)
@@ -758,7 +783,10 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
         (package / "dx.py").write_text(
             "import sys\nfrom pathlib import Path\n"
             "assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n"
-            "class DxProject:\n"
+            # Model Windows pipe translation on every host. The actual action
+            # producer must emit LF bytes after calling this authority.
+            + ("sys.stdout.reconfigure(newline='\\r\\n')\n" if mode == "crlf" else "")
+            + "class DxProject:\n"
             "    def __init__(self, root): assert root == Path.cwd()\n"
             "    def dependency_groups(self):\n"
             + (
@@ -789,15 +817,18 @@ def _run_project_group_sync(tmp_path: Path, mode: str):
         text=True,
         check=False,
     )
+    # Universal-newline decoding would hide a literal CR in an argv value.
     records = [
-        path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        path.read_bytes().decode("utf-8").removesuffix("\n").split("\n")
+        if path.exists()
+        else []
         for path in (query, synced)
     ]
     return result, records
 
 
 @pytest.mark.parametrize(
-    "mode", ["repository", "changed", "query", "invalid", "framing", "explicit"]
+    "mode", ["repository", "changed", "crlf", "query", "invalid", "framing", "explicit"]
 )
 def test_project_group_sync_uses_bound_python_and_preserves_query_failure(
     tmp_path: Path, mode: str

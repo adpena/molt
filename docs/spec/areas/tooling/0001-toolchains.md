@@ -98,6 +98,16 @@ otherwise the whole value, including `=`, is an `all` search path. Those literal
 paths receive the same capture and SDK-prefix ordering checks.
 Interrupted-process inventory marks malformed or truncated arguments incomplete.
 
+Each runtime-identity flag projection remembers successfully validated terminal
+literal text within that capture. Repeated literals take a set lookup; first
+occurrences retain the existing root-text and absolute-path checks. Storage
+scales with distinct literal text and ends with the projection. Path operands
+still resolve on every inspection, and response arguments retain the Cargo
+plan's content and custody checks. A fresh capture or prepended-root projection
+starts empty; no remembered literal can cross an identity operation or replace
+the final runtime-input fence. `MOLT_CLI_PROFILE` exposes fresh validation calls
+through `_validate_literal_token` without adding filesystem or process work.
+
 The runtime target coordinate appends its reference-types/SIMD directive only
 when it differs from the last actual target-feature directive. Later SDK search
 and external-libc options do not cause repeated policy growth. Re-resolving a
@@ -578,6 +588,17 @@ archive admission hashes current bytes before reusing parsed member semantics,
 and extracted members are rehashed before reuse. A supplied digest never
 authorizes different bytes merely because metadata matches.
 
+Backend cache candidate materialization owns fresh format/content admission and
+native module-chunk eligibility under the existing candidate publication lock.
+Eligibility precedes origin requirements, synchronized-output reuse and any
+copy or promotion; direct callers cannot bypass admission with a detached
+identity. Candidate selection does not repeat that admission. The
+`backend_cache_try_materialize` diagnostic measures the whole attempt, including
+lock wait and eligibility; the former selection-only `artifact_valid` and
+`unresolved_chunks` timing subphases are retired. Invalid present candidates now
+acquire the publication lock before rejection. Published output and runtime/link
+admission retain their separate content and semantic checks.
+
 WASM fact, linking-symbol and structural caches reuse parsing or validation
 results only after current member content matches. Cold structural validation
 retains the owned handle through the external validator. Final binding checks
@@ -899,6 +920,33 @@ publication evicts the generation files that no build used for 24 hours. It
 never evicts the selected pair. Recency lives in the ledger because a member's
 stat identity includes its file times. The shared generation cache under
 `MOLT_CACHE`, or a rebuild, restores an evicted generation.
+
+The family-keyed runtime WASM expected-pair receipt uses byte-exact
+write-if-changed publication through `molt.cli.atomic_io`. The JSON encoder and
+schema remain shared with ordinary atomic JSON publication; the expected pair
+opts in after producing its current admitted identities. Generated Python
+modules and native main stubs use the same comparison authority. This follows
+[LLVM TableGen's `--write-if-changed`](https://llvm.org/docs/CommandGuide/tblgen.html)
+and [CMake's generated-file policy](https://cmake.org/cmake/help/latest/command/file.html#generate),
+with Molt's stronger direct-file custody: validate publication policy and the
+canonical leaf, compare the immutable desired bytes through the bounded stable
+regular-file reader, and finish its pathname, handle and change-time fences
+before suppressing a write. Links and special files fail; missing, different,
+unreadable or changing regular files go through the existing atomic publisher.
+An unchanged readable leaf needs no write permission on its parent; it receives
+no replacement, timestamp refresh or new durability barrier. A mismatch still
+requires ordinary publication permissions and durability. Generated text is
+UTF-8 byte-exact, so a CRLF copy of a requested LF output is rewritten.
+
+Both runtime admission points remain live: the early code-generation selection
+and the later import-requirement admission. Receipt equality neither replaces
+those checks nor establishes future filesystem stability. No cross-operation
+cache or extra typed-JSON parse is introduced. Each operation still projects
+and serializes its desired payload once. Comparison adds one stable read of
+that extent and at most one 256 KiB content chunk; a size mismatch avoids the
+content read. A changed output pays that comparison before the existing staged
+write and durable replacement.
+Ordinary, exclusive and custom-replacement publication semantics are unchanged.
 
 For source-checkout reuse, `MOLT_SKIP_RUNTIME_REBUILD=1` disables compiler and
 runtime source builds, including Cargo-based provenance refresh. It does not
@@ -1469,7 +1517,7 @@ parsing distinguishes BSD extended names from GNU/short names. Only documented
 Darwin Mach-O member-data alignment admits exact newline padding; the full archive
 hash and each original object hash remain mandatory.
 
-`molt.compilation-inputs.v2` binds the compiler and optional shared stdlib origins
+`molt.compilation-inputs.v3` binds the compiler and optional shared stdlib origins
 to the actual linker input buffers. Its nullable cache coordinates name the exact
 producer-selected artifact and stdlib generation; they are untrusted selection
 hints. Admission export fences canonical roots/entry names, original observations
@@ -1515,6 +1563,29 @@ link buffer, relocatable runtime, and deployment runtime as distinct identities.
 Output substitution, a missing raw reproducer, or a summary that disagrees with
 raw buffers fails admission. Link-input capture never sets
 `compiled_with_verified`.
+
+`molt.link-input-observation.v2` records input `archive_path` values and semantic
+roles in LLD's relative reproducer namespace. These are slash-separated archive
+coordinates, not absolute host paths. The producer projects admitted host paths
+once using [LLD's `relativeToRoot` contract](https://github.com/llvm/llvm-project/blob/main/lld/Common/Reproduce.cpp):
+POSIX `/usr/lib/a.o` becomes `usr/lib/a.o`, a Windows drive path becomes
+`C/work/a.o`, and a UNC path becomes `server/share/a.o`. The projection cannot
+recover a host path from an arbitrary archive member. Receivers compare retained
+members directly and never reconstruct host paths from the inventory.
+
+Selected linker, driver, source, dependency and cache coordinates remain separate
+canonical absolute host paths. Their syntax is validated independently of the
+receiver's operating system by the existing host-path authority. Windows wire
+coordinates use canonical native backslashes. `molt.wasm-link-inputs.v2` and
+`molt.native-link-preparation.v2` carry this contract; obsolete schemas reject.
+The sealed systemd provider maps canonical POSIX host paths into its Linux root
+explicitly and rejects foreign host namespaces. Portable receipt validation does
+not establish a Windows sealed execution provider.
+
+Coordinate validation and projection cost linear work in the path bytes. They add
+no filesystem reads, subprocesses, archive buffering or persistent cache. Capture
+retains the existing bounded streaming parser, content checks and mutation fences;
+ordinary builds perform none of this admission work.
 
 The release compilation projection reuses the sealed systemd provider and native
 supervisor. One immutable compiler/Python/toolchain root serves the declared

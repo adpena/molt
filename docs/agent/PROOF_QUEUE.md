@@ -55,10 +55,12 @@ Cargo runtime substitutes for the source-selected runtime generation.
 The prerequisite's child guards share one elapsed-time budget and retain source
 bytes and build JSON. Build observations are not used-byte attestations. WASM
 application runtimes remain cold in the body; successful native preparation does
-not establish their completion. The measured worker unit is 10 GiB (an observed
-WASM child reached 8.59 GiB), replacing the 4 GiB estimate that admitted six workers
-and exceeded a 24 GiB guard. The canonical capacity planner chooses concurrency;
-no case, timeout or memory limit is relaxed. The 43-minute job, setup duration,
+not establish their completion. The worker estimate is 20 GiB: the retained
+execution with the earlier 10 GiB estimate observed a 17.98 GiB worker subtree
+and exceeded the 24 GiB aggregate guard with two workers. The canonical capacity
+planner now admits one worker under that grant; its minimum of one does not
+prove a worker fits a smaller hosted runner. No case, timeout or memory limit
+is relaxed. The 43-minute job, setup duration,
 three-slot memory sharing and cold completion still require actual qualification.
 
 LLVM's local and registered unit proof uses the same complete implementation

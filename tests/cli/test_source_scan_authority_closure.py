@@ -760,6 +760,29 @@ def test_generated_sources_are_content_addressed_without_self_referential_identi
         assert path.name not in path.read_text(encoding="utf-8")
 
 
+def test_generated_source_reuse_preserves_bytes_and_repairs_newlines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import file_publication
+
+    source = "VALUE = 1\n"
+    path = graphs._write_generated_module_source("generated", source, tmp_path)
+    publish = file_publication.atomic_write_bytes
+    writes = []
+
+    def record(destination, data, **kwargs):
+        writes.append((destination, data))
+        publish(destination, data, **kwargs)
+
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", record)
+    assert graphs._write_generated_module_source("generated", source, tmp_path) == path
+    assert writes == []
+    path.write_bytes(b"VALUE = 1\r\n")
+    assert graphs._write_generated_module_source("generated", source, tmp_path) == path
+    assert writes == [(path, b"VALUE = 1\n")]
+    assert path.read_bytes() == b"VALUE = 1\n"
+
+
 @pytest.mark.parametrize("source_name", ["support.py", "support/__init__.py"])
 def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_key(
     tmp_path: Path,
@@ -775,6 +798,7 @@ def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_ke
     leaf1 = _source(tmp_path / "leaf1.py", "pass\n")
     leaf2 = _source(tmp_path / "leaf2.py", "pass\n")
     _source(tmp_path / "dead.py", "pass\n")
+    physical_source = source.read_bytes()
     snapshot = PythonSourceSnapshot.capture(source)
     expected = ast.parse(text, filename=str(source))
     expected_later = next(
@@ -870,7 +894,8 @@ def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_ke
         {"leaf1", "leaf2"},
     ]
     assert source.read_text(encoding="utf-8") == text
-    assert snapshot.sha256 == hashlib.sha256(text.encode()).hexdigest()
+    assert source.read_bytes() == physical_source
+    assert snapshot.sha256 == hashlib.sha256(physical_source).hexdigest()
     assert tuple(tmp_path.glob("_molt_generated_*.py")) == ()
 
 

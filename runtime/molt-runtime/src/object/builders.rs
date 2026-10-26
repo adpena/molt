@@ -1545,7 +1545,7 @@ pub(crate) fn alloc_slice_obj(
 }
 
 pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(
         _py,
         total,
@@ -1558,6 +1558,11 @@ pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits
     unsafe {
         *(ptr as *mut u64) = origin_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = args_bits;
+        std::ptr::write(
+            ptr.add(2 * std::mem::size_of::<u64>())
+                .cast::<std::sync::atomic::AtomicU64>(),
+            std::sync::atomic::AtomicU64::new(MoltObject::none().bits()),
+        );
         inc_ref_bits(_py, origin_bits);
         inc_ref_bits(_py, args_bits);
     }
@@ -1565,13 +1570,18 @@ pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits
 }
 
 pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_UNION);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
         *(ptr as *mut u64) = args_bits;
+        std::ptr::write(
+            ptr.add(std::mem::size_of::<u64>())
+                .cast::<std::sync::atomic::AtomicU64>(),
+            std::sync::atomic::AtomicU64::new(MoltObject::none().bits()),
+        );
         inc_ref_bits(_py, args_bits);
     }
     ptr

@@ -4,7 +4,10 @@ from collections.abc import Callable
 import json
 from pathlib import Path
 
-from tools.bench_evidence import comparable_run_metadata_errors
+from tools.bench_evidence import (
+    comparable_run_metadata_errors,
+    format_observed_build_profiles,
+)
 
 
 MAX_FAILURE_DETAIL_RECORDS = 32
@@ -31,7 +34,7 @@ def compare_baseline(
         return [
             "incompatible benchmark baseline: "
             + "; ".join(metadata_errors)
-            + "; regenerate the baseline with matching benchmark timing settings"
+            + "; regenerate the baseline with matching benchmark timing settings and observed build profiles"
         ]
 
     regressions = []
@@ -200,6 +203,21 @@ def render_bench_summary_markdown(
                 f"{format_summary_seconds(raw_stats.get('molt_cpython_ratio'))} | "
                 f"{failure_text} |"
             )
+
+    lines.extend(
+        [
+            "",
+            "## Build Profile Observations",
+            "",
+            "Requested labels do not identify physical Cargo profiles. Missing historical observations are unbound.",
+        ]
+    )
+    if isinstance(benchmarks, dict):
+        for name, entry in sorted(benchmarks.items()):
+            if isinstance(entry, dict):
+                lines.append(
+                    f"- `{name}` requested=`{entry.get('requested_profile', 'unbound')}`; observed=`{format_observed_build_profiles(entry)}`"
+                )
 
     lines.extend(["", "## Custody Artifacts"])
     for key in (

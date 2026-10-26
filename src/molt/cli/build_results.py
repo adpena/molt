@@ -101,7 +101,7 @@ def _observed_build_toolchain(
             facts[name] = {"error": str(exc)}
     if runtime_lib is None and link_input_observation is not None:
         link = link_input_observation["link"]
-        if link["schema"] == "molt.wasm-link-inputs.v1":
+        if link["schema"] == "molt.wasm-link-inputs.v2":
             facts["runtime"] = {
                 "identity": dict(link["source_inputs"]["runtime"]),
                 "observation": "linker-input-buffer",

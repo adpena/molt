@@ -190,9 +190,13 @@ def isolated_guard_scratch(
         closed: bool,
         success: bool,
         evidence: Mapping[str, object],
+        timings: memory_guard._temporary_artifacts.ScratchFinalizationTimings,
     ) -> Mapping[str, object]:
         del evidence
-        lease.release()
+        with timings.measure(
+            memory_guard._temporary_artifacts.ScratchFinalizationPhase.LEASE_RELEASE
+        ):
+            lease.release()
         if not closed:
             state = "indeterminate"
         elif success:
@@ -1399,6 +1403,16 @@ def test_completed_guard_retires_its_marker_lock_and_scratch(
     assert payload["descendants_closed"] is True
     assert payload["temporary_artifacts"]["state"] == "reclaimed"
     assert payload["temporary_artifacts"]["receipt"] is None
+    phases = payload["temporary_artifacts"]["finalize_phase_elapsed_s"]
+    assert set(phases) == {
+        "terminal_publication",
+        "payload_reclamation",
+        "receipt_removal",
+        "retention_sweep",
+        "lease_release",
+    }
+    assert all(isinstance(value, float) and value >= 0.0 for value in phases.values())
+    assert sum(phases.values()) <= payload["temporary_artifacts"]["finalize_elapsed_s"]
     generations = [
         path.name for path in (tmp_path / "gs").iterdir() if len(path.name) == 32
     ]
@@ -1844,7 +1858,7 @@ def _install_darwin_host(
     resident_kb: Callable[[int], int] | None = None,
     viewer_uid: int = _DARWIN_VIEWER_UID,
 ) -> dict[str, list[int]]:
-    """Fake the Darwin kernel through the sampler's own module seams."""
+    """Fake the Darwin kernel only for the synchronous fixture reader."""
     model = memory_guard._process_model
     reads: dict[str, list[int]] = {"argv": [], "kernel_row": [], "resident_kb": []}
 
@@ -1860,11 +1874,31 @@ def _install_darwin_host(
         reads["resident_kb"].append(pid)
         return 2048 if resident_kb is None else resident_kb(pid)
 
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: dict(table))
-    monkeypatch.setattr(model, "_darwin_proc_argv", read_argv)
-    monkeypatch.setattr(model, "_darwin_proc_kernel_row", read_kernel_row)
-    monkeypatch.setattr(model, "_darwin_proc_resident_kb", read_resident_kb)
-    monkeypatch.setattr(model, "_darwin_viewer_uid", lambda: viewer_uid)
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_table",
+        current_thread_only(lambda: dict(table), model._darwin_proc_table),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_argv",
+        current_thread_only(read_argv, model._darwin_proc_argv),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_kernel_row",
+        current_thread_only(read_kernel_row, model._darwin_proc_kernel_row),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_resident_kb",
+        current_thread_only(read_resident_kb, model._darwin_proc_resident_kb),
+    )
+    monkeypatch.setattr(
+        model,
+        "_darwin_viewer_uid",
+        current_thread_only(lambda: viewer_uid, model._darwin_viewer_uid),
+    )
     return reads
 
 
@@ -2008,22 +2042,43 @@ def test_darwin_sampler_binds_zero_rss_after_sampled_instance_exits(
     assert reads["argv"] == []
 
 
-def test_native_resident_binding_runs_once_across_readers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_native_resident_binding_runs_once_across_readers() -> None:
     from concurrent.futures import ThreadPoolExecutor
 
-    model = memory_guard._process_model
-    reads = _install_darwin_host(
-        monkeypatch,
-        {7: _darwin_kernel_row()},
-        argv=lambda _pid: ("worker",),
+    # Bind probes to this one row: real guard readers on other threads must
+    # continue using their native host authority while these readers overlap.
+    reads: dict[str, list[int]] = {"resident_kb": [], "command": []}
+
+    def resident_kb() -> int:
+        reads["resident_kb"].append(7)
+        return 2048
+
+    def command() -> tuple[str, tuple[str, ...], str]:
+        reads["command"].append(7)
+        return "worker", ("worker",), "full"
+
+    sample = process_model.native_process_sample(
+        pid=7,
+        ppid=3,
+        rss_kb=resident_kb,
+        pgid=7,
+        elapsed_sec=0,
+        started_at_ns=123_000_000,
+        bind_command=command,
     )
-    sample = model._sample_processes_darwin()[7]
+    assert (sample.pid, sample.ppid, sample.pgid, sample.started_at_ns) == (
+        7,
+        3,
+        7,
+        123_000_000,
+    )
+    assert reads == {"resident_kb": [], "command": []}
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(lambda _: sample.rss_kb, range(16))) == [2048] * 16
-    assert reads["resident_kb"] == [7]
-    assert reads["argv"] == []
+    assert reads == {"resident_kb": [7], "command": []}
+    assert sample.argv == ("worker",)
+    assert sample.command == "worker"
+    assert reads == {"resident_kb": [7], "command": [7]}
 
 
 @pytest.mark.parametrize(
@@ -6150,8 +6205,9 @@ def test_terminate_verified_pid_revalidates_identity_before_fallback(
     sample_sets = iter([{200: original}, {200: reused_pid}])
     sent: list[tuple[int, int]] = []
 
+    # The re-exported function resolves its globals in the custody owner.
     monkeypatch.setattr(
-        memory_guard,
+        process_custody,
         "_pid_exited_or_unobservable",
         lambda pid, *, grace: False,
     )
@@ -6287,8 +6343,9 @@ def test_windows_cleanup_sampler_failure_never_signals_remembered_pid(
     assert sent == []
 
 
+@pytest.mark.parametrize("provider", ["posix", "nt"])
 def test_pid_permission_error_is_live_unknown_not_completed(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:
     sample = memory_guard.ProcessSample(
         pid=300,
@@ -6299,10 +6356,20 @@ def test_pid_permission_error_is_live_unknown_not_completed(
         started_at_ns=333,
     )
     sent: list[tuple[int, int]] = []
-    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: False)
+    observations: list[str] = []
+
+    def unknown_windows_liveness(pid: int) -> bool:
+        assert pid == 300
+        observations.append("nt")
+        raise PermissionError("OpenProcess access denied")
+
+    monkeypatch.setattr(process_model, "process_is_alive", unknown_windows_liveness)
+    # The PID is synthetic; host /proc or proc_pidinfo is not its state.
+    monkeypatch.setattr(process_model, "_posix_pid_is_zombie", lambda pid: False)
 
     def permission_liveness(pid: int, sig: int) -> None:
         if sig == 0:
+            observations.append("posix")
             raise PermissionError("EPERM")
         sent.append((pid, sig))
 
@@ -6313,6 +6380,7 @@ def test_pid_permission_error_is_live_unknown_not_completed(
         getpid=lambda: 999,
         getpgrp=lambda: 999,
         kill=permission_liveness,
+        name=provider,
     )
 
     action = memory_guard._terminate_pid_if_identity_action(
@@ -6324,6 +6392,7 @@ def test_pid_permission_error_is_live_unknown_not_completed(
 
     assert action.result == "still_live"
     assert sent == [(300, memory_guard.signal.SIGTERM)]
+    assert observations and set(observations) == {provider}
 
 
 @pytest.mark.parametrize("exit_at", [0.0, 0.01, 0.02])
@@ -8638,8 +8707,18 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
         lambda _root, _env: lease,
     )
 
-    def fail_finish(*_args: object, **_kwargs: object) -> Mapping[str, object]:
-        raise OSError("scratch cleanup failed")
+    def fail_finish(
+        _lease: object,
+        *,
+        closed: bool,
+        success: bool,
+        evidence: Mapping[str, object],
+        timings: memory_guard._temporary_artifacts.ScratchFinalizationTimings,
+    ) -> Mapping[str, object]:
+        with timings.measure(
+            memory_guard._temporary_artifacts.ScratchFinalizationPhase.PAYLOAD_RECLAMATION
+        ):
+            raise OSError("scratch cleanup failed")
 
     monkeypatch.setattr(
         memory_guard._temporary_artifacts,
@@ -8684,6 +8763,14 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
     assert result.temporary_artifacts["state"] == "cleanup-error"
     assert result.temporary_artifacts["error"] == ("OSError: scratch cleanup failed")
     assert result.temporary_artifacts["receipt"] == str(finish_error_receipt)
+    phases = result.temporary_artifacts["finalize_phase_elapsed_s"]
+    assert phases["terminal_publication"] is None
+    assert phases["receipt_removal"] is None
+    assert phases["retention_sweep"] is None
+    assert isinstance(phases["payload_reclamation"], float)
+    assert phases["payload_reclamation"] >= 0.0
+    assert isinstance(phases["lease_release"], float)
+    assert phases["lease_release"] >= 0.0
     finalize_elapsed = result.temporary_artifacts["finalize_elapsed_s"]
     assert isinstance(finalize_elapsed, float)
     assert finalize_elapsed >= 0.0
@@ -8733,7 +8820,7 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     monkeypatch.setattr(
         memory_guard._temporary_artifacts,
         "finish_guard_scratch",
-        lambda *_args, **_kwargs: {
+        lambda _lease, *, closed, success, evidence, timings: {
             "state": "reclaimed",
             "receipt": str(tmp_path / "owner.json"),
             "retention": {
@@ -8943,6 +9030,7 @@ def test_run_guarded_exception_releases_lease_and_updates_marker(
         closed: bool,
         success: bool,
         evidence: Mapping[str, object],
+        timings: memory_guard._temporary_artifacts.ScratchFinalizationTimings,
     ) -> Mapping[str, object]:
         finish_calls.append(
             {
@@ -10953,22 +11041,88 @@ def test_enforcer_signals_only_what_the_run_loop_has_not_delivered() -> None:
     assert inert.stop() == ((), ())
 
 
-def test_run_guarded_ends_a_command_whose_output_stops() -> None:
+def _observe_owned_guard_samples(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    before: Callable[[], None],
+    after: Callable[[], None],
+) -> None:
+    """Order child handshakes around real observations on either provider."""
+    if os.name == "nt":
+        real_memory = memory_guard._win_job.process_memory
+
+        def observed_memory(job: int | None, *, include_image_names: bool = False):
+            # A changed membership causes a second, name-enrichment query.
+            # Only the ordinary query advances the poll handshake.
+            if include_image_names:
+                return real_memory(job, include_image_names=True)
+            before()
+            members = real_memory(job)
+            after()
+            return members
+
+        install_thread_module_view(
+            monkeypatch,
+            "_win_job",
+            memory_guard._win_job,
+            memory_guard,
+            process_memory=observed_memory,
+        )
+    else:
+        real_custody = memory_guard.sample_processes_custody
+
+        def observed_custody(interest: process_model.CustodyInterest):
+            before()
+            samples = real_custody(interest)
+            after()
+            return samples
+
+        monkeypatch.setattr(memory_guard, "sample_processes_custody", observed_custody)
+
+
+def test_run_guarded_ends_a_command_whose_output_stops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    started = tmp_path / "started"
+
+    def await_started() -> None:
+        # This case owns silence after progress. Observe actual child startup
+        # before polling so interpreter startup cannot consume its 0.3s bound.
+        assert _wait_until(started.exists, 120)
+
+    _observe_owned_guard_samples(monkeypatch, before=await_started, after=lambda: None)
+    # Waiting for the child is a handshake, not a slow process-table query.
+    monkeypatch.setattr(memory_guard, "SAMPLE_COST_PACING_FACTOR", 0.0)
+    child = (
+        "import pathlib, sys\n"
+        "print('started', flush=True)\n"
+        "pathlib.Path(sys.argv[1]).touch()\n" + HUNG_CHILD_SOURCE
+    )
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "print('started', flush=True)\n" + HUNG_CHILD_SOURCE],
+        [sys.executable, "-c", child, str(started)],
         max_rss_kb=1_000_000,
         poll_interval=0.02,
         no_output_timeout=0.3,
         timeout=120,  # A hang guard only; its message differs.
     )
 
+    assert started.exists()
     assert result.timed_out is True
     assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
     assert result.stdout == "started\n"
     assert "memory_guard: no output for 0.30s" in result.stderr
-    assert [report.reason for report in result.termination_reports] == [
-        "output_stalled"
-    ]
+    assert result.output_stall_s == 0.3
+    if os.name == "nt":
+        assert result.termination_reports == ()
+        cleanup = result.windows_job_cleanup
+        assert cleanup is not None
+        assert cleanup.completed is True
+        assert cleanup.after.active_processes == 0
+        assert cleanup.remaining_processes == ()
+    else:
+        assert [report.reason for report in result.termination_reports] == [
+            "output_stalled"
+        ]
     assert result.descendants_closed is True
 
 
@@ -10988,46 +11142,36 @@ def test_run_guarded_output_bound_restarts_with_each_new_byte(
     lines = tmp_path / "lines"
     done = tmp_path / "done"
     bound = 0.15
-    real_custody = memory_guard.sample_processes_custody
     count = [0]
 
-    def published(path: Path) -> int:
-        try:
-            return int(path.read_text(encoding="utf-8") or 0)
-        except FileNotFoundError:
-            return 0
+    def reached(path: Path, value: int) -> bool:
+        return value == 0 or path.with_name(f"{path.name}-{value}").exists()
 
     def publish(path: Path, value: int) -> None:
-        partial = path.with_suffix(".partial")
-        partial.write_text(str(value), encoding="utf-8")
-        os.replace(partial, path)
+        # Write-once markers have no rename/read sharing race on Windows.
+        path.with_name(f"{path.name}-{value}").touch()
 
-    def paced_custody(*args, **kwargs):
+    def before_sample() -> None:
         # Poll k follows the child's line k // 3 - 1.
-        while published(lines) < count[0] // 3 and not done.exists():
+        while not reached(lines, count[0] // 3) and not done.exists():
             time.sleep(0.005)
-        samples = real_custody(*args, **kwargs)
+
+    def after_sample() -> None:
         count[0] += 1
         publish(polls, count[0])
-        return samples
 
-    monkeypatch.setattr(memory_guard, "sample_processes_custody", paced_custody)
+    _observe_owned_guard_samples(monkeypatch, before=before_sample, after=after_sample)
     # The handshake inside the sampler is not sampling cost to pace by.
     monkeypatch.setattr(memory_guard, "SAMPLE_COST_PACING_FACTOR", 0.0)
     child = (
-        "import os, pathlib, sys, time\n"
+        "import pathlib, sys, time\n"
         "polls, lines, done = map(pathlib.Path, sys.argv[1:4])\n"
-        "def published(path):\n"
-        "    try:\n"
-        "        return int(path.read_text() or 0)\n"
-        "    except FileNotFoundError:\n"
-        "        return 0\n"
         "for line in range(12):\n"
-        "    while published(polls) < 3 * line + 1:\n"
+        "    ready = polls.with_name(f'{polls.name}-{3 * line + 1}')\n"
+        "    while not ready.exists():\n"
         "        time.sleep(0.005)\n"
         "    print(line, flush=True)\n"
-        "    lines.with_suffix('.partial').write_text(str(line + 1))\n"
-        "    os.replace(lines.with_suffix('.partial'), lines)\n"
+        "    lines.with_name(f'{lines.name}-{line + 1}').touch()\n"
         "done.write_text('done')\n"
     )
 
@@ -11038,6 +11182,7 @@ def test_run_guarded_output_bound_restarts_with_each_new_byte(
         no_output_timeout=bound,
     )
 
+    assert count[0] >= 34  # The twelfth line requires the thirty-fourth sample.
     assert result.timed_out is False, result.stderr
     assert result.returncode == 0
     assert result.stdout.split() == [str(line) for line in range(12)]
@@ -11061,14 +11206,11 @@ def test_run_guarded_output_bound_ignores_time_the_guard_did_not_watch(
     polls = [0]
     polled = threading.Condition()
     finished = threading.Event()
-    real_custody = memory_guard.sample_processes_custody
 
-    def counted_custody(*args, **kwargs):
-        samples = real_custody(*args, **kwargs)
+    def after_sample() -> None:
         with polled:
             polls[0] += 1
             polled.notify_all()
-        return samples
 
     def after_polls(count: int) -> bool:
         with polled:
@@ -11090,7 +11232,7 @@ def test_run_guarded_output_bound_ignores_time_the_guard_did_not_watch(
             if after_polls(2):
                 resume.touch()
 
-    monkeypatch.setattr(memory_guard, "sample_processes_custody", counted_custody)
+    _observe_owned_guard_samples(monkeypatch, before=lambda: None, after=after_sample)
     install_module_view(
         monkeypatch,
         "time",
@@ -11120,6 +11262,7 @@ def test_run_guarded_output_bound_ignores_time_the_guard_did_not_watch(
         resume.touch()  # A child left waiting ends.
         thaw.join(120)  # A hang guard only.
 
+    assert leap[0] == 10 * bound
     assert result.timed_out is False, result.stderr
     assert result.returncode == 0
     assert result.stdout.split() == ["before", "after"]

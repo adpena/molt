@@ -61,12 +61,21 @@ jobs:
       - name: Execute repository policy partitions
         run: python3 tools/proof_plan.py --run-family repository_policy --receipt proof-receipts/repository_policy.json
 
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-docs-gates
+
       - name: Upload repository policy receipt
-        if: always() && hashFiles('proof-receipts/repository_policy.json') != ''
+        if: always() && (hashFiles('proof-receipts/repository_policy.json') != '' || hashFiles('proof-receipts/evidence/repository-docs-tests/*.json') != '')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-repository-policy
-          path: proof-receipts/repository_policy.json
+          path: |
+            proof-receipts/repository_policy.json
+            proof-receipts/evidence/repository-docs-tests
           if-no-files-found: error
 
       # Main-tier rows write the four source-addressed E4 release criterion
@@ -120,7 +129,17 @@ jobs:
 
       - name: Classify changed paths
         id: paths
-        run: python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"
+        run: >-
+          python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"
+          --selection-output logs/proof-selection/selection.json
+          --receipt-dir proof-receipts
+
+      - name: Preserve selected proof contract
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proof-selection-${{ github.run_attempt }}
+          path: logs/proof-selection/selection.json
+          if-no-files-found: error
 
   platform-portability:
     name: Platform Portability (${{ matrix.os }} / ${{ matrix.arch }})
@@ -171,20 +190,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes fish zsh
 
-      - name: Resolve portability command evidence custody
-        id: build-control
-        shell: bash
-        env:
-          PYTHONPATH: ${{ github.workspace }}/src
-        run: |
-          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
-
       - name: Execute selected platform portability partition
         run: >-
           python tools/proof_plan.py
           --run-family platform_portability --receipt
           proof-receipts/platform-portability-${{ matrix.cell }}.json
           --matrix-cell "${{ matrix.cell }}"
+
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-platform-portability-${{ matrix.cell }}
 
       - name: Upload platform portability receipt
         if: always() && hashFiles(format('proof-receipts/platform-portability-{0}.json', matrix.cell)) != ''
@@ -203,9 +221,6 @@ jobs:
             proof-receipts/platform-portability-${{ matrix.cell }}.json
             proof-receipts/evidence/runtime-gate-runs/
             ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
-            ${{ steps.build-control.outputs.profile_log }}
-            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
-            ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.[0-9]*.[0-9]*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
@@ -260,6 +275,13 @@ jobs:
 
       - name: Execute selected Python static partitions
         run: python3 tools/proof_plan.py --run-family python_static --receipt proof-receipts/python_static.json
+
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-python-static
 
       - name: Upload Python static receipt
         if: always() && hashFiles('proof-receipts/python_static.json') != ''
@@ -317,6 +339,13 @@ jobs:
           --run-family python_unit --receipt
           proof-receipts/python-unit-${{ matrix.cell }}.json
           --matrix-cell "${{ matrix.cell }}"
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-python-unit-${{ matrix.cell }}
+
       - name: Upload Python unit receipt
         if: always() && hashFiles(format('proof-receipts/python-unit-{0}.json', matrix.cell)) != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -355,6 +384,13 @@ jobs:
           --run-family python_unit_collection --receipt
           proof-receipts/python-unit-collection-${{ matrix.cell }}.json
           --matrix-cell "${{ matrix.cell }}"
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-python-unit-collection-${{ matrix.cell }}
+
       - name: Upload Python unit collection receipt
         if: always() && hashFiles(format('proof-receipts/python-unit-collection-{0}.json', matrix.cell)) != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -388,15 +424,15 @@ jobs:
         with:
           profile: "full"
           wasi: "true"
-      - name: Resolve native command evidence custody
-        id: build-control
-        shell: bash
-        env:
-          PYTHONPATH: ${{ github.workspace }}/src
-        run: |
-          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
       - name: Execute selected native integration partitions
         run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-native-integration
+
       - name: Upload native integration receipt
         if: always() && hashFiles('proof-receipts/native_integration.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -411,10 +447,6 @@ jobs:
           name: proof-diagnostics-native-integration
           path: |
             proof-receipts/native_integration.json
-            ${{ steps.build-control.outputs.profile_log }}
-            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
-            ${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}
-            ${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}
           include-hidden-files: true
           if-no-files-found: warn
       - name: Save Cargo dependency cache
@@ -443,6 +475,13 @@ jobs:
           sync-groups: dev
       - name: Execute browser SIMD contract
         run: python3 tools/proof_plan.py --run-family browser_simd --receipt proof-receipts/browser-simd.json
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-browser-simd
+
       - name: Upload browser SIMD receipt
         if: always() && hashFiles('proof-receipts/browser-simd.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -486,6 +525,13 @@ jobs:
 
       - name: Execute selected Rust partitions
         run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json
+
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-rust-build-unit-smoke
 
       - name: Upload Rust receipt
         if: always() && hashFiles('proof-receipts/rust.json') != ''
@@ -545,15 +591,15 @@ jobs:
       - name: Setup LLVM backend SDK
         uses: ./.github/actions/setup-llvm
 
-      - name: Resolve build-control evidence custody
-        id: build-control
-        env:
-          PYTHONPATH: ${{ github.workspace }}/src
-        run: |
-          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
-
       - name: Execute selected LLVM, MLIR, and linker partitions
         run: python3 tools/proof_plan.py --run-family llvm --receipt proof-receipts/llvm.json
+
+      - name: Upload common proof diagnostics
+        id: build-control
+        if: always()
+        uses: ./.github/actions/upload-proof-diagnostics
+        with:
+          name: proof-diagnostics-guard-llvm-backend
 
       - name: Upload LLVM/MLIR/linker receipt
         if: always() && hashFiles('proof-receipts/llvm.json') != ''
@@ -576,10 +622,9 @@ jobs:
             proof-receipts/llvm.json
             proof-receipts/evidence/llvm-differential-truth.json
             proof-receipts/evidence/llvm-backend-debug/native-batch-failures/
+            proof-receipts/evidence/llvm-backend-debug/native-execution-failures/
             ${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log', steps.build-control.outputs.root) || '' }}
             ${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log.old', steps.build-control.outputs.root) || '' }}
-            ${{ steps.build-control.outputs.profile_log }}
-            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
           include-hidden-files: true
           if-no-files-found: warn
 

@@ -146,8 +146,20 @@ def test_a_later_build_cannot_observe_the_previous_backend(
     assert seen == [("llvm", None), ("cranelift", None)]
 
 
+@pytest.mark.parametrize(
+    ("target", "backend", "trusted", "wasm_profile"),
+    [
+        ("native", "llvm", True, None),
+        ("wasm", "cranelift", False, "pure"),
+    ],
+)
 def test_build_passes_every_selection_explicitly(
-    clean_selection_env: None, monkeypatch: pytest.MonkeyPatch
+    clean_selection_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    backend: str,
+    trusted: bool,
+    wasm_profile: str | None,
 ) -> None:
     before = dict(os.environ)
     captured: dict[str, Any] = {}
@@ -162,14 +174,14 @@ def test_build_passes_every_selection_explicitly(
     rc = cli_build_command.build(
         BuildRequest(
             file_path="app.py",
-            target=admit_target("wasm"),
-            trusted=True,
+            target=admit_target(target),
+            trusted=trusted,
             portable=True,
-            wasm_profile="pure",
+            wasm_profile=wasm_profile,
             audit_log="jsonl:stderr",
             io_mode="virtual",
             stdlib_profile="full",
-            codegen_backend="llvm",
+            codegen_backend=backend,
         )
     )
 
@@ -177,11 +189,12 @@ def test_build_passes_every_selection_explicitly(
     # Nothing reached the process environment while the build ran, or after.
     assert captured["environ"] == before
     assert dict(os.environ) == before
+    assert captured["target"] == admit_target(target)
     assert captured["codegen"] == CodegenSelection(
-        backend="llvm", portable=True, wasm_profile="pure"
+        backend=backend, portable=True, wasm_profile=wasm_profile
     )
     assert (captured["trusted"], captured["audit_log"], captured["io_mode"]) == (
-        True,
+        trusted,
         "jsonl:stderr",
         "virtual",
     )

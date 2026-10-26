@@ -282,6 +282,38 @@ struct MoltHeader {
   field tuples; instance storage and constructor flags carry no equality policy.
   Union construction compares ordinary types by identity, uses rich equality
   for GenericAlias operands, and reuses the left union when already complete.
+- **Generic aliases and unions**: native `__parameters__` uses the ordinary
+  optional-attribute protocol: skip bare classes, recognize `__typing_subst__`
+  presence, then consume tuple-valued `__parameters__` in first-use identity
+  order. Getter errors propagate; failed collection publishes no cache. Targets
+  3.14+ additionally descend raw lists/tuples when metadata is absent, preserving
+  list-subclass iteration and physical tuple storage. This follows CPython's
+  [`_Py_make_parameters`](https://github.com/python/cpython/blob/3.14/Objects/genericaliasobject.c).
+  Python `typing` keeps its distinct equality/iterable-metadata policy and checks
+  default ordering only for Generic/Protocol declarations, following
+  [`typing._collect_type_parameters`](https://github.com/python/cpython/blob/3.14/Lib/typing.py).
+  Parameter collection does not evaluate alias values, bounds or defaults.
+  Each native alias/union owns one nullable cached-tuple edge; GC traversal and
+  retirement include it. A completing outer collection replaces any reentrant
+  inner publication. `Py_GenericAlias` uses the same runtime constructor and
+  opaque managed C view, requiring initialized runtime authority. The former
+  private C allocation/layout is removed.
+  Cache load-and-retain requires current PyToken/GilGuard custody; atomic slots
+  alone do not qualify free-threaded access. Before removing that guard, this
+  owner needs object-lock or retained-slot custody. The cache adds eight requested
+  bytes per native alias/union and one GC edge; warm reads retain one tuple,
+  while cold identity deduplication has quadratic worst-case parameter comparisons.
+  Bounded macOS arm64 development measurements confirm the tradeoff: 20,000
+  retained empty aliases add 160,000 requested live bytes with unchanged object
+  counts, and retirement releases the complete cohort. Empty and real-parameter
+  cached reads allocate no tracked runtime objects or bytes. A real-parameter
+  cohort retains 2,400,000 requested bytes across 30,000 objects and releases all
+  of them on retirement. These are runtime-requested extents, not allocator
+  rounding or RSS; collection can increase sampled RSS without a tracked runtime
+  allocation. Whole-process component timings establish no per-read latency or
+  release-performance claim. Native/WASM, target-minor, C-API and resource-failure
+  qualification remain separate proof cells; current acceptance belongs to the
+  [findings ledger](../../../agent/V1_HANDOFF_FINDINGS.md).
 - **Bytes**: inline `[length, data, NUL]` storage. The trailing NUL is reserved
   and initialized outside the logical length, including for empty values and
   subclasses. C bytes access borrows this same storage. Bytearray owns a stable

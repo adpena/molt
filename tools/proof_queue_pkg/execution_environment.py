@@ -30,7 +30,7 @@ from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.rust_toolchain import cargo_config_arguments
 from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
-    python_identity_verifier_prefix,
+    PythonIdentityVerifier,
     validate_python_environment_location,
 )
 from molt.python_runtime_identity import python_runtime_selection_locations
@@ -647,15 +647,16 @@ def _capture_toolchains(
             proof_plan.validate_selected_python_runtime(
                 policies[name], selected_runtime
             )
-            with python_identity_verifier_prefix() as verifier_prefix:
+            with PythonIdentityVerifier() as verifier:
                 fresh = command_identity._parse_json_output(
-                    command_identity._run_captured(
+                    command_identity._run_python_captured(
+                        verifier,
                         [
                             selected_runtime["launch_argv"][0],
                             *command_identity.python_identity_probe_arguments(
                                 ("--runtime-selection",),
                                 no_site=True,
-                                verifier_bytecode_prefix=verifier_prefix,
+                                verifier_bytecode_prefix=verifier.prefix,
                             ),
                         ],
                         cwd=cwd,
@@ -860,18 +861,20 @@ def _locate_toolchain_watch_roots(
         roots.append(source)
     if "python" in requested:
         python_envelope, python_exact = _python_capture_envelope(envelope, exact, env)
-        with python_identity_verifier_prefix() as verifier_prefix:
+        with PythonIdentityVerifier() as verifier:
             command = command_identity._python_auxiliary_command(
                 python_envelope,
                 python_exact,
                 arguments=("--locate-active-environment",),
                 no_site=True,
-                verifier_bytecode_prefix=verifier_prefix,
+                verifier_bytecode_prefix=verifier.prefix,
             )
             if command is None:
                 raise ValueError("proof Python locator has no selected interpreter")
             located = command_identity._parse_json_output(
-                command_identity._run_captured(command, cwd=cwd, env=env),
+                command_identity._run_python_captured(
+                    verifier, command, cwd=cwd, env=env
+                ),
                 purpose="proof Python toolchain locator",
             )
         try:

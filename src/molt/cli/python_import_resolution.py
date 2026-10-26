@@ -384,12 +384,14 @@ class LocalPythonModuleResolver:
     def _resolve_module(self, module: str) -> _ResolvedLocalModule | None:
         if not module:
             return None
-        parts = module.split(".")
-        if any(not part or "/" in part or "\\" in part for part in parts):
-            raise ValueError(f"invalid local Python module name: {module!r}")
         with self._cache_lock:
+            # Every entry, including misses and derived prefixes, comes from
+            # a fully validated name in this resolver's operation.
             if module in self._resolution_cache:
                 return self._resolution_cache[module]
+            parts = module.split(".")
+            if any(not part or "/" in part or "\\" in part for part in parts):
+                raise ValueError(f"invalid local Python module name: {module!r}")
 
             # Mirror PathFinder one segment at a time. Namespace portions keep
             # searching; the first regular package or module stops the current

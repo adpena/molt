@@ -35,7 +35,11 @@ DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
-from molt.python_interpreter import PythonInterpreter, probe_python_command  # noqa: E402
+from molt.python_interpreter import (  # noqa: E402
+    PythonInterpreter,
+    probe_python_command,
+    explicit_python_command,
+)
 from molt.default_paths import (  # noqa: E402
     executable_environment_value,
     expand_user_path,
@@ -221,7 +225,13 @@ def _baseline_python(env: ProcessEnvironment) -> PythonInterpreter:
     path = expand_user_path(selected, environment=env)
     if not path.is_absolute():
         path = ROOT / path
-    return probe_python_command((str(path), "-I"), env=_cpython_env(env), cwd=ROOT)
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    command = explicit_python_command(str(path))
+    with PythonIdentityVerifier() as verifier:
+        return probe_python_command(
+            (*command, "-I"), verifier=verifier, env=_cpython_env(env), cwd=ROOT
+        )
 
 
 def _measure_probe(

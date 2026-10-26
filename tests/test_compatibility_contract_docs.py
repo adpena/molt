@@ -84,6 +84,7 @@ def test_source_quickstart_commands_use_uv_and_match_cli(rel_path: str) -> None:
     from molt.cli.entrypoint_parser import _build_entrypoint_parser
 
     parser = _build_entrypoint_parser()
+    bootstrap_python = _read_text(".python-version").strip()
     commands = []
     for block in MarkdownIt().parse(_read_text(rel_path)):
         if block.type != "fence" or block.info not in {"bash", "powershell"}:
@@ -96,7 +97,14 @@ def test_source_quickstart_commands_use_uv_and_match_cli(rel_path: str) -> None:
                 continue
             assert words[:1] == ["uv"], f"Unmanaged quickstart command: {line}"
             if words[1:2] == ["sync"]:
-                assert words[-2:] == ["--python", "3.12"]
+                assert words == [
+                    "uv",
+                    "sync",
+                    "--group",
+                    "dev",
+                    "--python",
+                    bootstrap_python,
+                ], line
                 continue
             # The frontend is CPython 3.12+ and at least as new as the target
             # a command selects with --python-version.

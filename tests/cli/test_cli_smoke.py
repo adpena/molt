@@ -781,6 +781,13 @@ def test_cli_compare_json(tmp_path: Path) -> None:
         "exitcode": True,
     }
     assert payload["data"]["molt_stdout"] == "ok\n"
+    policy = payload["data"]["python_startup_policy"]
+    assert policy["bytecode_namespace"] == "fresh-empty-read-only"
+    assert policy["timing_scope"] == "reference-process-with-empty-bytecode-cache"
+    assert policy["command"][-3:-1] == ["-B", "-X"]
+    assert policy["command"][-1].startswith("pycache_prefix=")
+    prefix = Path(policy["command"][-1].split("=", 1)[1])
+    assert prefix.name == "bytecode" and not prefix.parent.exists()
 
 
 def test_cli_parity_run_json(tmp_path: Path) -> None:
@@ -2642,8 +2649,10 @@ def _assert_imported_syntax_error_payload(tmp_path: Path, *, target: str) -> Non
                 str(script),
             ]
         )
-        assert result.returncode == 0, result.stderr
+        assert result.returncode == 0, (
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
         data = json.loads(result.stdout)["data"]
-        assert data["returncode"] == 0, data.get("stderr")
+        assert data["returncode"] == 0, data
         assert data.get("stderr", "") == ""
         assert data.get("stdout", "") == oracle.stdout

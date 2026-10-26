@@ -799,3 +799,30 @@ def test_enabled_runtime_features_require_one_default_marker(
 ) -> None:
     with pytest.raises(ValueError, match="exactly one default-feature marker"):
         RUNTIME_FEATURES.runtime_enabled_cargo_features(request_features)
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected_domains"),
+    [
+        (("stdlib_net",), {"stdlib_net", "stdlib_select"}),
+        (
+            ("stdlib_micro", "stdlib_net"),
+            {"stdlib_asyncio", "stdlib_net", "stdlib_select"},
+        ),
+        (("stdlib_micro",), {"stdlib_asyncio"}),
+        (("stdlib_asyncio",), {"stdlib_asyncio"}),
+        (("stdlib_select",), {"stdlib_select"}),
+    ],
+)
+def test_network_runtime_feature_request_includes_fd_readiness_provider(
+    requested: tuple[str, ...], expected_domains: set[str]
+) -> None:
+    # Fd watchers are compiled with networking and call the select primitive.
+    # Neither non-network scheduling nor select alone needs the network driver.
+    enabled = RUNTIME_FEATURES.runtime_enabled_cargo_features(
+        ("no-default-features", *requested)
+    )
+    assert enabled & {"stdlib_asyncio", "stdlib_net", "stdlib_select"} == (
+        expected_domains
+    )
+    assert "stdlib_server" not in enabled and "stdlib_full" not in enabled

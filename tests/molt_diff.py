@@ -66,7 +66,6 @@ from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
     resolve_target_python_for_oracle,
 )
-from tests import process_guard_common  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
@@ -103,14 +102,19 @@ def _resolve_python_command(
     python_exe: PythonCommand, *, budget: compat_backends.ItemBudget | None = None
 ) -> tuple[str, ...]:
     if isinstance(python_exe, str):
-        try:
-            return python_interpreter.resolve_python_selector(
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            command = python_interpreter.resolve_python_selector(
                 python_exe,
+                verifier=verifier,
                 probe_timeout=None if budget is None else budget.probe_timeout,
             )
-        finally:
-            if budget is not None:
-                budget.check()
+        # An elapsed deadline after a normal result prevents payload dispatch.
+        # It must never replace a primary guard error or its terminal receipt.
+        if budget is not None:
+            budget.check()
+        return command
     command = tuple(str(part) for part in python_exe if str(part))
     return command or (sys.executable,)
 
@@ -125,14 +129,18 @@ def _resolve_diff_python_command(
     if not python_version:
         return (sys.executable,)
     target_python = python_interpreter.parse_target_python_version(python_version)
-    return tuple(
-        python_interpreter.resolve_target_python_command(
-            target_python,
-            override=os.environ.get("MOLT_DIFF_PYTHON", "").strip() or None,
-            cwd=_repo_root(),
-            probe_timeout=None if budget is None else budget.probe_timeout,
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    with PythonIdentityVerifier() as verifier:
+        return tuple(
+            python_interpreter.resolve_target_python_command(
+                target_python,
+                verifier=verifier,
+                override=os.environ.get("MOLT_DIFF_PYTHON", "").strip() or None,
+                cwd=_repo_root(),
+                probe_timeout=None if budget is None else budget.probe_timeout,
+            )
         )
-    )
 
 
 def _metadata_probe_timeout_sec() -> float:
@@ -146,18 +154,19 @@ def _metadata_probe_timeout_sec() -> float:
 
 # Successful probe facts retain their existing command identity. Deadlines are
 # per-call inputs, never cache keys; an exhausted item cannot poison later facts.
-_METADATA_PROBE_CACHE: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
+_METADATA_PROBE_CACHE: dict[tuple[str, ...], python_interpreter.PythonInterpreter] = {}
 
 
 def _run_metadata_probe(
-    cmd: Sequence[str],
+    command: Sequence[str],
     *,
     budget: compat_backends.ItemBudget | None = None,
     build_failed: bool = False,
-) -> subprocess.CompletedProcess[str] | None:
+) -> python_interpreter.PythonInterpreter | None:
+    """Cache the canonical guarded identity fact, never an uncertain failure."""
     if budget is not None:
         budget.check(build_failed=build_failed)
-    key = tuple(cmd)
+    key = tuple(command)
     if key in _METADATA_PROBE_CACHE:
         return _METADATA_PROBE_CACHE[key]
     timeout = _metadata_probe_timeout_sec()
@@ -165,25 +174,26 @@ def _run_metadata_probe(
         timeout = budget.limit(timeout)
         if timeout == 0:
             raise compat_backends.ItemBudgetExpired(build_failed=build_failed)
+    from molt.python_environment_identity import PythonIdentityVerifier
+
     try:
-        result = process_guard_common.run_guarded_test_process(
-            cmd,
-            prefix="MOLT_DIFF",
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        with PythonIdentityVerifier() as verifier:
+            result = python_interpreter.probe_python_command(
+                key,
+                verifier=verifier,
+                timeout=timeout,
+            )
+    except python_interpreter.PythonInterpreterError:
+        # This exception follows a proven-closed child or pure argv refusal.
+        # Core guard errors remain original and abort the item immediately.
         if budget is not None:
             budget.check(build_failed=build_failed)
         return None
     if budget is not None:
         budget.check(build_failed=build_failed)
-    # Probe facts are small, successful immutable command results. Bound retained
-    # payloads as well as entries; never retain an arbitrary interpreter banner.
     if (
-        result.returncode == 0
-        and len(result.stdout or "") + len(result.stderr or "") <= 65536
+        len(result.executable) + len(result.version) + len(result.implementation)
+        <= 65536
     ):
         if len(_METADATA_PROBE_CACHE) >= 32:
             del _METADATA_PROBE_CACHE[next(iter(_METADATA_PROBE_CACHE))]
@@ -333,38 +343,14 @@ def _python_command_metadata(
 
     if not command:
         return None
-    code = (
-        "import json,sys;"
-        "print(json.dumps({"
-        "'executable':sys.executable,"
-        "'version_info':list(sys.version_info[:2])"
-        "}))"
-    )
-    result = _run_metadata_probe([*command, "-c", code], budget=budget)
+    result = _run_metadata_probe(command, budget=budget)
     if result is None:
         return None
-    if result.returncode != 0:
-        return None
-    raw = (result.stdout or "").strip().splitlines()
-    if not raw:
-        return None
     try:
-        payload = json.loads(raw[-1])
-    except json.JSONDecodeError:
+        major, minor = map(int, result.major_minor.split("."))
+    except ValueError:
         return None
-    if not isinstance(payload, dict):
-        return None
-    version_info = payload.get("version_info")
-    executable = payload.get("executable")
-    if (
-        not isinstance(version_info, list)
-        or len(version_info) != 2
-        or not all(type(part) is int for part in version_info)
-        or not isinstance(executable, str)
-        or not executable
-    ):
-        return None
-    return _PythonOracleMetadata((version_info[0], version_info[1]), executable)
+    return _PythonOracleMetadata((major, minor), result.executable)
 
 
 def _python_exe_version(
@@ -1573,10 +1559,21 @@ def _open_log_file(path: Path | None):
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a", buffering=1)
+    primary: BaseException | None = None
     try:
         yield handle
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        handle.close()
+        try:
+            handle.close()
+        except BaseException as close_error:
+            if primary is None:
+                raise
+            primary.add_note(
+                f"differential log close also failed at {path}: {close_error!r}"
+            )
 
 
 def _diff_worker(
@@ -4080,6 +4077,7 @@ def diff_test(
             return _finalize_status("fail")
         return _finalize_status("pass")
 
+    primary: BaseException | None = None
     try:
         try:
             _impl()
@@ -4088,9 +4086,20 @@ def diff_test(
             record["raw_status"] = record["resolved_status"] = "fail"
             record["reason_tag"] = "timeout"
         return record
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        record["duration_s"] = round(time.monotonic() - started, 6)
-        _record_diff_result(record)
+        try:
+            record["duration_s"] = round(time.monotonic() - started, 6)
+            _record_diff_result(record)
+        except BaseException as recording_error:
+            if primary is None:
+                raise
+            primary.add_note(
+                "differential result receipt publication also failed: "
+                f"{recording_error!r}"
+            )
 
 
 def _parallel_diff_results(
@@ -4193,14 +4202,14 @@ def run_diff(
     preflight_timed_out = False
     preflight_budget = compat_backends.ItemBudget(admission.policy, admission.deadline)
     try:
-        try:
-            python_exe = (
-                _resolve_diff_python_command(oracle_version, budget=preflight_budget)
-                if oracle_version is not None
-                else _resolve_python_command(python_exe, budget=preflight_budget)
-            )
-        finally:
-            preflight_budget.check()
+        python_exe = (
+            _resolve_diff_python_command(oracle_version, budget=preflight_budget)
+            if oracle_version is not None
+            else _resolve_python_command(python_exe, budget=preflight_budget)
+        )
+        # Only a normal resolution may be reclassified as a pre-dispatch
+        # deadline. A child/guard failure keeps its original error and receipt.
+        preflight_budget.check()
         compiler_target_python = _resolve_molt_target_python(
             python_exe,
             target_python,

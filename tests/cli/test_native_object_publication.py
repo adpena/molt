@@ -246,6 +246,7 @@ def test_native_object_publication_is_one_admitted_transaction(
                 tier="module",
                 source_key="module-key",
                 cache_path=cache_path,
+                stdlib_object_path=None,
                 warnings=[],
                 artifact_contract=contract,
             )
@@ -472,6 +473,7 @@ def test_backend_cache_recency_requires_admitted_owned_copy(
             tier="module",
             source_key=key,
             cache_path=candidate,
+            stdlib_object_path=None,
             warnings=warnings,
             artifact_contract=resolve_backend_artifact_contract(
                 target=admit_target("native"), emit_mode="obj"
