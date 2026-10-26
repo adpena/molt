@@ -283,6 +283,17 @@ concurrency, linked-module execution and the wider release matrix remain
 unqualified. Ownership and failure cleanup follow
 `docs/spec/areas/compiler/0190_LOWERING_RULES.md`.
 
+Direct literal constructor operands remove the remaining per-output raw pointer
+and length staging from both WASM emitters. On the same component this reduces
+declared locals from 3,546 to 1,190 and module bytes from 228,793 to 212,627,
+without another runtime allocation or call. Existing Wasmtime pass telemetry
+identified register allocation as the remaining dominant cost: 20.008 s of
+22.253 s of function compilation before the deletion. The corresponding single
+instrumented observations took 28.001 s before and 30.197 s after, with register
+allocation at 22.002 s afterward. This establishes a smaller representation and
+removal of staging, not a compile-latency improvement. Further work must target
+the measured limiter and whole edit-to-result latency.
+
 Build-Python capture now binds inventory rows within the shared stable-file
 transaction and batches capture and final verification. An isolated Windows
 CPython 3.12 capture diagnostic reduced scheduled futures from 5,382 to 169 and
