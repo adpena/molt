@@ -23,7 +23,7 @@ import struct
 import sys
 import threading
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -63,9 +63,13 @@ def _event_key(candidate: Path) -> str:
 
     Windows custody names an actual directory entry and raises for an absent
     one, so a renamed-away or deleted entry takes its key from its nearest
-    existing ancestor plus the names below it. POSIX custody is lexical and
-    never raises here. Raises when no ancestor has a key.
+    existing ancestor plus the names below it. After coordinate validation,
+    POSIX custody is lexical. Raises for invalid coordinates or when no ancestor
+    has a key.
     """
+    if not candidate.is_absolute():
+        raise ValueError(f"watch custody requires an absolute path: {candidate}")
+    process_image_capture.require_custody_coordinate(candidate)
     try:
         return _norm(candidate)
     except (OSError, ValueError):
@@ -75,7 +79,7 @@ def _event_key(candidate: Path) -> str:
     while current.parent != current:
         if "~" in current.name:
             # The Windows watcher may report an 8.3 short name, which no key
-            # can match once the entry is gone; keep such an event owned.
+            # can match once the entry is gone; its custody is unknown.
             raise ValueError(f"vanished watch event may be a short name: {candidate}")
         names.append(current.name)
         current = current.parent
@@ -90,15 +94,22 @@ def _event_key(candidate: Path) -> str:
 class WatchSpec:
     root: Path
     paths: frozenset[str] | None = None
+    _root_key: str = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not self.root.is_absolute():
+            raise ValueError(f"watch custody requires an absolute root: {self.root}")
+        object.__setattr__(self, "_root_key", _norm(self.root))
 
     def owns(self, candidate: Path) -> bool:
+        normalized = _event_key(candidate)
+        # Canonical entry strings preserve Windows case-sensitive directories
+        # and lexical aliases. Path containment would fold distinct entries.
+        if normalized != self._root_key and not normalized.startswith(
+            self._root_key.rstrip(os.sep) + os.sep
+        ):
+            return False
         if self.paths is None:
-            return True
-        try:
-            normalized = _event_key(candidate)
-        except (OSError, ValueError):
-            # Without any keyed ancestor the entry cannot establish exclusion
-            # from this watch. Retain its event as an input mutation.
             return True
         if normalized in self.paths:
             return True
@@ -365,12 +376,12 @@ def _compact_specs(specs: Iterable[WatchSpec]) -> list[WatchSpec]:
         WatchSpec(root, None if paths is None else frozenset(paths))
         for root, paths in merged.values()
     ]
-    broad_roots = tuple(_norm(spec.root) for spec in compact if spec.paths is None)
+    broad_roots = tuple(spec._root_key for spec in compact if spec.paths is None)
     return [
         spec
         for spec in compact
         if not any(
-            _norm(spec.root).startswith(broad.rstrip(os.sep) + os.sep)
+            spec._root_key.startswith(broad.rstrip(os.sep) + os.sep)
             for broad in broad_roots
         )
     ]
@@ -437,10 +448,7 @@ class LiveCustodyMonitor:
             path = Path(record["path"])
             if not path.is_absolute() or path.resolve(strict=True) != path:
                 raise ValueError("uv environment lock has path indirection")
-            if not any(
-                path.is_relative_to(spec.root) and spec.owns(path)
-                for spec in self.specs
-            ):
+            if not any(spec.owns(path) for spec in self.specs):
                 raise ValueError("uv environment lock is outside armed custody")
             version = stable_regular_file_version(
                 path, label="captured uv environment lock"
@@ -566,25 +574,35 @@ class LiveCustodyMonitor:
             if message not in self._errors:
                 self._errors.append(message)
 
-    def _record_event(self, spec: WatchSpec, action: str, path: Path) -> None:
-        if not spec.owns(path):
-            return
+    def _record_event(self, spec: WatchSpec, action: str, path: Path) -> bool:
+        try:
+            if not spec.owns(path):
+                return False
+            apparatus = classify_apparatus_event(spec.root, path, action)
+            uv_key = _norm(path) if action == "inotify:0x8" else None
+        except (OSError, ValueError) as exc:
+            # An uncertain event must invalidate the receipt, never establish
+            # positive admission or escape a native callback without evidence.
+            self._record_error(
+                f"watch custody failed for {path}: {type(exc).__name__}: {exc}"
+            )
+            return False
         event = {"action": action, "path": str(path)}
-        apparatus = classify_apparatus_event(spec.root, path, action)
         with self._lock:
-            if action == "inotify:0x8":
-                uv_lock = self._uv_lock_records.get(_norm(path))
+            if uv_key is not None:
+                uv_lock = self._uv_lock_records.get(uv_key)
                 if uv_lock is not None:
                     if uv_lock not in self._apparatus_events:
                         self._apparatus_events.append(dict(uv_lock))
-                    return
+                    return True
             if apparatus is not None:
                 classified = {**event, "apparatus": apparatus}
                 if classified not in self._apparatus_events:
                     self._apparatus_events.append(classified)
-                return
+                return True
             if event not in self._events:
                 self._events.append(event)
+        return True
 
     def _run_windows(self) -> None:
         from ctypes import wintypes
@@ -841,11 +859,11 @@ class LiveCustodyMonitor:
                     continue
                 spec, directory = owner
                 candidate = directory / name if name else directory
-                self._record_event(spec, f"inotify:{event_mask:#x}", candidate)
+                owned = self._record_event(spec, f"inotify:{event_mask:#x}", candidate)
                 if (
                     event_mask & 0x40000000
                     and event_mask & (0x00000100 | 0x00000080)
-                    and spec.owns(candidate)
+                    and owned
                 ):
                     if candidate.is_dir():
                         new_wd = add(fd, os.fsencode(candidate), mask)
@@ -937,12 +955,8 @@ class LiveCustodyMonitor:
                         f"FSEvents history was incomplete for {path}: flags={flags:#x}"
                     )
                 for spec in self.specs:
-                    try:
-                        path.relative_to(spec.root)
-                    except ValueError:
-                        continue
-                    self._record_event(spec, f"fsevents:{flags:#x}", path)
-                    break
+                    if self._record_event(spec, f"fsevents:{flags:#x}", path):
+                        break
 
         callback_ref = callback_type(callback)
         try:
@@ -1102,7 +1116,13 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
             # exact selected coordinate and every retargetable alias here.
             add_path(Path(value), selected=True)
         elif key in path_keys and isinstance(value, str):
-            candidate = process_image_capture.custody_path(Path(value))
+            path = Path(value)
+            # Runtime inventory members are relative to their declared root.
+            # Absolute file custody and startup selections own their inputs;
+            # a root-reference must not select a same-named file beneath cwd.
+            if not path.is_absolute():
+                return
+            candidate = process_image_capture.custody_path(path)
             try:
                 if candidate.is_file():
                     add_path(candidate, selected=False)

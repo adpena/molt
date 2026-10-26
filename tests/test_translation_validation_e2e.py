@@ -1,9 +1,8 @@
-"""End-to-end test: compile a small Python program through the Molt frontend,
-capture before/after IR for each pass using tv_hooks, and run the
-TranslationValidator on the captured snapshots.
+"""Round-trip tests for synthetic IR emission and structural validation.
 
-This proves the TV infrastructure works end-to-end without modifying
-``__init__.py`` -- we drive the hooks directly from the test.
+These tests drive tv_hooks directly with simulated transformations; they do not
+compile Python or execute production optimizer passes. Real frontend pre/post
+IR expectations live in test_debug_ir.py.
 """
 
 from __future__ import annotations
@@ -101,7 +100,7 @@ def _simulate_simplify(ops):
 
 
 class TestTVEndToEnd:
-    """Exercise the full TV pipeline: emit snapshots -> validate them."""
+    """Exercise synthetic snapshot emission and structural validation."""
 
     def test_emit_and_validate_roundtrip(self, tmp_path):
         """Emit before/after snapshots via tv_hooks, then validate the

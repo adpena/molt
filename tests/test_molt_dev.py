@@ -76,7 +76,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
-from tools import molt_dev_gates  # noqa: E402
+from tools import harness_memory_guard, memory_guard, molt_dev_gates  # noqa: E402
 from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402
 from tools.molt_dev_policy import (  # noqa: E402
     GateConfig,
@@ -100,13 +100,34 @@ RUNTIME_GENERATION_MANIFEST = "wasm/molt_runtime.generation.json"
 CUSTOM_IGNORED_PATH = "tmp/operator-scratch.txt"
 
 
+def _gate_outcome(rc, stdout, stderr, peak=None, **guard_kwargs):
+    """Supply the real guard boundary, including explicit terminal closure."""
+    fields = {
+        "args": ["synthetic-gate"],
+        "returncode": rc,
+        "stdout": stdout,
+        "stderr": stderr,
+        "elapsed_s": 0.1,
+        "child_stderr": stderr,
+        "descendants_closed": True,
+        "peak_total": (
+            None
+            if peak is None
+            else memory_guard.RssViolation(0, peak // 1024, "synthetic-gate", "tree")
+        ),
+    }
+    fields.update(guard_kwargs)
+    return molt_dev_gates.GateOutcome(
+        harness_memory_guard.GuardedCompletedProcess(**fields)
+    )
+
+
 def _captured_gate(fake):
     """Adapt an exit-code gate fake to the captured runner every gate uses."""
-    from tools.molt_dev_gates import GateOutcome
 
     def run(command, repo, env, cancelled, streams=None):
         del cancelled, streams
-        return GateOutcome(fake(command, repo, env), "", "", None)
+        return _gate_outcome(fake(command, repo, env), "", "")
 
     return run
 
@@ -2690,42 +2711,83 @@ def test_integrate_always_gates_run_together_and_report_in_declared_order(
     assert all(row["duration_seconds"] > 0 for row in receipt["commands"])
 
 
-def test_integrate_reports_the_first_failure_in_declared_order(
-    drv, origin_and_clone, monkeypatch, capfd, borrowed_gate_python
+@pytest.mark.parametrize("failure_ordinal", [1, 2], ids=["earlier", "later"])
+def test_integrate_failure_cancels_live_sibling_and_skips_pending_gate(
+    drv, origin_and_clone, monkeypatch, capfd, borrowed_gate_python, failure_ordinal
 ):
     _, work = origin_and_clone
-    third = work.parent / "third-started"
-    # The first gate fails only after the executor recorded the second gate's
-    # failure and the third gate's skip: neither may cancel it.
-    first = _integration_python(
-        "import json, pathlib, subprocess, sys, time\n"
-        "git = lambda *a: subprocess.run(['git', *a], capture_output=True, "
-        "text=True, check=True).stdout.strip()\n"
-        "receipt = pathlib.Path(git('rev-parse', '--path-format=absolute', "
-        "'--git-common-dir')) / 'molt-integrate' / 'receipts' / "
-        "(git('rev-parse', 'HEAD') + '.gates.json')\n"
-        "while True:\n"
-        "    try:\n"
-        "        rows = json.loads(receipt.read_text())['commands']\n"
-        "    except (OSError, ValueError, KeyError):\n"
-        "        rows = []\n"
-        "    if any(r['id'] == 'local.always.3' for r in rows): sys.exit(5)\n"
-        "    time.sleep(0.05)\n"
+    ready = work.parent / "sibling-ready"
+    grandchild_ready = work.parent / "grandchild-ready"
+    forbidden = work.parent / "third-started"
+    marker = hung_child_marker()
+    grandchild = (
+        "from pathlib import Path\n"
+        f"Path({str(grandchild_ready)!r}).touch()\n" + HUNG_CHILD_SOURCE
     )
-    gates = [
-        first,
-        _integration_python("import sys; sys.exit(6)"),
-        _integration_python(f"import pathlib; pathlib.Path({str(third)!r}).touch()"),
-    ]
-    _commit_integration_policy(work, gates)
+    # Neither process exits naturally. The failing sibling waits until both
+    # exist, so returning requires the actual guard's cancellation and closure.
+    hung = shlex.join(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib, subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, '-c', {grandchild!r}, {marker!r}])\n"
+            f"while not pathlib.Path({str(grandchild_ready)!r}).exists():\n"
+            "    time.sleep(0.01)\n"
+            f"pathlib.Path({str(ready)!r}).touch()\n" + HUNG_CHILD_SOURCE,
+            marker,
+        ]
+    )
+    failure = _wait_for(
+        str(ready), then="print('independent exit six', flush=True); sys.exit(6)"
+    )
+    first_two = [failure, hung] if failure_ordinal == 1 else [hung, failure]
+    _commit_integration_policy(
+        work,
+        [
+            *first_two,
+            _integration_python(
+                f"import pathlib; pathlib.Path({str(forbidden)!r}).touch()"
+            ),
+        ],
+    )
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
-    with pytest.raises(GateFailure, match=r"gate failed \(exit 5\)") as exc:
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
-    # The second gate failed first in time; the first gate is reported, and the
-    # third gate, after both failures, never starts.
-    assert "exit 6" not in str(exc.value)
-    assert not third.exists()
-    assert 'gate_ordinal": 3' not in capfd.readouterr().out
+    try:
+        with pytest.raises(GateFailure, match=r"gate failed \(exit 6\)"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+        still_running = processes_carrying(marker)
+    finally:
+        stop_test_processes_carrying(marker)
+    assert ready.exists() and grandchild_ready.exists()
+    assert still_running == [], "the cancelled gate or grandchild still runs"
+    assert not forbidden.exists()
+    common = Path(
+        _git(
+            work, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        ).stdout.strip()
+    )
+    head = _git(work, "rev-parse", "HEAD").stdout.strip()
+    receipt = json.loads(
+        (common / "molt-integrate/receipts" / f"{head}.gates.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["execution"]["failure_policy"] == "cancel_remaining"
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": f"local.always.{failure_ordinal}",
+        "failure_scope": "partition",
+        "reason": "exit 6",
+    }
+    records = {row["id"]: row for row in receipt["commands"]}
+    failed = records[f"local.always.{failure_ordinal}"]
+    cancelled = records[f"local.always.{3 - failure_ordinal}"]
+    assert (failed["status"], failed["returncode"]) == ("failure", 6)
+    assert (cancelled["status"], cancelled["returncode"]) == ("cancelled", 137)
+    assert records["local.always.3"]["status"] == "skipped"
+    assert Path(failed["stdout_path"]).read_text(encoding="utf-8") == (
+        "independent exit six\n"
+    )
+    assert "independent exit six" in capfd.readouterr().err
 
 
 def test_integrate_cancels_later_gates_after_an_earlier_failure(
@@ -2767,8 +2829,8 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
         ran.append(command)
         if cause == "outside writer":
             changes[0] = ("?? stray.txt",)
-            return molt_dev_gates.GateOutcome(0, "", "", None)
-        return molt_dev_gates.GateOutcome(3, "", "", None)
+            return _gate_outcome(0, "", "", None)
+        return _gate_outcome(3, "", "", None)
 
     class Progress:
         def emit(self, event, **details):
@@ -2823,8 +2885,8 @@ def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
 
     huge = "x" * 34_000
     streams = {
-        ("gate", "1"): molt_dev_gates.GateOutcome(0, "chatty\n" * 1000, "", None),
-        ("gate", "2"): molt_dev_gates.GateOutcome(
+        ("gate", "1"): _gate_outcome(0, "chatty\n" * 1000, "", None),
+        ("gate", "2"): _gate_outcome(
             1, "", f"{huge}\nruff format failed: timed out after 60 s\n", None
         ),
     }
@@ -2910,6 +2972,314 @@ def _gate_runtime_fixture(molt_dev_gates, tmp_path, outcomes, *, output_dir):
     )
 
 
+def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+    import threading
+
+    # Use the real executor, with all four runners admitted before one fails.
+    # Observe its actual shared event so no sleep/order guess supplies the race.
+    entered = threading.Barrier(4)
+    events = {}
+    execute = molt_dev_gates.proof_executor.execute_commands
+
+    def observe_executor(*args, **kwargs):
+        run = kwargs["_run_command"]
+
+        def observe(plan, command, cancel):
+            events[command.gate.command] = cancel
+            return run(plan, command, cancel)
+
+        return execute(*args, **{**kwargs, "_run_command": observe})
+
+    monkeypatch.setattr(
+        molt_dev_gates.proof_executor, "execute_commands", observe_executor
+    )
+    outcomes = {
+        ("race", "1"): _gate_outcome(7, "independent seven\n", ""),
+        ("race", "2"): _gate_outcome(6, "trigger six\n", ""),
+        ("race", "3"): _gate_outcome(137, "", "closed cancellation\n", cancelled=True),
+        ("race", "4"): _gate_outcome(0, "completed successfully\n", ""),
+    }
+
+    def run(command, repo, environment, cancelled, streams=None):
+        entered.wait(timeout=30)
+        if command != ("race", "2"):
+            assert events[command].wait(timeout=30), "executor did not cancel siblings"
+            assert cancelled()
+        outcome = outcomes[command]
+        if streams is not None:
+            streams[0].write_text(outcome.stdout, encoding="utf-8")
+            streams[1].write_text(outcome.stderr, encoding="utf-8")
+        return outcome
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "gate-output"
+        ),
+        run_captured_gate=run,
+    )
+    gates = [
+        SelectedGate(command=command, toolchains=("python",), concurrent=True)
+        for command in outcomes
+    ]
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 6\)"):
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 4)
+    receipt = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "local.always.2",
+        "failure_scope": "partition",
+        "reason": "exit 6",
+    }
+    assert [row["status"] for row in receipt["commands"]] == [
+        "failure",
+        "failure",
+        "cancelled",
+        "success",
+    ]
+    assert [row["returncode"] for row in receipt["commands"]] == [7, 6, 137, 0]
+    assert [row["guard_outcome"]["cancelled"] for row in receipt["commands"]] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert all(
+        row["guard_outcome"]["descendants_closed"] is True
+        for row in receipt["commands"]
+    )
+    for row in receipt["commands"]:
+        expected = outcomes[tuple(row["argv"])]
+        assert Path(row["stdout_path"]).read_text(encoding="utf-8") == expected.stdout
+        assert Path(row["stderr_path"]).read_text(encoding="utf-8") == expected.stderr
+    assert outcomes[("race", "1")].guard_result.cancelled is False
+    assert outcomes[("race", "2")].guard_result.cancelled is False
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing",
+        "wrong-type",
+        "unclosed",
+        "infrastructure",
+        "invalid-cancel",
+        "cancelled-success",
+    ],
+)
+@pytest.mark.parametrize("concurrent", [True, False], ids=["executor", "serial"])
+def test_gate_adapter_refuses_unsafe_or_missing_guard_outcomes(
+    tmp_path, defect, concurrent
+):
+    from dataclasses import replace
+
+    progress = []
+
+    class Progress:
+        def emit(self, event, **details):
+            progress.append((event, details))
+
+    if defect == "missing":
+        outcome = None
+    elif defect == "wrong-type":
+        outcome = molt_dev_gates.GateOutcome(
+            subprocess.CompletedProcess(["synthetic-gate"], 7, "", "")
+        )
+    elif defect == "unclosed":
+        outcome = _gate_outcome(137, "", "", cancelled=True, descendants_closed=False)
+    elif defect == "infrastructure":
+        outcome = _gate_outcome(
+            137,
+            "",
+            "",
+            cancelled=True,
+            infrastructure_failure=memory_guard.GuardInfrastructureFailure(
+                "temporary_artifact_custody", ("independent custody refusal",)
+            ),
+        )
+    else:
+        outcome = _gate_outcome(
+            0 if defect == "cancelled-success" else 7, "", "", cancelled=True
+        )
+
+    def run(command, repo, environment, cancelled, streams=None):
+        assert command == ("gate", "1"), "unsafe outcome scheduled pending gate"
+        # Keep the stream writer from dereferencing the deliberately malformed
+        # outcome: the production adapter must own its boundary refusal.
+        if streams is not None:
+            streams[0].write_text("", encoding="utf-8")
+            streams[1].write_text("", encoding="utf-8")
+        return outcome
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "gate-output"
+        ),
+        run_captured_gate=run,
+        progress=Progress(),
+    )
+    gates = [
+        SelectedGate(
+            command=("gate", "1"), toolchains=("python",), concurrent=concurrent
+        )
+    ]
+    if concurrent:
+        # A single concurrent gate takes the serial path. Two selected gates
+        # enter the executor; host=1 keeps the second pending after refusal.
+        gates.append(
+            SelectedGate(command=("gate", "2"), toolchains=("python",), concurrent=True)
+        )
+    with pytest.raises(molt_dev.DriverError) as caught:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+    assert not isinstance(caught.value, CandidateFailure)
+    if concurrent:
+        receipt = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+        record, skipped = receipt["commands"]
+        assert skipped["id"] == "local.always.2" and skipped["status"] == "skipped"
+        assert record["status"] == "failure"
+        assert record["failure_scope"] == "global"
+        assert receipt["execution"]["failure_trigger"]["failure_scope"] == "global"
+    else:
+        finished = [details for event, details in progress if event == "gate_finished"]
+        (record,) = finished
+    if defect not in {"missing", "wrong-type"}:
+        assert record["status"] == "failure"
+        assert record["failure_scope"] == "global"
+        guard = record["guard_outcome"]
+        assert guard["command"] == ["synthetic-gate"]
+        assert guard["cancelled"] is True
+        assert guard["descendants_closed"] is (defect != "unclosed")
+        assert (
+            guard["returncode"]
+            == {
+                "unclosed": 137,
+                "infrastructure": 137,
+                "invalid-cancel": 7,
+                "cancelled-success": 0,
+            }[defect]
+        )
+        assert guard["infrastructure_failure"] == (
+            {
+                "phase": "temporary_artifact_custody",
+                "details": ["independent custody refusal"],
+            }
+            if defect == "infrastructure"
+            else None
+        )
+
+
+@pytest.mark.parametrize("concurrent", [True, False], ids=["executor", "serial"])
+@pytest.mark.parametrize(
+    ("declared", "sibling_linker"),
+    [(True, True), (False, True), (True, False)],
+    ids=["declared-beside-linker", "undeclared", "missing-linker"],
+)
+def test_gate_adapter_admits_windows_helper_only_from_selected_policy(
+    tmp_path, concurrent, declared, sibling_linker
+):
+    from dataclasses import replace
+    from tools import proof_plan, win_job
+
+    image = tmp_path / "MSVC" / "bin" / "vctip.exe"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"")
+    if sibling_linker:
+        image.with_name("link.exe").write_bytes(b"")
+    # Real canonical payload types: no platform switch or classifier mock.
+    accounting = win_job.WindowsJobAccounting(1, 0, 1, 4096, 0, 0, 0)
+    resources = win_job.WindowsSystemResources(1, 1, 1, 1, 1, 2, 1, 2, 1)
+    cleanup = win_job.WindowsJobCleanup(
+        before=replace(accounting, active_processes=1),
+        after=accounting,
+        system_before=resources,
+        system_after=resources,
+        terminated_remaining_processes=True,
+        remaining_processes=((720, str(image)),),
+        elapsed_s=0.01,
+        initial_process_ids=(720,),
+        escalation_process_ids=(),
+        natural_exit_wait_s=0.0,
+    )
+    policy = proof_plan.ToolchainPolicy(
+        "rustc",
+        {"linker_process_helpers": {"link.exe": ["vctip.exe"]}},
+        tmp_path,
+    )
+    outcomes = {
+        ("gate", "1"): _gate_outcome(0, "", "", windows_job_cleanup=cleanup),
+        ("gate", "2"): _gate_outcome(0, "", ""),
+    }
+    progress = []
+
+    class Progress:
+        def emit(self, event, **details):
+            progress.append((event, details))
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, outcomes, output_dir=tmp_path / "gate-output"
+        ),
+        progress=Progress(),
+        toolchain_policies=(policy,) if declared else (),
+    )
+    gates = [
+        SelectedGate(
+            command=("gate", "1"), toolchains=("python",), concurrent=concurrent
+        )
+    ]
+    if concurrent:
+        gates.append(
+            SelectedGate(command=("gate", "2"), toolchains=("python",), concurrent=True)
+        )
+    admitted = declared and sibling_linker
+    if admitted:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+    else:
+        with pytest.raises(molt_dev.DriverError) as caught:
+            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        assert not isinstance(caught.value, CandidateFailure)
+    if concurrent:
+        receipt = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+        record, following = receipt["commands"]
+        assert following["status"] == ("success" if admitted else "skipped")
+    else:
+        (record,) = [details for event, details in progress if event == "gate_finished"]
+    assert record["status"] == ("success" if admitted else "failure")
+    assert record["failure_scope"] == ("none" if admitted else "global")
+    evidence = record["guard_outcome"]["windows_job_cleanup"]
+    assert evidence["completed"] is True
+    assert evidence["remaining_processes"] == [{"pid": 720, "image": str(image)}]
+    assert evidence["initial_process_ids"] == [720]
+
+
+@pytest.mark.parametrize("defect", ["missing", "wrong-type", "wrong-argv"])
+def test_captured_gate_refuses_missing_or_mismatched_guard_result(
+    tmp_path, monkeypatch, defect
+):
+    from tools import molt_dev_common
+
+    if defect == "missing":
+        result = None
+    elif defect == "wrong-type":
+        result = subprocess.CompletedProcess(["synthetic-gate"], 0, "", "")
+    else:
+        result = _gate_outcome(0, "", "", args=["a-different-launch"]).guard_result
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: result,
+    )
+    with pytest.raises(molt_dev.DriverError) as caught:
+        molt_dev_common._run_captured_gate(
+            ("synthetic-gate",),
+            repo=tmp_path,
+            env=ProcessEnvironment(os.environ),
+            cancelled=lambda: False,
+        )
+    assert not isinstance(caught.value, CandidateFailure)
+
+
 @pytest.mark.parametrize("concurrent", [True, False])
 def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
     drv, tmp_path, capsys, concurrent
@@ -2920,8 +3290,8 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding="utf-8")
     outcomes = {
-        ("gate", "1"): molt_dev_gates.GateOutcome(0, "fine\n", "", None),
-        ("gate", "2"): molt_dev_gates.GateOutcome(2, "", "the real reason\n", None),
+        ("gate", "1"): _gate_outcome(0, "fine\n", "", None),
+        ("gate", "2"): _gate_outcome(2, "", "the real reason\n", None),
     }
     runtime = _gate_runtime_fixture(
         molt_dev_gates, tmp_path, outcomes, output_dir=blocked / "run"
@@ -2943,9 +3313,7 @@ def test_serial_gate_keeps_its_streams_and_names_them_in_the_failure(
 ):
 
     outcomes = {
-        ("gate", "1"): molt_dev_gates.GateOutcome(
-            1, "", "x" * 5000 + "\nserial reason\n", None
-        )
+        ("gate", "1"): _gate_outcome(1, "", "x" * 5000 + "\nserial reason\n", None)
     }
     output_dir = tmp_path / "receipt.d" / "run"
     runtime = _gate_runtime_fixture(
@@ -3036,7 +3404,7 @@ def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monke
 
     def fake(cmd, **kwargs):
         seen.append(kwargs["label"])
-        return 0, "", "", None
+        return _gate_outcome(0, "", "").guard_result
 
     monkeypatch.setattr(drv, "_run_captured_gate", fake)
     monkeypatch.setattr(
@@ -3085,7 +3453,7 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
         time.sleep(0.3)
         with lock:
             active[name] -= 1
-        return molt_dev_gates.GateOutcome(0, "", "", None)
+        return _gate_outcome(0, "", "", None)
 
     class Progress:
         def emit(self, event, **details):
@@ -3216,7 +3584,7 @@ def test_a_building_pytest_session_counts_as_a_session_and_waits_its_cargo_turn(
         time.sleep(0.2)
         with lock:
             active.discard(command)
-        return molt_dev_gates.GateOutcome(0, "", "", None)
+        return _gate_outcome(0, "", "", None)
 
     # The building session comes first, so it starts at once: admitted outside
     # the session class it would run beside both other sessions.
@@ -3239,7 +3607,7 @@ def test_a_gate_runner_error_keeps_its_streams_in_the_receipt(drv, tmp_path):
         if command[1] == "raises":
             streams[0].write_text("partial\n", encoding="utf-8")
             raise drv.DriverError("the runner lost its child")
-        return molt_dev_gates.GateOutcome(0, "", "", None)
+        return _gate_outcome(0, "", "", None)
 
     gates = [
         SelectedGate(command=("pytest", "raises"), toolchains=("python",), pytest=True),
@@ -5765,7 +6133,7 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             + "assert set(clippy.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "
             + "assert rustfmt._changed_rust_paths(sys.argv[1]) == (Path('feature.rs'),); "
             + f"assert sys.argv[1] == {expected!r}; "
-            + "print('selected-upstream-path' + '-gates-passed')"
+            + "print('selected-upstream-path' + '-gates-passed', flush=True)"
         )
         + f" {upstream}"
     )
@@ -5774,6 +6142,15 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             imports
             + "from tools import check_commit_attribution as attribution; "
             + "assert attribution.check_revisions(['origin/main..HEAD'], cwd=Path.cwd()) == []; "
+            # This fixture proves both consumers. Wait for the scheduler's
+            # closed, successful selection outcome before attribution may fail.
+            + "import json, time\n"
+            + "head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\n"
+            + "receipt = Path('.git/molt-integrate/receipts') / (head + '.gates.json')\n"
+            + "while True:\n"
+            + "    rows = json.loads(receipt.read_text(encoding='utf-8'))['commands']\n"
+            + "    if any(r['id'] == 'local.always.1' and r['status'] == 'success' for r in rows): break\n"
+            + "    time.sleep(0.01)\n"
             + "raise SystemExit(attribution.main(['--range', sys.argv[1]]))"
         )
         + f" {upstream}..HEAD"
@@ -7777,7 +8154,7 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
         observed.append(command)
         if command == "mock-rust-build":
             assert not executed.exists(), "collection executed test bodies"
-            return molt_dev_gates.GateOutcome(0, "mock Rust completed", "", None)
+            return _gate_outcome(0, "mock Rust completed", "", None)
         # Use real selected Python, pytest and canonical guard. No fake collector
         # verdict, shell parsing, host env mutation, or actual Rust compilation.
         return drv.run_captured_gate(command, repo, env, cancelled, streams)
