@@ -14,6 +14,10 @@ The WASI lifecycle policy builds a target libtest and hands its exact image to
 the existing native production-host integration; Rust owns its semantic roster.
 The native semantic policy also owns the declared core/math numeric libtests in
 that same Cargo build; primitive timings are observations, not performance gates.
+Cargo build streams go directly to the shared guard's exclusive capture files,
+so partial output survives a timeout without terminal rewrites. The artifact
+parser still consumes complete compiler JSON; guard diagnostics remain separate
+from the raw build stderr file.
 """
 
 from __future__ import annotations
@@ -745,19 +749,19 @@ def cargo_build(
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     admit_cargo_build(command, cwd=ROOT, env=environment)
-    build = COMMANDS.run(
+    return COMMANDS.run(
         command,
         cwd=ROOT,
         env=environment,
         capture_output=True,
+        stdout_capture_path=directory / "build.stdout.jsonl",
+        stderr_capture_path=directory / "build.stderr.log",
+        capture_tail_bytes=None,  # The artifact parser needs complete compiler JSON.
         text=True,
         timeout=timeout,
         check=False,
         encoding="utf-8",
     )
-    (directory / "build.stdout.jsonl").write_text(build.stdout, encoding="utf-8")
-    (directory / "build.stderr.log").write_text(build.stderr, encoding="utf-8")
-    return build
 
 
 def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> None:

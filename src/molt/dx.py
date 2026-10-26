@@ -368,8 +368,8 @@ def _running_under_pytest(env: Mapping[str, str] | None = None) -> bool:
     )
 
 
-def _disk_guard_disabled() -> bool:
-    return os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in {
+def _disk_guard_disabled(env: Mapping[str, str]) -> bool:
+    return env.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -389,28 +389,94 @@ def _source_disk_guard():  # noqa: ANN202 - tools.disk_guard loads lazily
     return disk_guard
 
 
-def _maybe_collect_checkout_state(ext_root: Path, env: Mapping[str, str]) -> None:
-    """Run the disk guard's daily collection of ``ext_root`` (HF-313).
+def prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
+    """The artifact preference shared by guards and maintenance policy."""
+    if development_artifacts_requested(env):
+        return True
+    try:
+        return bool(DxProject(root).load_config().get("prefer_external_artifacts"))
+    except (OSError, ValueError):
+        return False
 
-    Cargo runs its automatic GC from build commands once a day; here the
-    common case is one ``stat`` of the GC stamp. A failed collection never
-    fails the command: it is reported, and the next day retries.
+
+def checkout_state_maintenance_environment(
+    source_root: Path, env: Mapping[str, str]
+) -> ProcessEnvironment | None:
+    """Capture an initial maintenance-policy selection without source tools.
+
+    This uses the guarded child's canonical root policy, including for a
+    cache-hit build that launches none. It does not pin subsequent payload
+    selection: changing external-root availability can make a child choose a
+    different default, whose maintenance waits for its next eligible owner.
+    Installed compilers have no source collector. Selection failures cannot
+    replace the command's result.
     """
-    from molt.checkout_state import checkout_state_gc_due, claim_checkout_state_gc
+    try:
+        if not (compiler_source_root() / "tools" / "disk_guard.py").is_file():
+            return None
+        captured = ProcessEnvironment(env)
+        selected = artifact_root(
+            source_root,
+            captured,
+            prefer_external=(
+                False
+                if captured.get(ARTIFACT_ROOT_ENV, "").strip()
+                else prefers_external_artifacts(source_root, captured)
+            ),
+        )
+        return captured.updated({ARTIFACT_ROOT_ENV: str(selected)})
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"molt: checkout state GC failed: {str(exc)[:512]}", file=sys.stderr)
+        return None
 
-    if _disk_guard_disabled() or _running_under_pytest():
-        return
-    if not checkout_state_gc_due(ext_root):
+
+def collect_checkout_state_after_result(env: Mapping[str, str], *, cwd: Path) -> None:
+    """Schedule source-only daily maintenance after result publication.
+
+    Call only after terminal publication and any source verification. An
+    enclosing guard owns its later completion; never spend its payload budget
+    on global maintenance. Environment resolution alone grants no invocation.
+    The captured selection controls collection. This scheduling event makes
+    no process-closure claim: each candidate still needs its canonical fresh
+    eligibility check and exclusive retirement lock, even alongside live work.
+    """
+    if (
+        _disk_guard_disabled(env)
+        or _running_under_pytest(env)
+        or env.get("MOLT_MEMORY_GUARD_ACTIVE")
+        or env.get("MOLT_MEMORY_GUARD_STARTUP_JSON")
+    ):
         return
     try:
+        ext_root = configured_artifact_root(env, relative_to=cwd)
+        if ext_root is None:
+            return
+        from molt.checkout_state import checkout_state_gc, checkout_state_gc_due
+
+        if not checkout_state_gc_due(ext_root):
+            return
+        if not ext_root.is_dir():
+            return
         disk_guard = _source_disk_guard()
         if disk_guard is None:
             return
-        claim_checkout_state_gc(ext_root)
-        results = disk_guard.collect(root=ext_root, env=env)
-    except (OSError, ValueError) as exc:
-        print(f"molt: checkout state GC of {ext_root} failed: {exc}", file=sys.stderr)
+        with checkout_state_gc(ext_root) as admitted:
+            if not admitted:
+                return
+            results = disk_guard.collect(root=ext_root, env=env)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"molt: checkout state GC failed: {str(exc)[:512]}", file=sys.stderr)
         return
+    error_count = 0
+    for result in results:
+        for error in result.errors:
+            error_count += 1
+            if error_count <= 3:
+                print(f"molt: checkout state GC failed: {error[:512]}", file=sys.stderr)
+    if error_count > 3:
+        print(
+            f"molt: checkout state GC: {error_count - 3} more error(s)", file=sys.stderr
+        )
     reclaimed = sum(len(result.reclaimed) for result in results)
     if reclaimed:
         print(
@@ -1752,7 +1818,7 @@ class RunContext:
                         Path(value).expanduser().mkdir(parents=True, exist_ok=True)
             # Record this checkout as the owner and a user of its state under
             # a shared root, and a pinned session as a user of the target it
-            # selects, then retire idle state at most once a day (HF-313).
+            # selects. Global collection belongs after result publication.
             from molt.checkout_state import (
                 record_checkout_target_use,
                 stamp_checkout_state,
@@ -1762,8 +1828,7 @@ class RunContext:
                 record_checkout_target_use(
                     Path(env["CARGO_TARGET_DIR"]), checkout=self.root
                 )
-            if stamp_checkout_state(self.root, env):
-                _maybe_collect_checkout_state(Path(ext_root), env)
+            stamp_checkout_state(self.root, env)
         return ProcessEnvironment(env)
 
     def root_env(self, base: Mapping[str, str] | None = None) -> ProcessEnvironment:

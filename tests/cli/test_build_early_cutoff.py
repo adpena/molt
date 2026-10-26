@@ -73,9 +73,24 @@ def test_an_unchanged_build_reuses_its_output(
 ) -> None:
     monkeypatch.setattr(build_record, "_BUILDS_ENTERED", 0)
     calls: list[str] = []
-    build = build_command._with_early_cutoff(_fake_build(calls))
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_build(calls))
+    )
     output = tmp_path / "out" / "app"
     output.parent.mkdir()
+    from molt import dx
+    from molt.cli import build_output_layout
+
+    published = []
+
+    def collect(env, *, cwd):
+        assert output.is_file()
+        assert build_output_layout._BUILD_SCOPE.get() is None
+        assert cwd == project
+        assert env["MOLT_EXT_ROOT"]
+        published.append(len(calls))
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
     _run(build, project, output)
     assert len(calls) == 1
     _run(build, project, output)
@@ -86,6 +101,7 @@ def test_an_unchanged_build_reuses_its_output(
     _run(build, project, output)
     assert len(calls) == 2, "an edited input rebuilds"
     assert output.read_text(encoding="utf-8") == "binary of print(2)\n"
+    assert published == [1, 1, 2], "the no-child cache hit also publishes maintenance"
 
 
 def _judge_changes_during_the_build(monkeypatch: pytest.MonkeyPatch) -> None:

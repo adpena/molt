@@ -243,6 +243,15 @@ def test_live_gate_has_no_gating_violations():
     assert summary["by_kind"]["orphan"] == 0
     assert summary["by_kind"]["ungated"] == 0
     assert summary["regressions"] == 0
+    # Keep an independent ratchet comparison without scanning the live tree twice.
+    counts = dict.fromkeys(summary["closed_domains"], 0)
+    counts.update(summary["closed_domain_counts"])
+    baseline = CGM.load_baseline(ROOT)
+    for name, live in counts.items():
+        allowed = baseline.get(name, 0)
+        assert live <= allowed, (
+            f"closed domain {name} regressed: live={live} > baseline={allowed}"
+        )
 
 
 def test_generator_family_parallel_checks_preserve_source_state() -> None:
@@ -328,16 +337,28 @@ def test_closed_domains_parse_to_live_enums():
         assert variants, f"{cd['name']}: parsed 0 variants of {cd['enum_name']}"
 
 
-def test_baseline_matches_live_counts():
-    """The committed ratchet baseline equals the live counts (no silent drift in
-    either direction outside an explicit --update-baseline)."""
-    counts, _sites = CGM.collect_backlog_sites(ROOT)
-    baseline = CGM.load_baseline(ROOT)
-    for name, live in counts.items():
-        allowed = baseline.get(name, 0)
-        assert live <= allowed, (
-            f"closed domain {name} regressed: live={live} > baseline={allowed}"
-        )
+def test_backlog_collection_reports_sites_and_declared_zero_domains(tmp_path: Path):
+    """Baseline writing retains exact sites and zero entries after source edits."""
+    root = _mirror_min_tree(tmp_path)
+    relative = "runtime/molt-passes/src/collector_probe.rs"
+    offending = root / relative
+    offending.parent.mkdir(parents=True, exist_ok=True)
+    offending.write_text(_silent_default_match("Terminator"), encoding="utf-8")
+
+    counts, sites = CGM.collect_backlog_sites(root)
+    assert counts["Terminator"] == 1
+    assert sites["Terminator"] == [f"{relative}:2"]
+    assert counts["OpCode"] == 0
+    assert sites["OpCode"] == []
+    assert sum(counts.values()) == 1
+
+    offending.unlink()
+    counts, sites = CGM.collect_backlog_sites(root)
+    assert counts["Terminator"] == 0
+    assert sites["Terminator"] == []
+    assert counts["OpCode"] == 0
+    assert sites["OpCode"] == []
+    assert sum(counts.values()) == 0
 
 
 # --- 2. proven-to-find-debt: the closed-domain auditor --------------------

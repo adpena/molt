@@ -617,6 +617,121 @@ def test_shipping_profile_rejects_assertion_overrides(environment):
         gate.observed_build(output, artifact, "release-output", environment)
 
 
+@pytest.mark.parametrize("returncode", [0, 101])
+def test_cargo_build_streams_evidence_without_truncation_or_terminal_rewrite(
+    monkeypatch, tmp_path, returncode
+):
+    import json
+    import subprocess
+    from molt.process_environment import ProcessEnvironment
+
+    _, compiler_artifact, artifact_output = observed_fixture()
+    stdout = (
+        artifact_output
+        + "\n"
+        + json.dumps(
+            {
+                "reason": "build-finished",
+                "success": returncode == 0,
+                "padding": "x" * 100_000,
+            }
+        )
+        + "\n"
+    )
+    stderr = "compiler-diagnostic\n"
+    command = ["cargo", "test", "--no-run", "--message-format=json"]
+    environment = ProcessEnvironment({"RUSTC": "selected-rustc"})
+    result = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    paths = (tmp_path / "build.stdout.jsonl", tmp_path / "build.stderr.log")
+    captured_times = []
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            assert argv is command
+            assert kwargs["cwd"] == gate.ROOT
+            assert kwargs["env"] is environment
+            assert kwargs["capture_output"] is True
+            assert kwargs["capture_tail_bytes"] is None
+            assert kwargs["timeout"] == 123
+            assert kwargs["check"] is False
+            assert kwargs["encoding"] == "utf-8"
+            assert (
+                kwargs["stdout_capture_path"],
+                kwargs["stderr_capture_path"],
+            ) == paths
+            for path, text in zip(paths, (stdout, stderr), strict=True):
+                with path.open("x", encoding="utf-8") as handle:
+                    handle.write(text)
+                # The real capture owner creates evidence before returning.
+                assert path.read_text(encoding="utf-8") == text
+                # A terminal rewrite of identical text is still a new write.
+                # Give it a distinct, portable timestamp so the oracle catches
+                # that duplicate without timing sleeps or process-wide patches.
+                os.utime(path, (946684800, 946684800))
+                captured_times.append(path.stat().st_mtime_ns)
+            return result
+
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    assert gate.cargo_build(command, tmp_path, 123, environment) is result
+    assert result.stdout == stdout and result.stderr == stderr
+    assert list(
+        gate.truth.compiler_artifacts(result.stdout, source_context="compiler-only")
+    ) == [compiler_artifact]
+    assert [path.stat().st_mtime_ns for path in paths] == captured_times
+
+
+def test_cargo_build_timeout_keeps_real_partial_streams(monkeypatch, tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    from tests.process_guard_common import (
+        HUNG_CHILD_SOURCE,
+        hung_child_marker,
+        stop_test_processes_carrying,
+    )
+
+    _, compiler_artifact, artifact_output = observed_fixture()
+    stdout = (
+        artifact_output + "\r\n" + json.dumps({"padding": "x" * 100_000}) + "\r\n"
+    ).encode("utf-8")
+    stderr = "compiler diagnostic: café\r\n".encode("utf-8")
+    marker = hung_child_marker()
+    command = [
+        sys.executable,
+        "-c",
+        "import json, sys\n"
+        f"sys.stdout.buffer.write({artifact_output.encode('utf-8')!r} + bytes((13, 10)))\n"
+        "sys.stdout.buffer.write(json.dumps({'padding': 'x' * 100_000}).encode('utf-8') + bytes((13, 10)))\n"
+        "sys.stdout.buffer.flush()\n"
+        f"sys.stderr.buffer.write({stderr!r})\n"
+        "sys.stderr.buffer.flush()\n" + HUNG_CHILD_SOURCE,
+        marker,
+    ]
+    # Exercise the real receiver and process owner with a tiny Python child;
+    # Cargo policy/capacity and compilation are separate proof obligations.
+    monkeypatch.setattr(gate, "admit_cargo_build", lambda *args, **kwargs: None)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            gate.cargo_build(command, tmp_path, 5)
+        result = caught.value.guarded_result
+        assert result.timed_out and result.descendants_closed
+        assert (tmp_path / "build.stdout.jsonl").read_bytes() == stdout
+        assert (tmp_path / "build.stderr.log").read_bytes() == stderr
+        assert caught.value.output == stdout.decode("utf-8").replace("\r\n", "\n")
+        assert list(
+            gate.truth.compiler_artifacts(
+                caught.value.output, source_context="compiler-only"
+            )
+        ) == [compiler_artifact]
+        assert caught.value.stderr.startswith(
+            stderr.decode("utf-8").replace("\r\n", "\n")
+        )
+        assert "memory_guard: timeout after" in caught.value.stderr
+    finally:
+        stop_test_processes_carrying(marker)
+
+
 @pytest.mark.parametrize("output_owner", ["explicit", "queue", "proof-plan"])
 def test_default_profile_is_shipping_before_build(
     monkeypatch, tmp_path, output_owner, selected_cargo
@@ -652,9 +767,17 @@ def test_default_profile_is_shipping_before_build(
                     stdout='{"packages":[]}', stderr="", returncode=0
                 )
             seen.append(argv)
-            return SimpleNamespace(
+            result = SimpleNamespace(
                 stdout="", stderr="intentional stopped build", returncode=1
             )
+            assert kwargs["capture_tail_bytes"] is None
+            Path(kwargs["stdout_capture_path"]).write_text(
+                result.stdout, encoding="utf-8"
+            )
+            Path(kwargs["stderr_capture_path"]).write_text(
+                result.stderr, encoding="utf-8"
+            )
+            return result
 
     monkeypatch.setattr(gate, "COMMANDS", Commands())
     assert gate.main(argv) == 1
@@ -948,6 +1071,13 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
             elif argv[:2] == [selected_cargo, "test"]:
                 builds.append(argv)
                 result.stdout = "\n".join(json.dumps(item) for item in artifacts)
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
             elif argv[0] in {selected_cargo, "rustc"}:
                 result.stdout = "fixture-toolchain"
             else:
@@ -1306,6 +1436,13 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                     result.returncode = 9
                 if mutation == "changed_before" and package == "molt-wasm-host":
                     wasm.write_bytes(b"changed")
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
             else:
                 children.append(argv)
                 assert kwargs["env"]["MOLT_WASI_LIBTEST_ARTIFACT"] == str(wasm)
@@ -1626,6 +1763,13 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
                     else [{"reason": "build-finished", "success": True}]
                 )
                 result.stdout = "\n".join(json.dumps(row) for row in rows)
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
             else:
                 assert discovered
                 split = argv.index("--")
@@ -2001,6 +2145,13 @@ def test_semantic_build_owns_exact_satellite_controls_in_one_cargo_lifecycle(
             elif argv[:2] == [selected_cargo, "test"]:
                 builds.append(argv)
                 result.stdout = "\n".join(json.dumps(row) for row in artifacts)
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
             elif argv[0] in {selected_cargo, "rustc"}:
                 result.stdout = "fixture-toolchain"
             else:

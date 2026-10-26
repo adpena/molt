@@ -5339,6 +5339,20 @@ pytest_select = [
   ] },
 ]
 
+# Native compile/run diagnostics own a Python-only seam proof. The LLVM matrix
+# remains in its existing execution family; local witness changes need no LLVM.
+[[rule]]
+name = "native-test-failure-diagnostics"
+toolchains = ["python"]
+description = "Native compile/run failure retention, byte identity and original failure preservation."
+globs = [
+  "tests/native_process_guard.py",
+  "tests/test_native_process_guard.py",
+  "tests/test_native_lir_loop_join_semantics.py",
+]
+gates = []
+pytest = ["tests/test_native_process_guard.py"]
+
 # --- Rust toolchain authority -------------------------------------------
 [[rule]]
 name = "rust-toolchain"

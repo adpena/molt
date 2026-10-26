@@ -2830,7 +2830,9 @@ def test_ci_control_evidence_uses_shared_path_command(workflow, job, upload_name
 
 
 @pytest.mark.parametrize("family", ["rust", "llvm"])
-def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> None:
+def test_ci_command_diagnostics_survive_missing_final_receipts(
+    family: str, tmp_path: Path
+) -> None:
     jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
     job = jobs["rust-build-unit-smoke" if family == "rust" else "llvm-backend"]
     steps = job["steps"]
@@ -2877,9 +2879,41 @@ def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> N
             "proof-receipts/llvm.json",
             "proof-receipts/evidence/llvm-differential-truth.json",
             "proof-receipts/evidence/llvm-backend-debug/native-batch-failures/",
+            "proof-receipts/evidence/llvm-backend-debug/native-execution-failures/",
             "${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log', steps.build-control.outputs.root) || '' }}",
             "${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log.old', steps.build-control.outputs.root) || '' }}",
         ]
+        # Exercise upload selection with no final llvm.json. Only the declared
+        # invocation bundle is public; a sibling scratch file stays private.
+        debug = tmp_path / "proof-receipts/evidence/llvm-backend-debug"
+        bundle = debug / "native-execution-failures/invocation"
+        bundle.mkdir(parents=True)
+        expected = {
+            bundle / name
+            for name in ("source.py", "executable", "run.stdout", "manifest.json")
+        }
+        for path in expected:
+            path.write_bytes(b"failure-witness\x00\xff")
+        (debug / "private.txt").write_text("private", encoding="utf-8")
+        selected: set[Path] = set()
+        for line in paths:
+            rendered = _diagnostic_path_expression(
+                line, {"steps.build-control.outputs.root": ""}
+            )
+            if not rendered:
+                continue
+            for match in glob.glob(
+                str(tmp_path / rendered), recursive=True, include_hidden=True
+            ):
+                path = Path(match)
+                if path.is_dir():
+                    selected.update(
+                        child for child in path.rglob("*") if child.is_file()
+                    )
+                else:
+                    selected.add(path)
+        assert selected == expected
+        assert all(path.read_bytes() == b"failure-witness\x00\xff" for path in selected)
 
 
 def _diagnostic_path_expression(line: str, values: dict[str, str]) -> str:

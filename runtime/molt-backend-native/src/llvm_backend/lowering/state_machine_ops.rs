@@ -223,7 +223,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             panic!("state_set in '{}' requires its state", self.func.name);
         };
         let state = *state;
-        let self_bits = self.generator_self_bits();
+        let self_bits = self.poll_frame_address();
         let state_bits = self
             .backend
             .context
@@ -308,7 +308,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let frame_ptr = self
             .backend
             .builder
-            .build_int_to_ptr(self.generator_self_bits(), ptr_ty, "task_wait_frame")
+            .build_int_to_ptr(self.poll_frame_address(), ptr_ty, "task_wait_frame")
             .unwrap();
         let future_address = self.unbox_ptr_bits(future_bits);
         let future_ptr = self
