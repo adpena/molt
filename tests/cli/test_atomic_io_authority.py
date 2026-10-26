@@ -4,6 +4,7 @@ import ctypes
 import errno
 import hashlib
 import os
+import shutil
 import stat
 import sys
 import time
@@ -86,6 +87,50 @@ def test_clone_file_copies_when_the_volume_cannot_share_blocks(
     assert destination.read_bytes() == b"payload"
     with pytest.raises(FileExistsError):
         file_publication.clone_file(source, destination)
+
+
+def test_clone_file_follows_source_symlinks_without_aliasing_bytes(tmp_path):
+    target = tmp_path / "target.bin"
+    target.write_bytes(b"source bytes")
+    source = tmp_path / "source-link"
+    try:
+        source.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    destination = tmp_path / "result.bin"
+    file_publication.clone_file(source, destination)
+    assert not destination.is_symlink()
+    assert destination.read_bytes() == b"source bytes"
+    target.write_bytes(b"changed")
+    assert destination.read_bytes() == b"source bytes"
+
+
+def test_failed_kernel_copy_reclaims_only_its_own_partial_destination(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.write_bytes(b"complete")
+    destination = tmp_path / "destination"
+    primary = OSError(errno.EIO, "copy interrupted")
+
+    def fail_copy(_source, target):
+        target.write_bytes(b"partial")
+        raise primary
+
+    # The portable path must enforce the same acquisition boundary as clones.
+    install_module_view(monkeypatch, "sys", sys, file_publication, platform="win32")
+    install_module_view(
+        monkeypatch, "shutil", shutil, file_publication, copyfile=fail_copy
+    )
+    with pytest.raises(OSError) as caught:
+        file_publication.clone_file(source, destination)
+    assert caught.value is primary
+    assert not destination.exists()
+    destination.write_bytes(b"rival")
+    with pytest.raises(FileExistsError):
+        file_publication.clone_file(source, destination)
+    assert destination.read_bytes() == b"rival"
+    assert source.read_bytes() == b"complete"
 
 
 def test_owned_path_has_one_spelling_before_and_after_allocation(tmp_path):

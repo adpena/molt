@@ -26,7 +26,6 @@ MOVEFILE_REPLACE_EXISTING = 0x1
 MOVEFILE_WRITE_THROUGH = 0x8
 WINDOWS_REPLACE_RETRY_ERRORS = frozenset({5, 32, 33})
 _AT_FDCWD = -100
-_CLONE_NOFOLLOW = 0x0001
 _FICLONE = 0x40049409
 # A volume or pair of volumes that cannot share blocks answers with one of
 # these; the platform copy then copies in the kernel, as Rust's std::fs::copy.
@@ -818,6 +817,9 @@ def clone_file(source: Path, destination: Path) -> None:
     uses, so both languages transfer immutable generations alike. A 67 MB
     archive clones in under a millisecond where a byte copy took seconds on a
     USB volume. The destination must not exist: a clone never replaces a file.
+    Like shutil.copyfile, source symlinks are followed. Failure removes only a
+    partial destination this call exclusively created; a collision grants no
+    cleanup authority. Successful clones own independent file nodes.
     """
 
     if sys.platform == "darwin":
@@ -826,9 +828,7 @@ def clone_file(source: Path, destination: Path) -> None:
         clonefile.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
         clonefile.restype = ctypes.c_int
         ctypes.set_errno(0)
-        if not clonefile(
-            os.fsencode(source), os.fsencode(destination), _CLONE_NOFOLLOW
-        ):
+        if not clonefile(os.fsencode(source), os.fsencode(destination), 0):
             return
         error_code = ctypes.get_errno()
         if error_code not in _CLONE_UNSUPPORTED_ERRNOS:
@@ -838,22 +838,35 @@ def clone_file(source: Path, destination: Path) -> None:
                 os.fspath(source),
                 os.fspath(destination),
             )
-    elif sys.platform.startswith("linux"):
-        import fcntl
+    # clonefile is atomic on failure. Other paths acquire a missing leaf before
+    # entering cleanup, keeping collision refusal distinct from partial-copy
+    # failure on every platform.
+    with open(source, "rb") as reader:
+        writer = open(destination, "xb")
+        try:
+            with writer:
+                if sys.platform.startswith("linux"):
+                    import fcntl
 
-        with open(source, "rb") as reader, open(destination, "xb") as writer:
+                    try:
+                        fcntl.ioctl(writer.fileno(), _FICLONE, reader.fileno())
+                        return
+                    except OSError as exc:
+                        if exc.errno not in _CLONE_UNSUPPORTED_ERRNOS:
+                            raise
+            shutil.copyfile(source, destination)
+        except BaseException as primary:
             try:
-                fcntl.ioctl(writer.fileno(), _FICLONE, reader.fileno())
-                return
-            except OSError as exc:
-                if exc.errno not in _CLONE_UNSUPPORTED_ERRNOS:
-                    raise
-        shutil.copyfile(source, destination)
-        return
-    # The exclusive create keeps the missing-leaf contract on every platform.
-    with open(destination, "xb"):
-        pass
-    shutil.copyfile(source, destination)
+                destination.unlink()
+            except FileNotFoundError:
+                pass
+            except BaseException as cleanup_error:
+                BaseException.add_note(
+                    primary,
+                    f"clone destination cleanup failed for {destination}: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}",
+                )
+            raise
 
 
 def staged_file_path(
