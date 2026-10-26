@@ -579,6 +579,22 @@ callable. Any future namespace-specialized body needs an explicit activation
 guard; guarding a constructor alone cannot certify its downstream result facts,
 branch pruning, receiver methods or loop fusion.
 
+Callable task constructors consume the shared task kind and closure extent.
+Their Python arity and optional captured closure describe payload slots; the
+compiled poll entry always takes one raw task-frame address. Native, LLVM and
+WASM trampolines allocate that frame, retain each borrowed payload occurrence
+and return the suspended task without calling its poll body. Allocation failure
+returns the allocator's exact result without payload access or completion work.
+Coroutine registration and async-generator wrapping follow `TaskConstructorLayout`;
+wrapping releases the temporary task owner even when the wrapper fails. LLVM
+direct task creation and callable trampolines share allocation and completion
+emission, while SSA boxing and borrowed call-frame copying retain their distinct
+payload custody. Construction costs one task allocation and one retain per
+payload occurrence, plus the task kind's existing completion work; poll entry
+adds no adapter, allocation or name lookup. This follows
+[CPython's suspended generator frame construction](https://github.com/python/cpython/blob/main/InternalDocs/generators.md)
+and the [language's generator-expression evaluation order](https://docs.python.org/3.12/reference/expressions.html#generator-expressions).
+
 ### Guarded builtin reads in activations (HF-79)
 
 A builtin read in a function, lambda or eager comprehension is a live lookup,
