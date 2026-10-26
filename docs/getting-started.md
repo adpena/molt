@@ -101,6 +101,13 @@ uv run --python 3.12 molt build examples/hello.py --profile dev
 
 `--release` is shorthand for `--profile release`.
 
+Source-checkout WASM runtime builds default to nonincremental compilation for
+both `dev` and `release`. Explicit iteration controls can select stable family
+state; actual incrementality follows the captured Cargo plan. Explicit Cargo
+targets and pinned sessions retain precedence, while generated session labels
+do not isolate build state. See [build-time controls](OPERATIONS.md#build-time)
+for opt-ins and proof/reproducibility constraints.
+
 ## Run From Memory (JIT Tier)
 
 In a source checkout on macOS arm64, `molt run --tier jit` skips object

@@ -407,8 +407,9 @@ def test_runtime_probe_keeps_callers_verifier_prefix(monkeypatch, tmp_path):
     assert not prefix.exists()
 
 
+@pytest.mark.parametrize("publish", [False, True])
 def test_realized_environment_probe_preserves_mode_with_no_bytecode(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, publish
 ):
     expected = {"realized": "environment"}
     calls = []
@@ -428,7 +429,12 @@ def test_realized_environment_probe_preserves_mode_with_no_bytecode(
         authority, "validate_python_environment_identity", lambda value: value
     )
     executable = Path("selected-python")
-    assert authority._probe_environment_identity(executable, tmp_path) == expected
+    probe = (
+        authority._publish_environment_bytecode
+        if publish
+        else authority._probe_environment_identity
+    )
+    assert probe(executable, tmp_path) == expected
     assert calls == [
         [
             str(executable),
@@ -440,6 +446,7 @@ def test_realized_environment_probe_preserves_mode_with_no_bytecode(
             "--capture-environment",
             str(tmp_path.resolve()),
             "--admit-virtualenv-bootstrap",
+            *(["--publish-bytecode"] if publish else []),
         ]
     ]
     assert not Path(calls[0][4].split("=", 1)[1]).exists()
@@ -460,6 +467,21 @@ def test_recipe_probe_rejects_invalid_or_unattested_runtime(
         authority_schema.SourceBuildEnvironmentError, match="runtime probe returned"
     ):
         authority._probe_source_build_python(Path("selected-python"), verifier=verifier)
+
+
+@pytest.mark.parametrize("output", ["not json", '{"schema":1,"schema":2}', "{}"])
+def test_composite_bytecode_publication_rejects_invalid_realization(
+    tmp_path, monkeypatch, output
+):
+    monkeypatch.setattr(
+        authority.process_guard,
+        "run_completed_command",
+        lambda argv, **kwargs: guard_result_for_test(
+            argv, 0, output, "", descendants_closed=True
+        ),
+    )
+    with pytest.raises(authority_schema.SourceBuildEnvironmentError):
+        authority._publish_environment_bytecode(Path("selected-python"), tmp_path)
 
 
 def test_recipe_probe_reports_failure_instead_of_inprocess_fallback(

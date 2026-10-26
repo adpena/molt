@@ -394,6 +394,7 @@ def test_installed_wasm_build_never_plans_cargo(bundle, monkeypatch, tmp_path):
     state = _RuntimeArtifactState()
     assert not runtime_wasm_pair_build._ensure_runtime_wasm_both(
         state,
+        build_profile="release",
         json_output=True,
         cargo_profile="release-output",
         cargo_timeout=None,

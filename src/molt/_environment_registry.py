@@ -5670,7 +5670,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_RUNTIME_BUILD_PROFILE",
       "output_neutral": false,
       "owner": "src/molt/cli/runtime_wasm_build_policy.py",
-      "summary": "Cargo profile name (for example dev-fast) for the runtime-wasm build in an iteration loop; an explicit MOLT_WASM_CARGO_PROFILE wins over it, a name that fails the cargo profile pattern is ignored, and unset builds the derived profile (wasm-release for release, else the cargo profile); release verification refuses it.",
+      "summary": "Cargo profile name (for example dev-fast) for the runtime-wasm build in an iteration loop; an explicit MOLT_WASM_CARGO_PROFILE wins over it, and a name that fails the cargo profile pattern is ignored. A valid value also opts into stable family placement unless an explicit Cargo target, pinned session, proof scratch, SOURCE_DATE_EPOCH or explicit iteration opt-out takes precedence; actual incrementality binds from the captured Cargo plan. Unset builds the derived profile (wasm-release for release, else the cargo profile); release verification refuses this override.",
       "values": []
     },
     {
@@ -5770,7 +5770,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_RUNTIME_WASM_INCREMENTAL",
       "output_neutral": false,
       "owner": "src/molt/cli/runtime_wasm_build_policy.py",
-      "summary": "Selects a stable, session-independent incremental target dir with CARGO_INCREMENTAL=1 for the runtime-wasm build; 1, true, yes, or on force it on and 0, false, no, or off force it off (case-insensitive); unset means on when MOLT_RUNTIME_BUILD_PROFILE pins a profile and off otherwise.",
+      "summary": "Requests runtime-WASM iteration reuse: 1, true, yes, or on opt into stable family placement; 0, false, no, or off prevent automatic family placement and force incrementality off (case-insensitive). Unset follows a valid MOLT_RUNTIME_BUILD_PROFILE opt-in; otherwise dev and release keep their nonincremental default unless Cargo incrementality is explicitly controlled. Exact Cargo targets take precedence, followed by deliberately pinned sessions; generated labels do not isolate. Proof scratch and SOURCE_DATE_EPOCH force incrementality off and prevent automatic family placement. Actual incrementality binds from the captured Cargo plan after sccache normalization; only bound nonincremental emissions are eligible for shared publication, regardless of placement.",
       "values": []
     },
     {

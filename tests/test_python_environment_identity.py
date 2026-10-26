@@ -2650,12 +2650,18 @@ def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
         "grouped",
         "mutated-source",
         "forged-code",
+        "wrong-optimization",
+        "preserved-source-metadata",
+        "runtime-changed",
         "rewrite",
         "image-prefix",
         "populated-prefix",
     ],
 )
-def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault):
+@pytest.mark.parametrize("trusted", [False, True])
+def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(
+    tmp_path, fault, trusted
+):
     # Interpreter-wide cache policy belongs only to spawned children, never the
     # pytest process with concurrently active guard and sentinel threads.
     with identity.PythonIdentityVerifier() as verifier:
@@ -2670,9 +2676,10 @@ def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault
             "import sys; from pathlib import Path; "
             f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
             "from tests.test_python_environment_identity import _sealed_ordinary_prefix_control; "
-            "_sealed_ordinary_prefix_control(Path(sys.argv[1]), sys.argv[2])",
+            "_sealed_ordinary_prefix_control(Path(sys.argv[1]), sys.argv[2], trusted=sys.argv[3] == '1')",
             str(tmp_path),
             fault,
+            "1" if trusted else "0",
         ]
         result = verifier.run(
             command,
@@ -2687,7 +2694,7 @@ def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault
         assert result.returncode == 0, result.stderr
 
 
-def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
+def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str, *, trusted: bool):
     """py_compile and real pytest rewriting are independent producer controls."""
     import ast
     import importlib.util
@@ -2730,6 +2737,8 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
         ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
     )
 
+    derivations = environment._BytecodeDerivationProof() if trusted else None
+
     def project(entries, pool, runtime_tree, runtime_pool, *, publish):
         reads, attempts = [], []
         read_bound = files._FileNodePool.read_bound
@@ -2755,12 +2764,19 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
                 entries,
                 owned,
                 pool,
-                {"runtime_roots": [runtime_tree]},
+                {
+                    "runtime_roots": [runtime_tree],
+                    "runtime_closure_sha256": (
+                        "b" if not publish and fault == "runtime-changed" else "a"
+                    )
+                    * 64,
+                },
                 (("fixture", runtime_root),),
                 runtime_pool,
                 {"trees": []},
                 (),
                 publish=publish,
+                derivations=derivations,
             )
         return reads, attempts
 
@@ -2819,6 +2835,12 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
             cache.read_bytes()[:16]
             + marshal.dumps(compile("VALUE = 99\n", str(source), "exec"))
         )
+    elif fault == "wrong-optimization":
+        cache.write_bytes(cache_paths[2].read_bytes())
+    elif fault == "preserved-source-metadata":
+        stamp = source.stat()
+        source.write_bytes(source.read_bytes().replace(b"VALUE = 1", b"VALUE = 9"))
+        os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
     elif fault == "rewrite":
         tree = ast.parse("assert 1 == 2\n", filename=str(source))
         rewrite_asserts(tree, b"assert 1 == 2\n", str(source))
@@ -2872,9 +2894,11 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
         captured_context.verify()
         assert reads.count((captured_pool, "file-node-0")) == 1
         assert reads.count((captured_runtime_pool, "file-node-0")) == 2
-        assert sorted(attempts) == sorted((str(path), opt) for path, opt in present)
+        assert sorted(attempts) == (
+            [] if trusted else sorted((str(path), opt) for path, opt in present)
+        )
 
-    if fault in {"none", "grouped"}:
+    if fault in {"none", "grouped"} or (fault == "runtime-changed" and not trusted):
         admit()
         assert sys.pycache_prefix == verifier_prefix
         assert not list(Path(verifier_prefix).iterdir())
@@ -2910,9 +2934,111 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
         assert str(error.value) == (
             f"Python capture custody changed since identity capture: {source}"
         )
-    elif fault != "grouped":
+    elif fault != "grouped" and not (fault == "runtime-changed" and not trusted):
         with pytest.raises(PythonEnvironmentIdentityError):
             admit()
+    if derivations is not None:
+        derivations.close()
+        with pytest.raises(PythonEnvironmentIdentityError, match="revoked"):
+            derivations.matches(source.read_bytes(), str(source), 0, cache.read_bytes())
+
+
+@pytest.mark.parametrize("failure", [None, "producer", "receiver"])
+def test_composite_bytecode_publication_closes_fresh_capture_and_producer_fences(
+    tmp_path, monkeypatch, failure
+):
+    events = []
+    contexts = []
+    proofs = []
+    fresh = {"fresh": "independent final payload"}
+
+    class Context:
+        def __init__(self, *, hash_workers):
+            assert hash_workers == 2
+            self.role = "producer" if not contexts else "receiver"
+            contexts.append(self)
+
+        def __enter__(self):
+            events.append((self.role, "open"))
+            return self
+
+        def verify(self):
+            events.append((self.role, "verify"))
+            if self.role == failure:
+                raise PythonEnvironmentIdentityError("independent fence changed")
+
+        def __exit__(self, *args):
+            events.append((self.role, "close"))
+
+    def capture(root, *, capture_context, derivations, **kwargs):
+        assert root == tmp_path
+        assert kwargs["admitted_external_roots"] == (tmp_path / "reader",)
+        proofs.append(derivations)
+        events.append((capture_context.role, "capture"))
+        if capture_context.role == "producer":
+            assert kwargs["publish_bytecode"] is True
+            return {"stale": "must never escape"}
+        assert "publish_bytecode" not in kwargs
+        return fresh
+
+    monkeypatch.setattr(environment, "PythonFileCaptureContext", Context)
+    monkeypatch.setattr(environment, "_capture_current_python_environment", capture)
+    if failure is None:
+        assert (
+            environment.publish_current_python_environment(
+                tmp_path, admitted_external_roots=(tmp_path / "reader",), hash_workers=2
+            )
+            is fresh
+        )
+    else:
+        with pytest.raises(PythonEnvironmentIdentityError, match="fence changed"):
+            environment.publish_current_python_environment(
+                tmp_path, admitted_external_roots=(tmp_path / "reader",), hash_workers=2
+            )
+    assert contexts[0] is not contexts[1]
+    assert proofs[0] is proofs[1]
+    assert events == [
+        ("producer", "open"),
+        ("producer", "capture"),
+        ("receiver", "open"),
+        ("receiver", "capture"),
+        ("producer", "verify"),
+        *([] if failure == "producer" else [("receiver", "verify")]),
+        ("receiver", "close"),
+        ("producer", "close"),
+    ]
+    with pytest.raises(PythonEnvironmentIdentityError, match="revoked"):
+        proofs[0].compile(b"pass\n", "unused.py", 0)
+
+
+def test_bytecode_derivation_proof_unmatched_input_recompiles_without_adoption(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.py"
+    source.write_bytes(b'"doc"\nassert False\n')
+    oracle = tmp_path / "oracle.pyc"
+    py_compile.compile(
+        str(source),
+        cfile=str(oracle),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+        optimize=2,
+    )
+    proof = environment._BytecodeDerivationProof()
+    proof.bind_runtime({"runtime_closure_sha256": "a" * 64}, publish=True)
+    proof.compile(source.read_bytes(), str(source), 0)
+    calls = []
+    derive = environment._ordinary_cache_bytes
+
+    def compile_cache(data, filename, optimization):
+        calls.append((filename, optimization))
+        return derive(data, filename, optimization)
+
+    monkeypatch.setattr(environment, "_ordinary_cache_bytes", compile_cache)
+    for _ in range(2):
+        assert proof.matches(source.read_bytes(), str(source), 2, oracle.read_bytes())
+    assert calls == [(str(source), 2), (str(source), 2)]
+    proof.close()
 
 
 def test_immutable_image_excludes_only_mutable_editable_source_bytes():
