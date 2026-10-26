@@ -29,6 +29,23 @@
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`
   (`cargo-upgrade`) for dependency sweeps.
 
+## Selected tool inputs and execution authority
+
+Installed-consumer input admission uses `selected_tool_input` to bind an absolute
+executable to the proof plan's existing executable policy and dependency closure.
+`capture_selected_tool_input` shares the execution locator, policy-owned version
+and process-image probes, configuration capture, full resource validation and
+toolchain CAS. It does not admit a payload or construct an execution envelope.
+The capture wire format is unchanged. The selected path wins over another tool
+on PATH; probe arguments belong to the policy, not the release caller.
+
+Execution parsing remains separate and strict: raw `uv --version` is not a proof
+execution envelope, and UV execution still requires the admitted `uv run`
+grammar. Policies needing Python, target-derived or Rust build context require
+their typed execution owner; a bare selected image cannot supply that context.
+Input capture establishes available immutable bytes. Only subsequent sealed
+execution establishes their actual use, including native linker and SDK inputs.
+
 ## WASI C and C++ ownership
 
 The pinned wasi-sdk supplies one complete C ABI: headers, libc, the binary128
