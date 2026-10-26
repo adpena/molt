@@ -18,6 +18,10 @@ from molt._wasm_abi_generated import (
     wasm_runtime_import_name,
 )
 from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
+from molt.wasm_artifact import (
+    require_current_wasm_execution_manifest,
+    wasm_execution_manifest_module_descriptor,
+)
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_canonical_import_name,
@@ -226,6 +230,7 @@ def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
 
 def _generate_split_worker_js(
     *,
+    deployment_manifest: Mapping[str, object],
     resolved_capability_policy: ResolvedRuntimePolicy,
     shared_memory_initial_pages: int,
     shared_table_initial: int,
@@ -239,6 +244,17 @@ def _generate_split_worker_js(
     CDN independently of the app module.  Both modules share linear memory
     through WASI imports.
     """
+    require_current_wasm_execution_manifest(deployment_manifest)
+    if deployment_manifest.get("mode") != "split-runtime":
+        raise ValueError("split worker requires a split-runtime deployment manifest")
+    for role, filename in (("app", "app.wasm"), ("runtime", "molt_runtime.wasm")):
+        descriptor = wasm_execution_manifest_module_descriptor(
+            deployment_manifest, role
+        )
+        if descriptor["path"] != filename:
+            raise ValueError(
+                "split worker requires compiler-owned fixed lexical module paths"
+            )
     runtime_import_names = tuple(
         dict.fromkeys(
             (
@@ -303,12 +319,14 @@ import runtimeModule from "./molt_runtime.wasm";
 import appModule from "./app.wasm";
 
 const {
+  requireMoltDeploymentManifest,
   bindRuntimeFunctionImports,
   callableTableFromModule,
   callableTableSignature,
   runtimeExceptionPending,
   verifyCallableTableEntries,
 } = globalThis.MoltWasmLoaderBridge;
+const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
 const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
 const appCallableTable = callableTableFromModule(appModule, "app wasm");
@@ -1321,6 +1339,16 @@ export default {
     return (
         worker_js.replace(
             "__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages)
+        )
+        .replace(
+            "__MOLT_DEPLOYMENT_MANIFEST__",
+            json.dumps(
+                {
+                    key: deployment_manifest[key]
+                    for key in ("version", "mode", "modules")
+                },
+                sort_keys=True,
+            ),
         )
         .replace("__MOLT_SYNTHETIC_ERRNO__", json.dumps(dict(WASM_SYNTHETIC_ERRNO)))
         .replace(

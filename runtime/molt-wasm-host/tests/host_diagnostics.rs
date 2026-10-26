@@ -3,6 +3,7 @@
 #[path = "support/mod.rs"]
 mod support;
 
+use molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
 use support::host;
 
 /// Artifacts in a directory this process alone owns, removed when it drops.
@@ -100,7 +101,7 @@ fn actual_manifest_precompile_resolves_every_member_without_executing_guest() {
     let manifest = fixture.write(
         "manifest.json",
         &serde_json::to_vec(&serde_json::json!({
-            "version":2,"mode":"split-runtime","modules":{
+            "version":WASM_EXECUTION_MANIFEST_VERSION,"mode":"split-runtime","modules":{
                 "app":descriptor(&app, app_bytes),"runtime":descriptor(&runtime,runtime_bytes)
             }
         }))

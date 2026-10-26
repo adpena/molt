@@ -412,6 +412,10 @@ def _render_rs_callable_table(
         "pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = ",
         f"{authority['layout_version']};\n",
     ]
+    if not include_active_element_role:
+        lines.append(
+            f"pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = {data['deployment_manifest']['version']};\n"
+        )
     if include_active_element_role:
         lines.extend(
             [
@@ -2331,6 +2335,7 @@ def render_js_abi(data: dict) -> str:
         runtime_export_by_import.setdefault(split_export_name, split_export_name)
 
     payload = {
+        "execution_manifest_version": data["deployment_manifest"]["version"],
         "generated_by": "tools/gen_wasm_abi.py",
         "synthetic_errno": synthetic_errno_table(data),
         "wasi_preview1_errno": wasi_errno_table(data),
@@ -2371,6 +2376,7 @@ def render_js_callable_table_abi(data: dict) -> str:
     payload = json.dumps(
         {
             **data["callable_table_publication"],
+            "execution_manifest_version": data["deployment_manifest"]["version"],
             "runtime_callables": _js_runtime_callable_abi(data),
         },
         sort_keys=True,

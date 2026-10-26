@@ -38,29 +38,14 @@ parent traversal, trailing dots or spaces) fail closed.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 import ntpath
 import os
 import stat
-import sys
+from molt import process_launch
 
 
 class LaunchUndeterminable(ValueError):
     """Windows could run more than one image, or one this module cannot name."""
-
-
-@dataclass(frozen=True)
-class CallerSearch:
-    """The calling-process facts that CreateProcessW searches with."""
-
-    image_directory: str
-    current_directory: str
-    path: str | None
-    # NeedCurrentDirectoryForExePathW for a name without a backslash; a name
-    # with a backslash always searches the current directory.
-    searches_current_directory: bool
-    system_directory: str
-    windows_directory: str
 
 
 _EXECUTABLE_EXTENSION = ".exe"
@@ -88,19 +73,13 @@ def _has_extension(name: str) -> bool:
     return "." in _final_component(name)
 
 
-def _fully_qualified(name: str) -> bool:
-    if len(name) >= 3 and name[0].isalpha() and name[1] == ":":
-        return name[2] in _SEPARATORS
-    return len(name) >= 2 and name[0] in _SEPARATORS and name[1] in _SEPARATORS
-
-
 def _checked_name(name: str) -> str:
     if any(ord(char) < 32 or char in _FORBIDDEN_CHARACTERS for char in name):
         raise LaunchUndeterminable(f"module name {name!r} has a reserved character")
     if len(name) >= 4 and name[0] in _SEPARATORS and name[1] in _SEPARATORS:
         if name[2] in ".?" and name[3] in _SEPARATORS:
             raise LaunchUndeterminable(f"module name {name!r} is a device path")
-    if ":" in name and not _fully_qualified(name):
+    if ":" in name and not process_launch.windows_fully_qualified(name):
         raise LaunchUndeterminable(
             f"module name {name!r} is drive-relative or names a stream"
         )
@@ -116,7 +95,7 @@ def _checked_name(name: str) -> str:
 
 def _location(name: str, current_directory: str) -> str:
     """Complete a name from the current directory, as Win32 path parsing does."""
-    if _fully_qualified(name):
+    if process_launch.windows_fully_qualified(name):
         location = ntpath.normpath(name)
         if name[0] in _SEPARATORS and not ntpath.splitdrive(location)[1].strip("\\"):
             raise LaunchUndeterminable(f"module name {name!r} names no file")
@@ -143,33 +122,9 @@ def _direct_images(location: str) -> set[str | None]:
     }
 
 
-def _search_directories(name: str, search: CallerSearch) -> list[tuple[str, bool]]:
-    """Return (directory, definite) pairs in CreateProcessW search order."""
-    directories = [(search.image_directory, True)]
-    if "\\" in name or search.searches_current_directory:
-        directories.append((search.current_directory, True))
-    directories += [
-        (search.system_directory, True),
-        (ntpath.join(search.windows_directory, "System"), True),
-        (search.windows_directory, True),
-    ]
-    if search.path is not None:
-        for entry in search.path.split(";"):
-            if entry and '"' not in entry and _fully_qualified(entry):
-                directories.append((entry, True))
-            else:
-                # Windows does not document empty, quoted or relative entries.
-                # Locate the plausible reading; a hit there is undeterminable.
-                interpreted = entry.replace('"', "")
-                directories.append(
-                    (ntpath.join(search.current_directory, interpreted), False)
-                )
-    return directories
-
-
-def _searched_image(name: str, search: CallerSearch) -> str | None:
+def _searched_image(name: str, search: process_launch.CallerSearch) -> str | None:
     filename = name if _has_extension(name) else name + _EXECUTABLE_EXTENSION
-    for directory, definite in _search_directories(name, search):
+    for directory, definite in process_launch.windows_search_directories(name, search):
         location = ntpath.normpath(ntpath.join(directory, filename))
         kind = _located(location)
         if kind is None:
@@ -184,14 +139,14 @@ def _searched_image(name: str, search: CallerSearch) -> str | None:
     return None
 
 
-def _module_images(name: str, search: CallerSearch) -> set[str | None]:
+def _module_images(name: str, search: process_launch.CallerSearch) -> set[str | None]:
     if not name:
         return {None}
     _checked_name(name)
     if not any(separator in name for separator in _SEPARATORS):
         return {_searched_image(name, search)}
     images = _direct_images(_location(name, search.current_directory))
-    if not _fully_qualified(name) and name[0] not in _SEPARATORS:
+    if not process_launch.windows_fully_qualified(name) and name[0] not in _SEPARATORS:
         images.add(_searched_image(name, search))
     return images
 
@@ -226,7 +181,9 @@ def _single_image(images: set[str | None], what: str) -> str | None:
 
 
 def createprocess_image(
-    application_name: str | None, command_line: str | None, search: CallerSearch
+    application_name: str | None,
+    command_line: str | None,
+    search: process_launch.CallerSearch,
 ) -> str | None:
     """Return the image CreateProcessW runs, or None when the launch fails."""
     if application_name is not None:
@@ -264,54 +221,29 @@ def requested_module(intent: Mapping[str, object]) -> str:
         return command_line
 
 
-def _windows_directories() -> tuple[str, str]:
-    if sys.platform != "win32":
-        raise OSError("CreateProcessW search directories require Windows")
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    directories = []
-    for function in (kernel32.GetSystemDirectoryW, kernel32.GetWindowsDirectoryW):
-        function.argtypes = [wintypes.LPWSTR, wintypes.UINT]
-        function.restype = wintypes.UINT
-        size = 260
-        while True:
-            buffer = ctypes.create_unicode_buffer(size)
-            length = function(buffer, size)
-            if length == 0:
-                raise ctypes.WinError(ctypes.get_last_error())
-            if length < size:
-                directories.append(buffer.value)
-                break
-            size = length
-    return directories[0], directories[1]
-
-
-def caller_search(intent: Mapping[str, object]) -> CallerSearch:
+def caller_search(intent: Mapping[str, object]) -> process_launch.CallerSearch:
     """Read the calling-process facts a Python hook reports for one launch."""
     image = intent.get("caller_image")
     current_directory = intent.get("caller_cwd")
     path = intent.get("caller_path")
     searches_current_directory = intent.get("caller_searches_current_directory")
-    if not isinstance(image, str) or not _fully_qualified(image):
+    if not isinstance(image, str) or not process_launch.windows_fully_qualified(image):
         raise LaunchUndeterminable("launch intent has no absolute caller image")
-    if not isinstance(current_directory, str) or not _fully_qualified(
-        current_directory
-    ):
+    if not isinstance(
+        current_directory, str
+    ) or not process_launch.windows_fully_qualified(current_directory):
         raise LaunchUndeterminable("launch intent has no absolute caller directory")
     if path is not None and not isinstance(path, str):
         raise LaunchUndeterminable("launch intent has a malformed caller PATH")
     if not isinstance(searches_current_directory, bool):
         raise LaunchUndeterminable("launch intent has no current-directory rule")
-    system_directory, windows_directory = _windows_directories()
-    return CallerSearch(
-        image_directory=ntpath.dirname(image),
-        current_directory=current_directory,
-        path=path,
-        searches_current_directory=searches_current_directory,
-        system_directory=system_directory,
-        windows_directory=windows_directory,
+    return process_launch.windows_search(
+        {
+            "caller_image": image,
+            "caller_cwd": current_directory,
+            "caller_path": path,
+            "caller_searches_current_directory": searches_current_directory,
+        }
     )
 
 

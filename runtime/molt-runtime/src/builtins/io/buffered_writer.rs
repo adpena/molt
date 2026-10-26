@@ -102,6 +102,19 @@ enum RawWrite {
     Blocked(i32),
 }
 
+/// Physical errors carry SDK errno; callback/C-API errors already carry the
+/// public Python domain and never cross this adoption boundary.
+pub(super) fn physical_blocked_errno(error: &std::io::Error) -> i32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        molt_runtime_platform::synthetic_errno::from_io_error(error).code()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        error.raw_os_error().unwrap_or(libc::EAGAIN)
+    }
+}
+
 unsafe fn raw_write<T: ?Sized>(
     py: &PyToken<'_>,
     writer: *mut u8,
@@ -160,9 +173,7 @@ unsafe fn raw_write<T: ?Sized>(
             Err(super::buffer::BackendWriteError::Io(error))
                 if error.kind() == ErrorKind::WouldBlock =>
             {
-                return Ok(RawWrite::Blocked(
-                    error.raw_os_error().unwrap_or(libc::EAGAIN),
-                ));
+                return Ok(RawWrite::Blocked(physical_blocked_errno(&error)));
             }
             Err(super::buffer::BackendWriteError::Io(error))
                 if error.kind() == ErrorKind::Interrupted =>

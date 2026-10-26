@@ -5,6 +5,11 @@ from molt.cli.link_input_observation import (
     compilation_input_observation,
 )
 from molt.exact_json import read_exact
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+from molt.wasm_artifact import (
+    require_current_wasm_execution_manifest,
+    verify_wasm_execution_manifest_module,
+)
 
 import contextlib
 import datetime as dt
@@ -451,56 +456,12 @@ def _replace_directory_tree_from_source(
 def _snapshot_manifest_asset_digest(
     *, manifest_path: Path, modules: object, role: str
 ) -> str:
-    if not isinstance(modules, dict):
-        raise ValueError("snapshot execution manifest modules must be an object")
-    descriptor = modules.get(role)
-    if not isinstance(descriptor, dict):
-        raise ValueError(f"snapshot execution manifest missing modules.{role}")
-    path_value = descriptor.get("path")
-    size_value = descriptor.get("size")
-    digest_value = descriptor.get("sha256")
-    if not isinstance(path_value, str) or not path_value:
-        raise ValueError(f"snapshot execution manifest modules.{role}.path is invalid")
-    descriptor_path = Path(path_value)
-    if (
-        descriptor_path.name != path_value
-        or descriptor_path.drive
-        or any(character in path_value for character in "\\:")
-    ):
-        raise ValueError(
-            f"snapshot execution manifest modules.{role}.path must name an adjacent file"
-        )
-    if (
-        not isinstance(size_value, int)
-        or isinstance(size_value, bool)
-        or size_value < 0
-    ):
-        raise ValueError(f"snapshot execution manifest modules.{role}.size is invalid")
-    if (
-        not isinstance(digest_value, str)
-        or len(digest_value) != 64
-        or any(character not in "0123456789abcdef" for character in digest_value)
-    ):
-        raise ValueError(
-            f"snapshot execution manifest modules.{role}.sha256 is invalid"
-        )
-    module_path = manifest_path.parent / descriptor_path
-    if not module_path.is_file():
-        raise ValueError(
-            f"snapshot execution manifest modules.{role}.path is not a file: {module_path}"
-        )
-    actual = _file_asset(module_path, path_value)
-    if actual["size"] != size_value:
-        raise ValueError(
-            f"snapshot execution manifest modules.{role} size mismatch: "
-            f"manifest={size_value} actual={actual['size']}"
-        )
-    if actual["sha256"] != digest_value:
-        raise ValueError(
-            f"snapshot execution manifest modules.{role} SHA-256 mismatch: "
-            f"manifest={digest_value} actual={actual['sha256']}"
-        )
-    return f"sha256:{digest_value}"
+    observed = verify_wasm_execution_manifest_module(
+        {"version": WASM_EXECUTION_MANIFEST_VERSION, "modules": modules},
+        manifest_path,
+        role,
+    )
+    return f"sha256:{observed.sha256}"
 
 
 def _snapshot_execution_identity(output_wasm: Path) -> str | None:
@@ -511,8 +472,7 @@ def _snapshot_execution_identity(output_wasm: Path) -> str | None:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"failed to read snapshot execution manifest: {exc}") from exc
-    if not isinstance(manifest, dict) or manifest.get("version") != 2:
-        raise ValueError("snapshot execution manifest must use version 2")
+    require_current_wasm_execution_manifest(manifest)
     mode = manifest.get("mode")
     modules = manifest.get("modules")
     if mode == "linked":
@@ -521,7 +481,7 @@ def _snapshot_execution_identity(output_wasm: Path) -> str | None:
             modules=modules,
             role="linked",
         )
-        return f"molt.snapshot.execution.v2|linked|linked={linked}"
+        return f"molt.snapshot.execution.v{WASM_EXECUTION_MANIFEST_VERSION}|linked|linked={linked}"
     if mode == "split-runtime":
         app = _snapshot_manifest_asset_digest(
             manifest_path=manifest_path,
@@ -533,7 +493,7 @@ def _snapshot_execution_identity(output_wasm: Path) -> str | None:
             modules=modules,
             role="runtime",
         )
-        return f"molt.snapshot.execution.v2|split-runtime|app={app}|runtime={runtime}"
+        return f"molt.snapshot.execution.v{WASM_EXECUTION_MANIFEST_VERSION}|split-runtime|app={app}|runtime={runtime}"
     raise ValueError(f"snapshot execution manifest has unsupported mode: {mode!r}")
 
 
@@ -1677,7 +1637,7 @@ def _prepare_non_native_build_result_in_generation(
             _atomic_write_json(
                 linked_manifest,
                 {
-                    "version": 2,
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
                     "mode": "linked",
                     **(
                         {"optimizer": optimizer_attestation}
@@ -1862,7 +1822,7 @@ def _prepare_non_native_build_result_in_generation(
                 manifest_asset=target_feature_manifest_asset,
             )
             manifest_data: dict[str, Any] = {
-                "version": 2,
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
                 **(
                     {"optimizer": optimizer_attestation}
@@ -1910,6 +1870,7 @@ def _prepare_non_native_build_result_in_generation(
             _atomic_write_text(
                 worker_js,
                 _generate_split_worker_js(
+                    deployment_manifest=manifest_data,
                     resolved_capability_policy=resolved_capability_policy,
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,

@@ -137,7 +137,7 @@ class BatchCompileServerClient:
             self._state_use.enter_context(
                 checkout_state_use(
                     checkout_state_command_roots(
-                        source_root, selected_environment, cwd=cwd
+                        source_root, selected_environment, cmd, cwd=cwd
                     )
                 )
             )

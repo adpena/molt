@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{IpAddr, SocketAddr, TcpStream};
 #[cfg(unix)]
 use std::os::unix::io::{FromRawFd, RawFd};
 #[cfg(unix)]
@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(unix)]
 use crate::libc_compat as libc;
+use molt_runtime_core::OwnedRuntimeValue;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
@@ -25,7 +26,7 @@ use super::super::stream::molt_stream_new_with_io_hooks;
 use crate::{
     GilReleaseGuard, MoltObject, PyToken, alloc_bytes, dec_ref_bits, exception_pending,
     intern_static_name, is_missing_bits, missing_bits, molt_getattr_builtin, obj_from_bits,
-    pending_bits_i64, raise_exception, string_obj_to_owned,
+    pending_bits_i64, raise_exception, string_obj_to_owned, to_i64,
 };
 
 struct NativeTlsStream {
@@ -299,20 +300,151 @@ fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *m
 }
 
 #[cfg(molt_has_net_io)]
+#[derive(Debug)]
+pub(super) enum TlsConnectError {
+    PendingPython,
+    Io(std::io::Error),
+}
+
+fn tls_resolver_protocol_error(py: &PyToken<'_>, message: &str) -> TlsConnectError {
+    if !exception_pending(py) {
+        raise_exception::<u64>(py, "RuntimeError", message);
+    }
+    TlsConnectError::PendingPython
+}
+
+fn tls_addrinfo_sequence<'a, 'py>(
+    py: &'a PyToken<'py>,
+    bits: u64,
+) -> Result<crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>, TlsConnectError> {
+    let Some(pointer) = obj_from_bits(bits).as_ptr() else {
+        return Err(tls_resolver_protocol_error(
+            py,
+            "TLS resolver returned an invalid sequence",
+        ));
+    };
+    let kind = unsafe { crate::object_type_id(pointer) };
+    if kind != crate::TYPE_ID_LIST && kind != crate::TYPE_ID_TUPLE {
+        return Err(tls_resolver_protocol_error(
+            py,
+            "TLS resolver returned an invalid sequence",
+        ));
+    }
+    unsafe {
+        crate::object::seq_access::snapshot(py, pointer, "TLS address snapshot allocation failed")
+    }
+    .ok_or(TlsConnectError::PendingPython)
+}
+
+/// Consume the resolver's owned result before any blocking TCP operation.
+fn tls_addresses_from_result(
+    py: &PyToken<'_>,
+    result: OwnedRuntimeValue<'_>,
+) -> Result<Vec<SocketAddr>, TlsConnectError> {
+    if exception_pending(py) {
+        return Err(TlsConnectError::PendingPython);
+    }
+    let rows = tls_addrinfo_sequence(py, result.bits())?;
+    let mut addresses = Vec::with_capacity(rows.len());
+    for &row in rows.iter() {
+        let row = tls_addrinfo_sequence(py, row)?;
+        if row.len() != 5 || to_i64(obj_from_bits(row[1])) != Some(i64::from(libc::SOCK_STREAM)) {
+            return Err(tls_resolver_protocol_error(
+                py,
+                "TLS resolver returned an invalid TCP row",
+            ));
+        }
+        let family = to_i64(obj_from_bits(row[0])).and_then(|value| i32::try_from(value).ok());
+        let address = tls_addrinfo_sequence(py, row[4])?;
+        let numeric = address
+            .first()
+            .and_then(|&bits| string_obj_to_owned(obj_from_bits(bits)))
+            .and_then(|host| host.parse::<IpAddr>().ok());
+        // The canonical producer emits numeric addresses. Refuse a malformed
+        // hostname before the shared sockaddr converter can resolve it again.
+        let numeric_family = match numeric {
+            Some(IpAddr::V4(_)) if address.len() == 2 => libc::AF_INET,
+            Some(IpAddr::V6(_))
+                if address.len() == 4
+                    && address[2..].iter().all(|&bits| {
+                        to_i64(obj_from_bits(bits))
+                            .and_then(|value| u32::try_from(value).ok())
+                            .is_some()
+                    }) =>
+            {
+                libc::AF_INET6
+            }
+            _ => {
+                return Err(tls_resolver_protocol_error(
+                    py,
+                    "TLS resolver returned a nonnumeric address",
+                ));
+            }
+        };
+        if family != Some(numeric_family) {
+            return Err(tls_resolver_protocol_error(
+                py,
+                "TLS resolver returned a mismatched address family",
+            ));
+        }
+        let socket_address =
+            crate::async_rt::sockets::sockaddr_from_bits(py, row[4], numeric_family)
+                .map_err(|message| tls_resolver_protocol_error(py, &message))?
+                .as_socket()
+                .ok_or_else(|| {
+                    tls_resolver_protocol_error(py, "TLS resolver returned a non-IP address")
+                })?;
+        addresses.push(socket_address);
+    }
+    if addresses.is_empty() {
+        return Err(tls_resolver_protocol_error(
+            py,
+            "TLS resolver returned no TCP addresses",
+        ));
+    }
+    Ok(addresses)
+}
+
+/// Resolve before connecting, as CPython 3.12.15 asyncio/base_events.py's
+/// create_connection does (https://github.com/python/cpython/blob/v3.12.15/Lib/asyncio/base_events.py).
+/// Reusing the canonical intrinsic preserves gaierror/EAI_SYSTEM and its
+/// NetResolve policy in addition to the caller's SslConnect admission.
+/// Cold setup now owns temporary Python addrinfo rows and a Rust SocketAddr
+/// vector (plus scoped row snapshots), unlike std's opaque resolver. These
+/// Python owners retire before TCP connect; the Rust vector supplies a numeric
+/// SocketAddr slice through connect and performs no second DNS resolution.
+#[cfg(molt_has_net_io)]
 pub(super) fn tls_client_connect_native(
-    host: &str,
+    py: &PyToken<'_>,
+    host_bits: u64,
     port: u16,
     server_name: &str,
-) -> Result<*mut u8, std::io::Error> {
+) -> Result<*mut u8, TlsConnectError> {
+    let result = unsafe {
+        crate::async_rt::sockets_net::molt_socket_getaddrinfo(
+            host_bits,
+            MoltObject::from_int(i64::from(port)).bits(),
+            MoltObject::from_int(i64::from(libc::AF_UNSPEC)).bits(),
+            MoltObject::from_int(i64::from(libc::SOCK_STREAM)).bits(),
+            MoltObject::from_int(0).bits(),
+            MoltObject::from_int(0).bits(),
+        )
+    };
+    let result = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), result) };
+    let addresses = tls_addresses_from_result(py, result)?;
     let tcp = {
         let _release = GilReleaseGuard::suspend();
-        TcpStream::connect((host, port))?
+        TcpStream::connect(addresses.as_slice()).map_err(TlsConnectError::Io)?
     };
     let wrapped = tls_client_wrap_stream_native(tcp, server_name);
     if wrapped.is_null() {
-        Err(std::io::Error::other(
-            "asyncio TLS client connection failed",
-        ))
+        if exception_pending(py) {
+            Err(TlsConnectError::PendingPython)
+        } else {
+            Err(TlsConnectError::Io(std::io::Error::other(
+                "asyncio TLS client connection failed",
+            )))
+        }
     } else {
         Ok(wrapped)
     }
@@ -518,4 +650,183 @@ pub(super) fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut 
     }
     let tcp = unsafe { TcpStream::from_raw_socket(raw_fd as RawSocket) };
     tls_client_wrap_stream_native(tcp, server_name)
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+    use crate::test_support::RuntimeTestTransaction;
+    use crate::{alloc_list, alloc_string, alloc_tuple, clear_exception, inc_ref_bits};
+
+    fn addrinfo_row(py: &PyToken<'_>, family: i32, host: &str, scope: Option<(u32, u32)>) -> u64 {
+        let host = alloc_string(py, host.as_bytes());
+        assert!(!host.is_null());
+        let host = MoltObject::from_ptr(host).bits();
+        let mut address = vec![host, MoltObject::from_int(443).bits()];
+        if let Some((flow, scope)) = scope {
+            address.extend([
+                MoltObject::from_int(i64::from(flow)).bits(),
+                MoltObject::from_int(i64::from(scope)).bits(),
+            ]);
+        }
+        let address = alloc_tuple(py, &address);
+        dec_ref_bits(py, host);
+        assert!(!address.is_null());
+        let address = MoltObject::from_ptr(address).bits();
+        let row = alloc_tuple(
+            py,
+            &[
+                MoltObject::from_int(i64::from(family)).bits(),
+                MoltObject::from_int(i64::from(libc::SOCK_STREAM)).bits(),
+                MoltObject::from_int(i64::from(libc::IPPROTO_TCP)).bits(),
+                MoltObject::none().bits(),
+                address,
+            ],
+        );
+        dec_ref_bits(py, address);
+        assert!(!row.is_null());
+        MoltObject::from_ptr(row).bits()
+    }
+
+    #[test]
+    fn tls_addrinfo_adapter_preserves_numeric_order_ipv6_scope_and_ownership() {
+        let _guard = RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let v4 = addrinfo_row(py, libc::AF_INET, "127.0.0.1", None);
+            let v6 = addrinfo_row(py, libc::AF_INET6, "fe80::1", Some((0x10002, 9)));
+            let result = alloc_list(py, &[v4, v6]);
+            assert!(!result.is_null());
+            dec_ref_bits(py, v4);
+            dec_ref_bits(py, v6);
+            let bits = MoltObject::from_ptr(result).bits();
+            let refs = || unsafe { (*crate::header_from_obj_ptr(result)).ref_count_snapshot() };
+            let baseline = refs();
+            inc_ref_bits(py, bits); // The adapter consumes one distinct owned result.
+            let result = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), bits) };
+            let addresses = tls_addresses_from_result(py, result).unwrap();
+            assert_eq!(refs(), baseline);
+            assert_eq!(
+                addresses,
+                vec![
+                    "127.0.0.1:443".parse::<SocketAddr>().unwrap(),
+                    SocketAddr::V6(std::net::SocketAddrV6::new(
+                        "fe80::1".parse().unwrap(),
+                        443,
+                        0x10002,
+                        9
+                    )),
+                ]
+            );
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, bits);
+        });
+    }
+
+    #[test]
+    fn tls_resolver_pending_keeps_exact_class_errno_and_exception_owner() {
+        let _guard = RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (name, code) in [("gaierror", 9), ("OSError", 9), ("BlockingIOError", 11)] {
+                let class = crate::builtins::exceptions::exception_type_bits_from_name(py, name);
+                crate::builtins::exceptions::raise_os_error_errno_with_class::<u64>(
+                    py,
+                    class,
+                    code,
+                    "resolver detail",
+                );
+                let original = crate::molt_exception_last_pending();
+                let result = unsafe {
+                    OwnedRuntimeValue::from_owned_bits(py.core_token(), MoltObject::none().bits())
+                };
+                assert!(matches!(
+                    tls_addresses_from_result(py, result),
+                    Err(TlsConnectError::PendingPython)
+                ));
+                assert_eq!(
+                    crate::builtins::exceptions::exception_last_bits_noinc(py),
+                    Some(original)
+                );
+                assert_eq!(
+                    crate::builtins::exceptions::exception_class(py, original)
+                        .unwrap()
+                        .bits(),
+                    class
+                );
+                let errno_name = crate::attr_name_bits_from_bytes(py, b"errno").unwrap();
+                let errno =
+                    crate::molt_getattr_builtin(original, errno_name, MoltObject::none().bits());
+                assert_eq!(to_i64(obj_from_bits(errno)), Some(code));
+                dec_ref_bits(py, errno_name);
+                dec_ref_bits(py, errno);
+                clear_exception(py);
+                dec_ref_bits(py, original);
+            }
+        });
+    }
+
+    #[test]
+    fn tls_resolver_missing_or_nonnumeric_results_are_explicit_protocol_errors() {
+        let _guard = RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let bad = addrinfo_row(py, libc::AF_INET, "must-not-resolve.invalid", None);
+            let nonnumeric = alloc_list(py, &[bad]);
+            dec_ref_bits(py, bad);
+            assert!(!nonnumeric.is_null());
+            let empty = alloc_list(py, &[]);
+            assert!(!empty.is_null());
+            for result in [
+                MoltObject::none().bits(),
+                MoltObject::from_ptr(empty).bits(),
+                MoltObject::from_ptr(nonnumeric).bits(),
+            ] {
+                let result = unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), result) };
+                assert!(matches!(
+                    tls_addresses_from_result(py, result),
+                    Err(TlsConnectError::PendingPython)
+                ));
+                let error = crate::molt_exception_last_pending();
+                let class = crate::builtins::exceptions::exception_class(py, error).unwrap();
+                assert_eq!(
+                    class.bits(),
+                    crate::builtins::exceptions::exception_type_bits_from_name(py, "RuntimeError")
+                );
+                clear_exception(py);
+                dec_ref_bits(py, error);
+            }
+        });
+    }
+
+    #[test]
+    fn tls_connect_requires_canonical_net_resolve_in_addition_to_ssl_connect() {
+        RuntimeTestTransaction::with_explicit_capabilities("ssl.connect", |py| {
+            let host = alloc_string(py, b"127.0.0.1");
+            assert!(!host.is_null());
+            let host = MoltObject::from_ptr(host).bits();
+            let result = unsafe {
+                super::super::molt_asyncio_tls_client_connect_new(
+                    host,
+                    MoltObject::from_int(443).bits(),
+                    MoltObject::none().bits(),
+                )
+            };
+            dec_ref_bits(py, host);
+            assert!(obj_from_bits(result).is_none());
+            let error = crate::molt_exception_last_pending();
+            assert_eq!(
+                crate::type_name(py, obj_from_bits(error)),
+                "PermissionError"
+            );
+            let message = crate::builtins::exceptions::format_exception_message(
+                py,
+                obj_from_bits(error).as_ptr().unwrap(),
+            );
+            assert!(message.contains("net.resolve"), "{message}");
+            assert!(
+                !message.contains("ssl.connect"),
+                "SSL admission should have passed: {message}"
+            );
+            clear_exception(py);
+            dec_ref_bits(py, error);
+        });
+    }
 }

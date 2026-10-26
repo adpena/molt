@@ -73,8 +73,9 @@ defines test selection, source-change checks, and the exact cross-target pass la
 - Differential testing against CPython as a core validation path.
 - WASM build workflows, with cross-target parity still incomplete and actively
   tracked. The Node runner uses WASI plus Molt's host imports and deployment
-  manifest. Deployments need the matching runner assets or an admitted host
-  adapter; a linked module alone does not certify an arbitrary WASI host.
+  manifest. Current deployments require manifest version 3; rebuild older
+  deployments with the current compiler and matching runner assets. Deployments
+  need the matching runner assets or an admitted host adapter; a linked module alone does not certify an arbitrary WASI host.
 - Third-party integration through shared import/runtime primitives and
   source-recompiled extensions. C-API symbol coverage alone does not establish
   package compatibility. See the [extension ABI contract](docs/spec/areas/compat/contracts/libmolt_extension_abi_contract.md)

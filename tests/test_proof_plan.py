@@ -1050,10 +1050,16 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "native_extern_linkage",
         "rust_transpiler_preview",
         "wasm_link_facts_cli",
+        "host_diagnostics",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
+    features = set(core.argv[core.argv.index("--features") + 1].split(","))
+    assert "--no-default-features" in core.argv
+    # These source families are cfg-out without their actual network producer.
+    # A matching libtest filter alone cannot demonstrate test execution.
+    assert "molt-runtime/stdlib_net" in features
     filters = core.argv[core.argv.index("--") + 1 :]
     # HF-487 removes the disabled-feature stub producer, including its tests.
     # A stale filter silently selects no test and cannot qualify that boundary.
@@ -1065,6 +1071,9 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "synthetic_errno::",
         "async_rt::sockets::wait::tests::",
         "async_rt::sockets_net::tests::",
+        "builtins::io::tests::physical_write_blocking_errno_preserves_target_public_domain",
+        "builtins::io::tests::text_tell_adopts_real_file_seek_error_without_treating_bad_fd_as_pipe",
+        "builtins::io::tests::append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pipe",
         "wasm_abi::",
         "async_rt::channels::",
         "concurrency::gil::tests::",
@@ -10611,7 +10620,20 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
         "--out",
         "proof-results/compiled-contracts/macos",
     )
-    assert set(host.toolchains) == {"python", "uv", "rustc", "cargo"}
+    assert set(host.toolchains) == {
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "node",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt",
+    }
+    assert set(PLAN.required_toolchains(resource)) <= set(
+        PLAN.required_toolchains(host)
+    )
     assert proof_plan.cargo_native_units(host.data) == {"target": ["c", "c++"]}
     assert proof_plan.cargo_native_units(resource.data) == {"target": ["c", "c++"]}
     assert set(resource.toolchains) == {
@@ -10670,7 +10692,6 @@ def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admissio
     required = (
         "uses: ./.github/actions/setup-llvm",
         "uses: ./.github/actions/setup-binaryen",
-        "python -m molt.tool_releases provision node",
         "python -m molt.tool_releases provision wasm-tools",
     )
     for requirement in required:
@@ -10684,6 +10705,26 @@ def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admissio
         if requirement.endswith("setup-llvm"):
             assert "profile: wasm" in step and 'wasi: "true"' in step
             assert "profile: full" not in step
+
+    node_steps = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if "python -m molt.tool_releases provision node" in step
+    ]
+    assert len(node_steps) == 1
+    index, node_step = node_steps[0]
+    assert index < admission
+    assert "if: contains(matrix.toolchains, 'node')" in node_step
+    assert "matrix.cell ==" not in node_step
+    rows = {command.id: command for command in PLAN.commands}
+    for command_id in (
+        "python.unit.surface-contracts",
+        "python.unit.surface-contracts.macos",
+    ):
+        command = rows[command_id]
+        assert set(command.toolchains) == {"python", "uv", "node"}
+        assert "tests/test_generate_worker.py" in command.argv
+        assert not command.dependencies
 
 
 def test_compiled_preparation_directory_survives_merged_receipt_transport(
@@ -11005,6 +11046,26 @@ def test_host_error_abi_laws_have_binary_execution_ownership() -> None:
     )
     assert command.family == "rust"
     assert "--bins" in command.argv
+    targets = {
+        command.argv[index + 1]
+        for index, argument in enumerate(command.argv[:-1])
+        if argument == "--test"
+    }
+    assert "host_diagnostics" in targets
+    from tools import molt_dev_policy
+
+    rule = next(
+        rule
+        for rule in molt_dev_policy.GateConfig.load(PLAN.path).rules
+        if rule.name == "wasm-host"
+    )
+    gate = next(gate for gate in rule.gates if "cargo test" in gate)
+    assert "--bin molt-wasm-host" in gate
+    assert {
+        "socket_host::tests::",
+        "main_tests::runtime_manifest_",
+        "main_tests::explicit_wasi_command_",
+    } <= set(gate.split())
     packages = {
         command.argv[index + 1]
         for index, argument in enumerate(command.argv[:-1])

@@ -34,6 +34,9 @@ def render_py(
     lines.append(
         "from collections.abc import Mapping\nfrom types import MappingProxyType\nfrom typing import Literal\n\n"
     )
+    lines.append(
+        f"WASM_EXECUTION_MANIFEST_VERSION: int = {data['deployment_manifest']['version']}\n\n"
+    )
     for constant, alias, values in (
         ("WASM_SYNTHETIC_ERRNO", "WasmSyntheticErrnoName", synthetic_errno_table(data)),
         ("WASM_RESOLVER_ERROR", "WasmResolverErrorName", resolver_error_table(data)),

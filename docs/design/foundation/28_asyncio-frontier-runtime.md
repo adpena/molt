@@ -38,6 +38,37 @@ both fixes land). -->
 **Document status:** Design (2026-06-06). Architecture author: background architect agent, read-only audit of live tree.
 **Scope:** Runtime complement to compile-side doc 26. Defines the runtime architecture that delivers uvloop-class or better single-core throughput, structured-concurrency-sound cancellation, io_uring/kqueue integration, zero-copy buffer management, and reliable shutdown semantics. Does not duplicate doc 26's compile-side content; interfaces with it at precisely-defined handoff points.
 
+### Native TLS resolver boundary
+
+The native socket provider (`molt_has_net_io`) resolves TLS endpoints through
+the existing `molt_socket_getaddrinfo` authority before TCP connection. Its
+canonical `gaierror` and native `EAI_SYSTEM` exceptions remain the same pending
+Python objects; the TLS caller wraps only actual transport I/O failures.
+Malformed or absent resolver output without an exception is an explicit
+protocol `RuntimeError`. Existing TLS handshake error behavior is retained.
+This follows CPython 3.12.15's
+[`BaseEventLoop.create_connection`](https://github.com/python/cpython/blob/v3.12.15/Lib/asyncio/base_events.py#L993)
+ordering: resolution precedes connection attempts, so resolver failures retain
+their identity. The row adapter accepts numeric IPv4/IPv6 addresses, preserves
+IPv6 flow/scope and supplies a `SocketAddr` slice to connect, preventing a second
+DNS lookup through Rust's string-based `ToSocketAddrs` path.
+
+TLS admission includes its existing `SslConnect` requirement plus the resolver's
+canonical `NetResolve` stage, including numeric hosts. There is no TLS-specific
+capability registry or numeric-host bypass. Native C `getaddrinfo` and
+`getnameinfo` calls release the GIL with Rust-owned input/output storage and
+capture a failed call's native errno before reacquiring it; Python allocation
+and exception publication occur while the GIL is held.
+
+This reuse adds temporary Python addrinfo rows, scoped row snapshots and a Rust
+address vector during cold connection setup. Work and memory scale with the
+number of resolved addresses; Python owners retire before connection while the
+Rust vector supplies its numeric slice. These are explicit extra allocations
+relative to the previous opaque standard-library resolver, not a measured
+performance improvement. The existing invalid-host TLS differential and the
+runtime channel resolver controls own exception, address and capability
+acceptance. This native boundary does not establish WASM TLS support.
+
 ---
 
 ## Part 1 — Audit With Numbers: Current Runtime Cost Inventory

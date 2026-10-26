@@ -2629,7 +2629,7 @@ def test_probe_reader_selection_uses_explicit_source_without_ambient_fallback(
 
 
 @pytest.mark.parametrize(
-    "name", ["default_paths", "windows_process_api", "flag_strings"]
+    "name", ["default_paths", "windows_process_api", "flag_strings", "process_launch"]
 )
 def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     tmp_path,

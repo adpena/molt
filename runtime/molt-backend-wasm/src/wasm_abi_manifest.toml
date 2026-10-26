@@ -8886,3 +8886,7 @@ unknown = "EIO"
 
 [wasi_errno_disposition]
 ENOTCAPABLE = "EACCES"
+
+# Semantic host/runtime ABI of linked and split deployment manifests.
+[deployment_manifest]
+version = 3

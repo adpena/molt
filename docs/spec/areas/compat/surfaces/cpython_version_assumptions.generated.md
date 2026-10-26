@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 66
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 347
+- `scattered-assumption` files: 349
 
 ## Files
 
@@ -259,6 +259,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-passes/src/tir/passes/sccp/eval/tests.rs` | 6 | scattered-assumption | `3.0` |
 | `runtime/molt-passes/src/tir/passes/sccp/tests.rs` | 5 | scattered-assumption | `3.12` |
 | `runtime/molt-passes/src/tir/passes/value_range/tests.rs` | 1 | scattered-assumption | `3.2` |
+| `runtime/molt-runtime/src/async_rt/channels/websocket/tls_native.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/async_rt/event_loop.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/async_rt/generators.rs` | 1 | authority-routed | `3.13` |
 | `runtime/molt-runtime/src/builtins/abc.rs` | 1 | scattered-assumption | `3.14` |
@@ -393,6 +394,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-stdlib-text/src/codec_aliases_generated.rs` | 4 | scattered-assumption | `3.4` |
 | `runtime/molt-stdlib-text/src/token_metadata_generated.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs` | 1 | scattered-assumption | `3.0` |
+| `runtime/molt-wasm-host/src/main_tests.rs` | 1 | scattered-assumption | `3.0` |
 | `config/ci_resource_policy.toml` | 1 | scattered-assumption | `3.0` |
 | `config/codec_aliases.toml` | 3 | scattered-assumption | `3.4` |
 | `config/cpython_coverage.toml` | 21 | authority-routed | `3.12` |

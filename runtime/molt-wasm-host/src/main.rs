@@ -332,6 +332,16 @@ fn execute_loaded_guest(
     };
     let needs_runtime = has_runtime_imports(output_module);
     validate_execution_imports(is_wasi_command, use_linked, needs_runtime)?;
+    if is_wasi_command
+        && output_module.imports().any(|import| {
+            matches!(import.module(), "molt_runtime" | "molt_native")
+                || (import.module() == "env" && import.name().starts_with("molt_"))
+        })
+    {
+        bail!(
+            "Molt host imports require a current deployment manifest; use manifest.json instead of --wasi-command"
+        );
+    }
 
     match kind {
         LoadedGuestKind::WasiCommand => {

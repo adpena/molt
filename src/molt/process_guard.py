@@ -278,6 +278,7 @@ def run_completed_command(
             _command_source_root(guard_source_root),
             os.environ if env is None else env,
             cwd,
+            command,
         ) as state_owner:
             process = subprocess.Popen(
                 native_popen_command(command),

@@ -28,6 +28,71 @@ if TYPE_CHECKING:
     from molt.toolchain_identity import StableRegularFileIdentity
     from molt.wasm_linking_symbols import WasmLinkingSymbolTable
 
+
+def require_current_wasm_execution_manifest(payload: object) -> Mapping[str, object]:
+    from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
+    if (
+        not isinstance(payload, Mapping)
+        or type(payload.get("version")) is not int
+        or payload.get("version") != WASM_EXECUTION_MANIFEST_VERSION
+    ):
+        raise ValueError(
+            f"Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}; "
+            "rebuild this deployment with the current Molt compiler"
+        )
+    return payload
+
+
+def wasm_execution_manifest_module_descriptor(
+    payload: object, role: str
+) -> Mapping[str, object]:
+    manifest = require_current_wasm_execution_manifest(payload)
+    modules = manifest.get("modules")
+    descriptor = modules.get(role) if isinstance(modules, Mapping) else None
+    if not isinstance(descriptor, Mapping):
+        raise ValueError(f"WASM execution manifest missing modules.{role}")
+    name, size, digest = (
+        descriptor.get("path"),
+        descriptor.get("size"),
+        descriptor.get("sha256"),
+    )
+    if (
+        not isinstance(name, str)
+        or not name
+        or name in {".", ".."}
+        or any(character in name for character in "/\\:")
+    ):
+        raise ValueError(
+            f"WASM execution manifest modules.{role}.path must name an adjacent file"
+        )
+    if type(size) is not int or size < 0:
+        raise ValueError(f"WASM execution manifest modules.{role}.size is invalid")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError(f"WASM execution manifest modules.{role}.sha256 is invalid")
+    return descriptor
+
+
+def verify_wasm_execution_manifest_module(
+    payload: object, manifest_path: Path, role: str
+) -> StableRegularFileIdentity:
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    descriptor = wasm_execution_manifest_module_descriptor(payload, role)
+    observed = stable_regular_file_identity(
+        manifest_path.parent / str(descriptor["path"]), label=f"WASM deployment {role}"
+    )
+    if observed.size != descriptor["size"]:
+        raise ValueError(f"WASM execution manifest modules.{role} size mismatch")
+    if observed.sha256 != descriptor["sha256"]:
+        raise ValueError(f"WASM execution manifest modules.{role} SHA-256 mismatch")
+    return observed
+
+
 WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
 WASM_FINAL_ARTIFACT_FORBIDDEN_CUSTOM_SECTIONS = frozenset({"linking"})
 WASM_RUNTIME_MANIFEST_NAME = "manifest.json"
@@ -79,6 +144,7 @@ def wasm_runtime_manifest_path(artifact: Path) -> Path:
 
 def wasm_runtime_manifest_entry_path(manifest: Path) -> Path:
     payload = json.loads(manifest.read_text(encoding="utf-8"))
+    require_current_wasm_execution_manifest(payload)
     mode = payload.get("mode")
     label = {"linked": "linked", "split-runtime": "app"}.get(mode)
     if label is None:
@@ -107,6 +173,7 @@ def copy_wasm_runtime_manifest_for_artifact(
     """
     source_manifest = wasm_runtime_manifest_path(source_artifact)
     payload = json.loads(source_manifest.read_text(encoding="utf-8"))
+    require_current_wasm_execution_manifest(payload)
     modules = payload.get("modules")
     if not isinstance(modules, dict):
         raise ValueError(

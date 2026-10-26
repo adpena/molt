@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, cast
 
+from molt import process_launch
 from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.process_environment import NameRule, ProcessEnvironment
 from molt.python_environment_location import (
@@ -2468,9 +2469,7 @@ def _search_child_executable(
     )
     if candidate.is_absolute() or any(separator in token for separator in "/\\"):
         return process_image_capture.custody_path(cwd / candidate)
-    path_entries = os.get_exec_path(
-        child_env if isinstance(child_env, Mapping) else None
-    )
+    path_entries = process_launch.posix_search(child_env, os.fspath(cwd)).path
     extensions = [""]
     if os.name == "nt" and not candidate.suffix:
         raw_extensions = None

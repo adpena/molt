@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import copy
 import hashlib
 import io
@@ -33,7 +35,11 @@ def _wasm_stage_inputs(tmp_path):
         "size": len(data),
     }
     raw = _json(
-        {"mode": "linked", "modules": {"linked": {**artifact, "path": module.name}}}
+        {
+            "version": WASM_EXECUTION_MANIFEST_VERSION,
+            "mode": "linked",
+            "modules": {"linked": {**artifact, "path": module.name}},
+        }
     )
     manifest = source / "manifest.json"
     manifest.write_bytes(raw)
@@ -110,7 +116,13 @@ def test_staged_manifest_decode_is_bound_to_expected_bytes(tmp_path, monkeypatch
     def replace_before_decode(path, **kwargs):
         path.chmod(0o644)
         path.write_bytes(
-            _json({"mode": "linked", "modules": {"linked": {"path": "other.wasm"}}})
+            _json(
+                {
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "mode": "linked",
+                    "modules": {"linked": {"path": "other.wasm"}},
+                }
+            )
         )
         return real_capture(path, **kwargs)
 

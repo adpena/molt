@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 
 #[derive(Debug, Deserialize)]
 struct RuntimeManifest {
-    version: u32,
     mode: String,
     modules: RuntimeManifestModules,
 }
@@ -199,15 +198,16 @@ pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedE
             manifest_path.display()
         )
     })?;
-    let manifest: RuntimeManifest = serde_json::from_slice(&manifest_bytes).with_context(|| {
-        format!(
-            "failed to decode runtime manifest: {}",
-            manifest_path.display()
-        )
-    })?;
-    if manifest.version != 2 {
-        bail!("runtime manifest must use version 2");
+    let value: JsonValue =
+        serde_json::from_slice(&manifest_bytes).context("failed to decode runtime manifest")?;
+    let expected = molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
+    if value.get("version").and_then(JsonValue::as_u64) != Some(u64::from(expected)) {
+        bail!(
+            "Molt deployment manifest version must be {expected}; rebuild this deployment with the current Molt compiler"
+        );
     }
+    let manifest: RuntimeManifest =
+        serde_json::from_value(value).context("failed to decode runtime manifest fields")?;
     let (main, runtime, linked) = match manifest.mode.as_str() {
         "linked" => (
             resolve_manifest_module(&manifest_path, manifest.modules.linked.as_ref(), "linked")?,

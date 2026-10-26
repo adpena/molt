@@ -5,6 +5,7 @@ use super::{
     parse_host_args, resolve_execution, resolve_execution_modules, select_manifest_path,
     validate_execution_imports, validate_guest_module_entrypoint,
 };
+use molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
 use molt_wasm_host::sha256_hex;
 use std::collections::HashMap;
 use std::fs;
@@ -97,7 +98,7 @@ fn runtime_manifest_fixture(label: &str, module_bytes: &[u8], digest: &str) -> t
     fs::write(
         root.path().join("manifest.json"),
         format!(
-            r#"{{"version":2,"mode":"linked","modules":{{"linked":{{"path":"program.wasm","size":{},"sha256":"{digest}"}}}}}}"#,
+            r#"{{"version":{WASM_EXECUTION_MANIFEST_VERSION},"mode":"linked","modules":{{"linked":{{"path":"program.wasm","size":{},"sha256":"{digest}"}}}}}}"#,
             module_bytes.len()
         ),
     )
@@ -132,7 +133,7 @@ fn runtime_manifest_resolves_and_verifies_split_modules() {
     fs::write(
         root.path().join("manifest.json"),
         format!(
-            r#"{{"version":2,"mode":"split-runtime","modules":{{"app":{{"path":"program.wasm","size":{},"sha256":"{app_digest}"}},"runtime":{{"path":"runtime.wasm","size":{},"sha256":"{runtime_digest}"}}}}}}"#,
+            r#"{{"version":{WASM_EXECUTION_MANIFEST_VERSION},"mode":"split-runtime","modules":{{"app":{{"path":"program.wasm","size":{},"sha256":"{app_digest}"}},"runtime":{{"path":"runtime.wasm","size":{},"sha256":"{runtime_digest}"}}}}}}"#,
             app_bytes.len(),
             runtime_bytes.len(),
         ),
@@ -198,14 +199,38 @@ fn runtime_manifest_rejects_version_and_nonportable_asset_paths() {
     let root = runtime_manifest_fixture("manifest-admission", bytes, &sha256_hex(bytes));
     let path = root.path().join("manifest.json");
     let original: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    for version in [0, 1, 3] {
+    // Remove the module: an old receiver must be rejected before even reading
+    // its bytes, rather than reaching a misleading missing-artifact failure.
+    fs::remove_file(root.path().join("program.wasm")).unwrap();
+    for version in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!(0)),
+        Some(serde_json::json!(1)),
+        Some(serde_json::json!(2)),
+        Some(serde_json::json!(4)),
+        Some(serde_json::json!(99)),
+        Some(serde_json::json!(true)),
+        Some(serde_json::json!(false)),
+        Some(serde_json::json!("3")),
+        Some(serde_json::json!(3.0)),
+    ] {
         let mut manifest = original.clone();
-        manifest["version"] = version.into();
+        match version {
+            Some(version) => manifest["version"] = version,
+            None => {
+                manifest.as_object_mut().unwrap().remove("version");
+            }
+        }
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let error =
             resolve_execution_modules(Some(path.to_string_lossy().into_owned())).unwrap_err();
-        assert!(error.to_string().contains("version 2"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("Molt deployment manifest version must be 3"),
+            "{error:#}",
+        );
     }
+    fs::write(root.path().join("program.wasm"), bytes).unwrap();
     for asset in [
         "../program.wasm",
         "/program.wasm",
@@ -230,7 +255,8 @@ fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
         .tempdir()
         .expect("create command fixture root");
     let module = root.path().join("command.wasm");
-    fs::write(&module, b"command wasm fixture").expect("write command fixture");
+    let bytes = br#"(module (func (export "_start")))"#;
+    fs::write(&module, bytes).expect("write command fixture");
 
     let resolved = resolve_execution(ExecutionRequest::WasiCommand {
         module: module.to_string_lossy().into_owned(),
@@ -239,9 +265,64 @@ fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
     match resolved {
         ResolvedExecution::WasiCommand { module: source } => {
             assert_eq!(source.path(), module);
-            assert_eq!(source.bytes(), b"command wasm fixture");
+            assert_eq!(source.bytes(), bytes);
+            let engine = build_engine().expect("production host engine");
+            let command = Module::new(&engine, source.bytes()).unwrap();
+            assert_eq!(
+                execute_test_guest(
+                    &engine,
+                    &command,
+                    None,
+                    LoadedGuestKind::WasiCommand,
+                    &[],
+                    None
+                )
+                .unwrap(),
+                GuestTermination::Returned,
+            );
         }
         ResolvedExecution::MoltApplication(_) => panic!("command resolved as application"),
+    }
+}
+
+#[test]
+fn explicit_wasi_command_cannot_import_molt_without_current_manifest() {
+    let engine = build_engine().expect("production host engine");
+    for (namespace, name) in [
+        ("env", "molt_socket_getaddrinfo_host"),
+        ("molt_runtime", "molt_int_from_i64"),
+        ("molt_native", "native_entry"),
+    ] {
+        let module = Module::new(
+            &engine,
+            format!(
+                r#"(module
+                (import "{namespace}" "{name}" (func))
+                (func $unreachable_start unreachable) (start $unreachable_start)
+                (func (export "_start")))"#
+            ),
+        )
+        .unwrap();
+        let error = execute_test_guest(
+            &engine,
+            &module,
+            None,
+            LoadedGuestKind::WasiCommand,
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("Molt host imports require a current deployment manifest"),
+            "{namespace}.{name}: {error:#}",
+        );
+        assert!(
+            !error
+                .chain()
+                .any(|cause| cause.to_string().contains("unreachable")),
+            "command started before import admission: {error:#}",
+        );
     }
 }
 

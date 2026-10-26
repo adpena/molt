@@ -1,9 +1,46 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import hashlib
 import json
 import os
 from pathlib import Path
+
+
+EMPTY_WASM_MODULE = b"\x00asm\x01\x00\x00\x00"
+
+
+def _manifest_payload(
+    mode: str, modules: dict[str, dict[str, object]]
+) -> dict[str, object]:
+    return {
+        "version": WASM_EXECUTION_MANIFEST_VERSION,
+        "mode": mode,
+        "modules": modules,
+        "entry": {
+            "module": "linked" if mode == "linked" else "app",
+            "function": "molt_main",
+        },
+    }
+
+
+def split_wasm_execution_manifest(app: bytes, runtime: bytes) -> dict[str, object]:
+    """Bind the generator's fixed lexical files to the actual fixture bytes."""
+    return _manifest_payload(
+        "split-runtime",
+        {
+            label: {
+                "path": filename,
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            for label, filename, data in (
+                ("app", "app.wasm", app),
+                ("runtime", "molt_runtime.wasm", runtime),
+            )
+        },
+    )
 
 
 def write_wasm_execution_manifest(
@@ -37,15 +74,7 @@ def write_wasm_execution_manifest(
     manifest = root / "manifest.json"
     manifest.write_text(
         json.dumps(
-            {
-                "version": 2,
-                "mode": mode,
-                "modules": modules,
-                "entry": {
-                    "module": "linked" if linked is not None else "app",
-                    "function": "molt_main",
-                },
-            },
+            _manifest_payload(mode, modules),
             indent=2,
             sort_keys=True,
         )

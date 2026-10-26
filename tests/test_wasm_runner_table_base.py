@@ -24,6 +24,54 @@ DEFAULT_WASM_APP_TABLE_BASE = 256
 TEST_SHARED_WASM_TABLE_BASE = 4096
 
 
+def test_node_manifest_rejects_incompatible_receiver_before_module_read(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    script = (
+        "const manifestPath = "
+        + json.dumps(str(manifest_path))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const {resolveWasmPaths} = require('./wasm/run_wasm.js');
+const invalid = [undefined, null, 0, 1, 2, 4, 99, true, false, '3', 3.5];
+const originalRead = fs.readFileSync;
+let cases = 0;
+for (const mode of ['linked', 'split-runtime']) {
+  for (const version of invalid) {
+    const descriptor = {path: 'must-not-read.wasm', size: 8, sha256: '0'.repeat(64)};
+    const manifest = {version, mode, modules: mode === 'linked'
+      ? {linked: descriptor} : {app: descriptor, runtime: descriptor}};
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    let moduleReads = 0;
+    fs.readFileSync = function(selected, ...args) {
+      if (path.resolve(String(selected)) !== path.resolve(manifestPath)) {
+        moduleReads++;
+        throw new Error('module read attempted before receiver admission');
+      }
+      return originalRead.call(this, selected, ...args);
+    };
+    try {
+      assert.throws(() => resolveWasmPaths({manifestPath}),
+        /Molt deployment manifest version must be 3/);
+      assert.equal(moduleReads, 0);
+      cases++;
+    } finally { fs.readFileSync = originalRead; }
+  }
+}
+console.log(JSON.stringify({cases}));
+"""
+    )
+    result = _run_wasm_test_process(
+        ["node", "-e", script], cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"cases": 22}
+
+
 @pytest.mark.parametrize("capture", [False, True])
 def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
     tmp_path: Path, capture: bool
@@ -1830,6 +1878,8 @@ const transport = loaded.exports.transport;
     env: {memory, molt_socket_getaddrinfo_host: transport.socketHostGetaddrinfo},
   });
   const statuses = [];
+  const lengthControls = [];
+  let requiredLength;
   try {
     for (const host of ['ok.test', 'resolver.test', 'system.test', 'opaque.test', 'unknown.test', 'ok.test']) {
       try {
@@ -1841,8 +1891,13 @@ const transport = loaded.exports.transport;
         statuses.push({type: error.constructor.name, diagnostic: error.message});
       }
     }
+    for (const capacity of [0, 1024]) {
+      lengthControls.push(instance.exports.lookup(64, 7, 512, 2, 2, 1, 6, 0, 1024, capacity, 65535));
+    }
+    lengthControls.push(instance.exports.lookup(64, 7, 512, 2, 2, 1, 6, 0, 1024, 0, 2048));
+    requiredLength = new DataView(memory.buffer).getUint32(2048, true);
   } finally { await transport.close(); }
-  console.log(JSON.stringify(statuses));
+  console.log(JSON.stringify({statuses, lengthControls, requiredLength}));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = _run_wasm_test_process(
@@ -1852,7 +1907,10 @@ const transport = loaded.exports.transport;
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    statuses = json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    statuses = payload["statuses"]
+    assert payload["lengthControls"] == [-14, -14, -12]
+    assert payload["requiredLength"] > 0
     assert statuses[:3] == [0, 9, -9]
     assert (
         statuses[-1] == 0
@@ -1862,3 +1920,75 @@ const transport = loaded.exports.transport;
         assert "getaddrinfo refused" in status["diagnostic"]
     assert "unsupported resolver error identity EAI_SYSTEM" in statuses[3]["diagnostic"]
     assert "unsupported resolver error identity EAI_VENDOR" in statuses[4]["diagnostic"]
+
+
+def test_node_socket_error_prefix_executes_actual_import_and_native_reset(
+    tmp_path: Path,
+) -> None:
+    script = r"""
+const fs = require('node:fs');
+const Module = require('node:module');
+const path = require('node:path');
+const {Worker} = require('node:worker_threads');
+const server = new Worker(`
+  const {parentPort} = require('node:worker_threads');
+  const net = require('node:net');
+  const server = net.createServer(socket => socket.once('data', bytes => {
+    socket.resetAndDestroy();
+    parentPort.postMessage({type: 'reset', byte: bytes[0]});
+  }));
+  server.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));
+`, {eval: true});
+const filename = path.resolve('wasm/run_wasm.js');
+const loaded = new Module(filename, module);
+loaded.filename = filename;
+loaded.paths = Module._nodeModulePaths(path.dirname(filename));
+loaded._compile(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.socket = { socketHostNew, socketHostConnect, socketHostWait, socketHostGetsockopt, socketHostSend, socketHostClose, setWasmMemory, close: () => socketWorkerClient.close() };', filename);
+const host = loaded.exports.socket;
+(async () => {
+  try {
+    const port = await new Promise((resolve, reject) => { server.once('message', resolve); server.once('error', reject); });
+    const text = value => [...Buffer.from(value)];
+    const name = value => [text(value).length, ...text(value)];
+    const section = (id, body) => [id, body.length, ...body];
+    const bytes = [0,97,115,109,1,0,0,0,
+      ...section(1, [1, 0x60, 6, 0x7e, ...Array(5).fill(0x7f), 1, 0x7f]),
+      ...section(2, [2, ...name('env'), ...name('molt_socket_getsockopt_host'), 0, 0, ...name('env'), ...name('memory'), 2, 0, 1]),
+      ...section(7, [2, ...name('get'), 0, 0, ...name('memory'), 2, 0])];
+    const memory = new WebAssembly.Memory({initial: 1});
+    host.setWasmMemory(memory);
+    const {instance} = await WebAssembly.instantiate(new Uint8Array(bytes), {env: {memory, molt_socket_getsockopt_host: host.socketHostGetsockopt}});
+    const view = new DataView(memory.buffer);
+    const results = [];
+    for (const capacity of [1, 4]) {
+      const reset = new Promise((resolve, reject) => { server.once('message', resolve); server.once('error', reject); });
+      const handle = host.socketHostNew(2, 1, 6, -1);
+      try {
+        new Uint8Array(memory.buffer).set([2, 0, port & 255, port >> 8, 127, 0, 0, 1], 64);
+        const connected = host.socketHostConnect(handle, 64, 8);
+        if (connected !== 0 && connected !== -115) throw new Error(`connect failed ${connected}`);
+        if (host.socketHostWait(handle, 2, 2000) < 0) throw new Error('connect readiness failed');
+        new Uint8Array(memory.buffer)[512] = 7;
+        if (host.socketHostSend(handle, 512, 1, 0) !== 1) throw new Error('handshake byte was not sent');
+        const observed = await reset;
+        if (observed.type !== 'reset' || observed.byte !== 7) throw new Error('server did not reset after the actual handshake byte');
+        if (host.socketHostWait(handle, 1, 2000) < 0) throw new Error('reset readiness failed');
+        new Uint8Array(memory.buffer).set([165,165,165,165], 128);
+        const status = instance.exports.get(handle, 1, 4, 128, capacity, 256);
+        results.push({status, length: view.getUint32(256, true), bytes: [...new Uint8Array(memory.buffer, 128, 4)]});
+        if (instance.exports.get(handle, 1, 4, 128, -1, 256) !== -22) throw new Error('negative option capacity accepted');
+        if (instance.exports.get(handle, 1, 4, 128, 4, 65535) !== -14) throw new Error('invalid option length pointer accepted');
+      } finally { host.socketHostClose(handle); }
+    }
+    console.log(JSON.stringify(results));
+  } finally { await server.terminate(); await host.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = _run_wasm_test_process(
+        ["node", "-e", script], cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        {"status": 0, "length": 1, "bytes": [104, 165, 165, 165]},
+        {"status": 0, "length": 4, "bytes": [104, 0, 0, 0]},
+    ]

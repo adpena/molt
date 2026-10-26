@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import split_wasm_execution_manifest
+
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import hashlib
 import json
 import os
@@ -195,7 +199,11 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
             + _wasm_section(10, _wasm_vec(runtime_bodies))
         )
     (tmp_path / "app.wasm").write_bytes(app)
+    (tmp_path / "molt_runtime.wasm").write_bytes((tmp_path / "exact.wasm").read_bytes())
     worker = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            app, (tmp_path / "molt_runtime.wasm").read_bytes()
+        ),
         resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
@@ -334,7 +342,7 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
     )
 
     return {
-        "version": 2,
+        "version": WASM_EXECUTION_MANIFEST_VERSION,
         "mode": "split-runtime",
         "shared_memory_initial_pages": 1,
         "shared_table_initial": 1,

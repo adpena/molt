@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 400 |
+| Hashed executable authority inputs | 1 | 402 |
 | Local path rules | 35 | 93 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -46,18 +46,18 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 231 |
-| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 53 |
+| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 54 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
-| `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 36 |
+| `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 37 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 342 min | 20280 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 151 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 152 |
 
 ## Scheduled families
 
@@ -398,8 +398,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `host-fact-test-isolation` | 2 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
-| `runtime-cargo-input-custody` | 54 | 0 |
-| `native-test-failure-diagnostics` | 3 | 0 |
+| `runtime-cargo-input-custody` | 55 | 0 |
+| `native-test-failure-diagnostics` | 5 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |
 | `target-python-extension-release-identity` | 5 | 0 |

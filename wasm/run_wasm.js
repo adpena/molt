@@ -12,6 +12,7 @@ const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
 const {
+  requireMoltDeploymentManifest,
   bindRuntimeFunctionImports,
   callIsolateImportExport,
   callReservedRuntimeCallable,
@@ -174,7 +175,7 @@ const resolveWasmPaths = ({
       'run_wasm.js accepts a runtime manifest path, not a module path; pass manifest.json',
     );
   }
-  const manifest = JSON.parse(fs.readFileSync(selectedManifestPath, 'utf8'));
+  const manifest = requireMoltDeploymentManifest(JSON.parse(fs.readFileSync(selectedManifestPath, 'utf8')));
   if (manifest.mode !== 'linked' && manifest.mode !== 'split-runtime') {
     throw new Error(`runtime manifest has unsupported mode: ${String(manifest.mode)}`);
   }
@@ -4309,16 +4310,21 @@ const socketHostSetsockopt = (handle, level, optname, valPtr, valLen) => {
 
 const socketHostGetsockopt = (handle, level, optname, valPtr, valLen, outLenPtr) => {
   if (!wasmMemory) return -ENOSYS;
+  if (valLen < 0) return -EINVAL;
   const res = socketCall('getsockopt', { handle: Number(handle), level, optname }, valLen);
   if (res.status < 0) return res.status;
   const dataLen = res.dataLen || 0;
-  if (dataLen > valLen) {
-    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-    return -ENOMEM;
+  const partialError = level === SOL_SOCKET && optname === SO_ERROR;
+  const length = partialError ? Math.min(valLen, dataLen) : dataLen;
+  const status = !partialError && dataLen > valLen ? -ENOMEM : 0;
+  try {
+    if (status === 0 && !writeBytes(valPtr, res.data.subarray(0, length))) return -GUEST_ERRNO.EFAULT;
+    writeU32(Number(outLenPtr), length);
+  } catch (error) {
+    if (error instanceof RangeError) return -GUEST_ERRNO.EFAULT;
+    throw error;
   }
-  if (!writeBytes(valPtr, res.data)) return -EINVAL;
-  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-  return 0;
+  return status;
 };
 
 const socketHostDetach = (handle) => {
@@ -4438,13 +4444,15 @@ const socketHostGetaddrinfo = (
   );
   if (res.status !== 0) return res.status;
   const dataLen = res.dataLen || 0;
-  if (dataLen > outCap) {
-    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-    return -ENOMEM;
+  const status = dataLen > outCap ? encodeSystemError(GUEST_ERRNO.ENOMEM) : 0;
+  try {
+    if (status === 0 && !writeBytes(outPtr, res.data)) return encodeSystemError(GUEST_ERRNO.EFAULT);
+    writeU32(Number(outLenPtr), dataLen);
+  } catch (error) {
+    if (error instanceof RangeError) return encodeSystemError(GUEST_ERRNO.EFAULT);
+    throw error;
   }
-  if (!writeBytes(outPtr, res.data)) return -EINVAL;
-  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-  return 0;
+  return status;
 };
 
 const socketHostGethostname = (bufPtr, bufCap, outLenPtr) => {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from molt.cargo_execution_policy import cargo_profile_directory
@@ -27596,6 +27598,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     linked_bytes = _wasm_exporting_i64_unary_symbol("molt_main")
     linked_wasm.write_bytes(linked_bytes)
     manifest_payload = {
+        "version": WASM_EXECUTION_MANIFEST_VERSION,
         "mode": "linked",
         "modules": {
             "linked": {

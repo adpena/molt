@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import hashlib
 import json
 from pathlib import Path
@@ -38,7 +40,13 @@ def _write_manifest(root: Path, *, mode: str) -> tuple[str, ...]:
         assets = (_asset(app), _asset(runtime))
         modules = {"app": assets[0], "runtime": assets[1]}
     (root / "manifest.json").write_text(
-        json.dumps({"version": 2, "mode": mode, "modules": modules}),
+        json.dumps(
+            {
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
+                "mode": mode,
+                "modules": modules,
+            }
+        ),
         encoding="utf-8",
     )
     return tuple(f"sha256:{asset['sha256']}" for asset in assets)
@@ -131,6 +139,28 @@ def test_existing_execution_manifest_fails_closed(
 
     with pytest.raises(ValueError):
         _generate(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0, 3.5],
+)
+def test_snapshot_rejects_incompatible_execution_version_before_module_read(
+    tmp_path: Path, version: object
+) -> None:
+    _write_manifest(tmp_path, mode="linked")
+    path = tmp_path / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if version == "missing":
+        del manifest["version"]
+    else:
+        manifest["version"] = version
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    (tmp_path / "program.wasm").unlink()
+    with pytest.raises(
+        ValueError, match="Molt deployment manifest version must be 3"
+    ):
+        _snapshot_execution_identity(tmp_path / "output.wasm")
 
 
 def test_explicit_empty_snapshot_capabilities_do_not_regain_defaults(

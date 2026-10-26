@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import json
 import subprocess
 import sys
@@ -2736,6 +2738,7 @@ def test_wasm_artifact_selection_refuses_decoys_without_scanning(tmp_path, defec
         manifest.write_text(
             json.dumps(
                 {
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
                     "mode": "split-runtime" if defect == "split-mode" else "linked",
                     "modules": {
                         "linked": {

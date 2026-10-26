@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import write_wasm_execution_manifest
+
+from tests.wasm_execution_manifest import (
+    EMPTY_WASM_MODULE,
+    split_wasm_execution_manifest,
+)
+
 import json
 import shutil
 from pathlib import Path
@@ -405,7 +412,7 @@ async function exercise(primary, split, fails, cleanupErrors = [], status = 0) {
     initWasmAssets(manifestPath) { assert.equal(manifestPath, 'manifest.json'); },
     formatTraceError,
     wasmBuffer: {}, linkedBuffer: split ? null : {}, runtimeBuffer: {},
-    runtimeManifest: {mode: split ? 'split-runtime' : 'linked'},
+    runtimeManifest: {version: 3, mode: split ? 'split-runtime' : 'linked'},
     outputImports: null, inputHasRuntimeImports: false, runtimeImportsDesc: null,
     runtimeCallIndirectNames: [], runtimeExportSignatures: {}, canDirectLink: false,
     loadRuntimeAssets() {},
@@ -1525,6 +1532,9 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
     from tools.generate_worker import generate_worker
 
     output = tmp_path / "worker.js"
+    module = tmp_path / "worker_linked.wasm"
+    module.write_bytes(EMPTY_WASM_MODULE)
+    write_wasm_execution_manifest(tmp_path, linked=module)
     generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=32)
     source = output.read_text(encoding="utf-8")
     assert source.count("export default {") == 1
@@ -1532,13 +1542,17 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
     _run_node(
         "const workerSource = "
         + json.dumps(source)
-        + ";\n"
+        + ";\nconst moduleBytes = new Uint8Array("
+        + json.dumps(list(module.read_bytes()))
+        + ");\n"
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
+const {webcrypto} = require('node:crypto');
 
 async function exercise(status) {
   const events = [];
+  let compiles = 0;
   let pending = 0n;
   const exports = {
     molt_main() { events.push('main'); pending = status === 'pending' ? 1n : 0n; },
@@ -1555,25 +1569,29 @@ async function exercise(status) {
   };
   if (status !== 'missing') exports.molt_exception_pending = () => pending;
   const context = {
-    TextDecoder, TextEncoder, Uint8Array, DataView, Response, performance,
+    TextDecoder, TextEncoder, Uint8Array, ArrayBuffer, DataView, Response, URL, performance,
+    crypto: webcrypto,
     console: {error() {}},
     WebAssembly: {
-      compile: async x => x,
-      instantiate: async () => ({instance: {exports}}),
+      Module: WebAssembly.Module,
+      compile: async bytes => { compiles++; return WebAssembly.compile(bytes); },
+      instantiate: async () => ({exports}),
     },
   };
   vm.createContext(context);
   vm.runInContext(workerSource, context);
   const response = await context.worker.fetch(
-    {body: null}, {__STATIC_CONTENT: {get: async () => new Uint8Array()}}, {},
+    {body: null, url: 'https://worker.example/route'}, {__STATIC_CONTENT: {get: async () => (status === 'corrupt-bytes'
+      ? new Uint8Array([0, 97, 115, 109, 1, 0, 0, 1]) : moduleBytes).buffer}}, {},
   );
   assert.equal(response.status, status === 'ok' ? 200 : 500);
-  assert.deepEqual(events, status === 'missing'
+  assert.deepEqual(events, status === 'corrupt-bytes' ? [] : status === 'missing'
     ? ['enter', 'leave', 'shutdown'] : ['enter', 'main', 'status', 'leave', 'shutdown']);
+  assert.equal(compiles, status === 'corrupt-bytes' ? 0 : 1);
   assert.equal(pending, 0n, 'the runtime report, not the host, consumes the exception');
 }
 (async () => {
-  for (const status of ['missing', 'pending', 'ok']) await exercise(status);
+  for (const status of ['missing', 'pending', 'ok', 'corrupt-bytes']) await exercise(status);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """,
         tmp_path,
@@ -2044,6 +2062,9 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
     from molt.capability_manifest import CapabilityManifest
 
     source = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
+        ),
         resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,

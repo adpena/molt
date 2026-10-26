@@ -1221,6 +1221,9 @@ pub(super) fn define_socket_host(
          val_len: i32,
          out_len_ptr: i32|
          -> i32 {
+            if val_len < 0 {
+                return -GuestErrno::EINVAL;
+            }
             let option = match native_socket_option(level, optname) {
                 Ok(option) => option,
                 Err(error) => return -error,
@@ -1235,19 +1238,19 @@ pub(super) fn define_socket_host(
                 Err(errno) => return -errno,
             };
             if matches!(option, SocketOption::Error) {
-                if val_len < 4 {
-                    let _ = write_u32(&mut caller, &memory, out_len_ptr, 4);
-                    return -GuestErrno::ENOMEM;
-                }
                 let error = match socket.take_error() {
                     Ok(None) => 0,
                     Ok(Some(error)) => map_io_error(&error).code(),
                     Err(error) => return -map_io_error(&error),
                 };
-                if write_bytes(&mut caller, &memory, val_ptr, &error.to_le_bytes()).is_err() {
+                let data = error.to_le_bytes();
+                let length = (val_len as usize).min(data.len());
+                if write_bytes(&mut caller, &memory, val_ptr, &data[..length]).is_err() {
                     return -GuestErrno::EFAULT;
                 }
-                let _ = write_u32(&mut caller, &memory, out_len_ptr, 4);
+                if write_u32(&mut caller, &memory, out_len_ptr, length as u32).is_err() {
+                    return -GuestErrno::EFAULT;
+                }
                 return 0;
             }
             if matches!(option, SocketOption::Linger) {
@@ -1266,7 +1269,9 @@ pub(super) fn define_socket_host(
                 if write_bytes(&mut caller, &memory, val_ptr, &data[..length]).is_err() {
                     return -GuestErrno::EFAULT;
                 }
-                let _ = write_u32(&mut caller, &memory, out_len_ptr, length as u32);
+                if write_u32(&mut caller, &memory, out_len_ptr, length as u32).is_err() {
+                    return -GuestErrno::EFAULT;
+                }
                 return 0;
             }
             let guest_capacity = val_len.max(0) as usize;
@@ -1308,7 +1313,9 @@ pub(super) fn define_socket_host(
             if write_bytes(&mut caller, &memory, val_ptr, &buf).is_err() {
                 return -GuestErrno::EFAULT;
             }
-            let _ = write_u32(&mut caller, &memory, out_len_ptr, buf.len() as u32);
+            if write_u32(&mut caller, &memory, out_len_ptr, buf.len() as u32).is_err() {
+                return -GuestErrno::EFAULT;
+            }
             0
         },
     );
@@ -1491,13 +1498,17 @@ pub(super) fn define_socket_host(
                 ),
             };
             if payload.len() > out_cap as usize {
-                let _ = write_u32(&mut caller, &memory, out_len_ptr, payload.len() as u32);
+                if write_u32(&mut caller, &memory, out_len_ptr, payload.len() as u32).is_err() {
+                    return Ok(guest_errno::ResolverFailure::System(GuestErrno::EFAULT).encode());
+                }
                 return Ok(-GuestErrno::ENOMEM);
             }
             if write_bytes(&mut caller, &memory, out_ptr, &payload).is_err() {
                 return Ok(-GuestErrno::EFAULT);
             }
-            let _ = write_u32(&mut caller, &memory, out_len_ptr, payload.len() as u32);
+            if write_u32(&mut caller, &memory, out_len_ptr, payload.len() as u32).is_err() {
+                return Ok(guest_errno::ResolverFailure::System(GuestErrno::EFAULT).encode());
+            }
             Ok(0)
         },
     );

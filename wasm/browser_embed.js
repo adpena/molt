@@ -26,6 +26,9 @@ const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 
 const {
+  requireMoltDeploymentManifest,
+  manifestModuleUrl,
+  verifyManifestModuleBytes,
   callIsolateImportExport,
   callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
@@ -1015,16 +1018,18 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   const moduleUrl = options.moduleUrl || import.meta.url;
   const baseForManifest = options.baseUrl || moduleUrl;
   const manifestUrl = options.manifestUrl || resolveUrl('manifest.json', baseForManifest);
-  const manifest = options.manifest || await fetchJson(manifestUrl);
-  const baseUrl = options.baseUrl || resolveUrl('.', manifestUrl);
-  const appPath = manifest?.modules?.app?.path || 'app.wasm';
-  const runtimePath = manifest?.modules?.runtime?.path || 'molt_runtime.wasm';
-  const appUrl = options.appUrl || options.wasmUrl || resolveUrl(appPath, baseUrl);
-  const runtimeUrl = options.runtimeUrl || resolveUrl(runtimePath, baseUrl);
+  const manifest = requireMoltDeploymentManifest(Object.hasOwn(options, 'manifest') ? options.manifest : await fetchJson(manifestUrl));
+  if (manifest.mode !== 'split-runtime') throw new Error('Molt browser embed requires a split-runtime deployment manifest');
+  const appUrl = options.appUrl || options.wasmUrl || manifestModuleUrl(manifestUrl, manifest?.modules?.app, 'app');
+  const runtimeUrl = options.runtimeUrl || manifestModuleUrl(manifestUrl, manifest?.modules?.runtime, 'runtime');
   const browserAbi = browserAbiFromManifest(manifest);
   const [appBytes, runtimeBytes] = await Promise.all([
     fetchArrayBuffer(appUrl),
     fetchArrayBuffer(runtimeUrl),
+  ]);
+  await Promise.all([
+    verifyManifestModuleBytes(appBytes, manifest?.modules?.app, 'app wasm', appUrl, globalThis.crypto, manifestUrl, moduleUrl),
+    verifyManifestModuleBytes(runtimeBytes, manifest?.modules?.runtime, 'runtime wasm', runtimeUrl, globalThis.crypto, manifestUrl, moduleUrl),
   ]);
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);

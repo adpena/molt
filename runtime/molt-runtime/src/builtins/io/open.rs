@@ -943,10 +943,13 @@ fn open_impl(
                     std::mem::forget(file);
                 }
             }
+            #[cfg(windows)]
             return match error.raw_os_error() {
                 Some(errno) => raise_os_error_errno::<u64>(_py, i64::from(errno), "open"),
                 None => raise_os_error::<u64>(_py, error, "open"),
             };
+            #[cfg(not(windows))]
+            return raise_os_error::<u64>(_py, error, "open");
         }
     }
 
