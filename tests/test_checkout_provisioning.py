@@ -410,6 +410,53 @@ def test_owner_installation_uses_the_owner_check_and_install(checkout: Path) -> 
         cp.ensure_input(spec)
 
 
+def test_development_selection_metadata_is_available_without_site_packages(tmp_path):
+    import hashlib
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    contents = {
+        "pyproject.toml": b'[project]\nname = "MOLT._-Fixture"\nversion = "1.2.3"\nreadme = "README.md"\n',
+        "README.md": b"owned metadata\n",
+        "uv.lock": b"version = 1\n",
+        ".python-version": b"3.12\n",
+    }
+    for name, data in contents.items():
+        (checkout / name).write_bytes(data)
+    code = (
+        "import json, sys; from pathlib import Path; "
+        "sys.path[:0] = [sys.argv[1], str(Path(sys.argv[1]) / 'src')]; "
+        "from tools.import_file import bind_repository_imports; "
+        "bind_repository_imports(Path(sys.argv[1]) / 'tools/molt_dev.py'); "
+        "from molt import checkout_provisioning as cp; "
+        "from molt.source_build_environment import _editable_binding; "
+        "root = Path(sys.argv[2]); "
+        "spec = cp.checkout_input('uv-environment', root, {}); "
+        "print(json.dumps({'binding': _editable_binding(root), 'locks': cp._lock_digests(spec)}))"
+    )
+    result = run_guarded_test_process(
+        [sys.executable, "-I", "-S", "-B", "-c", code, str(REPO_ROOT), str(checkout)],
+        cwd=tmp_path,
+        env=ProcessEnvironment(os.environ),
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["binding"] == {
+        "source_root": str(checkout),
+        "project": "molt-fixture",  # PyPA name normalization, independent of the reader.
+        "version": "1.2.3",
+        "metadata_inputs": {
+            name: hashlib.sha256(contents[name]).hexdigest()
+            for name in ("pyproject.toml", "README.md")
+        },
+    }
+    assert observed["locks"] == {
+        name: hashlib.sha256(data).hexdigest() for name, data in contents.items()
+    }
+    assert not list(checkout.rglob("*.pyc"))
+
+
 def test_owner_installation_runs_isolated_from_a_foreign_environment(
     checkout: Path, tmp_path: Path
 ) -> None:
