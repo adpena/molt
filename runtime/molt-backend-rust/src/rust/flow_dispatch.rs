@@ -73,9 +73,7 @@ impl RustBackend {
                         op,
                         "labelled-flow emission requires admitted synchronous, non-exception edges",
                     );
-                } else if simpleir_kind_is_verifier_phi(&op.kind)
-                    || matches!(op.kind.as_str(), "loop_index_start" | "loop_index_next")
-                {
+                } else if simpleir_kind_is_verifier_phi(&op.kind) {
                     self.emit_unsupported_op(
                         op,
                         "canonical SSA lowering left an unresolved predecessor value",

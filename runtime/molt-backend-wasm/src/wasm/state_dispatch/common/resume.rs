@@ -1,7 +1,8 @@
 use super::super::super::op_loop::WasmFunctionEmitContext;
-use super::super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use super::super::plan::NonLinearControlPlan;
 use super::super::state_remap::{build_sparse_state_remap_entries, emit_sparse_state_remap_lookup};
 use crate::wasm::WasmFrameLocals;
+use crate::wasm::frame_locals::WasmDispatchFrameLocals;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::POINTER_MASK;
 use wasm_encoder::{BlockType, Function, Instruction};
@@ -9,8 +10,8 @@ use wasm_encoder::{BlockType, Function, Instruction};
 pub(in crate::wasm::state_dispatch) fn emit_stateful_resume_prelude(
     func: &mut Function,
     op_emitter: &WasmFunctionEmitContext<'_, '_>,
-    plan: &NonLinearDispatchPlan,
-    locals: NonLinearDispatchLocals,
+    plan: &NonLinearControlPlan,
+    locals: WasmDispatchFrameLocals,
 ) {
     let self_ptr_local = locals
         .self_ptr_local
@@ -27,7 +28,10 @@ pub(in crate::wasm::state_dispatch) fn emit_stateful_resume_prelude(
         .state_resume
         .as_ref()
         .expect("state resume maps missing for stateful wasm");
-    let state_remap_table_entries = resume.remap_table.as_ref().map(|(entries, _)| *entries);
+    let state_remap_table_entries = resume
+        .remap_table
+        .as_ref()
+        .map(|bytes| (bytes.len() / 8) as i64);
     let sparse_state_remap_entries = state_remap_table_entries
         .is_none()
         .then(|| build_sparse_state_remap_entries(&resume.state_map));

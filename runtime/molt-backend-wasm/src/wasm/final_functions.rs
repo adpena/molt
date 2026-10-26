@@ -78,6 +78,10 @@ impl WasmFinalFunctions {
     /// Production cannot enter through this boundary.
     #[cfg(test)]
     pub(super) fn from_codegen_fixtures(ir: SimpleIR) -> Self {
+        for function in &ir.functions {
+            molt_ir::ir_schema::validate_normalized_simple_ir_ops(&function.name, &function.ops)
+                .unwrap_or_else(|error| panic!("WASM final fixture admission failed: {error}"));
+        }
         let target = crate::tir::TargetInfo::wasm_release_fast();
         let facts = ir
             .functions

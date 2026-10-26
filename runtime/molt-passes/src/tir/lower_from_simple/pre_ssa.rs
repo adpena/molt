@@ -39,36 +39,26 @@ fn with_inherited_source_site(
 ///   loop_end
 /// ```
 ///
-/// Returns an empty Vec if no rewrites were needed (caller uses original ops).
-fn is_pre_ssa_rewritten_kind(kind: &str) -> bool {
-    simpleir_kind_is_pre_ssa_rewritten(kind)
-}
-
-pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::OpIR> {
+/// Consumes authored transport and returns normalized operations. An unchanged
+/// stream retains its allocation. Malformed or orphaned carriers fail the
+/// shared normalized-input contract rather than surviving into SSA passthrough.
+pub fn normalize_loop_indices(
+    function_name: &str,
+    ops: Vec<crate::ir::OpIR>,
+) -> Vec<crate::ir::OpIR> {
     use crate::ir::OpIR;
 
     // Quick scan: any loop-index op consumed by this pre-SSA rewrite?
     let has_loop_index = ops
         .iter()
-        .any(|op| is_pre_ssa_rewritten_kind(op.kind.as_str()));
+        .any(|op| simpleir_kind_is_pre_ssa_rewritten(op.kind.as_str()));
     if !has_loop_index {
-        return Vec::new();
+        return ops;
     }
 
-    // Find the loop_start op that immediately precedes each loop_index_start.
-    // We need to insert store_var BEFORE the loop_start.
-    //
-    // Also find every loop_index_start and loop_index_next to rewrite them.
-    let mut result: Vec<OpIR> = Vec::with_capacity(ops.len() + 8);
-
-    // First, find the positions of loop_start ops so we can insert store_var
-    // before them. We process ops sequentially, buffering the loop_start and
-    // inserting the store_var before it when we see loop_index_start.
-
-    // Strategy: two-pass approach.
-    // Pass 1: identify (loop_start_idx, var_name, init_arg) for each pattern.
-    // Pass 2: emit rewritten ops.
-
+    // Find carrier initializers and their lexical loop owner before emitting
+    // stores. Key replacements by operation identity, not by a global spelling:
+    // another loop may reuse a carrier name without owning an orphaned start.
     struct LoopIndexPattern {
         loop_start_idx: usize,
         source_op_idx: usize,
@@ -78,6 +68,7 @@ pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::i
 
     let mut patterns: Vec<LoopIndexPattern> = Vec::new();
     let mut loop_start_stack: Vec<usize> = Vec::new();
+    let mut seen_carriers = std::collections::HashSet::new();
 
     for (idx, op) in ops.iter().enumerate() {
         match op.kind.as_str() {
@@ -90,13 +81,15 @@ pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::i
             "loop_index_start" => {
                 if let Some(&ls_idx) = loop_start_stack.last() {
                     let var_name = op.out.clone().unwrap_or_default();
-                    let init_arg = op
-                        .args
-                        .as_ref()
-                        .and_then(|a| a.first())
-                        .cloned()
-                        .unwrap_or_default();
-                    if !var_name.is_empty() && var_name != "none" {
+                    let init_arg = op.args.as_deref().and_then(|args| match args {
+                        [initial] if !initial.is_empty() => Some(initial.clone()),
+                        _ => None,
+                    });
+                    if !var_name.is_empty()
+                        && var_name != "none"
+                        && let Some(init_arg) = init_arg
+                        && seen_carriers.insert((ls_idx, var_name.clone()))
+                    {
                         patterns.push(LoopIndexPattern {
                             loop_start_idx: ls_idx,
                             source_op_idx: idx,
@@ -110,10 +103,6 @@ pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::i
         }
     }
 
-    if patterns.is_empty() {
-        return Vec::new();
-    }
-
     // Build sets for quick lookup.
     let insert_before: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> = {
         let mut map: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> =
@@ -123,14 +112,26 @@ pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::i
         }
         map
     };
-    let rewrite_vars: std::collections::HashSet<&str> =
-        patterns.iter().map(|p| p.var_name.as_str()).collect();
-    let loop_carrier_for_start: std::collections::HashMap<usize, String> = patterns
+    let rewrite_starts: std::collections::HashSet<usize> = patterns
         .iter()
-        .map(|pat| (pat.loop_start_idx, pat.var_name.clone()))
+        .map(|pattern| pattern.source_op_idx)
         .collect();
+    let loop_carriers: std::collections::HashMap<usize, std::collections::HashSet<String>> =
+        insert_before
+            .iter()
+            .map(|(&start, patterns)| {
+                (
+                    start,
+                    patterns
+                        .iter()
+                        .map(|pattern| pattern.var_name.clone())
+                        .collect(),
+                )
+            })
+            .collect();
 
-    let mut active_loop_carriers: Vec<Option<String>> = Vec::new();
+    let mut active_loop_carriers: Vec<usize> = Vec::new();
+    let mut result: Vec<OpIR> = Vec::with_capacity(ops.len() + patterns.len());
 
     // Pass 2: emit rewritten ops.
     for (idx, op) in ops.iter().enumerate() {
@@ -151,12 +152,12 @@ pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::i
 
         match op.kind.as_str() {
             "loop_start" => {
-                active_loop_carriers.push(loop_carrier_for_start.get(&idx).cloned());
+                active_loop_carriers.push(idx);
                 result.push(op.clone());
             }
             "loop_index_start" => {
                 let var_name = op.out.clone().unwrap_or_default();
-                if rewrite_vars.contains(var_name.as_str()) {
+                if rewrite_starts.contains(&idx) {
                     // Rewrite to load_var: read V from the phi.
                     result.push(with_inherited_source_site(
                         OpIR {
@@ -172,24 +173,26 @@ pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::i
                 }
             }
             "loop_index_next" => {
-                let carrier_name = active_loop_carriers
-                    .iter()
-                    .rev()
-                    .find_map(|carrier| carrier.as_ref())
-                    .cloned();
-                if let Some(var_name) = carrier_name {
+                // Physical nesting does not select the recurrence: inlined
+                // cleanup may update an outer loop's explicitly named carrier.
+                // Resolve that identity in the nearest declaring active scope.
+                let carrier_name = op.out.as_ref().and_then(|name| {
+                    active_loop_carriers
+                        .iter()
+                        .rev()
+                        .find_map(|start| loop_carriers.get(start)?.get(name.as_str()))
+                });
+                let updated_arg = op.args.as_deref().and_then(|args| match args {
+                    [updated] if !updated.is_empty() => Some(updated),
+                    _ => None,
+                });
+                if let (Some(var_name), Some(updated_arg)) = (carrier_name, updated_arg) {
                     // Rewrite to store_var: update V.
-                    let updated_arg = op
-                        .args
-                        .as_ref()
-                        .and_then(|a| a.first())
-                        .cloned()
-                        .unwrap_or_default();
                     result.push(with_inherited_source_site(
                         OpIR {
                             kind: "store_var".to_string(),
-                            var: Some(var_name),
-                            args: Some(vec![updated_arg]),
+                            var: Some(var_name.clone()),
+                            args: Some(vec![updated_arg.clone()]),
                             ..OpIR::default()
                         },
                         op,
@@ -208,6 +211,8 @@ pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::i
         }
     }
 
+    molt_ir::ir_schema::validate_normalized_simple_ir_ops(function_name, &result)
+        .unwrap_or_else(|error| panic!("counted-loop normalization failed: {error}"));
     result
 }
 

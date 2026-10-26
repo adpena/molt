@@ -2309,10 +2309,92 @@ def test_live_rust_admitted_domains_close_refusal_paths(tmp_path):
     domain = proven_admitted_wire_domain(tmp_path, _body(source, "compile_checked"))
     assert domain is not None
     assert {"const_int", "load_const", "const_bigint"} <= domain.denied
+    assert {"loop_index_start", "loop_index_next"} <= domain.denied
     assert {"inplace_floordiv", "inplace_mod", "mod_", "binop_pow"} <= domain.denied
     assert "store_local" not in domain.registered
     assert "const_float" in domain.possible
     assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("relative", "owner", "before", "after"),
+    [
+        (
+            "runtime/molt-backend-rust/src/rust.rs",
+            "emit_function",
+            '.unwrap_or_else(|error| panic!("Rust normalized flow admission failed: {error}"))',
+            ".unwrap_or(())",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust.rs",
+            "emit_function",
+            "validate_normalized_simple_ir_ops(&func.name, &ops)",
+            "validate_normalized_simple_ir_ops(&func.name, &func.ops)",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            "validate_normalized_simple_ir_ops",
+            "if simpleir_kind_is_pre_ssa_rewritten(&op.kind)",
+            "if false && simpleir_kind_is_pre_ssa_rewritten(&op.kind)",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            "validate_normalized_simple_ir_ops",
+            "ops.iter().enumerate()",
+            "ops.iter().take(1).enumerate()",
+        ),
+        (
+            "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+            "simpleir_kind_is_pre_ssa_rewritten",
+            '"loop_index_next"',
+            '"nop"',
+        ),
+    ],
+)
+def test_rust_normalized_flow_source_contract_fails_closed(
+    tmp_path, relative, owner, before, after
+):
+    from tools.structural_audit_rust_admission import _body
+
+    _copy_live_rust_admission_sources(tmp_path)
+    # This is a real current-source consumer fixture, not a handwritten
+    # reconstruction of the normalizer or its operation inventory.
+    assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
+    path = tmp_path / relative
+    source = path.read_text(encoding="utf-8")
+    body = _body(source, owner)
+    assert body is not None and source.count(body) == 1 and body.count(before) == 1
+    path.write_text(
+        source.replace(body, body.replace(before, after, 1), 1), encoding="utf-8"
+    )
+    # Swallowing failure, checking a different stream, skipping a residue, or
+    # changing the generated predicate must restore an applicability obligation.
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert any(f.probe == "rust_backend_rejection_applicability" for f in findings), (
+        findings
+    )
+
+
+def test_rust_normalized_flow_projection_requires_declared_generated_agreement(
+    tmp_path,
+):
+    _copy_live_rust_admission_sources(tmp_path)
+    assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
+    path = tmp_path / "runtime/molt-ir/src/tir/op_kinds.toml"
+    source = path.read_text(encoding="utf-8")
+    marker = 'kind = "loop_index_next"'
+    start = source.index(marker)
+    end = source.index("[[simpleir_control_kind]]", start)
+    declaration = source[start:end]
+    assert declaration.count("pre_ssa_rewritten = true") == 1
+    changed = declaration.replace(
+        "pre_ssa_rewritten = true", "pre_ssa_rewritten = false", 1
+    )
+    path.write_text(source[:start] + changed + source[end:], encoding="utf-8")
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert any(f.probe == "rust_backend_rejection_applicability" for f in findings), (
+        findings
+    )
 
 
 def test_live_rust_operand_projection_uses_registered_current_validators():

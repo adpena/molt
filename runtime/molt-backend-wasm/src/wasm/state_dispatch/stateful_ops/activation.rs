@@ -1,7 +1,9 @@
 //! Non-terminating scheduler primitives. Shared TIR owns branches and returns.
 
+use crate::wasm::frame_locals::WasmDispatchFrameLocals;
+
 use super::super::common::emit_obj_set_state_arg;
-use super::super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use super::super::plan::NonLinearControlPlan;
 use crate::OpIR;
 use crate::wasm::op_loop::WasmFunctionEmitContext;
 use crate::wasm_abi_generated::WasmRuntimeImport;
@@ -12,8 +14,8 @@ use wasm_encoder::{Function, Instruction};
 pub(in crate::wasm::state_dispatch) fn emit_activation_op(
     func: &mut Function,
     context: &WasmFunctionEmitContext<'_, '_>,
-    plan: &NonLinearDispatchPlan,
-    locals: NonLinearDispatchLocals,
+    plan: &NonLinearControlPlan,
+    locals: WasmDispatchFrameLocals,
     op: &OpIR,
 ) {
     match op.kind.as_str() {
