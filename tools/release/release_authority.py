@@ -102,8 +102,8 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v6"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v11"
-COMPONENT_CONSUMER_SCHEMA = "molt.release-consumer-component-proof.v1"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v12"
+COMPONENT_CONSUMER_SCHEMA = "molt.release-consumer-component-proof.v2"
 
 
 def consumer_lanes(
@@ -1221,6 +1221,7 @@ def _validate_consumer_scope(
         expected_stdout=CONSUMER_EXPECTED_STDOUT,
         selected_lanes=lanes,
     )
+    consumer_replay.validate_resources(evidence_root=evidence_root, consumer=consumer)
 
 
 def _validate_consumer_pip_proof(
