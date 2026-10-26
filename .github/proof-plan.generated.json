@@ -9917,6 +9917,9 @@
             "k": "not compiled_gpu_kernel_vector_add",
             "targets": [
               "tests/test_gpu_kernel_compiled.py"
+            ],
+            "toolchains": [
+              "python"
             ]
           }
         ],
@@ -13138,10 +13141,7 @@
         "git"
       ],
       "local.frontend-ir-assembly.pytest-select-0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
+        "python"
       ],
       "local.frontend-python.0": [
         "python",

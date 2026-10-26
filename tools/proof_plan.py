@@ -1055,21 +1055,36 @@ def local_pytest_command(
     return shlex.join(local_pytest_argv(targets, select, memory_units=memory_units))
 
 
+@dataclass(frozen=True)
+class LocalPytestSelection:
+    select: tuple[str, ...]
+    targets: tuple[str, ...]
+    toolchains: tuple[str, ...]
+
+
 def local_pytest_selections(
     rule: Mapping[str, Any],
-) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
-    """A rule's `pytest_select` entries as (selection argv, targets)."""
+) -> list[LocalPytestSelection]:
+    """Resolve each selector's prerequisites, inheriting its rule by default."""
     selections = []
     for entry in rule.get("pytest_select", []):
         (key,) = set(entry) & set(_LOCAL_PYTEST_SELECTORS)
         selections.append(
-            ((_LOCAL_PYTEST_SELECTORS[key], entry[key]), tuple(entry["targets"]))
+            LocalPytestSelection(
+                (_LOCAL_PYTEST_SELECTORS[key], entry[key]),
+                tuple(entry["targets"]),
+                tuple(entry.get("toolchains", rule.get("toolchains", []))),
+            )
         )
     return selections
 
 
 def local_pytest_select_errors(
-    name: str, entries: object, *, root: Path = ROOT
+    name: str,
+    entries: object,
+    *,
+    toolchain_names: Collection[str],
+    root: Path = ROOT,
 ) -> list[str]:
     """Each `pytest_select` entry names one selection and its test targets."""
     if not isinstance(entries, list):
@@ -1081,7 +1096,7 @@ def local_pytest_select_errors(
             errors.append(f"{label} must be a table")
             continue
         keys = set(entry) & set(_LOCAL_PYTEST_SELECTORS)
-        unknown = set(entry) - set(_LOCAL_PYTEST_SELECTORS) - {"targets"}
+        unknown = set(entry) - set(_LOCAL_PYTEST_SELECTORS) - {"targets", "toolchains"}
         if len(keys) != 1 or unknown:
             errors.append(f"{label} must hold exactly one of k or m, and targets")
             continue
@@ -1091,6 +1106,18 @@ def local_pytest_select_errors(
         errors.extend(
             local_pytest_target_errors(label, entry.get("targets"), root=root)
         )
+        if "toolchains" in entry:
+            tools = entry["toolchains"]
+            if (
+                not isinstance(tools, list)
+                or not tools
+                or not all(isinstance(tool, str) and tool.strip() for tool in tools)
+            ):
+                errors.append(f"{label}.toolchains must be a non-empty list of names")
+            elif len(tools) != len(set(tools)):
+                errors.append(f"{label}.toolchains must be unique")
+            elif missing := sorted(set(tools) - set(toolchain_names)):
+                errors.append(f"{label}: unknown toolchains {missing!r}")
     return errors
 
 
@@ -1130,10 +1157,12 @@ def local_gate_commands(
                 local_pytest_command(rule["pytest"], memory_units=memory_units),
                 tuple(rule.get("toolchains", [])),
             )
-        for index, (select, targets) in enumerate(local_pytest_selections(rule)):
+        for index, selection in enumerate(local_pytest_selections(rule)):
             commands[f"local.{rule['name']}.pytest-select-{index}"] = (
-                local_pytest_command(targets, select, memory_units=memory_units),
-                tuple(rule.get("toolchains", [])),
+                local_pytest_command(
+                    selection.targets, selection.select, memory_units=memory_units
+                ),
+                selection.toolchains,
             )
     return commands
 
@@ -2870,6 +2899,7 @@ class ProofPlan:
                             f"{sorted(expected_verdict_needs)!r}"
                         )
         local_names: set[str] = set()
+        local_toolchain_names = {policy.name for policy in self.toolchain_policies}
         for index, command in enumerate(self.always):
             if error := local_gate_template_error(command):
                 errors.append(f"local.always.{index}: {error}")
@@ -2909,7 +2939,11 @@ class ProofPlan:
                             errors.append(f"local.{name}.{index}: {error}")
             errors.extend(local_pytest_target_errors(name, rule.get("pytest", [])))
             errors.extend(
-                local_pytest_select_errors(name, rule.get("pytest_select", []))
+                local_pytest_select_errors(
+                    name,
+                    rule.get("pytest_select", []),
+                    toolchain_names=local_toolchain_names,
+                )
             )
         return errors
 

@@ -564,6 +564,15 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
         ({"k": "a", "m": "b", "targets": ["tests/test_proof_plan.py"]}, "exactly one"),
         ({"x": "a", "targets": ["tests/test_proof_plan.py"]}, "exactly one"),
         ({"k": "a", "n": "4", "targets": ["tests/test_proof_plan.py"]}, "exactly one"),
+        (
+            {
+                "k": "a",
+                "targets": ["tests/test_proof_plan.py"],
+                "toolchains": ["python"],
+                "typo": True,
+            },
+            "exactly one",
+        ),
         ({"k": " ", "targets": ["tests/test_proof_plan.py"]}, "non-empty"),
         ({"m": "slow", "targets": ["-n 4"]}, "must be a tests/ path"),
         ({"m": "slow"}, "must be a list of test paths"),
@@ -585,7 +594,7 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
         memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     for index, entry in enumerate(rule["pytest_select"]):
-        (key,) = set(entry) - {"targets"}
+        (key,) = set(entry) - {"targets", "toolchains"}
         command, tools = commands[f"local.{rule['name']}.pytest-select-{index}"]
         assert shlex.split(command) == [
             "python",
@@ -599,7 +608,65 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
             entry[key],
             *entry["targets"],
         ]
-        assert tools == tuple(rule["toolchains"])
+        assert tools == tuple(entry.get("toolchains", rule["toolchains"]))
+
+
+@pytest.mark.parametrize(
+    "toolchains,message",
+    [
+        ([], "non-empty list"),
+        ("python", "non-empty list"),
+        ([""], "non-empty list"),
+        ([" "], "non-empty list"),
+        (["python", 1], "non-empty list"),
+        (["python", "python"], "unique"),
+        (["not-a-declared-toolchain"], "unknown toolchains"),
+    ],
+)
+def test_local_pytest_selector_prerequisites_are_closed(toolchains, message) -> None:
+    first, *rest = PLAN.local_rules
+    invalid = {
+        **first,
+        "pytest_select": [
+            {
+                "k": "selected",
+                "targets": ["tests/test_proof_plan.py"],
+                "toolchains": toolchains,
+            }
+        ],
+    }
+    errors = replace(PLAN, local_rules=(invalid, *rest)).validate()
+    assert any("pytest_select[0]" in error and message in error for error in errors)
+
+
+def test_local_selector_projection_preserves_command_and_owned_prerequisites() -> None:
+    rule = {
+        "name": "fixture",
+        "toolchains": ["python", "cargo"],
+        "gates": ["cargo check"],
+        "pytest_select": [
+            {
+                "k": "pure",
+                "targets": ["tests/test_proof_plan.py"],
+                "toolchains": ["python"],
+            },
+            {"m": "compiled", "targets": ["tests/test_proof_plan.py"]},
+        ],
+    }
+    commands = proof_plan.local_gate_commands(
+        {"rule": [rule]},
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
+    )
+    assert commands["local.fixture.0"] == ("cargo check", ("python", "cargo"))
+    prefix = "python -m pytest -q -n auto --molt-worker-memory-gb=2.5"
+    assert commands["local.fixture.pytest-select-0"] == (
+        prefix + " -k pure tests/test_proof_plan.py",
+        ("python",),
+    )
+    assert commands["local.fixture.pytest-select-1"] == (
+        prefix + " -m compiled tests/test_proof_plan.py",
+        ("python", "cargo"),
+    )
 
 
 def test_local_pytest_units_preserve_path_and_node_ownership_boundaries(

@@ -1232,6 +1232,63 @@ toolchains = ["python"]
     }
 
 
+def test_selector_prerequisites_override_inherit_and_union_without_dropping_owners(
+    tmp_path,
+):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_a.py").touch()
+    source = """
+[[toolchain_policy]]
+name = "python"
+[[toolchain_policy]]
+name = "cargo"
+[[rule]]
+name = "first"
+globs = ["src/first.py"]
+gates = ["cargo check"]
+toolchains = ["python", "cargo"]
+pytest_select = [
+  {k="pure", targets=["tests/test_a.py"], toolchains=["python"]},
+  {m="compiled", targets=["tests/test_a.py"]},
+]
+[[rule]]
+name = "second"
+globs = ["src/second.py"]
+gates = []
+toolchains = ["cargo"]
+pytest_select = [{k="pure", targets=["tests/test_a.py"]}]
+"""
+    config = GateConfig.parse(source, "selector prerequisites", root=tmp_path)
+    first, _ = config.select(["src/first.py"])
+    assert [(gate.pytest, gate.toolchains) for gate in first] == [
+        (False, ("python", "cargo")),
+        (True, ("python",)),
+        (True, ("python", "cargo")),
+    ]
+    both, _ = config.select(["src/first.py", "src/second.py"])
+    assert [gate.command for gate in both] == [gate.command for gate in first]
+    assert both[1].toolchains == ("python", "cargo")
+    assert both[2].toolchains == first[2].toolchains
+
+
+@pytest.mark.parametrize("toolchains", ["[]", '["python", "python"]', '["missing"]'])
+def test_gate_driver_rejects_invalid_selector_prerequisites(drv, tmp_path, toolchains):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_a.py").touch()
+    source = f"""
+[[toolchain_policy]]
+name = "python"
+[[rule]]
+name = "invalid"
+globs = ["**"]
+gates = []
+toolchains = ["python"]
+pytest_select = [{{k="pure", targets=["tests/test_a.py"], toolchains={toolchains}}}]
+"""
+    with pytest.raises(drv.DriverError, match=r"pytest_select\[0\].*toolchains"):
+        GateConfig.parse(source, "invalid selector prerequisites", root=tmp_path)
+
+
 @pytest.mark.parametrize(
     "target,message",
     [
@@ -3634,6 +3691,65 @@ def test_a_building_pytest_session_counts_as_a_session_and_waits_its_cargo_turn(
     runtime = _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate)
     molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 8)
     assert peak == {"pytest": 2, "cargo": 1}
+
+
+def test_python_selector_overlaps_its_rules_cargo_writer_without_overlapping_writers(
+    tmp_path,
+):
+    import threading
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_a.py").touch()
+    config = GateConfig.parse(
+        """
+[[toolchain_policy]]
+name = "python"
+[[rule]]
+name = "mixed"
+globs = ["src/**"]
+gates = ["cargo build", "cargo check"]
+toolchains = ["python", "cargo"]
+pytest_select = [{k="pure", targets=["tests/test_a.py"], toolchains=["python"]}]
+""",
+        "mixed selector",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["src/changed.py"])
+    writer_started = threading.Event()
+    pure_started = threading.Event()
+    active_writers = 0
+    peak_writers = 0
+    lock = threading.Lock()
+
+    def run(command, repo, environment, cancelled, streams=None):
+        nonlocal active_writers, peak_writers
+        if isinstance(command, str):
+            with lock:
+                active_writers += 1
+                peak_writers = max(peak_writers, active_writers)
+            try:
+                writer_started.set()
+                assert pure_started.wait(5), (
+                    "Python selector waited for the Cargo writer"
+                )
+            finally:
+                with lock:
+                    active_writers -= 1
+        else:
+            assert writer_started.wait(5)
+            pure_started.set()
+        return _gate_outcome(0, "", "", None)
+
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, gates, run)
+    molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 4)
+    receipt = json.loads((tmp_path / "receipt.heavy.json").read_text(encoding="utf-8"))
+    assert peak_writers == 1
+    assert [row["dependencies"] for row in receipt["commands"]] == [
+        [],
+        ["local.gate.1"],
+        [],
+    ]
+    assert receipt["execution"]["peak_active_by_resource"]["python-tests"] == 1
 
 
 def test_a_gate_runner_error_keeps_its_streams_in_the_receipt(drv, tmp_path):
