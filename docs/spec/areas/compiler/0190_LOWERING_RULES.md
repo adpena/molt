@@ -160,10 +160,10 @@ returns through the same epilogue without claiming Python frame entry. Counted
 initialization and cleanup loops keep emitted storage-management code constant
 in anchor count. This trades one allocation/free pair and linear memory traffic
 per invocation for fewer invocation-long WASM anchor locals; tiny-literal hot
-paths and compiler memory/latency are separate performance obligations. LIR-fast literals
-retain their per-operation result ownership and native anchors retain their
-native stack-slot storage. Statically known
-forward WASM edges use their enclosing block labels directly, including
+paths and compiler memory/latency are separate performance obligations. LIR-fast
+literals retain their per-operation result ownership and native anchors retain
+their native stack-slot storage. Statically known forward WASM edges use their
+enclosing block labels directly, including
 pending-error checks and ready await continuations. One pure control plan projects
 `molt-ir`'s executable operation edges and implicit exits onto the generated WASM
 physical block boundaries before frame locals or data segments are allocated.
