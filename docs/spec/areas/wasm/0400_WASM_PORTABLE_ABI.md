@@ -731,8 +731,14 @@ metadata template version 2 are distinct contracts and keep their current versio
 Browser embed URLs must identify the modules named by the current manifest,
 and their fetched bytes undergo the same shared descriptor/size/SHA admission
 as the full browser host. There is no unversioned raw-byte/module loader path.
-Rust's explicit pure WASI-command mode remains separate and refuses Molt host,
-runtime or native imports; Molt modules must enter through their manifest.
+Rust's explicit WASI-command mode remains separate. It admits the existing raw
+`molt_call_indirectN` table-dispatch protocol only after checking its canonical
+names, function signatures and exported wasm32 funcref table, before any core
+start. These calls transport raw i64 values rather than resolver/OS statuses;
+callable-table publication version 1 is not a command compatibility handshake.
+Every other Molt host service, runtime or native import requires the current
+deployment manifest, including when mixed with valid indirect calls. Molt
+applications must enter through their manifest.
 
 Workers preserve static module compilation. The CLI passes its already-built
 in-memory manifest to its split worker generator inside the existing deployment

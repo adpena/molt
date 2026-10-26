@@ -216,13 +216,23 @@ pub(super) fn table_limits(module: &Module) -> Option<TableType> {
 pub(super) fn plan_call_indirect_imports(
     output: &Module,
     runtime: Option<&Module>,
-    is_wasi_command: bool,
+    kind: LoadedGuestKind,
 ) -> Result<Vec<(String, FuncType)>> {
     let mut imports = std::collections::BTreeMap::<String, FuncType>::new();
     for module in std::iter::once(output).chain(runtime) {
         for import in module.imports() {
+            let namespace = import.module();
             let name = import.name();
-            if import.module() != "env" || !name.starts_with("molt_call_indirect") {
+            let is_indirect = namespace == "env" && name.starts_with("molt_call_indirect");
+            if matches!(kind, LoadedGuestKind::WasiCommand)
+                && (matches!(namespace, "molt_runtime" | "molt_native")
+                    || (namespace == "env" && name.starts_with("molt_") && !is_indirect))
+            {
+                bail!(
+                    "Molt host imports require a current deployment manifest; use manifest.json instead of --wasi-command: {namespace}.{name}"
+                );
+            }
+            if !is_indirect {
                 continue;
             }
             let ExternType::Func(ty) = import.ty() else {
@@ -236,20 +246,23 @@ pub(super) fn plan_call_indirect_imports(
             }
         }
     }
-    if is_wasi_command {
-        if !imports.is_empty() {
-            validate_command_indirect_table(output)?;
+    match kind {
+        LoadedGuestKind::WasiCommand => {
+            if !imports.is_empty() {
+                validate_command_indirect_table(output)?;
+            }
         }
-    } else {
-        for (name, expected) in &imports {
-            let export = output
-                .exports()
-                .find(|export| export.name() == name)
-                .with_context(|| format!("missing indirect-call application export {name}"))?;
-            let ExternType::Func(actual) = export.ty() else {
-                bail!("malformed indirect-call application export {name}: expected a function");
-            };
-            require_indirect_signature(name, &actual, expected)?;
+        LoadedGuestKind::MoltApplication { .. } => {
+            for (name, expected) in &imports {
+                let export = output
+                    .exports()
+                    .find(|export| export.name() == name)
+                    .with_context(|| format!("missing indirect-call application export {name}"))?;
+                let ExternType::Func(actual) = export.ty() else {
+                    bail!("malformed indirect-call application export {name}: expected a function");
+                };
+                require_indirect_signature(name, &actual, expected)?;
+            }
         }
     }
     Ok(imports.into_iter().collect())
@@ -317,16 +330,17 @@ pub(super) fn define_call_indirect_imports(
     linker: &mut Linker<HostState>,
     store: &mut Store<HostState>,
     imports: &[(String, FuncType)],
-    is_wasi_command: bool,
+    kind: LoadedGuestKind,
 ) -> Result<()> {
     let registry = store.data().call_indirect.clone();
     for (name, ty) in imports {
-        let target = if is_wasi_command {
-            IndirectDispatch::CommandTable {
+        let target = match kind {
+            LoadedGuestKind::WasiCommand => IndirectDispatch::CommandTable {
                 callee_type: FuncType::new(ty.engine(), ty.params().skip(1), ty.results()),
+            },
+            LoadedGuestKind::MoltApplication { .. } => {
+                IndirectDispatch::ApplicationExports(registry.clone())
             }
-        } else {
-            IndirectDispatch::ApplicationExports(registry.clone())
         };
         let func = make_call_indirect_func(&mut *store, name.clone(), ty.clone(), target);
         linker.define(&mut *store, "env", name, func)?;
@@ -819,7 +833,12 @@ mod indirect_dispatch_tests {
             (func (export "molt_call_indirect1") (param i64 i64) (result i64) i64.const 0))"#,
         )
         .unwrap();
-        let plan = plan_call_indirect_imports(&output, Some(&runtime), false).unwrap();
+        let plan = plan_call_indirect_imports(
+            &output,
+            Some(&runtime),
+            LoadedGuestKind::MoltApplication { linked: false },
+        )
+        .unwrap();
         assert_eq!(
             plan.iter()
                 .map(|(name, _)| name.as_str())
