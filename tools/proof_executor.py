@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import datetime as dt
+from enum import Enum
 import heapq
 from pathlib import Path
 import sys
@@ -18,6 +19,13 @@ from tools import proof_receipts
 from tools.proof_receipts import ReceiptCommand
 
 
+class FailurePolicy(str, Enum):
+    """Whether a failed partition leaves independent work useful to its caller."""
+
+    COLLECT_INDEPENDENT = "collect_independent"
+    CANCEL_REMAINING = "cancel_remaining"
+
+
 class ProofPlan(Protocol):
     receipt_schema: str
     executor_max_workers: int
@@ -30,6 +38,7 @@ def execute_commands(
     commands: Iterable[ReceiptCommand],
     receipt_path: Path,
     *,
+    failure_policy: FailurePolicy = FailurePolicy.COLLECT_INDEPENDENT,
     _source_tree_changes: Callable[[], tuple[str, ...]],
     toolchain_fingerprints: Callable[
         [Iterable[ToolchainPolicy], tuple[str, ...]], dict[str, dict[str, Any]]
@@ -44,6 +53,8 @@ def execute_commands(
     ],
     _cache_disposition: Callable[[ReceiptCommand], str],
 ) -> int:
+    if not isinstance(failure_policy, FailurePolicy):
+        raise ValueError("receipt execution requires a typed failure policy")
     command_list = tuple(commands)
     if not command_list:
         raise ValueError("receipt execution requires at least one command")
@@ -99,6 +110,8 @@ def execute_commands(
         "peak_active_by_resource": {name: 0 for name in sorted(resource_limits)},
         "global_stop_triggered": False,
         "global_stop_reasons": [],
+        "failure_policy": failure_policy.value,
+        "failure_trigger": None,
         "source_observation_boundaries": "before-scheduling-and-after-partition",
     }
     receipt_errors: list[str] = []
@@ -342,11 +355,27 @@ def execute_commands(
                                 )
                     else:
                         failed = True
+                        actual_failure = record["status"] not in {
+                            "success",
+                            "cancelled",
+                            "skipped",
+                        }
+                        if actual_failure and execution["failure_trigger"] is None:
+                            execution["failure_trigger"] = {
+                                "command_id": command.id,
+                                "failure_scope": record.get("failure_scope")
+                                or "global",
+                                "reason": record.get("failure_reason")
+                                or f"exit {record.get('returncode')}",
+                            }
                         block_dependents(command.id)
                         if (
                             record.get("failure_scope") != "partition"
-                            and not global_stop
-                        ):
+                            or (
+                                failure_policy is FailurePolicy.CANCEL_REMAINING
+                                and actual_failure
+                            )
+                        ) and not global_stop:
                             stop_all(
                                 f"{command.id}: {record.get('failure_reason') or 'unclassified command failure'}"
                             )
@@ -414,7 +443,15 @@ def execute_commands(
     ]
     if failures or failed:
         receipt["status"] = "failure"
-        returncode = int(failures[0].get("returncode") or 2) if failures else 2
+        trigger = execution["failure_trigger"]
+        if failure_policy is FailurePolicy.CANCEL_REMAINING and trigger is not None:
+            # A lower declared ordinal may fail while cancellation drains it.
+            # Keep that outcome, without replacing the failure that stopped work.
+            returncode = int(
+                records_by_id[trigger["command_id"]].get("returncode") or 2
+            )
+        else:
+            returncode = int(failures[0].get("returncode") or 2) if failures else 2
     else:
         receipt["status"] = "success"
         returncode = 0
