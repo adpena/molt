@@ -139,7 +139,7 @@ def _declared_dependency_group(
 
 
 def _editable_binding(repo_root: Path) -> dict[str, object]:
-    from packaging.utils import canonicalize_name
+    from molt.python_identity_common import _canonicalize_name
 
     project_path = repo_root / "pyproject.toml"
     project_bytes = project_path.read_bytes()
@@ -174,7 +174,7 @@ def _editable_binding(repo_root: Path) -> dict[str, object]:
             ).hexdigest()
     return {
         "source_root": str(repo_root),
-        "project": canonicalize_name(project["name"]),
+        "project": _canonicalize_name(project["name"]),
         "version": project["version"],
         "metadata_inputs": inputs,
     }
