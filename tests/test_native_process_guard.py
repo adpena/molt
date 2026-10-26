@@ -198,7 +198,7 @@ def test_native_failure_retains_real_child_bytes_and_unique_invocations(
     )
     assert len(manifests) == 2
     for path in manifests:
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding="utf-8"))
         root = path.parent
         assert manifest["backend"] == "llvm" and manifest["profile"] == "dev"
         assert manifest["test"] == "independent-test[dev-llvm] (call)"
@@ -240,7 +240,7 @@ def test_native_failure_never_copies_a_later_executable_generation(
     error = AssertionError("original failure")
     native_process_guard.retain_native_test_failure(error, **inputs)
     [path] = (tmp_path / "debug/native-execution-failures").glob("*/manifest.json")
-    manifest = json.loads(path.read_text())
+    manifest = json.loads(path.read_text(encoding="utf-8"))
     assert manifest["executable"]["retained"] is False
     assert manifest["executable"]["unavailable_reason"]
     assert not (path.parent / "executable").exists()
@@ -301,7 +301,7 @@ def test_native_witness_bounds_streams_and_separates_guard_stderr(
         AssertionError("original"), **inputs
     )
     [path] = (tmp_path / "debug/native-execution-failures").glob("*/manifest.json")
-    manifest = json.loads(path.read_text())
+    manifest = json.loads(path.read_text(encoding="utf-8"))
     output = manifest["run"]["result"]["stdout"]
     assert (path.parent / output["path"]).read_bytes() == b"0123"
     assert output == {
@@ -392,7 +392,7 @@ def test_loop_join_consumer_preserves_failures_and_binary_capture(
         if failure.endswith("timeout"):
             assert caught.value is timeout
         [path] = (tmp_path / "debug/native-execution-failures").glob("*/manifest.json")
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding="utf-8"))
         phase = (
             "build"
             if failure.startswith("build") or failure == "missing-binary"
