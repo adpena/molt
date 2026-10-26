@@ -216,15 +216,16 @@ def staged_copy_file(
     """Own a verified private copy until its caller publishes or abandons it."""
 
     tmp_path = staged_output_path(dst, purpose="copy")
-    destination = tmp_path.open("xb")
+    if observed is None:
+        # The clone authority acquires the leaf and reclaims its own partial
+        # output on failure. Register our cleanup only after that succeeds.
+        clone_file(src, tmp_path)
+        destination = None
+    else:
+        destination = tmp_path.open("xb")
     try:
-        if observed is None:
-            destination.close()
-            # The name stays reserved by its unique stage; a clone needs the
-            # leaf absent, and shares the source's blocks where it can.
-            tmp_path.unlink()
-            clone_file(src, tmp_path)
-        else:
+        if observed is not None:
+            assert destination is not None
             with (
                 destination,
                 open_stable_regular_file(
@@ -246,6 +247,12 @@ def staged_copy_file(
                     label="staged copy source",
                 )
         if prepare is not None:
+            # A clone can inherit a read-only source mode. Preparation used to
+            # receive the writable byte-copy stage; restore the source's mode
+            # after preparation as before.
+            mode = stat.S_IMODE(tmp_path.stat().st_mode)
+            if not mode & stat.S_IWUSR:
+                tmp_path.chmod(mode | stat.S_IWUSR)
             prepare(tmp_path)
         if expected_sha256 is not None and _sha256_file(tmp_path) != expected_sha256:
             raise ValueError(f"source changed while staging verified copy: {src}")
@@ -256,7 +263,8 @@ def staged_copy_file(
         yield tmp_path
     finally:
         try:
-            destination.close()
+            if destination is not None:
+                destination.close()
         finally:
             discard_staged_output(tmp_path)
 
