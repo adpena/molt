@@ -11,6 +11,7 @@ from molt.cli import source_extension_link_inputs as link_inputs_resolver
 from molt.cli import wasm_link_inputs
 from molt.process_environment import NameRule, ProcessEnvironment
 from tools.proof_queue_pkg import execution_environment, toolchain_capture
+from tests.executable_test_support import custody_spelling
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     runtime_wasi_c_abi_plan,
@@ -42,7 +43,7 @@ def test_bound_archive_is_consumed_without_rediscovery(tmp_path, monkeypatch):
         {"source-extension": {"link_inputs": payload}}
     )
     assert [(row.path, row.sha256, row.size) for row in frozen] == [
-        (str(archive), captured.sha256, captured.size)
+        (custody_spelling(archive), captured.sha256, captured.size)
     ]
     assert (
         execution_environment._broad_toolchain_roots(

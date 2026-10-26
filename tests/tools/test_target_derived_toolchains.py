@@ -993,7 +993,7 @@ def test_owned_directory_projects_relative_members_without_a_second_manifest(tmp
     files = toolchain_capture.frozen_files({"resource_custody": manifest})
     assert files == [
         toolchain_capture.FrozenFile(
-            str(tmp_path / "include" / "errno.h"),
+            custody_spelling(tmp_path / "include" / "errno.h"),
             hashlib.sha256(b"/*owned*/\n").hexdigest(),
             10,
         )
