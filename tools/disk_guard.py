@@ -631,12 +631,28 @@ def _delete_candidate(
 # directory (`<target>/debug/.cargo-lock`, `<target>/<triple>/<profile>/...`),
 # not the target root, and a pinned session builds below its checkout target;
 # build control holds its build, diff and daemon-suite owner locks.
+# RuntimeCargoPlan pins intermediates under .molt-toolchains/<digest>.
+# Supported Cargo releases hold .cargo-lock or .cargo-build-lock there; a
+# check can hold its intermediate lock without a final-output exclusive lock.
 _LOCK_PATTERNS = (
     ".cargo-lock",
     "*/.cargo-lock",
     "*/*/.cargo-lock",
     "sessions/*/*/.cargo-lock",
     "sessions/*/*/*/.cargo-lock",
+    ".molt-toolchains/*/*/.cargo-lock",
+    ".molt-toolchains/*/*/*/.cargo-lock",
+    "sessions/*/.molt-toolchains/*/*/.cargo-lock",
+    "sessions/*/.molt-toolchains/*/*/*/.cargo-lock",
+    ".cargo-build-lock",
+    "*/.cargo-build-lock",
+    "*/*/.cargo-build-lock",
+    "sessions/*/*/.cargo-build-lock",
+    "sessions/*/*/*/.cargo-build-lock",
+    ".molt-toolchains/*/*/.cargo-build-lock",
+    ".molt-toolchains/*/*/*/.cargo-build-lock",
+    "sessions/*/.molt-toolchains/*/*/.cargo-build-lock",
+    "sessions/*/.molt-toolchains/*/*/*/.cargo-build-lock",
     "diff_run.lock",
     "build_locks/*.lock",
     "backend_daemon/suite-leases/*/owner.lock",
