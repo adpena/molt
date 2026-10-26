@@ -135,15 +135,45 @@ def windows_caller_facts(
     variable: Callable[[str], str | None],
 ) -> Callable[[], WindowsCallerFacts]:
     """Bind CreateProcessW search to the actual calling process environment."""
-    import _winapi
+    if sys.platform != "win32":
+        raise OSError("Windows caller facts require Windows")
+    import ctypes
+    from ctypes import wintypes
 
-    module_file_name = _winapi.GetModuleFileName
-    need_current_directory = _winapi.NeedCurrentDirectoryForExePath
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_module_file_name = kernel32.GetModuleFileNameW
+    get_module_file_name.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+    get_module_file_name.restype = wintypes.DWORD
+    need_current_directory = kernel32.NeedCurrentDirectoryForExePathW
+    need_current_directory.argtypes = [wintypes.LPCWSTR]
+    need_current_directory.restype = wintypes.BOOL
+    create_buffer = ctypes.create_unicode_buffer
+    get_last_error = ctypes.get_last_error
+    set_last_error = ctypes.set_last_error
+    win_error = ctypes.WinError
     current_directory = os.getcwd
+
+    def module_file_name() -> str:
+        size = 260
+        # The extended Windows path bound includes its terminating UTF-16 NUL.
+        maximum_units = 32768
+        while True:
+            buffer = create_buffer(size)
+            set_last_error(0)
+            length = get_module_file_name(0, buffer, size)
+            if length == 0:
+                raise win_error(get_last_error())
+            if length < size:
+                return buffer.value
+            # GetModuleFileNameW returns nSize on truncation, rather than the
+            # required capacity. Never return a truncated caller identity.
+            if size == maximum_units:
+                raise win_error(122)  # ERROR_INSUFFICIENT_BUFFER
+            size = min(size * 2, maximum_units)
 
     def caller_facts() -> WindowsCallerFacts:
         return {
-            "caller_image": module_file_name(0),
+            "caller_image": module_file_name(),
             "caller_cwd": current_directory(),
             "caller_path": variable("PATH"),
             # A name without a backslash follows NoDefaultCurrentDirectoryInExePath.
