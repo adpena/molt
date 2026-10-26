@@ -520,6 +520,7 @@ def test_cargo_capture_reuse_and_rust_link_probe_share_bound_payload(
         policy_sha256=command_identity.canonical_json_sha256(policy.data),
         cwd=proof_plan.ROOT,
         env=env,
+        command_argv=command_admission._nested_command(exact) or exact,
     )
     assert len(probes) == 1
     assert probes[0]["cargo"] == expected

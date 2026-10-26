@@ -1917,6 +1917,37 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     )
 
 
+@pytest.mark.parametrize("name", ["uv", "node", "wasm-ld", "wasm-opt", "clang"])
+def test_selected_tool_input_projects_canonical_policy_without_execution(
+    tmp_path, name
+):
+    executable = tmp_path / name
+    selected = command_admission.selected_tool_input(executable)
+    assert selected.executable == executable
+    assert selected.policy == name
+    assert selected.toolchains == (name,)
+
+
+@pytest.mark.parametrize("name", ["unknown-tool", "rustc", "cargo", "python"])
+def test_selected_tool_input_rejects_missing_policy_or_execution_context(
+    tmp_path, name
+):
+    with pytest.raises(
+        ValueError, match="unknown proof executable|typed execution context"
+    ):
+        command_admission.selected_tool_input(tmp_path / name)
+
+
+def test_selected_tool_input_rejects_relative_or_forged_authority(tmp_path):
+    with pytest.raises(ValueError, match="absolute executable"):
+        command_admission.selected_tool_input(Path("uv"))
+    forged = command_admission.SelectedToolInput(tmp_path / "uv", "node", ("node",))
+    with pytest.raises(ValueError, match="noncanonical capture authority"):
+        execution_environment._locate_toolchain_watch_roots(
+            forged, (), cwd=tmp_path, env={}, supervisor_binary=tmp_path / "unused"
+        )
+
+
 def test_generator_envelope_preserves_explicit_selected_images_and_launchers():
     command_admission._proof_command_registry.cache_clear()
     plan = proof_plan.ProofPlan.load()
@@ -3281,13 +3312,19 @@ def test_environment_tool_paths_with_spaces_share_execution_resolution(
         assert record["executable"]["sha256"] == command_identity._hash_file(tool)
 
 
+@pytest.mark.parametrize("authority", ["execution", "selected-input"])
 def test_node_tool_identity_binds_runtime_versions_configuration_and_global_paths(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    authority: str,
 ) -> None:
     # The plan's node policy pins config/tool_releases.toml's version.
     node_version = tool_releases.tool_release("node").version
+    executable = tmp_path / native_executable_name("node")
+    executable.write_bytes(b"independent selected Node image")
+    executable.chmod(0o755)
     runtime_payload = {
-        "execPath": str(Path(sys.executable).resolve()),
+        "execPath": str(executable.resolve()),
         "versions": {"node": node_version, "modules": "137"},
         "config": {"variables": {"node_module_version": 137}},
         "globalPaths": [],
@@ -3296,7 +3333,7 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
     monkeypatch.setattr(
         command_identity,
         "_which_in_command_environment",
-        lambda *_args, **_kwargs: Path(sys.executable).resolve(),
+        lambda *_args, **_kwargs: executable.resolve(),
     )
 
     def fake_run(
@@ -3310,14 +3347,18 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
 
     monkeypatch.setattr(command_identity, "_run_captured", fake_run)
     plan = proof_plan.ProofPlan.load()
-    identity = command_identity._tool_identity(
-        plan,
-        "node",
-        {"python": None},
-        [sys.executable],
-        cwd=Path.cwd(),
-        env={},
-    )
+    if authority == "selected-input":
+        identity = execution_environment.capture_selected_tool_input(
+            executable,
+            cwd=tmp_path,
+            env={},
+            source_root=tmp_path,
+            supervisor_binary=tmp_path / "unused-supervisor",
+        )["node"]
+    else:
+        identity = command_identity._tool_identity(
+            plan, "node", {"python": None}, [sys.executable], cwd=Path.cwd(), env={}
+        )
     command_identity._validate_toolchain_identity(plan, "node", identity)
     assert identity["runtime"] == runtime_payload
     assert re.fullmatch(r"[0-9a-f]{64}", identity["runtime_sha256"])
@@ -3447,8 +3488,9 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
     )
 
 
+@pytest.mark.parametrize("authority", ["execution", "selected-input"])
 def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authority: str
 ) -> None:
     root = tmp_path / "captured-é"
     root.mkdir()
@@ -3465,6 +3507,17 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
     # The tool owner inspects the actual outer command grammar even though this
     # unit captures only uv's identity and never executes the payload.
     exact = [str(executable), "run", "--no-sync", "python", "-c", "pass"]
+    selected_input = None
+    if authority == "selected-input":
+        selected_input = command_admission.selected_tool_input(executable)
+        envelope = selected_input
+        exact = []
+        decoy_root = root / "decoy"
+        decoy_root.mkdir()
+        decoy = decoy_root / executable.name
+        decoy.write_bytes(b"different PATH-selected UV image")
+        decoy.chmod(0o755)
+        environment["PATH"] = str(decoy_root)
     plan = proof_plan.ProofPlan.load()
     declared_probes = next(
         policy for policy in plan.toolchain_policies if policy.name == "uv"
@@ -3516,7 +3569,13 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
         supervisor_custody, "capture_process_image_inventory", inventory
     )
     selected = command_identity._tool_identity(
-        plan, "uv", envelope, exact, cwd=root, env=environment
+        plan,
+        "uv",
+        None if selected_input else envelope,
+        exact,
+        cwd=root,
+        env=environment,
+        **({"selected_input": selected_input} if selected_input else {}),
     )
     selected_material = {
         key: value for key, value in selected.items() if key != "identity_sha256"
@@ -3570,6 +3629,67 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
     )
     assert python is None
     assert full["uv"]["identity_sha256"] == full_digest
+    if selected_input is not None:
+        from tools.release import verify_consumer
+
+        python_captures, reference = verify_consumer._compilation_captures(
+            interpreters=(),
+            tools=(executable, executable),
+            compiler=SimpleNamespace(source_root=root),
+            cwd=root,
+            env=ProcessEnvironment(environment),
+            supervisor=root / "unused-supervisor",
+            cas_root=root / "cas",
+        )
+        assert python_captures == []
+        retained = toolchain_capture.load_capture(reference, cas_root=root / "cas")
+        assert retained["toolchains"] == full
+        assert {row["sha256"] for row in retained["files"]} == {
+            hashlib.sha256(executable.read_bytes()).hexdigest(),
+            hashlib.sha256(loader_bytes).hexdigest(),
+        }
+        monkeypatch.setattr(
+            command_identity,
+            "_run_captured",
+            lambda command, **kwargs: subprocess.CompletedProcess(
+                command, 0, "uv 0.0.0\n", ""
+            ),
+        )
+        with pytest.raises(ValueError, match="violates canonical policy"):
+            verify_consumer._compilation_captures(
+                interpreters=(),
+                tools=(executable,),
+                compiler=SimpleNamespace(source_root=root),
+                cwd=root,
+                env=ProcessEnvironment(environment),
+                supervisor=root / "unused-supervisor",
+                cas_root=root / "rejected-cas",
+            )
+        assert not (root / "rejected-cas").exists()
+        substituted = copy.deepcopy(located)
+        substituted["uv"]["path"] = str(loader)
+        with pytest.raises(ValueError, match="differs from selected input executable"):
+            execution_environment._capture_toolchains(
+                selected_input,
+                (),
+                cwd=root,
+                env=environment,
+                source_root=root,
+                hash_workers=1,
+                located_toolchains=substituted,
+            )
+        # A captured identity cannot admit changed bytes at the full boundary.
+        loader.write_bytes(b"substituted loader after selection")
+        with pytest.raises(ValueError, match="changed"):
+            execution_environment._capture_toolchains(
+                selected_input,
+                (),
+                cwd=root,
+                env=environment,
+                source_root=root,
+                hash_workers=1,
+                located_toolchains=located,
+            )
     assert (
         execution_custody.validated_uv_environment_lock_capture(full).uv_identity_sha256
         == full_digest
