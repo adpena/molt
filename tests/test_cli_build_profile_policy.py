@@ -363,7 +363,7 @@ def test_runtime_build_profile_ignores_invalid_name(
         ("On", True),
     ],
 )
-def test_runtime_wasm_incremental_enabled_env(
+def test_runtime_wasm_explicit_layout_policy(
     value: str,
     expected: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -372,7 +372,12 @@ def test_runtime_wasm_incremental_enabled_env(
         monkeypatch.setenv("MOLT_RUNTIME_WASM_INCREMENTAL", value)
     else:
         monkeypatch.delenv("MOLT_RUNTIME_WASM_INCREMENTAL", raising=False)
-    assert cli_runtime_build._runtime_wasm_incremental_enabled() is expected
+    policy = cli_runtime_build.resolve_runtime_wasm_build_policy(
+        "release", {"MOLT_RUNTIME_WASM_INCREMENTAL": value}
+    )
+    assert (
+        policy.layout is cli_runtime_build.RuntimeWasmTargetLayout.FAMILY
+    ) is expected
 
 
 def test_incremental_family_key_excludes_link_args_and_separates_configs() -> None:
@@ -385,31 +390,27 @@ def test_incremental_family_key_excludes_link_args_and_separates_configs() -> No
         simd_enabled=True,
         freestanding=False,
     )
-    key = cli_runtime_build._runtime_wasm_incremental_family_key(**base)
+    key = cli_runtime_build._runtime_wasm_family_key(**base)
     # Stable across feature ordering (sorted internally).
     reordered = dict(base, features=("stdlib_regex", "stdlib_math"))
-    assert cli_runtime_build._runtime_wasm_incremental_family_key(**reordered) == key
+    assert cli_runtime_build._runtime_wasm_family_key(**reordered) == key
     # Genuinely different configs get different families.
     assert (
-        cli_runtime_build._runtime_wasm_incremental_family_key(
+        cli_runtime_build._runtime_wasm_family_key(
             **dict(base, cargo_profile="dev-fast")
         )
         != key
     )
     assert (
-        cli_runtime_build._runtime_wasm_incremental_family_key(
-            **dict(base, simd_enabled=False)
-        )
+        cli_runtime_build._runtime_wasm_family_key(**dict(base, simd_enabled=False))
         != key
     )
     assert (
-        cli_runtime_build._runtime_wasm_incremental_family_key(
-            **dict(base, freestanding=True)
-        )
+        cli_runtime_build._runtime_wasm_family_key(**dict(base, freestanding=True))
         != key
     )
     assert (
-        cli_runtime_build._runtime_wasm_incremental_family_key(
+        cli_runtime_build._runtime_wasm_family_key(
             **dict(base, features=("stdlib_math",))
         )
         != key
@@ -424,7 +425,7 @@ def test_incremental_target_root_is_session_independent(
     developer_host_context: None,
 ) -> None:
     monkeypatch.setenv("MOLT_SESSION_ID", "session-abc")
-    root = cli_runtime_build._runtime_wasm_incremental_target_root(
+    root = cli_runtime_build._runtime_wasm_family_target_root(
         tmp_path, "release-output-deadbeef"
     )
     # No per-session component: the whole point is cross-iteration reuse.
@@ -438,7 +439,7 @@ def test_incremental_target_root_honors_cargo_target_dir(
 ) -> None:
     override = tmp_path / "custom-target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(override))
-    root = cli_runtime_build._runtime_wasm_incremental_target_root(
+    root = cli_runtime_build._runtime_wasm_family_target_root(
         tmp_path, "dev-fast-cafef00d"
     )
     assert root == override / "runtime-wasm-incr" / "dev-fast-cafef00d"

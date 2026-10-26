@@ -1,51 +1,126 @@
-"""V2 stable dep-cache default-on-for-iteration matrix (doctrine 74 law 1)."""
+"""Independent intent, target custody and execution constraint matrix."""
 
 from __future__ import annotations
 
 import pytest
 
-import molt.cli.runtime_wasm_build_policy as rb
+from molt.cli.runtime_wasm_build_policy import (
+    RuntimeWasmIncrementality as Incrementality,
+    RuntimeWasmTargetLayout as Layout,
+    resolve_runtime_wasm_build_policy,
+)
 
 
-def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("MOLT_RUNTIME_WASM_INCREMENTAL", raising=False)
-    monkeypatch.delenv("MOLT_RUNTIME_BUILD_PROFILE", raising=False)
+@pytest.mark.parametrize(
+    "intent,environment,layout,incrementality",
+    [
+        ("dev", {}, Layout.CHECKOUT, Incrementality.FORCED_OFF),
+        ("release", {}, Layout.CHECKOUT, Incrementality.FORCED_OFF),
+        (
+            "release",
+            {"MOLT_SESSION_ID": "proof"},
+            Layout.SESSION,
+            Incrementality.FORCED_OFF,
+        ),
+        (
+            "release",
+            {"CARGO_TARGET_DIR": "/caller"},
+            Layout.EXPLICIT,
+            Incrementality.FORCED_OFF,
+        ),
+        (
+            "dev",
+            {"CARGO_INCREMENTAL": "0"},
+            Layout.CHECKOUT,
+            Incrementality.FORCED_OFF,
+        ),
+        (
+            "dev",
+            {"MOLT_RUNTIME_WASM_INCREMENTAL": "0"},
+            Layout.CHECKOUT,
+            Incrementality.FORCED_OFF,
+        ),
+        (
+            "release",
+            {"MOLT_RUNTIME_WASM_INCREMENTAL": "1"},
+            Layout.FAMILY,
+            Incrementality.REQUESTED_ON,
+        ),
+        (
+            "release",
+            {"MOLT_RUNTIME_BUILD_PROFILE": "dev-fast"},
+            Layout.FAMILY,
+            Incrementality.REQUESTED_ON,
+        ),
+        (
+            "release",
+            {"MOLT_RUNTIME_BUILD_PROFILE": "not valid"},
+            Layout.CHECKOUT,
+            Incrementality.FORCED_OFF,
+        ),
+        (
+            "dev",
+            {"SOURCE_DATE_EPOCH": "123"},
+            Layout.CHECKOUT,
+            Incrementality.FORCED_OFF,
+        ),
+        (
+            "dev",
+            {
+                "MOLT_PROOF_SCRATCH_ROOT": "/proof",
+                "MOLT_SESSION_ID": "proof",
+                "MOLT_RUNTIME_WASM_INCREMENTAL": "1",
+            },
+            Layout.SESSION,
+            Incrementality.FORCED_OFF,
+        ),
+        (
+            "release",
+            {"CARGO_INCREMENTAL": "1"},
+            Layout.CHECKOUT,
+            Incrementality.PROFILE,
+        ),
+    ],
+)
+def test_runtime_wasm_policy_matrix(intent, environment, layout, incrementality):
+    policy = resolve_runtime_wasm_build_policy(intent, environment)
+    assert policy.build_profile == intent
+    assert policy.layout is layout
+    assert policy.incrementality is incrementality
 
 
-def test_default_off_without_iteration_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear(monkeypatch)
-    # Acceptance / final-green: no iteration knob -> deterministic session dir.
-    assert rb._runtime_wasm_incremental_enabled() is False
+def test_unresolved_cargo_profile_cannot_authorize_publication_or_diagnostics():
+    policy = resolve_runtime_wasm_build_policy("dev", {})
+    with pytest.raises(ValueError, match="resolved incrementality"):
+        _ = policy.publish_shared_cache
+    with pytest.raises(ValueError, match="resolved incrementality"):
+        _ = policy.diagnostic_detail
 
 
-def test_default_on_in_iteration_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear(monkeypatch)
-    # An explicit iteration profile enables the stable cross-session dep cache
-    # with no second env var.
-    monkeypatch.setenv("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
-    assert rb._runtime_wasm_incremental_enabled() is True
+@pytest.mark.parametrize("intent", ["dev", "release"])
+def test_forced_off_request_still_requires_captured_cargo_policy(intent):
+    policy = resolve_runtime_wasm_build_policy(intent, {"CARGO_INCREMENTAL": "0"})
+    with pytest.raises(ValueError, match="resolved incrementality"):
+        _ = policy.publish_shared_cache
+    with pytest.raises(ValueError, match="resolved incrementality"):
+        _ = policy.diagnostic_detail
 
 
-def test_explicit_on_wins(monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear(monkeypatch)
-    monkeypatch.setenv("MOLT_RUNTIME_WASM_INCREMENTAL", "1")
-    assert rb._runtime_wasm_incremental_enabled() is True
-
-
-def test_explicit_off_overrides_iteration_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear(monkeypatch)
-    # Even in an iteration context, an explicit opt-out is honoured (e.g. to
-    # force a deterministic build).
-    monkeypatch.setenv("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
-    monkeypatch.setenv("MOLT_RUNTIME_WASM_INCREMENTAL", "0")
-    assert rb._runtime_wasm_incremental_enabled() is False
-
-
-def test_invalid_profile_does_not_enable(monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear(monkeypatch)
-    # A typo'd profile is ignored by the override resolver, so it must NOT
-    # silently flip the acceptance default.
-    monkeypatch.setenv("MOLT_RUNTIME_BUILD_PROFILE", "not a valid profile!!")
-    assert rb._runtime_wasm_incremental_enabled() is False
+@pytest.mark.parametrize(
+    "environment,expected",
+    [
+        ({"CARGO_TARGET_DIR": "/caller"}, Layout.EXPLICIT),
+        ({"MOLT_SESSION_ID": "owned-proof"}, Layout.SESSION),
+        (
+            {"MOLT_SESSION_ID": "generated", "MOLT_SESSION_ID_GENERATED": "1"},
+            Layout.CHECKOUT,
+        ),
+        (
+            {"MOLT_RUNTIME_WASM_INCREMENTAL": "1", "CARGO_TARGET_DIR": "/caller"},
+            Layout.EXPLICIT,
+        ),
+    ],
+)
+def test_dev_iteration_preserves_canonical_target_custody(environment, expected):
+    policy = resolve_runtime_wasm_build_policy("dev", environment)
+    assert policy.layout is expected

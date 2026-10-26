@@ -21,6 +21,10 @@ from tools.proof_queue_pkg import custody_cas, supervisor_custody
 from tools.release import consumer_replay, execution_root, provision_execution_archives
 from molt import tool_releases
 from tests.native_artifact_fixtures import elf_dynamic_image, elf_header
+from tests.tools.test_release_supply_chain import (
+    release_source as release_source,
+    runtime_projection_compiler as runtime_projection_compiler,
+)
 
 
 def _wasm_stage_inputs(tmp_path):
@@ -2215,6 +2219,227 @@ def test_rooted_verifier_binds_guest_receipt_and_requires_native_custody(
     assert len(observed) == 1
 
 
+def _stage_runtime_projection(root, compiler, selected, monkeypatch):
+    from molt import python_capture
+    from tools.proof_queue_pkg import toolchain_capture
+
+    # Python startup is outside this runtime-byte boundary. Runtime metadata,
+    # source, member copies, CAS record, root seal and receiver stay real.
+    monkeypatch.setattr(python_capture, "validate_python_capture", lambda value: value)
+    monkeypatch.setattr(execution_root, "compilation_python_files", lambda value: [])
+    cas = root.parent / "capture-cas"
+    _, reference, _ = toolchain_capture.publish_capture(cas, {})
+    root.mkdir()
+    return execution_root.stage_compilation_inputs(
+        root,
+        compiler=compiler,
+        runtime_cells=selected,
+        python_captures=[{"file_custody": []}],
+        toolchain_capture=reference,
+        cas_root=cas,
+    )
+
+
+@pytest.mark.parametrize("kind", ["native", "wasm"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "unselected-missing",
+        "unselected-corrupt",
+        "selected-missing",
+        "selected-corrupt",
+        "foreign",
+        "malformed",
+        "empty",
+        "conflicting-duplicate",
+    ],
+)
+def test_compilation_runtime_projection_stages_only_exact_selected_bytes(
+    tmp_path, monkeypatch, runtime_projection_compiler, kind, defect, record_property
+):
+    compiler, native, wasm, unused = runtime_projection_compiler
+    selected = native if kind == "native" else wasm
+    selection = (selected, selected)  # Two logical lanes share physical members.
+    selected_path = (
+        compiler.runtime_root / selected["id"] / selected["files"][0]["name"]
+    )
+    unused_path = (
+        compiler.runtime_root
+        / unused["id"]
+        / next(
+            row["name"] for row in unused["files"] if row["role"] == "runtime_archive"
+        )
+    )
+    if defect == "unselected-missing":
+        unused_path.unlink()
+    elif defect == "unselected-corrupt":
+        unused_path.write_bytes(b"changed unrelated runtime")
+    elif defect == "selected-missing":
+        selected_path.unlink()
+    elif defect == "selected-corrupt":
+        selected_path.write_bytes(b"changed selected runtime")
+    elif defect == "empty":
+        selection = ()
+    elif defect == "malformed":
+        selection = ({"id": []},)
+    elif defect in {"foreign", "conflicting-duplicate"}:
+        foreign = copy.deepcopy(selected)
+        foreign["files"][0]["sha256"] = "0" * 64
+        selection = (foreign,) if defect == "foreign" else (selected, foreign)
+    copied = []
+    actual_stage = execution_root.stage_file
+
+    def stage(root, name, source, **kwargs):
+        copied.append((source, source.stat().st_size))
+        return actual_stage(root, name, source, **kwargs)
+
+    monkeypatch.setattr(execution_root, "stage_file", stage)
+    root = tmp_path / "rootfs"
+    if defect not in {None, "unselected-missing", "unselected-corrupt"}:
+        with pytest.raises((OSError, ValueError)):
+            _stage_runtime_projection(root, compiler, selection, monkeypatch)
+        if defect in {"foreign", "malformed", "empty", "conflicting-duplicate"}:
+            assert copied == []
+        return
+    rows = _stage_runtime_projection(root, compiler, selection, monkeypatch)
+    runtime_copies = [
+        (path, size) for path, size in copied if compiler.runtime_root in path.parents
+    ]
+    assert {path.name for path, _ in runtime_copies} == {
+        row["name"] for row in selected["files"]
+    }
+    assert len(runtime_copies) == len(selected["files"])
+    assert sum(size for _, size in runtime_copies) == sum(
+        row["size"] for row in selected["files"]
+    )
+    record_property(
+        "runtime_copy_cost",
+        json.dumps(
+            {
+                "old_catalog_files": sum(
+                    len(cell["files"]) for cell in compiler.runtime["cells"]
+                ),
+                "old_catalog_bytes": sum(
+                    row["size"]
+                    for cell in compiler.runtime["cells"]
+                    for row in cell["files"]
+                ),
+                "observed_selected_files": len(runtime_copies),
+                "observed_selected_bytes": sum(size for _, size in runtime_copies),
+            },
+            sort_keys=True,
+        ),
+    )
+    assert all(unused["id"] not in row["path"] for row in rows)
+    from molt.compiler_distribution import installed_compiler
+
+    staged = installed_compiler(
+        root / execution_root.linux_root_relative_path(str(compiler.source_root))
+    )
+    assert staged.runtime == compiler.runtime  # Full metadata is retained unchanged.
+    # The old full-catalog requirement rejects this same admitted projection.
+    with pytest.raises(ValueError, match="closure is not exact"):
+        staged.verify_runtime()
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "missing",
+        "corrupt",
+        "extra-file",
+        "extra-directory",
+        "foreign-selection",
+        "missing-selection",
+        "catalog-substitution",
+    ],
+)
+def test_compilation_runtime_projection_receiver_independently_rejects_drift(
+    tmp_path, monkeypatch, runtime_projection_compiler, defect
+):
+    from molt.exact_json import read_exact, write_exact
+    from molt.source_root import MANIFEST_NAME
+    from molt.compiler_distribution import installed_compiler
+
+    compiler, native, wasm, unused = runtime_projection_compiler
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    root = evidence / "rootfs"
+    _stage_runtime_projection(root, compiler, (native, wasm, native), monkeypatch)
+    source = root / execution_root.linux_root_relative_path(str(compiler.source_root))
+    staged = installed_compiler(source)
+    selected_path = staged.runtime_root / native["id"] / native["files"][0]["name"]
+    if defect == "missing":
+        selected_path.unlink()
+    elif defect == "corrupt":
+        selected_path.chmod(0o644)
+        selected_path.write_bytes(b"resealed corrupted runtime")
+    elif defect == "extra-file":
+        extra = staged.runtime_root / unused["id"] / "unselected.a"
+        extra.parent.mkdir()
+        extra.write_bytes(b"positive unselected contamination")
+    elif defect == "extra-directory":
+        (staged.runtime_root / unused["id"]).mkdir()
+    elif defect == "catalog-substitution":
+        manifest = read_exact(
+            source / MANIFEST_NAME, max_bytes=1024**2, label="fixture compiler"
+        )
+        manifest["runtime"]["cells"] = [native, wasm]
+        manifest["runtime"]["cells"].sort(key=lambda row: row["id"])
+        (source / MANIFEST_NAME).chmod(0o644)
+        write_exact(source / MANIFEST_NAME, manifest)
+    selected = [native, wasm, native]
+    if defect == "foreign-selection":
+        selected[0] = {**native, "key": {**native["key"], "cargo_profile": "foreign"}}
+    elif defect == "missing-selection":
+        selected = []
+    projection = cross_run.SealedExecutionProjection.compilation(
+        memory_max_bytes=512 * 1024**2,
+        workspace_max_bytes=128 * 1024**2,
+        runtime_max_seconds=90,
+    )
+    sealed = execution_root.seal_root(
+        root,
+        evidence / "rootfs.tar",
+        expected_files=execution_root.root_inventory(root),
+        projection=projection,
+    )
+    compilation = {
+        "schema": "molt.installed-compilation.v4",
+        "execution": projection.to_dict(),
+        "root": sealed,
+        "supervisor_generation": {},
+        "compiler_source_root": str(compiler.source_root),
+        "compiler": compiler.record,
+        "source_sha": compiler.source_sha,
+        "target": {"platform": "linux", "arch": "x86_64"},
+        "cells": [{"runtime_cell": cell} for cell in selected],
+    }
+    # Command policy/native supervisor admission is separate; this receiver
+    # must still independently verify the real sealed runtime byte projection.
+    monkeypatch.setattr(
+        consumer_replay, "_validate_compilation_plan", lambda **kwargs: None
+    )
+    monkeypatch.setattr(consumer_replay, "_validate_generation", lambda *args: None)
+    arguments = dict(
+        evidence=evidence,
+        compilation=compilation,
+        compiler=compiler,
+        lanes=(),
+        python_minor="3.12",
+        launcher=[],
+        controller_python=tmp_path / "unused",
+    )
+    if defect is not None:
+        with pytest.raises((ValueError, OSError)):
+            consumer_replay._validate_compilation_inputs(**arguments)
+    else:
+        admitted = consumer_replay._validate_compilation_inputs(**arguments)
+        assert admitted.runtime == compiler.runtime
+
+
 def test_compile_root_projection_cannot_be_replayed_as_an_ordinary_guest(tmp_path):
     projection = cross_run.SealedExecutionProjection.compilation(
         memory_max_bytes=512 * 1024 * 1024,
@@ -2878,6 +3103,9 @@ def test_compilation_export_rechecks_raw_buffers_and_publication(
         "foreign-guard",
         "launcher",
         "interpreter",
+        "old-schema",
+        "shared-runtime",
+        "runtime-store",
     ],
 )
 def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
@@ -2887,6 +3115,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
     # This tests the preparation/output boundary only. The capture materializers
     # are explicit fixture seams; no installed/kernel execution is claimed.
     from molt.compiler_distribution import InstalledCompiler
+    from molt.cli import installed_runtime
     from molt.release_lanes import capture_release_lanes
     from molt.exact_json import read_exact
     from tools.release.release_model import ROOT
@@ -2898,6 +3127,12 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         if lane.target == "native" and lane.backend != "llvm"
     )
     wasm = next(lane for lane in inventory.lanes if lane.target == "wasm")
+    shared_runtime = defect == "shared-runtime"
+    second = (
+        next(lane for lane in inventory.lanes if lane.backend == "llvm")
+        if shared_runtime
+        else wasm
+    )
     compiler = InstalledCompiler(
         Path("/installed/source"),
         "a" * 40,
@@ -2923,20 +3158,29 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         )
         return execution_root.root_inventory(root)
 
-    def runtime(root, **kwargs):
-        staged.append(kwargs["key"]["cell"])
-        return [], {
-            "id": kwargs["key"]["cell"],
-            "key": {
-                "target_triple": "x86_64-unknown-linux-gnu"
-                if kwargs["kind"] == "native"
-                else "wasm32-wasip1"
+    def select(compiler, *, kind, key, retention_store):
+        assert retention_store == Path("/work/state/installed-runtime")
+        return SimpleNamespace(
+            id=key["cell"],
+            record={
+                "id": key["cell"],
+                "key": {
+                    "target_triple": "x86_64-unknown-linux-gnu"
+                    if kind == "native"
+                    else "wasm32-wasip1"
+                },
+                "files": [],
             },
-            "files": [],
-        }
+        )
 
     monkeypatch.setattr(execution_root, "stage_compilation_inputs", inputs)
-    monkeypatch.setattr(execution_root, "stage_compilation_runtime", runtime)
+    monkeypatch.setattr(installed_runtime, "select_installed_runtime_cell", select)
+    for name in ("admit_installed_native_runtime", "admit_installed_wasm_runtime"):
+        monkeypatch.setattr(
+            installed_runtime,
+            name,
+            lambda *a, **k: pytest.fail("prehydrated proof input"),
+        )
     monkeypatch.setattr(execution_root, "support_payloads", lambda *a, **k: ({}, []))
     supervisor = tmp_path / "supervisor"
     supervisor.write_bytes(b"supervisor")
@@ -2953,7 +3197,11 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
     )
     cells = [
         (native, "native", {"cell": native.id}),
-        (native if duplicate else wasm, "wasm", {"cell": wasm.id}),
+        (
+            native if duplicate else second,
+            "native" if shared_runtime else "wasm",
+            {"cell": native.id if shared_runtime else wasm.id},
+        ),
     ]
     args = dict(
         evidence=tmp_path / "evidence",
@@ -2976,6 +3224,8 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         supervisor=supervisor,
         generation=generation,
     )
+    if shared_runtime:
+        args["native_link_inputs"][second.id] = args["native_link_inputs"][native.id]
     if duplicate:
         with pytest.raises(ValueError, match="no applicable"):
             consumer_replay.prepare_compilation(**args)
@@ -2988,18 +3238,22 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         execution_root, "stage_compilation_driver_inputs", lambda *args, **kwargs: []
     )
     prepared = consumer_replay.prepare_compilation(**args)
-    assert staged == ["inputs", native.id, wasm.id]
-    assert prepared["schema"] == "molt.installed-compilation.v3"
+    assert staged == ["inputs"]
+    assert prepared["schema"] == "molt.installed-compilation.v4"
     assert prepared["origins"] == []
     assert prepared["cache_seed"] == []
-    assert [row["id"] for row in prepared["cells"]] == [native.id, wasm.id]
+    assert [row["id"] for row in prepared["cells"]] == [native.id, second.id]
+    if shared_runtime:
+        assert (
+            prepared["cells"][0]["runtime_cell"] == prepared["cells"][1]["runtime_cell"]
+        )
     root = args["evidence"] / "rootfs"
     assert (
         len([row for row in prepared["root"]["files"] if row["path"] == "sdk/input"])
         == 1
     )
     policies = []
-    for lane, cell in zip((native, wasm), prepared["cells"], strict=True):
+    for lane, cell in zip((native, second), prepared["cells"], strict=True):
         policy = read_exact(
             root / cell["policy"], max_bytes=65536, label="fixture compilation policy"
         )
@@ -3021,6 +3275,11 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         assert config["environment"]["MOLT_EMISSION_SCOPE"] == policy["nonce"]
         assert len(policy["nonce"]) == 64
         assert config["environment"]["MOLT_WASM_CARGO_PROFILE"] == lane.runtime_profile
+        assert config["environment"]["MOLT_HOME"] == "/installed-home"
+        assert (
+            config["environment"]["MOLT_INSTALLED_RUNTIME_STORE"]
+            == "/work/state/installed-runtime"
+        )
         assert "MOLT_MEMORY_GUARD_TOKEN" not in config["environment"]
         assert policy["derived_roots"] == []
         assert any(
@@ -3041,7 +3300,9 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         projection=projection,
     )
 
-    if defect == "launcher":
+    if defect == "old-schema":
+        prepared["schema"] = "molt.installed-compilation.v3"
+    elif defect == "launcher":
         prepared["launcher"] = ["/python/bin/python", "/app/forged.py"]
     elif defect == "interpreter":
         prepared["controller_python"] = "/other/python"
@@ -3051,7 +3312,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         controller.write_bytes(b"X" * controller.stat().st_size)
     elif defect == "cell-omission":
         prepared["cells"].pop()
-    elif defect in {"policy", "foreign-guard"}:
+    elif defect in {"policy", "foreign-guard", "runtime-store"}:
         cell = prepared["cells"][0]
         selected = root / (
             cell["policy"]
@@ -3061,16 +3322,20 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         value = json.loads(selected.read_text(encoding="utf-8"))
         if defect == "policy":
             value["fixed_images"][0]["sha256"] = "0" * 64
-        else:
+        elif defect == "foreign-guard":
             value["environment"]["MOLT_MEMORY_GUARD_TOKEN"] = "foreign-token"
+        else:
+            value["environment"]["MOLT_INSTALLED_RUNTIME_STORE"] = (
+                "/installed-home/installed-runtime"
+            )
         selected.chmod(0o644)
         selected.write_text(json.dumps(value), encoding="utf-8")
-    if defect is not None:
+    if defect not in {None, "shared-runtime"}:
         with pytest.raises(ValueError):
             consumer_replay._validate_compilation_plan(
                 rootfs=root,
                 compilation=prepared,
-                lanes=(native, wasm),
+                lanes=(native, second),
                 python_minor="3.12",
                 launcher=args["launcher"],
                 controller_python=args["python_executable"],
@@ -3079,7 +3344,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         consumer_replay._validate_compilation_plan(
             rootfs=root,
             compilation=prepared,
-            lanes=(native, wasm),
+            lanes=(native, second),
             python_minor="3.12",
             launcher=args["launcher"],
             controller_python=args["python_executable"],
@@ -3208,7 +3473,7 @@ def test_retained_compilation_replays_export_before_accepting_summary(
         )
     }
     compilation.update(
-        schema="molt.installed-compilation.v3",
+        schema="molt.installed-compilation.v4",
         origins=[],
         cache_seed=[],
         execution=args["projection"].to_dict(),

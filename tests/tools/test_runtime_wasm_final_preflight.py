@@ -62,8 +62,9 @@ def test_planned_pair_uses_production_control_root(
     )
     requests = []
 
-    def compute_spec(*_args, **kwargs):
-        requests.append(kwargs["cargo_profile"])
+    def compute_spec(*_args, build_profile: str, **kwargs):
+        assert build_profile in {"dev", "release"}
+        requests.append((build_profile, kwargs["cargo_profile"]))
         from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
 
         return SimpleNamespace(
@@ -103,7 +104,7 @@ def test_planned_pair_uses_production_control_root(
         state / "runtime_wasm_generations" / f"{'f' * 64}.expected.json"
     )
     assert state.is_relative_to(custody)
-    assert requests == [requested, requested]
+    assert requests == [(build_profile, requested), (build_profile, requested)]
     assert pair["cargo_profile"] == (
         "wasm-release" if requested == "release" else requested
     )

@@ -348,6 +348,7 @@ def _prepare_backend_setup(
         if not _ensure_runtime_wasm_both(
             runtime_state,
             json_output=json_output,
+            build_profile=profile,
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
@@ -455,6 +456,7 @@ def _prepare_backend_setup(
 def _prepare_backend_runtime_context(
     *,
     prepared_backend_setup: _PreparedBackendSetup,
+    profile: BuildProfile,
     is_wasm_freestanding: bool,
     json_output: bool,
     runtime_cargo_profile: str,
@@ -499,6 +501,7 @@ def _prepare_backend_runtime_context(
         return _ensure_runtime_wasm_both(
             runtime_state,
             json_output=json_output,
+            build_profile=profile,
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,

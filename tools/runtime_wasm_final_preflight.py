@@ -11,7 +11,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,8 +25,10 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.process_environment import ProcessEnvironment  # noqa: E402
+from molt.process_model import ProcessSample  # noqa: E402
 from molt.cli.atomic_io import _atomic_write_text  # noqa: E402
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name  # noqa: E402
+from molt.cli.build_request import BuildProfile  # noqa: E402
 from molt.cli.runtime_paths import (  # noqa: E402
     _build_state_root,
     _runtime_wasm_artifact_path_from_env,
@@ -408,7 +410,7 @@ def _proof_queue_conflicts(db: Path, *, exclude_run_id: str) -> list[dict[str, o
 
 def _claim_binds_current_process(
     claim: RuntimeWasmBuildClaim,
-    samples: Mapping[int, object],
+    samples: Mapping[int, ProcessSample],
 ) -> bool:
     """Require the live queue guard to own this process through ancestry."""
 
@@ -548,7 +550,7 @@ def _disk_facts(
 
 
 @contextlib.contextmanager
-def _exact_build_environment(values: Mapping[str, str]) -> Iterator[None]:
+def _exact_build_environment(values: Mapping[str, str]) -> Generator[None, None, None]:
     previous = dict(os.environ)
     os.environ.clear()
     os.environ.update(values)
@@ -565,7 +567,7 @@ def _planned_pair(
     target_root: Path,
     cache_root: Path,
     runtime_dir: Path,
-    build_profile: str,
+    build_profile: BuildProfile,
     stdlib_profile: str,
     build_env: Mapping[str, str],
 ) -> dict[str, object]:
@@ -588,26 +590,29 @@ def _planned_pair(
     if state_override := build_env.get("MOLT_BUILD_STATE_DIR"):
         required_env["MOLT_BUILD_STATE_DIR"] = state_override
     with _exact_build_environment(build_env):
-        cargo_profile, error = _resolve_cargo_profile_name(build_profile, wasm=True)  # type: ignore[arg-type]
+        cargo_profile, error = _resolve_cargo_profile_name(build_profile, wasm=True)
         if error is not None:
             raise ValueError(error)
         shared = runtime_dir / "molt_runtime.wasm"
         reloc = runtime_dir / "molt_runtime_reloc.wasm"
-        common = {
-            "cargo_profile": cargo_profile,
-            "simd_enabled": True,
-            "freestanding": False,
-            "stdlib_profile": stdlib_profile,
-            "resolved_modules": None,
-            "required_link_features": frozenset(),
-            "required_exports": None,
-        }
-        shared_spec = _compute_runtime_wasm_build_spec(
-            project_root, shared, reloc=False, **common
-        )
-        reloc_spec = _compute_runtime_wasm_build_spec(
-            project_root, reloc, reloc=True, **common
-        )
+
+        def member_spec(path: Path, *, reloc: bool):
+            return _compute_runtime_wasm_build_spec(
+                project_root,
+                path,
+                reloc=reloc,
+                build_profile=build_profile,
+                cargo_profile=cargo_profile,
+                simd_enabled=True,
+                freestanding=False,
+                stdlib_profile=stdlib_profile,
+                resolved_modules=None,
+                required_link_features=frozenset(),
+                required_exports=None,
+            )
+
+        shared_spec = member_spec(shared, reloc=False)
+        reloc_spec = member_spec(reloc, reloc=True)
         if (
             shared_spec.target_root != target_root
             or reloc_spec.target_root != target_root
@@ -668,7 +673,7 @@ def build_preflight(
     *,
     context: RuntimeWasmPreflightContext,
     reserve_bytes: int,
-    build_profile: str,
+    build_profile: BuildProfile,
     stdlib_profile: str,
 ) -> dict[str, object]:
     roots = context.roots
@@ -798,7 +803,7 @@ def build_preflight(
 
 def _build_command(
     *,
-    build_profile: str,
+    build_profile: BuildProfile,
     stdlib_profile: str,
     cargo_timeout: float | None,
 ) -> list[str]:

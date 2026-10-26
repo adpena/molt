@@ -214,6 +214,32 @@ identity consumers, and the selector consumer, closing missing producer triggers
 compile zlib, while provider edits keep both compiled gates and source oracles.
 These are verified obligation changes, not an end-to-end latency comparison.
 
+Immutable Python image publication derives three ordinary bytecode variants per
+source. One publication action retains trusted derivation hashes for its fresh
+receiver capture, eliminating duplicate compilation while preserving full input
+and output reads. It also retains CPython-derived destinations and creates each
+parent directory once. Two alternating before/after pairs on macOS arm64 over
+3,383 real sources and 10,149 byte-identical caches measured publication plus
+fresh source/cache inventory and verification at median 16.28 seconds before and
+10.19 seconds after (37% lower). Median process peak memory rose from 155.3 to
+156.4 MiB; source/code buffers remain bounded to one module and the action table
+scales with cache variants. This component excludes full environment/runtime
+inventory, dependency installation and process startup; it does not measure the
+entire dev loop. Cold publication also removes one child and JSON round trip.
+Incoming and existing-image admission still derive caches independently. The
+[publication contract](../docs/ops/INTEGRATION.md) owns the exact proof lifetime.
+
+WASM policy separates typed build intent, target placement, effective captured
+Cargo incrementality and shared publication. The ordinary nonincremental default
+is retained: one controlled `dev-fast`, micro-runtime WASM source edit took
+32.31 seconds without incrementality versus 34.14 seconds with it (Cargo compile
+17.98 versus 21.17 seconds), with retained incremental state verified. Both paths
+used isolated targets and suppressed shared publication, so this is a component
+comparison, not ordinary default-loop or cross-platform qualification. Explicit
+iteration controls remain available; only bound nonincremental products may
+publish to the shared cache. [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
+own effective settings after canonical sccache normalization.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 
