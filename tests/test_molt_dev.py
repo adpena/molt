@@ -205,15 +205,20 @@ def test_integrate_maintenance_retains_cwd_before_command_changes_it(
     from molt import dx
 
     _, work = origin_and_clone
-    selected = ProcessEnvironment({"MOLT_EXT_ROOT": str(tmp_path / "selected")})
-    context = GateEnvironment(selected, None, False)
+    selected = ProcessEnvironment({"MOLT_EXT_ROOT": "selected"})
+    duplicate = ProcessEnvironment({"MOLT_EXT_ROOT": str(work / "selected")})
+    other = ProcessEnvironment({"MOLT_EXT_ROOT": "other"})
     monkeypatch.chdir(work.parent)
     monkeypatch.setattr(
         drv.molt_dev_controller, "integration_controller", lambda _a: "fixture"
     )
 
     def exclusive(_args, *, progress):
-        progress.environments = {(): context}
+        progress.environments = {
+            (): GateEnvironment(selected, None, False),
+            ("duplicate",): GateEnvironment(duplicate, None, False),
+            ("other",): GateEnvironment(other, None, False),
+        }
         monkeypatch.chdir(tmp_path)
         return 7
 
@@ -221,17 +226,20 @@ def test_integrate_maintenance_retains_cwd_before_command_changes_it(
     observed = []
 
     def collect(env, *, cwd):
-        terminal = json.loads(capsys.readouterr().out.splitlines()[-1])
-        assert terminal["event"] == "integration_finished"
-        assert terminal["returncode"] == 7
-        assert env is selected
+        output = capsys.readouterr().out
+        if not observed:
+            terminal = json.loads(output.splitlines()[-1])
+            assert terminal["event"] == "integration_finished"
+            assert terminal["returncode"] == 7
+        else:
+            assert output == ""
         assert cwd == work and Path.cwd() == tmp_path
-        observed.append("captured")
+        observed.append(env)
 
     monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
     args = _integrate_ns(drv, repo=work.name)
     assert drv.cmd_integrate(args) == 7
-    assert observed == ["captured"]
+    assert observed == [selected, other]
 
 
 # --------------------------------------------------------------------------

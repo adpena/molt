@@ -191,7 +191,7 @@ from molt.file_locks import (  # noqa: E402
     _release_file_lock,
     _try_acquire_file_lock,
 )
-from molt.dx import project_cargo_target_dir  # noqa: E402
+from molt.dx import configured_artifact_root, project_cargo_target_dir  # noqa: E402
 
 from tools.molt_dev_detached import (  # noqa: E402
     cmd_detached_run,
@@ -1062,9 +1062,9 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
         )
         if not args.dry_run:
-            seen: set[str] = set()
+            seen: set[Path | None] = set()
             for context in progress.environments.values():
-                root = context.environment.get("MOLT_EXT_ROOT", "")
+                root = configured_artifact_root(context.environment, relative_to=repo)
                 if root not in seen:
                     seen.add(root)
                     _collect_driver_maintenance(repo, context.environment)
