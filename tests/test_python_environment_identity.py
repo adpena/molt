@@ -1923,12 +1923,12 @@ def test_environment_locator_keeps_import_archive_as_exact_input(
     assert location.validate_python_environment_location(located) == located
 
 
-def _installed_fixture(root: Path):
+def _installed_fixture(root: Path, source_bytes: bytes = b"VALUE = 1\n"):
     site = root / "site"
     metadata = site / "demo-1.0.dist-info"
     metadata.mkdir(parents=True)
     module = site / "demo.py"
-    module.write_bytes(b"VALUE = 1\n")
+    module.write_bytes(source_bytes)
     meta = metadata / "METADATA"
     meta.write_text(
         "Metadata-Version: 2.1\nName: Demo\nVersion: 1.0\n", encoding="utf-8"
@@ -2644,7 +2644,16 @@ def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
 
 
 @pytest.mark.parametrize(
-    "fault", ["none", "forged-code", "rewrite", "image-prefix", "populated-prefix"]
+    "fault",
+    [
+        "none",
+        "grouped",
+        "mutated-source",
+        "forged-code",
+        "rewrite",
+        "image-prefix",
+        "populated-prefix",
+    ],
 )
 def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault):
     # Interpreter-wide cache policy belongs only to spawned children, never the
@@ -2687,28 +2696,79 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
     from _pytest.assertion.rewrite import rewrite_asserts
 
     root = tmp_path / "image"
-    source = _installed_fixture(root)
+    source = _installed_fixture(
+        root, b'"module docstring"\nVALUE = 1\nassert VALUE == 1\nDEBUG = __debug__\n'
+    )
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    runtime_source = runtime_root / "runtime.py"
+    runtime_source.write_bytes(b'"runtime docstring"\nassert __debug__\n')
+    runtime_alias = runtime_root / "alias.py"
+    os.link(runtime_source, runtime_alias)
+    sources = [source, runtime_source, runtime_alias]
     prefix = location.environment_bytecode_prefix(root)
     prefix.mkdir()
     verifier_prefix = sys.pycache_prefix
     assert verifier_prefix is not None
     assert Path(verifier_prefix) != prefix
-    tree, pool = _tree(root, files.PythonFileCaptureContext())
+
+    def capture_tree(directory, first, context):
+        captured_pool = files._FileNodePool(capture_context=context)
+        # Distinct pools deliberately reuse file-node-0; runtime aliases share
+        # that node but require different code.co_filename values.
+        assert captured_pool.bind(first, first.stat(), label="fixture") == "file-node-0"
+        captured_tree, _, _ = files._stable_tree_inventory(
+            directory, root_id="fixture", label="fixture", pool=captured_pool
+        )
+        return captured_tree, captured_pool
+
+    context = files.PythonFileCaptureContext()
+    tree, pool = capture_tree(root, source, context)
+    runtime_tree, runtime_pool = capture_tree(runtime_root, runtime_source, context)
     entries = {row["path"]: row for row in tree["entries"]}
     _, owned, _ = environment._installed_distributions(
         ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
     )
-    environment._ordinary_bytecode_projection(
-        root,
-        entries,
-        owned,
-        pool,
-        {"runtime_roots": []},
-        (),
-        pool,
-        {"trees": []},
-        (),
-        publish=True,
+
+    def project(entries, pool, runtime_tree, runtime_pool, *, publish):
+        reads, attempts = [], []
+        read_bound = files._FileNodePool.read_bound
+        derive = environment._ordinary_cache_bytes
+
+        def read(owner, node, *, label):
+            data = read_bound(owner, node, label=label)
+            if label.endswith(" source"):
+                reads.append((owner, node))
+                if not publish and fault == "mutated-source" and len(reads) == 1:
+                    source.write_bytes(b"VALUE = 2\n")
+            return data
+
+        def compile_cache(data, filename, optimization):
+            attempts.append((filename, optimization))
+            return derive(data, filename, optimization)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(files._FileNodePool, "read_bound", read)
+            patch.setattr(environment, "_ordinary_cache_bytes", compile_cache)
+            environment._ordinary_bytecode_projection(
+                root,
+                entries,
+                owned,
+                pool,
+                {"runtime_roots": [runtime_tree]},
+                (("fixture", runtime_root),),
+                runtime_pool,
+                {"trees": []},
+                (),
+                publish=publish,
+            )
+        return reads, attempts
+
+    reads, attempts = project(entries, pool, runtime_tree, runtime_pool, publish=True)
+    assert reads.count((pool, "file-node-0")) == 1
+    assert reads.count((runtime_pool, "file-node-0")) == 2
+    assert sorted(attempts) == sorted(
+        (str(path), opt) for path in sources for opt in (0, 1, 2)
     )
     assert sys.pycache_prefix == verifier_prefix
     assert not list(Path(verifier_prefix).iterdir())
@@ -2723,9 +2783,9 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
             f"pycache_prefix={prefix}",
             "-c",
             "import importlib.util,json,sys; "
-            "print(json.dumps([importlib.util.cache_from_source(sys.argv[1], "
-            "optimization=o) for o in ('',1,2)]))",
-            str(source),
+            "print(json.dumps([[importlib.util.cache_from_source(source, "
+            "optimization=o) for o in ('',1,2)] for source in sys.argv[1:]]))",
+            *map(str, sources),
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -2735,18 +2795,22 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
         check=False,
     )
     assert mapped.returncode == 0, mapped.stderr
-    cache_paths = [Path(value) for value in json.loads(mapped.stdout)]
-    for optimization in (0, 1, 2):
-        cache = cache_paths[optimization]
-        oracle = tmp_path / f"oracle-{optimization}.pyc"
-        py_compile.compile(
-            str(source),
-            cfile=str(oracle),
-            doraise=True,
-            invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
-            optimize=optimization,
-        )
-        assert cache.read_bytes() == oracle.read_bytes()
+    all_caches = [
+        [Path(value) for value in values] for values in json.loads(mapped.stdout)
+    ]
+    for module, caches in zip(sources, all_caches, strict=True):
+        for optimization, cache in enumerate(caches):
+            oracle = tmp_path / f"oracle-{module.stem}-{optimization}.pyc"
+            py_compile.compile(
+                str(module),
+                cfile=str(oracle),
+                doraise=True,
+                invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+                optimize=optimization,
+            )
+            assert cache.read_bytes() == oracle.read_bytes()
+        assert len({cache.read_bytes() for cache in caches}) == 3
+    cache_paths = all_caches[0]
     cache = cache_paths[0]
     if fault == "forged-code":
         # Keep the complete valid checked-hash header. A filename/header waiver
@@ -2772,26 +2836,49 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
         sys.pycache_prefix = str(prefix)
     elif fault == "populated-prefix":
         (Path(verifier_prefix) / "unadmitted.pyc").write_bytes(b"foreign cache")
-    captured, captured_pool = _tree(root, files.PythonFileCaptureContext())
+    present = [(path, opt) for path in sources for opt in (0, 1, 2)]
+    if fault == "grouped":
+        # Sparse opt-1/opt-2 sets and interleaved hardlink rows defeat both an
+        # opt-0 assumption and a last-source-only reuse implementation.
+        present = [
+            (runtime_alias, 0),
+            (source, 1),
+            (runtime_source, 2),
+            (runtime_alias, 2),
+        ]
+        for module, caches in zip(sources, all_caches, strict=True):
+            for opt, cache in enumerate(caches):
+                if (module, opt) not in present:
+                    cache.unlink()
+    captured_context = files.PythonFileCaptureContext()
+    captured, captured_pool = capture_tree(root, source, captured_context)
+    captured_runtime, captured_runtime_pool = capture_tree(
+        runtime_root, runtime_source, captured_context
+    )
+    captured_entries = {row["path"]: row for row in captured["entries"]}
+    for module, opt in present:
+        relative = all_caches[sources.index(module)][opt].relative_to(root).as_posix()
+        captured_entries[relative] = captured_entries.pop(relative)
 
     def admit():
-        environment._ordinary_bytecode_projection(
-            root,
-            {row["path"]: row for row in captured["entries"]},
-            owned,
+        reads, attempts = project(
+            captured_entries,
             captured_pool,
-            {"runtime_roots": []},
-            (),
-            captured_pool,
-            {"trees": []},
-            (),
+            captured_runtime,
+            captured_runtime_pool,
             publish=False,
         )
+        # The public capture boundary retains this fence after projection.
+        captured_context.verify()
+        assert reads.count((captured_pool, "file-node-0")) == 1
+        assert reads.count((captured_runtime_pool, "file-node-0")) == 2
+        assert sorted(attempts) == sorted((str(path), opt) for path, opt in present)
 
-    if fault == "none":
+    if fault in {"none", "grouped"}:
         admit()
         assert sys.pycache_prefix == verifier_prefix
         assert not list(Path(verifier_prefix).iterdir())
+    if fault == "none":
         # A cache hit must remain usable under the mandatory pre-start policy.
         # Making source compilation fail distinguishes an actual hit from a
         # source execution that happens to return the same value.
@@ -2817,7 +2904,13 @@ def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "1"
-    else:
+    elif fault == "mutated-source":
+        with pytest.raises(ValueError) as error:
+            admit()
+        assert str(error.value) == (
+            f"Python capture custody changed since identity capture: {source}"
+        )
+    elif fault != "grouped":
         with pytest.raises(PythonEnvironmentIdentityError):
             admit()
 
