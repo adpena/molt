@@ -1,16 +1,17 @@
 use crate::OpIR;
-use crate::wasm::control_flow::{ControlKind, dispatch_control_panic};
+use crate::wasm::control_flow::ControlKind;
+use crate::wasm::frame_locals::WasmDispatchFrameLocals;
 use crate::wasm::op_loop::WasmFunctionEmitContext;
 use crate::wasm::state_dispatch::DispatchMode;
 use crate::wasm::state_dispatch::common::{
     emit_conditional_state_branch, emit_dispatch_check_exception, emit_dispatch_if,
-    emit_dispatch_loop_break_cond, emit_static_dispatch_edge, label_target, loop_break_target,
-    require_stateful,
+    emit_dispatch_loop_break_cond, emit_static_dispatch_edge, require_stateful,
 };
-use crate::wasm::state_dispatch::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
+use crate::wasm::state_dispatch::plan::{ControlScopeDepth, NonLinearControlPlan};
 use crate::wasm::state_dispatch::stateful_ops::emit_activation_op;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
+use molt_ir::simple_verify::EdgeRole;
 use std::collections::BTreeMap;
 use wasm_encoder::{BlockType, Function, Instruction};
 
@@ -24,156 +25,125 @@ pub(super) struct DispatchOpScratch {
 
 pub(super) fn emit_dispatch_op(
     func: &mut Function,
-    op_emitter: &mut WasmFunctionEmitContext<'_, '_>,
-    plan: &NonLinearDispatchPlan,
-    locals: NonLinearDispatchLocals,
+    context: &mut WasmFunctionEmitContext<'_, '_>,
+    plan: &NonLinearControlPlan,
+    locals: Option<WasmDispatchFrameLocals>,
     mode: DispatchMode,
     op: &OpIR,
     idx: usize,
-    depth: u32,
+    depth: ControlScopeDepth,
     scratch: &mut DispatchOpScratch,
 ) -> bool {
-    let func_ir = op_emitter.func_ir;
     match op.kind.as_str() {
         "state_switch" => {
-            require_stateful(mode, func_ir, idx, op);
-            let resume_state_local = locals
+            require_stateful(mode, context.func_ir, idx, op);
+            let locals = locals.expect("stateful control requires dispatch locals");
+            let resume = locals
                 .resume_state_local
-                .expect("resume state local missing for stateful wasm");
-            func.instruction(&Instruction::LocalGet(resume_state_local));
+                .expect("resume state local missing");
+            func.instruction(&Instruction::LocalGet(resume));
             func.instruction(&Instruction::LocalSet(locals.state_local));
-            func.instruction(&Instruction::Br(depth));
+            func.instruction(&Instruction::Br(depth.redispatch_depth(0)));
             true
         }
         "aiter" if mode == DispatchMode::Stateful => {
             let args = op.args.as_ref().unwrap();
-            let iter = op_emitter.locals()[&args[0]];
-            func.instruction(&Instruction::LocalGet(iter));
+            func.instruction(&Instruction::LocalGet(context.locals()[&args[0]]));
             emit_call(
                 func,
-                op_emitter.reloc_enabled,
-                op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Aiter],
+                context.reloc_enabled,
+                context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Aiter],
             );
             func.instruction(&Instruction::LocalSet(
-                op_emitter.locals()[op.out.as_ref().unwrap()],
+                context.locals()[op.out.as_ref().unwrap()],
             ));
             false
         }
         "state_set" | "task_wait" | "is_pending" => {
-            require_stateful(mode, func_ir, idx, op);
-            emit_activation_op(func, op_emitter, plan, locals, op);
+            require_stateful(mode, context.func_ir, idx, op);
+            emit_activation_op(
+                func,
+                context,
+                plan,
+                locals.expect("stateful control requires dispatch locals"),
+                op,
+            );
             false
         }
         "state_transition" | "state_yield" => panic!(
             "{}: suspension must be normalized by shared terminal ownership before WASM emission",
-            func_ir.name
+            context.func_ir.name
         ),
         "if" => {
-            emit_dispatch_if(func, op_emitter, plan, locals, op, idx, depth);
+            emit_dispatch_if(func, context, plan, locals, op, idx, depth);
             true
         }
-        "else" => {
-            let end_idx = plan
-                .control_maps
-                .end_for_else
-                .get(&idx)
-                .copied()
-                .unwrap_or_else(|| {
-                    dispatch_control_panic(&func_ir.name, idx, "else without end_if")
-                });
-            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, end_idx + 1, depth, 0);
+        "else" | "end_if" | "loop_start" | "loop_end" | "try_start" | "try_end" | "label"
+        | "state_label" | "loop_break" | "loop_continue" | "jump" => {
+            emit_static_dispatch_edge(
+                func,
+                context,
+                plan,
+                locals,
+                idx,
+                plan.sole_successor(idx),
+                depth,
+                0,
+            );
             true
         }
-        "end_if" | "loop_start" | "loop_end" | "try_start" | "try_end" | "label"
-        | "state_label" => {
-            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, idx + 1, depth, 0);
-            true
-        }
-        "loop_index_start" => {
-            let args = op.args.as_ref().unwrap();
-            let start = op_emitter.locals()[&args[0]];
-            let out = op_emitter.locals()[op.out.as_ref().unwrap()];
-            func.instruction(&Instruction::LocalGet(start));
-            func.instruction(&Instruction::LocalSet(out));
-            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, idx + 1, depth, 0);
-            true
-        }
-        "loop_break_if_true" => {
-            emit_dispatch_loop_break_cond(func, op_emitter, plan, locals, op, idx, depth, false);
-            true
-        }
-        "loop_break_if_false" => {
-            emit_dispatch_loop_break_cond(func, op_emitter, plan, locals, op, idx, depth, true);
+        "loop_break_if_true" | "loop_break_if_false" => {
+            emit_dispatch_loop_break_cond(func, context, plan, locals, op, idx, depth);
             true
         }
         "loop_break_if_exception" => {
-            let end_idx = loop_break_target(plan, func_ir, idx, "loop_break_if_exception");
-            let end_block = end_idx + 1;
-            let next_block = idx + 1;
             emit_call(
                 func,
-                op_emitter.reloc_enabled,
-                op_emitter.import_ids
-                    [crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
+                context.reloc_enabled,
+                context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
             );
             func.instruction(&Instruction::I64Const(0));
             func.instruction(&Instruction::I64Ne);
             emit_conditional_state_branch(
-                func, op_emitter, plan, locals, idx, end_block, next_block, depth,
+                func,
+                context,
+                plan,
+                locals,
+                idx,
+                plan.successor(idx, EdgeRole::BranchTrue),
+                plan.successor(idx, EdgeRole::BranchFalse),
+                depth,
             );
-            true
-        }
-        "loop_break" => {
-            let end_idx = loop_break_target(plan, func_ir, idx, "loop_break");
-            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, end_idx + 1, depth, 0);
-            true
-        }
-        "loop_continue" => {
-            let start_idx = plan
-                .control_maps
-                .loop_continue_target
-                .get(&idx)
-                .copied()
-                .unwrap_or_else(|| {
-                    dispatch_control_panic(&func_ir.name, idx, "loop_continue without loop")
-                });
-            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, start_idx + 1, depth, 0);
-            true
-        }
-        "jump" => {
-            let target_label = op.value.unwrap_or_else(|| {
-                dispatch_control_panic(&func_ir.name, idx, "jump missing label")
-            });
-            let target_idx = label_target(plan, func_ir, idx, target_label, "jump");
-            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, target_idx, depth, 0);
             true
         }
         "br_if" => {
             let args = op.args.as_ref().unwrap();
-            let cond = op_emitter.locals()[&args[0]];
-            let target_label = op.value.unwrap_or_else(|| {
-                dispatch_control_panic(&func_ir.name, idx, "br_if missing label")
-            });
-            let target_idx = label_target(plan, func_ir, idx, target_label, "br_if");
             emit_branch_truthiness_i32(
                 func,
-                cond,
-                op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
-                op_emitter.reloc_enabled,
+                context.locals()[&args[0]],
+                context.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+                context.reloc_enabled,
             );
             func.instruction(&Instruction::If(BlockType::Empty));
-            emit_static_dispatch_edge(func, op_emitter, plan, locals, idx, target_idx, depth, 1);
+            emit_static_dispatch_edge(
+                func,
+                context,
+                plan,
+                locals,
+                idx,
+                plan.successor(idx, EdgeRole::BranchTrue),
+                depth,
+                1,
+            );
             func.instruction(&Instruction::End);
             false
         }
         kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
-            emit_dispatch_check_exception(func, op_emitter, plan, locals, op, idx, depth);
+            emit_dispatch_check_exception(func, context, plan, locals, op, idx, depth);
             true
         }
         _ => {
-            // Returns use the same payload, boxed-None and ownership emission
-            // as straight-line code. Dispatch owns only the terminating edge.
-            op_emitter.emit_ops(
+            context.emit_ops(
                 func,
                 std::slice::from_ref(op),
                 &mut scratch.control,
@@ -181,7 +151,7 @@ pub(super) fn emit_dispatch_op(
                 &mut scratch.label_stack,
                 &mut scratch.label_depths,
                 idx,
-                depth + 1,
+                depth.return_depth(0),
             );
             molt_tir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(&op.kind)
         }

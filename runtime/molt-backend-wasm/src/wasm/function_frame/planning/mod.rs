@@ -10,6 +10,7 @@ use crate::wasm::frame_locals::{
     WasmFrameAnonymousLocal, WasmFrameLocals, WasmFrameSyntheticLocal,
 };
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
+use crate::wasm::state_dispatch::NonLinearControlPlan;
 use debug::emit_seed_debug;
 use local_alloc::FrameLocalAllocator;
 use molt_tir::tir::simple_def_use::{
@@ -39,6 +40,17 @@ impl WasmFunctionFramePlan {
         for op in &func_ir.ops {
             requirements.observe_op(&scalar_plan, op);
         }
+        let control_mode = if requirements.stateful() {
+            WasmFrameControlMode::Stateful
+        } else if requirements.jumpful() {
+            WasmFrameControlMode::Jumpful
+        } else {
+            WasmFrameControlMode::Plain
+        };
+        let control_plan = NonLinearControlPlan::for_function(func_ir, control_mode);
+        let needs_dispatch = control_plan
+            .as_ref()
+            .is_some_and(NonLinearControlPlan::needs_dispatch);
         let mut locals = WasmFrameLocals::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
@@ -192,8 +204,12 @@ impl WasmFunctionFramePlan {
                 }
             });
 
-        let dispatch_locals =
-            locals.allocate_dispatch_locals(stateful, jumpful, &mut local_types, &mut local_count);
+        let dispatch_locals = locals.allocate_dispatch_locals(
+            stateful,
+            needs_dispatch,
+            &mut local_types,
+            &mut local_count,
+        );
         let (const_seed_locals, const_anchors, const_anchor_by_op_index) =
             seed_plan.into_frame_plans(stateful || jumpful);
 
@@ -212,14 +228,7 @@ impl WasmFunctionFramePlan {
         });
         emit_seed_debug(func_ir, &locals, &const_seed_locals, const_anchors.len());
 
-        let control_mode = if stateful {
-            WasmFrameControlMode::Stateful
-        } else if jumpful {
-            WasmFrameControlMode::Jumpful
-        } else {
-            WasmFrameControlMode::Plain
-        };
-        debug_assert_eq!(control_mode.needs_dispatch(), dispatch_locals.is_some());
+        debug_assert_eq!(needs_dispatch, dispatch_locals.is_some());
 
         let _ = local_count;
         Self {
@@ -232,6 +241,7 @@ impl WasmFunctionFramePlan {
                 guard_facts,
                 guard_profile_local,
                 control_mode,
+                control_plan,
                 tail_call_eligible: tail_call_eligible && const_anchors.is_empty(),
                 owned_frame_attempt,
                 frame_homes,

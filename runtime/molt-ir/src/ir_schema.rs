@@ -5,7 +5,8 @@ use crate::tir::op_kinds_generated::{
     kind_source_call_callable_operand, kind_to_opcode_table, simpleir_backend_private_owner,
     simpleir_backend_service_kind, simpleir_call_target_role,
     simpleir_kind_carries_class_definition, simpleir_kind_has_function_reference_s_value,
-    simpleir_kind_is_registered, simpleir_kind_may_carry_async_work_poll_marker,
+    simpleir_kind_is_pre_ssa_rewritten, simpleir_kind_is_registered,
+    simpleir_kind_may_carry_async_work_poll_marker,
     simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
     simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
 };
@@ -42,6 +43,9 @@ pub enum OpShapeViolation {
     ForbiddenClassDefinition,
     UnboundClassDefinition,
     MissingResult,
+    Unnormalized {
+        source_op_idx: Option<i64>,
+    },
     InvalidModuleRegistry {
         reason: String,
     },
@@ -134,6 +138,16 @@ impl std::fmt::Display for OpShapeDiagnostic {
                 write!(f, "has invalid program registry: {reason}")
             }
             OpShapeViolation::MissingResult => write!(f, "requires a nonempty result in `out`"),
+            OpShapeViolation::Unnormalized { source_op_idx } => {
+                write!(
+                    f,
+                    "pre-SSA operation remains in normalized executable SimpleIR"
+                )?;
+                if let Some(source_op_idx) = source_op_idx {
+                    write!(f, " (source op#{source_op_idx})")?;
+                }
+                Ok(())
+            }
             OpShapeViolation::CodeSlotCount { expected, actual } => {
                 write!(
                     f,
@@ -347,6 +361,35 @@ impl std::fmt::Display for FunctionOpShapeDiagnostic {
 }
 
 impl std::error::Error for FunctionOpShapeDiagnostic {}
+
+/// Check the post-normalization contract without changing operations or replaying
+/// SSA. Authored frontend transport may contain pre-SSA operations; normalized
+/// executable consumers and final projections may not. The generated registry
+/// owns this classification. Successful validation allocates nothing.
+pub fn validate_normalized_simple_ir_ops(
+    function: &str,
+    ops: &[OpIR],
+) -> Result<(), FunctionOpShapeDiagnostic> {
+    for (op_index, op) in ops.iter().enumerate() {
+        if simpleir_kind_is_pre_ssa_rewritten(&op.kind) {
+            return Err(FunctionOpShapeDiagnostic {
+                function: function.into(),
+                op_index,
+                shape: OpShapeDiagnostic {
+                    family: "normalization",
+                    kind: op.kind.clone(),
+                    violation: OpShapeViolation::Unnormalized {
+                        source_op_idx: op.source_op_idx,
+                    },
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod normalized_tests;
 
 pub fn validate_function_op_shapes(
     func: &crate::FunctionIR,
