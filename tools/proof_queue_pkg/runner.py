@@ -2050,9 +2050,7 @@ def _run_one(
                 log_path=log_path,
                 phase="completion projection",
             )
-        rc_text = "?" if rc is None else str(rc)
-        print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
-        print(f"log: {log_path}")
+        _publish_terminal_result(status, run_id, rc, elapsed, log_path)
         _apply_automatic_retention(db=db, logs_root=logs_root)
         if env is not None and process_cleanup_safe and execution_error is None:
             from molt.dx import collect_checkout_state_after_result
@@ -2066,6 +2064,15 @@ def _run_one(
             if disposition_failed
             else (rc if rc is not None else custody.PROOF_QUEUE_STALE_EXIT_CODE)
         )
+
+
+def _publish_terminal_result(
+    status: str, run_id: str, returncode: int | None, elapsed: float, log_path: Path
+) -> None:
+    """Flush the terminal status before synchronous post-result maintenance."""
+    rc_text = "?" if returncode is None else str(returncode)
+    print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
+    print(f"log: {log_path}", flush=True)
 
 
 def _apply_automatic_retention(*, db: Path, logs_root: Path) -> None:

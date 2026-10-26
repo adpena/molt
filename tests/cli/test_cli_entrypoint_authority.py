@@ -77,6 +77,76 @@ def test_dispatcher_leaves_maintenance_to_build_scope(monkeypatch, returncode):
 
 
 @pytest.mark.parametrize(
+    "command", ["build", "completion", "dx", "doctor", "internal-backend-build"]
+)
+def test_outer_maintenance_excludes_build_metadata_and_internal_commands(
+    monkeypatch, command
+):
+    from types import SimpleNamespace
+    from molt import dx
+
+    args = SimpleNamespace(command=command)
+    monkeypatch.setattr(
+        entrypoint,
+        "_build_entrypoint_parser",
+        lambda: SimpleNamespace(parse_args=lambda: args),
+    )
+    monkeypatch.setattr(
+        entrypoint_dispatch, "_dispatch_entrypoint_command", lambda *_a, **_k: 7
+    )
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an ineligible outer command captured maintenance policy")
+
+    monkeypatch.setattr(dx, "checkout_state_maintenance_environment", forbidden)
+    assert entrypoint.main() == 7
+
+
+def test_outer_guard_infrastructure_failure_is_published_before_maintenance(
+    tmp_path, monkeypatch, capsys
+):
+    import json
+    from types import SimpleNamespace
+    from molt import dx
+    from molt.process_guard import (
+        GuardInfrastructureError,
+        guard_infrastructure_exit_code,
+    )
+
+    args = SimpleNamespace(command="run", json=True)
+    selected = tmp_path / "selected"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(selected))
+    monkeypatch.setattr(
+        entrypoint,
+        "_build_entrypoint_parser",
+        lambda: SimpleNamespace(parse_args=lambda: args),
+    )
+    result = SimpleNamespace(
+        infrastructure_failure=SimpleNamespace(
+            phase="fixture", details=("unresolved custody",)
+        ),
+        child_returncode=7,
+    )
+
+    def failure(*_args, **_kwargs):
+        raise GuardInfrastructureError(["fixture"], result)
+
+    monkeypatch.setattr(entrypoint_dispatch, "_dispatch_entrypoint_command", failure)
+    observed = []
+
+    def collect(env, *, cwd):
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "error"
+        assert payload["data"]["returncode"] == guard_infrastructure_exit_code()
+        assert env["MOLT_EXT_ROOT"] == str(selected)
+        observed.append("published failure")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    assert entrypoint.main() == guard_infrastructure_exit_code()
+    assert observed == ["published failure"]
+
+
+@pytest.mark.parametrize(
     "command", [["build", "app.py"], ["factgraph", "app.py", "main"]]
 )
 @pytest.mark.parametrize("policy", ["error", "bridge"])

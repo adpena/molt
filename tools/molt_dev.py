@@ -1845,7 +1845,8 @@ def cmd_difftest(args: argparse.Namespace) -> int:
                     "failures": failures,
                     "passed": not failures,
                 }
-            )
+            ),
+            flush=True,
         )
     if failures:
         raise DriverError(
