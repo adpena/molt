@@ -6133,7 +6133,7 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             + "assert set(clippy.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "
             + "assert rustfmt._changed_rust_paths(sys.argv[1]) == (Path('feature.rs'),); "
             + f"assert sys.argv[1] == {expected!r}; "
-            + "print('selected-upstream-path' + '-gates-passed')"
+            + "print('selected-upstream-path' + '-gates-passed', flush=True)"
         )
         + f" {upstream}"
     )
@@ -6142,6 +6142,15 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             imports
             + "from tools import check_commit_attribution as attribution; "
             + "assert attribution.check_revisions(['origin/main..HEAD'], cwd=Path.cwd()) == []; "
+            # This fixture proves both consumers. Wait for the scheduler's
+            # closed, successful selection outcome before attribution may fail.
+            + "import json, time\n"
+            + "head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\n"
+            + "receipt = Path('.git/molt-integrate/receipts') / (head + '.gates.json')\n"
+            + "while True:\n"
+            + "    rows = json.loads(receipt.read_text(encoding='utf-8'))['commands']\n"
+            + "    if any(r['id'] == 'local.always.1' and r['status'] == 'success' for r in rows): break\n"
+            + "    time.sleep(0.01)\n"
             + "raise SystemExit(attribution.main(['--range', sys.argv[1]]))"
         )
         + f" {upstream}..HEAD"
