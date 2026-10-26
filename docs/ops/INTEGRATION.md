@@ -399,7 +399,10 @@ repairing a retired generation. An explicit image remains an exact selection
 and must satisfy the current contract. Reading that bounded projection does
 not admit executable bytes. `ensure uv-environment` publishes a missing
 generation under the existing address lock and records the selection only after
-success. Changed declared inputs select a new recipe; published images are never
+success. When an implicit selection outlives its retired physical generation,
+`status` reports it absent and `ensure` republishes through that same owner.
+An explicit missing image, indirect path, or present invalid image remains a
+refusal. Changed declared inputs select a new recipe; published images are never
 synced or repaired in place. Explicit `UV_PROJECT_ENVIRONMENT` must identify a
 matching published image at managed operation boundaries. `MOLT_VENV` (or
 `venv_exec --venv`) explicitly borrows an external environment without converting

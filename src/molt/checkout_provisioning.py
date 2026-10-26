@@ -553,6 +553,31 @@ def _current_development_environment(spec: DevelopmentEnvironment) -> Path | Non
         return None
     intent = _development_intent(spec)
     try:
+        if not spec.environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
+            try:
+                selected.lstat()
+            except FileNotFoundError:
+                # Selection records outlive reconstructible image payloads.
+                # Only a missing physical generation is a miss: a dangling
+                # root/ancestor or a foreign coordinate remains a refusal.
+                from molt.checkout_state import checkout_state_kind_of
+                from molt.dx import artifact_root, checkout_component
+                from molt.file_publication import resolve_owned_path
+
+                physical = resolve_owned_path(selected)
+                if (
+                    physical != selected
+                    or selected.parent.name != checkout_component(spec.checkout)
+                    or checkout_state_kind_of(
+                        selected, artifact_root(spec.checkout, spec.environment)
+                    )
+                    != "python-environment"
+                ):
+                    raise ProvisioningError(
+                        "uv-environment: selected development image is outside "
+                        "its physical checkout generation namespace"
+                    )
+                return None
         return load_development_environment(
             selected,
             repo_root=spec.checkout,
