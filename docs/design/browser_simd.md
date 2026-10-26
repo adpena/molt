@@ -31,6 +31,12 @@ malformed, failed or ABI-incompatible results preserve the previous artifact.
 No guessed target-directory copy or optional optimizer changes the product.
 The complete published module has a 6 KiB regression budget, checked after building.
 Inherited compiler flags that remove required exports cause publication to fail.
+The repository Cargo configuration and the crate's configuration both contribute
+compiler flags. Rust pin, Cargo configuration and ABI-reader changes select the
+same source/product/numerical checks in local integration and CI. When refreshing
+the checked artifact, preserve the selected compiler/Cargo identities and compare
+two independently built outputs before publishing; a toolchain upgrade alone is
+not evidence that previously checked bytes came from a different compiler.
 
 `browser_simd` in `tools/proof_plan.toml` owns CI compilation, clippy, source/product
 synchronization, independent arithmetic oracles and the actual browser API consumer.

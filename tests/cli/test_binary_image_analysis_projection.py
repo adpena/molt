@@ -17,6 +17,7 @@ from molt.cli.module_source import (
     _ModuleSourceCatalog,
     _ModuleSourceLease,
 )
+from tests.process_guard_common import install_module_view
 
 
 class _NativePlan:
@@ -121,8 +122,22 @@ def _count_capture(
         return tree
 
     monkeypatch.setattr(_ModuleSourceLease, "read", read_lease)
-    monkeypatch.setattr(diagnostics.ast, "parse", parse_source)
+    install_module_view(monkeypatch, "ast", ast, diagnostics, parse=parse_source)
     return counts
+
+
+def test_capture_counter_observes_diagnostics_without_replacing_host_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, analysis = _inputs(tmp_path, {"app": "x = 1\n"})
+    host_parse = ast.parse
+    counts = _count_capture(monkeypatch)
+    assert ast.parse is host_parse
+    host_tree = ast.parse("host_value = 2\n")
+    assert isinstance(host_tree, ast.Module)
+    assert counts == {"reads": 0, "parses": 0}
+    assert _payload(plan, analysis)["source_ast"]["known"]["ast_nodes"] == 5
+    assert counts == {"reads": 1, "parses": 1}
 
 
 def test_full_projection_reads_parses_and_releases_each_module_once(
@@ -173,9 +188,10 @@ def test_omitted_details_never_read_parse_or_project_source(
         raise AssertionError("non-full diagnostics must not inspect source")
 
     monkeypatch.setattr(_ModuleSourceLease, "read", forbidden)
-    monkeypatch.setattr(diagnostics.ast, "parse", forbidden)
+    install_module_view(monkeypatch, "ast", ast, diagnostics, parse=forbidden)
     monkeypatch.setattr(diagnostics, "_module_source_projection", forbidden)
     monkeypatch.setattr(plan.native_artifact_plan, "native_module_names", forbidden)
+    assert isinstance(ast.parse("host_value = 2\n"), ast.Module)
     payload = _payload(plan, analysis, full=False)
     assert payload["source_identity"]["detail"] == "omitted"
     assert payload["source_ast"]["detail"] == "omitted"

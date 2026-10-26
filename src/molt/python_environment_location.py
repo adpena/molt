@@ -15,12 +15,40 @@ import urllib.parse
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.python_identity_common import (
     PythonEnvironmentIdentityError,
+    canonical_absolute_path,
     identity_validator,
 )
 from molt.python_native_locations import loaded_native_module_paths
+from molt.toolchain_identity import stable_executable_probe
 
 
-PYTHON_ENVIRONMENT_LOCATION_SCHEMA = "molt.python-environment-location.v1"
+PYTHON_ENVIRONMENT_LOCATION_SCHEMA = "molt.python-environment-location.v2"
+ENVIRONMENT_BYTECODE_DIRECTORY = "bytecode"
+SOURCE_BUILD_ENVIRONMENT_MANIFEST = "molt-source-build-environment.json"
+
+
+def environment_bytecode_prefix(root: Path) -> Path:
+    """Project an image's cache location; this does not admit its contents."""
+    return root.absolute() / ENVIRONMENT_BYTECODE_DIRECTORY
+
+
+def environment_bytecode_arguments(root: Path) -> tuple[str, ...]:
+    """Select the image's read namespace before CPython/site startup."""
+    return ("-B", "-X", f"pycache_prefix={environment_bytecode_prefix(root)}")
+
+
+def environment_provisioning_record_path(root: Path) -> Path:
+    """The existing publisher's sibling record, outside the immutable image."""
+    return root.parent / ".provisioning" / f"{root.name}.json"
+
+
+def environment_python_path(root: Path) -> Path:
+    """The host interpreter entrypoint of a standard Python environment.
+
+    The environment entrypoint preserves its prefix and installed packages;
+    resolving its symlink would select the base interpreter instead.
+    """
+    return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
@@ -36,7 +64,9 @@ def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
         not isinstance(payload, dict)
         or set(payload) != {"url", "dir_info"}
         or not isinstance(payload.get("url"), str)
-        or payload.get("dir_info") != {"editable": True}
+        or not isinstance(payload.get("dir_info"), dict)
+        or set(payload["dir_info"]) != {"editable"}
+        or payload["dir_info"]["editable"] is not True
     ):
         raise PythonEnvironmentIdentityError(
             f"installed distribution {distribution!r} is not an admitted editable source"
@@ -200,14 +230,81 @@ def _site_roots(root: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
-def locate_current_python_environment() -> dict[str, object]:
-    """Locate the active environment's broad roots without hashing them."""
+def locate_editable_project(root: Path, project: str) -> str | None:
+    """Find one project's PEP 610 record without importing installed packages.
 
+    Run under the selected interpreter with site startup disabled: its sysconfig
+    owns platform/version site paths, while the caller supplies the venv prefix.
+    The returned path is relative to that prefix and is never a package import.
+    """
+    from molt.python_identity_common import _canonicalize_name
+
+    root = root.resolve(strict=True)
+    matches = [
+        dist
+        for dist in metadata.distributions(path=[str(p) for p in _site_roots(root)])
+        if _canonicalize_name(str(dist.metadata.get("Name", "")))
+        == _canonicalize_name(project)
+    ]
+    if len(matches) > 1:
+        raise PythonEnvironmentIdentityError(
+            f"multiple installed distributions for {project!r}"
+        )
+    if not matches:
+        return None
+    dist = matches[0]
+    text = dist.read_text("direct_url.json")
+    if text is None:
+        return None  # A noneditable/manual environment retains its existing contract.
+    try:
+        payload = loads_exact(text)
+    except (json.JSONDecodeError, ExactJsonError) as exc:
+        raise PythonEnvironmentIdentityError(
+            f"invalid direct_url.json for {project!r}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PythonEnvironmentIdentityError(f"invalid direct_url.json for {project!r}")
+    if "dir_info" not in payload:
+        return None  # Archive/VCS installs have no editable directory authority.
+    directory = payload["dir_info"]
+    if isinstance(directory, dict) and (
+        "editable" not in directory or directory["editable"] is False
+    ):
+        return None  # PEP 610: absent or boolean false means noneditable.
+    # All other directory markers must satisfy the existing strict editable
+    # decoder. Unsupported fields and malformed markers cannot become manual.
+    editable_direct_url_path(text.encode("utf-8"), distribution=project)
+    candidates = [
+        Path(str(dist.locate_file(entry))).resolve(strict=True)
+        for entry in dist.files or ()
+        if entry.name == "direct_url.json"
+    ]
+    if len(candidates) != 1:
+        raise PythonEnvironmentIdentityError(
+            f"editable project {project!r} has no unique recorded direct_url.json"
+        )
+    return candidates[0].relative_to(root).as_posix()
+
+
+def locate_current_python_environment() -> dict[str, object]:
+    """Locate runtime roots while binding the lexical base selector's image."""
+
+    selector = Path(getattr(sys, "_base_executable", None) or sys.executable).absolute()
+    canonical_absolute_path(str(selector))
+    # CPython exposes the lexical startup selector separately from its image.
+    # uv's Python trampoline intentionally preserves that spelling, including
+    # managed-Python directory junctions and venv selection semantics.
+    # https://github.com/astral-sh/uv/blob/main/crates/uv-trampoline/src/bounce.rs
+    with stable_executable_probe(selector, label="Python base selector") as (
+        _entrypoint,
+        content,
+    ):
+        return _locate_current_python_environment(selector, content.path)
+
+
+def _locate_current_python_environment(selector: Path, base: Path) -> dict[str, object]:
     prefix = _active_environment_prefix()
     selected = Path(os.path.abspath(sys.executable))
-    base = Path(getattr(sys, "_base_executable", None) or sys.executable).resolve(
-        strict=True
-    )
     if not selected.is_file() or not base.is_file():
         raise PythonEnvironmentIdentityError(
             "active Python environment has no executable launcher chain"
@@ -270,6 +367,7 @@ def locate_current_python_environment() -> dict[str, object]:
         "prefix": str(prefix),
         "selected_executable": str(selected),
         "base_executable": str(base),
+        "base_executable_selector": str(selector),
         "roots": [str(path) for path in ordered_roots],
         "external_roots": [str(path) for path in ordered_external],
         # Import archives and native images are finite inputs, not parent
@@ -286,10 +384,16 @@ def locate_current_python_environment() -> dict[str, object]:
 
 @identity_validator("Python environment location")
 def validate_python_environment_location(payload: object) -> dict[str, object]:
-    """Validate one path-only pre-arm location receipt."""
+    """Validate a path-only receipt without reading host files.
+
+    The producer proves physical locations and the selector's target under
+    executable generation custody. Pure admission preserves those declared
+    coordinates; it must never reinterpret an arbitrary launcher target.
+    """
 
     if not isinstance(payload, dict) or set(payload) != {
         "base_executable",
+        "base_executable_selector",
         "external_roots",
         "file_paths",
         "identity_sha256",
@@ -313,66 +417,35 @@ def validate_python_environment_location(payload: object) -> dict[str, object]:
     prefix_raw = payload.get("prefix")
     selected_raw = payload.get("selected_executable")
     base_raw = payload.get("base_executable")
+    selector_raw = payload.get("base_executable_selector")
     roots = payload.get("roots")
     external = payload.get("external_roots")
 
-    def canonical_path(
-        raw: object, *, label: str, directory: bool, preserve_symlink: bool = False
-    ) -> str:
-        if not isinstance(raw, str) or not Path(raw).is_absolute():
-            raise PythonEnvironmentIdentityError(
-                f"Python environment location {label} is invalid"
-            )
-        lexical = Path(os.path.abspath(raw))
-        if str(lexical) != raw:
-            raise PythonEnvironmentIdentityError(
-                f"Python environment location {label} is not canonical"
-            )
-        try:
-            resolved = lexical.resolve(strict=True)
-        except (OSError, ValueError) as exc:
-            raise PythonEnvironmentIdentityError(
-                f"Python environment location {label} is unavailable"
-            ) from exc
-        if (directory and not resolved.is_dir()) or (
-            not directory and not lexical.is_file()
-        ):
-            raise PythonEnvironmentIdentityError(
-                f"Python environment location {label} has the wrong file kind"
-            )
-        if not preserve_symlink and str(resolved) != raw:
-            raise PythonEnvironmentIdentityError(
-                f"Python environment location {label} is not resolved"
-            )
-        return raw
+    def canonical_path(raw: object) -> str:
+        canonical_absolute_path(raw)
+        return cast(str, raw)
 
     if not isinstance(external, list):
         raise PythonEnvironmentIdentityError(
             "Python environment location has no executable prefix chain"
         )
-    prefix_path = canonical_path(prefix_raw, label="prefix", directory=True)
-    selected_path = canonical_path(
-        selected_raw,
-        label="selected executable",
-        directory=False,
-        preserve_symlink=True,
-    )
-    canonical_path(base_raw, label="base executable", directory=False)
-    if not Path(selected_path).is_relative_to(Path(prefix_path)):
+    prefix_path = canonical_path(prefix_raw)
+    selected_path = canonical_path(selected_raw)
+    canonical_path(base_raw)
+    canonical_path(selector_raw)
+    if not canonical_absolute_path(selected_path).is_relative_to(
+        canonical_absolute_path(prefix_path)
+    ):
         raise PythonEnvironmentIdentityError(
             "Python environment selected executable escapes its prefix"
         )
 
-    def validated_paths(
-        raw: object, *, label: str, directory: bool = True
-    ) -> list[str]:
+    def validated_paths(raw: object, *, label: str) -> list[str]:
         if not isinstance(raw, list) or not raw:
             raise PythonEnvironmentIdentityError(
                 f"Python environment location {label} are invalid"
             )
-        values = [
-            canonical_path(value, label=label, directory=directory) for value in raw
-        ]
+        values = [canonical_path(value) for value in raw]
         expected = sorted(
             set(values), key=lambda value: (os.path.normcase(value), value)
         )
@@ -385,7 +458,7 @@ def validate_python_environment_location(payload: object) -> dict[str, object]:
         return values
 
     root_paths = validated_paths(roots, label="roots")
-    validated_paths(payload.get("file_paths"), label="exact files", directory=False)
+    validated_paths(payload.get("file_paths"), label="exact files")
     external_paths = (
         validated_paths(external, label="external roots") if external else []
     )
@@ -398,7 +471,9 @@ def validate_python_environment_location(payload: object) -> dict[str, object]:
             "Python environment external roots escape broad custody"
         )
     if any(
-        Path(path) == Path(prefix_path) or Path(path).is_relative_to(Path(prefix_path))
+        canonical_absolute_path(path).is_relative_to(
+            canonical_absolute_path(prefix_path)
+        )
         for path in external_paths
     ):
         raise PythonEnvironmentIdentityError(

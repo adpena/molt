@@ -2,14 +2,42 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
+import hashlib
 import os
+import re
 from pathlib import Path
-from typing import TypeGuard
+from typing import BinaryIO, TypeGuard
+
+from molt.process_environment import ProcessEnvironmentBuilder
 
 
 _HEX = frozenset("0123456789abcdef")
 GIT_OBJECT_ID_LENGTHS = frozenset({40, 64})
+
+
+def immutable_git_environment(
+    environment: Mapping[str, str],
+) -> ProcessEnvironmentBuilder:
+    """Read original Git objects and ancestry, without replacement refs or grafts."""
+    env = ProcessEnvironmentBuilder(environment)
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_GRAFT_FILE"] = os.devnull
+    add_git_config(env, "advice.graftFileDeprecated", "false")
+    return env
+
+
+def add_git_config(environment: MutableMapping[str, str], key: str, value: str) -> None:
+    """Append one per-process Git setting, retaining inherited settings."""
+    raw_count = environment.get("GIT_CONFIG_COUNT", "0") or "0"
+    if re.fullmatch(r"[ \t\r\n\v\f]*[+-]?[0-9]+", raw_count) is None:
+        raise ValueError("invalid GIT_CONFIG_COUNT")
+    count = int(raw_count)
+    if count < 0:
+        raise ValueError("GIT_CONFIG_COUNT must be nonnegative")
+    environment[f"GIT_CONFIG_KEY_{count}"] = key
+    environment[f"GIT_CONFIG_VALUE_{count}"] = value
+    environment["GIT_CONFIG_COUNT"] = str(count + 1)
 
 
 def repository_source_paths(
@@ -154,3 +182,34 @@ def branch_changed_paths(
             dict.fromkeys(path for path in run_git(arguments).split("\0") if path)
         )
     return sorted(paths)
+
+
+def read_git_blob_batch(
+    output: BinaryIO, objects: Sequence[tuple[str, int]]
+) -> Iterator[tuple[bytes, str]]:
+    """Yield verified blob bytes and SHA256 from Git's default --batch framing.
+
+    The caller owns execution and must exhaust this iterator to validate EOF.
+    Only one blob is retained by the reader; release consumers may stream it
+    directly to their unpublished destination. Protocol: git-scm.com/docs/git-cat-file.
+    """
+    for blob_oid, declared_size in objects:
+        require_git_object_id(blob_oid)
+        if type(declared_size) is not int or declared_size < 0:
+            raise ValueError("Git source snapshot blob size is invalid")
+        expected_header = f"{blob_oid} blob {declared_size}\n".encode("ascii")
+        if output.readline(len(expected_header) + 1) != expected_header:
+            raise ValueError(f"Git source snapshot blob header is invalid: {blob_oid}")
+        data = output.read(declared_size)
+        if len(data) != declared_size or output.read(1) != b"\n":
+            raise ValueError(f"Git source snapshot blob framing is invalid: {blob_oid}")
+        object_hash = hashlib.new({40: "sha1", 64: "sha256"}[len(blob_oid)])
+        object_hash.update(f"blob {declared_size}\0".encode("ascii"))
+        object_hash.update(data)
+        if object_hash.hexdigest() != blob_oid:
+            raise ValueError(
+                f"Git source snapshot blob content does not match its object ID: {blob_oid}"
+            )
+        yield data, hashlib.sha256(data).hexdigest()
+    if output.read(1):
+        raise ValueError("Git source snapshot has trailing blob data")

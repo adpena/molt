@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
@@ -895,12 +897,17 @@ def test_scan_authority_projects_and_merges_exact_body_contexts(tmp_path):
     owner = (1, 0, 5, 0, "FunctionDef")
     path = tmp_path / "api.py"
     left = _ModuleSourceScanAuthority(
-        "api", path, "module_init", deferred_owners=frozenset({(owner, ("left",))})
+        "api",
+        path,
+        "module_init",
+        body_selection=ModuleBodySelection("complete_source"),
+        deferred_owners=frozenset({(owner, ("left",))}),
     )
     right = _ModuleSourceScanAuthority(
         "api",
         path,
         "module_init",
+        body_selection=ModuleBodySelection("complete_source"),
         deferred_owners=frozenset({(owner, ("right",)), (owner, ())}),
     )
     authority = _ModuleGraphScanAuthority((left,)).merged(
@@ -2144,9 +2151,15 @@ def test_closure_publication_visits_only_its_changed_authority_rows(tmp_path, ve
         "prior",
         tmp_path / "prior.py",
         "module_init",
+        body_selection=ModuleBodySelection("complete_source"),
         namespace_premise=PythonNamespacePremise((), 0) if verified else None,
     )
-    added = _ModuleSourceScanAuthority("added", tmp_path / "added.py", "module_init")
+    added = _ModuleSourceScanAuthority(
+        "added",
+        tmp_path / "added.py",
+        "module_init",
+        body_selection=ModuleBodySelection("complete_source"),
+    )
     revised = replace(prior, namespace_premise=PythonNamespacePremise(("handler",), 0))
     graph = DeltaOnlyMap({"prior": prior.source_path})
     sources = DeltaOnlyMap({"prior": prior})

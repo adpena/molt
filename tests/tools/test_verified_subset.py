@@ -48,16 +48,20 @@ def test_reference_identity_startup_preserves_disposable_site_sources(
     )
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(tmp_path / "external-cache"))
-    original = verified_subset.harness_memory_guard.guarded_completed_process
+    from molt import process_guard
+
+    original = process_guard.run_completed_command
+    observed = []
 
     def run_probe(command, **kwargs):
-        if remove_no_bytecode_flag:
+        if remove_no_bytecode_flag and observed:
             command = [argument for argument in command if argument != "-B"]
-        return original(command, **kwargs)
+        prefix = Path(command[command.index("-X") + 1].removeprefix("pycache_prefix="))
+        result = original(command, **kwargs)
+        observed.append((prefix, bool(list(prefix.rglob("*.pyc")))))
+        return result
 
-    monkeypatch.setattr(
-        verified_subset.harness_memory_guard, "guarded_completed_process", run_probe
-    )
+    monkeypatch.setattr(process_guard, "run_completed_command", run_probe)
     coordinate = replace(
         authority.verified_subset_coordinates()[0],
         python=f"{sys.version_info.major}.{sys.version_info.minor}",
@@ -65,7 +69,11 @@ def test_reference_identity_startup_preserves_disposable_site_sources(
     )
     identity = verified_subset._reference_python_identity(coordinate)
     assert identity["version"] == coordinate.reference_python
-    assert bool(list(site.rglob("*.pyc"))) is remove_no_bytecode_flag
+    assert not list(site.rglob("*.pyc"))
+    assert len(observed) == 2
+    assert observed[0][1] is False
+    assert observed[1][1] is remove_no_bytecode_flag
+    assert all(not prefix.exists() for prefix, _ in observed)
     assert {
         path.name: (path.read_bytes(), path.stat().st_mtime_ns)
         for path in site.iterdir()
@@ -300,6 +308,16 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
         for profile in policy.build_profiles
     }
     assert len({coordinate.id for coordinate in coordinates}) == 108
+    # Admission, pinned release facts and their semantic join must each
+    # invalidate a receipt when changed; no one file substitutes for the others.
+    assert {
+        "src/molt/target_python.py",
+        "src/molt/target_python_policy.py",
+        "src/molt/_python_release_generated.py",
+    } <= {
+        path.relative_to(verified_subset.ROOT).as_posix()
+        for path in verified_subset.verified_subset_authority_files(policy)
+    }
 
 
 def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(

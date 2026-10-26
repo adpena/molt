@@ -34,6 +34,7 @@ BENCHMARKS: tuple[str, ...] = (
     "tests/benchmarks/bench_range_iter.py",
     "tests/benchmarks/bench_try_except.py",
     "tests/benchmarks/bench_generator_iter.py",
+    "tests/benchmarks/bench_itertools_tee.py",
     "tests/benchmarks/bench_generator_chain.py",
     "tests/benchmarks/bench_async_await.py",
     "tests/benchmarks/bench_channel_throughput.py",

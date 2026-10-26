@@ -14,6 +14,46 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v10 separates requested profile labels from the build producer's
+observed compiler/runtime selections. Baseline and trend comparisons refuse
+missing or different observations, including historical records labelled
+`release-fast` from a logical `release` request. This changes comparison verdicts,
+so v9 boards remain historical in their original methodology class. It does not
+change the canonical scoreboard's declared lanes or prove loaded-byte admission.
+
+Methodology v9 preserves the selected immutable Python image and bytecode policy
+during conformance/benchmark setup. This can change measured build startup;
+v8 boards remain historical and are not a comparable baseline.
+
+Noncanonical benchmark provenance records `requested_profile` as a request
+label. It does not infer a physical compiler or runtime profile. Each regular
+benchmark cell retains the CLI producer's `build_observation.selected_profiles`
+(backend, target, guest request, runtime Cargo profile and compiler Cargo profile).
+Reports show missing historical observations as `unbound`; baseline comparisons
+require matching observed coordinates and timing settings. Historical files are
+not rewritten or upgraded from logical labels. Native logical `release` normally
+selects `release-output`; the canonical scoreboard pins `release-fast` explicitly
+through the shared release-lane authority. Publication observation still does
+not prove loaded compiler/runtime bytes, and these records remain noncanonical.
+The legacy `bench/harness.py` retains raw timings and status checks but does not
+capture a build observation. It explicitly refuses baseline timing comparisons;
+its request label cannot supply missing physical selection evidence.
+The regular baseline gate, `perf_regression.py` (including trends), Molt metrics
+in `bench_diff.py`, and `bench_dashboard.py` reuse the shared observation policy.
+Standalone producers without a retained observation remain unbound, including
+historical and current `bench_wasm.py` records. Their raw measurements remain
+readable, but cannot authorize cross-run Molt timing comparisons. External-only
+metrics in `bench_diff.py` retain their existing independent comparison rules.
+
+Methodology v8 binds source and ancestry to original Git objects, ignoring
+replacement refs and legacy grafts. Performance freshness resolves the current
+`origin/main` rather than retaining a process-lifetime ref or ancestry verdict.
+These checks follow [Git's replacement semantics](https://git-scm.com/docs/git-replace)
+and apply to development/release evidence, with no work in emitted programs.
+The null-device graft source is portable across Git hosts. Its specific deprecation advice is disabled through [Git’s per-process configuration protocol](https://git-scm.com/docs/git-config#Documentation/git-config.txt-GITCONFIGCOUNT), preserving inherited settings and all other diagnostics.
+Historical boards retain their recorded methodology; this correction does not
+authenticate missing compiler/runtime execution identities or full-matrix evidence.
+
 Methodology v7 routes benchmark build targets through the compiler's admitted
 target authority. Exact WASI and freestanding targets retain their distinct
 deployment rules. This can change selected builds or admission outcomes, so v6
@@ -113,6 +153,14 @@ not installed-user compile latency or E2 performance acceptance.
 
 ## Finding the limiter
 
+Development-loop latency is always P0: every faster edit, build, diagnosis and
+proof compounds across subsequent work. Keep the existing build phase diagnostics
+on during development, profile the current limiter, and compare the same unchanged
+or edited workload before and after each load-bearing change. Use
+`tools/dx_build_timer.py` for build-loop measurements and
+`MOLT_CLI_PROFILE` for attribution; keep instrumented timings separate from
+uninstrumented latency. Classify a new failure before repeating an expensive proof.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 
@@ -191,6 +239,60 @@ open.
 These remain development component results, with CLIF output disabled for
 comparison timings. Public-build cold/warm/edit measurements must include actual
 module discovery, lowering, linking, delivered bytes and memory.
+
+WASM dispatch planning projects the final executable graph rather than admitting
+every physical block as an ordinary dynamic target. A paired macOS arm64 component
+diagnostic compiled the same retained 2,365-operation locale dictionary function
+through the production mandatory TIR/WASM pipeline. Its emitted table narrowed
+from 5,898 to 1,179 targets; the other 72,724 decoded instructions and all 8,499
+ordered runtime calls were identical. The dispatcher loop and forward scopes
+remained because final ownership cleanup introduced backward transfers.
+
+Single compile-only observations with the same retained Wasmtime host and default
+engine policy measured translation at 93.293 s before and 8.292 s after. The
+baseline exceeded the unchanged 180 s bound before codegen completed; the changed
+module completed in 113.276 s, including 103.693 s for the function's compilation,
+with 4.965 GiB peak sampled/direct-child RSS. The timeout is censored, not a finite
+whole-compile speedup. These are unlinked component observations with diagnostic
+logging, not linked-module execution, installed-user latency, quiescent medians
+or full-module/release acceptance.
+
+Replacing per-literal WASM anchor locals with one invocation-owned scratch region
+further reduced this same component from 4,488 to 3,546 locals and from 246,843 to
+228,793 bytes. Its 944 anchors occupy 7,552 checked bytes. The other 91 function
+bodies, all non-code sections, constructor inputs and the 1,179-target dispatch
+table remain identical. With the same retained host, cache-disabled engine policy,
+diagnostic logging and 180 s bound, single compile-only observations measured
+113.276 s before and 28.575 s after: function translation fell from 8.292 to
+4.625 s and compilation from 103.693 to 22.627 s. Peak sampled/direct-child RSS
+fell from 4.965 to 3.396 GiB; serialized native artifacts shrank from 41,569,600
+to 36,371,200 bytes. The earlier receipt does not retain exhaustive ambient
+environment or numeric guard limits, so these are development observations rather
+than a fully controlled benchmark or canonical performance score.
+
+This accepts a compile-latency/runtime-allocation trade: a literal-bearing
+invocation or poll performs one resource-accounted allocation/free pair, uses
+8 bytes per anchor plus allocator overhead and linear initialization/cleanup
+traffic, and can fail resource admission. A function without anchors allocates
+nothing for this storage. A historical one-anchor, two-million-call Node
+diagnostic measured literal process-wall medians of 5.340 and 5.447 s. Every sample
+started a fresh process, and the after-sample spread exceeded the estimated
+control-adjusted signal; it establishes neither isolated allocator latency nor a
+current runtime regression percentage. Cold/steady runtime, retained memory,
+concurrency, linked-module execution and the wider release matrix remain
+unqualified. Ownership and failure cleanup follow
+`docs/spec/areas/compiler/0190_LOWERING_RULES.md`.
+
+Direct literal constructor operands remove the remaining per-output raw pointer
+and length staging from both WASM emitters. On the same component this reduces
+declared locals from 3,546 to 1,190 and module bytes from 228,793 to 212,627,
+without another runtime allocation or call. Existing Wasmtime pass telemetry
+identified register allocation as the remaining dominant cost: 20.008 s of
+22.253 s of function compilation before the deletion. The corresponding single
+instrumented observations took 28.001 s before and 30.197 s after, with register
+allocation at 22.002 s afterward. This establishes a smaller representation and
+removal of staging, not a compile-latency improvement. Further work must target
+the measured limiter and whole edit-to-result latency.
 
 Build-Python capture now binds inventory rows within the shared stable-file
 transaction and batches capture and final verification. An isolated Windows
@@ -338,7 +440,7 @@ top-level `provenance` object from `tools/perf_authority.py` with:
 - `authoritative: false`
 - `source: "non-canonical"`
 - `lane`: the emitting tool path
-- `profile`: the actual measured profile
+- `requested_profile`: the request label, never an inferred physical profile
 - `canonical_gate`: the full `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15` command
 
 These lanes are for debugging, triage, and local comparison. Do not cite them as
@@ -521,3 +623,113 @@ second backlog system. Gain and cost are relative planning estimates.
 | runtime-wasm cache authority | 8 | 2 |
 | witness lowering-context stability | 10 | 4 |
 | seal relocation-root reuse | 4 | 2 |
+
+## Linux sealed release replay provider
+
+`tools/release/consumer_replay.py` owns one post-uninstall native/WASM replay
+contract. Its Linux provider is `SealedRootTransport` in `tools/cross_run.py`:
+a system-manager-owned import and ephemeral execution root, using the existing
+Linux proof supervisor for actual guest executable identity and complete process
+receipts. It does not provision Docker, a new VM, a scheduler, or an end-user
+dependency. Generic Docker cross-platform smoke transport is a separate producer.
+
+The initial reviewed provider source coordinate is systemd `259.5-0ubuntu3.4` on native
+Linux aarch64 or x86_64. The installed Ubuntu security package includes the
+fixes in [USN-8626-1](https://ubuntu.com/security/notices/USN-8626-1)
+(published 2026-08-10); no package install or seven-day age exception is needed
+for that recorded coordinate. Package versions are provenance, not a permanent
+single-patch admission gate. Every invocation must supply the required effective
+API properties; unsupported settings fail without retry or fallback. Recheck the
+runner before dispatch. A VM name does not establish its ISA. The host kernel,
+system manager and root-owned control tools form the trusted execution base.
+Recorded tool hashes identify selected files, not the manager's loaded image;
+they must never be projected as compiler/runtime used-byte admission. macOS
+remains ineligible for this Linux execution-root contract.
+
+The orchestrator validates the exact sealed tar and sends its captured bytes
+through a write/grow/shrink/seal-locked memfd. The manager opens that descriptor
+while its owner keeps it alive; a constrained, bounded tar service imports into
+a fresh root-owned runtime directory. Exact payload inventory, archive binding,
+root ownership and permissions are checked before execution. Each guest service
+uses `RootEphemeral=yes`, a read-only root, private PID/user/network/IPC/mount
+namespaces, no capabilities, no-new-privileges, and bounded noexec tmpfs scratch.
+No host root or host executable bind is admitted. Guest stdin is null; only the
+owned stdout/stderr capture descriptors cross the manager boundary.
+
+This follows systemd's maintained [execution sandbox contract](https://www.freedesktop.org/software/systemd/man/259/systemd.exec.html)
+and [transient service interface](https://www.freedesktop.org/software/systemd/man/259/systemd-run.html).
+The [v259.5 executor](https://github.com/systemd/systemd/blob/v259.5/src/core/exec-invoke.c)
+implements the ephemeral directory snapshot with a copy fallback on ext4.
+The [service lifecycle](https://github.com/systemd/systemd/blob/v259.5/src/core/service.c)
+implements `ExitType=cgroup`: main-process exit alone is insufficient. No custom
+namespace, capability-drop or privileged Python helper replaces these owners.
+
+The receiver requires the retained typed D-Bus Unit and Service observations,
+including empty properties; omitted fields do not mean default isolation. It
+checks the exact supervisor argv, transient invocation, resource configuration,
+terminal cgroup-owned state, successful blocking stop job, and invocation-bound
+retirement. The existing supervisor receipt verifier independently checks actual
+guest image bytes, policy, stdout and complete process closure. An uncertain
+creation/stop retains the imported source and nonce-bound intent for recovery;
+a failed lookup is never proof that a delayed creation cannot arrive.
+
+Cold cost is bounded archive capture plus one import, one snapshot and two
+inventory passes per guest, selected-tool hashes, and manager control queries.
+Archive input is capped at 1 GiB. Import has 2 GiB memory, no swap, one CPU and
+16 tasks; guest services have 1 GiB memory, no swap, one CPU and 64 tasks.
+Scratch totals 96 MiB and captured streams are bounded to 16 MiB each. Existing
+cross-run guards own control clients and captures. These are development proof
+costs; emitted programs receive no added work. Actual latency and peak memory
+remain a real-run measurement obligation.
+
+A successful Python protocol fixture is not kernel isolation, native/WASM product
+success, performance admission, or authenticated H0. Acceptance still requires
+an explicitly authorized real Linux run of the exact provider postimage, existing
+supervisor generation and installed native/WASM subjects, followed by retained
+receipt replay and independent archive/identity/omission rejection. This provider
+prerequisite does not close the missing consumed compiler/runtime identity
+producer or H0 signing producer, change thresholds, or shrink the release matrix.
+
+The same provider has a typed compilation projection with explicit memory,
+workspace and runtime budgets. It gives compiler scratch a writable noexec `/work`; imported
+compiler, frontend, toolchain and installed runtime inputs remain read-only.
+The compilation projection leaves captured `/tmp` installation paths read-only
+instead of masking them with replay's disposable `/tmp` mount; `TMPDIR` points
+to `/work/tmp`.
+Preparation and import are shared across the declared cells of one installed
+frontend coordinate. Each invocation has a fresh workspace and independent
+supervisor policy, journal and output export. Replay retains its original fixed
+limits. Compilation stdout carries the release ZIP export and is bounded by its
+workspace budget and the existing ZIP32 archive limit; stderr retains the 16 MiB
+supervisor transport bound. Both streams are checked again after pipe completion.
+
+Raw linker reproducers and the final-link publication receipt are checked before
+compiler/runtime content can be joined to actual supervisor-observed images.
+The controller and cell configuration are themselves reconstructed from source;
+sealing an arbitrary controller cannot authorize a caller-written summary.
+These source mechanisms do not remove the current performance and full-release
+refusals: installed caller coverage, measurement/artifact binding, real kernel
+execution and authenticated H0 still require their owning producers and receivers.
+
+Native admission capture also retains the C driver dependency report. Its
+header paths are preparation selections, not consumed-byte claims. The canonical
+Make parser retains lexical and resolved coordinates: installed roots copy the
+selected contents at the lexical header names, while existing extension/Cython
+content closures continue to deduplicate resolved files. Selected driver bytes
+must already belong to the admitted toolchain root and join the native journal.
+CRT objects and link libraries are copied from the LLD reproducer buffers. The
+fresh supervised build still supplies the actual link-consumption evidence.
+
+The shared `bench_evidence.METRIC_POLICIES` declaration binds each Molt metric's
+success gates and native/WASM lane. Comparison admits the observed target
+through the compiler's target authority; an identical wrong-lane observation
+does not qualify, and a mixed native/WASM metric cell cannot share one build
+observation. A new Molt metric requires a declared policy. Exact native triples
+and all admitted WASM/WASI intents preserve their target distinctions; no
+runtime profile is inferred from a metric name or target.
+
+Methodology v10 governs the shared comparison policy and each comparison
+verdict owner (`bench_reporting`, `bench_diff`, `bench_dashboard`,
+`perf_regression` and the legacy harness), including the target-admission
+dependencies. They are not unlocked report-formatting mechanics. The canonical
+bump must run after final formatting, and historical versions remain separate.

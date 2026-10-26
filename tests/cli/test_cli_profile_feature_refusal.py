@@ -121,7 +121,8 @@ def test_representative_symbols_map_to_their_declared_features() -> None:
         "molt_sqlite3_connect": "sqlite",
         "molt_stringprep_in_table": "stdlib_stringprep",
         "molt_html_escape": "stdlib_text",
-        "molt_unicodedata_name": "stdlib_text",
+        "molt_unicodedata_name": "stdlib_unicode_names",
+        "molt_unicodedata_lookup": "stdlib_unicode_names",
         "molt_zoneinfo_new": "stdlib_zoneinfo",
         "molt_gpu_prim_device": "molt_gpu_primitives",
         "molt_base64_b64encode": "stdlib_serial",
@@ -134,6 +135,49 @@ def test_representative_symbols_map_to_their_declared_features() -> None:
     }
     for symbol, feature in cases.items():
         assert feature_for_symbol(symbol) == feature
+
+
+@pytest.mark.parametrize("target_triple", [None, "wasm32-wasip1"])
+@pytest.mark.parametrize("symbol", ["molt_unicodedata_name", "molt_unicodedata_lookup"])
+def test_unicode_names_demand_owns_auto_profile_and_explicit_ceiling(
+    target_triple: str | None, symbol: str
+) -> None:
+    reached = RF.reached_intrinsic_symbols(_functions_reaching(symbol))
+    required = RF.required_link_features(reached)
+    assert required == frozenset({"stdlib_unicode_names"})
+    assert (
+        RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
+            "auto", required, target_triple=target_triple
+        )
+        == "full"
+    )
+    refusal = _refusal_for_reached_symbols(
+        symbol, profile="standard", target_triple=target_triple
+    )
+    assert (
+        refusal is not None and symbol in refusal and "stdlib_unicode_names" in refusal
+    )
+    assert (
+        _refusal_for_reached_symbols(
+            symbol, profile="full", target_triple=target_triple
+        )
+        is None
+    )
+    # Property-only and empty closures do not acquire the public names feature.
+    property_required = RF.required_link_features({"molt_unicodedata_category"})
+    assert property_required == frozenset({"stdlib_text"})
+    assert (
+        RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
+            "auto", property_required, target_triple=target_triple
+        )
+        == "standard"
+    )
+    assert (
+        RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
+            "auto", (), target_triple=target_triple
+        )
+        == "micro"
+    )
 
 
 def test_compile_is_a_core_builtin() -> None:
@@ -755,3 +799,30 @@ def test_enabled_runtime_features_require_one_default_marker(
 ) -> None:
     with pytest.raises(ValueError, match="exactly one default-feature marker"):
         RUNTIME_FEATURES.runtime_enabled_cargo_features(request_features)
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected_domains"),
+    [
+        (("stdlib_net",), {"stdlib_net", "stdlib_select"}),
+        (
+            ("stdlib_micro", "stdlib_net"),
+            {"stdlib_asyncio", "stdlib_net", "stdlib_select"},
+        ),
+        (("stdlib_micro",), {"stdlib_asyncio"}),
+        (("stdlib_asyncio",), {"stdlib_asyncio"}),
+        (("stdlib_select",), {"stdlib_select"}),
+    ],
+)
+def test_network_runtime_feature_request_includes_fd_readiness_provider(
+    requested: tuple[str, ...], expected_domains: set[str]
+) -> None:
+    # Fd watchers are compiled with networking and call the select primitive.
+    # Neither non-network scheduling nor select alone needs the network driver.
+    enabled = RUNTIME_FEATURES.runtime_enabled_cargo_features(
+        ("no-default-features", *requested)
+    )
+    assert enabled & {"stdlib_asyncio", "stdlib_net", "stdlib_select"} == (
+        expected_domains
+    )
+    assert "stdlib_server" not in enabled and "stdlib_full" not in enabled

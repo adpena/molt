@@ -3,45 +3,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-struct TestTempDir {
-    path: PathBuf,
-}
-
-impl TestTempDir {
-    fn new() -> Self {
-        static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
-        let temp_id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must be after unix epoch")
-            .as_nanos();
-        // The platform temp directory, never the checkout: a run context
-        // points it at the run scratch root.
-        let path = std::env::temp_dir().join(format!(
-            "native-batch-worker-spawn-{}-{temp_id}-{nonce}",
-            std::process::id(),
-        ));
-        std::fs::create_dir_all(&path).expect("create native batch worker temp dir");
-        Self { path }
-    }
-}
-
-impl Drop for TestTempDir {
-    fn drop(&mut self) {
-        if self.path.exists()
-            && let Err(err) = std::fs::remove_dir_all(&self.path)
-        {
-            eprintln!(
-                "MOLT_TEST: failed to remove native batch worker temp dir '{}': {err}",
-                self.path.display()
-            );
-        }
-    }
-}
-
 mod cargo_test_artifacts {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -140,9 +101,10 @@ fn main() {{
 
 #[test]
 fn native_batch_worker_spawn_path_compiles_materialized_batches() {
-    let tmp = TestTempDir::new();
-    let ir_path = tmp.path.join("two_live_functions.json");
-    let output_path = tmp.path.join("out.a");
+    let tmp = cargo_test_artifacts::CargoTestArtifacts::new("native-batch-worker-application")
+        .expect("retain native worker proof inputs and outputs under Cargo custody");
+    let ir_path = tmp.path().join("two_live_functions.json");
+    let output_path = tmp.path().join("out.a");
     std::fs::write(
         &ir_path,
         r#"{
@@ -212,17 +174,17 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
 
     // Explicit invalid custody must fail before publication instead of silently
     // allocating in the process's unrelated platform temp directory.
-    let nondirectory = tmp.path.join("scratch-file");
+    let nondirectory = tmp.path().join("scratch-file");
     std::fs::write(&nondirectory, b"not a directory").expect("write invalid scratch root");
     for (index, invalid_root) in [
         PathBuf::from("relative-scratch"),
-        tmp.path.join("missing-scratch"),
+        tmp.path().join("missing-scratch"),
         nondirectory,
     ]
     .iter()
     .enumerate()
     {
-        let denied_output = tmp.path.join(format!("denied-{index}.a"));
+        let denied_output = tmp.path().join(format!("denied-{index}.a"));
         let denied = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
             .args(["--native-output-kind", "archive"])
             .arg("--ir-file")
@@ -247,18 +209,19 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
 
 #[test]
 fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
-    let tmp = TestTempDir::new();
-    let ir_path = tmp.path.join("stdlib_split.json");
-    let output_path = tmp.path.join("out.a");
+    let tmp = cargo_test_artifacts::CargoTestArtifacts::new("native-batch-worker-stdlib")
+        .expect("retain native worker proof inputs and outputs under Cargo custody");
+    let ir_path = tmp.path().join("stdlib_split.json");
+    let output_path = tmp.path().join("out.a");
     let initial_key = "a".repeat(64);
     let other_key = "b".repeat(64);
     let emitter_key = "c".repeat(64);
     let changed_key = "d".repeat(64);
-    let cache_root = tmp.path.join("cache");
+    let cache_root = tmp.path().join("cache");
     let archive_for = |key: &str| cache_root.join("shared-stdlib").join(key).join("stdlib.a");
     let required_archive_for = |output: &Path| output.with_extension("stdlib.a");
     let stdlib_path = required_archive_for(&output_path);
-    let runtime_symbols_path = tmp.path.join("runtime_callable_symbols.txt");
+    let runtime_symbols_path = tmp.path().join("runtime_callable_symbols.txt");
     std::fs::write(
         &runtime_symbols_path,
         "molt_main\nmolt_host_init\nmolt_init_demo\nmolt_init_sys\nsys__helper\n",
@@ -482,7 +445,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         required_bytes
     );
 
-    let warm_output_path = tmp.path.join("out-warm.a");
+    let warm_output_path = tmp.path().join("out-warm.a");
     let warm_output = run_backend(&warm_output_path, initial_key.as_str(), "speed", "0");
     let warm_stderr = String::from_utf8_lossy(&warm_output.stderr);
     let warm_required = required_archive_for(&warm_output_path);
@@ -542,7 +505,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
             .unwrap_or(0)
     };
     assert_eq!(content_entries(), 1, "the cold build publishes its content");
-    let other_output_path = tmp.path.join("other-program.a");
+    let other_output_path = tmp.path().join("other-program.a");
     let content_output = run_backend(&other_output_path, other_key.as_str(), "speed", "0");
     let content_stderr = String::from_utf8_lossy(&content_output.stderr);
     assert!(
@@ -594,7 +557,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     *corrupt.last_mut().unwrap() ^= 1;
     std::fs::write(&content_entry, corrupt).unwrap();
     let constituent_key = "f".repeat(64);
-    let constituent_output_path = tmp.path.join("constituent-program.a");
+    let constituent_output_path = tmp.path().join("constituent-program.a");
     let constituent_output = run_backend(
         &constituent_output_path,
         constituent_key.as_str(),
@@ -661,7 +624,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     // Without its content generation the shifted program restores both
     // constituents, which proves their identity directly.
     std::fs::remove_dir_all(&content_store).unwrap();
-    let shifted_output_path = tmp.path.join("shifted-program.a");
+    let shifted_output_path = tmp.path().join("shifted-program.a");
     let shifted_key = "e".repeat(64);
     let shifted_output = run_backend(&shifted_output_path, &shifted_key, "speed", "0");
     let shifted_stderr = String::from_utf8_lossy(&shifted_output.stderr);
@@ -686,7 +649,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     // This switch was absent from the old CLI digest. Keep the same manifest
     // variant to prove that the actual inherited worker input invalidates reuse.
     let emitter_output = run_backend(
-        &tmp.path.join("changed-emitter.a"),
+        &tmp.path().join("changed-emitter.a"),
         emitter_key.as_str(),
         "speed",
         "1",
@@ -704,7 +667,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     // Effective codegen settings and their canonical manifest change together.
     // Identical IR cannot admit the prior speed-optimized object generation.
     let changed_output = run_backend(
-        &tmp.path.join("changed-codegen.a"),
+        &tmp.path().join("changed-codegen.a"),
         changed_key.as_str(),
         "none",
         "0",
@@ -722,10 +685,11 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
 
 #[test]
 fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
-    let tmp = TestTempDir::new();
-    let ir_path = tmp.path.join("failing_batch.json");
-    let output_path = tmp.path.join("out.a");
-    let debug_artifact_dir = tmp.path.join("debug-artifacts");
+    let tmp = cargo_test_artifacts::CargoTestArtifacts::new("native-batch-worker-replay")
+        .expect("retain native worker proof inputs and outputs under Cargo custody");
+    let ir_path = tmp.path().join("failing_batch.json");
+    let output_path = tmp.path().join("out.a");
+    let debug_artifact_dir = tmp.path().join("debug-artifacts");
     std::fs::write(
         &ir_path,
         r#"{

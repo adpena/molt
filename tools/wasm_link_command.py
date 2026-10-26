@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tools.wasm_link_transaction import WasmArtifactState
+
 from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -276,14 +278,14 @@ def _call_indirect_alias_entries(
 
 
 def _inject_call_indirect_alias(
-    output: Path,
+    output: WasmArtifactState,
     runtime: Path,
     temp_dir: OwnedTemporaryDirectory,
     *,
     facts_provider: WasmFactsProvider,
-) -> Path:
+) -> WasmArtifactState:
     runtime_facts = facts_provider(runtime.read_bytes())
-    output_data = output.read_bytes()
+    output_data = output.data
     entries = _call_indirect_alias_entries(facts_provider(output_data), runtime_facts)
     updated = _append_linking_function_symbols(
         output_data, entries, facts_provider=facts_provider
@@ -291,5 +293,4 @@ def _inject_call_indirect_alias(
     if updated is None:
         return output
     alias_path = Path(temp_dir.name) / "output_alias.wasm"
-    alias_path.write_bytes(updated)
-    return alias_path
+    return output.derive(alias_path, updated)

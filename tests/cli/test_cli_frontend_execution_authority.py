@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 from functools import partial
 import inspect
@@ -72,6 +74,7 @@ def test_serial_layer_result_records_cache_hits_as_cache_hits(tmp_path: Path) ->
         module_path=tmp_path / "m.py",
         source_lease=source_lease,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "source_sha256": source_lease.source_sha256,
             "functions": [],
             "func_code_ids": {},
@@ -171,6 +174,7 @@ def test_result_generation_refusal_precedes_integration(
     path.write_text("VALUE = 1\n", encoding="utf-8")
     lease = _ModuleSourceLease.path_backed(path)
     result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "functions": [],
         "func_code_ids": {},
         "function_metadata": {},
@@ -256,6 +260,7 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
         assert isinstance(seed.digest, bytes) and len(seed.digest) == 32
     loaded = module_cache._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=lease,
         module_name="m",
         context_digest=digest,

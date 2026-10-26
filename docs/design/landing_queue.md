@@ -145,7 +145,8 @@ The code that decides whether a change lands is never the change.
   queue run as services, not from the pull request.
 - **Design.** `integrate`, `land`, the queue runner, `queue withdraw`,
   `lane start` and `lane retire` fetch first. Then they run the driver from
-  main's tip: `git archive <tip>` of `tools`, `src/molt`, `config` (the data
+  main's tip: `git archive <tip>` of `tools`, `src/molt`, `src/sitecustomize.py`,
+  `config` (the data
   the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
   and `.python-version` extracts into
   `<git-common-dir>/molt/controllers/<key>`, where the key is the digest of
@@ -155,8 +156,13 @@ The code that decides whether a change lands is never the change.
   from the candidate. The candidate still supplies its declared data: gate
   selection from its `tools/proof_plan.toml`, and its tests. A change to the
   driver takes effect after it lands, as a stage0 bump does.
-- **Escape.** `--candidate-controller` runs the candidate's driver for a
-  repair of a broken controller on main. A landing's progress stream and
+- **Adoption.** `--candidate-controller` runs the candidate's driver for a
+  reviewed controller repair or controller-owned input-contract transition
+  that main cannot prepare. The complete selected gates remain mandatory;
+  this is an explicit bootstrap, never a post-failure retry policy. Follow the
+  [canonical integration contract](../../ops/INTEGRATION.md#the-driver-lifecycle-integrate).
+  Once landed, the next default invocation uses main's newly pinned controller.
+  A landing's progress stream and
   receipt record which controller ran; a lane command prints it
   (`==> pinned controller <key>`). Each command refuses a pinned claim that
   does not name the controller it runs from
@@ -187,9 +193,23 @@ A checkout's inputs come from its lock files, on demand, as `uv run` does.
   from the shared caches. `gen_browser_asset_graph.py` stops asking a person
   to run a bootstrap script. `lane start` provisions the default prerequisites. Optional registered inputs,
   such as the Edgebox TypeScript tree, are provisioned only when explicitly
-  selected. Status and queue setup share the default selection; retirement
-  recognizes all registered inputs so an explicitly provisioned tree keeps its
-  custody.
+  selected. Status and lane start share the default selection. Queue gate
+  preparation follows the selected proof toolchain closures instead: only an
+  environment-role prerequisite requests a source development image, and
+  non-Python inputs are provisioned only when selected. Preparation binds tool
+  identity to the selected interpreter before execution; every launch still
+  checks the image. Explicit selectors remain fail-closed even for generic
+  shell gates. Retirement recognizes all registered inputs so an explicitly
+  provisioned tree keeps its custody.
+- **Editable-source custody.** The uv stamp also binds its resolved checkout.
+  A current editable environment rechecks its exact PEP 610 metadata path; a
+  foreign checkout is refused, even with identical lock bytes. Cold
+  unstamped admission uses the existing isolated no-site Python probe. Explicit
+  `MOLT_VENV` borrowing remains read-only; manual noneditable environments keep
+  their existing contract. The existing Git-scoped provisioning lock is unchanged.
+  This does not exclude simultaneous first writers from different checkouts,
+  arbitrary external `uv` writers, or same-checkout sync during reads: shared use
+  protects retirement, not content mutation.
 - **Cost.** 2.2 s for a new worktree (uv 1.5 s, npm 0.7 s, both from warm
   caches); about 1 ms per consumer afterwards.
 - **Landed (slice 3).** `src/molt/checkout_provisioning.py` holds the uv
@@ -228,7 +248,15 @@ The driver creates, provisions and retires each lane.
   sandbox it owns.
 - **Design.** `molt_dev.py lane start <slug>` creates the `lane/<slug>`
   branch from main in a slot worktree, writes the coordination record, and
-  provisions it. `lane retire <slug>` accepts a landed lane, or an abandoned
+  provisions it. The checkout selected by `--repo` is preferred only when its
+  Git registration is a clean, detached, unlocked, non-prunable slot under the
+  selected root; otherwise selection keeps path order. Protected registrations
+  reserve their numbers. This preserves a selected checkout's artifact namespace
+  without weakening provisioning or build identity checks, and starting a lane
+  still consumes an active WIP position. Detach is the availability commit
+  point: a new lane may claim the slot while the old lane finishes deleting its
+  refs and closing its record, with no further checkout mutation by retirement.
+  `lane retire <slug>` accepts a landed lane, or an abandoned
   one after it writes a Git bundle. It deletes the branches, detaches the
   clean slot at main and closes the record; the slot keeps its checkout state
   for the next lane (HF-491). A long-lived monorepo checkout and Bazel's
@@ -317,8 +345,10 @@ One runner owns main. Agents enqueue and continue.
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
-  It builds a candidate in its own sandbox worktree: main's tip, then a
-  `--no-ff` merge of each ready lane tip in queue order, preserving source DAGs
+  It builds a candidate in its own sandbox worktree. When the first enrolled
+  tip already contains captured main, it checks out that tip directly and adds
+  a dedicated candidate commit. Otherwise it starts at main. Remaining tips
+  merge with `--no-ff` in queue order, preserving source DAGs
   and resolution-only changes through the final citation amendment. A conflicting
   merge is aborted and the preceding candidate verified before proceeding;
   a failed restoration stops the runner. The conflicting lane leaves with a report. The runner resolves change ids, takes the repository integration
@@ -329,6 +359,15 @@ One runner owns main. Agents enqueue and continue.
   person. Speculation is a candidate chain (main + L1, main + L1 + L2, ...)
   that runs as far as the admitted capacity allows: one chain on this Mac,
   wider on the farm.
+  Direct materialization uses Git's
+  [`merge-base --is-ancestor`](https://git-scm.com/docs/git-merge-base) predicate
+  and ordinary [`commit --allow-empty`](https://git-scm.com/docs/git-commit),
+  including its hooks. The candidate's tree and parent must remain exactly the
+  enrolled tree and tip; a hook that changes either stops admission. This keeps
+  citation amendment off the source commit without the old main-then-lane
+  checkout, which rewrote byte-identical Rust inputs on every failed retry.
+  Unchanged inputs and ignored build products stay in place; their timestamps
+  never establish compiler-artifact admission. No gate result is reused.
 - **Cost.** N small lanes pay the fixed gate cost once, not N times. A bad
   lane costs O(log N) extra runs. The runner is one process per batch; it
   waits for the integration lock with the lock authority's 2 s retry and
@@ -374,6 +413,42 @@ One runner owns main. Agents enqueue and continue.
   its terminal result identifies the remaining integration-owner action.
 - This replaces three-day red stretches of main, each repaired by hand after
   the fact, with one bounded run per candidate.
+
+## Hosted evidence handoff
+
+The existing classifier publishes its canonical selection as
+`molt.proof-selection.v1`, separately from executable receipts. The artifact
+binds the exact tested commit/tree, proof authority, declared tier and GitHub
+run/attempt. Its changed paths or full-plan mode reconstruct the complete
+family selection; received receipt files never determine the required set.
+The same `family_outputs` projection continues to feed CI job outputs and its
+aggregate verdict. This adds transport for an existing fact, not a second
+selection registry or scheduler.
+
+`ci_triage.py --verify` joins that artifact with the existing receipt verifier
+and strict ZIP reader. It pins a completed successful run, retrieves immutable
+artifact IDs and digests, verifies source and coverage, then rechecks the run
+and source before reporting success. Unique earlier-attempt receipts can
+prove the same unchanged source; duplicates remain errors. A missing current
+classifier is unavailable, including a partial rerun that retained its older
+classifier. No timestamps, newest-artifact choice, automatic rerun or checkout
+mutation substitute for evidence. CI lifecycle and coverage are separate
+results, and neither grants installed-release acceptance.
+
+This follows [Bazel's structured build-event contract](https://bazel.build/remote/bep):
+announced work and its completion must be joined programmatically. It retains
+Molt's existing proof plan and receipts rather than introducing Bazel or a
+second execution system. [rustc's supported workflows](https://rustc-dev-guide.rust-lang.org/building/suggested.html)
+likewise keep routine development behind maintained project commands.
+
+Ordinary triage keeps its existing lazy startup and completed-log cache.
+Explicit verification costs one paginated artifact inventory, one streamed
+download per selected artifact, bounded archive validation/extraction and the
+existing evidence hash checks, plus source/run fences. Time and storage scale
+with downloaded evidence bytes; no compiler, environment publication or proof
+execution occurs. Failed downloads and receipts remain recoverable. Guard
+incidents/current-test evidence are exported by one shared CI action; no
+additional profiler or per-test write is introduced by this handoff.
 
 ## Migration
 

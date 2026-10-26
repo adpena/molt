@@ -16,6 +16,42 @@ RuntimeGatePolicy = Literal[
 ]
 
 
+@dataclass(frozen=True)
+class SemanticImage:
+    """One explicitly owned libtest; empty cases keep the runtime partition."""
+
+    package: str
+    target: str
+    kind: Literal["rlib", "lib"]
+    cases: tuple[str, ...] = ()
+
+
+# Dependency rlibs do not contain their crates' cfg(test) bodies. Build these
+# libtest roots in the same Cargo solve, without expanding to every satellite.
+# Only the declared satellite cases execute; other discovered tests stay unrun.
+SEMANTIC_IMAGES = (
+    SemanticImage("molt-runtime", "molt_runtime", "rlib"),
+    SemanticImage(
+        "molt-runtime-core",
+        "molt_runtime_core",
+        "lib",
+        (
+            "numeric_ratio::tests::ratio_to_f64_matches_cpython_bit_exact",
+            "numeric_ratio::tests::ratio_to_f64_overflows_past_f64_max",
+            "numeric_ratio::tests::binary64_rounding_boundaries",
+        ),
+    ),
+    SemanticImage(
+        "molt-runtime-math",
+        "molt_runtime_math",
+        "lib",
+        (
+            "math::statistics_reduction_tests::exact_reduction_oracles_and_primitive_cost",
+        ),
+    ),
+)
+
+
 def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="release-output")
@@ -138,7 +174,13 @@ def cargo_operations(
         )
     if policy not in {"semantic", "allocation-observer"}:
         raise ValueError(f"unknown runtime gate policy: {policy!r}")
-    command = (*base, "-p", "molt-runtime", "--lib", *tail)
+    packages = (
+        tuple(image.package for image in SEMANTIC_IMAGES)
+        if policy == "semantic"
+        else ("molt-runtime",)
+    )
+    selectors = tuple(word for package in packages for word in ("-p", package))
+    command = (*base, *selectors, "--lib", *tail)
     if policy == "allocation-observer":
         command += (
             "--test",

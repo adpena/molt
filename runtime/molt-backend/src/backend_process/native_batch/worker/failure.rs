@@ -1,6 +1,7 @@
 use std::{io, path::Path};
 
 use super::super::temp::preserve_native_batch_worker_failure_artifacts;
+use super::compile::NativeWorkerOrigin;
 use super::spawn::run_native_batch_worker;
 
 pub(crate) fn run_native_batch_worker_with_failure_artifacts(
@@ -8,9 +9,9 @@ pub(crate) fn run_native_batch_worker_with_failure_artifacts(
     job: &[u8],
     job_name: &str,
     object_path: &Path,
-) -> io::Result<()> {
+) -> io::Result<NativeWorkerOrigin> {
     match run_native_batch_worker(job, object_path) {
-        Ok(()) => Ok(()),
+        Ok(origin) => Ok(origin),
         Err(err) => {
             let original_error = format!("{label} job '{job_name}': {err}");
             match preserve_native_batch_worker_failure_artifacts(label, job, job_name, object_path)
@@ -49,7 +50,7 @@ pub(crate) struct NativeBatchWork<'a> {
 pub(crate) fn run_native_batch_workers(
     label: &str,
     works: &[NativeBatchWork<'_>],
-) -> io::Result<()> {
+) -> io::Result<Vec<NativeWorkerOrigin>> {
     molt_backend::tir::pipeline_cache::request_parallel_map(works, |work| {
         eprintln!("{}", work.progress);
         run_native_batch_worker_with_failure_artifacts(

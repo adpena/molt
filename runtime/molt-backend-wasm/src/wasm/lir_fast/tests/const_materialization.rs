@@ -83,6 +83,16 @@ fn lir_const_bool_mismatched_payload_fails_closed() {
 
 #[test]
 fn lir_literal_consts_materialize_without_generic_bail() {
+    // One result with the same i64 machine carrier and CFG, without a literal
+    // constructor. Compare the actual declarations rather than assuming how
+    // many control-flow or result locals the lowering needs.
+    let scalar_locals = lower_tir_to_wasm(&make_scalar_const_return_func(
+        "const_local_baseline",
+        OpCode::ConstNone,
+        TirType::None,
+        AttrDict::new(),
+    ))
+    .locals;
     let cases = [
         {
             let mut attrs = AttrDict::new();
@@ -136,16 +146,35 @@ fn lir_literal_consts_materialize_without_generic_bail() {
             "{name} must materialize in the LIR fast body instead of bailing"
         );
         assert_eq!(output.bail_to_generic_reason, None);
+        for storage_call in ["scratch_alloc", "scratch_free"] {
+            assert!(
+                !output.runtime_calls.contains(&storage_call),
+                "LIR literal results have per-operation ownership, not invocation anchors"
+            );
+        }
         assert!(
             output.runtime_calls.contains(&import_name),
             "{name} must call {import_name}; got {:?}",
             output.runtime_calls
         );
-        assert!(
-            output.locals.len() >= 3,
-            "{name} must declare result plus ptr/len scratch locals for materialization"
+        assert_eq!(
+            output.locals, scalar_locals,
+            "{name} must not add pointer/length staging locals to the one-result body"
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "const_bigint requires nonempty signed bytes")]
+fn lir_empty_bigint_payload_fails_closed() {
+    let mut attrs = AttrDict::new();
+    attrs.insert("bytes".into(), AttrValue::Bytes(vec![]));
+    let _ = lower_tir_to_wasm(&make_scalar_const_return_func(
+        "empty_bigint",
+        OpCode::ConstBigInt,
+        TirType::DynBox,
+        attrs,
+    ));
 }
 
 #[test]

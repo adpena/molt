@@ -15,6 +15,18 @@ def _payload(
     summary_only: bool = False,
 ) -> dict:
     entry: dict = {
+        "requested_profile": "release",
+        "build_observation": {
+            "kind": "molt-build-observation-v1",
+            "compiled_with_verified": False,
+            "selected_profiles": {
+                "backend": "native",
+                "target": "native",
+                "guest_profile": "release",
+                "runtime_profile": "release-output",
+                "compiler_profile": "release",
+            },
+        },
         "molt_ok": molt_ok,
         "molt_time_s": value,
         "molt_build_s": 1.0,
@@ -122,3 +134,62 @@ def test_malformed_present_raw_samples_fail_closed(bad_sample: object) -> None:
             _payload(value=1.0, samples_s=[0.9, 1.0, 1.1]),
             perf_regression.DEFAULT_THRESHOLDS,
         )
+
+
+@pytest.mark.parametrize(
+    "coordinate", ["runtime_profile", "compiler_profile", "target"]
+)
+def test_regression_refuses_different_observed_build_profiles(coordinate: str) -> None:
+    current = _payload(value=1.2)
+    baseline = _payload(value=1.0)
+    current["benchmarks"]["bench.py"]["build_observation"]["selected_profiles"][
+        coordinate
+    ] = "different"
+
+    with pytest.raises(ValueError, match="selected build profiles differ"):
+        perf_regression.compare_benchmarks(
+            current, baseline, perf_regression.DEFAULT_THRESHOLDS
+        )
+
+
+def test_regression_refuses_legacy_profile_label_without_observation() -> None:
+    current = _payload(value=1.2)
+    baseline = _payload(value=1.0)
+    baseline["benchmarks"]["bench.py"].pop("build_observation")
+    baseline["provenance"] = {"profile": "release-fast"}
+
+    with pytest.raises(ValueError, match="baseline selected profiles unbound"):
+        perf_regression.compare_benchmarks(
+            current, baseline, perf_regression.DEFAULT_THRESHOLDS
+        )
+
+
+@pytest.mark.parametrize("historical_only", [False, True])
+def test_trends_require_every_point_to_bind_the_same_profile(
+    historical_only: bool,
+) -> None:
+    from pathlib import Path
+
+    older = _payload(value=1.0)
+    recent = _payload(value=1.1)
+    current = _payload(value=1.2)
+    baselines = [(Path("older.json"), older), (Path("recent.json"), recent)]
+    if historical_only:
+        baselines.append((Path("last.json"), current))
+        current = {**current, "benchmarks": {}}
+
+    trends = perf_regression.analyze_trends(baselines, current)
+    runtime = next(trend for trend in trends if trend.metric == "runtime")
+    assert runtime.num_points == 3
+    assert runtime.is_drifting and runtime.direction == "degrading"
+
+    older["benchmarks"]["bench.py"]["build_observation"]["selected_profiles"][
+        "runtime_profile"
+    ] = "release-fast"
+    with pytest.raises(
+        ValueError, match="incompatible benchmark trend.*selected build profiles differ"
+    ):
+        perf_regression.analyze_trends(baselines, current)
+    older["benchmarks"]["bench.py"].pop("build_observation")
+    with pytest.raises(ValueError, match="selected profiles unbound"):
+        perf_regression.analyze_trends(baselines, current)

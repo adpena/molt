@@ -19,7 +19,7 @@ REMAINDER = ["ordinary::parallel_case", support.TRAP, support.TRAP_CHILD, suppor
 
 @pytest.fixture
 def selected_cargo(monkeypatch, tmp_path):
-    from molt.cli.runtime_cargo_plan import _tool_path
+    from molt.cli.runtime_tool_selection import runtime_tool_path
     from molt.rust_toolchain import rustup_proxy_selection
 
     suffix = ".exe" if os.name == "nt" else ""
@@ -38,7 +38,9 @@ def selected_cargo(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(proxy.parent))
     # Prove that a bare selector would choose a real proxy identity, not the
     # queue-published physical Cargo. No compiler or proxy process is executed.
-    assert _tool_path("cargo", root=tmp_path, env=os.environ, role="cargo") == proxy
+    assert (
+        runtime_tool_path("cargo", root=tmp_path, env=os.environ, role="cargo") == proxy
+    )
     selection = rustup_proxy_selection(proxy)
     assert selection is not None and selection.entrypoint == rustup
     return str(selected)
@@ -615,6 +617,121 @@ def test_shipping_profile_rejects_assertion_overrides(environment):
         gate.observed_build(output, artifact, "release-output", environment)
 
 
+@pytest.mark.parametrize("returncode", [0, 101])
+def test_cargo_build_streams_evidence_without_truncation_or_terminal_rewrite(
+    monkeypatch, tmp_path, returncode
+):
+    import json
+    import subprocess
+    from molt.process_environment import ProcessEnvironment
+
+    _, compiler_artifact, artifact_output = observed_fixture()
+    stdout = (
+        artifact_output
+        + "\n"
+        + json.dumps(
+            {
+                "reason": "build-finished",
+                "success": returncode == 0,
+                "padding": "x" * 100_000,
+            }
+        )
+        + "\n"
+    )
+    stderr = "compiler-diagnostic\n"
+    command = ["cargo", "test", "--no-run", "--message-format=json"]
+    environment = ProcessEnvironment({"RUSTC": "selected-rustc"})
+    result = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    paths = (tmp_path / "build.stdout.jsonl", tmp_path / "build.stderr.log")
+    captured_times = []
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            assert argv is command
+            assert kwargs["cwd"] == gate.ROOT
+            assert kwargs["env"] is environment
+            assert kwargs["capture_output"] is True
+            assert kwargs["capture_tail_bytes"] is None
+            assert kwargs["timeout"] == 123
+            assert kwargs["check"] is False
+            assert kwargs["encoding"] == "utf-8"
+            assert (
+                kwargs["stdout_capture_path"],
+                kwargs["stderr_capture_path"],
+            ) == paths
+            for path, text in zip(paths, (stdout, stderr), strict=True):
+                with path.open("x", encoding="utf-8") as handle:
+                    handle.write(text)
+                # The real capture owner creates evidence before returning.
+                assert path.read_text(encoding="utf-8") == text
+                # A terminal rewrite of identical text is still a new write.
+                # Give it a distinct, portable timestamp so the oracle catches
+                # that duplicate without timing sleeps or process-wide patches.
+                os.utime(path, (946684800, 946684800))
+                captured_times.append(path.stat().st_mtime_ns)
+            return result
+
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    assert gate.cargo_build(command, tmp_path, 123, environment) is result
+    assert result.stdout == stdout and result.stderr == stderr
+    assert list(
+        gate.truth.compiler_artifacts(result.stdout, source_context="compiler-only")
+    ) == [compiler_artifact]
+    assert [path.stat().st_mtime_ns for path in paths] == captured_times
+
+
+def test_cargo_build_timeout_keeps_real_partial_streams(monkeypatch, tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    from tests.process_guard_common import (
+        HUNG_CHILD_SOURCE,
+        hung_child_marker,
+        stop_test_processes_carrying,
+    )
+
+    _, compiler_artifact, artifact_output = observed_fixture()
+    stdout = (
+        artifact_output + "\r\n" + json.dumps({"padding": "x" * 100_000}) + "\r\n"
+    ).encode("utf-8")
+    stderr = "compiler diagnostic: café\r\n".encode("utf-8")
+    marker = hung_child_marker()
+    command = [
+        sys.executable,
+        "-c",
+        "import json, sys\n"
+        f"sys.stdout.buffer.write({artifact_output.encode('utf-8')!r} + bytes((13, 10)))\n"
+        "sys.stdout.buffer.write(json.dumps({'padding': 'x' * 100_000}).encode('utf-8') + bytes((13, 10)))\n"
+        "sys.stdout.buffer.flush()\n"
+        f"sys.stderr.buffer.write({stderr!r})\n"
+        "sys.stderr.buffer.flush()\n" + HUNG_CHILD_SOURCE,
+        marker,
+    ]
+    # Exercise the real receiver and process owner with a tiny Python child;
+    # Cargo policy/capacity and compilation are separate proof obligations.
+    monkeypatch.setattr(gate, "admit_cargo_build", lambda *args, **kwargs: None)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            gate.cargo_build(command, tmp_path, 5)
+        result = caught.value.guarded_result
+        assert result.timed_out and result.descendants_closed
+        assert (tmp_path / "build.stdout.jsonl").read_bytes() == stdout
+        assert (tmp_path / "build.stderr.log").read_bytes() == stderr
+        assert caught.value.output == stdout.decode("utf-8").replace("\r\n", "\n")
+        assert list(
+            gate.truth.compiler_artifacts(
+                caught.value.output, source_context="compiler-only"
+            )
+        ) == [compiler_artifact]
+        assert caught.value.stderr.startswith(
+            stderr.decode("utf-8").replace("\r\n", "\n")
+        )
+        assert "memory_guard: timeout after" in caught.value.stderr
+    finally:
+        stop_test_processes_carrying(marker)
+
+
 @pytest.mark.parametrize("output_owner", ["explicit", "queue", "proof-plan"])
 def test_default_profile_is_shipping_before_build(
     monkeypatch, tmp_path, output_owner, selected_cargo
@@ -650,9 +767,17 @@ def test_default_profile_is_shipping_before_build(
                     stdout='{"packages":[]}', stderr="", returncode=0
                 )
             seen.append(argv)
-            return SimpleNamespace(
+            result = SimpleNamespace(
                 stdout="", stderr="intentional stopped build", returncode=1
             )
+            assert kwargs["capture_tail_bytes"] is None
+            Path(kwargs["stdout_capture_path"]).write_text(
+                result.stdout, encoding="utf-8"
+            )
+            Path(kwargs["stderr_capture_path"]).write_text(
+                result.stderr, encoding="utf-8"
+            )
+            return result
 
     monkeypatch.setattr(gate, "COMMANDS", Commands())
     assert gate.main(argv) == 1
@@ -946,6 +1071,13 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
             elif argv[:2] == [selected_cargo, "test"]:
                 builds.append(argv)
                 result.stdout = "\n".join(json.dumps(item) for item in artifacts)
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
             elif argv[0] in {selected_cargo, "rustc"}:
                 result.stdout = "fixture-toolchain"
             else:
@@ -1146,7 +1278,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
 ):
     import json
     from types import SimpleNamespace
-    from molt.cli import runtime_cargo_plan
+    from molt.cli import runtime_cargo_plan, runtime_tool_selection
 
     # This policy executes the native production host, not Node. Preserve an
     # unrelated Node setting rather than imposing the counter policy on it.
@@ -1252,7 +1384,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         assert env["NODE_OPTIONS"] == inherited_node_options
         # Exercise the real planner's executable-selection boundary, while its
         # SDK/configuration/compiler work remains outside this host unit test.
-        selected = runtime_cargo_plan._tool_path(
+        selected = runtime_tool_selection.runtime_tool_path(
             cargo_command[0], root=root, env=env, role="cargo"
         )
         assert selected == Path(selected_cargo)
@@ -1304,6 +1436,13 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                     result.returncode = 9
                 if mutation == "changed_before" and package == "molt-wasm-host":
                     wasm.write_bytes(b"changed")
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
             else:
                 children.append(argv)
                 assert kwargs["env"]["MOLT_WASI_LIBTEST_ARTIFACT"] == str(wasm)
@@ -1624,6 +1763,13 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
                     else [{"reason": "build-finished", "success": True}]
                 )
                 result.stdout = "\n".join(json.dumps(row) for row in rows)
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
             else:
                 assert discovered
                 split = argv.index("--")
@@ -1727,7 +1873,7 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
     flags,
     refused,
 ):
-    from molt.cli import runtime_cargo_plan as plan
+    from molt.cli import runtime_cargo_plan as plan, runtime_tool_selection
     from molt import rust_toolchain
     from tools.proof_queue_pkg import toolchain_capture
 
@@ -1736,7 +1882,9 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
     monkeypatch.setattr(
         plan, "capture_cargo_configuration_inputs", lambda *a, **kw: captured
     )
-    monkeypatch.setattr(plan, "_tool_path", lambda *a, **kw: tmp_path / "rustc")
+    monkeypatch.setattr(
+        runtime_tool_selection, "runtime_tool_path", lambda *a, **kw: tmp_path / "rustc"
+    )
     monkeypatch.setattr(rust_toolchain, "resolve_rustup_proxy", lambda path, **kw: path)
 
     def capture(**kw):
@@ -1767,6 +1915,10 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
                     [
                         "-p",
                         "molt-runtime",
+                        "-p",
+                        "molt-runtime-core",
+                        "-p",
+                        "molt-runtime-math",
                         "--lib",
                         "--no-run",
                         "--message-format=json",
@@ -1912,3 +2064,165 @@ def test_runtime_cargo_operation_c_declaration_preserves_supersets_and_roles():
     (provider,) = cargo_operations("zlib-wasi", "dev-fast", cargo="cargo")
     assert provider.admits_native_requirements({})
     assert not provider.admits_native_requirements({"target": ["c"]})
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "missing_image", "foreign_package", "missing_case", "ignored"]
+)
+def test_semantic_build_owns_exact_satellite_controls_in_one_cargo_lifecycle(
+    monkeypatch, tmp_path, mutation, selected_cargo
+):
+    import json
+    from types import SimpleNamespace
+
+    # Independent semantic names, not a copy of the policy's descriptor object.
+    required = {
+        "molt_runtime_core": {
+            "numeric_ratio::tests::ratio_to_f64_matches_cpython_bit_exact",
+            "numeric_ratio::tests::ratio_to_f64_overflows_past_f64_max",
+            "numeric_ratio::tests::binary64_rounding_boundaries",
+        },
+        "molt_runtime_math": {
+            "math::statistics_reduction_tests::exact_reduction_oracles_and_primitive_cost"
+        },
+    }
+    inventories = {
+        "molt_runtime": [
+            *gate.isolated_for(gate.sys.platform),
+            *gate.probes_for(gate.sys.platform),
+            *REMAINDER,
+        ],
+        **{
+            target: [*sorted(cases), "unselected::other_case"]
+            for target, cases in required.items()
+        },
+    }
+    images = {target: support.make_image(tmp_path / target) for target in inventories}
+    metadata, abi = abi_compiler_fixture(gate.ROOT, [], artifact_root=tmp_path)
+    artifacts = [abi]
+    for package, target, kind in (
+        ("molt-runtime", "molt_runtime", "rlib"),
+        ("molt-runtime-core", "molt_runtime_core", "lib"),
+        ("molt-runtime-math", "molt_runtime_math", "lib"),
+    ):
+        if mutation == "foreign_package" and target == "molt_runtime_core":
+            package = "foreign-core"
+        package_id = f"path+file:///fixture/{package}#{package}@0.1.0"
+        metadata["packages"].append(
+            {"id": package_id, "name": package, "version": "0.1.0"}
+        )
+        artifacts.append(
+            {
+                "reason": "compiler-artifact",
+                "package_id": package_id,
+                "target": {"name": target, "kind": [kind]},
+                "profile": {"test": True, "debug_assertions": False, "opt_level": "z"},
+                "features": [],
+                "executable": str(images[target]),
+            }
+        )
+    if mutation == "missing_image":
+        artifacts.pop()
+    if mutation == "missing_case":
+        inventories["molt_runtime_core"].remove(
+            sorted(required["molt_runtime_core"])[0]
+        )
+    monkeypatch.setattr(gate.truth, "git_source_identity", lambda: support.SOURCE)
+    discoveries, builds, children = [], [], []
+
+    def discover(binary, args, **kwargs):
+        target = next(name for name, path in images.items() if str(path) == binary)
+        discoveries.append(target)
+        return inventories[target], SimpleNamespace(succeeded=True, receipt=lambda: {})
+
+    monkeypatch.setattr(gate.runner, "listed_tests", discover)
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            result = SimpleNamespace(stdout="", stderr="", returncode=0)
+            if argv[:2] == [selected_cargo, "metadata"]:
+                result.stdout = json.dumps(metadata)
+            elif argv[:2] == [selected_cargo, "test"]:
+                builds.append(argv)
+                result.stdout = "\n".join(json.dumps(row) for row in artifacts)
+                assert kwargs["capture_tail_bytes"] is None
+                Path(kwargs["stdout_capture_path"]).write_text(
+                    result.stdout, encoding="utf-8"
+                )
+                Path(kwargs["stderr_capture_path"]).write_text(
+                    result.stderr, encoding="utf-8"
+                )
+            elif argv[0] in {selected_cargo, "rustc"}:
+                result.stdout = "fixture-toolchain"
+            else:
+                # All required images and inventories precede the first child.
+                assert set(discoveries) == set(inventories)
+                split = argv.index("--")
+                binary, args = Path(argv[split + 1]), argv[split + 2 :]
+                target = next(name for name, path in images.items() if path == binary)
+                if target in required:
+                    cases = required[target]
+                    assert args[0] == "--exact"
+                    assert set(args[1:-2]) == cases
+                    assert args[-2:] == ["--test-threads=1", "--nocapture"]
+                else:
+                    cases = {args[1]} if args[0] == "--exact" else set(REMAINDER)
+                required_passed = [
+                    argv[i + 1]
+                    for i, value in enumerate(argv[:-1])
+                    if value == "--require-passed-test"
+                ]
+                assert set(required_passed) == (cases if target in required else set())
+                directory = Path(argv[argv.index("--receipt-dir") + 1])
+                owners = [name for name in cases if name in support.MODES]
+                receipt = support.binary_receipt(
+                    directory,
+                    binary,
+                    sorted(cases),
+                    support.family_records(binary, owners),
+                    args=args,
+                    retained_root=Path(argv[argv.index("--retained-root") + 1]),
+                    run_id=argv[argv.index("--run-id") + 1],
+                    invocation=f"child-{len(children)}",
+                    statuses=(
+                        {sorted(cases)[0]: "ignored"}
+                        if mutation == "ignored" and target == "molt_runtime_core"
+                        else None
+                    ),
+                )
+                receipt["required_passed_tests"] = required_passed
+                gate.runner.write_receipt(directory / "receipt.json", receipt)
+                children.append((target, cases))
+            return result
+
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    root = tmp_path / "receipts"
+    code = gate.main(["--receipt-root", str(root)])
+    aggregate = json.loads(
+        next(root.glob("*/aggregate.json")).read_text(encoding="utf-8")
+    )
+    assert len(builds) == 1
+    assert builds[0][builds[0].index("--profile") + 1] == "release-output"
+    assert [
+        builds[0][i + 1] for i, arg in enumerate(builds[0][:-1]) if arg == "-p"
+    ] == ["molt-runtime", "molt-runtime-core", "molt-runtime-math"]
+    if mutation:
+        assert code == 1 and aggregate["status"] == "failed"
+        assert "passed_test_count" not in aggregate
+        if mutation != "ignored":
+            assert children == []
+        else:
+            assert "verification_error" in aggregate["images"]["molt_runtime_core"]
+            assert "passed_test_count" not in aggregate["images"]["molt_runtime_core"]
+        return
+    assert code == 0 and aggregate["status"] == "success"
+    for target, cases in required.items():
+        image = aggregate["images"][target]
+        assert image["passed_test_count"] == len(cases)
+        assert {row["identity"] for row in image["unrun"]} == {"unselected::other_case"}
+        assert (
+            image["unrun"][0]["reason"] == "outside declared satellite numeric controls"
+        )
+    assert aggregate["passed_test_count"] == (
+        len(gate.isolated_for(gate.sys.platform)) + len(REMAINDER) + 4
+    )

@@ -184,7 +184,6 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
             env=kwargs["env"],
             cargo_command=kwargs["cargo_command"],
             requested_target=kwargs["requested_target"],
-            environment_transform=kwargs["environment_transform"],
             rustflags_transform=kwargs["rustflags_transform"],
         )
         plans.append(plan)
@@ -192,11 +191,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
 
     def identity(*_args, **kwargs):
         assert kwargs["cargo_plan"].command == plans[-1].command
-        assert {
-            key: value
-            for key, value in kwargs["cargo_plan"].environment.items()
-            if key != "MOLT_BUILD_PYTHON_SIGNATURE"
-        } == dict(plans[-1].environment)
+        assert kwargs["cargo_plan"].environment == plans[-1].environment
         assert tuple(kwargs["cargo_command"]) == plans[-1].command
         captures.append(tuple(kwargs["runtime_features"]))
         events.append("capture")
@@ -207,11 +202,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
 
     def cargo(plan, **_kwargs):
         assert plan.command == plans[-1].command
-        assert plan.environment["MOLT_BUILD_PYTHON_SIGNATURE"] == canonical_json_sha256(
-            native_runtime_staticlib_identity().toolchain_manifest.to_dict()["payload"][
-                "toolchain"
-            ]["tools"]["build_python"]
-        )
+        assert plan is plans[-1]
         cargo_runs.append(plan)
         scratch = runtime._runtime_cargo_scratch_lib_path(current.coordinate, None)
         scratch.parent.mkdir(parents=True, exist_ok=True)
@@ -305,20 +296,25 @@ def test_native_runtime_cargo_plan_carries_the_build_rust_cpu_policy(native_buil
     baseline = native_build.plans[-1]
 
     # Cargo executes the flags the plan pins, never a process RUSTFLAGS.
-    assert native.rustflags[-2:] == ("-C", "target-cpu=native")
-    assert native.environment["CARGO_ENCODED_RUSTFLAGS"].endswith("target-cpu=native")
+    assert ("-C", "target-cpu=native") in tuple(
+        zip(native.rustflags, native.rustflags[1:])
+    )
+    assert native.rustflags[-2:] == (
+        f"--remap-path-prefix={native.project_root}=/molt/source",
+        f"--remap-path-prefix={native.build_directory_base}=/molt/build",
+    )
+    assert native.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(
+        native.rustflags
+    )
     assert "target-cpu=native" not in baseline.rustflags
     assert "target-cpu=native" not in baseline.environment["CARGO_ENCODED_RUSTFLAGS"]
 
 
-def test_native_runtime_python_signature_reaches_the_actual_executor(native_build):
+def test_native_runtime_executes_the_exact_admitted_cargo_plan(native_build):
     ok, _state, _timings = native_build.run()
     assert ok and len(native_build.cargo_runs) == 1
-    assert native_build.cargo_runs[0].environment["MOLT_BUILD_PYTHON_SIGNATURE"]
-    executable = Path(native_build.cargo_runs[0].environment["MOLT_BUILD_PYTHON"])
-    assert executable.is_absolute()
-    assert executable.samefile(sys.executable)
-    assert "MOLT_BUILD_PYTHON_SIGNATURE" not in native_build.plans[0].environment
+    assert native_build.cargo_runs[0] is native_build.plans[0]
+    assert "MOLT_BUILD_PYTHON_SIGNATURE" not in native_build.cargo_runs[0].environment
     assert len(native_build.captures) == 2
 
 
@@ -327,7 +323,7 @@ def test_native_build_captures_twice_and_retained_admission_once(native_build):
     assert ok and len(native_build.captures) == 2
     assert native_build.events[0] == "lock"
     assert len(native_build.cargo_runs) == 1
-    assert native_build.cargo_runs[0] is not native_build.plans[0]
+    assert native_build.cargo_runs[0] is native_build.plans[0]
     assert "MOLT_BUILD_PYTHON_SIGNATURE" not in native_build.plans[0].environment
     assert {
         "runtime_lib_identity_initial",

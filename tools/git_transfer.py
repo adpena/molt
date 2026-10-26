@@ -44,6 +44,8 @@ import os
 from pathlib import Path
 import shlex
 
+from tools.git_identity import add_git_config
+
 TRANSFER_STALL_SECONDS = 120
 
 _TRANSFER_SUBCOMMANDS = frozenset({"fetch", "push", "pull", "clone", "ls-remote"})
@@ -189,7 +191,7 @@ def bound_transfer(
         bounded["SSH_ASKPASS"] = ""
         bounded["SSH_ASKPASS_REQUIRE"] = "never"
         bounded["GCM_INTERACTIVE"] = "never"
-        _add_config(bounded, "credential.interactive", "false")
+        add_git_config(bounded, "credential.interactive", "false")
     if not attended and watch_output:
         if transfer.subcommand in _PROGRESS_SUBCOMMANDS:
             argv.insert(transfer.index + 1, "--progress")
@@ -211,8 +213,8 @@ def _bound_http(env: dict[str, str], settings: TransportSettings) -> None:
     # URL-scoped http.<url>.lowSpeed* still wins for its URL, since Git's
     # urlmatch prefers the more specific key; a plain one is tightened here.
     tightest = _tighter_low_speed(settings.low_speed_limit, settings.low_speed_time)
-    _add_config(env, "http.lowSpeedLimit", tightest[0])
-    _add_config(env, "http.lowSpeedTime", tightest[1])
+    add_git_config(env, "http.lowSpeedLimit", tightest[0])
+    add_git_config(env, "http.lowSpeedTime", tightest[1])
 
 
 def _tighter_low_speed(limit: int | None, seconds: int | None) -> tuple[str, str]:
@@ -256,7 +258,7 @@ def _bound_ssh(
     )
     env["GIT_SSH_COMMAND"] = f"{prefix} {user_command}"
     # Git's variant probe would run the wrapper with -G; it is OpenSSH.
-    _add_config(env, "ssh.variant", "ssh")
+    add_git_config(env, "ssh.variant", "ssh")
 
 
 def _runs_ssh(command: str) -> bool:
@@ -265,14 +267,6 @@ def _runs_ssh(command: str) -> bool:
     except ValueError:
         return False
     return bool(words) and Path(words[0]).name.lower() in _SSH_PROGRAMS
-
-
-def _add_config(env: dict[str, str], key: str, value: str) -> None:
-    """Add one ``git -c`` setting through Git's environment protocol."""
-    count = _whole_number(env.get("GIT_CONFIG_COUNT")) or 0
-    env[f"GIT_CONFIG_KEY_{count}"] = key
-    env[f"GIT_CONFIG_VALUE_{count}"] = value
-    env["GIT_CONFIG_COUNT"] = str(count + 1)
 
 
 SSH_WRAPPER = Path(__file__).with_name("git_ssh_bound.sh")

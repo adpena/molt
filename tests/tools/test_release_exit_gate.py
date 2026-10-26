@@ -1301,6 +1301,113 @@ def test_source_findings_read_the_ledger_blob_at_the_source_revision(
         gate.source_findings(ledger_repo, tree)
 
 
+@pytest.mark.parametrize("replaced_kind", ["commit", "tree", "ledger", "version"])
+def test_source_facts_ignore_replacement_commit_tree_and_blobs(
+    ledger_repo: Path, monkeypatch, replaced_kind
+) -> None:
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
+    opened = _commit_ledger(ledger_repo, OPEN_LEDGER, PYPROJECT_V1)
+    original_blob = _git(ledger_repo, "rev-parse", f"{opened}:{LEDGER}")
+    closed = _commit_ledger(ledger_repo, CLOSED_LEDGER, PYPROJECT_V0)
+    suffix = {
+        "commit": "",
+        "tree": "^{tree}",
+        "ledger": f":{LEDGER}",
+        "version": ":pyproject.toml",
+    }[replaced_kind]
+    original = _git(ledger_repo, "rev-parse", opened + suffix)
+    replacement = _git(ledger_repo, "rev-parse", closed + suffix)
+    _git(ledger_repo, "replace", original, replacement)
+    redirected = "pyproject.toml" if replaced_kind == "version" else LEDGER
+    expected_redirect = PYPROJECT_V0 if replaced_kind == "version" else CLOSED_LEDGER
+    assert (
+        _git(ledger_repo, "show", f"{opened}:{redirected}") == expected_redirect.strip()
+    )
+    facts = release_exit_gate.source_findings(ledger_repo, opened)
+    assert facts.status.open_keys == ("HF-7", "V1-3")
+    assert facts.holding_findings == ("HF-7", "V1-3")
+    assert facts.ledger_blob == original_blob
+    assert facts.version == "1.0.0"
+
+
+@pytest.mark.parametrize("consumer", ["criterion", "exit", "workflow"])
+def test_release_clean_source_refuses_replacement_hidden_changes(
+    ledger_repo: Path, tmp_path: Path, monkeypatch, consumer
+) -> None:
+    from tools.release import release_authority
+
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
+    declared = _commit_ledger(ledger_repo, OPEN_LEDGER, PYPROJECT_V1)
+    replacement = _commit_ledger(ledger_repo, CLOSED_LEDGER, PYPROJECT_V0)
+    _git(ledger_repo, "update-ref", "refs/heads/declared", declared)
+    _git(ledger_repo, "symbolic-ref", "HEAD", "refs/heads/declared")
+    _git(ledger_repo, "update-ref", "refs/remotes/origin/main", declared)
+    _git(ledger_repo, "tag", "v0.9.0", declared)
+    _git(ledger_repo, "replace", declared, replacement)
+    assert _git(ledger_repo, "status", "--porcelain=v1") == ""
+    with pytest.raises(ValueError, match="clean"):
+        if consumer == "criterion":
+            release_exit_gate.rcr.assert_clean_source(
+                repo_root=ledger_repo,
+                source_sha=declared,
+                output_path=tmp_path / "receipt.json",
+            )
+        elif consumer == "exit":
+            release_exit_gate._assert_clean_landed_source(ledger_repo, declared)
+        else:
+            monkeypatch.setattr(release_authority, "ROOT", ledger_repo)
+            release_authority.resolve_source("0.9.0", declared)
+
+
+@pytest.mark.parametrize("consumer", ["exit", "workflow", "performance"])
+@pytest.mark.parametrize("overlay", ["replacement", "legacy-local", "legacy-env"])
+def test_release_ancestry_uses_original_graph_and_current_origin(
+    ledger_repo: Path, monkeypatch, consumer, overlay
+) -> None:
+    from tools.release import release_authority
+
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
+    monkeypatch.delenv("GIT_GRAFT_FILE", raising=False)
+    main = _commit_ledger(ledger_repo, OPEN_LEDGER, PYPROJECT_V1)
+    tree = _git(ledger_repo, "rev-parse", f"{main}^{{tree}}")
+    source = _git(ledger_repo, "commit-tree", tree, "-m", "independent root")
+    _git(ledger_repo, "update-ref", "refs/heads/source", source)
+    _git(ledger_repo, "symbolic-ref", "HEAD", "refs/heads/source")
+    _git(ledger_repo, "tag", "v1.0.0", source)
+    _git(ledger_repo, "update-ref", "refs/remotes/origin/main", main)
+    if consumer == "performance":
+        pa = release_exit_gate.pa
+        monkeypatch.setattr(pa, "REPO_ROOT", ledger_repo)
+        assert pa.current_origin_main_rev() == main
+        assert pa.git_rev_is_ancestor_of_origin(source) is False
+        _git(ledger_repo, "update-ref", "refs/remotes/origin/main", source)
+        assert pa.current_origin_main_rev() == source
+        assert pa.git_rev_is_ancestor_of_origin(source) is True
+        _git(ledger_repo, "update-ref", "refs/remotes/origin/main", main)
+        assert pa.git_rev_is_ancestor_of_origin(source) is False
+    if overlay == "replacement":
+        _git(ledger_repo, "replace", "--graft", main, source)
+    else:
+        grafts = (
+            ledger_repo / ".git" / "info" / "grafts"
+            if overlay == "legacy-local"
+            else ledger_repo.parent / "external-grafts"
+        )
+        grafts.write_text(f"{main} {source}\n", encoding="ascii")
+        if overlay == "legacy-env":
+            monkeypatch.setenv("GIT_GRAFT_FILE", str(grafts))
+    assert _git(ledger_repo, "merge-base", "--is-ancestor", source, main) == ""
+    if consumer == "performance":
+        assert release_exit_gate.pa.git_rev_is_ancestor_of_origin(source) is False
+    elif consumer == "exit":
+        with pytest.raises(ValueError, match="not landed"):
+            release_exit_gate._assert_clean_landed_source(ledger_repo, source)
+    else:
+        monkeypatch.setattr(release_authority, "ROOT", ledger_repo)
+        with pytest.raises(subprocess.CalledProcessError):
+            release_authority.resolve_source("1.0.0", source)
+
+
 def test_open_finding_at_the_source_refuses_pass_and_names_every_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

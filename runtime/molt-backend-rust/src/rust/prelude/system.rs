@@ -8,6 +8,8 @@ impl RustBackend {
         let needs_module_cache = used("molt_module_cache_get(")
             || used("molt_module_cache_set(")
             || used("molt_module_cache_del(");
+        self.output
+            .push_str(include_str!("../python_version_policy_generated.rs"));
         self.output.push_str(
                 r#"#[derive(Clone)]
 struct MoltSysVersionInfo {
@@ -20,12 +22,13 @@ struct MoltSysVersionInfo {
 
 impl Default for MoltSysVersionInfo {
     fn default() -> Self {
+        let (major, minor, micro, releaselevel, serial) = DEFAULT_TARGET_PYTHON_VERSION;
         Self {
-            major: 3,
-            minor: 12,
-            micro: 0,
-            releaselevel: "final".to_string(),
-            serial: 0,
+            major,
+            minor,
+            micro,
+            releaselevel: releaselevel.to_string(),
+            serial,
         }
     }
 }
@@ -82,12 +85,13 @@ fn molt_sys_arg_str(args: &[MoltValue], index: usize, default: &str) -> String {
 
 fn molt_sys_set_version_info(args: &mut Vec<MoltValue>) -> MoltValue {
     assert_eq!(args.len(), 5, "sys version metadata requires five fields");
+    let (major, minor, micro, level, serial) = DEFAULT_TARGET_PYTHON_VERSION;
     let next = MoltSysVersionInfo {
-        major: molt_sys_arg_int(args, 0, 3),
-        minor: molt_sys_arg_int(args, 1, 12),
-        micro: molt_sys_arg_int(args, 2, 0),
-        releaselevel: molt_sys_arg_str(args, 3, "final"),
-        serial: molt_sys_arg_int(args, 4, 0),
+        major: molt_sys_arg_int(args, 0, major),
+        minor: molt_sys_arg_int(args, 1, minor),
+        micro: molt_sys_arg_int(args, 2, micro),
+        releaselevel: molt_sys_arg_str(args, 3, level),
+        serial: molt_sys_arg_int(args, 4, serial),
     };
     *molt_sys_version_state().lock().unwrap() = next;
     MoltValue::None

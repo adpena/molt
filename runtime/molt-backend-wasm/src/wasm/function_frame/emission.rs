@@ -2,7 +2,7 @@ use super::WasmFunctionFrame;
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
-use crate::wasm::constant_ops::{emit_const_anchor_materialization, emit_release_const_anchors};
+use crate::wasm::constant_ops::emit_const_anchor_materialization;
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
@@ -85,9 +85,17 @@ impl WasmFunctionFrame {
         import_ids: &TrackedImportIds,
         const_str_scratch_segment: DataSegmentRef,
     ) {
-        for anchor in &self.const_anchors {
+        if let Some(region) = self.const_anchor_region {
+            region.emit_allocate(func, import_ids, reloc_enabled);
+            func.instruction(&Instruction::LocalGet(region.base()));
+            func.instruction(&Instruction::I64Eqz);
+            func.instruction(&Instruction::If(BlockType::Empty));
+            // Allocation failed before any frame-entry attempt. Use the same
+            // return scope as constructor failure; zero base skips all loads.
             self.const_cache.emit_none(func);
-            func.instruction(&Instruction::LocalSet(anchor.local));
+            self.emit_return(func, 1);
+            func.instruction(&Instruction::End);
+            region.emit_initialize(func);
         }
 
         for anchor in &self.const_anchors {
@@ -95,12 +103,12 @@ impl WasmFunctionFrame {
                 backend,
                 func,
                 &anchor.op,
-                &self.locals,
                 func_index,
                 reloc_enabled,
                 import_ids,
                 const_str_scratch_segment,
-                anchor.local,
+                self.const_anchor_region(),
+                anchor.slot,
             );
             let policy = WasmConstOpPolicy::for_op(&anchor.op)
                 .unwrap_or_else(|| panic!("missing WASM const policy for {}", anchor.op.kind));
@@ -117,17 +125,9 @@ impl WasmFunctionFrame {
                 self.emit_return(func, 1);
                 func.instruction(&Instruction::End);
             }
-            if let Some((source, aliases)) = anchor.scratch_aliases.split_first() {
-                for alias in aliases {
-                    func.instruction(&Instruction::LocalGet(source.ptr_local()));
-                    func.instruction(&Instruction::LocalSet(alias.ptr_local()));
-                    func.instruction(&Instruction::LocalGet(source.len_local()));
-                    func.instruction(&Instruction::LocalSet(alias.len_local()));
-                }
-            }
         }
 
-        if self.control_mode.needs_dispatch() {
+        if self.control_plan.is_some() {
             for (local_idx, bits) in self.const_seed_locals.iter().copied() {
                 func.instruction(&Instruction::I64Const(bits));
                 func.instruction(&Instruction::LocalSet(local_idx));
@@ -392,7 +392,9 @@ impl WasmFunctionFrame {
         import_ids: &TrackedImportIds,
         reloc_enabled: bool,
     ) {
-        emit_release_const_anchors(func, self.const_anchor_locals(), import_ids, reloc_enabled);
+        if let Some(region) = self.const_anchor_region {
+            region.emit_release(func, import_ids, reloc_enabled);
+        }
         if let Some(attempted) = self.owned_frame_attempt {
             func.instruction(&Instruction::LocalGet(attempted));
             func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));

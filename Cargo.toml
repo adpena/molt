@@ -2,6 +2,7 @@
 members = [
     "runtime/molt-runtime",
     "runtime/molt-runtime-core",
+    "runtime/molt-runtime-capi",
     "runtime/molt-runtime-net",
     "runtime/molt-runtime-asyncio",
     "runtime/molt-runtime-math",
@@ -32,6 +33,7 @@ members = [
     "runtime/molt-artifact-publish",
     "runtime/molt-host-process",
     "runtime/molt-backend-native",
+    "runtime/molt-llvm-link",
     "runtime/molt-jit",
     "runtime/molt-backend-luau",
     "runtime/molt-backend-rust",

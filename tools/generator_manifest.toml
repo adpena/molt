@@ -41,12 +41,13 @@
 # Field contract (per [[generator]] row):
 #   outputs         list  — the files the generator writes. The audit treats
 #                           each as generated and skips it.
-#   output_family   str   — instead of outputs, for a generator whose files are
+#   output_family   str   — for a generator whose files are
 #                           not fixed and sit among hand-written sources;
 #                           generated_outputs() enumerates them at run time.
 #                           The audit does not treat them as generated, so the
 #                           debt they record stays counted. A row declares
-#                           exactly one of a non-empty outputs or output_family.
+#                           at least one of a non-empty outputs or output_family;
+#                           mixed producers also list their fixed outputs.
 #   check_mode      bool  — the generator supports `--check`. MUST be true for a
 #                           non-discovery authority (the meta-gate fails otherwise).
 #   ci_checkable    bool  — default true. false ⇒ the source is not reproducible
@@ -129,12 +130,12 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_unicode_width.py"
-outputs = ["runtime/molt-runtime/src/object/unicode_width_generated.rs"]
-source = "src/molt/target_python.py + installed matching CPython unicodedata databases + tools/generator_io.py"
+outputs = ["runtime/molt-obj-model/src/unicode_generated.rs"]
+source = "config/cpython_stdlib_snapshot.json (receipted Objects/unicodetype_db.h, Modules/unicodedata_db.h, Tools/unicode/makeunicodedata.py, Objects/unicodectype.c and Modules/unicodedata.c at config/cpython_regrtest_sources.toml revisions) + config/cpython_regrtest_sources.toml + tools/gen_stdlib_module_union.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_unicode_width.py --check"
 idempotent = true
-toolchains = ["target-pythons"]
+toolchains = []
 sync_test = "tests/test_runtime_build_python.py"
 discovery_only = false
 
@@ -230,11 +231,14 @@ tool = "tools/gen_host_capabilities.py"
 outputs = [
   "src/molt/_host_capabilities_generated.py",
   "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
+  "runtime/molt-obj-model/src/python_version_generated.rs",
   "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
+  "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
   "wasm/host_capabilities_generated.js",
   "docs/spec/areas/security/host_capabilities.generated.md",
 ]
-source = "runtime/host_capabilities.toml + src/molt/target_python.py + tools/generator_io.py"
+source = "runtime/host_capabilities.toml + src/molt/target_python.py + src/molt/target_python_policy.py + src/molt/_python_release_generated.py + tools/generator_io.py"
+upstream_generators = ["tools/gen_stdlib_module_union.py"]
 check_mode = true
 check_command = "tools/gen_host_capabilities.py --check"
 toolchains = ["rustfmt"]
@@ -423,7 +427,7 @@ outputs = [
   "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
   "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
 ]
-source = "runtime/molt-stdlib-text/src/codec_registry.rs + tools/generator_io.py"
+source = "runtime/molt-stdlib-text/src/codec_registry.rs + config/codec_aliases.toml + src/molt/stdlib/encodings/*.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_codecs.py --check"
 toolchains = ["rustfmt"]
@@ -538,7 +542,7 @@ tool = "tools/check_runtime_bridge_test_stubs.py"
 outputs = [
   "runtime/molt-runtime-core/src/bridge_test_stubs.rs",
 ]
-source = "runtime/molt-runtime-core/src/lib.rs + runtime/molt-cpython-abi/src/native_custody.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
+source = "runtime/molt-runtime-core/src/lib.rs + runtime/molt-runtime-capi/src/lib.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/check_runtime_bridge_test_stubs.py --check"
@@ -549,9 +553,9 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_stdlib_module_union.py"
-outputs = []
-output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending source pins produce no module baseline"
-source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI, release-note and token source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + tools/generator_io.py"
+outputs = ["src/molt/_python_release_generated.py"]
+output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending pins produce no module baseline"
+source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI, release-note and token source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + src/molt/target_python_policy.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_stdlib_module_union.py --check"
@@ -660,7 +664,7 @@ outputs = [
   "runtime/molt-backend-luau/src/luau/numeric_error_policy_generated.rs",
   "runtime/molt-backend-rust/src/rust/numeric_error_policy_generated.rs",
 ]
-source = "config/python_numeric_errors.toml + src/molt/target_python.py + tools/generator_io.py"
+source = "config/python_numeric_errors.toml + config/cpython_regrtest_sources.toml + tools/cpython_regrtest.py + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_python_numeric_errors.py --check"

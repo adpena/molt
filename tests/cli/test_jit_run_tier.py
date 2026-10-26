@@ -289,6 +289,13 @@ _HEADER = {
 }
 
 
+def _program(ir):
+    from molt.cli.backend_ir_transport import BackendIrProgram
+    from molt.cli.cache_keys import FunctionDigests
+
+    return BackendIrProgram(ir, FunctionDigests())
+
+
 @_POSIX_ONLY
 def test_a_jit_image_holds_its_header_and_program_in_one_file(tmp_path: Path) -> None:
     import json
@@ -298,15 +305,22 @@ def test_a_jit_image_holds_its_header_and_program_in_one_file(tmp_path: Path) ->
     from molt.cli.jit_image import JIT_IMAGE_MARKER, publish_jit_image
 
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
-    ir = {"functions": [], "profile": None}
-    publish_jit_image(image, runner=_ECHO_RUNNER, header=_HEADER, ir=ir)
+    function = {"name": "molt_main", "ops": [{"kind": "ret_void"}]}
+    ir = {"functions": [function], "profile": None}
+    publish_jit_image(image, runner=_ECHO_RUNNER, header=_HEADER, program=_program(ir))
     interpreter, marker, rest = image.read_bytes().split(b"\n", 2)
     assert interpreter == b"#!/bin/echo --image"
     name, header_len, program_len = marker.decode().split(" ")
     assert name == JIT_IMAGE_MARKER
     assert len(rest) == int(header_len) + int(program_len)
     assert json.loads(rest[: int(header_len)]) == _HEADER
-    assert msgspec.msgpack.decode(rest[int(header_len) :]) == ir
+    # The program is a content-addressed lease that ships every body.
+    lease = msgspec.msgpack.decode(rest[int(header_len) :])
+    assert lease["profile"] is None
+    assert [msgspec.msgpack.decode(body) for body in lease["function_bodies"]] == [
+        function
+    ]
+    assert lease["function_digests"] == b"".join(_program(ir).digests)
     assert os.access(image, os.X_OK)
 
 
@@ -322,7 +336,10 @@ def test_a_jit_image_is_executable_through_the_umask(
     previous = os.umask(umask)
     try:
         publish_jit_image(
-            image, runner=_ECHO_RUNNER, header=_HEADER, ir={"functions": []}
+            image,
+            runner=_ECHO_RUNNER,
+            header=_HEADER,
+            program=_program({"functions": []}),
         )
     finally:
         os.umask(previous)
@@ -342,7 +359,9 @@ def test_executing_a_jit_image_starts_its_runner_with_no_shell(
     from tests.process_guard_common import run_guarded_test_process
 
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
-    publish_jit_image(image, runner=_ECHO_RUNNER, header=_HEADER, ir={"functions": []})
+    publish_jit_image(
+        image, runner=_ECHO_RUNNER, header=_HEADER, program=_program({"functions": []})
+    )
     arguments = ["it's", "$HOME", "--start-receipt", "*"]
     completed = run_guarded_test_process(
         [str(image), *arguments], capture_output=True, text=True, check=True
@@ -373,7 +392,9 @@ def test_a_runner_path_the_kernel_cannot_start_is_refused(
 
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
     with pytest.raises(ValueError) as refused:
-        publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
+        publish_jit_image(
+            image, runner=runner, header=_HEADER, program=_program({"functions": []})
+        )
     assert reason in str(refused.value)
     assert not image.exists()
 
@@ -392,7 +413,9 @@ def test_a_jit_image_stops_when_its_runner_generation_is_gone(
 
     runner = tmp_path / "evicted" / "molt-jit"
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
-    publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
+    publish_jit_image(
+        image, runner=runner, header=_HEADER, program=_program({"functions": []})
+    )
     completed = run_guarded_test_process(
         ["/bin/sh", "-c", '"$0"', str(image)],
         capture_output=True,

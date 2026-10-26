@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 
 import pytest
@@ -41,7 +43,9 @@ def test_explicit_native_source_selection_controls_emitted_functions(
 ) -> None:
     generator = SimpleTIRGenerator(
         module_name="nativepkg.support",
-        native_support_function_roots=roots,
+        module_body_selection=(
+            None if roots is None else ModuleBodySelection.from_requested_roots(roots)
+        ),
         native_callable_exports={
             "nativepkg.ops.run": {
                 "module": "nativepkg.ops",

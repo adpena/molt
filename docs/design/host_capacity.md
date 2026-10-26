@@ -115,6 +115,37 @@ An independent audit (2026-10-17) found more:
    parent divides its memory slice among the units it admits and exports it;
    a child sizes itself against the smaller of its slice and live memory.
 
+### Landing test resource cohorts
+
+One unfiltered pytest invocation previously inherited every selected owner's
+toolchain requirements and the largest worker-memory envelope. In the retained
+429255673 landing, 5,517 tests used three workers under a 20.11 GiB tree cap;
+the largest observed worker was 1.50 GiB. The declared 6.25 GiB envelope remains
+necessary for its owning family. It must not restrict unrelated test families.
+The aggregate Cargo requirement also left a 56.73-second serialized tail.
+These observations identify an opportunity, not a demonstrated speedup.
+
+The selection authority uses the existing memory-ownership trie and typed
+test declarations. Overlapping requests form indivisible components. Each
+component owns the union of its contributors' prerequisites. Independent
+components with the same prerequisites share one cohort, which takes their
+largest declared memory envelope. Separating every memory value repeated
+startup and cleanup without a commensurate wall-time gain in the matched
+workload; this coarser grouping trades worker concurrency for fewer starts.
+The existing Ninja-pool and pytest-xdist precedents above motivate retaining
+resource custody on the work that needs it. Literal targets, explicit
+selectors and parameter IDs keep their meaning. Repository-entry spelling
+and symlink refusal occur at admission; queries and grouping perform linear
+trie work without filesystem access or test collection.
+
+The existing executor still bounds pytest sessions and serializes all gates
+that can mutate the shared Cargo target. This adds no scheduler or result
+cache. Extra interpreter/collection cost, actual parallelism, memory peaks,
+case-union equality and matched wall time must qualify the partition before
+claiming an improvement. All costs and checks are development-side; emitted
+programs are unaffected. Hierarchical CPU allocation, complete evidence reuse
+and broader HF-334 release obligations remain separate work.
+
 ### Guard delegation
 
 An inherited tree limit is an allocation ceiling, not a new machine. Keep the
@@ -177,7 +208,7 @@ guest binary pays none of this test-observer cost.
 ## Storage
 
 Capacity includes where state lives. The frontend's source record store
-(`toolchain_source_records/source_records.<schema digest>.sqlite`) sits under the artifact
+(`toolchain_source_records/<schema digest>/records.sqlite`) sits under the artifact
 root, which on the primary Mac is an external USB volume: 285 MB holding
 50,315 records of 5 compiler generations, interleaved. A keyed lookup costs
 2.26 ms cold and 0.034 ms warm, and discovery for `import scipy.ndimage` reads
@@ -187,13 +218,20 @@ more under suite load (that test took 43 s alone and 295 s in its suite).
 Small, hot metadata belongs on the fastest local volume with room for it, and
 bulk artifacts (Cargo targets, linked outputs) on the large one. The canonical
 source-record authority instead uses one shared four-kind
-SQLite table with generation retirement and global byte/age retention; see
+SQLite table whose row recency and global byte/age budget own retention; compiler
+generation remains read provenance. Short metadata snapshots release the WAL
+before eviction work; see
 [the record contract](../spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md). The
 previous per-generation-file proposal is retired: retained scan-key replays
 under HF-285 do not establish a persistent-storage bottleneck. Frontend
 operations and live observations own connections; a weak identity registry
 releases abandoned roots rather than retaining a connection per historical
 root. Volume choice still requires measurement per machine.
+
+[SQLite WAL checkpointing](https://sqlite.org/wal.html#checkpointing) requires
+readers to release their snapshots before the WAL can reset. Maintenance uses
+short page snapshots and the existing inventory count as a finite observation
+budget; synchronous NORMAL and automatic checkpointing remain enabled.
 
 ## Migration
 

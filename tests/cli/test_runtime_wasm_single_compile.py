@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from tests.runtime_build_identity_helper import (
     runtime_cargo_environment_inputs,
+    publication_executor,
     runtime_cargo_stdout,
 )
 
@@ -37,6 +38,12 @@ from typing import cast
 import pytest
 from molt.capability_manifest import CapabilityManifest
 from molt.cli.python_source_closure import LocalPythonSourceClosure
+from molt.cli.runtime_identity_schema import (
+    RuntimePublicationAction,
+    RuntimePublicationInput,
+    RuntimePublicationTransform,
+    runtime_publication_action,
+)
 
 from molt.cli import artifact_state as runtime_artifact_state
 from molt.cli.backend_cache_setup import _build_cache_variant
@@ -69,7 +76,6 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
     runtime_wasm_generation_path,
 )
-from molt.exact_json import canonical_json_sha256
 from tests.executable_test_support import native_executable_donor, write_mock_executable
 from tests.process_guard_common import current_thread_only
 from tests.runtime_build_identity_helper import (
@@ -96,8 +102,20 @@ _COMMON = dict(
 )
 
 
+@pytest.fixture(autouse=True)
+def admitted_validator_for_pair_controls(monkeypatch, tmp_path):
+    from molt.cli import runtime_wasm_validation
+    from tests.runtime_build_identity_helper import wasm_validator_discovery
+
+    # Pair layout, cache and publication tests do not own tool provisioning.
+    discovery = wasm_validator_discovery(tmp_path)
+    monkeypatch.setattr(
+        runtime_wasm_validation, "require_pinned_tool", lambda _name: discovery
+    )
+
+
 @pytest.mark.parametrize("cache", ["valid", "missing", "corrupt"])
-def test_disabled_pair_build_still_admits_hydrated_generation(
+def test_disabled_pair_build_still_admits_cached_generation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache: str
 ) -> None:
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
@@ -132,30 +150,38 @@ def test_disabled_pair_build_still_admits_hydrated_generation(
         ),
     )
 
-    def hydrate(**_kwargs):
-        if cache == "missing":
-            return None
+    from molt.cli import runtime_wasm_cache as pair_cache
+
+    monkeypatch.setattr(
+        pair_cache, "_shared_runtime_wasm_cache_root", lambda: tmp_path / "cache"
+    )
+    if cache != "missing":
         source_shared, source_reloc = (
             tmp_path / "shared-source",
             tmp_path / "reloc-source",
         )
         source_shared.write_bytes(b"shared")
         source_reloc.write_bytes(b"reloc")
-        generation = publish_runtime_wasm_generation(
-            shared_path,
-            reloc_path,
-            shared_identity=shared,
-            reloc_identity=reloc,
-            source_shared=source_shared,
-            source_reloc=source_reloc,
-            cargo_environment=runtime_cargo_environment_inputs(),
+        assert (
+            pair_cache.publish_runtime_wasm_pair_to_shared_cache(
+                shared=source_shared,
+                reloc=source_reloc,
+                shared_identity=shared,
+                reloc_identity=reloc,
+                cargo_environment=runtime_cargo_environment_inputs(),
+            )
+            is None
         )
         if cache == "corrupt":
-            generation.shared.write_bytes(b"corrupt")
-        return generation
-
+            _, _, manifest = pair_cache._cached_pair_paths(shared)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            (manifest.parent / payload["receipts"]["shared"]["member"]).write_bytes(
+                b"corrupt"
+            )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "hydrate_runtime_wasm_pair_from_shared_cache", hydrate
+        pair_cache,
+        "publish_runtime_wasm_generation",
+        lambda **_k: pytest.fail("ordinary cache admission published a runtime"),
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build,
@@ -191,9 +217,7 @@ def test_disabled_pair_build_still_admits_hydrated_generation(
         assert outcome is runtime_wasm_pair_build._PairBuildOutcome.FAILED
         failure = state.runtime_wasm_build_failure
         assert failure is not None
-        assert failure.stage == (
-            "rebuild-policy" if cache == "missing" else "shared-cache-hydration"
-        )
+        assert failure.stage == "rebuild-policy"
 
 
 @pytest.fixture(autouse=True)
@@ -682,27 +706,18 @@ def test_synthetic_runtime_writes_require_typed_fixture_ownership(
     assert not (tmp_path / "runtime-link-inputs").exists()
 
 
-def test_runtime_publication_authority_is_exact_and_content_addressed(
-    tmp_path: Path,
-) -> None:
-    root = _compiler_root()
-    authority_paths = {
-        path.relative_to(root).as_posix()
-        for path in runtime_build_identity.runtime_build_tooling_paths(root)
-    }
-    for relative in authority_paths:
-        source = root / relative
-        destination = tmp_path / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(source.read_bytes())
-
-    _, before = runtime_build_identity._capture_runtime_build_trees(tmp_path, ())
-    assert before["file_count"] == len(authority_paths)
-
-    changed = tmp_path / "src/molt/cli/runtime_wasm_build.py"
-    changed.write_bytes(changed.read_bytes() + b"\n# publication mutation\n")
-    _, after = runtime_build_identity._capture_runtime_build_trees(tmp_path, ())
-    assert after["digest"] != before["digest"]
+def test_unconsumed_tooling_does_not_change_runtime_source_identity(tmp_path):
+    source = tmp_path / "runtime/lib.rs"
+    source.parent.mkdir()
+    source.write_text("pub fn runtime() {}", encoding="utf-8")
+    roots = (("source/runtime", source.parent),)
+    before = runtime_build_identity._capture_runtime_build_sources(tmp_path, roots)
+    planner = tmp_path / "src/molt/cli/runtime_wasm_build.py"
+    planner.parent.mkdir(parents=True)
+    planner.write_text("# changed orchestration", encoding="utf-8")
+    assert (
+        runtime_build_identity._capture_runtime_build_sources(tmp_path, roots) == before
+    )
 
 
 def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> None:
@@ -930,11 +945,11 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         output_path: Path,
         json_output: bool,
         link_timeout: float | None,
-        export_link_args: tuple[str, ...],
+        publication: RuntimePublicationAction,
         **_kwargs: object,
     ) -> bool:
         del json_output, link_timeout
-        linked.append((staticlib_path, export_link_args))
+        linked.append((staticlib_path, publication.link_exports))
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\0asm\x01\0\0\0")
         return True
@@ -960,7 +975,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         cargo_environment=runtime_cargo_environment_inputs(),
     )
     assert linked and linked[0][0] == staticlib
-    assert "link-arg=--export-if-defined=molt_typing_get_origin" in linked[0][1]
+    assert "--export-if-defined=molt_typing_get_origin" in linked[0][1]
 
 
 def test_relocation_root_feature_closure_reports_one_cargo_compile(
@@ -1060,12 +1075,14 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
         runtime_wasm_pair_build, "_build_state_root", lambda _root: state_root
     )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "_inspect_wasm_binary", lambda _path: "valid"
-    )
-    monkeypatch.setattr(
         runtime_wasm_pair_build,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda _path: True,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_shared_runtime_wasm_validation_error",
+        lambda _path: None,
     )
 
     _reset_runtime_wasm_build_timings()
@@ -1141,9 +1158,17 @@ def _test_pair_context(
 
 
 @pytest.mark.parametrize("producer", ["pair", "cpython-abi"])
-def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
+def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
     producer, tmp_path, monkeypatch, _synthetic_cargo_plan
 ):
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("WASM Rust build admitted Python"),
+    )
+
     class AtExecutor(Exception):
         pass
 
@@ -1158,7 +1183,7 @@ def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
     root = _compiler_root()
     generator_environment = {
         **os.environ,
-        "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, root),
+        "MOLT_BUILD_PYTHON": "missing-rust-generator",
     }
     for owner in (runtime_wasm_build_spec, runtime_wasm_build_support):
         monkeypatch.setattr(owner, "_cargo_build_env", lambda: generator_environment)
@@ -1194,9 +1219,7 @@ def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
                 profile_dir=ctx.shared_spec.profile_dir,
                 json_output=True,
             )
-        python = captured.shared.toolchain_manifest.to_dict()["payload"]["toolchain"][
-            "tools"
-        ]["build_python"]
+        assert observed[0] is plan
     else:
         captured = native_runtime_staticlib_identity(target_triple="wasm32-wasip1")
         monkeypatch.setattr(
@@ -1221,16 +1244,13 @@ def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
                 cargo_profile="release",
                 cargo_timeout=5,
             )
-        python = captured.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
-            "build_python"
-        ]
+
     assert len(observed) == 1
-    executable = Path(observed[0].environment["MOLT_BUILD_PYTHON"])
-    assert executable.is_absolute()
-    assert executable.samefile(sys.executable)
-    assert observed[0].environment["MOLT_BUILD_PYTHON_SIGNATURE"] == (
-        canonical_json_sha256(python)
+    assert (
+        observed[0].environment["MOLT_BUILD_PYTHON"]
+        == generator_environment["MOLT_BUILD_PYTHON"]
     )
+    assert "MOLT_BUILD_PYTHON_SIGNATURE" not in observed[0].environment
 
 
 def test_pair_member_staging_is_identity_local_and_never_process_cached(
@@ -1481,12 +1501,14 @@ def test_combined_build_requires_and_fingerprints_only_reported_crate_types(
         runtime_wasm_pair_build, "_build_state_root", lambda _root: state_root
     )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "_inspect_wasm_binary", lambda _path: "valid"
-    )
-    monkeypatch.setattr(
         runtime_wasm_pair_build,
         "_is_valid_shared_runtime_wasm_artifact",
         lambda _path: True,
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build,
+        "_shared_runtime_wasm_validation_error",
+        lambda _path: None,
     )
 
     assert (
@@ -1638,14 +1660,6 @@ def _empty_app_export_contract(tmp_path: Path) -> Path:
     return path
 
 
-def _record_ensure(name: str, ret: bool, log: list[str]):
-    def _ensure(required_exports=None) -> bool:  # noqa: ANN001
-        log.append(name)
-        return ret
-
-    return _ensure
-
-
 def _run_app_ensure_routing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1653,6 +1667,7 @@ def _run_app_ensure_routing(
     freestanding: bool,
     both_callable: bool,
     both_ret: bool,
+    recorded_failure: str | None = None,
 ) -> list[str]:
     """Drive `_prepare_non_native_build_result` up to the runtime-ensure branch.
 
@@ -1676,6 +1691,26 @@ def _run_app_ensure_routing(
     runtime_shared_missing = tmp_path / "molt_runtime.wasm"
 
     log: list[str] = []
+    state = _RuntimeArtifactState(
+        runtime_wasm=runtime_shared_missing,
+        runtime_reloc_wasm=runtime_reloc,
+        runtime_wasm_selected=runtime_shared_missing,
+        runtime_reloc_wasm_selected=runtime_reloc,
+    )
+
+    def ensure(required_exports=None):
+        log.append("both")
+        if recorded_failure is not None:
+            from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
+
+            return record_runtime_wasm_failure(
+                state,
+                project_root=tmp_path,
+                stage="validator-readiness",
+                summary=recorded_failure,
+            )
+        return both_ret
+
     _result, err = nno._prepare_non_native_build_result(
         validate_inputs=lambda: None,
         resolved_capability_policy=CapabilityManifest().resolve(),
@@ -1688,15 +1723,8 @@ def _run_app_ensure_routing(
         linked_output_path=None,
         output_artifact=output_wasm,
         json_output=True,
-        runtime_state=_RuntimeArtifactState(
-            runtime_wasm=runtime_shared_missing,
-            runtime_reloc_wasm=runtime_reloc,
-            runtime_wasm_selected=runtime_shared_missing,
-            runtime_reloc_wasm_selected=runtime_reloc,
-        ),
-        ensure_runtime_wasm_both=(
-            _record_ensure("both", both_ret, log) if both_callable else None
-        ),
+        runtime_state=state,
+        ensure_runtime_wasm_both=ensure if both_callable else None,
         runtime_cargo_profile="release",
         molt_root=tmp_path,
         split_runtime=True,
@@ -1706,6 +1734,25 @@ def _run_app_ensure_routing(
     # Every configured scenario short-circuits before a successful build.
     assert err is not None
     return log
+
+
+@pytest.mark.parametrize("freestanding", [False, True])
+def test_linked_app_json_preserves_runtime_validator_failure(
+    monkeypatch, tmp_path, capsys, freestanding
+):
+    reason = "wasm-tools validation prerequisite is unavailable"
+    assert _run_app_ensure_routing(
+        monkeypatch,
+        tmp_path,
+        freestanding=freestanding,
+        both_callable=True,
+        both_ret=False,
+        recorded_failure=reason,
+    ) == ["both"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errors"] == [reason]
+    assert payload["data"]["runtime_wasm_failure"]["summary"] == reason
+    assert payload["data"]["runtime_wasm_failure"]["stage"] == "validator-readiness"
 
 
 def test_app_path_default_routes_through_combined_ensure(
@@ -2471,3 +2518,121 @@ def test_generation_linking_parse_failure_has_one_admission_reason(
         ("reloc", "linking")
     ]
     assert "Unexpected EOF" in details["issues"][0]["detail"]
+
+
+@pytest.mark.parametrize("changed_order", [False, True])
+def test_reloc_link_executes_captured_publication_action(
+    monkeypatch, tmp_path, changed_order
+):
+    """The identity's operand order, not a second linker recipe, drives execution."""
+    shared, reloc = _specs(_compiler_root())
+    plan = reloc.cargo_plan
+    assert plan is not None and plan.wasi_c_abi is not None
+    action = runtime_wasm_build_support.runtime_reloc_publication_action(
+        ("-C", "link-arg=--export-if-defined=molt_add"),
+        module_name="selected-runtime.wasm",
+        executor=publication_executor(RuntimePublicationTransform.RELOC),
+    )
+    if changed_order:
+        tokens = list(action.link_command)
+        a, b = (
+            tokens.index(RuntimePublicationInput.LIBC),
+            tokens.index(RuntimePublicationInput.COMPILER_RT),
+        )
+        tokens[a], tokens[b] = tokens[b], tokens[a]
+        action = replace(action, link_command=tuple(tokens))
+    source, output = tmp_path / "runtime.a", tmp_path / "runtime.wasm"
+    source.write_bytes(b"!<arch>\n")
+    emitted = bytes.fromhex("0061736d01000000010401600000030201000a040102000b")
+    from molt.cli import runtime_wasm_validation
+
+    monkeypatch.setattr(
+        runtime_wasm_validation, "_validate_wasm_structural", lambda _path: None
+    )
+    seen = []
+
+    def execute(command, **kwargs):
+        seen.append(command)
+        assert command[1] == "-r"
+        assert (
+            Path(command[2][1:]).read_text(encoding="utf-8").strip()
+            == "--export-if-defined=molt_add"
+        )
+        expected_archives = [
+            str(plan.wasi_c_abi.path("libc")),
+            str(plan.wasi_c_abi.path("compiler_rt")),
+        ]
+        if changed_order:
+            expected_archives.reverse()
+        assert command[3:-1] == [
+            "--whole-archive",
+            str(source),
+            str(plan.wasi_c_abi.path("long_double")),
+            "--no-whole-archive",
+            *expected_archives,
+            "--soname=selected-runtime.wasm",
+            "-o",
+        ]
+        assert kwargs["env"] is plan.environment
+        Path(command[-1]).write_bytes(emitted)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(runtime_wasm_build_support, "_run_completed_command", execute)
+    assert runtime_wasm_build_support._link_runtime_staticlib_to_reloc_wasm(
+        staticlib_path=source,
+        output_path=output,
+        json_output=True,
+        link_timeout=1,
+        cargo_plan=plan,
+        publication=action,
+    )
+    assert len(seen) == 1 and output.read_bytes() == emitted
+
+
+def test_shared_finalizer_consumes_identity_publication(monkeypatch, tmp_path):
+    shared, _ = _specs(_compiler_root())
+    identity = runtime_build_identity.RuntimeBuildIdentity.from_dict(
+        shared.fingerprint["build_identity"]
+    )
+    action = runtime_publication_action(identity)
+    output = tmp_path / "runtime.wasm"
+    output.write_bytes(b"\0asm\x01\0\0\0")
+    from types import SimpleNamespace
+
+    seen = []
+
+    def transform(path, **kwargs):
+        seen.append((path, kwargs))
+        return SimpleNamespace(
+            input_bytes=8,
+            output_bytes=8,
+            scanned_bytes=8,
+            written_bytes=0,
+            max_buffer_bytes=0,
+            changed=False,
+        )
+
+    monkeypatch.setattr(
+        runtime_wasm_build, "transform_wasm_publication_file", transform
+    )
+    ctx = runtime_wasm_build._RuntimeWasmMemberFinalizer(
+        output,
+        False,
+        True,
+        1,
+        tmp_path,
+        None,
+        shared,
+        runtime_cargo_environment_inputs(shared.cargo_plan.environment),
+    )
+    assert ctx.finalize_publication()
+    assert seen == [
+        (
+            output,
+            {
+                "rename_map": dict(action.export_renames),
+                "final_artifact": True,
+                "preserve_debug": action.preserve_debug,
+            },
+        )
+    ]

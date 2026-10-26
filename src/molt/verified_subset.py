@@ -13,7 +13,7 @@ from molt.file_publication import is_link_like
 from molt.portable_paths import portable_relative_path
 from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
 from molt.source_root import compiler_source_root
-from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
@@ -179,7 +179,7 @@ def capture_verified_subset_policy(
         raise ValueError("verified-subset policy schema or keys are not exact")
     if tuple(SUPPORTED_CPYTHON_VERSIONS) != SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
         raise ValueError(
-            "generated release Python versions drifted from TargetPythonVersion"
+            "generated release Python versions drifted from target admission policy"
         )
     build_profiles = _exact_string_list(
         document.get("build_profiles"), field="build_profiles"

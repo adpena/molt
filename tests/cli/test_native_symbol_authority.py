@@ -354,10 +354,10 @@ def test_successful_archive_can_contain_empty_members(
     empty_name = member[1:-1] if member.startswith("(") else member[1:]
     members = (
         StaticArchiveMemberIdentity(
-            0, StaticArchiveMember("member.o", 68, 1), "a" * 64
+            0, StaticArchiveMember("member.o", 68, 1, "short-or-gnu"), "a" * 64
         ),
         StaticArchiveMemberIdentity(
-            1, StaticArchiveMember(empty_name, 130, 1), "b" * 64
+            1, StaticArchiveMember(empty_name, 130, 1, "short-or-gnu"), "b" * 64
         ),
     )
     result = subprocess.CompletedProcess(
@@ -804,6 +804,7 @@ def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
             tier="module",
             source_key="key",
             cache_path=None,
+            stdlib_object_path=None,
             warnings=[],
             artifact_contract=contract,
         ),
@@ -1226,6 +1227,7 @@ def test_backend_publication_rejects_swapped_source_before_copy(
             tier="module",
             source_key="key",
             cache_path=None,
+            stdlib_object_path=None,
             warnings=warnings,
             artifact_contract=contract,
         )
@@ -1241,7 +1243,7 @@ def test_backend_publication_rejects_swapped_source_before_copy(
             function_cache_path=None,
             warnings=warnings,
             artifact_contract=contract,
-        )
+        ).error
         assert error and "source changed" in error
     assert destination.read_text(encoding="utf-8") == "prior output"
 
@@ -1273,7 +1275,7 @@ def test_immutable_publication_returns_admitted_identity_without_source_alias(tm
         destination,
         artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
         warnings=[],
-    )
+    ).identity
     assert identity.path == destination
     assert identity.sha256 == hashlib.sha256(payload.encode()).hexdigest()
     cache.verify_stable_regular_file_identity(identity, label="published cache")
@@ -1820,6 +1822,7 @@ def test_cached_artifact_input_failures_are_misses(
             tier="module",
             source_key="key",
             cache_path=None,
+            stdlib_object_path=None,
             warnings=warnings,
             artifact_contract=contract,
         )

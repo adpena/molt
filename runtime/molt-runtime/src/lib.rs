@@ -728,7 +728,7 @@ pub(crate) use crate::object::layout::{
     property_get_bits, property_set_bits, range_len_i64, range_start_bits, range_step_bits,
     range_stop_bits, reversed_index, reversed_set_index, reversed_target_bits, seq_vec_ptr,
     slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits,
-    super_type_bits, union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
+    super_type_bits, union_type_args_bits, zip_iters_ptr, zip_strict_bits,
 };
 #[cfg(test)]
 pub(crate) use crate::object::layout::{function_dict_bits, function_set_dict_bits};

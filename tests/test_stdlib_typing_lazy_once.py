@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,48 +9,11 @@ import pytest
 
 
 @pytest.fixture
-def molt_typing(monkeypatch: pytest.MonkeyPatch):
-    intrinsic_module = types.ModuleType("_intrinsics")
+def molt_typing():
+    from tools.profile_typing_lazy_once import typing_source_modules
 
-    def rlock_acquire(lock, blocking: bool, timeout: float) -> bool:
-        if timeout == -1.0:
-            return lock.acquire(blocking)
-        return lock.acquire(blocking, timeout)
-
-    def require_intrinsic(name: str):
-        if name == "molt_generic_alias_new":
-            return lambda origin, args: types.GenericAlias(origin, args)
-        if name == "molt_typing_type_param":
-            return lambda factory, name: factory(name)
-        if name == "molt_rlock_new":
-            return __import__("_thread").RLock
-        if name == "molt_rlock_acquire":
-            return rlock_acquire
-        if name == "molt_rlock_release":
-            return lambda lock: lock.release()
-        if name.startswith("molt_protocol_"):
-            return lambda *_args, **_kwargs: None
-        raise RuntimeError("runtime inactive")
-
-    intrinsic_module.require_intrinsic = require_intrinsic  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "_intrinsics", intrinsic_module)
-    typing_path = Path(__file__).parents[1] / "src/molt/stdlib/typing.py"
-    spec = importlib.util.spec_from_file_location("_molt_typing_lazy_once", typing_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    previous_type_attrs = {
-        name: getattr(types, name, None) for name in ("Any", "Iterable")
-    }
-    previous_presence = {name: hasattr(types, name) for name in previous_type_attrs}
-    try:
-        spec.loader.exec_module(module)
+    with typing_source_modules(Path(__file__).parents[1]) as (module, _collections):
         yield module
-    finally:
-        for name, value in previous_type_attrs.items():
-            if previous_presence[name]:
-                setattr(types, name, value)
-            elif hasattr(types, name):
-                delattr(types, name)
 
 
 def test_type_alias_concurrent_first_read_evaluates_once(molt_typing) -> None:
@@ -183,3 +144,164 @@ def test_lazy_type_lock_mix_distributes_address_and_handle_families(
         molt_typing._lazy_type_lock_index(identity << shift) for identity in range(4096)
     }
     assert indexes == set(range(molt_typing._LAZY_TYPE_LOCK_MASK + 1))
+
+
+@pytest.mark.parametrize("factory_name", ["TypeVar", "ParamSpec", "TypeVarTuple"])
+def test_type_parameter_producer_supplies_real_generic_alias_protocol(
+    molt_typing, factory_name
+) -> None:
+    # The host's real GenericAlias is an independent consumer of Molt's Python
+    # parameter producer. It cannot pass through a Rust class-name heuristic.
+    parameter = getattr(molt_typing, factory_name)("T")
+    parameter_class = type(parameter)
+    original_name = parameter_class.__name__
+    original_qualname = parameter_class.__qualname__
+    parameter_class.__name__ = parameter_class.__qualname__ = "RenamedParameter"
+    try:
+        alias = types.GenericAlias(tuple, (parameter, parameter))
+        assert len(alias.__parameters__) == 1
+        assert alias.__parameters__[0] is parameter
+        if factory_name == "ParamSpec":
+            assert molt_typing._collections_abc_module._is_param_expr(parameter)
+    finally:
+        # Special type attributes need restoration through their descriptors;
+        # they need not be present in the class dictionary on every CPython.
+        parameter_class.__name__ = original_name
+        parameter_class.__qualname__ = original_qualname
+
+
+@pytest.mark.parametrize(
+    ("factory_name", "arguments"),
+    [("TypeVar", (int, None)), ("ParamSpec", ([int, str], Ellipsis))],
+)
+def test_type_parameter_substitution_protocol_has_real_behavior(
+    molt_typing, factory_name, arguments
+) -> None:
+    import typing as host_typing
+
+    expected_parameter = getattr(host_typing, factory_name)("T")
+    actual_parameter = getattr(molt_typing, factory_name)("T")
+    for argument in arguments:
+        expected = expected_parameter.__typing_subst__(argument)
+        actual = actual_parameter.__typing_subst__(argument)
+        assert actual == expected
+
+
+def test_typevartuple_substitution_protocol_preserves_bare_rejection(molt_typing):
+    import typing as host_typing
+
+    with pytest.raises(TypeError) as expected:
+        host_typing.TypeVarTuple("Ts").__typing_subst__(int)
+    with pytest.raises(TypeError) as actual:
+        molt_typing.TypeVarTuple("Ts").__typing_subst__(int)
+    assert str(actual.value) == str(expected.value)
+
+
+def test_callable_and_paramspec_share_actual_selected_type_identity(molt_typing):
+    import _collections_abc as host_collections
+    import typing as host_typing
+
+    selected_collections = molt_typing._collections_abc_module
+    assert selected_collections is not host_collections
+    assert molt_typing is not host_typing
+    actual_p = molt_typing.ParamSpec("P")
+    actual_q = molt_typing.ParamSpec("Q")
+    actual_concat = molt_typing.Concatenate[int, actual_q]
+    expected_p = host_typing.ParamSpec("P")
+    expected_q = host_typing.ParamSpec("Q")
+    expected_concat = host_typing.Concatenate[int, expected_q]
+    for actual_arg, expected_arg in (
+        (actual_q, expected_q),
+        (actual_concat, expected_concat),
+    ):
+        assert actual_p.__typing_subst__(actual_arg) is actual_arg
+        assert expected_p.__typing_subst__(expected_arg) is expected_arg
+        actual = selected_collections.Callable[actual_arg, str]
+        expected = host_collections.Callable[expected_arg, str]
+        assert actual.__args__[0] is actual_arg
+        assert expected.__args__[0] is expected_arg
+        assert len(actual.__parameters__) == len(expected.__parameters__)
+    renamed = type("ParamSpec", (), {"__module__": "typing"})()
+    assert not selected_collections._is_param_expr(renamed)
+    assert not selected_collections._is_param_expr(host_typing.ParamSpec("Foreign"))
+
+
+def test_typing_collection_uses_python_equality_and_iterable_metadata(molt_typing):
+    import typing as host_typing
+
+    host_collect = getattr(host_typing, "_collect_type_parameters", None)
+    if host_collect is None:
+        host_collect = host_typing._collect_parameters
+
+    class EqualParameter:
+        def __eq__(self, other):
+            return isinstance(other, EqualParameter)
+
+    first, second = EqualParameter(), EqualParameter()
+
+    class Provider:
+        __parameters__ = [first, second]
+
+    actual = molt_typing._collect_type_parameters((Provider(),))
+    expected = host_collect((Provider(),))
+    assert len(actual) == len(expected) == 1
+    assert actual[0] is expected[0] is first
+
+
+def test_typing_residual_collection_preserves_default_laziness(molt_typing):
+    if not molt_typing._SUPPORTS_TYPEVAR_DEFAULTS:
+        assert not hasattr(molt_typing.TypeVar("T"), "has_default")
+        return
+    import typing as host_typing
+
+    calls = []
+    defaulted = molt_typing._TypeVar("D", False, False, None, (), pep695=True)
+    molt_typing._molt_type_param_set_evaluators(
+        defaulted,
+        None,
+        None,
+        lambda _format: calls.append("default") or {"__default__": int},
+    )
+    required = molt_typing.TypeVar("R")
+    host_defaulted = host_typing.TypeVar("D", default=int)
+    host_required = host_typing.TypeVar("R")
+    assert molt_typing.Tuple[defaulted, required].__parameters__ == (
+        defaulted,
+        required,
+    )
+    assert host_typing.Tuple[host_defaulted, host_required].__parameters__ == (
+        host_defaulted,
+        host_required,
+    )
+    with pytest.raises(TypeError) as actual:
+        molt_typing.Generic[defaulted, required]
+    with pytest.raises(TypeError) as expected:
+        host_typing.Generic[host_defaulted, host_required]
+    assert str(actual.value) == str(expected.value)
+    assert calls == []
+
+
+def test_typing_tuple_collection_has_independent_default_order_boundaries(molt_typing):
+    import typing as host_typing
+
+    if not molt_typing._SUPPORTS_TYPEVAR_DEFAULTS:
+        assert molt_typing._collect_type_parameters(((molt_typing.TypeVar("T"),),))
+        return
+    actual_d = molt_typing.TypeVar("D", default=int)
+    actual_r = molt_typing.TypeVar("R")
+    host_d = host_typing.TypeVar("D", default=int)
+    host_r = host_typing.TypeVar("R")
+    actual = molt_typing._collect_type_parameters(((actual_d, actual_r),))
+    expected = host_typing._collect_type_parameters(((host_d, host_r),))
+    assert actual == (actual_d, actual_r)
+    assert expected == (host_d, host_r)
+
+    class Unpacked:
+        __typing_is_unpacked_typevartuple__ = True
+        __parameters__ = ()
+
+    with pytest.raises(TypeError) as actual_error:
+        molt_typing._collect_type_parameters((Unpacked(), actual_d))
+    with pytest.raises(TypeError) as expected_error:
+        host_typing._collect_type_parameters((Unpacked(), host_d))
+    assert str(actual_error.value) == str(expected_error.value)

@@ -26,6 +26,7 @@ mod class_lookup;
 mod field_sites;
 #[cfg(test)]
 mod field_sites_tests;
+mod generic_parameters;
 mod mutation;
 #[cfg(test)]
 mod native_dictionary_tests;
@@ -123,15 +124,6 @@ unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8])
     }
 }
 
-fn is_typing_param(_py: &PyToken<'_>, bits: u64) -> bool {
-    if obj_from_bits(bits).is_none() {
-        return false;
-    }
-    let class_bits = type_of_bits(_py, bits);
-    let name = class_name_for_error(class_bits);
-    matches!(name.as_str(), "_TypeVar" | "_ParamSpec" | "_TypeVarTuple")
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -157,6 +149,7 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
         };
 
         if needs_fallback {
+            let unicode = crate::object::ops::unicode_data(_py);
             let mut line = unsafe { code_firstlineno(code_ptr) };
             let mut start_col = 0i64;
             let mut end_col = 0i64;
@@ -173,7 +166,8 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
                 if let Some(raw_line) = lines.get(line_index).copied() {
                     let mut trimmed = raw_line.trim_end_matches(['\r', '\n']);
                     let starts_def = {
-                        let lead = trimmed.trim_start();
+                        let lead =
+                            trimmed.trim_start_matches(|ch: char| unicode.is_space(ch as u32));
                         lead.starts_with("def ") || lead.starts_with("async def ")
                     };
                     if starts_def {
@@ -187,7 +181,9 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
                     end_col = trimmed.chars().count() as i64;
                     if let Some(pos) = trimmed.find("return ") {
                         start_col = (pos + "return ".len()) as i64;
-                    } else if let Some(pos) = trimmed.chars().position(|ch| !ch.is_whitespace()) {
+                    } else if let Some(pos) =
+                        trimmed.chars().position(|ch| !unicode.is_space(ch as u32))
+                    {
                         start_col = pos as i64;
                     }
                     if line <= 0 {
@@ -787,33 +783,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
                     return Ok(Some(bits));
                 }
                 "__parameters__" => {
-                    let args_bits = generic_alias_args_bits(obj_ptr);
-                    let mut params: Vec<u64> = Vec::new();
-                    if let Some(args_ptr) = obj_from_bits(args_bits).as_ptr()
-                        && object_type_id(args_ptr) == TYPE_ID_TUPLE
-                    {
-                        let Some(args) = crate::object::seq_access::snapshot(
-                            _py,
-                            args_ptr,
-                            "sequence snapshot allocation failed",
-                        ) else {
-                            return Err(());
-                        };
-                        for &arg_bits in args.iter() {
-                            if !is_typing_param(_py, arg_bits) {
-                                continue;
-                            }
-                            if params.contains(&arg_bits) {
-                                continue;
-                            }
-                            params.push(arg_bits);
-                        }
-                    }
-                    let tuple_ptr = alloc_tuple(_py, &params);
-                    if tuple_ptr.is_null() {
-                        return Err(());
-                    }
-                    return Ok(Some(MoltObject::from_ptr(tuple_ptr).bits()));
+                    return generic_parameters::alias_parameters(_py, obj_ptr).map(Some);
                 }
                 "__unpacked__" => {
                     return Ok(Some(MoltObject::from_bool(false).bits()));
@@ -834,6 +804,9 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
                     let bits = union_type_args_bits(obj_ptr);
                     inc_ref_bits(_py, bits);
                     return Ok(Some(bits));
+                }
+                "__parameters__" => {
+                    return generic_parameters::alias_parameters(_py, obj_ptr).map(Some);
                 }
                 _ => {}
             }
@@ -2616,6 +2589,539 @@ mod tests {
             attributes_clear_runtime_state(_py, runtime_state(_py));
             dec_ref_bits(_py, instance_bits);
             dec_ref_bits(_py, class_bits);
+        });
+    }
+
+    #[test]
+    fn generic_alias_parameters_are_protocol_owned_cached_gc_edges() {
+        use crate::{alloc_generic_alias, alloc_tuple, builtin_classes, object_type_id};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = test_class_bits(
+                py,
+                b"RenamedParameter",
+                &[(b"__typing_subst__", MoltObject::none().bits())],
+            );
+            let first = unsafe { test_instance_bits(py, class) };
+            let second = unsafe { test_instance_bits(py, class) };
+            let arguments = alloc_tuple(py, &[second, first, second]);
+            assert!(!arguments.is_null());
+            let arguments = MoltObject::from_ptr(arguments).bits();
+            let before = refcount(first);
+            let alias = alloc_generic_alias(py, builtin_classes(py).tuple, arguments);
+            assert!(!alias.is_null());
+            let alias_bits = MoltObject::from_ptr(alias).bits();
+            let name = string_bits(py, b"__parameters__");
+            let parameters = super::molt_get_attr_name(alias_bits, name);
+            assert!(!crate::exception_pending(py));
+            let tuple = obj_from_bits(parameters).as_ptr().unwrap();
+            assert_eq!(unsafe { object_type_id(tuple) }, crate::TYPE_ID_TUPLE);
+            let values = unsafe { crate::object::seq_access::pin_tuple(py, tuple) }.unwrap();
+            assert_eq!(&*values, &[second, first]);
+            drop(values);
+            assert_eq!(refcount(first), before + 1);
+            let again = super::molt_get_attr_name(alias_bits, name);
+            assert_eq!(again, parameters, "success must cache the actual tuple");
+            let mut edges = Vec::new();
+            unsafe {
+                crate::object::heap_lifecycle::visit_payload_owned_values(py, alias, &mut |bits| {
+                    edges.push(bits)
+                });
+            }
+            assert!(
+                edges.contains(&parameters),
+                "cache must participate in canonical GC traversal"
+            );
+            dec_ref_bits(py, again);
+            dec_ref_bits(py, parameters);
+            dec_ref_bits(py, alias_bits);
+            assert_eq!(
+                refcount(first),
+                before,
+                "alias retirement must release its cache owner"
+            );
+            for bits in [name, arguments, second, first, class] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn generic_alias_c_api_constructs_the_same_parameter_owner() {
+        use molt_cpython_abi::api::{object, refcount};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            let class = test_class_bits(
+                py,
+                b"CParameter",
+                &[(b"__typing_subst__", MoltObject::none().bits())],
+            );
+            let parameter = unsafe { test_instance_bits(py, class) };
+            // The transaction and live GIL entry keep both borrowed runtime
+            // handles valid while the bridge creates their independent C owners.
+            let (origin, argument) = unsafe {
+                (
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(crate::builtin_classes(py).list),
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(parameter),
+                )
+            };
+            assert!(!origin.is_null() && !argument.is_null());
+            unsafe {
+                let alias = object::Py_GenericAlias(origin, argument);
+                assert!(!alias.is_null());
+                let managed = GLOBAL_BRIDGE
+                    .observed_handle_for_pyobj(alias)
+                    .expect("canonical runtime alias");
+                assert_eq!(
+                    crate::object_type_id(obj_from_bits(managed.bits()).as_ptr().unwrap()),
+                    crate::TYPE_ID_GENERIC_ALIAS
+                );
+                let parameters = object::PyObject_GetAttrString(alias, c"__parameters__".as_ptr());
+                assert!(!parameters.is_null());
+                let again = object::PyObject_GetAttrString(alias, c"__parameters__".as_ptr());
+                assert_eq!(parameters, again, "C consumers must share the cached tuple");
+                assert_eq!(
+                    molt_cpython_abi::api::sequences::PyTuple_Size(parameters),
+                    1
+                );
+                let actual = molt_cpython_abi::api::sequences::PyTuple_GetItem(parameters, 0);
+                assert_eq!(actual, argument);
+                for value in [again, parameters, alias, argument, origin] {
+                    refcount::Py_DECREF(value);
+                }
+            }
+            assert!(!crate::exception_pending(py));
+            dec_ref_bits(py, parameter);
+            dec_ref_bits(py, class);
+        });
+    }
+
+    #[test]
+    fn union_parameter_projection_reuses_the_native_collector_and_gc_owner() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = test_class_bits(
+                py,
+                b"UnionParameter",
+                &[(b"__typing_subst__", MoltObject::none().bits())],
+            );
+            let parameter = unsafe { test_instance_bits(py, class) };
+            let arguments = crate::alloc_tuple(py, &[parameter, parameter]);
+            assert!(!arguments.is_null());
+            let arguments = MoltObject::from_ptr(arguments).bits();
+            let union = crate::alloc_union_type(py, arguments);
+            assert!(!union.is_null());
+            let union_bits = MoltObject::from_ptr(union).bits();
+            let name = string_bits(py, b"__parameters__");
+            let parameters = super::molt_get_attr_name(union_bits, name);
+            assert!(!crate::exception_pending(py));
+            let values = unsafe {
+                crate::object::seq_access::pin_tuple(
+                    py,
+                    obj_from_bits(parameters).as_ptr().unwrap(),
+                )
+            }
+            .unwrap();
+            assert_eq!(&*values, &[parameter]);
+            drop(values);
+            let mut edges = Vec::new();
+            unsafe {
+                crate::object::heap_lifecycle::visit_payload_owned_values(py, union, &mut |bits| {
+                    edges.push(bits)
+                });
+            }
+            assert!(edges.contains(&parameters));
+            for bits in [parameters, name, union_bits, arguments, parameter, class] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    static PARAMETER_REENTRY_ALIAS: AtomicU64 = AtomicU64::new(0);
+    static PARAMETER_REENTRY_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    extern "C" fn reentrant_parameter_getter(_receiver: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let call = PARAMETER_REENTRY_CALLS.fetch_add(1, Ordering::Relaxed);
+            let value = if call == 0 {
+                let name = string_bits(py, b"__parameters__");
+                let inner = super::molt_get_attr_name(
+                    PARAMETER_REENTRY_ALIAS.load(Ordering::Acquire),
+                    name,
+                );
+                assert!(!crate::exception_pending(py));
+                dec_ref_bits(py, inner);
+                dec_ref_bits(py, name);
+                22
+            } else {
+                11
+            };
+            let tuple = crate::alloc_tuple(py, &[MoltObject::from_int(value).bits()]);
+            assert!(!tuple.is_null());
+            MoltObject::from_ptr(tuple).bits()
+        })
+    }
+
+    #[test]
+    fn reentrant_parameter_cache_uses_outer_completion_order() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            PARAMETER_REENTRY_CALLS.store(0, Ordering::Relaxed);
+            let getter = runtime_function_bits(
+                py,
+                "reentrant_parameter_getter",
+                reentrant_parameter_getter as *const (),
+                1,
+            );
+            let descriptor = crate::molt_property_new(
+                getter,
+                MoltObject::none().bits(),
+                MoltObject::none().bits(),
+            );
+            let class = test_class_bits(
+                py,
+                b"ReentrantParameterProvider",
+                &[(b"__parameters__", descriptor)],
+            );
+            let provider = unsafe { test_instance_bits(py, class) };
+            let arguments = crate::alloc_tuple(py, &[provider]);
+            assert!(!arguments.is_null());
+            let arguments = MoltObject::from_ptr(arguments).bits();
+            let alias = crate::alloc_generic_alias(py, crate::builtin_classes(py).list, arguments);
+            assert!(!alias.is_null());
+            let alias = MoltObject::from_ptr(alias).bits();
+            PARAMETER_REENTRY_ALIAS.store(alias, Ordering::Release);
+            let name = string_bits(py, b"__parameters__");
+            let first = super::molt_get_attr_name(alias, name);
+            assert!(!crate::exception_pending(py));
+            let second = super::molt_get_attr_name(alias, name);
+            assert_eq!(first, second);
+            let values = unsafe {
+                crate::object::seq_access::pin_tuple(py, obj_from_bits(first).as_ptr().unwrap())
+            }
+            .unwrap();
+            assert_eq!(
+                &*values,
+                &[MoltObject::from_int(22).bits()],
+                "matches actual CPython 3.12/3.14 reentry oracle"
+            );
+            assert_eq!(PARAMETER_REENTRY_CALLS.load(Ordering::Relaxed), 2);
+            drop(values);
+            PARAMETER_REENTRY_ALIAS.store(0, Ordering::Release);
+            for bits in [
+                second, first, name, alias, arguments, provider, class, descriptor, getter,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn parameter_cache_cycle_is_actually_reclaimed_after_metadata_replacement() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::state::metrics::enable_profile_for_test();
+        crate::with_gil_entry_nopanic!(py, {
+            let parameter = crate::alloc_list(py, &[]);
+            assert!(!parameter.is_null());
+            let parameter_bits = MoltObject::from_ptr(parameter).bits();
+            let metadata = crate::alloc_tuple(py, &[parameter_bits]);
+            assert!(!metadata.is_null());
+            let metadata = MoltObject::from_ptr(metadata).bits();
+            let class = test_class_bits(
+                py,
+                b"CacheOnlyCycleProvider",
+                &[(b"__parameters__", metadata)],
+            );
+            let provider = unsafe { test_instance_bits(py, class) };
+            let arguments = crate::alloc_tuple(py, &[provider]);
+            assert!(!arguments.is_null());
+            let arguments = MoltObject::from_ptr(arguments).bits();
+            let alias = crate::alloc_generic_alias(py, crate::builtin_classes(py).list, arguments);
+            assert!(!alias.is_null());
+            let alias_bits = MoltObject::from_ptr(alias).bits();
+            let name = string_bits(py, b"__parameters__");
+            let cached = super::molt_get_attr_name(alias_bits, name);
+            assert!(!crate::exception_pending(py));
+            let cache_pointer = obj_from_bits(cached).as_ptr().unwrap();
+            let values =
+                unsafe { crate::object::seq_access::pin_tuple(py, cache_pointer) }.unwrap();
+            assert_eq!(&*values, &[parameter_bits]);
+            drop(values);
+            // Remove the original provider edge. The only remaining path to
+            // parameter is alias -> cached tuple -> parameter -> alias.
+            let empty = crate::alloc_tuple(py, &[]);
+            assert!(!empty.is_null());
+            let empty = MoltObject::from_ptr(empty).bits();
+            let result = super::molt_set_attr_name(class, name, empty);
+            assert!(!crate::exception_pending(py));
+            dec_ref_bits(py, result);
+            // The setup lookup's descriptor snapshot separately owns the old
+            // metadata. Retire that TLS root before isolating the object cache;
+            // this does not clear the GenericAlias parameter cache.
+            crate::builtins::attr::clear_attr_tls_caches(py);
+            let result = crate::molt_list_append(parameter_bits, alias_bits);
+            dec_ref_bits(py, result);
+            for bits in [
+                cached,
+                metadata,
+                arguments,
+                provider,
+                alias_bits,
+                parameter_bits,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            for pointer in [alias, cache_pointer, parameter] {
+                assert!(unsafe { crate::object::gc::gc_is_tracked(pointer) });
+            }
+            assert_eq!(
+                refcount(alias_bits),
+                1,
+                "only the parameter list owns the alias"
+            );
+            assert_eq!(refcount(cached), 1, "only the alias owns the cached tuple");
+            assert_eq!(
+                refcount(parameter_bits),
+                1,
+                "only the cached tuple owns the list"
+            );
+            let before = crate::DEALLOC_COUNT.load(Ordering::Relaxed);
+            let stats = unsafe { crate::object::gc::collect_cycles(py) };
+            assert!(
+                stats.collected >= 3,
+                "cache-only cycle must actually collect"
+            );
+            assert!(crate::DEALLOC_COUNT.load(Ordering::Relaxed) >= before + 3);
+            for pointer in [alias, cache_pointer, parameter] {
+                assert!(!unsafe { crate::object::gc::gc_is_tracked(pointer) });
+            }
+            for bits in [name, empty, class] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn parameter_collection_resource_denial_retires_partial_tuples_and_owners() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+
+        // Exhaust the real remaining budget with ordinary live allocations.
+        // Repeating this after collection refusal detects leaked reservations,
+        // independently of parameter owners or the collector's implementation.
+        fn available_capacity(py: &PyToken<'_>, label: &str) -> usize {
+            let mut probes = Vec::new();
+            let count = loop {
+                let probe = crate::alloc_string(py, b"capacity probe");
+                if probe.is_null() {
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
+                    break probes.len();
+                }
+                probes.push(MoltObject::from_ptr(probe).bits());
+                assert!(
+                    probes.len() < 1024,
+                    "{label}: bounded capacity census must exhaust"
+                );
+            };
+            for probe in probes {
+                dec_ref_bits(py, probe);
+            }
+            count
+        }
+
+        fn refusal_case(
+            py: &PyToken<'_>,
+            label: &str,
+            args: u64,
+            parameters: &[u64],
+            limits: ResourceLimits,
+            large_outer_result: bool,
+        ) {
+            let name = string_bits(py, b"__parameters__");
+            // A real positive witness checks the exact parameter identity/order
+            // and warms immutable lookup authority before denying resources.
+            let warm = crate::alloc_generic_alias(py, crate::builtin_classes(py).list, args);
+            assert!(!warm.is_null());
+            let warm = MoltObject::from_ptr(warm).bits();
+            let result = super::molt_get_attr_name(warm, name);
+            assert!(!crate::exception_pending(py), "{label}: positive witness");
+            let values = unsafe {
+                crate::object::seq_access::pin_tuple(py, obj_from_bits(result).as_ptr().unwrap())
+            }
+            .unwrap();
+            assert_eq!(
+                &*values, parameters,
+                "{label}: independent expected identities"
+            );
+            drop(values);
+            dec_ref_bits(py, result);
+            dec_ref_bits(py, warm);
+
+            let owners: Vec<_> = parameters.iter().map(|&bits| refcount(bits)).collect();
+            let alias = crate::alloc_generic_alias(py, crate::builtin_classes(py).list, args);
+            assert!(!alias.is_null());
+            let alias_bits = MoltObject::from_ptr(alias).bits();
+            let reset = Reset;
+            set_tracker(Box::new(LimitedTracker::new(&limits)));
+            if large_outer_result {
+                // The real memory limit admits the nested one-element result,
+                // but refuses the larger final result. These direct allocator
+                // controls prevent a normalization/early refusal passing as
+                // coverage of the final result after nested tuple retirement.
+                let small = crate::alloc_tuple(py, &parameters[..1]);
+                assert!(!small.is_null(), "{label}: nested-size allocation admitted");
+                dec_ref_bits(py, MoltObject::from_ptr(small).bits());
+                let large = crate::alloc_tuple(py, parameters);
+                assert!(large.is_null(), "{label}: outer-size allocation refused");
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+            }
+            let capacity_before = available_capacity(py, label);
+            let result = super::molt_get_attr_name(alias_bits, name);
+            assert!(obj_from_bits(result).is_none(), "{label}: must refuse");
+            crate::test_support::assert_and_clear_emergency_memory_error(py);
+            assert!(
+                obj_from_bits(unsafe {
+                    crate::object::layout::generic_alias_parameters_bits(alias)
+                })
+                .is_none(),
+                "{label}: no partial publication"
+            );
+            let observed: Vec<_> = parameters.iter().map(|&bits| refcount(bits)).collect();
+            assert_eq!(observed, owners, "{label}: temporary owners retired");
+            assert_eq!(
+                available_capacity(py, label),
+                capacity_before,
+                "{label}: all live capacity restored"
+            );
+            drop(reset);
+            let retry = super::molt_get_attr_name(alias_bits, name);
+            assert!(
+                !crate::exception_pending(py),
+                "{label}: explicit read after resource restoration"
+            );
+            let values = unsafe {
+                crate::object::seq_access::pin_tuple(py, obj_from_bits(retry).as_ptr().unwrap())
+            }
+            .unwrap();
+            assert_eq!(
+                &*values, parameters,
+                "{label}: failed collection leaves a reusable receiver"
+            );
+            drop(values);
+            dec_ref_bits(py, retry);
+            dec_ref_bits(py, alias_bits);
+            dec_ref_bits(py, name);
+            let observed: Vec<_> = parameters.iter().map(|&bits| refcount(bits)).collect();
+            assert_eq!(observed, owners, "{label}: failed receiver retirement");
+            assert!(!crate::exception_pending(py));
+        }
+
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+            assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+            crate::with_gil_entry_nopanic!(py, {
+                let release = string_bits(py, b"final");
+                let result = crate::object::ops_sys::molt_sys_set_version_info(
+                    MoltObject::from_int(3).bits(),
+                    MoltObject::from_int(14).bits(),
+                    MoltObject::from_int(0).bits(),
+                    release,
+                    MoltObject::from_int(0).bits(),
+                );
+                dec_ref_bits(py, result);
+                dec_ref_bits(py, release);
+                assert!(!crate::exception_pending(py));
+                assert!(crate::object::ops_sys::runtime_target_at_least(py, 3, 14));
+                let class = test_class_bits(
+                    py,
+                    b"BudgetParameter",
+                    &[(b"__typing_subst__", MoltObject::none().bits())],
+                );
+                let parameters: Vec<_> = (0..128)
+                    .map(|_| unsafe { test_instance_bits(py, class) })
+                    .collect();
+                let list = crate::alloc_list(py, &parameters[..1]);
+                let nested = crate::alloc_tuple(py, &parameters[..1]);
+                assert!(!list.is_null() && !nested.is_null());
+                let list = MoltObject::from_ptr(list).bits();
+                let nested = MoltObject::from_ptr(nested).bits();
+                let list_args = crate::alloc_tuple(py, &[list]);
+                let tuple_args = crate::alloc_tuple(py, &[nested]);
+                assert!(!list_args.is_null() && !tuple_args.is_null());
+                let list_args = MoltObject::from_ptr(list_args).bits();
+                let tuple_args = MoltObject::from_ptr(tuple_args).bits();
+
+                // LimitedTracker counts concurrently LIVE allocations, not
+                // cumulative events. Separate inputs/limits isolate each stage
+                // instead of assuming three sequential stages need three slots.
+                for budget in [0, 1] {
+                    refusal_case(
+                        py,
+                        if budget == 0 {
+                            "normalization snapshot"
+                        } else {
+                            "normalization tuple"
+                        },
+                        list_args,
+                        &parameters[..1],
+                        ResourceLimits {
+                            max_allocations: Some(budget),
+                            ..ResourceLimits::default()
+                        },
+                        false,
+                    );
+                }
+                refusal_case(
+                    py,
+                    "nested result tuple",
+                    tuple_args,
+                    &parameters[..1],
+                    ResourceLimits {
+                        max_allocations: Some(0),
+                        ..ResourceLimits::default()
+                    },
+                    false,
+                );
+
+                let mut outer = vec![nested];
+                outer.extend_from_slice(&parameters[1..]);
+                let outer_args = crate::alloc_tuple(py, &outer);
+                assert!(!outer_args.is_null());
+                let outer_args = MoltObject::from_ptr(outer_args).bits();
+                let memory_limit = crate::object::layout::TupleStorage::object_size(1).unwrap() * 8;
+                assert!(
+                    crate::object::layout::TupleStorage::object_size(parameters.len()).unwrap()
+                        > memory_limit
+                );
+                refusal_case(
+                    py,
+                    "outer result after nested tuple",
+                    outer_args,
+                    &parameters,
+                    ResourceLimits {
+                        max_memory: Some(memory_limit),
+                        ..ResourceLimits::default()
+                    },
+                    true,
+                );
+
+                for bits in [outer_args, tuple_args, list_args, nested, list] {
+                    dec_ref_bits(py, bits);
+                }
+                for parameter in parameters {
+                    dec_ref_bits(py, parameter);
+                }
+                dec_ref_bits(py, class);
+                assert!(!crate::exception_pending(py));
+            });
         });
     }
 }

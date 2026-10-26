@@ -284,6 +284,7 @@ def resolve_build_request(
         respect_pythonpath=respect_pythonpath,
         module=args.module,
         diagnostics=diagnostics,
+        capture_link_inputs=args.capture_link_inputs,
         diagnostics_file=diagnostics_file,
         diagnostics_verbosity=diagnostics_verbosity,
         portable=getattr(args, "portable", False),

@@ -300,3 +300,41 @@ stage-sized key lookup and captured payload storage;
 there is no per-stage rescan of locks or retired history. Publication and
 reconciliation retain their pre/post-lock physical checks. These are developer
 apparatus costs, with no generated-program overhead.
+
+
+## Current-tree sentinel observation
+
+Automatic command and suite sentinels use the same `CustodyInterest` sampler as
+command guards. Their poll includes the guard lineage, remembered process births
+(including reparented children), and the current suite receipt roots and members.
+The suite projects observation hints through its existing receipt reader; the
+hints grant no custody, and the usual lease and birth validation still decides
+adoption. Receipt discovery runs each poll to see newly adopted daemons. This
+adds one non-waiting receipt discovery for a leased sentinel while removing
+host-size process enumeration. A busy adoption lock supplies no new hints;
+remembered tracker births remain sampling roots. Existing admission keeps its
+separate bounded lock policy. Inherited receivers, including an object retained
+after fork, discover the command operational root as admission does. Diagnostic
+PID history remains available for protection and attribution but never seeds
+traversal: only current tracker custody and receipt hints do. Explicit repo-scope observers and signal-time protection
+continue to read the host table. The 100 ms cadence is unchanged.
+
+## Operation completion gaps (V1-12)
+
+Automatic checkout maintenance after result publication is a scheduling event,
+not a process-tree closure receipt. Its independent per-root shared-use and
+exclusive-retirement authority is specified in [design 56](foundation/56_dx_buildspeed_tooling.md#26-checkout-state-retention-hf-313).
+Guard qualification still requires the actual terminal closure evidence.
+
+Ordinary CLI and driver integer results currently do not compose all process
+custody. Open obligations include raw metadata/source-compiler subprocesses,
+guard outcomes erased by translated exceptions or integer/tuple projections,
+native-runtime futures surviving an early build return, replaced frontend
+pools shut down without waiting, and explicit owner propagation through threads
+and source-isolated command executors. A direct child's exit does not establish
+descendant closure. No-suite backend daemon readiness is also distinct from the
+verified suite lease transfer; it supplies no aggregate operation receipt.
+These remain V1-12 custody obligations and are not qualified by maintenance
+scheduling tests. Any future aggregate must compose the existing actual owners,
+futures and verified transfers without a second process registry or a guessed
+closure flag.

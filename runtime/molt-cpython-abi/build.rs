@@ -2,12 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[path = "../build_support/build_python.rs"]
-mod build_python;
 #[path = "../build_support/c_codegen.rs"]
 mod c_codegen;
-#[path = "../build_support/unicode_tables.rs"]
-mod unicode_tables;
 #[path = "../build_support/variadic_exports.rs"]
 mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
@@ -87,7 +83,6 @@ fn main() {
     } else {
         None
     };
-    unicode_tables::emit_cpython_abi_unicode_tables(&out_dir, &build_python::resolve());
 
     // Compile the C variadic shim into a static library.
     let mut build = cc::Build::new();
@@ -107,7 +102,6 @@ fn main() {
         // Auto-vectorisation hints for clang/gcc.
         .flag_if_supported("-fvectorize")
         .flag_if_supported("-fslp-vectorize");
-    c_codegen::apply_codegen_policy(&mut build, &target_os);
     if target_arch == "wasm32" {
         match target_os.as_str() {
             "wasi" | "unknown" => {
@@ -134,6 +128,8 @@ fn main() {
             ),
         }
     }
+
+    c_codegen::apply_codegen_policy(&mut build, &target_os, &manifest, &out_dir);
 
     // On Linux (rust-lld) the shim archive was force-included via a separate
     // `--whole-archive <full-path>` link-arg (the old `"linux"` match arm below)
@@ -211,7 +207,6 @@ fn main() {
     println!("cargo:rerun-if-changed={}", shim_exports.display());
     println!("cargo:rerun-if-changed=../build_support/variadic_exports.rs");
     println!("cargo:rerun-if-changed=../build_support/c_codegen.rs");
-    println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
     println!("cargo:rerun-if-changed=src/api/strings.rs");
     // The layout-assertion TU is generated from the Rust repr(C) authority; rebuild
     // it if that authority changes so a drift is caught immediately.

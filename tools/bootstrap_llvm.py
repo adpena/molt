@@ -958,6 +958,18 @@ def _llvm_source_root(extract_root: Path, version: str) -> Path:
     raise SystemExit(f"Unable to find extracted LLVM source under {extract_root}")
 
 
+# The command and its content address project the same configuration authority.
+_LLVM_CMAKE_CONTRACT = (
+    ("LLVM_ENABLE_ASSERTIONS", "ON"),
+    ("LLVM_ENABLE_ZSTD", "OFF"),
+    ("LLVM_INCLUDE_BENCHMARKS", "OFF"),
+    ("LLVM_INCLUDE_DOCS", "OFF"),
+    ("LLVM_INCLUDE_EXAMPLES", "OFF"),
+    ("LLVM_INCLUDE_TESTS", "OFF"),
+    ("LLVM_INSTALL_UTILS", "ON"),
+)
+
+
 def _build_cache_identity(
     *,
     release_identity: dict[str, object],
@@ -979,14 +991,7 @@ def _build_cache_identity(
             "cmake": asdict(cmake),
             "ninja": asdict(ninja),
         },
-        "cmake_contract": {
-            "assertions": True,
-            "benchmarks": False,
-            "docs": False,
-            "examples": False,
-            "tests": False,
-            "install_utils": True,
-        },
+        "cmake_contract": dict(_LLVM_CMAKE_CONTRACT),
     }
     config_digest = hashlib.sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1214,15 +1219,7 @@ def _build_and_publish(
             f"-DCMAKE_INSTALL_PREFIX={install_prefix}",
             f"-DLLVM_TARGETS_TO_BUILD={targets}",
             f"-DLLVM_ENABLE_PROJECTS={args.projects}",
-            "-DLLVM_ENABLE_ASSERTIONS=ON",
-            # Host-optional libraries make a prefix depend on whatever the build
-            # machine had installed (Homebrew zstd on macOS); Molt needs none.
-            "-DLLVM_ENABLE_ZSTD=OFF",
-            "-DLLVM_INCLUDE_BENCHMARKS=OFF",
-            "-DLLVM_INCLUDE_DOCS=OFF",
-            "-DLLVM_INCLUDE_EXAMPLES=OFF",
-            "-DLLVM_INCLUDE_TESTS=OFF",
-            "-DLLVM_INSTALL_UTILS=ON",
+            *(f"-D{name}={value}" for name, value in _LLVM_CMAKE_CONTRACT),
         ]
         try:
             _run(cmake_configure, cwd=ROOT, env=env)

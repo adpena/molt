@@ -15,11 +15,11 @@ impl WasmFrameLocals {
     pub(in crate::wasm) fn allocate_dispatch_locals(
         &mut self,
         stateful: bool,
-        jumpful: bool,
+        needs_dispatch: bool,
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) -> Option<WasmDispatchFrameLocals> {
-        if !(stateful || jumpful) {
+        if !needs_dispatch {
             return None;
         }
         let self_ptr_local = stateful.then(|| {

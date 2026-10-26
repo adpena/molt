@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from tools.wasm_link_transaction import WasmArtifactState
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.wasm_link_transaction import WasmSectionEdit
+
 from tools.wasm_link_fact_provider import WasmFactsProvider
 
 import sys
@@ -144,13 +151,13 @@ def _extend_code_relocations(
 
 
 def _inject_app_export_adapters(
-    output: Path,
+    output: WasmArtifactState,
     temp_dir: OwnedTemporaryDirectory,
     *,
     public_export_names: Sequence[str],
     call_abi: Mapping[str, object],
     facts_provider: WasmFactsProvider,
-) -> tuple[Path, dict[str, str]]:
+) -> tuple[WasmArtifactState, dict[str, str]]:
     """Add exact contract-selected host adapters to a relocatable app object.
 
     Under the canonical call ABI the target entry adopts every argument and
@@ -187,7 +194,7 @@ def _inject_app_export_adapters(
     ):
         raise ValueError("unsupported canonical app-call ABI")
 
-    data = output.read_bytes()
+    data = output.data
     sections = _parse_sections(data)
     facts = facts_provider(data)
     types = facts["function_types"]
@@ -382,8 +389,7 @@ def _inject_app_export_adapters(
             "app export adapter symbols were not published to linking metadata"
         )
     adapter_path = Path(temp_dir.name) / "output_app_export_adapters.wasm"
-    adapter_path.write_bytes(with_symbols)
-    return adapter_path, adapter_symbol_map
+    return output.derive(adapter_path, with_symbols), adapter_symbol_map
 
 
 def _function_type_for_index(
@@ -734,18 +740,50 @@ def _required_linked_table_min(
     return required
 
 
-def _rewrite_table_import_min(data: bytes, required_min: int) -> bytes | None:
-    sections = _parse_sections(data)
+def _rewrite_table_import_min(edit: WasmSectionEdit, required_min: int) -> None:
+    payload = edit.payload(2)
+    if payload is None:
+        return
     changed = False
-    new_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id != 2:
-            new_sections.append((section_id, payload))
-            continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        rebuilt = bytearray()
-        rebuilt.extend(_write_varuint(count))
+    count, offset = _read_varuint(payload, 0)
+    rebuilt = bytearray(_write_varuint(count))
+    for _ in range(count):
+        module, offset = _read_string(payload, offset)
+        name, offset = _read_string(payload, offset)
+        if offset >= len(payload):
+            raise ValueError("Unexpected EOF while reading import kind")
+        kind = payload[offset]
+        offset += 1
+        desc_start = offset
+        offset = _parse_import_desc(payload, offset, kind)
+        desc = payload[desc_start:offset]
+        if kind == 1 and module == "env" and name == "__indirect_function_table":
+            if not desc:
+                raise ValueError("Missing table import descriptor")
+            element_type = desc[0:1]
+            flags, minimum, maximum, _ = _read_limits(desc, 1)
+            new_min = max(minimum, required_min)
+            new_max = maximum if maximum is None else max(maximum, new_min)
+            if new_min != minimum or new_max != maximum:
+                changed = True
+                desc = element_type + _write_limits(flags, new_min, new_max)
+        rebuilt.extend(_write_string(module))
+        rebuilt.extend(_write_string(name))
+        rebuilt.append(kind)
+        rebuilt.extend(desc)
+    if changed:
+        edit.replace(2, bytes(rebuilt))
+
+
+def _rewrite_memory_min(edit: WasmSectionEdit, required_min: int) -> None:
+    # The old operation canonicalized both relevant sections whenever either
+    # changed. Keep that exact byte behavior while retaining every other view.
+    changed = False
+    replacements: dict[int, bytes] = {}
+    payload = edit.payload(2)
+    if payload is not None:
+        count, offset = _read_varuint(payload, 0)
+        rebuilt = bytearray(_write_varuint(count))
         for _ in range(count):
             module, offset = _read_string(payload, offset)
             name, offset = _read_string(payload, offset)
@@ -756,83 +794,32 @@ def _rewrite_table_import_min(data: bytes, required_min: int) -> bytes | None:
             desc_start = offset
             offset = _parse_import_desc(payload, offset, kind)
             desc = payload[desc_start:offset]
-            if kind == 1 and module == "env" and name == "__indirect_function_table":
-                if not desc:
-                    raise ValueError("Missing table import descriptor")
-                element_type = desc[0:1]
-                flags, minimum, maximum, _ = _read_limits(desc, 1)
+            if kind == 2 and module == "env" and name == "memory":
+                flags, minimum, maximum, _ = _read_limits(desc, 0)
                 new_min = max(minimum, required_min)
-                new_max = maximum
-                if maximum is not None and new_min > maximum:
-                    new_max = new_min
+                new_max = maximum if maximum is None else max(maximum, new_min)
                 if new_min != minimum or new_max != maximum:
                     changed = True
-                    desc = element_type + _write_limits(flags, new_min, new_max)
+                    desc = _write_limits(flags, new_min, new_max)
             rebuilt.extend(_write_string(module))
             rebuilt.extend(_write_string(name))
             rebuilt.append(kind)
             rebuilt.extend(desc)
-        new_sections.append((section_id, bytes(rebuilt)))
-    if not changed:
-        return None
-    return _build_sections(new_sections)
-
-
-def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
-    sections = _parse_sections(data)
-    changed = False
-    new_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id == 2:
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            rebuilt = bytearray()
-            rebuilt.extend(_write_varuint(count))
-            for _ in range(count):
-                module, offset = _read_string(payload, offset)
-                name, offset = _read_string(payload, offset)
-                if offset >= len(payload):
-                    raise ValueError("Unexpected EOF while reading import kind")
-                kind = payload[offset]
-                offset += 1
-                desc_start = offset
-                offset = _parse_import_desc(payload, offset, kind)
-                desc = payload[desc_start:offset]
-                if kind == 2 and module == "env" and name == "memory":
-                    flags, minimum, maximum, _ = _read_limits(desc, 0)
-                    new_min = max(minimum, required_min)
-                    new_max = maximum
-                    if maximum is not None and new_min > maximum:
-                        new_max = new_min
-                    if new_min != minimum or new_max != maximum:
-                        changed = True
-                        desc = _write_limits(flags, new_min, new_max)
-                rebuilt.extend(_write_string(module))
-                rebuilt.extend(_write_string(name))
-                rebuilt.append(kind)
-                rebuilt.extend(desc)
-            new_sections.append((section_id, bytes(rebuilt)))
-            continue
-        if section_id == 5:
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            rebuilt = bytearray()
-            rebuilt.extend(_write_varuint(count))
-            for _ in range(count):
-                flags, minimum, maximum, offset = _read_limits(payload, offset)
-                new_min = max(minimum, required_min)
-                new_max = maximum
-                if maximum is not None and new_min > maximum:
-                    new_max = new_min
-                if new_min != minimum or new_max != maximum:
-                    changed = True
-                rebuilt.extend(_write_limits(flags, new_min, new_max))
-            new_sections.append((section_id, bytes(rebuilt)))
-            continue
-        new_sections.append((section_id, payload))
-    if not changed:
-        return None
-    return _build_sections(new_sections)
+        replacements[2] = bytes(rebuilt)
+    payload = edit.payload(5)
+    if payload is not None:
+        count, offset = _read_varuint(payload, 0)
+        rebuilt = bytearray(_write_varuint(count))
+        for _ in range(count):
+            flags, minimum, maximum, offset = _read_limits(payload, offset)
+            new_min = max(minimum, required_min)
+            new_max = maximum if maximum is None else max(maximum, new_min)
+            changed |= new_min != minimum or new_max != maximum
+            rebuilt.extend(_write_limits(flags, new_min, new_max))
+        replacements[5] = bytes(rebuilt)
+    if changed:
+        for section_id, payload in replacements.items():
+            edit.replace(section_id, payload)
 
 
 def _runtime_import_rewrite_target(
@@ -1107,7 +1094,7 @@ def _rewrite_native_runtime_imports(
 
 
 def _rewrite_runtime_import_module_namespace(
-    module_path: Path,
+    module_path: WasmArtifactState,
     *,
     source_module: str,
     target_module: str,
@@ -1115,8 +1102,8 @@ def _rewrite_runtime_import_module_namespace(
     temp_dir: OwnedTemporaryDirectory,
     filename: str,
     provider_symbols: frozenset[str] = frozenset(),
-) -> tuple[Path, list[str]] | None:
-    data = module_path.read_bytes()
+) -> tuple[WasmArtifactState, list[str]] | None:
+    data = module_path.data
     try:
         rewritten, force_exports = _rewrite_runtime_imports_in_module(
             data,
@@ -1131,15 +1118,14 @@ def _rewrite_runtime_import_module_namespace(
     if rewritten is None:
         return module_path, force_exports
     staged = Path(temp_dir.name) / filename
-    staged.write_bytes(rewritten)
-    return staged, force_exports
+    return module_path.derive(staged, rewritten), force_exports
 
 
 def _rewrite_output_imports(
-    output: Path,
+    output: WasmArtifactState,
     runtime_exports: set[str],
     temp_dir: OwnedTemporaryDirectory,
-) -> tuple[Path, OwnedTemporaryDirectory, list[str]] | None:
+) -> tuple[WasmArtifactState, OwnedTemporaryDirectory, list[str]] | None:
     """Rewrite output imports to add the ``molt_`` prefix where needed.
 
     Returns ``(rewritten_path, temp_dir, force_exports)`` on success.
@@ -1148,7 +1134,7 @@ def _rewrite_output_imports(
     ``--export-if-defined`` flags to wasm-ld so the linker retains the
     symbols from a relocatable runtime input.
     """
-    data = output.read_bytes()
+    data = output.data
     try:
         sections = _parse_sections(data)
     except ValueError as exc:
@@ -1215,8 +1201,11 @@ def _rewrite_output_imports(
         return output, temp_dir, []
 
     wasm_path = Path(temp_dir.name) / "output_rewrite.wasm"
-    wasm_path.write_bytes(_build_sections(new_sections))
-    return wasm_path, temp_dir, force_exports
+    return (
+        output.derive(wasm_path, _build_sections(new_sections)),
+        temp_dir,
+        force_exports,
+    )
 
 
 def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
@@ -1336,57 +1325,45 @@ def _standard_section_order_error(data: bytes) -> str | None:
     return None
 
 
-def _strip_internal_exports(
-    data: bytes,
-    *,
-    preserve_exports: set[str] | None = None,
+def _strip_internal_export_payload(
+    payload: bytes, *, preserve_exports: set[str] | None = None
 ) -> bytes | None:
-    """Remove exports that only exist for internal ABI wiring or relocatable linking.
-
-    After linking, these exports serve no purpose but each one marks its
-    target function as a module root, preventing dead-code elimination by
-    wasm-opt.  Stripping them is critical for enabling the DCE pass to
-    remove thousands of unreachable runtime functions.
-
-    Only the exports actually referenced by the host JS (worker.js) are
-    retained (see ``_ESSENTIAL_EXPORTS``).
-    """
-    sections = _parse_sections(data)
-    new_sections: list[tuple[int, bytes]] = []
-    modified = False
     keep_exports = set(_ESSENTIAL_EXPORTS)
     if preserve_exports:
         keep_exports.update(preserve_exports)
     seen_exports: set[str] = set()
-    for section_id, payload in sections:
-        if section_id != 7:
-            new_sections.append((section_id, payload))
+    _, offset = _read_varuint(payload, 0)
+    entries: list[bytes] = []
+    modified = False
+    while offset < len(payload):
+        entry_start = offset
+        name, offset = _read_string(payload, offset)
+        if offset >= len(payload):
+            break
+        offset += 1
+        _, offset = _read_varuint(payload, offset)
+        if name not in keep_exports or name in seen_exports:
+            modified = True
             continue
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        entries: list[bytes] = []
-        new_count = 0
-        while offset < len(payload):
-            entry_start = offset
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                break
-            offset += 1
-            _, offset = _read_varuint(payload, offset)
-            entry_bytes = payload[entry_start:offset]
-            if name not in keep_exports:
-                modified = True
-                continue
-            if name in seen_exports:
-                modified = True
-                continue
-            seen_exports.add(name)
-            entries.append(entry_bytes)
-            new_count += 1
-        rebuilt = bytearray(_write_varuint(new_count))
-        for entry in entries:
-            rebuilt.extend(entry)
-        new_sections.append((section_id, bytes(rebuilt)))
+        seen_exports.add(name)
+        entries.append(payload[entry_start:offset])
     if not modified:
         return None
-    return _build_sections(new_sections)
+    return _write_varuint(len(entries)) + b"".join(entries)
+
+
+def _strip_internal_exports(
+    data: bytes, *, preserve_exports: set[str] | None = None
+) -> bytes | None:
+    """Strip optimizer roots with the shared export-section transformation."""
+    sections = _parse_sections(data)
+    changed = False
+    for index, (section_id, payload) in enumerate(sections):
+        if section_id == 7:
+            updated = _strip_internal_export_payload(
+                payload, preserve_exports=preserve_exports
+            )
+            if updated is not None:
+                sections[index] = (section_id, updated)
+                changed = True
+    return _build_sections(sections) if changed else None

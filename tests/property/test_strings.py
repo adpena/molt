@@ -284,4 +284,8 @@ class TestStringCPythonEquivalence:
         # Only test via CPython (Molt compilation tested separately with --run-molt)
         code = f"print(repr({s!r}))"
         result = run_via_cpython(code)
-        assert result == repr(s)
+        assert result.returncode == 0
+        assert result.stderr == ""
+        import os
+
+        assert result.stdout == repr(s) + os.linesep

@@ -36,14 +36,25 @@ pub(crate) struct BackendTargetEmitRequest<'a> {
     pub(crate) document: BackendIrDocument,
     pub(crate) output_path: Option<&'a str>,
     pub(crate) target: BackendTarget,
+    pub(crate) capture_origin: bool,
 }
 
-pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::Result<()> {
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+type EmissionResult = Option<crate::backend_process::origin::EmittedArtifact>;
+#[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+type EmissionResult = ();
+
+pub(crate) fn emit_backend_target(
+    request: BackendTargetEmitRequest<'_>,
+) -> io::Result<EmissionResult> {
     let BackendTargetEmitRequest {
         document,
         output_path,
         target,
+        capture_origin,
     } = request;
+    #[cfg(not(feature = "wasm-backend"))]
+    let _ = capture_origin;
     let output_file = output_path.unwrap_or(target.default_output_path());
     ensure_output_parent_dir(output_file).map_err(|err| {
         io::Error::new(
@@ -61,7 +72,8 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
             output_file,
             options.target_triple.as_deref(),
             options.output_kind,
-        ),
+        )
+        .map(Some),
         #[cfg(feature = "wasm-backend")]
         BackendTarget::Wasm(options) => emit_wasm_target(
             document.ir,
@@ -69,11 +81,14 @@ pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::
             document.code_slots,
             output_file,
             options,
+            capture_origin,
         ),
         // Admission refused a module catalog for the source emitters.
         #[cfg(feature = "luau-backend")]
-        BackendTarget::Luau => emit_luau_target(document.ir, document.code_slots, output_file),
+        BackendTarget::Luau => emit_luau_target(document.ir, document.code_slots, output_file)
+            .map(|()| Default::default()),
         #[cfg(feature = "rust-backend")]
-        BackendTarget::Rust => emit_rust_target(&document.ir, document.code_slots, output_file),
+        BackendTarget::Rust => emit_rust_target(&document.ir, document.code_slots, output_file)
+            .map(|()| Default::default()),
     }
 }

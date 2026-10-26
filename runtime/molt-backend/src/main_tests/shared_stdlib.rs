@@ -92,6 +92,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
         None,
+        None,
     )
     .expect("write sidecars");
     assert!(shared_stdlib_cache_matches(
@@ -154,6 +155,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
         None,
+        None,
     )
     .expect("rewrite sidecars");
     std::fs::write(&stdlib_path, b"changed-object").expect("mutate object");
@@ -172,6 +174,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
         None,
     )
     .expect("write matching object sidecars");
@@ -449,6 +452,7 @@ fn shared_stdlib_cache_sidecar_write_failures_propagate() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
         None,
     )
     .expect_err("sidecar writes should fail when parent is not a directory");
@@ -791,8 +795,9 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
     .expect("plan empty stdlib cache");
     assert_eq!(planned.archive_key(), None, "no reuse without a manifest");
     planned
-        .assemble("MOLT_BACKEND(test)", None, |objects| {
+        .assemble("MOLT_BACKEND(test)", None, |objects, _origins| {
             crate::backend_process::write_native_archive_objects(&stdlib, objects)
+                .map(|_unpersisted_content| ())
         })
         .expect("empty stdlib cache must emit an object");
 
@@ -1051,4 +1056,87 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
             "molt_isolate_import"
         ]
     );
+}
+
+#[test]
+fn shared_stdlib_async_edge_agrees_with_dfe_and_object_dependencies() {
+    check_provider_reference_boundary(vec![OpIR {
+        kind: "call_async".into(),
+        s_value: Some("application_body".into()),
+        ..OpIR::default()
+    }]);
+}
+
+#[test]
+fn shared_stdlib_gpu_edge_agrees_with_dfe_and_object_dependencies() {
+    let descriptor = OpIR {
+        kind: "const_str".into(),
+        s_value: Some(r#"{"python_bodies":{"buffer_get":{"symbol":"application_body"}}}"#.into()),
+        out: Some("descriptor".into()),
+        ..OpIR::default()
+    };
+    check_provider_reference_boundary(vec![
+        descriptor.clone(),
+        OpIR {
+            kind: "call".into(),
+            s_value: Some("molt_gpu_kernel_descriptor_set".into()),
+            args: Some(vec!["kernel".into(), "descriptor".into()]),
+            ..OpIR::default()
+        },
+    ]);
+    // Identical guest data without the compiler's publisher creates no edge.
+    let literal_only = FunctionIR {
+        name: "provider".into(),
+        ops: vec![descriptor],
+        ..FunctionIR::default()
+    };
+    let all_names =
+        std::collections::BTreeSet::from(["provider".to_owned(), "application_body".to_owned()]);
+    validate_shared_stdlib_partition(std::slice::from_ref(&literal_only), &all_names)
+        .expect("guest strings do not create executable dependencies");
+    assert!(
+        !molt_backend::NativeBackendModuleContext::object_dependencies(&[literal_only])
+            .contains("application_body")
+    );
+}
+
+fn check_provider_reference_boundary(ops: Vec<OpIR>) {
+    let provider = FunctionIR {
+        name: "provider".into(),
+        params: vec!["kernel".into()],
+        ops,
+        ..FunctionIR::default()
+    };
+    let target = FunctionIR {
+        name: "application_body".into(),
+        ops: vec![OpIR {
+            kind: "ret_void".into(),
+            ..OpIR::default()
+        }],
+        ..FunctionIR::default()
+    };
+    let functions = vec![provider.clone(), target];
+    let all_names = functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect();
+    let reached =
+        molt_tir::passes::reachable_function_names(&functions, &std::collections::BTreeSet::new());
+    assert!(reached.contains("application_body"));
+    let dependencies = molt_backend::NativeBackendModuleContext::object_dependencies(
+        std::slice::from_ref(&provider),
+    );
+    assert!(dependencies.contains("application_body"));
+    let issue = shared_stdlib_partition_closure_issue(std::slice::from_ref(&provider), &all_names)
+        .expect("a provider cannot depend on an application-defined body");
+    assert!(issue.contains("provider -> application_body"));
+    validate_shared_stdlib_partition(&functions, &all_names)
+        .expect("moving the target into the provider closes the dependency");
+    // Names not defined by this program retain the existing external/import
+    // contract; this boundary must not invent a definition for them.
+    validate_shared_stdlib_partition(
+        &[provider],
+        &std::collections::BTreeSet::from(["provider".to_owned()]),
+    )
+    .expect("external symbols are admitted by the target linkage authority");
 }

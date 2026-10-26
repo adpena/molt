@@ -195,10 +195,11 @@ pub enum ObjectShapeId {
     ItertoolsTakewhile = 114,
     ItertoolsTee = 115,
     ItertoolsZipLongest = 116,
+    ItertoolsTeeBlock = 117,
 }
 
 impl ObjectShapeId {
-    pub const MAX_ID: u16 = 116;
+    pub const MAX_ID: u16 = 117;
 
     #[inline(always)]
     pub const fn from_u16(value: u16) -> Option<Self> {
@@ -268,8 +269,82 @@ impl ObjectShapeId {
             114 => Self::ItertoolsTakewhile,
             115 => Self::ItertoolsTee,
             116 => Self::ItertoolsZipLongest,
+            117 => Self::ItertoolsTeeBlock,
             _ => return None,
         })
+    }
+
+    /// Whether the physical payload reserves shared class fields and a dictionary tail.
+    #[inline(always)]
+    pub const fn has_class_fields(self) -> bool {
+        match self {
+            Self::Plain => true,
+            Self::Promise => false,
+            Self::AsyncSleep => false,
+            Self::AsyncGeneratorFuture => false,
+            Self::AnextDefault => false,
+            Self::AsyncioFdWatcher => false,
+            Self::AsyncioServerAcceptLoop => false,
+            Self::ContextlibAsyncgenEnter => false,
+            Self::ContextlibAsyncgenExit => false,
+            Self::ContextlibAsyncExitstackEnter => false,
+            Self::ContextlibAsyncExitstackExit => false,
+            Self::AsyncioSocketReaderRead => false,
+            Self::AsyncioSocketReaderReadline => false,
+            Self::AsyncioStreamReaderRead => false,
+            Self::AsyncioStreamReaderReadline => false,
+            Self::AsyncioStreamSendAll => false,
+            Self::AsyncioSockRecv => false,
+            Self::AsyncioSockConnect => false,
+            Self::AsyncioSockAccept => false,
+            Self::AsyncioSockRecvInto => false,
+            Self::AsyncioSockSendAll => false,
+            Self::AsyncioSockRecvFrom => false,
+            Self::AsyncioSockRecvFromInto => false,
+            Self::AsyncioSockSendTo => false,
+            Self::ThreadTask => false,
+            Self::ProcessTask => false,
+            Self::IoWait => false,
+            Self::WebsocketWait => false,
+            Self::GenericTaskPayload => false,
+            Self::BoxedFields => false,
+            Self::DictSubclass => true,
+            Self::OperatorItemGetter => true,
+            Self::OperatorAttrGetter => true,
+            Self::OperatorMethodCaller => true,
+            Self::FunctoolsPartial => true,
+            Self::FunctoolsCmpKey => true,
+            Self::FunctoolsLruWrapper => true,
+            Self::TypesMappingProxy => true,
+            Self::TypesFrame => true,
+            Self::TypesFrameLocalsProxy => true,
+            Self::Context => true,
+            Self::ContextVar => true,
+            Self::ContextToken => true,
+            Self::ContextIterator => true,
+            Self::ItertoolsChain => true,
+            Self::ItertoolsIslice => true,
+            Self::ItertoolsRepeat => true,
+            Self::ItertoolsCount => true,
+            Self::ItertoolsCycle => true,
+            Self::ItertoolsAccumulate => true,
+            Self::ItertoolsBatched => true,
+            Self::ItertoolsCombinations => true,
+            Self::ItertoolsCombinationsWithReplacement => true,
+            Self::ItertoolsCompress => true,
+            Self::ItertoolsDropwhile => true,
+            Self::ItertoolsFilterfalse => true,
+            Self::ItertoolsPairwise => true,
+            Self::ItertoolsGroupby => true,
+            Self::ItertoolsGroupbyIter => true,
+            Self::ItertoolsProduct => true,
+            Self::ItertoolsPermutations => true,
+            Self::ItertoolsStarmap => true,
+            Self::ItertoolsTakewhile => true,
+            Self::ItertoolsTee => false,
+            Self::ItertoolsZipLongest => true,
+            Self::ItertoolsTeeBlock => false,
+        }
     }
 }
 
@@ -363,6 +438,7 @@ pub const fn object_shape_lifecycle_family(shape: ObjectShapeId) -> ObjectShapeL
         ObjectShapeId::ItertoolsTakewhile => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsTee => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsZipLongest => ObjectShapeLifecycleFamily::Itertools,
+        ObjectShapeId::ItertoolsTeeBlock => ObjectShapeLifecycleFamily::Itertools,
     }
 }
 
@@ -434,6 +510,7 @@ pub const fn object_shape_resource_slot(shape: ObjectShapeId) -> ObjectShapeReso
         ObjectShapeId::ItertoolsTakewhile => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsTee => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsZipLongest => ObjectShapeResourceSlot::None,
+        ObjectShapeId::ItertoolsTeeBlock => ObjectShapeResourceSlot::None,
     }
 }
 

@@ -4,7 +4,7 @@
 //! etc. is a separate linker symbol so that `wasm-ld --gc-sections` can drop
 //! unused entries.
 
-use crate::object::iterable::{SpecialIterationKind, SpecialIterationStep};
+use crate::object::iterable::{IterationExhaustion, SpecialIterationKind, SpecialIterationStep};
 use crate::object::memoryview::memoryview_prepare_iter;
 use crate::object::{
     ObjectAuxPreselection, dec_ref_ptr, inc_ref_ptr, object_init_poll_fn_unpublished,
@@ -243,23 +243,27 @@ pub extern "C" fn molt_enumerate_builtin(iter_bits: u64, start_bits: u64) -> u64
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        match iteration_step(_py, iter_bits) {
+        use crate::object::iterable::{IterationExhaustion, SpecialIterationStep};
+        let has_default = default_bits != missing_bits(_py);
+        let exhaustion = if has_default {
+            IterationExhaustion::Normalize
+        } else {
+            IterationExhaustion::PreserveException
+        };
+        match iteration_step(_py, iter_bits, exhaustion) {
             Ok(SpecialIterationStep::Item(value)) => value,
-            Ok(SpecialIterationStep::Exhausted(payload)) => {
-                if default_bits != missing_bits(_py) {
-                    dec_ref_bits(_py, payload);
+            Ok(SpecialIterationStep::Exhausted(value)) => {
+                let result = if has_default {
                     inc_ref_bits(_py, default_bits);
-                    return default_bits;
-                }
-                // CPython re-raises the iterator's StopIteration with its value.
-                let raised = unsafe {
-                    crate::async_rt::generators::raise_stop_iteration_from_value(_py, payload)
+                    default_bits
+                } else {
+                    unsafe {
+                        crate::async_rt::generators::raise_stop_iteration_from_value(_py, value)
+                    }
                 };
-                dec_ref_bits(_py, payload);
-                raised
+                dec_ref_bits(_py, value);
+                result
             }
-            // CPython's next() rejects a non-iterator with a type-qualified
-            // message before it consults any default.
             Ok(SpecialIterationStep::Missing) => {
                 let msg = format!(
                     "'{}' object is not an iterator",
@@ -285,31 +289,40 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
+                // Each previous acquisition owns a reference, even though the
+                // aggregate iterator has not been allocated yet.
+                for prior in iters.into_iter().rev() {
+                    dec_ref_bits(_py, prior);
+                }
                 return raise_not_iterable(_py, iterable_bits);
             }
             iters.push(iter_bits);
         }
+        // Stage the fallible backing before allocating the aggregate object.
+        // Until payload publication, `iters` owns every acquired reference.
+        let Some(iters_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
+        else {
+            crate::record_memory_error_without_allocation(_py);
+            for iter_bits in iters.into_iter().rev() {
+                dec_ref_bits(_py, iter_bits);
+            }
+            return MoltObject::none().bits();
+        };
         let total = std::mem::size_of::<MoltHeader>() + MAP_PAYLOAD_SIZE;
         let map_ptr = alloc_object(_py, total, TYPE_ID_MAP);
         if map_ptr.is_null() {
-            for iter_bits in iters {
+            // Dropping u64 backing releases its tracked charge, not its Python
+            // references. Retire those once through their current owner below.
+            drop(crate::object::backing::tracked_vec_box_from_raw(iters_ptr));
+            for iter_bits in iters.into_iter().rev() {
                 dec_ref_bits(_py, iter_bits);
             }
             return MoltObject::none().bits();
         }
-        let Some(iters_ptr) =
-            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
-        else {
-            for iter_bits in iters {
-                dec_ref_bits(_py, iter_bits);
-            }
-            dec_ref_bits(_py, MoltObject::from_ptr(map_ptr).bits());
-            return raise_exception::<_>(_py, "MemoryError", "map allocation failed");
-        };
         *(map_ptr as *mut u64) = func_bits;
         *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
-        // Initialize cached-tuple slot to null (payload bytes are not
-        // zero-initialized when the nursery serves the allocation).
+        // Publish the complete payload with no subsequent fallible allocation.
         map_set_cached_tuple(map_ptr, std::ptr::null_mut());
         inc_ref_bits(_py, func_bits);
         MoltObject::from_ptr(map_ptr).bits()
@@ -374,35 +387,54 @@ pub(crate) unsafe fn zip_new_impl(_py: &PyToken<'_>, iterables: &[u64], strict: 
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
+                // Each previous acquisition owns a reference, even though the
+                // aggregate iterator has not been allocated yet.
+                for prior in iters.into_iter().rev() {
+                    dec_ref_bits(_py, prior);
+                }
                 return raise_not_iterable(_py, iterable_bits);
             }
             iters.push(iter_bits);
         }
-        let total = std::mem::size_of::<MoltHeader>() + crate::object::layout::ZIP_PAYLOAD_SIZE;
-        let zip_ptr = alloc_object(_py, total, TYPE_ID_ZIP);
-        if zip_ptr.is_null() {
-            for iter_bits in iters {
-                dec_ref_bits(_py, iter_bits);
-            }
-            return MoltObject::none().bits();
-        }
-        // The nursery does not zero payloads; a failed construction below
-        // releases this object, so every word is valid before then.
-        *(zip_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-        zip_set_strict_bits(zip_ptr, MoltObject::from_bool(false).bits());
-        *crate::object::layout::zip_cached_tuple_slot(zip_ptr) = std::ptr::null_mut();
+        // Stage the fallible backing before allocating the aggregate object.
+        // Until payload publication, `iters` owns every acquired reference.
         let Some(iters_ptr) =
             crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
         else {
-            for iter_bits in iters {
+            crate::record_memory_error_without_allocation(_py);
+            for iter_bits in iters.into_iter().rev() {
                 dec_ref_bits(_py, iter_bits);
             }
-            dec_ref_bits(_py, MoltObject::from_ptr(zip_ptr).bits());
-            return raise_exception::<_>(_py, "MemoryError", "zip allocation failed");
+            return MoltObject::none().bits();
         };
-        *(zip_ptr as *mut *mut Vec<u64>) = iters_ptr;
-        zip_set_strict_bits(zip_ptr, strict_bits);
-        inc_ref_bits(_py, strict_bits);
+        iters.fill(MoltObject::none().bits());
+        let result = alloc_tuple(_py, &iters);
+        if result.is_null() {
+            for &bits in (&*iters_ptr).iter().rev() {
+                dec_ref_bits(_py, bits);
+            }
+            drop(crate::object::backing::tracked_vec_box_from_raw(iters_ptr));
+            return MoltObject::none().bits();
+        }
+        let total =
+            std::mem::size_of::<MoltHeader>() + std::mem::size_of::<super::layout::ZipPayload>();
+        let zip_ptr = alloc_object(_py, total, TYPE_ID_ZIP);
+        if zip_ptr.is_null() {
+            for &bits in (&*iters_ptr).iter().rev() {
+                dec_ref_bits(_py, bits);
+            }
+            drop(crate::object::backing::tracked_vec_box_from_raw(iters_ptr));
+            dec_ref_ptr(_py, result);
+            return MoltObject::none().bits();
+        }
+        zip_ptr
+            .cast::<super::layout::ZipPayload>()
+            .write(super::layout::ZipPayload {
+                iterators: iters_ptr,
+                strict: strict_bits,
+                result: MoltObject::from_ptr(result).bits(),
+            });
+        super::gc::gc_publish_initialized(_py, zip_ptr);
         MoltObject::from_ptr(zip_ptr).bits()
     }
 }
@@ -546,25 +578,19 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 let total = std::mem::size_of::<MoltHeader>()
                     + std::mem::size_of::<u64>()
                     + std::mem::size_of::<usize>();
-                let list_storage = native_list
-                    || matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL);
-                let rev_ptr = if list_storage {
-                    super::alloc_object_zeroed_unpublished_with_aux(
-                        _py,
-                        total,
-                        TYPE_ID_REVERSED,
-                        ObjectAuxPreselection::ClassInline,
-                    )
-                } else {
-                    alloc_object(_py, total, TYPE_ID_REVERSED)
-                };
+                let rev_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                    _py,
+                    total,
+                    TYPE_ID_REVERSED,
+                    ObjectAuxPreselection::ClassInline,
+                );
                 if rev_ptr.is_null() {
                     return MoltObject::none().bits();
                 }
                 inc_ref_bits(_py, seq_bits);
                 *(rev_ptr as *mut u64) = seq_bits;
                 reversed_set_index(rev_ptr, idx);
-                if list_storage && !publish_list_iterator(_py, rev_ptr, true) {
+                if !publish_native_iterator(_py, rev_ptr) {
                     return MoltObject::none().bits();
                 }
                 return MoltObject::from_ptr(rev_ptr).bits();
@@ -704,6 +730,11 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
     iter_impl(iter_bits, false)
 }
 
+/// Unary descriptor ABI; the public next builtin owns result and exception transfer.
+pub(crate) extern "C" fn builtin_next_slot(iter_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { molt_next_builtin(iter_bits, missing_bits(py)) })
+}
+
 pub(crate) extern "C" fn builtin_iter_slot(iter_bits: u64) -> u64 {
     iter_impl(iter_bits, true)
 }
@@ -780,7 +811,12 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                                 + std::mem::size_of::<u64>()
                                 + std::mem::size_of::<usize>()
                                 + std::mem::size_of::<*mut u8>();
-                            let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
+                            let iter_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                                _py,
+                                total,
+                                TYPE_ID_ITER,
+                                ObjectAuxPreselection::ClassInline,
+                            );
                             if iter_ptr.is_null() {
                                 return MoltObject::none().bits();
                             }
@@ -788,6 +824,9 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                             *(iter_ptr as *mut u64) = args_bits;
                             iter_set_index(iter_ptr, 0);
                             iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+                            if !publish_native_iterator(_py, iter_ptr) {
+                                return MoltObject::none().bits();
+                            }
                             return MoltObject::from_ptr(iter_ptr).bits();
                         }
                     }
@@ -816,19 +855,12 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                             + std::mem::size_of::<u64>()
                             + std::mem::size_of::<usize>()
                             + std::mem::size_of::<*mut u8>();
-                        let list_storage =
-                            matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
-                                || crate::object::list_storage::native_list(iter_bits).is_some();
-                        let iter_ptr = if list_storage {
-                            super::alloc_object_zeroed_unpublished_with_aux(
-                                _py,
-                                total,
-                                TYPE_ID_ITER,
-                                ObjectAuxPreselection::ClassInline,
-                            )
-                        } else {
-                            alloc_object(_py, total, TYPE_ID_ITER)
-                        };
+                        let iter_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                            _py,
+                            total,
+                            TYPE_ID_ITER,
+                            ObjectAuxPreselection::ClassInline,
+                        );
                         if iter_ptr.is_null() {
                             return MoltObject::none().bits();
                         }
@@ -836,7 +868,7 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         *(iter_ptr as *mut u64) = iter_bits;
                         iter_set_index(iter_ptr, 0);
                         iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-                        if list_storage && !publish_list_iterator(_py, iter_ptr, false) {
+                        if !publish_native_iterator(_py, iter_ptr) {
                             return MoltObject::none().bits();
                         }
                         return MoltObject::from_ptr(iter_ptr).bits();
@@ -888,7 +920,12 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         + std::mem::size_of::<u64>()
                         + std::mem::size_of::<usize>()
                         + std::mem::size_of::<*mut u8>();
-                    let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
+                    let iter_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                        _py,
+                        total,
+                        TYPE_ID_ITER,
+                        ObjectAuxPreselection::ClassInline,
+                    );
                     if iter_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -896,6 +933,9 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                     *(iter_ptr as *mut u64) = iter_bits;
                     iter_set_index(iter_ptr, 0);
                     iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+                    if !publish_native_iterator(_py, iter_ptr) {
+                        return MoltObject::none().bits();
+                    }
                     return MoltObject::from_ptr(iter_ptr).bits();
                 }
             }
@@ -904,29 +944,28 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
     })
 }
 
+pub(super) fn iter_checked(_py: &PyToken<'_>, iter_bits: u64) -> u64 {
+    let res = molt_iter(iter_bits);
+    if obj_from_bits(res).is_none() {
+        if exception_pending(_py) {
+            return res;
+        }
+        if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ITER) {
+            let iter_obj = obj_from_bits(iter_bits);
+            eprintln!(
+                "molt_iter_checked: non-iterable type={} bits=0x{:x}",
+                type_name(_py, iter_obj),
+                iter_bits
+            );
+        }
+        return raise_not_iterable(_py, iter_bits);
+    }
+    res
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if obj_from_bits(iter_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let res = molt_iter(iter_bits);
-        if obj_from_bits(res).is_none() {
-            if exception_pending(_py) {
-                return res;
-            }
-            if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ITER) {
-                let iter_obj = obj_from_bits(iter_bits);
-                eprintln!(
-                    "molt_iter_checked: non-iterable type={} bits=0x{:x}",
-                    type_name(_py, iter_obj),
-                    iter_bits
-                );
-            }
-            return raise_not_iterable(_py, iter_bits);
-        }
-        res
-    })
+    crate::with_gil_entry_nopanic!(_py, { iter_checked(_py, iter_bits) })
 }
 
 /// Publish exhaustion before retiring either owned field. Finalizers may
@@ -939,28 +978,30 @@ unsafe fn call_iter_finish(py: &PyToken<'_>, ptr: *mut u8) {
         unsafe { std::ptr::replace(ptr.add(std::mem::size_of::<u64>()).cast::<u64>(), none) };
     dec_ref_bits(py, sentinel);
 }
+pub(super) fn iter_sentinel(_py: &PyToken<'_>, callable_bits: u64, sentinel_bits: u64) -> u64 {
+    let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callable_bits)));
+    if !callable_ok {
+        return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
+    }
+    let total = std::mem::size_of::<MoltHeader>() + CALL_ITER_PAYLOAD_SIZE;
+    let iter_ptr = alloc_object(_py, total, TYPE_ID_CALL_ITER);
+    if iter_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        *(iter_ptr as *mut u64) = callable_bits;
+        *(iter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = sentinel_bits;
+        // Initialize cached-tuple slot to null.
+        call_iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+    }
+    inc_ref_bits(_py, callable_bits);
+    inc_ref_bits(_py, sentinel_bits);
+    MoltObject::from_ptr(iter_ptr).bits()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callable_bits)));
-        if !callable_ok {
-            return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
-        }
-        let total = std::mem::size_of::<MoltHeader>() + CALL_ITER_PAYLOAD_SIZE;
-        let iter_ptr = alloc_object(_py, total, TYPE_ID_CALL_ITER);
-        if iter_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            *(iter_ptr as *mut u64) = callable_bits;
-            *(iter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = sentinel_bits;
-            // Initialize cached-tuple slot to null.
-            call_iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-        }
-        inc_ref_bits(_py, callable_bits);
-        inc_ref_bits(_py, sentinel_bits);
-        MoltObject::from_ptr(iter_ptr).bits()
-    })
+    crate::with_gil_entry_nopanic!(_py, { iter_sentinel(_py, callable_bits, sentinel_bits) })
 }
 
 #[unsafe(no_mangle)]
@@ -1042,14 +1083,11 @@ unsafe fn cached_pair_return(
     unsafe {
         let cached = *slot_ptr;
 
-        if !cached.is_null()
-            && let Some((old0, old1)) =
-                crate::object::seq_access::replace_unique_pair(_py, cached, elem0, elem1)
+        if let Some(mut result) =
+            crate::object::seq_access::TupleCacheMutation::claim(_py, cached, 2)
         {
-            // Publish the caller's owner before releasing old elements.
-            // Their finalizers can clear or replace this same cache slot;
-            // rc=2 also prevents nested next() from mutating our result.
-            inc_ref_ptr(_py, cached);
+            let old0 = result.replace_borrowed(0, elem0);
+            let old1 = result.replace_borrowed(1, elem1);
             dec_ref_bits(_py, old0);
             dec_ref_bits(_py, old1);
             if owns_elem0 {
@@ -1058,7 +1096,7 @@ unsafe fn cached_pair_return(
             if owns_elem1 {
                 dec_ref_bits(_py, elem1);
             }
-            return MoltObject::from_ptr(cached).bits();
+            return result.into_bits();
         }
         // Shared or ABI-observed tuples cannot be mutated. Keep the old
         // owner alive until the replacement owns its inputs and is visible.
@@ -1229,10 +1267,15 @@ unsafe fn hash_iterator_finish(py: &PyToken<'_>, ptr: *mut u8, reverse: bool) {
         super::layout::iter_set_target_bits(ptr, MoltObject::none().bits());
         iter_set_index(ptr, ITER_EXHAUSTED);
         super::layout::hash_iterator_state(ptr, reverse).remaining = 0;
-        if !reverse {
-            cached_pair_clear(py, iter_pair_slot(ptr));
-        }
-        dec_ref_bits(py, target);
+        // Only terminal retirement can release the last owner of these edges.
+        // Its finalizers must not replace the original keys-changed error (or
+        // manufacture an error when ordinary exhaustion entered cleanly).
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            if !reverse {
+                cached_pair_clear(py, iter_pair_slot(ptr));
+            }
+            dec_ref_bits(py, target);
+        });
     }
 }
 
@@ -1252,6 +1295,9 @@ impl HashIteratorRow<'_, '_> {
         if projection == TYPE_ID_DICT_ITEMS_VIEW {
             let tuple = alloc_tuple(self.py, &[self.key, self.value]);
             if tuple.is_null() {
+                // Allocation may have run callbacks that removed the dict's
+                // owners. Retire our pinned row without replacing that error.
+                molt_cpython_abi::api::errors::with_preserved_error(|| drop(self));
                 MoltObject::none().bits()
             } else {
                 MoltObject::from_ptr(tuple).bits()
@@ -1345,27 +1391,76 @@ unsafe fn hash_iterator_step<'a, 'py>(
     }
 }
 
-/// Pin public list-iterator identity independently of its removable target.
-unsafe fn publish_list_iterator(py: &PyToken<'_>, ptr: *mut u8, reverse: bool) -> bool {
+/// Publish initialized iterator storage and eagerly pin constant-work classes.
+/// String class classification is deferred until observation or source retirement.
+unsafe fn publish_native_iterator(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
-        let builtins = builtin_classes(py);
-        let class = if reverse {
-            builtins.list_reverseiterator
-        } else {
-            builtins.list_iterator
-        };
+        if object_type_id(ptr) == TYPE_ID_ITER
+            && obj_from_bits(iter_target_bits(ptr))
+                .as_ptr()
+                .is_some_and(|target| object_type_id(target) == TYPE_ID_STRING)
+        {
+            // The ClassInline word is initialized zero. A short prefix read
+            // must not classify all source bytes; type observation or live
+            // source retirement will fill this lane through the shared owner.
+            // Establish class anchors now, so later GC clear cannot allocate.
+            let _ = builtin_classes(py);
+            super::gc::gc_publish_initialized(py, ptr);
+            return true;
+        }
+        let class = crate::builtins::type_ops::type_of_bits(py, MoltObject::from_ptr(ptr).bits());
         if !super::object_init_class_edge_unpublished(
             py,
             ptr,
             class,
             super::ClassEdgeOwnership::Owned,
         ) {
-            raise_exception::<()>(py, "SystemError", "list iterator class publication failed");
+            raise_exception::<()>(
+                py,
+                "SystemError",
+                "native iterator class publication failed",
+            );
             dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
             return false;
         }
         super::gc::gc_publish_initialized(py, ptr);
         true
+    }
+}
+
+/// Resolve the sole deferred native class while its immutable source is live.
+/// ClassInline was selected and zero-initialized by construction, and class
+/// anchors already exist. Publication cannot allocate or invoke Python. A live
+/// type query and source retirement use this same owner; terminal destruction
+/// deliberately never calls it, keeping prefix-only iteration/drop scan-free.
+pub(crate) unsafe fn resolve_deferred_iterator_class(py: &PyToken<'_>, ptr: *mut u8) -> u64 {
+    unsafe {
+        debug_assert_eq!(object_type_id(ptr), TYPE_ID_ITER);
+        let existing = object_class_bits(ptr);
+        if existing != 0 {
+            return existing;
+        }
+        let Some(target) = obj_from_bits(iter_target_bits(ptr)).as_ptr() else {
+            return 0;
+        };
+        if object_type_id(target) != TYPE_ID_STRING {
+            return 0;
+        }
+        let builtins = builtin_classes(py);
+        let class = if super::layout::StringStorage::is_ascii(target) {
+            builtins.str_ascii_iterator
+        } else {
+            builtins.str_iterator
+        };
+        // The only deferred producer preselects this stable class lane. A
+        // missing lane or committed-dead receiver violates that internal proof.
+        assert!(super::object_replace_class_edge(
+            py,
+            ptr,
+            class,
+            super::ClassEdgeOwnership::Owned
+        ));
+        class
     }
 }
 
@@ -1455,6 +1550,7 @@ unsafe fn iter_pair_slot(iter_ptr: *mut u8) -> *mut *mut u8 {
 /// Retire the target before releasing any edge that can reenter the iterator.
 unsafe fn iter_finish(py: &PyToken<'_>, iter_ptr: *mut u8) {
     unsafe {
+        resolve_deferred_iterator_class(py, iter_ptr);
         let target = iter_target_bits(iter_ptr);
         crate::object::layout::iter_set_target_bits(iter_ptr, MoltObject::none().bits());
         iter_set_index(iter_ptr, ITER_EXHAUSTED);
@@ -1553,26 +1649,34 @@ fn invalid_iterator_state(py: &PyToken<'_>) -> IterationResult {
 /// reference, and `Err` means an exception is pending. No step builds a
 /// `(value, done)` pair: that ABI is a projection (`molt_iter_next`).
 #[inline(always)]
-fn native_step(py: &PyToken<'_>, iter_bits: u64) -> Option<IterationResult> {
+fn native_step(
+    py: &PyToken<'_>,
+    iter_bits: u64,
+    exhaustion: IterationExhaustion,
+) -> Option<IterationResult> {
     let ptr = maybe_ptr_from_bits(iter_bits)?;
-    unsafe {
+    // Exact sequence storage has no Python slot call. Keep its scalar advance
+    // free of an exception-stack transaction, as the unboxed fast path was.
+    if unsafe { object_type_id(ptr) == TYPE_ID_ITER && iterates_sequence_target(ptr) } {
+        return Some(unsafe { sequence_iterator_next(py, ptr) });
+    }
+    // Proved hash storage has the same direct typed-step contract: no Python
+    // slot and no StopIteration to reinterpret. Allocation and terminal edge
+    // retirement retain their local error custody in the shared hash owner.
+    if unsafe { matches!(object_type_id(ptr), TYPE_ID_ITER | TYPE_ID_REVERSED) }
+        && let Some((reverse, projection)) = unsafe { hash_iterator_kind(py, ptr) }
+    {
+        return Some(unsafe { hash_iterator_next(py, ptr, reverse, projection) });
+    }
+    let frame = crate::builtins::exceptions::ExceptionStackScope::push(py);
+    let result = (|| unsafe {
         Some(match object_type_id(ptr) {
-            // A hash iterator targets only a dict, set or dict view, so a
-            // sequence target skips the class-edge test that selects a hash
-            // iterator's projection.
-            TYPE_ID_ITER if iterates_sequence_target(ptr) => sequence_iterator_next(py, ptr),
-            TYPE_ID_ITER => match hash_iterator_kind(py, ptr) {
-                Some((reverse, projection)) => hash_iterator_next(py, ptr, reverse, projection),
-                None => sequence_iterator_next(py, ptr),
-            },
-            TYPE_ID_ENUMERATE => enumerate_next(py, ptr),
-            TYPE_ID_ZIP => zip_next(py, ptr),
-            TYPE_ID_MAP => map_next(py, ptr),
-            TYPE_ID_FILTER => filter_next(py, ptr),
-            TYPE_ID_REVERSED => match hash_iterator_kind(py, ptr) {
-                Some((reverse, projection)) => hash_iterator_next(py, ptr, reverse, projection),
-                None => reversed_next(py, ptr),
-            },
+            TYPE_ID_ITER => sequence_iterator_next(py, ptr),
+            TYPE_ID_ENUMERATE => enumerate_next(py, ptr, exhaustion),
+            TYPE_ID_ZIP => zip_next(py, ptr, exhaustion),
+            TYPE_ID_MAP => map_next(py, ptr, exhaustion),
+            TYPE_ID_FILTER => filter_next(py, ptr, exhaustion),
+            TYPE_ID_REVERSED => reversed_next(py, ptr),
             TYPE_ID_CALL_ITER => call_iter_next(py, ptr),
             // Send owns completion, including terminal binding release.
             TYPE_ID_GENERATOR => generator_next_step(py, ptr),
@@ -1583,7 +1687,23 @@ fn native_step(py: &PyToken<'_>, iter_bits: u64) -> Option<IterationResult> {
                 class_native_next_step(py, next, iter_bits)
             }
         })
+    })();
+    if exception_pending(py) {
+        if let Some(Ok(
+            SpecialIterationStep::Item(value) | SpecialIterationStep::Exhausted(value),
+        )) = result
+        {
+            dec_ref_bits(py, value);
+        }
+        return Some(crate::object::iterable::finish_iteration_error(
+            py,
+            SpecialIterationKind::Next,
+            exhaustion,
+            frame,
+        ));
     }
+    drop(frame);
+    result
 }
 
 /// The common sequence targets of a TYPE_ID_ITER, none a hash iterator's.
@@ -1615,25 +1735,18 @@ fn class_native_next_step(
     next: crate::object::layout::NativeNextFn,
     iter_bits: u64,
 ) -> IterationResult {
-    // The same handler-stack custody every runtime call boundary keeps.
     let value = {
         let _baseline = crate::call::ExceptionBaselineGuard::new();
         next(iter_bits)
     };
-    // The callback ABI returns None bits on failure; any other value is an item.
-    if !obj_from_bits(value).is_none() || !exception_pending(py) {
-        return Ok(SpecialIterationStep::Item(value));
+    // The shared advance transaction owns exact exception preservation versus
+    // normalized loop exhaustion, including a native callback's StopIteration.
+    if exception_pending(py) {
+        dec_ref_bits(py, value);
+        Err(())
+    } else {
+        Ok(SpecialIterationStep::Item(value))
     }
-    let exception = molt_exception_last_pending();
-    if !crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "StopIteration")
-    {
-        dec_ref_bits(py, exception);
-        return Err(());
-    }
-    let payload = crate::object::iterable::stop_iteration_payload(py, exception);
-    clear_exception(py);
-    dec_ref_bits(py, exception);
-    Ok(SpecialIterationStep::Exhausted(payload))
 }
 
 /// A generator's `tp_iternext` (CPython's `gen_iternext`): its typed resume
@@ -1667,12 +1780,14 @@ unsafe fn hash_iterator_next(
     unsafe {
         match hash_iterator_step(py, ptr, reverse, projection) {
             Err(()) => Err(()),
+            Ok(None) if exception_pending(py) => Err(()),
             Ok(None) => exhausted(),
             Ok(Some(row)) => {
                 let value = row.value(projection);
-                // Only the items projection allocates, so only it can fail.
-                if projection == TYPE_ID_DICT_ITEMS_VIEW && exception_pending(py) {
-                    dec_ref_bits(py, value);
+                if exception_pending(py) {
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(py, value);
+                    });
                     Err(())
                 } else {
                     Ok(SpecialIterationStep::Item(value))
@@ -1696,10 +1811,14 @@ unsafe fn glob_iter_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
     Ok(SpecialIterationStep::Item(value))
 }
 
-unsafe fn enumerate_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
+unsafe fn enumerate_next(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    exhaustion: IterationExhaustion,
+) -> IterationResult {
     unsafe {
         let inner_slot = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
-        let value = match iteration_step(py, enumerate_target_bits(ptr)) {
+        let value = match iteration_step(py, enumerate_target_bits(ptr), exhaustion) {
             Ok(SpecialIterationStep::Item(value)) => value,
             // CPython leaves the inner StopIteration set, so its value
             // reaches `yield from enumerate(gen)`.
@@ -1834,48 +1953,6 @@ impl<'a, 'py> OwnedRow<'a, 'py> {
             &self.spilled
         }
     }
-
-    fn as_mut_slice(&mut self) -> &mut [u64] {
-        if self.spilled.capacity() == 0 {
-            &mut self.inline[..self.len]
-        } else {
-            &mut self.spilled
-        }
-    }
-
-    /// Publish the row as an iterator's result tuple. Like CPython's zip_next,
-    /// a cached result that only the iterator still owns is refilled in place.
-    unsafe fn into_cached_tuple(mut self, slot: *mut *mut u8) -> IterationResult {
-        unsafe {
-            let cached = *slot;
-            if !cached.is_null()
-                && crate::object::seq_access::swap_unique_tuple_items(cached, self.as_mut_slice())
-            {
-                // Publish the caller's owner before the row releases the
-                // previous items: their finalizers may advance this iterator.
-                inc_ref_ptr(self.py, cached);
-                drop(self);
-                return Ok(SpecialIterationStep::Item(
-                    MoltObject::from_ptr(cached).bits(),
-                ));
-            }
-            let tuple = alloc_tuple_owned(self.py, self.as_slice());
-            if tuple.is_null() {
-                return Err(());
-            }
-            self.len = 0;
-            self.spilled.clear();
-            // Publish both owners before releasing the displaced cache.
-            inc_ref_ptr(self.py, tuple);
-            let previous = std::ptr::replace(slot, tuple);
-            if !previous.is_null() {
-                dec_ref_ptr(self.py, previous);
-            }
-            Ok(SpecialIterationStep::Item(
-                MoltObject::from_ptr(tuple).bits(),
-            ))
-        }
-    }
 }
 
 impl Drop for OwnedRow<'_, '_> {
@@ -1886,7 +1963,11 @@ impl Drop for OwnedRow<'_, '_> {
     }
 }
 
-unsafe fn map_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
+unsafe fn map_next(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    exhaustion: IterationExhaustion,
+) -> IterationResult {
     unsafe {
         let func_bits = map_func_bits(ptr);
         let iters_ptr = map_iters_ptr(ptr);
@@ -1900,7 +1981,7 @@ unsafe fn map_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
         }
         let mut inputs = OwnedRow::new(py, count);
         for index in 0..count {
-            match iteration_step(py, (&*iters_ptr)[index])? {
+            match iteration_step(py, (&*iters_ptr)[index], exhaustion)? {
                 SpecialIterationStep::Item(value) => inputs.push(value),
                 // CPython map_next leaves the input's StopIteration set.
                 SpecialIterationStep::Exhausted(payload) => {
@@ -1926,12 +2007,16 @@ unsafe fn map_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
     }
 }
 
-unsafe fn filter_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
+unsafe fn filter_next(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    exhaustion: IterationExhaustion,
+) -> IterationResult {
     unsafe {
         let func_bits = filter_func_bits(ptr);
         let iter_bits = filter_iter_bits(ptr);
         loop {
-            let value = match iteration_step(py, iter_bits)? {
+            let value = match iteration_step(py, iter_bits, exhaustion)? {
                 SpecialIterationStep::Item(value) => value,
                 // CPython filter_next leaves the input's StopIteration set.
                 SpecialIterationStep::Exhausted(payload) => {
@@ -1960,36 +2045,73 @@ unsafe fn filter_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
     }
 }
 
-unsafe fn zip_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
+unsafe fn zip_next(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    exhaustion: IterationExhaustion,
+) -> IterationResult {
     unsafe {
         let iters_ptr = zip_iters_ptr(ptr);
-        let count = if iters_ptr.is_null() {
-            0
-        } else {
-            (*iters_ptr).len()
-        };
-        if count == 0 {
+        if iters_ptr.is_null() || (&*iters_ptr).is_empty() {
             return exhausted();
         }
+        let iters = &*iters_ptr;
         let strict = zip_strict_bits(ptr) == MoltObject::from_bool(true).bits();
-        let mut values = OwnedRow::new(py, count);
-        for index in 0..count {
-            match iteration_step(py, (&*iters_ptr)[index])? {
-                SpecialIterationStep::Item(value) => values.push(value),
-                SpecialIterationStep::Exhausted(payload) => {
-                    drop(values);
-                    // CPython zip_next leaves a non-strict input's
-                    // StopIteration set; the strict check clears it.
-                    if !strict {
-                        return Ok(SpecialIterationStep::Exhausted(payload));
-                    }
-                    dec_ref_bits(py, payload);
-                    return zip_strict_mismatch(py, iters_ptr, index);
+        let cached = obj_from_bits(super::layout::zip_result_bits(ptr))
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
+        let mut result = if let Some(result) =
+            crate::object::seq_access::TupleCacheMutation::claim(py, cached, iters.len())
+        {
+            result
+        } else {
+            let fresh = super::builders::alloc_tuple_uninitialized(py, iters.len());
+            if fresh.is_null() {
+                return Err(());
+            }
+            // Complete traceable storage precedes every Python callback. The
+            // scoped owner protects it when an item or finalizer reenters zip.
+            super::gc::gc_publish_initialized(py, fresh);
+            let owner = molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(fresh).bits(),
+            );
+            crate::object::seq_access::TupleCacheMutation::from_owned(py, owner, iters.len())
+                .expect("fresh tuple mutation")
+        };
+        let policy = if strict {
+            IterationExhaustion::Normalize
+        } else {
+            exhaustion
+        };
+        for (index, &iterator) in iters.iter().enumerate() {
+            match iteration_step(py, iterator, policy) {
+                Ok(SpecialIterationStep::Item(value)) => {
+                    let old = result.replace_owned(index, value);
+                    dec_ref_bits(py, old);
                 }
-                SpecialIterationStep::Missing => return not_an_iterator(py),
+                Ok(SpecialIterationStep::Exhausted(payload)) => {
+                    drop(result);
+                    if exception_pending(py) {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(py, payload);
+                        });
+                        return Err(());
+                    }
+                    return if strict {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(py, payload);
+                        });
+                        zip_strict_mismatch(py, iters_ptr, index)
+                    } else {
+                        Ok(SpecialIterationStep::Exhausted(payload))
+                    };
+                }
+                Ok(SpecialIterationStep::Missing) => return not_an_iterator(py),
+                Err(()) => return Err(()),
             }
         }
-        values.into_cached_tuple(crate::object::layout::zip_cached_tuple_slot(ptr))
+        Ok(SpecialIterationStep::Item(result.into_bits()))
     }
 }
 
@@ -2018,7 +2140,11 @@ unsafe fn zip_strict_mismatch(
     }
     let count = unsafe { (*iters_ptr).len() };
     for other in 1..count {
-        match iteration_step(py, unsafe { (&*iters_ptr)[other] })? {
+        match iteration_step(
+            py,
+            unsafe { (&*iters_ptr)[other] },
+            IterationExhaustion::Normalize,
+        )? {
             SpecialIterationStep::Item(value) => {
                 dec_ref_bits(py, value);
                 let msg = format!(
@@ -2371,6 +2497,7 @@ unsafe fn sequence_iterator_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationRes
                     py,
                     target_bits,
                     SpecialIterationKind::SequenceItem(index_bits),
+                    IterationExhaustion::Normalize,
                 ) {
                     Ok(SpecialIterationStep::Item(value)) => {
                         iter_set_index(ptr, idx + 1);
@@ -2463,23 +2590,38 @@ unsafe fn pair_from_step(py: &PyToken<'_>, iter_bits: u64, step: IterationResult
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        unsafe { pair_from_step(_py, iter_bits, iteration_step(_py, iter_bits)) }
+        unsafe {
+            pair_from_step(
+                _py,
+                iter_bits,
+                iteration_step(_py, iter_bits, IterationExhaustion::Normalize),
+            )
+        }
     })
 }
 
 /// The one iterator advance: the native step when the receiver has one, else
 /// the Python `__next__` protocol. Items and exhaustion payloads transfer
 /// ownership; `Missing` means the receiver is not an iterator.
-pub(crate) fn iteration_step(py: &PyToken<'_>, iter_bits: u64) -> IterationResult {
-    advance(py, iter_bits)
+pub(crate) fn iteration_step(
+    py: &PyToken<'_>,
+    iter_bits: u64,
+    exhaustion: IterationExhaustion,
+) -> IterationResult {
+    advance(py, iter_bits, exhaustion)
 }
 
 /// The body of `iteration_step`, inlined into the compiled loop's entry so
 /// its native dispatch runs without a call or a returned-enum round trip.
 #[inline(always)]
-fn advance(py: &PyToken<'_>, iter_bits: u64) -> IterationResult {
-    native_step(py, iter_bits).unwrap_or_else(|| {
-        crate::object::iterable::special_iteration_step(py, iter_bits, SpecialIterationKind::Next)
+fn advance(py: &PyToken<'_>, iter_bits: u64, exhaustion: IterationExhaustion) -> IterationResult {
+    native_step(py, iter_bits, exhaustion).unwrap_or_else(|| {
+        crate::object::iterable::special_iteration_step(
+            py,
+            iter_bits,
+            SpecialIterationKind::Next,
+            exhaustion,
+        )
     })
 }
 
@@ -2522,7 +2664,7 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
 #[inline(always)]
 fn iter_next_unboxed_step(py: &PyToken<'_>, iter_bits: u64) -> (u64, u64) {
     let no_value = MoltObject::none().bits();
-    match advance(py, iter_bits) {
+    match advance(py, iter_bits, IterationExhaustion::Normalize) {
         Ok(SpecialIterationStep::Item(value)) => (MoltObject::from_bool(false).bits(), value),
         Ok(SpecialIterationStep::Exhausted(payload)) => {
             dec_ref_bits(py, payload);
@@ -2638,6 +2780,10 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[path = "ops_iter_generic_tests.rs"]
+mod generic_tests;
+
+#[cfg(test)]
 #[path = "ops_iter_string_tests.rs"]
 mod string_tests;
 
@@ -2647,7 +2793,7 @@ mod tests {
     use crate::object::HEADER_FLAG_CONTAINS_REFS;
     use crate::{
         MoltObject, alloc_dict_with_pairs, alloc_string, dec_ref_bits, header_from_obj_ptr,
-        molt_dict_items, molt_unpack_sequence,
+        molt_dict_items, molt_reversed_builtin, molt_unpack_sequence,
     };
 
     unsafe fn refcount(bits: u64) -> u32 {
@@ -2796,41 +2942,135 @@ mod tests {
     }
 
     #[test]
+    fn map_and_zip_construction_denial_releases_references_and_backing() {
+        use crate::object::backing::{tracked_vec_box_from_raw, tracked_vec_box_with_capacity};
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+        struct ResetTracker;
+        impl Drop for ResetTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let tuple =
+                    MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(1).bits()]))
+                        .bits();
+                let first = molt_iter(tuple);
+                let second = molt_iter(tuple);
+                let refs = [refcount(first), refcount(second)];
+                let none = MoltObject::none().bits();
+                for map in [true, false] {
+                    // These already-created iterators return themselves from
+                    // __iter__, so the denied allocations are constructor work.
+                    // Deny each constructor allocation in turn: backing, zip
+                    // result cache, aggregate object. A failed constructor must
+                    // return all references and its entire admitted budget.
+                    for allowed in 0..if map { 2 } else { 3 } {
+                        let reset = ResetTracker;
+                        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                            max_allocations: Some(allowed),
+                            ..Default::default()
+                        })));
+                        let result = if map {
+                            super::map_new_impl(py, none, &[first, second])
+                        } else {
+                            super::zip_new_impl(py, &[first, second], false)
+                        };
+                        assert_eq!(result, none);
+                        crate::test_support::assert_and_clear_emergency_memory_error(py);
+                        assert_eq!([refcount(first), refcount(second)], refs);
+                        let mut probes = Vec::new();
+                        for _ in 0..allowed {
+                            probes.push(
+                                tracked_vec_box_with_capacity::<u64>(0)
+                                    .expect("returned allocation budget"),
+                            );
+                        }
+                        assert!(tracked_vec_box_with_capacity::<u64>(0).is_none());
+                        for probe in probes {
+                            drop(tracked_vec_box_from_raw(probe));
+                        }
+                        drop(reset);
+                    }
+                    let result = if map {
+                        super::map_new_impl(py, none, &[first, second])
+                    } else {
+                        super::zip_new_impl(py, &[first, second], false)
+                    };
+                    assert!(!crate::exception_pending(py));
+                    assert!(MoltObject::from_bits(result).as_ptr().is_some());
+                    assert_eq!(
+                        [refcount(first), refcount(second)],
+                        [refs[0] + 1, refs[1] + 1]
+                    );
+                    dec_ref_bits(py, result);
+                    assert_eq!([refcount(first), refcount(second)], refs);
+                }
+                for bits in [first, second, tuple] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
     fn dictionary_items_allocation_failure_consumes_the_selected_row() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            unsafe {
-                let int = |value| MoltObject::from_int(value).bits();
-                let dict = alloc_dict_with_pairs(py, &[int(0), int(10), int(1), int(11)]);
-                let bits = MoltObject::from_ptr(dict).bits();
-                let view = molt_dict_items(bits);
-                let iter = molt_iter(view);
-                crate::resource::set_tracker(Box::new(crate::resource::LimitedTracker::new(
-                    &crate::resource::ResourceLimits {
-                        max_memory: Some(0),
-                        ..Default::default()
-                    },
-                )));
-                let (_, failed) = hash_test_next(iter);
-                crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
-                assert!(crate::exception_pending(py));
-                crate::molt_exception_clear();
-                dec_ref_bits(py, failed);
-                assert_eq!(super::hash_iterator_length_hint(iter), int(1));
-                let (done, pair) = hash_test_next(iter);
-                assert!(!done);
-                let tuple = MoltObject::from_bits(pair).as_ptr().unwrap();
-                assert_eq!(
-                    crate::object::seq_access::with_immutable_tuple_slice(tuple, |items| items
-                        .to_vec()),
-                    Some(vec![int(1), int(11)])
-                );
-                dec_ref_bits(py, pair);
-                assert!(hash_test_next(iter).0);
-                for value in [iter, view, bits] {
-                    dec_ref_bits(py, value);
+            for reverse in [false, true] {
+                unsafe {
+                    let int = |value| MoltObject::from_int(value).bits();
+                    let dict = alloc_dict_with_pairs(py, &[int(0), int(10), int(1), int(11)]);
+                    let bits = MoltObject::from_ptr(dict).bits();
+                    let view = molt_dict_items(bits);
+                    let iter = if reverse {
+                        molt_reversed_builtin(view)
+                    } else {
+                        molt_iter(view)
+                    };
+                    crate::resource::set_tracker(Box::new(crate::resource::LimitedTracker::new(
+                        &crate::resource::ResourceLimits {
+                            max_memory: Some(0),
+                            ..Default::default()
+                        },
+                    )));
+                    let (_, failed) = hash_test_next(iter);
+                    crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
+                    assert!(crate::exception_pending(py));
+                    let error = crate::molt_exception_last_pending();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
+                        "MemoryError",
+                    ));
+                    crate::molt_exception_clear();
+                    dec_ref_bits(py, error);
+                    dec_ref_bits(py, failed);
+                    assert_eq!(super::hash_iterator_length_hint(iter), int(1));
+                    let (done, pair) = hash_test_next(iter);
+                    assert!(!done);
+                    let tuple = MoltObject::from_bits(pair).as_ptr().unwrap();
+                    assert_eq!(
+                        crate::object::seq_access::with_immutable_tuple_slice(tuple, |items| items
+                            .to_vec()),
+                        Some(if reverse {
+                            vec![int(0), int(10)]
+                        } else {
+                            vec![int(1), int(11)]
+                        })
+                    );
+                    dec_ref_bits(py, pair);
+                    assert!(hash_test_next(iter).0);
+                    for value in [iter, view, bits] {
+                        dec_ref_bits(py, value);
+                    }
+                    assert!(!crate::exception_pending(py));
                 }
-                assert!(!crate::exception_pending(py));
             }
         });
     }

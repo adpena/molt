@@ -559,15 +559,30 @@ def test_incident_capsules_in_active_directory_do_not_claim_guard_custody(tmp_pa
 # --- 2c. a lock-held dir is never reclaimed (real held lock) ----------------
 
 
-def test_lock_held_dir_never_reclaimed(tmp_path):
+@pytest.mark.parametrize("lock_name", [".cargo-lock", ".cargo-build-lock"])
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "",
+        "debug",
+        "wasm32-wasip1/release",
+        "sessions/shard-7/debug",
+        "sessions/shard-7/wasm32-wasip1/release",
+        ".molt-toolchains/0123abcd/dev-fast",
+        ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast",
+        "sessions/shard-7/.molt-toolchains/0123abcd/dev-fast",
+        "sessions/shard-7/.molt-toolchains/0123abcd/wasm32-wasip1/dev-fast",
+    ],
+)
+def test_lock_held_dir_never_reclaimed(tmp_path, profile, lock_name):
     now = 2_000_000.0
     d = tmp_path / "target" / "codex-building"
     d.mkdir(parents=True)
     (d / "artifact.bin").write_bytes(b"\0" * 4096)
-    lock_path = d / ".cargo-lock"
+    lock_path = d / profile / lock_name
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_bytes(b"\0")
-    stamp = now - 100_000  # otherwise-stale
-    os.utime(d, (stamp, stamp))
+    _last_used([d], 100_000, now)  # The held lock is the only live signal.
 
     handle = open(lock_path, "a+b")
     got_lock = False
@@ -615,6 +630,16 @@ def test_lock_held_dir_never_reclaimed(tmp_path):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+    assert dg._lock_held(d) is False
+    released = dg.ensure_free(
+        root=str(tmp_path),
+        config=_cfg(),
+        free_bytes_fn=vol,
+        now_fn=lambda: now,
+        env={},
+    )
+    assert str(d.resolve()) in _reclaimed(released)
+    assert not d.exists()
 
 
 # --- 3. AGENT-SAFETY source scan: zero process-actuation tokens -------------
@@ -822,9 +847,10 @@ def _checkout_state(ext: Path, checkout: Path) -> dict[str, Path]:
         "cargo-target": dx.cargo_target_dir_for_artifact_root(
             ext, None, source_root=checkout
         ),
-        "uv-environment": dx.stable_uv_project_env_dir(
-            ext, purpose="dx", python="3.12", source_root=checkout
-        ),
+        # Retired mutable layout remains covered by the retirement authority.
+        "uv-environment": ext
+        / "uv-project-envs"
+        / (f"dx__py3.12__src-{dx.checkout_component(checkout)}"),
         "pytest-cache": checkout_state.checkout_scratch_state_dir(
             "pytest-cache", checkout, env
         ),
@@ -856,9 +882,15 @@ def _checkout_family(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
 
 def _last_used(roots, seconds_ago: float, now: float) -> None:
     """Age ordinary fixture-owned roots and their direct activity entries."""
+    from molt import checkout_state
+
     stamp = now - seconds_ago
     for root in roots:
-        for path in (*root.iterdir(), root):
+        metadata = checkout_state._state_metadata_root(root)
+        paths = [*root.iterdir(), root]
+        if metadata != root and metadata.is_dir():
+            paths.extend((*metadata.iterdir(), metadata))
+        for path in paths:
             os.utime(path, (stamp, stamp))
 
 
@@ -1197,8 +1229,8 @@ def test_pressure_evicts_checkout_state_by_last_use_outside_the_window(tmp_path)
     assert roots["recent"].is_dir(), "a root used within the window survives pressure"
 
 
-def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path):
-    from molt import checkout_state
+def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path, monkeypatch):
+    from molt import build_state_layout, checkout_state
     from molt.memory_guard_paths import active_guard_marker_dirs_of
 
     ext, projects, env = _checkout_family(tmp_path)
@@ -1209,6 +1241,28 @@ def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path):
     earlier_roots = _checkout_state(ext, earlier)
     checkout_state.stamp_checkout_state(retired, env)
     checkout_state.stamp_checkout_state(earlier, env)
+    # A matching owner is only a selection hint: a copied record under the
+    # wrong target hash must not grant deletion authority.
+    control = retired_roots["build-control"]
+    wrong_name = ("0" if control.name[0] != "0" else "1") + control.name[1:]
+    forged = control.with_name(wrong_name)
+    forged.mkdir()
+    (forged / checkout_state.OWNER_RECORD).write_bytes(
+        (control / checkout_state.OWNER_RECORD).read_bytes()
+    )
+    resolve_owned_path = build_state_layout.resolve_owned_path
+    resolved_owners = []
+
+    def resolve_selected_owner(path):
+        assert path != earlier_roots["cargo-target"], (
+            "retirement resolved an unrelated target before selecting its owner"
+        )
+        resolved_owners.append(path)
+        return resolve_owned_path(path)
+
+    monkeypatch.setattr(
+        build_state_layout, "resolve_owned_path", resolve_selected_owner
+    )
     retired.rmdir()
     earlier.rmdir()
     # A guard elsewhere in the artifact root says nothing about these roots.
@@ -1223,6 +1277,8 @@ def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path):
     assert not any(path.exists() for path in retired_roots.values())
     # Fresh state of another removed checkout waits for the protection window.
     assert all(path.is_dir() for path in earlier_roots.values())
+    assert forged.is_dir(), "selection must not replace target-address binding"
+    assert retired_roots["cargo-target"] in resolved_owners
 
 
 def test_the_running_interpreters_environment_is_never_reclaimed(tmp_path):
@@ -1262,7 +1318,7 @@ def test_the_running_interpreters_environment_is_never_reclaimed(tmp_path):
     assert len(reclaimed) == 4 and not roots["cargo-target"].exists()
 
 
-def test_dx_collects_idle_checkout_state_at_most_once_a_day(tmp_path):
+def test_dx_completion_collects_idle_state_without_collecting_its_environment(tmp_path):
     import time
 
     from molt import checkout_state
@@ -1280,11 +1336,13 @@ def test_dx_collects_idle_checkout_state_at_most_once_a_day(tmp_path):
     code = (
         "import sys; from pathlib import Path\n"
         f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
-        "from molt.dx import RunContext\n"
-        "RunContext(Path(sys.argv[1]), session_prefix='t').canonical_env(\n"
+        "from molt.dx import RunContext, collect_checkout_state_after_result\n"
+        "env = RunContext(Path(sys.argv[1]), session_prefix='t').canonical_env(\n"
         "    {'MOLT_EXT_ROOT': sys.argv[2], 'PATH': '/usr/bin:/bin'}, create_dirs=True)\n"
+        "assert Path(sys.argv[3]).is_dir(), 'environment construction collected global state'\n"
+        "collect_checkout_state_after_result(env, cwd=Path(sys.argv[1]))\n"
     )
-    # canonical_env collects only outside pytest, as for lane registration.
+    # A real source process, outside pytest's automatic-maintenance opt-out.
     clean = {
         key: value
         for key, value in os.environ.items()
@@ -1293,7 +1351,14 @@ def test_dx_collects_idle_checkout_state_at_most_once_a_day(tmp_path):
 
     def run() -> None:
         completed = run_guarded_test_process(
-            [sys.executable, "-c", code, str(user), str(ext)],
+            [
+                sys.executable,
+                "-c",
+                code,
+                str(user),
+                str(ext),
+                str(next(iter(gone_roots.values()))),
+            ],
             cwd=tmp_path,
             env=clean,
             timeout=120,
@@ -1310,10 +1375,499 @@ def test_dx_collects_idle_checkout_state_at_most_once_a_day(tmp_path):
     checkout_state.stamp_checkout_state(later, env)
     later.rmdir()
     _last_used(later_roots.values(), 3 * HOUR, now)
+    # The environment-only assertion still names a real idle root on run two.
+    gone_roots = later_roots
     run()
     assert all(path.is_dir() for path in later_roots.values())
     assert not checkout_state.checkout_state_gc_due(ext)
     assert checkout_state.checkout_state_gc_due(ext, now=now + 25 * HOUR)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"MOLT_DISABLE_DISK_GUARD": "1"},
+        {"PYTEST_CURRENT_TEST": "fixture"},
+        {"MOLT_MEMORY_GUARD_ACTIVE": "1"},
+        {"MOLT_MEMORY_GUARD_STARTUP_JSON": "pending-startup.json"},
+    ],
+)
+def test_automatic_collection_requires_an_eligible_outer_completion(
+    tmp_path, monkeypatch, extra
+):
+    from molt import checkout_state
+
+    ext, _projects, env = _checkout_family(tmp_path)
+
+    def forbidden():
+        pytest.fail("ineligible completion loaded the collector")
+
+    monkeypatch.setattr(dx, "_source_disk_guard", forbidden)
+    dx.collect_checkout_state_after_result({**env, **extra}, cwd=tmp_path)
+    assert not ext.joinpath(*checkout_state.GC_STAMP).exists()
+
+
+def test_installed_completion_does_not_claim_source_collection(tmp_path, monkeypatch):
+    from molt import checkout_state
+
+    ext, _projects, env = _checkout_family(tmp_path)
+    monkeypatch.setattr(dx, "_source_disk_guard", lambda: None)
+    dx.collect_checkout_state_after_result(env, cwd=tmp_path)
+    assert not ext.joinpath(*checkout_state.GC_STAMP).exists()
+
+
+def test_installed_maintenance_selection_imports_no_source_tools(tmp_path, monkeypatch):
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    monkeypatch.setattr(dx, "compiler_source_root", lambda: installed)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("installed maintenance tried to resolve source artifact policy")
+
+    monkeypatch.setattr(dx, "artifact_root", forbidden)
+    assert dx.checkout_state_maintenance_environment(installed, {}) is None
+    assert list(installed.iterdir()) == []
+
+
+def test_maintenance_selection_failure_is_reported_without_replacing_result(
+    tmp_path, monkeypatch, capsys
+):
+    def unavailable():
+        raise RuntimeError("source unavailable")
+
+    monkeypatch.setattr(dx, "compiler_source_root", unavailable)
+    assert dx.checkout_state_maintenance_environment(tmp_path, {}) is None
+    assert "checkout state GC failed: source unavailable" in capsys.readouterr().err
+
+
+def test_automatic_collection_reports_real_reclaim_errors_and_throttles_failure(
+    tmp_path, monkeypatch, capsys
+):
+    import time
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    _last_used(roots.values(), 3 * HOUR, time.time())
+    monkeypatch.setattr(dg, "delete_path", lambda _path: (False, "fixture-denied"))
+    dx.collect_checkout_state_after_result(env, cwd=tmp_path)
+    diagnostics = capsys.readouterr().err
+    assert diagnostics.count("fixture-denied") == 3
+    assert "1 more error(s)" in diagnostics
+    assert all(path.is_dir() for path in roots.values())
+    assert not checkout_state.checkout_state_gc_due(ext)
+
+    def forbidden(**_kwargs):
+        pytest.fail("failed attempt was repeated before the next day")
+
+    monkeypatch.setattr(dg, "collect", forbidden)
+    dx.collect_checkout_state_after_result(env, cwd=tmp_path)
+
+
+def test_daily_collection_admission_is_nonblocking_across_processes(tmp_path):
+    import subprocess
+    from molt import checkout_state
+    from tests.process_guard_common import start_owned_test_process
+
+    ext = tmp_path / "artifacts"
+    ext.mkdir()
+    code = (
+        "import sys; from pathlib import Path\n"
+        f"sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / 'src')!r}]\n"
+        "from molt.checkout_state import checkout_state_gc\n"
+        "with checkout_state_gc(Path(sys.argv[1])) as admitted:\n"
+        " print(admitted, flush=True)\n"
+        " sys.stdin.read(1)\n"
+    )
+    with start_owned_test_process(
+        [sys.executable, "-c", code, str(ext)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as child:
+        assert child.stdout is not None and child.stdin is not None
+        try:
+            assert child.stdout.readline().strip() == "True"
+            # Force the cadence due while another process still holds admission.
+            # A stamp-only implementation would admit this second collector.
+            stamp = ext.joinpath(*checkout_state.GC_STAMP)
+            os.utime(stamp, (1, 1))
+            with checkout_state.checkout_state_gc(ext) as admitted:
+                assert admitted is False
+            assert child.poll() is None
+        finally:
+            child.communicate("x", timeout=10)
+        assert child.returncode == 0
+    with pytest.raises(RuntimeError, match="interrupted fixture"):
+        with checkout_state.checkout_state_gc(ext) as admitted:
+            assert admitted is True
+            raise RuntimeError("interrupted fixture")
+    assert not checkout_state.checkout_state_gc_due(ext)
+    os.utime(ext.joinpath(*checkout_state.GC_STAMP), (1, 1))
+    with checkout_state.checkout_state_gc(ext) as admitted:
+        assert admitted is True
+
+
+@pytest.mark.parametrize("owner", ["memory_guard", "dx_run", "nested_guarded_exec"])
+def test_outer_completion_publishes_payload_before_real_collection(
+    tmp_path, monkeypatch, owner
+):
+    import argparse
+    import time
+    from molt import checkout_state
+    from tools import memory_guard
+    from molt.cli import dx_cli
+    from tests.process_guard_common import ModuleView
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    _last_used(roots.values(), 3 * HOUR, time.time())
+    marker = tmp_path / "payload-ran"
+    summary = tmp_path / "guard.json"
+    selected = {
+        **env,
+        "PATH": os.environ.get("PATH", ""),
+        "MOLT_DISK_GUARD_HIGH_WATER_GB": "0.001",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    command = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('closed payload', encoding='utf-8'); raise SystemExit(7)",
+    ]
+    if owner == "nested_guarded_exec":
+        # The real outer guard supplies ACTIVE to the standalone nested
+        # facade. Its payload environment drops internal keys, but its owner
+        # eligibility must still defer to the outer guard's later terminal.
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import sys; from pathlib import Path\n"
+                f"sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / 'src')!r}]\n"
+                "from tools import guarded_exec\n"
+                f"rc = guarded_exec.main(['--', *{command!r}])\n"
+                f"assert all(Path(p).is_dir() for p in {[str(p) for p in roots.values()]!r}), 'nested facade collected inside outer guard'\n"
+                "raise SystemExit(rc)\n"
+            ),
+        ]
+    original = dg.collect
+    observations = []
+
+    def collect(**kwargs):
+        assert marker.read_text(encoding="utf-8") == "closed payload"
+        if owner != "dx_run":
+            payload = json.loads(summary.read_text(encoding="utf-8"))
+            assert payload["returncode"] == 7
+            assert payload["descendants_closed"] is True
+        observations.append(owner)
+        return original(**kwargs)
+
+    monkeypatch.setattr(dg, "collect", collect)
+    if owner != "dx_run":
+        result = memory_guard.main(
+            [
+                "--max-rss-gb",
+                "1",
+                "--max-total-rss-gb",
+                "1",
+                "--poll-interval",
+                "0.01",
+                "--summary-json",
+                str(summary),
+                "--",
+                *command,
+            ],
+            environ=selected,
+        )
+    else:
+        monkeypatch.setattr(dx_cli, "os", ModuleView(os, environ=selected))
+        result = dx_cli._handle_run(argparse.Namespace(child_command=command))
+    assert result == 7
+    assert observations == [owner]
+    assert not any(path.exists() for path in roots.values())
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "build",
+        "driver-fix",
+        "cli-run",
+        "cli-compare",
+        "cli-test",
+        "cli-diff",
+        "cli-bench",
+        "cli-profile",
+        "cli-lint",
+        "cli-harness",
+        "cli-deploy",
+    ],
+)
+def test_published_nonzero_result_collects_selected_root_alongside_live_use(
+    tmp_path, monkeypatch, capsys, owner
+):
+    import time
+    from molt import checkout_state
+    from molt.cli import build_command, build_output_layout
+    from molt.cli.build_request import BuildRequest
+    from molt.process_environment import ProcessEnvironment
+    from tests.process_guard_common import ModuleView, run_guarded_test_process
+    from tools import molt_dev
+    from tools.molt_dev_policy import GateEnvironment
+
+    ext, projects, selected = _checkout_family(tmp_path)
+    live, gone = projects / "live", projects / "gone"
+    live.mkdir()
+    gone.mkdir()
+    live_roots = _checkout_state(ext, live)
+    gone_roots = _checkout_state(ext, gone)
+    checkout_state.stamp_checkout_state(live, selected)
+    checkout_state.stamp_checkout_state(gone, selected)
+    selected = ProcessEnvironment(
+        {
+            **selected,
+            "PATH": os.defpath,
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "guards"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    ambient = tmp_path / "ambient-artifacts"
+    ambient.mkdir()
+    valuable = ambient / "keep.bin"
+    valuable.write_bytes(b"ambient is not the selected root")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient))
+    marker = tmp_path / "payload-result"
+    original = dg.collect
+    observations = []
+
+    def collect(**kwargs):
+        assert marker.read_text(encoding="utf-8") == "7"
+        assert "published result 7" in capsys.readouterr().out
+        assert kwargs["root"] == ext
+        assert kwargs["env"]["MOLT_EXT_ROOT"] == str(ext)
+        observations.append("publication precedes maintenance")
+        return original(**kwargs)
+
+    monkeypatch.setattr(dg, "collect", collect)
+
+    def payload():
+        proc = run_guarded_test_process(
+            [
+                sys.executable,
+                "-c",
+                (
+                    f"from pathlib import Path; Path({str(marker)!r}).write_text('7', encoding='utf-8'); "
+                    "raise SystemExit(7)"
+                ),
+            ],
+            env=selected,
+            check=False,
+        )
+        assert proc.returncode == 7
+        print("published result 7")
+        return 7
+
+    if owner == "build":
+        monkeypatch.setattr(build_output_layout, "os", ModuleView(os, environ=selected))
+        command = build_command._in_build_scope(lambda _request: payload())
+
+        def run():
+            return command(BuildRequest(file_path="app.py", cache=False))
+
+        expected = 7
+    elif owner == "driver-fix":
+        context = GateEnvironment(selected, None, False)
+        monkeypatch.setattr(
+            molt_dev, "prepare_gate_environment", lambda *_a, **_k: context
+        )
+        monkeypatch.setattr(molt_dev, "run_gate", lambda *_a, **_k: payload())
+        args = molt_dev.build_parser().parse_args(["fix", "--repo", str(projects)])
+
+        def run():
+            return molt_dev.cmd_fix(args)
+
+        expected = 1
+    else:
+        from types import SimpleNamespace
+        from molt.cli import entrypoint, entrypoint_dispatch
+
+        args = SimpleNamespace(command=owner.removeprefix("cli-"), json=True)
+        monkeypatch.setattr(entrypoint, "os", ModuleView(os, environ=selected))
+        monkeypatch.setattr(
+            entrypoint,
+            "_build_entrypoint_parser",
+            lambda: SimpleNamespace(parse_args=lambda: args),
+        )
+        monkeypatch.setattr(
+            entrypoint_dispatch,
+            "_dispatch_entrypoint_command",
+            lambda *_a, **_kw: payload(),
+        )
+        run = entrypoint.main
+        expected = 7
+    chosen = live_roots["cargo-target"]
+    bound = checkout_state.bound_checkout_owner(chosen, ext)
+    with checkout_state.checkout_state_use(((chosen, bound),)):
+        live.rmdir()
+        gone.rmdir()
+        _last_used([*live_roots.values(), *gone_roots.values()], 40 * DAY, time.time())
+        before = (chosen / "payload.bin").read_bytes()
+        assert run() == expected
+        assert chosen.is_dir()
+        assert (chosen / "payload.bin").read_bytes() == before
+        assert not any(path.exists() for path in gone_roots.values())
+    assert observations == ["publication precedes maintenance"]
+    assert valuable.read_bytes() == b"ambient is not the selected root"
+
+
+@pytest.mark.parametrize(
+    "owner", ["build-json", "build-human", "difftest", "queue", "cli-harness"]
+)
+def test_terminal_output_reaches_real_pipe_before_blocked_maintenance(tmp_path, owner):
+    import queue
+    import subprocess
+    import threading
+    import time
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    entered = tmp_path / "maintenance-entered"
+    program = tmp_path / "app.py"
+    program.write_text("print('ok')\n", encoding="utf-8")
+    source = f"""
+import json, sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / "src")!r}]
+from molt import dx
+assert not sys.stdout.line_buffering, "the oracle needs a buffered real pipe"
+def block(env, *, cwd):
+    Path({str(entered)!r}).write_text("entered", encoding="utf-8")
+    assert sys.stdin.buffer.read(1) == b"r"
+dx.collect_checkout_state_after_result = block
+if {owner!r}.startswith("build-"):
+    from molt.cli import build_command, output
+    from molt.cli.build_request import BuildRequest
+    def body(request):
+        if {owner!r} == "build-json":
+            output.emit_json({{"returncode": 7}}, True)
+        else:
+            output.success("human result 7")
+        return 7
+    rc = build_command._in_build_scope(body)(BuildRequest(file_path={str(program)!r}, cache=False))
+elif {owner!r} == "cli-harness":
+    from molt.cli import entrypoint, entrypoint_dispatch
+    args = SimpleNamespace(command="harness", json=True)
+    entrypoint._build_entrypoint_parser = lambda: SimpleNamespace(parse_args=lambda: args)
+    def dispatch(*args, **kwargs):
+        print(json.dumps({{"returncode": 7}}))
+        return 7
+    entrypoint_dispatch._dispatch_entrypoint_command = dispatch
+    rc = entrypoint.main()
+elif {owner!r} == "queue":
+    from tools.proof_queue_pkg import runner
+    runner._publish_terminal_result("failed", "fixture", 7, 1.0, Path("fixture.log"))
+    block({{}}, cwd=Path.cwd())
+    rc = 7
+else:
+    from tools import molt_dev
+    molt_dev.python_interpreter.probe_python_command = lambda command, **kw: molt_dev.python_interpreter.PythonInterpreter(tuple(command), command[0], "3.12.0", "CPython")
+    molt_dev._run_driver_command = lambda *a, **kw: SimpleNamespace(returncode=0)
+    def capture(command, **kwargs):
+        if command[1:3] == ["-m", "molt"]:
+            Path(command[command.index("--output") + 1]).write_bytes(b"fixture")
+        return 0, b"ok\\n", b""
+    molt_dev._difftest_capture = capture
+    args = molt_dev.build_parser().parse_args(["difftest", {str(program)!r}, "--root", {str(ROOT)!r}, "--target", "native", "--python-version", "3.12", "--out-dir", {str(tmp_path)!r}, "--json"])
+    rc = molt_dev.cmd_difftest(args)
+raise SystemExit(rc)
+"""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper()
+        not in {
+            "PYTHONUNBUFFERED",
+            "PYTEST_CURRENT_TEST",
+            "PYTEST_VERSION",
+            "MOLT_MEMORY_GUARD_ACTIVE",
+            "MOLT_MEMORY_GUARD_STARTUP_JSON",
+            "MOLT_PROOF_QUEUE",
+            "MOLT_PYTEST_OUTER_GUARD_REEXEC",
+        }
+    }
+    env.update(
+        {
+            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "guards"),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    proc = start_owned_test_process(
+        [sys.executable, "-c", source],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    observed = queue.Queue()
+    reader = threading.Thread(
+        target=lambda: observed.put(proc.stdout.readline()), daemon=True
+    )
+    reader.start()
+    try:
+        deadline = time.monotonic() + 5
+        while (
+            not entered.exists() and proc.poll() is None and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert entered.exists(), "the command did not reach maintenance"
+        try:
+            line = observed.get(timeout=3)
+        except queue.Empty:
+            pytest.fail("terminal output stayed buffered while maintenance blocked")
+        if owner == "build-human":
+            assert line == b"human result 7\n"
+        elif owner == "queue":
+            assert line == b"failed fixture rc=7 elapsed=1.0s\n"
+        else:
+            payload = json.loads(line)
+            assert (
+                payload == {"returncode": 7}
+                if owner != "difftest"
+                else payload["passed"] is True
+            )
+        assert proc.poll() is None, (
+            "publication must be visible before maintenance returns"
+        )
+    finally:
+        try:
+            proc.stdin.write(b"r")
+            proc.stdin.flush()
+        except BrokenPipeError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            close_owned_test_process(proc)
+        reader.join(timeout=2)
+        proc.stdin.close()
+        proc.stdout.close()
+        diagnostic = proc.stderr.read().decode("utf-8", "replace")
+        proc.stderr.close()
+    assert proc.returncode == (0 if owner == "difftest" else 7), diagnostic
 
 
 def test_the_daily_collection_also_relieves_disk_pressure(tmp_path):
@@ -1357,6 +1911,34 @@ def test_the_daily_collection_also_relieves_disk_pressure(tmp_path):
         ("cargo-target", "wasm32-wasip1/dev-fast/.cargo-lock"),
         ("cargo-target", "sessions/shard-7/debug/.cargo-lock"),
         ("cargo-target", "sessions/shard-7/wasm32-wasip1/release/.cargo-lock"),
+        ("cargo-target", ".molt-toolchains/0123abcd/dev-fast/.cargo-lock"),
+        (
+            "cargo-target",
+            ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/dev-fast/.cargo-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/"
+            "wasm32-wasip1/dev-fast/.cargo-lock",
+        ),
+        ("cargo-target", ".molt-toolchains/0123abcd/dev-fast/.cargo-build-lock"),
+        (
+            "cargo-target",
+            ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-build-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/dev-fast/.cargo-build-lock",
+        ),
+        (
+            "cargo-target",
+            "sessions/shard-7/.molt-toolchains/0123abcd/"
+            "wasm32-wasip1/dev-fast/.cargo-build-lock",
+        ),
         ("build-control", "build_locks/runtime.dev-fast.native.lock"),
         ("build-control", "diff_run.lock"),
         ("build-control", "backend_daemon/suite-leases/0123abcd/owner.lock"),
@@ -1647,6 +2229,13 @@ def test_pressure_evicts_session_targets_by_last_use_outside_the_window(tmp_path
         ("target", ".cargo-lock"),
         ("target", "debug/.cargo-lock"),
         ("target", "wasm32-wasip1/release/.cargo-lock"),
+        ("target", ".molt-toolchains/0123abcd/dev-fast/.cargo-lock"),
+        ("target", ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-lock"),
+        ("target", ".molt-toolchains/0123abcd/dev-fast/.cargo-build-lock"),
+        (
+            "target",
+            ".molt-toolchains/0123abcd/wasm32-wasip1/dev-fast/.cargo-build-lock",
+        ),
         ("control", "build_locks/runtime.dev-fast.native.lock"),
         ("control", "diff_run.lock"),
         ("control", "backend_daemon/suite-leases/0123abcd/owner.lock"),
@@ -1845,7 +2434,9 @@ def test_checkout_session_foreign_record_and_name_do_not_grant_orphan_custody(tm
 
 
 @pytest.mark.parametrize("operation", ["gc", "pressure", "retirement"])
-@pytest.mark.parametrize("selected", ["session", "control", "uv-environment"])
+@pytest.mark.parametrize(
+    "selected", ["session", "control", "uv-environment", "python-environment"]
+)
 def test_managed_shared_use_retains_idle_root_through_actual_operation(
     tmp_path, operation, selected
 ):
@@ -1858,11 +2449,36 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
     roots = _checkout_state(ext, source)
     checkout_state.stamp_checkout_state(source, env)
     child, control = _session(ext, source, "long-reader")
+    if selected == "python-environment":
+        image = (
+            ext
+            / "build-environments"
+            / "development"
+            / dx.checkout_component(source)
+            / ("a" * 64)
+        )
+        image.mkdir(parents=True)
+        (image / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+        (image / "payload.bin").write_bytes(b"immutable generation")
+        checkout_state.record_checkout_owner(
+            image, owner=source, kind="python-environment"
+        )
+        roots[selected] = image
     chosen = {
         "session": child,
         "control": control,
         "uv-environment": roots["uv-environment"],
+        **(
+            {"python-environment": roots[selected]}
+            if selected == "python-environment"
+            else {}
+        ),
     }[selected]
+    image_bytes = {
+        path.relative_to(chosen): path.read_bytes()
+        for path in chosen.rglob("*")
+        if path.is_file()
+    }
     owner = checkout_state.bound_checkout_owner(chosen, ext)
     now = time.time()
     with checkout_state.checkout_state_use(((chosen, owner),)):
@@ -1886,6 +2502,13 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
         assert str(chosen.resolve()) not in _reclaimed(result)
         if selected in ("session", "control"):
             assert roots["cargo-target"].is_dir()
+        if selected == "python-environment":
+            assert checkout_state.read_checkout_owner(chosen) == owner
+            assert {
+                path.relative_to(chosen): path.read_bytes()
+                for path in chosen.rglob("*")
+                if path.is_file()
+            } == image_bytes
     # Ordinary eviction is allowed again once use ends and policy ages it.
     _last_used(
         [root for root in (*roots.values(), child, control) if root.exists()],
@@ -1895,6 +2518,8 @@ def test_managed_shared_use_retains_idle_root_through_actual_operation(
     reclaimed = {Path(path) for path in _reclaimed(_gc(ext, env, now))}
     assert not chosen.exists()
     assert any(path == chosen or path in chosen.parents for path in reclaimed)
+    if selected == "python-environment":
+        assert not checkout_state._state_metadata_root(chosen).exists()
 
 
 @pytest.mark.parametrize("operation", ["gc", "pressure"])
@@ -2130,6 +2755,414 @@ def test_structural_use_scope_never_adopts_an_owner_or_deletion_permission(
     assert (selected / "payload").read_bytes() == b"caller data"
     if not retained:
         assert dg._is_reclaimable(selected, tmp_path, ("*",)) is None
+
+
+@pytest.fixture
+def completed_incremental(tmp_path):
+    from molt.checkout_state import record_checkout_owner
+
+    root = tmp_path / "artifacts"
+    source = tmp_path / "source"
+    source.mkdir()
+    session = (
+        root / "target/checkouts" / dx.checkout_component(source) / "sessions/finished"
+    )
+    build = session / ".molt-toolchains" / ("a" * 64)
+    cache = build / "release/incremental"
+    unit = cache / "sample-session"
+    unit.mkdir(parents=True)
+    (unit / "query-cache.bin").write_bytes(b"discardable generated cache")
+    (cache / "sample.lock").touch()
+    (cache.parent / ".cargo-build-lock").touch()
+    (session / "release").mkdir()
+    (session / "release/.cargo-lock").touch()
+    record_checkout_owner(session, owner=source, kind="cargo-target")
+    for name in (
+        "deps/keep.rlib",
+        "build/keep",
+        ".fingerprint/keep",
+        "keep.generation.json",
+    ):
+        kept = cache.parent / name
+        kept.parent.mkdir(exist_ok=True)
+        kept.write_bytes(b"retain product and evidence")
+    argv = [
+        "/toolchain/bin/cargo",
+        "build",
+        "--profile",
+        "release",
+        "--locked",
+        "--config",
+        "build.build-dir=" + json.dumps(str(build)),
+        "--config",
+        "build.target-dir=" + json.dumps(str(session)),
+    ]
+    retired = root / "tmp/memory_guard/retired"
+    retired.mkdir(parents=True)
+    receipt = _guard_marker(retired, 761, "completed")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload.update(
+        cwd=str(source),
+        command=argv,
+        launch_command=argv,
+        returncode=0,
+        child_returncode=0,
+        descendants_closed=True,
+    )
+    payload["child_process"]["command"] = argv
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    return root, source, session, cache, receipt
+
+
+def _incremental_plan(fixture, **kwargs):
+    root, _, _, cache, receipt = fixture
+    return dg.retire_cargo_incremental(
+        cache, root=root, guard_receipt=receipt, env={}, **kwargs
+    )
+
+
+def test_incremental_retirement_removes_only_reviewed_cache(completed_incremental):
+    root, _, session, cache, receipt = completed_incremental
+    receipt_bytes = receipt.read_bytes()
+    # A real hardlink into retained deps must remain byte-identical and its
+    # storage must never be counted as reclaimed merely by unlinking the cache.
+    kept = cache.parent / "deps/keep.rlib"
+    os.link(kept, cache / "sample-session/external.rmeta")
+    plan = _incremental_plan(completed_incremental)
+    assert plan["applied"] is False and cache.is_dir()
+    assert (
+        plan["externally_linked_bytes_retained"]
+        == getattr(kept.stat(), "st_blocks", 0) * 512
+    )
+    result = _incremental_plan(
+        completed_incremental,
+        apply=True,
+        expected_inventory_sha256=plan["inventory_sha256"],
+    )
+    assert result["applied"] is True and not cache.exists()
+    assert session.is_dir() and receipt.read_bytes() == receipt_bytes
+    assert (
+        kept.read_bytes() == b"retain product and evidence"
+        and kept.stat().st_nlink == 1
+    )
+    for name in ("build/keep", ".fingerprint/keep", "keep.generation.json"):
+        assert (cache.parent / name).read_bytes() == b"retain product and evidence"
+    assert (cache.parent / ".cargo-build-lock").exists()
+
+
+@pytest.mark.parametrize("relative", ["deps", "build", ".fingerprint", ".", "../.."])
+def test_incremental_retirement_refuses_outside_scope(completed_incremental, relative):
+    root, _, _, cache, receipt = completed_incremental
+    with pytest.raises(ValueError):
+        dg.retire_cargo_incremental(
+            cache.parent / relative,
+            root=root,
+            guard_receipt=receipt,
+            env={},
+            apply=True,
+            expected_inventory_sha256="0" * 64,
+        )
+    assert cache.is_dir()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("returncode", False),
+        ("child_returncode", False),
+        ("returncode", 1),
+        ("descendants_closed", False),
+        ("status", "child_running"),
+        ("cwd", "/foreign"),
+    ],
+)
+def test_incremental_retirement_requires_real_terminal_custody(
+    completed_incremental, field, value
+):
+    receipt = completed_incremental[-1]
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload[field] = value
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError):
+        _incremental_plan(completed_incremental)
+    assert completed_incremental[-2].is_dir()
+
+
+@pytest.mark.parametrize("kind", ["managed-reader", "cargo-build", "cargo-output"])
+def test_incremental_retirement_refuses_live_owners(completed_incremental, kind):
+    from contextlib import ExitStack
+    from molt.checkout_state import checkout_state_use
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    _, _, session, cache, _ = completed_incremental
+    with ExitStack() as stack:
+        if kind == "managed-reader":
+            stack.enter_context(checkout_state_use(((session, None),), publish=False))
+        else:
+            name = ".cargo-build-lock" if kind == "cargo-build" else ".cargo-lock"
+            lock = (
+                cache.parent if kind == "cargo-build" else session / "release"
+            ) / name
+            handle = _try_acquire_file_lock(lock)
+            assert handle is not None
+            stack.callback(_release_file_lock, handle)
+        with pytest.raises(ValueError, match="live|active"):
+            _incremental_plan(completed_incremental)
+    assert cache.is_dir()
+
+
+def test_incremental_retirement_does_not_require_a_surviving_source(
+    completed_incremental,
+):
+    _, source, _, cache, _ = completed_incremental
+    source.rmdir()
+    plan = _incremental_plan(completed_incremental)
+    _incremental_plan(
+        completed_incremental,
+        apply=True,
+        expected_inventory_sha256=plan["inventory_sha256"],
+    )
+    assert not cache.exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "payload",
+        "receipt",
+        "new-file",
+        "symlink",
+        "missing-lock",
+        "missing-output-lock",
+    ],
+)
+def test_incremental_retirement_rejects_changed_review(
+    completed_incremental, change, tmp_path
+):
+    _, _, session, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    if change == "payload":
+        (cache / "sample-session/query-cache.bin").write_bytes(b"different")
+    elif change == "receipt":
+        receipt.write_text(receipt.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    elif change == "new-file":
+        (cache / "sample-session/added.o").write_bytes(b"new")
+    elif change == "symlink":
+        outside = tmp_path / "valuable.bin"
+        outside.write_bytes(b"keep")
+        selected = cache / "sample-session/query-cache.bin"
+        selected.unlink()
+        selected.symlink_to(outside)
+    elif change == "missing-lock":
+        (cache.parent / ".cargo-build-lock").unlink()
+    else:
+        (session / "release/.cargo-lock").unlink()
+    with pytest.raises((ValueError, OSError)):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert cache.is_dir()
+    if change == "symlink":
+        assert outside.read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("replacement", ["lock", "receipt", "owner"])
+def test_incremental_retirement_rechecks_after_final_inventory(
+    completed_incremental, monkeypatch, replacement
+):
+    _, _, session, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    original = dg._incremental_inventory
+    calls = 0
+
+    def changed(path):
+        nonlocal calls
+        value = original(path)
+        calls += 1
+        if calls == 2:
+            if replacement == "lock":
+                lock = cache.parent / ".cargo-build-lock"
+                lock.rename(lock.with_suffix(".old"))
+                lock.touch()
+            elif replacement == "receipt":
+                receipt.write_text(
+                    receipt.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+                )
+            else:
+                (session / ".molt-state-owner.json").write_text("{}", encoding="utf-8")
+        return value
+
+    monkeypatch.setattr(dg, "_incremental_inventory", changed)
+    with pytest.raises(ValueError, match="changed|owner"):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert cache.is_dir()
+
+
+def test_incremental_retirement_cli_requires_review_before_apply(
+    completed_incremental, capsys
+):
+    root, _, _, cache, receipt = completed_incremental
+    argv = [
+        "--root",
+        str(root),
+        "--retire-cargo-incremental",
+        str(cache),
+        "--guard-receipt",
+        str(receipt),
+    ]
+    assert dg.main(argv) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert not plan["applied"] and cache.exists()
+    assert dg.main([*argv, "--apply"]) == 1
+    assert "reviewed" in capsys.readouterr().out and cache.exists()
+
+
+def test_incremental_retirement_targeted_profile(completed_incremental):
+    _, _, session, cache, receipt = completed_incremental
+    build = cache.parent.parent
+    (build / "wasm32-wasip1").mkdir()
+    cache.parent.rename(build / "wasm32-wasip1/release")
+    (session / "wasm32-wasip1").mkdir()
+    (session / "release").rename(session / "wasm32-wasip1/release")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    for argv in (
+        payload["command"],
+        payload["launch_command"],
+        payload["child_process"]["command"],
+    ):
+        argv.extend(["--target", "wasm32-wasip1"])
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    fixture = (
+        *completed_incremental[:3],
+        build / "wasm32-wasip1/release/incremental",
+        receipt,
+    )
+    plan = _incremental_plan(fixture)
+    _incremental_plan(
+        fixture, apply=True, expected_inventory_sha256=plan["inventory_sha256"]
+    )
+    assert not fixture[-2].exists()
+    assert (
+        fixture[-2].parent / "deps/keep.rlib"
+    ).read_bytes() == b"retain product and evidence"
+
+
+def test_incremental_retirement_refuses_indirect_ancestor(completed_incremental):
+    root, _, session, cache, receipt = completed_incremental
+    actual = session.with_name("retained-session")
+    session.rename(actual)
+    session.symlink_to(actual, target_is_directory=True)
+    with pytest.raises(ValueError, match="link|junction"):
+        dg.retire_cargo_incremental(cache, root=root, guard_receipt=receipt, env={})
+    assert (actual / cache.relative_to(session)).is_dir()
+
+
+def test_incremental_retirement_preserves_durable_failure_evidence(
+    completed_incremental, monkeypatch
+):
+    from molt import file_publication
+
+    _, _, _, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    original = file_publication._reclaim_retired_leaf
+    retained = []
+
+    def deny_reclamation(path, identity):
+        retained.append(path)
+        raise file_publication.RetirementError(
+            path, "physical reclamation", OSError("injected storage error")
+        )
+
+    monkeypatch.setattr(file_publication, "_reclaim_retired_leaf", deny_reclamation)
+    with pytest.raises(file_publication.RetirementError):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert not cache.exists() and len(retained) == 1 and retained[0].is_dir()
+    assert (
+        retained[0] / "sample-session/query-cache.bin"
+    ).read_bytes() == b"discardable generated cache"
+    assert receipt.exists() and (cache.parent / "deps/keep.rlib").exists()
+    # The canonical deletion owner remains responsible for explicit recovery;
+    # the failed operation must not report success or recreate the live name.
+    monkeypatch.setattr(file_publication, "_reclaim_retired_leaf", original)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="independent POSIX flock holder")
+@pytest.mark.parametrize("name", [".cargo-lock", ".cargo-build-lock"])
+def test_incremental_retirement_observes_native_cargo_locks(
+    completed_incremental, name
+):
+    import fcntl
+
+    _, _, session, cache, _ = completed_incremental
+    lock = (cache.parent if name == ".cargo-build-lock" else session / "release") / name
+    with lock.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match="active|live"):
+            _incremental_plan(completed_incremental)
+    assert cache.is_dir()
+
+
+@pytest.mark.parametrize("missing", ["receipt", "cache"])
+def test_incremental_retirement_refuses_missing_admission_inputs(
+    completed_incremental, missing
+):
+    _, _, _, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    selected = receipt if missing == "receipt" else cache
+    retained = selected.with_name(selected.name + ".retained")
+    selected.rename(retained)
+    with pytest.raises((ValueError, OSError)):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert retained.exists()
+    assert (
+        cache.parent / "deps/keep.rlib"
+    ).read_bytes() == b"retain product and evidence"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="independent POSIX flock oracle")
+def test_incremental_retirement_holds_both_split_locks_through_deletion(
+    completed_incremental, monkeypatch
+):
+    import fcntl
+    from molt import file_publication
+
+    _, _, session, cache, _ = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    original = file_publication.durable_remove_path
+    observed = []
+
+    def check_locks(path, **kwargs):
+        for lock in (
+            cache.parent / ".cargo-build-lock",
+            session / "release/.cargo-lock",
+        ):
+            with lock.open("rb") as handle:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            observed.append(lock)
+        original(path, **kwargs)
+
+    monkeypatch.setattr(file_publication, "durable_remove_path", check_locks)
+    _incremental_plan(
+        completed_incremental,
+        apply=True,
+        expected_inventory_sha256=plan["inventory_sha256"],
+    )
+    assert len(observed) == 2 and not cache.exists()
 
 
 def _superseded_fixture(tmp_path: Path):

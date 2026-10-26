@@ -131,7 +131,7 @@ def _run(args: list[str], *, timeout: float = 15.0) -> subprocess.CompletedProce
     # A version/identity check must never mutate rustup while another command is
     # using its installation. Explicit setup remains a separate caller action.
     env, _cargo_policies = cargo_subprocess_environment(
-        args, {**os.environ, "RUSTUP_AUTO_INSTALL": "0"}
+        args, {**os.environ, "RUSTUP_AUTO_INSTALL": "0"}, cwd=ROOT
     )
     return subprocess.run(
         args,

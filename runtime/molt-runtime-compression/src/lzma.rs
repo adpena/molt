@@ -1,7 +1,7 @@
 use crate::bridge::*;
 use crate::compression_common::{CodecIndexRole, codec_index, codec_uint64};
 use crate::stream::{DecodeError, DecodeStep, Decoder, StreamDecoder};
-use molt_cpython_abi::native_custody::ByteInput;
+use molt_runtime_capi::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};

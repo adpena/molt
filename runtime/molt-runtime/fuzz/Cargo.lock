@@ -256,9 +256,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -795,11 +795,9 @@ dependencies = [
  "libc",
  "molt-codegen-abi",
  "molt-lang-obj-model",
- "molt-runtime-core",
  "molt-runtime-platform",
  "once_cell",
  "parking_lot",
- "unicode-properties",
 ]
 
 [[package]]
@@ -833,6 +831,7 @@ dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-asyncio",
  "molt-runtime-audit",
+ "molt-runtime-capi",
  "molt-runtime-collections",
  "molt-runtime-compression",
  "molt-runtime-constants",
@@ -876,7 +875,6 @@ dependencies = [
  "socket2",
  "tempfile",
  "tungstenite",
- "unicode-casefold",
  "unicode_names2 4.0.0",
  "webpki-roots 1.0.10",
  "windows-sys 0.61.2",
@@ -896,6 +894,14 @@ name = "molt-runtime-audit"
 version = "0.1.0"
 
 [[package]]
+name = "molt-runtime-capi"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-cpython-abi",
+ "molt-runtime-core",
+]
+
+[[package]]
 name = "molt-runtime-collections"
 version = "0.1.0"
 dependencies = [
@@ -911,6 +917,7 @@ dependencies = [
  "flate2",
  "libz-rs-sys",
  "molt-lang-cpython-abi",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "xz2",
  "zip",
@@ -927,6 +934,7 @@ dependencies = [
  "crc32fast",
  "molt-lang-obj-model",
  "num-bigint 0.5.1",
+ "num-integer",
  "num-traits",
 ]
 
@@ -942,6 +950,7 @@ dependencies = [
  "md4",
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",
@@ -973,8 +982,8 @@ name = "molt-runtime-http"
 version = "0.1.0"
 dependencies = [
  "libc",
- "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",
@@ -1041,8 +1050,8 @@ version = "0.1.0"
 dependencies = [
  "filetime",
  "libc",
- "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "molt-runtime-platform",
  "num_cpus",
@@ -1086,6 +1095,7 @@ dependencies = [
  "memchr",
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",
@@ -1999,22 +2009,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "unicode-casefold"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7f66b1c8f8caa2ab31dc6d3f35386f16efdab89668f93411e565ac368908e8f"
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
-
-[[package]]
-name = "unicode-properties"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
 name = "unicode-width"

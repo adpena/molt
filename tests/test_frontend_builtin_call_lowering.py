@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 import builtins
 import shutil
@@ -3021,7 +3023,9 @@ def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
         known_modules={"numpy.exceptions", "scipy._lib._util"},
         known_classes=known_classes,
         direct_call_modules={"scipy._lib._util"},
-        native_support_function_roots={"normalize_axis_index"},
+        module_body_selection=ModuleBodySelection.from_requested_roots(
+            {"normalize_axis_index"}
+        ),
     )
     gen.visit(
         ast.parse(
@@ -3062,7 +3066,9 @@ def test_imported_uppercase_constructor_uses_live_binding_outside_module_scope()
         module_name="scipy._lib._util",
         known_modules={"scipy._lib._util"},
         direct_call_modules={"scipy._lib._util"},
-        native_support_function_roots={"normalize_axis_index"},
+        module_body_selection=ModuleBodySelection.from_requested_roots(
+            {"normalize_axis_index"}
+        ),
     )
     gen.visit(
         ast.parse(
@@ -5908,3 +5914,48 @@ def test_known_anext_default_acquires_through_runtime_call_before_await() -> Non
     assert len(ops[call_index].args) == 3
     assert ops[call_index + 1].kind == "CHECK_EXCEPTION"
     assert not any(op.kind == "CALL_ASYNC" for op in ops)
+
+
+def test_iter_overload_uses_one_public_callable_declaration() -> None:
+    spec = BUILTIN_FUNC_SPECS["iter"]
+    assert spec.runtime == "molt_iter_builtin"
+    assert spec.params == ("obj", "sentinel")
+    assert len(spec.defaults) == 1
+    assert isinstance(spec.defaults[0], ast.Name)
+    assert spec.defaults[0].id == "__molt_missing__"
+    ir = compile_to_tir("result = iter(lambda: None, None)\n")
+    ops = [op for function in ir["functions"] for op in function["ops"]]
+    assert not any(op.get("s_value") == "molt_iter_sentinel" for op in ops)
+    assert any(op.get("s_value") == spec.runtime for op in ops)
+
+
+@pytest.mark.parametrize("source", ["iter()", "iter(1, 2, 3)", "iter(1, sentinel=2)"])
+def test_invalid_iter_shape_defers_to_argument_binding(source: str) -> None:
+    from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
+
+    gen = SimpleTIRGenerator(module_name="main")
+    initial_ops = list(gen.current_ops)
+    result = gen._try_emit_named_builtin_iter_call(
+        ast.parse(source, mode="eval").body, "iter", False
+    )
+    assert result is CALL_NOT_HANDLED
+    assert gen.current_ops == initial_ops
+
+
+@pytest.mark.parametrize(
+    "source, name",
+    [
+        ("iter(1, 2)", "iter"),
+        ("next(1, 2)", "next"),
+        ("getattr(1, 2, 3)", "getattr"),
+    ],
+)
+def test_positional_diagnostic_policy_does_not_force_call_packing(
+    source: str, name: str
+) -> None:
+    gen = SimpleTIRGenerator(module_name="main")
+    gen._try_emit_named_builtin_fallback_call(
+        ast.parse(source, mode="eval").body, name, False
+    )
+    assert any(op.kind == "CALL_FUNC" for op in gen.current_ops)
+    assert not any(op.kind == "CALL_BIND" for op in gen.current_ops)

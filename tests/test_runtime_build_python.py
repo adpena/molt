@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import json
-import os
 import re
-import shutil
 import sys
 import unicodedata
 from pathlib import Path
@@ -11,9 +8,41 @@ from pathlib import Path
 import pytest
 
 from molt.process_environment import NameRule, ProcessEnvironment
-from tests.rust.process_guard import run_rust_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_surrogate_differential_witness_reaches_every_indexing_case():
+    """Matching early failures cannot stand in for the claimed Unicode matrix."""
+    import os
+    from collections import Counter
+
+    from tests.process_guard_common import run_guarded_test_process
+
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-B",
+            str(ROOT / "tests/differential/basic/unicode_surrogate_handling.py"),
+        ],
+        env=ProcessEnvironment(os.environ).updated(
+            {"PYTHONIOENCODING": "utf-8:strict"}
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert not result.stderr
+    lines = result.stdout.splitlines()
+    cases = Counter(
+        tuple(line.split()[:2])
+        for line in lines
+        if line.startswith(("short ", "empty ", "long "))
+    )
+    assert cases == {
+        (length, operation): count
+        for length in ("short", "empty", "long")
+        for operation, count in (("index", 8), ("slice", 11))
+    }
+    assert lines[-1].startswith("long slice ")
 
 
 @pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
@@ -50,462 +79,228 @@ def test_python_loader_policy_uses_the_callers_name_rule(rule):
     )
 
 
-@pytest.mark.parametrize(
-    ("channel", "selector"),
-    [
-        ("MOLT_BUILD_PYTHON", "explicit"),
-        ("MOLT_BUILD_PYTHON", "path"),
-        ("PYTHON", "explicit"),
-        ("PYTHON", "path"),
-        ("default", "path"),
-    ],
-)
-@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
-def test_generator_selection_is_pinned_before_cargo_changes_cwd(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    channel: str,
-    selector: str,
-    rule: NameRule,
-) -> None:
-    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
-    from molt.python_runtime_admission import resolve_build_python
+def _emitted_unicode_tables(source: str, target: tuple[int, int]):
+    """Decode emitted Rust constants independently of the source-table generator."""
+    import ast
+    import struct
 
-    name = "python.exe" if os.name == "nt" else "python3"
-    operation = tmp_path / "operation"
-    crate = tmp_path / "crate"
-    for directory, content in ((operation, b"selected"), (crate, b"poison")):
-        executable = directory / "bin" / name
-        executable.parent.mkdir(parents=True)
-        executable.write_bytes(content)
-        executable.chmod(0o755)
-    environment = {"PATH": "bin", "PATHEXT": ".EXE", "MOLT_BUILD_PYTHON": " "}
-    if channel != "default":
-        environment[channel] = f"bin/{name}" if selector == "explicit" else name
-    if channel == "MOLT_BUILD_PYTHON":
-        environment["PYTHON"] = "shadowed-unavailable-python"
-    if rule is NameRule.WINDOWS:
-        environment["Path"] = environment.pop("PATH")
-        environment["Molt_Build_Python"] = environment.pop("MOLT_BUILD_PYTHON")
-    environment = ProcessEnvironment(environment, rule=rule)
-    original = dict(environment)
-    monkeypatch.chdir(crate)
-    pinned = pin_runtime_build_python_environment(environment, cwd=operation)
-    key = "MOLT_BUILD_PYTHON" if channel == "default" else channel
-    selected = (operation / "bin" / name).resolve(strict=True)
-    assert pinned[key] == str(selected)
-    assert resolve_build_python(pinned) == selected
-    assert resolve_build_python(pinned).read_bytes() == b"selected"
-    assert isinstance(pinned, ProcessEnvironment) and pinned.rule is rule
-    assert dict(environment) == original
-    assert Path.cwd() == crate
-    if channel == "PYTHON":
-        assert pinned["MOLT_BUILD_PYTHON"] == " "
-    if channel == "MOLT_BUILD_PYTHON":
-        assert pinned["PYTHON"] == "shadowed-unavailable-python"
+    major, minor = target
 
+    def array(name):
+        raw = re.search(rf"const {name}: [^=]+ = &\[(.*?)\];", source, re.S)[1]
+        return ast.literal_eval("[" + raw + "]")
 
-def test_unicode_width_projection_matches_running_cpython() -> None:
-    source = (
-        ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
-    ).read_text(encoding="utf-8")
-    major, minor = sys.version_info[:2]
-    table_name = f"WIDTH_{major}_{minor}"
-    table = source.split(f"const {table_name}: WidthRanges = &[", 1)[1].split("];", 1)[
-        0
-    ]
-    assert (
-        f'({major}, {minor}) => Some(("{unicodedata.unidata_version}", {table_name}))'
-        in source
-    )
-    expected = 0
-    for lo, hi, width in re.findall(r'\((\d+), (\d+), "(N|Na|A|H|W|F)"\)', table):
-        start, end = int(lo), int(hi)
-        assert start == expected
-        assert all(
-            unicodedata.east_asian_width(chr(code)) == width
-            for code in range(start, end + 1)
+    records = []
+    for body in re.findall(r"^    Record \{ (.*?) \},$", source, re.M):
+        row = {}
+        for name, value in re.findall(r"(\w+): (\[[^]]*\]|-?\d+)", body):
+            row[name] = ast.literal_eval(value)
+        records.append(row)
+    cases = [
+        tuple(ast.literal_eval(deltas)[: int(length)])
+        for deltas, length in re.findall(
+            r"CaseSequence \{ deltas: (\[[^]]*\]), len: (\d+) \}", source
         )
-        expected = end + 1
-    assert expected == 0x110000
+    ]
+    numeric = [
+        struct.unpack(">d", bytes.fromhex(bits))[0]
+        for bits in re.findall(r"f64::from_bits\(0x([0-9a-f]{16})\)", source)
+    ]
+    version, raw = re.search(
+        rf'static DATA_{major}_{minor}: UnicodeData = UnicodeData \{{ version: "([^"]+)", index: &\[(.*?)\] \}};',
+        source,
+        re.S,
+    ).groups()
+    index = ast.literal_eval("[" + raw + "]")
+    shift = int(re.search(r"const SHIFT: usize = (\d+)", source)[1])
+    return (
+        version,
+        shift,
+        index,
+        array("PAGES"),
+        records,
+        cases,
+        numeric,
+        array("CATEGORIES"),
+        array("BIDIRECTIONAL"),
+        array("WIDTHS"),
+    )
 
 
-def test_runtime_build_python_consumers_share_one_authority() -> None:
-    for crate in ("molt-runtime", "molt-cpython-abi"):
-        source = (ROOT / "runtime" / crate / "build.rs").read_text(encoding="utf-8")
-        assert '#[path = "../build_support/build_python.rs"]' in source
-        assert "build_python::resolve()" in source
-        assert "fn resolve_build_python" not in source
-        assert "rerun-if-env-changed=PYTHONPATH" not in source
-    unicode = (ROOT / "runtime/build_support/unicode_tables.rs").read_text(
+def test_unicode_facts_match_every_running_cpython_codepoint():
+    """The public interpreter is the oracle, never the generator's C parser."""
+    source = (ROOT / "runtime/molt-obj-model/src/unicode_generated.rs").read_text(
         encoding="utf-8"
     )
-    assert "crate::build_python::run_script(" in unicode
-    assert "Command::new" not in unicode
-
-
-@pytest.fixture(scope="module")
-def unicode_generator(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    rustc = shutil.which("rustc")
-    if rustc is None:
-        pytest.skip("rustc is required for build-script consumer execution")
-    directory = tmp_path_factory.mktemp("runtime-build-python")
-    driver = directory / "unicode_driver.rs"
-    shared = ROOT / "runtime/build_support"
-    driver.write_text(
-        f"#[path = {json.dumps((shared / 'build_python.rs').as_posix())}]\n"
-        "mod build_python;\n"
-        f"#[path = {json.dumps((shared / 'unicode_tables.rs').as_posix())}]\n"
-        "mod unicode_tables;\n"
-        r"""
-fn main() {
-    let python = build_python::resolve();
-    let mode = std::env::args().nth(1).expect("mode");
-    if mode == "probe" {
-        print!("{}", build_python::run_script(&python,
-            "import sys; print('flags', sys.flags.isolated, sys.flags.no_site, sys.flags.dont_write_bytecode)",
-            "isolation probe"));
-    } else if mode == "failure" {
-        build_python::run_script(&python,
-            "raise RuntimeError('build-script-sentinel')", "failure probe");
-    } else if mode == "generate" {
-        let root = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
-        let runtime = root.join("runtime");
-        let abi = root.join("abi");
-        std::fs::create_dir_all(&runtime).unwrap();
-        std::fs::create_dir_all(&abi).unwrap();
-        unicode_tables::emit_runtime_unicode_tables(&runtime, &python);
-        unicode_tables::emit_cpython_abi_unicode_tables(&abi, &python);
-    } else {
-        panic!("unexpected fixture mode: {mode}");
-    }
-}
-""",
-        encoding="utf-8",
+    version, shift, index, pages, records, cases, numbers, categories, bidis, widths = (
+        _emitted_unicode_tables(source, sys.version_info[:2])
     )
-    binary = directory / ("unicode.exe" if os.name == "nt" else "unicode")
-    result = run_rust_test_process(
-        [rustc, "--edition=2024", str(driver), "-o", str(binary)],
-        cwd=str(ROOT),
-        env=os.environ,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    return binary
-
-
-@pytest.mark.slow
-def test_real_build_generators_ignore_ambient_imports(
-    tmp_path: Path, unicode_generator: Path
-) -> None:
-    poison = tmp_path / "ambient"
-    poison.mkdir()
-    for name in ("unicodedata", "sitecustomize", "usercustomize"):
-        (poison / f"{name}.py").write_text(
-            "raise RuntimeError('ambient Python module executed')\n", encoding="utf-8"
+    assert version == unicodedata.unidata_version
+    assert len(index) << shift == 0x110000
+    assert len(pages) % (1 << shift) == 0
+    for code in range(0x110000):
+        row = records[
+            pages[(index[code >> shift] << shift) + (code & ((1 << shift) - 1))]
+        ]
+        ch = chr(code)
+        flags = row["flags"]
+        actual = tuple(
+            bool(flags & mask)
+            for mask in (1, 2, 4, 8, 16, 32, 64, 128, 512, 1024, 2048)
         )
-    outputs = []
-    for polluted in (False, True):
-        out = tmp_path / ("polluted" if polluted else "baseline")
-        out.mkdir()
-        environment = {
-            **os.environ,
-            "MOLT_BUILD_PYTHON": sys.executable,
-            "OUT_DIR": str(out),
-        }
-        for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "PYTHON"):
-            environment.pop(name, None)
-        if polluted:
-            environment.update(
-                PYTHONPATH=str(poison),
-                PYTHONHOME=str(poison / "not-a-python-home"),
-                PYTHONUSERBASE=str(poison),
-                PYTHON="shadowed-nonexistent-interpreter",
+        expected = (
+            ch.isalpha(),
+            ch.isdecimal(),
+            ch.isdigit(),
+            ch.islower(),
+            ch.splitlines() == [""],
+            ch.isspace(),
+            unicodedata.category(ch) == "Lt",
+            ch.isupper(),
+            ("a" + ch).isidentifier(),
+            ch.isprintable(),
+            ch.isnumeric(),
+        )
+        assert actual == expected, (hex(code), "predicates", actual, expected)
+        assert (ch == "_" or bool(flags & 256)) == ch.isidentifier(), (
+            hex(code),
+            "identifier",
+        )
+        cased = ch.islower() or ch.isupper() or unicodedata.category(ch) == "Lt"
+        assert bool(flags & 8192) == cased, (hex(code), "cased")
+        # Final sigma exposes Case_Ignorable through public contextual behavior,
+        # including characters that are simultaneously cased and ignorable.
+        ignored = (
+            ("." + ch + "Σ").lower()[-1] != "ς"
+            if cased
+            else ("A" + ch + "Σ").lower()[-1] == "ς"
+        )
+        assert bool(flags & 4096) == ignored, (hex(code), "case-ignorable")
+        for mapping, expected in zip(
+            row["case"],
+            (ch.lower(), ch.upper(), ch.title(), ch.casefold()),
+            strict=True,
+        ):
+            assert "".join(chr(code + delta) for delta in cases[mapping]) == expected, (
+                hex(code),
+                "case",
             )
-        result = run_rust_test_process(
-            [str(unicode_generator), "generate"],
-            cwd=str(poison),
-            env=environment,
-            timeout=60,
+        actual = (
+            row["decimal"],
+            row["digit"],
+            widths[row["width"]],
+            categories[row["category"]],
+            bidis[row["bidi"]],
+            row["combining"],
+            row["mirrored"],
+            numbers[row["numeric"]].hex() if flags & 2048 else None,
         )
-        assert result.returncode == 0, result.stderr
-        outputs.append(
-            {path.relative_to(out): path.read_bytes() for path in out.rglob("*.rs")}
+        expected = (
+            unicodedata.decimal(ch, -1),
+            unicodedata.digit(ch, -1),
+            unicodedata.east_asian_width(ch),
+            unicodedata.category(ch),
+            unicodedata.bidirectional(ch),
+            unicodedata.combining(ch),
+            unicodedata.mirrored(ch),
+            float(unicodedata.numeric(ch)).hex() if ch.isnumeric() else None,
         )
-    assert outputs[0] == outputs[1]
-    # Both consumers emit the same complete projection of the one selected
-    # CPython Unicode authority; only the runtime needs titlecase mappings.
-    properties = {
-        "digit",
-        "decimal",
-        "numeric",
-        "space",
-        "printable",
-        "alpha",
-        "lower",
-        "upper",
-        "title",
-        "identifier_start",
-        "identifier_continue",
-    }
-    expected = {
-        Path(consumer) / f"unicode_{name}_ranges.rs"
-        for consumer in ("runtime", "abi")
-        for name in properties
-    }
-    expected.add(Path("runtime/unicode_titlecase_map.rs"))
-    assert set(outputs[0]) == expected
-    assert not tuple(poison.rglob("*.pyc"))
-    for relative, content in outputs[0].items():
-        if relative.parts[0] == "abi":
-            assert content == outputs[0][Path("runtime") / relative.name]
+        assert actual == expected, (hex(code), "basic properties", actual, expected)
 
 
-@pytest.mark.slow
-def test_real_build_python_selection_and_failure_diagnostics(
-    tmp_path: Path, unicode_generator: Path
-) -> None:
-    environment = {**os.environ, "MOLT_BUILD_PYTHON": " ", "PYTHON": sys.executable}
-    result = run_rust_test_process(
-        [str(unicode_generator), "probe"],
-        cwd=str(tmp_path),
-        env=environment,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "flags 1 1 1" in result.stdout
-    result = run_rust_test_process(
-        [str(unicode_generator), "failure"],
-        cwd=str(tmp_path),
-        env=environment,
-        timeout=30,
-    )
-    assert result.returncode != 0
-    assert "failure probe failed" in result.stderr
-    assert "build-script-sentinel" in result.stderr
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Windows virtualenvs copy a launcher")
-def test_two_checkouts_aliasing_one_interpreter_pin_one_value(tmp_path: Path) -> None:
-    """A checkout's virtualenv alias never reaches Cargo's rerun inputs.
-
-    The value is recorded with every product, so per-checkout alias paths
-    would split the product store by checkout (design 56, section 2.8).
-    """
-    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
-
-    interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
-        strict=True
-    )
-    pinned = []
-    for checkout in ("lane-a", "lane-b"):
-        alias = tmp_path / checkout / ".venv" / "bin" / "python"
-        alias.parent.mkdir(parents=True)
-        try:
-            alias.symlink_to(interpreter)
-        except OSError:
-            pytest.skip("host cannot create executable symlinks")
-        environment = {"PATH": str(alias.parent), "MOLT_BUILD_PYTHON": str(alias)}
-        pinned.append(
-            pin_runtime_build_python_environment(environment, cwd=tmp_path / checkout)[
-                "MOLT_BUILD_PYTHON"
-            ]
-        )
-    assert pinned == [str(interpreter), str(interpreter)]
-
-
-@pytest.mark.parametrize("names_base", ["executable", "home"])
-def test_two_checkouts_copying_one_interpreter_pin_its_base(
-    tmp_path: Path, names_base: str
-) -> None:
-    """A launcher copy (Windows virtualenvs, ``venv --copies``) pins its base.
-
-    Resolving a copy reaches no link, so only the virtualenv's ``pyvenv.cfg``
-    names the base: CPython's venv by ``executable``, uv by ``home``.
-    """
-    import shutil
-
-    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
-
-    interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
-        strict=True
-    )
-    pinned = []
-    for checkout in ("lane-a", "lane-b"):
-        venv = tmp_path / checkout / ".venv"
-        launcher = venv / "Scripts" / interpreter.name
-        launcher.parent.mkdir(parents=True)
-        shutil.copy2(interpreter, launcher)
-        key = (
-            f"executable = {interpreter}"
-            if names_base == "executable"
-            else f"home = {interpreter.parent}"
-        )
-        (venv / "pyvenv.cfg").write_text(
-            f"{key}\ninclude-system-site-packages = false\n", encoding="utf-8"
-        )
-        environment = {"PATH": str(launcher.parent), "MOLT_BUILD_PYTHON": str(launcher)}
-        pinned.append(
-            pin_runtime_build_python_environment(environment, cwd=tmp_path / checkout)[
-                "MOLT_BUILD_PYTHON"
-            ]
-        )
-    assert pinned == [str(interpreter), str(interpreter)]
-
-
-def test_a_launcher_whose_base_is_gone_keeps_its_own_path(tmp_path: Path) -> None:
-    import shutil
-
-    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
-
-    interpreter = Path(sys.executable).resolve(strict=True)
-    venv = tmp_path / ".venv"
-    launcher = venv / "Scripts" / interpreter.name
-    launcher.parent.mkdir(parents=True)
-    shutil.copy2(interpreter, launcher)
-    (venv / "pyvenv.cfg").write_text(f"home = {tmp_path / 'gone'}\n", encoding="utf-8")
-    environment = {"PATH": str(launcher.parent), "MOLT_BUILD_PYTHON": str(launcher)}
-    pinned = pin_runtime_build_python_environment(environment, cwd=tmp_path)
-    assert pinned["MOLT_BUILD_PYTHON"] == str(launcher.resolve())
-
-
-def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
-    tmp_path: Path, unicode_generator: Path
-) -> None:
-    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
-
-    operation, crate = tmp_path / "operation", tmp_path / "crate"
-    operation.mkdir()
-    crate.mkdir()
-    if os.name == "nt":
-        from tests.python_environment_test_support import create_test_venv
-
-        # Preserve the standard copied Windows launcher/configuration layout.
-        name = create_test_venv(operation).relative_to(operation)
-        poison = crate / name
-        poison.parent.mkdir(parents=True)
-        shutil.copyfile(unicode_generator, poison)
-    else:
-        name = Path("selected-python")
-        interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
-            strict=True
-        )
-        try:
-            (operation / name).symlink_to(interpreter)
-            (crate / name).symlink_to(unicode_generator)
-        except OSError:
-            pytest.skip("host cannot create executable symlinks")
-    environment = {**os.environ, "MOLT_BUILD_PYTHON": f"./{name.as_posix()}"}
-    pinned = pin_runtime_build_python_environment(environment, cwd=operation)
-    assert pinned["MOLT_BUILD_PYTHON"] == str((operation / name).resolve(strict=True))
-    result = run_rust_test_process(
-        [str(unicode_generator), "probe"],
-        cwd=str(crate),
-        env=pinned,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "flags 1 1 1" in result.stdout
-    # The same original relative selector invokes the poison crate entrypoint.
-    poisoned = run_rust_test_process(
-        [str(unicode_generator), "probe"],
-        cwd=str(crate),
-        env=environment,
-        timeout=30,
-    )
-    assert poisoned.returncode != 0
-    assert "flags 1 1 1" not in poisoned.stdout
-    assert "unexpected fixture mode: -B" in poisoned.stderr
-
-
-def test_unicode_width_facts_replay_keyed_by_the_admitted_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tools import gen_unicode_width, scan_records
-
-    versions = gen_unicode_width.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
-    queried: list[str] = []
-
-    def query(version, selected, admission):
-        queried.append(version)
-        return {
-            "python": version,
-            "unicode": "15.0.0",
-            "ranges": [[0, 0x10FFFF, "N"]],
-        }
-
-    def runtimes(digest: str):
-        return {
-            version: (
-                {
-                    "runtime": {"runtime_closure_sha256": digest + version},
-                    "launch_argv": ["python" + version, "-I", "-S", "-B"],
-                },
-                None,
-            )
-            for version in versions
-        }
-
-    def records():
-        return scan_records.ScanRecords(
-            "generator_gen_unicode_width",
-            owner=Path(gen_unicode_width.__file__),
-            cache_root=tmp_path,
-        )
-
-    monkeypatch.setattr(gen_unicode_width, "_query", query)
-    computed = gen_unicode_width.render(python_runtimes=runtimes("a"))
-    assert queried == list(versions)
-    cold = records()
-    assert gen_unicode_width.render(python_runtimes=runtimes("a"), records=cold) == (
-        computed
-    )
-    assert cold.publish() is True
-    queried.clear()
-    warm = records()
-    assert gen_unicode_width.render(python_runtimes=runtimes("a"), records=warm) == (
-        computed
-    )
-    assert queried == [] and warm.misses == 0
-    # Another runtime closure is another key: its facts are queried again.
-    changed = records()
-    gen_unicode_width.render(python_runtimes=runtimes("b"), records=changed)
-    assert queried == list(versions)
-
-
-def test_unicode_width_projection_preserves_full_target_identity(monkeypatch):
+def test_unicode_generation_consumes_only_pinned_sources(monkeypatch):
     from tools import gen_unicode_width
 
-    # Synthetic admitted query results exercise projection only. They are not
-    # claims about Python 3.0 or 4.0 Unicode data or compiler support.
-    monkeypatch.setattr(
-        gen_unicode_width, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.0", "4.0")
-    )
-    observed = []
-
-    def query(version, selected, admission):
-        observed.append(version)
-        return {
-            "python": version,
-            "unicode": "three" if version == "3.0" else "four",
-            "ranges": [[0, 0x10FFFF, "N" if version == "3.0" else "W"]],
-        }
-
-    monkeypatch.setattr(gen_unicode_width, "_query", query)
-    runtimes = {
-        version: (
-            {
-                "runtime": {"runtime_closure_sha256": version},
-                "launch_argv": ["python" + version, "-I", "-S", "-B"],
-            },
-            None,
-        )
-        for version in ("3.0", "4.0")
+    # Poison former build-host selection. The complete output must still be the
+    # catalog-derived byte sequence, with no interpreter resolution or spawn.
+    monkeypatch.setenv("MOLT_BUILD_PYTHON", "/nonexistent/unicode-frontend")
+    monkeypatch.setenv("PYTHON", "/nonexistent/other-frontend")
+    assert gen_unicode_width.generated_outputs() == {
+        gen_unicode_width.OUTPUT: gen_unicode_width.OUTPUT.read_text(encoding="utf-8")
     }
-    rendered = gen_unicode_width.render(python_runtimes=runtimes)
-    assert observed == ["3.0", "4.0"]
-    assert '(3, 0) => Some(("three", WIDTH_3_0))' in rendered
-    assert '(4, 0) => Some(("four", WIDTH_4_0))' in rendered
-    assert "match target" in rendered and "_ => None" in rendered
-    with pytest.raises(ValueError, match="every admitted target runtime"):
-        gen_unicode_width.render(python_runtimes={"3.0": runtimes["3.0"]})
+
+
+def test_unicode_generation_refuses_unadmitted_target_or_changed_record_layout():
+    from dataclasses import replace
+    from tools import gen_unicode_width
+
+    snapshots = gen_unicode_width.sources.pinned_snapshots(("3.12",))
+    with pytest.raises(ValueError, match="exactly every pinned source cohort"):
+        gen_unicode_width.render(snapshots=snapshots.values())
+    snapshot = snapshots["3.12"]
+    changed = replace(
+        snapshot,
+        inputs=tuple(
+            replace(
+                item, text=item.text.replace("const int upper;", "const int changed;")
+            )
+            if item.role == "unicode_type_implementation"
+            else item
+            for item in snapshot.inputs
+        ),
+    )
+    with pytest.raises(ValueError, match="type record changed"):
+        next(gen_unicode_width._records(changed))
+
+
+@pytest.mark.parametrize(
+    "role, suffix, message",
+    [
+        ("unicode_type_table", "\n#define SHIFT 7\n", "exactly one SHIFT"),
+        ("unicode_database_table", "\n#define SHIFT 7\n", "exactly one SHIFT"),
+        ("unicode_generator", "\nLINEBREAK_MASK = 0x40\n", "whitespace flags"),
+        ("unicode_generator", "\nSPACE_MASK = 0x40\n", "whitespace flags"),
+    ],
+)
+def test_unicode_generation_refuses_ambiguous_source_layout(role, suffix, message):
+    from dataclasses import replace
+    from tools import gen_unicode_width
+
+    snapshot = gen_unicode_width.sources.pinned_snapshots(("3.12",))["3.12"]
+    changed = replace(
+        snapshot,
+        inputs=tuple(
+            replace(item, text=item.text + suffix) if item.role == role else item
+            for item in snapshot.inputs
+        ),
+    )
+    with pytest.raises(ValueError, match=message):
+        next(gen_unicode_width._records(changed))
+
+
+def test_unicode_ascii_fact_invariant_rejects_target_drift():
+    from tools import gen_unicode_width
+
+    # Distinct record IDs model a semantic table change, not a target list.
+    gen_unicode_width._assert_ascii_invariant({"first": [0] * 128, "second": [0] * 128})
+    changed = [0] * 128
+    changed[65] = 1
+    with pytest.raises(ValueError, match="ASCII records disagree"):
+        gen_unicode_width._assert_ascii_invariant(
+            {"first": [0] * 128, "second": changed}
+        )
+
+
+def test_unicode_source_projection_preserves_full_coordinates(monkeypatch):
+    from dataclasses import replace
+    from tools import gen_unicode_width
+
+    # Synthetic coordinates test projection identity, not guest admission.
+    snapshot = gen_unicode_width.sources.pinned_snapshots(("3.12",))["3.12"]
+    snapshots = [replace(snapshot, python=version) for version in ("3.0", "4.0")]
+    monkeypatch.setattr(
+        gen_unicode_width.sources,
+        "load_cpython_sources",
+        lambda _path: {"3.0": None, "4.0": None},
+    )
+    monkeypatch.setattr(gen_unicode_width, "_MAX_CODE", 128)
+    row = (0, -1, -1, "N", (0,), (0,), (0,), (0,), "Cn", "", 0, 0, None)
+    monkeypatch.setattr(
+        gen_unicode_width, "_records", lambda _snapshot: iter([row] * 128)
+    )
+    output = gen_unicode_width.render(snapshots=snapshots)
+    assert "(3, 0) => Some(&DATA_3_0)" in output
+    assert "(4, 0) => Some(&DATA_4_0)" in output
+    assert "match target" in output
+    with pytest.raises(ValueError, match="exactly every pinned source cohort"):
+        gen_unicode_width.render(snapshots=snapshots[:1])

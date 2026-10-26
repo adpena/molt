@@ -480,7 +480,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         _ => None,
                     })
                     .unwrap_or(0);
-                let func = self.ensure_function_symbol(func_name, arity, false);
+                let (func, trampoline) = self.ensure_callable_target(op, func_name, arity, false);
                 let fn_ptr = self
                     .backend
                     .builder
@@ -490,7 +490,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, false);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -539,7 +538,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&closure_id) = op.operands.first() else {
                     return false;
                 };
-                let func = self.ensure_function_symbol(func_name, arity, true);
+                let (func, trampoline) = self.ensure_callable_target(op, func_name, arity, true);
                 let fn_ptr = self
                     .backend
                     .builder
@@ -549,7 +548,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "closure_func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, true);
                 let tramp_ptr = self
                     .backend
                     .builder

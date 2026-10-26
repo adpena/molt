@@ -843,7 +843,11 @@ fn iterator_resume(
     if let ResumeRequest::Send(value) = request
         && obj_from_bits(value).is_none()
     {
-        return crate::object::ops_iter::iteration_step(py, iterator);
+        return crate::object::ops_iter::iteration_step(
+            py,
+            iterator,
+            crate::object::iterable::IterationExhaustion::Normalize,
+        );
     }
     let closing = match &request {
         ResumeRequest::Throw(arguments) => {

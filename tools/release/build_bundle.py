@@ -39,6 +39,10 @@ from tools.release.binary_compatibility import (  # noqa: E402
 from tools.release.git_source_snapshot import GitSourceSnapshot  # noqa: E402
 from tools.release.platform_wheel import write_platform_wheel  # noqa: E402
 from tools.release.runtime_cells import read_runtime_inventory  # noqa: E402
+from tools.release.native_dependencies import notice_bytes  # noqa: E402
+from molt.exact_json import write_exact  # noqa: E402
+from molt.toolchain_identity import stable_regular_file_content_identity  # noqa: E402
+from molt.release_matrix import RUST_TARGET_BY_COORDINATE  # noqa: E402
 from molt.compiler_distribution import (  # noqa: E402
     COMPILER_BUNDLE_DIRECTORIES,
     MAX_SOURCE_FILES,
@@ -150,7 +154,12 @@ def _bundle_molt(
     runtime_cells: Path,
     platform: str,
     arch: str,
+    llvm_inputs: dict[str, Any],
 ) -> None:
+    from tools.release.native_build import validate_llvm_target
+
+    validate_llvm_target(llvm_inputs, RUST_TARGET_BY_COORDINATE[(platform, arch)])
+    llvm = llvm_inputs
     record = compiler_record(compiler, platform=platform, arch=arch)
     entry = launcher_record(launcher, platform=platform, arch=arch)
     facts = wasm_facts_record(wasm_facts, platform=platform, arch=arch)
@@ -186,6 +195,17 @@ def _bundle_molt(
     )
     _copy_file(source / "LICENSE", root / "share" / "molt" / "LICENSE")
     _copy_file(source / "vendor/llvm/LICENSE.TXT", root / "share/molt/LLVM-LICENSE.TXT")
+    dependencies = llvm["system_static_dependencies"]
+    notice_root = root / "share/molt/system-dependencies"
+    for dependency in dependencies:
+        package = dependency["package"]
+        for notice in dependency["notices"]:
+            destination = (
+                notice_root / package["name"] / package["architecture"] / notice["path"]
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(notice_bytes(notice))
+    write_exact(root / "share/molt/system-dependencies.json", dependencies)
     if {entry.name for entry in root.iterdir()} != set(
         COMPILER_BUNDLE_DIRECTORIES
     ) or not all((root / name).is_dir() for name in COMPILER_BUNDLE_DIRECTORIES):
@@ -254,6 +274,7 @@ def build_bundle(
     runtime_cells: Path | None = None,
     pure_wheel: Path | None = None,
     wheel_output_dir: Path | None = None,
+    llvm_inputs: dict[str, Any] | None = None,
 ) -> Path | None:
     """Write one bundle archive; a Molt bundle may also project its pip wheel.
 
@@ -269,9 +290,10 @@ def build_bundle(
         or wasm_facts is None
         or snapshot is None
         or runtime_cells is None
+        or llvm_inputs is None
     ):
         raise ValueError(
-            "production compiler, launcher, WASM facts tool, runtime cells and committed source "
+            "production compiler, launcher, WASM facts tool, runtime cells, LLVM inputs and committed source "
             "are required for molt bundles"
         )
     if (pure_wheel is None) != (wheel_output_dir is None) or (
@@ -293,6 +315,7 @@ def build_bundle(
                 and wasm_facts is not None
                 and snapshot is not None
                 and runtime_cells is not None
+                and llvm_inputs is not None
             )
             _bundle_molt(
                 root_dir,
@@ -303,6 +326,7 @@ def build_bundle(
                 runtime_cells=runtime_cells,
                 platform=platform,
                 arch=arch,
+                llvm_inputs=llvm_inputs,
             )
         else:
             assert worker is not None
@@ -355,6 +379,11 @@ def main() -> None:
     parser.add_argument("--launcher", type=Path)
     parser.add_argument("--wasm-facts", type=Path)
     parser.add_argument("--runtime-cells", type=Path)
+    parser.add_argument(
+        "--native-build",
+        type=Path,
+        help="admitted native-build.json receipt (required for molt)",
+    )
     parser.add_argument("--source-sha")
     parser.add_argument("--kind", choices=["molt", "molt-worker"], default="molt")
     parser.add_argument("--output", type=Path, required=True)
@@ -365,6 +394,48 @@ def main() -> None:
     )
     args = parser.parse_args()
     from tools.release.compiler_payload import source_snapshot
+    from tools.release.native_build import (
+        RECEIPT_NAME,
+        read_native_build,
+        snapshot_rust_channel,
+    )
+
+    if args.kind == "molt" and args.native_build is None:
+        parser.error("--native-build is required for molt bundles")
+    if args.native_build is not None and args.native_build.name != RECEIPT_NAME:
+        parser.error(f"--native-build must name the explicit {RECEIPT_NAME} receipt")
+    snapshot = source_snapshot(ROOT, args.source_sha) if args.source_sha else None
+    native = None
+    if args.native_build is not None:
+        if snapshot is None:
+            parser.error("--native-build requires --source-sha")
+        try:
+            native = read_native_build(
+                args.native_build.parent,
+                snapshot=snapshot,
+                expected_rust_channel=snapshot_rust_channel(ROOT, snapshot),
+                source_date_epoch=args.source_date_epoch,
+                platform=args.platform,
+                arch=args.arch,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+    if native is not None and args.kind == "molt":
+        for role, path in (
+            ("compiler", args.compiler),
+            ("launcher", args.launcher),
+            ("wasm_facts", args.wasm_facts),
+        ):
+            if path is None:
+                parser.error(f"{role} input is required for molt bundles")
+            identity = stable_regular_file_content_identity(
+                path, label=f"bundle {role}"
+            )
+            if any(
+                identity[key] != native["artifacts"][role][key]
+                for key in ("sha256", "size")
+            ):
+                parser.error(f"{role} bytes differ from native-build receipt")
 
     build_bundle(
         version=args.version,
@@ -378,7 +449,8 @@ def main() -> None:
         launcher=args.launcher,
         wasm_facts=args.wasm_facts,
         runtime_cells=args.runtime_cells,
-        snapshot=source_snapshot(ROOT, args.source_sha) if args.source_sha else None,
+        snapshot=snapshot,
+        llvm_inputs=None if native is None else native["llvm"],
     )
 
 

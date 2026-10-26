@@ -1088,7 +1088,11 @@ def _guarded_scratch(tmp_path, *, pid=10, status="child_running"):
 
 def _finish_indeterminate(marker, lease):
     outcome = scratch.finish_guard_scratch(
-        lease, closed=False, success=False, evidence={"closed": False}
+        lease,
+        closed=False,
+        success=False,
+        evidence={"closed": False},
+        timings=scratch.ScratchFinalizationTimings(),
     )
     custody.update_active_guard_marker(
         marker,
@@ -1180,7 +1184,11 @@ def test_indeterminate_scratch_whose_payload_is_gone_resolves_with_a_receipt(
 def test_retirement_removes_a_reclaimed_generation_left_by_older_code(tmp_path):
     active, marker, lease = _guarded_scratch(tmp_path)
     outcome = scratch.finish_guard_scratch(
-        lease, closed=True, success=False, evidence={"closed": True}
+        lease,
+        closed=True,
+        success=False,
+        evidence={"closed": True},
+        timings=scratch.ScratchFinalizationTimings(),
     )
     assert outcome["state"] == "retained"
     # Older code reclaimed the payload, dropped the index, and kept receipts.

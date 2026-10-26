@@ -1809,17 +1809,13 @@ fn is_python_keyword(name: &str) -> bool {
     )
 }
 
-fn is_valid_identifier(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let mut chars = name.chars();
-    let first = chars.next().unwrap();
-    if !first.is_alphabetic() && first != '_' {
-        return false;
-    }
-    chars.all(|c| c.is_alphanumeric() || c == '_')
+fn is_valid_identifier(data: &molt_obj_model::unicode::UnicodeData, bytes: &[u8]) -> bool {
+    data.is_identifier(bytes)
 }
+
+#[cfg(test)]
+#[path = "collections_ext/identifier_tests.rs"]
+mod identifier_tests;
 
 /// `molt_namedtuple_validate_fields(typename, field_names_list, rename)`
 ///
@@ -1842,7 +1838,16 @@ pub extern "C" fn molt_namedtuple_validate_fields(
         let Some(typename) = string_obj_to_owned(obj_from_bits(typename_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "typename must be a string");
         };
-        if !is_valid_identifier(&typename) || is_python_keyword(&typename) {
+        let Some(data) = molt_runtime_core::unicode_target::for_runtime_target() else {
+            return raise_exception::<_>(
+                _py,
+                "SystemError",
+                "unsupported target Python Unicode facts",
+            );
+        };
+        let typename_bytes = unsafe { molt_runtime_core::rt_string_as_bytes(typename_bits) }
+            .expect("validated string storage");
+        if !is_valid_identifier(data, typename_bytes) || is_python_keyword(&typename) {
             let msg = format!("Type names and field names must be valid identifiers: {typename:?}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
@@ -1861,14 +1866,16 @@ pub extern "C" fn molt_namedtuple_validate_fields(
         let elems = unsafe { seq_snapshot(fields_ptr) };
 
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut normalized: Vec<u64> = Vec::new();
+        let mut normalized: Vec<OwnedRuntimeValue<'_>> = Vec::new();
 
         for (idx, &elem_bits) in elems.iter().enumerate() {
             let Some(name) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
                 return raise_exception::<_>(_py, "TypeError", "field names must be strings");
             };
 
-            let invalid = !is_valid_identifier(&name)
+            let name_bytes = unsafe { molt_runtime_core::rt_string_as_bytes(elem_bits) }
+                .expect("validated string storage");
+            let invalid = !is_valid_identifier(data, name_bytes)
                 || is_python_keyword(&name)
                 || name.starts_with('_')
                 || seen.contains(&name);
@@ -1904,14 +1911,14 @@ pub extern "C" fn molt_namedtuple_validate_fields(
             if name_ptr.is_null() {
                 return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
             }
-            normalized.push(MoltObject::from_ptr(name_ptr).bits());
+            normalized.push(unsafe {
+                OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(name_ptr).bits())
+            });
         }
 
-        let result_ptr = alloc_tuple(_py, &normalized);
-        // Decref the individual name strings (tuple took ownership via ref)
-        for bits in &normalized {
-            dec_ref_bits(_py, *bits);
-        }
+        let result_ptr = alloc_tuple(_py, OwnedRuntimeValue::as_bits_slice(&normalized));
+        // Exact-string temporaries retire on validation/allocation failure too.
+        drop(normalized);
         if result_ptr.is_null() {
             return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
         }

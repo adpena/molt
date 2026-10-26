@@ -6,7 +6,7 @@ development; consult [current status](spec/STATUS.md) for compatibility limits.
 ## Prerequisites
 
 - A [supported CPython compiler host](../packaging/INSTALL.md#requirements)
-  (the examples select 3.12 through `uv`)
+  (the repository pins its development host to CPython 3.12.15 through `uv`)
 - Rust via `rustup`, using the version pinned in `rust-toolchain.toml`
 - `uv`
 - A native C compiler and linker: a platform toolchain on macOS/Linux, or MSVC
@@ -36,8 +36,14 @@ Run from the cloned repository root. The commands below work in PowerShell and
 POSIX shells without activating a virtual environment:
 
 ```bash
-uv sync --group dev --python 3.12
+uv sync --group dev --python 3.12.15
 ```
+
+This creates the source bootstrap environment. Run it without a
+`UV_PROJECT_ENVIRONMENT` that selects a managed image. Managed development and
+proof commands select immutable generations, with the project's default `dev`
+and `bench` groups; see [checkout provisioning](ops/INTEGRATION.md#checkout-provisioning)
+for selection, explicit external environments and updates.
 
 ## Verify The Toolchain
 
@@ -139,6 +145,15 @@ uv run --python 3.14 molt build examples/hello.py --python-version 3.14
 
 The target comes from the explicit option, project configuration or supported
 project floor; changing the host interpreter alone does not change that policy.
+`molt compare` resolves a matching CPython oracle for that target and refuses an
+explicit interpreter whose observed minor differs, before either workload runs.
+The compiler build continues under the invoking frontend. Numeric `--python`
+selections retain their explicit target shorthand; interpreter paths do not
+silently select a different guest target.
+The oracle uses a fresh empty bytecode read namespace with writes disabled;
+ordinary site and environment behavior is retained. Its reported startup timing
+is diagnostic and does not compare matched warm image caches or qualify release
+performance. See the [compare contract](cli-reference.md#molt-compare).
 Differential tooling also uses its launching interpreter as the frontend, so
 `uv run --python 3.14 python tests/molt_diff.py --python-version 3.14 <test.py>`
 selects the frontend and matching CPython oracle without an interpreter override.
@@ -166,8 +181,10 @@ uv run --python 3.12 python -m molt.cli run examples/hello.py
 - WASM linked builds need the [WASM toolchain](spec/areas/tooling/0001-toolchains.md).
   `molt run --target wasm` uses the bundled linked-module runner on Node.js,
   not Wasmtime. A native build does not verify the WASM cell.
-- After changing `pyproject.toml` or dependency groups, rerun `uv sync` so the
-  editable `molt` install in `.venv` stays current.
+- After changing `pyproject.toml` or dependency groups, update a source bootstrap
+  with `uv sync`. For a managed development image, use
+  [checkout provisioning](ops/INTEGRATION.md#checkout-provisioning) to select a
+  new generation; never sync or repair the published image in place.
 
 ## Where To Go Next
 

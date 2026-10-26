@@ -20,13 +20,13 @@ fn discard_itertools_class(py: &crate::PyToken<'_>, class: u64) -> u64 {
 /// Allocate a complete itertools declaration before publishing its class cache.
 ///
 /// Iterator callbacks have the positional `(self)` ABI. An optional constructor
-/// supplies its positional arity and retained defaults and never binds a receiver.
-/// The namespace owns the callables; there is no parallel method cache. The
-/// `__next__` callback is also the class's native next slot (CPython
-/// `tp_iternext`), so iteration calls it without a lookup or a bound method.
-/// Like CPython's itertools heap types, the class is immutable: its
-/// `__next__` cannot diverge from that slot. The tee and groupby iterator
-/// classes are final, like CPython's `_tee` and `_grouper`.
+/// supplies its full positional arity, including an explicit first `cls` operand,
+/// and retained trailing defaults. Attribute lookup never binds `cls` implicitly:
+/// type.__call__ prepends it, while explicit __new__ callers supply it themselves.
+/// The namespace owns the callables; there is no parallel method cache.
+/// The `__next__` callback is also the exact class native next slot.
+/// Its immutable namespace keeps the method and slot coherent; tee and
+/// groupby iterator classes remain final.
 pub(crate) fn alloc_itertools_class(
     py: &crate::PyToken<'_>,
     name: &str,
@@ -39,8 +39,19 @@ pub(crate) fn alloc_itertools_class(
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    if iter_fn == 0
-        || next_fn == 0
+    let is_tee_block = shape == ObjectShapeId::ItertoolsTeeBlock;
+    let declared_extent = match shape {
+        ObjectShapeId::ItertoolsTee => Some(std::mem::size_of::<
+            molt_runtime_core::itertools_tee::TeeCursor,
+        >()),
+        ObjectShapeId::ItertoolsTeeBlock => Some(std::mem::size_of::<
+            molt_runtime_core::itertools_tee::TeeBlock,
+        >()),
+        _ => None,
+    };
+    if declared_extent.is_some_and(|extent| layout_size != extent as i64)
+        || (is_tee_block && (iter_fn != 0 || next_fn != 0 || constructor.is_some()))
+        || (!is_tee_block && (iter_fn == 0 || next_fn == 0))
         || constructor.is_some_and(|(callback, arity, defaults)| {
             callback == 0 || arity == 0 || defaults.len() as u64 >= arity
         })
@@ -115,7 +126,10 @@ pub(crate) fn alloc_itertools_class(
     {
         return discard_itertools_class(py, class_bits);
     }
-    for (name, callback) in [("__iter__", iter_fn), ("__next__", next_fn)] {
+    for (name, callback) in [("__iter__", iter_fn), ("__next__", next_fn)]
+        .into_iter()
+        .filter(|_| !is_tee_block)
+    {
         if crate::builtins::methods::builtin_func_bits(
             py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class_bits, name),
@@ -126,13 +140,29 @@ pub(crate) fn alloc_itertools_class(
             return discard_itertools_class(py, class_bits);
         }
     }
-    // SAFETY: `next_fn` is the address of the `(self)` callback just declared
-    // as `__next__`; the class is unpublished.
-    unsafe {
-        crate::object::layout::class_declare_native_next(
-            class_ptr,
-            std::mem::transmute::<usize, crate::object::layout::NativeNextFn>(next_fn as usize),
-        );
+    if shape == ObjectShapeId::ItertoolsTee
+        && crate::builtins::methods::builtin_func_bits(
+            py,
+            NativeCallableSpec::declared(
+                NativeCallableKind::MethodDescriptor,
+                class_bits,
+                "__copy__",
+            ),
+            crate::molt_itertools_tee_copy as *const () as usize as u64,
+            1,
+        ) == 0
+    {
+        return discard_itertools_class(py, class_bits);
+    }
+    if !is_tee_block {
+        // SAFETY: `next_fn` is the address of the `(self)` callback just declared
+        // as `__next__`; the class is unpublished.
+        unsafe {
+            crate::object::layout::class_declare_native_next(
+                class_ptr,
+                std::mem::transmute::<usize, crate::object::layout::NativeNextFn>(next_fn as usize),
+            );
+        }
     }
     if let Some((callback, arity, defaults)) = constructor
         && crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
@@ -180,6 +210,220 @@ pub(crate) fn alloc_itertools_class(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tee_pair(py: &crate::PyToken<'_>, source: u64) -> [u64; 2] {
+        let result = crate::molt_itertools_tee(source, MoltObject::from_int(2).bits());
+        assert!(!exception_pending(py));
+        let tuple = obj_from_bits(result).as_ptr().unwrap();
+        let readers = std::array::from_fn(|index| unsafe {
+            let bits = crate::object::seq_access::item(tuple, index).unwrap();
+            inc_ref_bits(py, bits);
+            bits
+        });
+        dec_ref_bits(py, result);
+        readers
+    }
+
+    #[test]
+    fn tee_shared_block_outlives_first_reader_and_releases_every_owned_value() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let value = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+            let sequence = MoltObject::from_ptr(alloc_tuple(py, &[value])).bits();
+            let [first, second] = tee_pair(py, sequence);
+            let yielded = crate::molt_itertools_tee_next(first);
+            assert_eq!(yielded, value);
+            dec_ref_bits(py, yielded);
+            dec_ref_bits(py, first);
+            unsafe { crate::object::gc::collect_cycles(py) };
+            let yielded = crate::molt_itertools_tee_next(second);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                yielded, value,
+                "deleting first reader must preserve the shared item"
+            );
+            dec_ref_bits(py, yielded);
+            dec_ref_bits(py, second);
+            let sequence_ptr = obj_from_bits(sequence).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(sequence_ptr)).owned_ref_count_snapshot() },
+                1,
+                "tee must release the source iterator exactly once"
+            );
+            dec_ref_bits(py, sequence);
+            let value_ptr = obj_from_bits(value).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(value_ptr)).owned_ref_count_snapshot() },
+                1,
+                "all cache and source owners must be gone"
+            );
+            dec_ref_bits(py, value);
+        });
+    }
+
+    #[test]
+    fn tee_synchronized_readers_bound_live_value_owners() {
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::state::metrics::enable_profile_for_test();
+        crate::with_gil_entry_nopanic!(py, {
+            let value = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+            let value_ptr = obj_from_bits(value).as_ptr().unwrap();
+            let source = crate::molt_itertools_repeat(value, MoltObject::from_int(900).bits());
+            // Measure the same source protocol independently. Repeat currently
+            // takes generic descriptor dispatch, whose temporary allocations
+            // belong to source advancement rather than tee cache storage.
+            let source_allocations_before =
+                crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            let source_bytes_before =
+                crate::ALLOC_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+            {
+                let iterator =
+                    molt_runtime_core::OwnedRuntimeValue::retain(py.core_token(), source);
+                for _ in 0..400 {
+                    let yielded = molt_runtime_core::iter_next_owned(py.core_token(), &iterator)
+                        .expect("repeat source must advance")
+                        .expect("repeat source must not exhaust");
+                    assert_eq!(yielded.bits(), value);
+                }
+            }
+            let source_allocations = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+                - source_allocations_before;
+            let source_bytes = crate::ALLOC_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
+                - source_bytes_before;
+            let baseline = unsafe { (*header_from_obj_ptr(value_ptr)).owned_ref_count_snapshot() };
+            let [first, second] = tee_pair(py, source);
+            let allocations_before = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            let allocated_bytes_before =
+                crate::ALLOC_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+            for _ in 0..400 {
+                for reader in [first, second] {
+                    let before = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+                    let yielded = crate::molt_itertools_tee_next(reader);
+                    assert!(!exception_pending(py));
+                    assert_eq!(yielded, value);
+                    dec_ref_bits(py, yielded);
+                    if reader == second {
+                        assert_eq!(
+                            crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+                            before,
+                            "cached reader advancement must not allocate"
+                        );
+                    }
+                }
+                let owners =
+                    unsafe { (*header_from_obj_ptr(value_ptr)).owned_ref_count_snapshot() };
+                assert!(
+                    owners <= baseline + 57,
+                    "cache retained already-consumed blocks"
+                );
+            }
+            let allocations =
+                crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed) - allocations_before;
+            let allocated_bytes = crate::ALLOC_BYTES_TOTAL
+                .load(std::sync::atomic::Ordering::Relaxed)
+                - allocated_bytes_before;
+            // The first block exists already. 400 successful source advances
+            // cross seven CPython block boundaries; cached reads allocate none.
+            // Keep generic source dispatch costs visible instead of attributing
+            // every allocation to tee or assuming source advancement is free.
+            assert_eq!(
+                allocations,
+                source_allocations + 7,
+                "tee must add one cache block per 57 source yields"
+            );
+            let block_bytes = allocated_bytes
+                .checked_sub(source_bytes)
+                .expect("tee adds cache storage to the same source cost");
+            eprintln!(
+                "tee lockstep: source_yields=400 reader_yields=800 total_allocations={allocations} source_allocations={source_allocations} block_allocations=7 total_bytes={allocated_bytes} source_bytes={source_bytes} block_bytes={block_bytes} live_cached_value_bound=57"
+            );
+            dec_ref_bits(py, first);
+            dec_ref_bits(py, second);
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(value_ptr)).owned_ref_count_snapshot() },
+                baseline
+            );
+            dec_ref_bits(py, source);
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(value_ptr)).owned_ref_count_snapshot() },
+                1
+            );
+            dec_ref_bits(py, value);
+        });
+    }
+
+    #[test]
+    fn tee_terminal_links_retire_iteratively_through_native_and_abi_ownership() {
+        use molt_runtime_core::itertools_tee::{TeeBlock, TeeCursor};
+        let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            // Get the block class from the public producer, then construct a
+            // long ownership chain directly to isolate terminal retirement from
+            // iterator throughput. Registry absence is the independent oracle.
+            let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+            let [first, second] = tee_pair(py, empty);
+            let cursor = obj_from_bits(first).as_ptr().unwrap().cast::<TeeCursor>();
+            let block = obj_from_bits(unsafe { (*cursor).block_bits })
+                .as_ptr()
+                .unwrap();
+            let class = unsafe { object_class_bits(block) };
+            assert!(
+                unsafe {
+                    crate::object::layout::class_native_next(obj_from_bits(class).as_ptr().unwrap())
+                }
+                .is_none(),
+                "tee storage blocks have no iterator callback or native next slot"
+            );
+            inc_ref_bits(py, class);
+            dec_ref_bits(py, first);
+            dec_ref_bits(py, second);
+            dec_ref_bits(py, empty);
+            for (viewed, c_rooted) in [(false, false), (true, false), (true, true)] {
+                let mut head = 0;
+                let mut nodes = Vec::new();
+                let mut c_root = std::ptr::null_mut();
+                for index in 0..4096 {
+                    let bits = unsafe {
+                        crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
+                    };
+                    let ptr = obj_from_bits(bits).as_ptr().unwrap();
+                    let mut payload = TeeBlock::new(0);
+                    payload.next_bits = head; // Transfer the previous stack owner.
+                    unsafe { ptr.cast::<TeeBlock>().write(payload) };
+                    head = bits;
+                    nodes.push(ptr);
+                    if viewed {
+                        let view = unsafe {
+                            molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits)
+                        };
+                        assert!(!view.is_null());
+                        if c_rooted && index == 2048 {
+                            unsafe { molt_cpython_abi::api::refcount::Py_INCREF(view) };
+                            c_root = view;
+                        }
+                    }
+                }
+                dec_ref_bits(py, head);
+                for (index, ptr) in nodes.iter().copied().enumerate() {
+                    assert_eq!(
+                        unsafe { crate::object::gc::gc_is_tracked(ptr) },
+                        c_rooted && index <= 2048,
+                        "retirement must stop exactly at the externally C-owned suffix"
+                    );
+                }
+                if c_rooted {
+                    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(c_root) };
+                    assert!(
+                        nodes
+                            .into_iter()
+                            .all(|ptr| !unsafe { crate::object::gc::gc_is_tracked(ptr) })
+                    );
+                }
+                assert!(!exception_pending(py));
+            }
+            dec_ref_bits(py, class);
+        });
+    }
 
     #[test]
     fn cached_public_results_own_references_independent_of_runtime_slots() {
@@ -323,15 +567,42 @@ mod tests {
                 !exception_pending(py),
                 "constructor must retain its omitted count default"
             );
-            for _ in 0..3 {
-                let next = attr(py, defaulted, b"__next__");
-                let yielded = unsafe { call_callable0(py, next) };
+            let class_defaulted = unsafe { call_callable1(py, repeat_class, value) };
+            assert!(
+                !exception_pending(py),
+                "repeat class must supply explicit cls"
+            );
+            for reader in [defaulted, class_defaulted] {
+                for _ in 0..3 {
+                    let next = attr(py, reader, b"__next__");
+                    let yielded = unsafe { call_callable0(py, next) };
+                    assert!(!exception_pending(py));
+                    assert_eq!(yielded, value);
+                    dec_ref_bits(py, yielded);
+                    dec_ref_bits(py, next);
+                }
+            }
+            let finite =
+                unsafe { call_callable2(py, repeat_class, value, MoltObject::from_int(2).bits()) };
+            assert!(
+                !exception_pending(py),
+                "repeat class must bind its full arity"
+            );
+            for _ in 0..2 {
+                let yielded = crate::molt_itertools_repeat_next(finite);
                 assert!(!exception_pending(py));
                 assert_eq!(yielded, value);
                 dec_ref_bits(py, yielded);
-                dec_ref_bits(py, next);
             }
-            for owned in [defaulted, instance_constructor, constructor, count, repeat] {
+            for owned in [
+                finite,
+                class_defaulted,
+                defaulted,
+                instance_constructor,
+                constructor,
+                count,
+                repeat,
+            ] {
                 dec_ref_bits(py, owned);
             }
         });
@@ -402,7 +673,11 @@ mod tests {
             dec_ref_bits(py, key);
             // The slot is the iteration step: no lookup, bound method or binding.
             for expected in [5, 7, 9] {
-                match crate::object::ops_iter::iteration_step(py, count) {
+                match crate::object::ops_iter::iteration_step(
+                    py,
+                    count,
+                    crate::object::iterable::IterationExhaustion::Normalize,
+                ) {
                     Ok(crate::object::iterable::SpecialIterationStep::Item(value)) => {
                         assert_eq!(obj_from_bits(value).as_int(), Some(expected));
                     }

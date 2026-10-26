@@ -22,11 +22,34 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from molt import host_capacity
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import frontend_worker as cli_frontend_worker
 from molt.cli.models import _FrontendLayerPlan, _FrontendParallelLayerState
+
+
+@pytest.fixture
+def frontend_parallel_capacity(
+    monkeypatch: pytest.MonkeyPatch, no_ambient_guard_caps: None
+) -> None:
+    # These scheduler controls require a parallel-capable allocation, not the
+    # runner's ambient slice. Keep the real resource intersection: eight CPUs
+    # and eight requested workers fit only four workers in this 5 GiB budget.
+    gib = 1024**3
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 8)
+    monkeypatch.setattr(
+        host_capacity, "_probe_memory_bytes", lambda: (16 * gib, 8 * gib)
+    )
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(5 * gib))
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "8")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_MODULES", "2")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST", "32768")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_TARGET_COST_PER_WORKER", "65536")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_STDLIB_MIN_COST_SCALE", "0.5")
 
 
 def _graph(names: list[str]) -> dict[str, Path]:
@@ -81,8 +104,8 @@ def test_tarjan_handles_deep_chain_without_recursion_error() -> None:
     assert all(len(component) == 1 for component in sccs)
 
 
-def test_a1_cycle_does_not_disable_frontend_parallelism(monkeypatch) -> None:
-    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "8")
+@pytest.mark.usefixtures("frontend_parallel_capacity")
+def test_a1_cycle_does_not_disable_frontend_parallelism() -> None:
     # a<->b cycle, plus independent c, d, e, and a chain to create layers.
     module_graph = _graph(["a", "b", "c", "d", "e", "f", "g"])
     module_deps = {
@@ -123,6 +146,7 @@ def test_a1_cycle_does_not_disable_frontend_parallelism(monkeypatch) -> None:
     config = cli_frontend_parallel._resolve_frontend_parallel_config(
         module_count=len(module_graph),
     )
+    assert config.workers == 4
     assert config.enabled is True
     assert config.reason == "enabled"
 
@@ -152,10 +176,10 @@ def test_a1_pure_dag_layers_are_unchanged() -> None:
     assert order == ["a", "b", "c", "d", "e"]
 
 
+@pytest.mark.usefixtures("frontend_parallel_capacity")
 def test_a1_layer_plan_forces_serial_for_scc_unit_but_parallel_for_peers(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "8")
     monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST", "0")
     from molt.cli.module_source import _ModuleSourceCatalog
 
@@ -173,6 +197,8 @@ def test_a1_layer_plan_forces_serial_for_scc_unit_but_parallel_for_peers(
     config = cli_frontend_parallel._resolve_frontend_parallel_config(
         module_count=len(module_graph),
     )
+    assert config.workers == 4
+    assert config.enabled is True
     scc_serial_modules = frozenset({"a", "b"})
 
     scc_plan = cli_frontend_parallel._frontend_layer_plan(
@@ -207,7 +233,7 @@ def test_a1_layer_plan_forces_serial_for_scc_unit_but_parallel_for_peers(
         scc_serial_modules=scc_serial_modules,
     )
     assert peer_plan.mode == "parallel"
-    assert peer_plan.workers >= 2
+    assert peer_plan.workers == 3
 
 
 # ---------------------------------------------------------------------------
@@ -216,14 +242,15 @@ def test_a1_layer_plan_forces_serial_for_scc_unit_but_parallel_for_peers(
 # ---------------------------------------------------------------------------
 
 
-def test_a2_phase_timeout_does_not_disable_parallelism(monkeypatch) -> None:
-    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "8")
+@pytest.mark.usefixtures("frontend_parallel_capacity")
+def test_a2_phase_timeout_does_not_disable_parallelism() -> None:
     # Pre-fix, a non-None frontend_phase_timeout forced enabled=False with
     # reason="phase_timeout_configured". The config no longer even takes the
     # timeout: it is applied inside each worker.
     config = cli_frontend_parallel._resolve_frontend_parallel_config(
         module_count=4,
     )
+    assert config.workers == 4
     assert config.enabled is True
     assert config.reason == "enabled"
 
@@ -252,6 +279,7 @@ def test_a2_worker_applies_phase_timeout_per_module(tmp_path, monkeypatch) -> No
 
     def _payload(frontend_phase_timeout):
         return {
+            "body_selection": {"kind": "complete_source", "roots": []},
             "module_name": "slow_module",
             "module_path": str(module_path),
             "source_lease": _ModuleSourceLease.inline(
@@ -375,6 +403,7 @@ def _make_execution_context(
     )
 
 
+@pytest.mark.usefixtures("frontend_parallel_capacity")
 def test_a3_run_frontend_layer_isolates_failed_module_and_keeps_parallel(
     monkeypatch,
 ) -> None:
@@ -475,6 +504,7 @@ def test_a3_run_frontend_layer_isolates_failed_module_and_keeps_parallel(
     assert details["reason"] == "worker_error_isolated_serial"
 
 
+@pytest.mark.usefixtures("frontend_parallel_capacity")
 def test_a4_run_frontend_layer_surrenders_pool_only_when_broken(
     monkeypatch,
 ) -> None:
@@ -564,7 +594,10 @@ def test_a4_run_frontend_layer_surrenders_pool_only_when_broken(
 
 
 def _make_config():
-    return cli_frontend_parallel._resolve_frontend_parallel_config(module_count=8)
+    config = cli_frontend_parallel._resolve_frontend_parallel_config(module_count=8)
+    assert config.enabled is True
+    assert config.workers == 4
+    return config
 
 
 def _make_runtime_hooks(warnings: list[str], details: dict[str, Any]):

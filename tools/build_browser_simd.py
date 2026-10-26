@@ -148,7 +148,7 @@ def _build_artifact_bytes(project_root: Path) -> bytes:
     environment = RunContext(root, session_prefix="browser-simd").canonical_env(
         os.environ, create_dirs=False, admit_toolchain_root=False
     )
-    environment, _policies = normalize_cargo_environment(environment)
+    environment, _policies = normalize_cargo_environment(environment, cwd=crate)
     cargo = environment.get("CARGO", "cargo")
     if not cargo:
         raise BrowserSimdBuildError("CARGO must name an executable")

@@ -28,6 +28,47 @@ exact termination, completion and mode-specific proof marker through
 must fail verification. These controls belong to development test binaries and
 receipt tooling, not emitted programs.
 
+Native loop-join compile/run tests retain optional failure bundles through
+`tests/native_process_guard.py` when `MOLT_DEBUG_ARTIFACT_DIR` is explicitly set.
+Each invocation gets a private directory under `native-execution-failures/`;
+`manifest.json` is published last and records backend/profile, argv/cwd,
+source-input bytes, build/guest streams and terminal guard facts. Child stderr
+is separate from stderr augmented by the guard. Timeouts retain their attached
+guard result, and diagnostic failure adds a note without replacing the original
+exception. Semantic-output mismatches after the helper returns remain outside
+this capture boundary.
+
+With capture enabled, one stable pre-guest executable read computes its identity,
+refusing files above 256 MiB before hashing. A failed invocation copies only that
+observed generation through the shared publication authority; a changed or
+unavailable executable is recorded without substituting later bytes. Source
+and each stream retain at most 8 MiB, with complete/retained sizes, digests and
+truncation flags. These bounds limit retained disk bytes, not the guard's existing
+in-memory output capture. Failure publication adds a streamed executable copy,
+bounded files and a post-failure Git commit/tree observation; the latter does
+not attest the earlier dirty worktree. Disabled capture adds no executable read,
+directory or Git process. The existing always-upload LLVM diagnostics artifact
+collects this exact subtree, independently of strict release receipts.
+
+Invocation-local outputs follow [LLVM lit's per-test output paths](https://llvm.org/docs/CommandGuide/lit.html)
+and [rustc's separate compiler and execution streams](https://rustc-dev-guide.rust-lang.org/tests/ui.html).
+These diagnostic bundles support crash investigation; they do not establish
+compilation correctness, performance improvement or release acceptance.
+
+Property execution uses the shared compatibility comparison with exact stdout,
+guest stderr and exit status. Capture stays binary until lossless decoding;
+whitespace, final newlines and non-UTF-8 bytes remain observable. Compiler and
+guard failures cannot become matching guest results. The native helper executes
+the consumer selected by the shared build-JSON contract, without directory scans
+or executable-name guesses. Scratch is retired only after process-tree closure;
+unknown closure retains its owned directory and adds its path to the failure.
+CPython-only generator checks remain distinct from `--run-molt` execution.
+
+This reuses the guard, output model, comparison and owned-directory authorities.
+It adds no guest work or process launches. Comparison reads the captured streams
+linearly; build selection parses one JSON response and checks its selected path.
+The removed whitespace copy and directory search have no claimed timing result.
+
 Place Rust unit-test bodies in separate files behind `#[cfg(test)] mod tests;`,
 with an explicit `#[path]` where needed. This keeps test-only edits outside the
 production crate's inputs and avoids rebuilding its dependents. Preserve module
@@ -156,7 +197,19 @@ percentages. Required conformance and release matrix gates still apply.
   --molt-profile=run.json ...` records every phase's wall, CPU, child CPU,
   spawns and waiting, and `python tools/pytest_profile.py report run.json`
   shows what bounds the run (the busiest worker, the exit tail, the tests that
-  wait). Reuse immutable fixture inputs without sharing
+  wait). Profiling is opt-in: the controller atomically publishes an initial
+  snapshot, its first completed phase, and then at most one checkpoint per ten
+  seconds on report callbacks. A long phase can leave the checkpoint older than
+  ten seconds. An interrupted profile contains only observed phase durations;
+  its observed phase-duration totals are lower bounds, while derived waiting
+  and imbalance remain provisional. `compare` refuses it as a completed run.
+  A session-finish record completes pytest phase reporting even when process
+  exit is still unknown; neither session completion nor exit implies proof
+  acceptance. Use a fresh output path per run, including its worker metadata
+  siblings, to prevent final reports from mixing metadata from older runs.
+  Retain the exact profile and worker metadata through the owning diagnostic
+  artifact upload; a receipt naming an output does not transport its bytes.
+  Reuse immutable fixture inputs without sharing
   mutable state across tests; batch integration builds and keep them out of the
   fast unit loop. Real Cargo fixtures use actual filesystem measurements with
   invocation-owned headroom appropriate to their dependency graph; modeled

@@ -463,7 +463,6 @@ class LocalBindingMixin(GeneratorMixinBase):
         self,
         candidates: Iterable[str],
         *,
-        value_captures: dict[str, MoltValue] | None = None,
         cell_captures: Mapping[str, MoltValue] | None = None,
         class_scope: _ClassNsScope | None = None,
     ) -> tuple[list[str], dict[str, TypeHint], MoltValue | None, bool]:
@@ -475,7 +474,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         Module globals remain globals, except actual comprehension locals.
         """
         names = set(candidates)
-        values = value_captures or {}
+        parameters = self.type_parameter_bindings
         captured_cells = cell_captures or {}
         scope = class_scope or (
             self._class_ns_stack[-1] if self._class_ns_stack else None
@@ -503,7 +502,7 @@ class LocalBindingMixin(GeneratorMixinBase):
                 free_vars = self._free_vars_in_outer_scope(names)
             free_vars = sorted(
                 set(free_vars)
-                | (names & values.keys())
+                | (names & parameters.keys())
                 | (names & captured_cells.keys())
             )
             if not free_vars:
@@ -516,11 +515,15 @@ class LocalBindingMixin(GeneratorMixinBase):
                     cells.append(captured_cells[name])
                     hints[name] = "Any"
                     continue
-                if name in values:
-                    value = values[name]
-                    cell = self._emit_cell_new(value)
-                    cells.append(cell)
-                    hints[name] = value.type_hint or "Any"
+                if name in parameters:
+                    binding = parameters[name]
+                    if binding.cell is None:
+                        raise FrontendRejection(
+                            Diagnostic.INTERNAL_INVARIANT,
+                            f"Type parameter {name!r} has no planned closure cell",
+                        )
+                    cells.append(binding.cell)
+                    hints[name] = "Any"
                     continue
                 self._box_local(name)
                 binding = self.comprehension_bindings.get(name)
@@ -626,8 +629,13 @@ class LocalBindingMixin(GeneratorMixinBase):
         )
 
     def _load_free_var_cell(self, name: str) -> MoltValue | None:
-        if not self._free_var_cell_available(name):
+        if name not in self.free_vars:
             return None
+        if not self._free_var_cell_available(name):
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                f"Free variable {name!r} has no closure transport",
+            )
         closure = self.compiler_bindings.get(_MOLT_CLOSURE_PARAM)
         if closure is None:
             assert self.async_closure_offset is not None
@@ -849,10 +857,11 @@ class LocalBindingMixin(GeneratorMixinBase):
         # law. Neither may skip the enclosing cell or consult an outer class.
         # A generic class body sits inside its type-parameter scope, which
         # CPython consults after the class mapping (LOAD_FROM_DICT_OR_DEREF).
-        fallback = self.annotation_type_params.get(name)
-        if fallback is None and (
-            name not in scope.local_names or name in scope.nonlocal_names
-        ):
+        fallback = None
+        lexical_fallback = name not in scope.local_names or name in scope.nonlocal_names
+        if lexical_fallback:
+            fallback = self._load_type_parameter(name)
+        if fallback is None and lexical_fallback:
             saved_scopes, saved_locals = self._class_ns_stack, self.locals
             self._class_ns_stack, self.locals = [], scope.enclosing_locals
             try:

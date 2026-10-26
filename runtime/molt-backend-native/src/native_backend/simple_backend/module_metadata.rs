@@ -306,14 +306,9 @@ impl NativeBackendModuleContext {
     pub fn object_dependencies(functions: &[FunctionIR]) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = functions.iter().map(|f| f.name.clone()).collect();
         for function in functions {
-            for op in &function.ops {
-                if crate::tir::op_kinds_generated::simpleir_kind_references_defined_function(
-                    &op.kind,
-                ) && let Some(name) = op.s_value.as_ref()
-                {
-                    names.insert(name.clone());
-                }
-            }
+            molt_tir::passes::visit_function_reference_targets(function, |name| {
+                names.insert(name.to_owned());
+            });
         }
         names.extend(
             molt_tir::trampolines::CallableMetadata::from_functions(functions)

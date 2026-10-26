@@ -315,7 +315,7 @@ def test_explicit_nested_operation_timeout_remains_narrower_than_owner(
 @pytest.mark.parametrize("raw", ["0", "nan", "invalid"])
 def test_invalid_owning_proof_timeout_fails_closed(raw: str) -> None:
     with pytest.raises(ValueError, match=PROOF_COMMAND_TIMEOUT_ENV):
-        process_guard_common._timeout_from_role_env(
+        process_guard_common.resolve_test_process_timeout(
             "MOLT_NATIVE_TEST",
             process_guard_common.GuardedProcessRole.EXECUTION,
             {PROOF_COMMAND_TIMEOUT_ENV: raw},

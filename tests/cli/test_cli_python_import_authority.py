@@ -676,6 +676,89 @@ def test_local_resolver_reuses_namespace_package_prefix(
     )
 
 
+@pytest.mark.parametrize("kind", ["module", "package", "namespace", "missing"])
+@pytest.mark.parametrize("workers", [1, 4])
+def test_local_resolver_validates_each_cached_name_once(
+    tmp_path: Path, kind: str, workers: int
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    initializer = package / "__init__.py"
+    initializer.write_text("pass\n", encoding="utf-8")
+    # This resolver admits module spellings beyond Python identifier syntax.
+    child = package / "child-segment"
+    expected_source: Path | None = None
+    expected_locations: tuple[Path, ...] = ()
+    if kind == "module":
+        expected_source = child.with_suffix(".py")
+        expected_source.write_text("pass\n", encoding="utf-8")
+    elif kind in {"package", "namespace"}:
+        child.mkdir()
+        expected_locations = (child.resolve(),)
+        if kind == "package":
+            expected_source = child / "__init__.py"
+            expected_source.write_text("pass\n", encoding="utf-8")
+    if expected_source is not None:
+        expected_source = expected_source.resolve()
+    split_names: list[str] = []
+
+    class ObservedName(str):
+        # Keep string value/hash/equality and splitting semantics unchanged;
+        # observe only work that an exact cache hit need not repeat.
+        def split(self, sep: str | None = None, maxsplit: int = -1) -> list[str]:
+            split_names.append(str(self))
+            return super().split(sep, maxsplit)
+
+    name = ObservedName("pkg.child-segment")
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    requests = [name] * 8
+    if workers == 1:
+        results = [resolver.source_for_module(request) for request in requests]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(resolver.source_for_module, requests))
+    assert results == [expected_source] * len(requests)
+    assert resolver.package_locations(name) == expected_locations
+    expected_parents = [initializer.resolve()]
+    if expected_source is not None:
+        expected_parents.append(expected_source)
+    assert [
+        source.path
+        for source in resolver.resolve_import_sources(
+            name, include_parent_packages=True
+        )
+    ] == expected_parents
+    # Resolving a child also admitted the complete, validated parent prefix.
+    assert resolver.source_for_module(ObservedName("pkg")) == initializer.resolve()
+    assert resolver.source_for_module(ObservedName("")) is None
+    assert split_names == ["pkg.child-segment"]
+    fresh = LocalPythonModuleResolver((tmp_path,))
+    assert fresh.source_for_module(name) == expected_source
+    assert split_names == ["pkg.child-segment", "pkg.child-segment"]
+
+
+@pytest.mark.parametrize("prefix_kind", ["missing", "module", "package"])
+@pytest.mark.parametrize(
+    "name", [".pkg", "pkg.", "pkg..child", "pkg.child/other", "pkg.child\\other"]
+)
+def test_local_resolver_validates_uncached_name_before_cached_prefix(
+    tmp_path: Path, prefix_kind: str, name: str
+) -> None:
+    if prefix_kind == "module":
+        (tmp_path / "pkg.py").write_text("pass\n", encoding="utf-8")
+    elif prefix_kind == "package":
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "__init__.py").write_text("pass\n", encoding="utf-8")
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    resolver.source_for_module("pkg")
+    for _attempt in range(2):
+        with pytest.raises(ValueError) as error:
+            resolver.source_for_module(name)
+        assert str(error.value) == f"invalid local Python module name: {name!r}"
+
+
 def test_branch_join_preserves_whole_possible_states() -> None:
     source = (
         "if condition is None:\n"
@@ -3013,8 +3096,8 @@ def test_cpython_eager_relative_protocol_callbacks_warnings_and_errors(monkeypat
 
 @pytest.mark.parametrize("source", ["import pkg", "from pkg import item"])
 def test_import_fact_and_direct_visitor_gateways_preserve_syntax_admission(source):
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     from molt.target_python import (
-        SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
         TargetPythonVersion,
     )
 

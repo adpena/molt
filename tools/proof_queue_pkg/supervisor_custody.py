@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -406,12 +407,35 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SupervisorEventArtifact:
+    path: Path
+    images: tuple[tuple[str, str, int], ...]
+    # One terminal image for each kernel stable generation, including unknown
+    # image generations. A reused numeric PID can never silently select one.
+    processes: tuple[tuple[int, str, tuple[str, str, int] | None], ...]
+
+    def producing_process(self, process_id: int) -> tuple[str, tuple[str, str, int]]:
+        """Finalize a PID hint only within this original verified event session."""
+        matches = [
+            (stable, image)
+            for pid, stable, image in self.processes
+            if pid == process_id
+        ]
+        if len(matches) != 1 or matches[0][1] is None:
+            raise ValueError("producing PID has no unique observed process generation")
+        stable, image = matches[0]
+        assert image is not None
+        return stable, image
+
+
 def _verified_supervisor_event_artifact(
     *,
     receipt_path: Path,
     descriptor: Mapping[str, object],
     collect_images: bool,
-) -> tuple[Path, list[tuple[str, str, int]]]:
+    collect_processes: bool = False,
+) -> SupervisorEventArtifact:
     if descriptor.get("schema") != SUPERVISOR_EVENT_LOG_SCHEMA:
         raise ValueError(
             "native proof supervisor event artifact descriptor has unsupported schema"
@@ -446,6 +470,8 @@ def _verified_supervisor_event_artifact(
     count = 0
     actual_bytes = 0
     unique_images: dict[tuple[str, str, int], None] = {}
+    process_images: dict[tuple[int, str], tuple[str, str, int] | None] = {}
+    previous_sequence = -1
     with event_path.open("rb") as stream:
         if os.fstat(stream.fileno()).st_size != expected_bytes:
             raise ValueError("native proof supervisor event artifact identity changed")
@@ -467,7 +493,7 @@ def _verified_supervisor_event_artifact(
                 raise ValueError(
                     "native proof supervisor event artifact exceeds its record bound"
                 )
-            if not collect_images:
+            if not collect_images and not collect_processes:
                 continue
             try:
                 event = loads_exact(raw_line.decode("utf-8"))
@@ -477,7 +503,44 @@ def _verified_supervisor_event_artifact(
                 ) from exc
             payload = event.get("event") if isinstance(event, Mapping) else None
             image = payload.get("image") if isinstance(payload, Mapping) else None
+            process_key = None
+            if collect_processes:
+                pid = event.get("process_id") if isinstance(event, Mapping) else None
+                stable = (
+                    event.get("stable_process_id")
+                    if isinstance(event, Mapping)
+                    else None
+                )
+                sequence = event.get("sequence") if isinstance(event, Mapping) else None
+                if (
+                    type(pid) is not int
+                    or not 0 < pid < 1 << 32
+                    or not isinstance(stable, str)
+                    or not stable
+                    or len(stable.encode("utf-8"))
+                    > SUPERVISOR_BUDGETS["stable_process_id_utf8_bytes"]
+                    or type(sequence) is not int
+                    or sequence <= previous_sequence
+                    or not isinstance(payload, Mapping)
+                ):
+                    raise ValueError(
+                        "native proof supervisor process generation is malformed"
+                    )
+                previous_sequence = sequence
+                process_key = (pid, stable)
+                process_images.setdefault(process_key, None)
+                if len(process_images) > SUPERVISOR_BUDGETS["lifetime_processes"]:
+                    raise ValueError(
+                        "native proof supervisor process projection exceeds its bound"
+                    )
             if image is None:
+                if collect_processes and payload.get("kind") in {
+                    "exec",
+                    "initial-image",
+                }:
+                    raise ValueError(
+                        "native proof supervisor image event omitted its image"
+                    )
                 continue
             if not isinstance(image, Mapping):
                 raise ValueError("native proof supervisor event image is malformed")
@@ -496,7 +559,14 @@ def _verified_supervisor_event_artifact(
                 raise ValueError(
                     "native proof supervisor event image identity is malformed"
                 )
-            unique_images[(raw_path, image_sha256, image_size)] = None
+            observed_image = (raw_path, image_sha256, image_size)
+            if process_key is not None:
+                if payload.get("kind") not in {"exec", "initial-image", "fork"}:
+                    raise ValueError(
+                        "native proof supervisor image has no producing event"
+                    )
+                process_images[process_key] = observed_image
+            unique_images[observed_image] = None
             if len(unique_images) > _MAX_INVENTORY_IMAGE_IDENTITIES:
                 raise ValueError(
                     "native proof supervisor inventory exceeds its unique-image bound"
@@ -507,7 +577,14 @@ def _verified_supervisor_event_artifact(
         or digest.hexdigest() != expected_sha256
     ):
         raise ValueError("native proof supervisor event artifact identity changed")
-    return event_path, list(unique_images)
+    return SupervisorEventArtifact(
+        event_path,
+        tuple(unique_images),
+        tuple(
+            (pid, stable, image)
+            for (pid, stable), image in sorted(process_images.items())
+        ),
+    )
 
 
 class SupervisorPrelaunchRefused(ValueError):
@@ -1153,12 +1230,12 @@ def capture_process_image_inventory(
         descriptor = receipt.get("event_log")
         if not isinstance(descriptor, Mapping):
             raise ValueError(f"{role} process-image inventory has no event log")
-        _, observed_images = _verified_supervisor_event_artifact(
+        observed_events = _verified_supervisor_event_artifact(
             receipt_path=receipt_path, descriptor=descriptor, collect_images=True
         )
         rows: list[dict[str, object]] = []
         launcher_path = Path(str(launcher["path"]))
-        for raw_path, digest, size in observed_images:
+        for raw_path, digest, size in observed_events.images:
             observed = Path(raw_path)
             try:
                 is_launcher = observed.samefile(launcher_path)
@@ -1198,7 +1275,7 @@ def _publish_supervisor_event_artifact(
     event_log = receipt.get("event_log")
     if not isinstance(event_log, Mapping):
         raise ValueError("native proof supervisor receipt has no event artifact")
-    event_path, _ = _verified_supervisor_event_artifact(
+    events = _verified_supervisor_event_artifact(
         receipt_path=receipt_path, descriptor=event_log, collect_images=False
     )
     file_name = str(event_log["file"])
@@ -1206,7 +1283,7 @@ def _publish_supervisor_event_artifact(
     expected_bytes = event_log["bytes"]
     expected_count = event_log["count"]
     artifact = custody_cas.put_file(
-        cas_root, event_path, logical_name=file_name, executable=False
+        cas_root, events.path, logical_name=file_name, executable=False
     ).as_dict()
     if (
         artifact.get("sha256") != expected_sha256

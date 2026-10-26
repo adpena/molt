@@ -42,6 +42,28 @@ Key characteristics of the current implementation:
 
 ---
 
+### Revision-bound linked resource normalization
+
+`WasmArtifactState.section_edit()` owns one sparse edit of the current bytes.
+Table and memory minima, resource exports, and identity-export removal share the
+canonical section-span parse and evolving payloads, then serialize at most once.
+Untouched code, data and custom payloads remain borrowed views until that final
+serialization. No-op edits preserve the bytes, revision and admitted facts.
+Revision changes (including external publication) reject stale edits; final facts
+validation precedes commit, and failure leaves owned and persisted bytes intact.
+Split-app export restoration and external optimizers retain their existing mutation
+and validation boundaries. Source facts used during planning describe only
+unchanged resource counts/identities; final facts belong to the resulting bytes.
+
+This adapts the borrowed payload windows of
+[wasm-tools v1.262.0 `wasmparser::Payload`](https://github.com/bytecodealliance/wasm-tools/blob/v1.262.0/crates/wasmparser/src/parser.rs#L119-L137),
+which explicitly separate parsing from validation. Planning costs one section
+walk, O(section count) descriptors and copies of edited payloads. A changed module
+still requires the existing serializer's output buffer and immutable result copy;
+this removes intermediate whole-module copies, not final output allocation or
+independent validation. Operation counters belong to the existing link timing
+receipt; this is a development-tool improvement, not a guest throughput claim.
+
 ### 0.1 Runtime trampoline link identities and rejected artifacts
 
 Relocatable runtime `env::molt_call_indirect0..13` imports are the generated ABI

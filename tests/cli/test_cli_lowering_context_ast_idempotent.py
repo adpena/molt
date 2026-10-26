@@ -32,6 +32,8 @@ task #39 pattern):
 
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 import hashlib
 import importlib
@@ -194,7 +196,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
                 "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
                 "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
                 "import_scan_mode": "module_init",
-                "native_support_function_roots": [],
+                "body_selection": {"kind": "complete_source", "roots": []},
                 "func_kinds": {"f": "sync"},
                 "func_defaults": {
                     "f": {
@@ -213,6 +215,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
                 "source_kind": "path",
                 "context_digest": "context",
                 "result": {
+                    "body_selection": {"kind": "complete_source", "roots": []},
                     "functions": [],
                     "function_metadata": {},
                     "constant_metadata": raw,
@@ -228,6 +231,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
             lowering_result = MC._validate_persisted_module_lowering_payload(
                 json.loads(json.dumps(lowering)),
                 source,
+                body_selection=ModuleBodySelection("complete_source"),
                 source_lease=source_lease,
                 module_name="mod",
                 context_digest="context",
@@ -288,7 +292,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
             "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
             "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
             "import_scan_mode": "module_init",
-            "native_support_function_roots": [],
+            "body_selection": {"kind": "complete_source", "roots": []},
             "func_defaults": defaults,
             "func_kinds": kinds,
         }
@@ -334,6 +338,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         lowering_result = MC._validate_persisted_module_lowering_payload(
             persisted(lowering),
             source,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=source_lease,
             module_name="__main__",
             context_digest="context",

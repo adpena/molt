@@ -1,8 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
+use molt_ir::FunctionIR;
+use molt_ir::addressed_program::FunctionDigest;
+
 use super::super::protocol::DaemonCacheKey;
 use super::state::DaemonLru;
+use crate::backend_process::origin::DaemonCacheEntry;
 
 /// The daemon's compiled-output cache, shared by concurrent connections.
 ///
@@ -64,12 +68,48 @@ impl DaemonCache {
         self.max_bytes
     }
 
-    pub(crate) fn get_bytes(&self, key: &DaemonCacheKey) -> Option<Arc<[u8]>> {
-        lock(&self.lru).get_bytes(key)
+    pub(crate) fn get_entry(&self, key: &Arc<DaemonCacheKey>) -> Option<Arc<DaemonCacheEntry>> {
+        lock(&self.lru).get_entry(key)
     }
 
-    pub(crate) fn insert(&self, key: Arc<DaemonCacheKey>, value: Arc<[u8]>) {
+    pub(crate) fn insert(&self, key: Arc<DaemonCacheKey>, value: Arc<DaemonCacheEntry>) {
         lock(&self.lru).insert(key, value);
+    }
+
+    /// Program positions whose bodies are not resident. One lock covers the
+    /// whole program; each resident body is promoted.
+    pub(crate) fn missing_functions(&self, digests: &[FunctionDigest]) -> Vec<usize> {
+        let mut lru = lock(&self.lru);
+        digests
+            .iter()
+            .enumerate()
+            .filter(|(_, digest)| lru.get_function(**digest).is_none())
+            .map(|(position, _)| position)
+            .collect()
+    }
+
+    /// The resident body of each position `wanted` selects, under one lock.
+    pub(crate) fn resident_functions(
+        &self,
+        digests: &[FunctionDigest],
+        wanted: impl Fn(&FunctionDigest) -> bool,
+    ) -> Vec<Option<Arc<FunctionIR>>> {
+        let mut lru = lock(&self.lru);
+        digests
+            .iter()
+            .map(|digest| wanted(digest).then(|| lru.get_function(*digest)).flatten())
+            .collect()
+    }
+
+    /// Keep admitted bodies, under one lock.
+    pub(crate) fn insert_functions(
+        &self,
+        functions: impl IntoIterator<Item = (FunctionDigest, Arc<FunctionIR>)>,
+    ) {
+        let mut lru = lock(&self.lru);
+        for (digest, function) in functions {
+            lru.insert_function(digest, function);
+        }
     }
 
     #[cfg(all(test, feature = "native-backend"))]
@@ -81,6 +121,18 @@ impl DaemonCache {
     /// Includes keys/context/output storage; this is not process RSS.
     pub(crate) fn usage(&self) -> (usize, usize) {
         lock(&self.lru).usage()
+    }
+
+    /// Resident function bodies, counted by a linear scan.
+    pub(crate) fn function_entries(&self) -> usize {
+        lock(&self.lru).function_entries()
+    }
+
+    /// Resident compiled artifacts, counted by a linear scan.
+    #[cfg(test)]
+    pub(crate) fn artifact_entries(&self) -> usize {
+        let lru = lock(&self.lru);
+        lru.usage().0 - lru.function_entries()
     }
 
     /// Join `key`'s single flight.

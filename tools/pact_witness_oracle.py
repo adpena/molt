@@ -20,7 +20,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from molt.cli.source_build_environment import source_build_environment  # noqa: E402
+from molt.source_build_environment import source_build_environment  # noqa: E402
 from molt.dx import proof_scratch_root  # noqa: E402
 from molt.scientific_stack_versions import PACT_WITNESS_DEPENDENCY_GROUP  # noqa: E402
 

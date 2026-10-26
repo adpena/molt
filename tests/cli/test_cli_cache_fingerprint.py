@@ -1259,8 +1259,12 @@ def test_lowering_dependency_graph_reuse_ends_with_build_transaction(
     assert set(captured) == {source, helper}
 
 
+@pytest.mark.parametrize(
+    "version_module",
+    ["target_python", "target_python_policy", "_python_release_generated"],
+)
 def test_installed_python_layout_drives_both_fingerprint_scopes(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version_module: str
 ) -> None:
     site_packages = tmp_path / "site-packages"
     package = site_packages / "molt"
@@ -1268,9 +1272,9 @@ def test_installed_python_layout_drives_both_fingerprint_scopes(
     frontend.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (frontend / "__init__.py").write_text(
-        "from molt.target_python import TARGET\n", encoding="utf-8"
+        f"from molt.{version_module} import TARGET\n", encoding="utf-8"
     )
-    target = package / "target_python.py"
+    target = package / f"{version_module}.py"
     target.write_text("TARGET = 312\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path))
     monkeypatch.setattr(COMPILER_METADATA, "_SRC_ROOT", site_packages)
@@ -1523,7 +1527,7 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
     import io
     import sys
     from molt.frontend import SimpleTIRGenerator
-    from molt.cli.backend_ir_transport import write_backend_ir
+    from molt.cli.backend_ir_transport import BackendIrProgram
     from molt.opcode_literal_payloads import integer_literal_value
 
     huge_hex = "0x1" + "0" * 5000
@@ -1562,10 +1566,13 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
             assert streamed.getvalue().encode() == payload
             assert json.loads(payload) == ir
             binary = io.BytesIO()
-            write_backend_ir(binary, ir)
+            BackendIrProgram(ir, CACHE_KEYS.FunctionDigests()).write(binary)
             import msgpack
 
-            assert msgpack.unpackb(binary.getvalue()) == ir
+            lease = msgpack.unpackb(binary.getvalue())
+            assert [msgpack.unpackb(body) for body in lease["function_bodies"]] == ir[
+                "functions"
+            ]
             outputs.append((payload, CACHE_KEYS._cache_payload_digest(ir)))
         assert outputs[0] == outputs[1]
         changed = dict(ir, constants={"changed": expected + 7})

@@ -83,13 +83,12 @@ def _detached_state_dir(name: str, override: str | None) -> Path:
     return root / name
 
 
-def verify_command(name: str, state_dir: str | None, min_age_s: float) -> list[str]:
-    """The ``detached-verify`` argv that finds the state ``detached-run`` wrote.
+def verify_command(name: str, state_root: Path, min_age_s: float) -> list[str]:
+    """Carry the admitted state root into the later verification process.
 
-    A run under ``--state-dir`` is invisible to a verify without it: the
-    default root is the system temp directory.
+    Even a default root must be explicit: the later process can have a
+    different temporary environment. The caller passes the selected state.parent.
     """
-    state_root = ["--state-dir", str(Path(state_dir).resolve())] if state_dir else []
     return [
         # This interpreter and the driver by absolute path: a bare `python3`
         # may be one that cannot run the driver (macOS ships 3.9).
@@ -97,7 +96,8 @@ def verify_command(name: str, state_dir: str | None, min_age_s: float) -> list[s
         "detached-verify",
         "--name",
         name,
-        *state_root,
+        "--state-dir",
+        str(state_root),
         "--min-age-s",
         str(min_age_s),
     ]
@@ -360,21 +360,27 @@ def cmd_detached_run(args: argparse.Namespace) -> int:
             ),
         )
         daemon_pid = _detached_daemonize(state, command, cwd, env)
+        verify_argv = verify_command(args.name, state.parent, args.verify_min_age_hint)
         _ok(f"detached {args.name!r} spawned: pid {daemon_pid}")
         _say(f"    state: {state}")
         _say(f"    log:   {state / 'run.log'}")
         _say("    REQUIRED next step, in a LATER tool call (teardown of THIS call")
         _say("    is exactly what hazard 11 is about):")
-        _say(
-            "      "
-            + shlex.join(
-                verify_command(args.name, args.state_dir, args.verify_min_age_hint)
-            )
-        )
+        if os.name == "nt":
+            _say("    verify_argv (JSON argument array; launch without a shell):")
+            _say("      " + json.dumps(verify_argv))
+        else:
+            _say("    POSIX shell command:")
+            _say("      " + shlex.join(verify_argv))
         if args.json:
             print(
                 json.dumps(
-                    {"name": args.name, "pid": daemon_pid, "state_dir": str(state)}
+                    {
+                        "name": args.name,
+                        "pid": daemon_pid,
+                        "state_dir": str(state),
+                        "verify_argv": verify_argv,
+                    }
                 )
             )
         return EXIT_OK

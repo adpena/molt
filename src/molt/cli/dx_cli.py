@@ -47,6 +47,10 @@ def _handle_run(args: argparse.Namespace) -> int:
         capture_output=False,
         memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
     )
+    from molt.dx import collect_checkout_state_after_result
+
+    if not env.get("MOLT_PROOF_QUEUE"):
+        collect_checkout_state_after_result(env, cwd=project.root)
     return result.returncode
 
 

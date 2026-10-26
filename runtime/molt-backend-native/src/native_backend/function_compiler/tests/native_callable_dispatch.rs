@@ -2816,6 +2816,7 @@ static ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 static FAIL: AtomicU64 = AtomicU64::new(0);
 static CTOR_FAIL: AtomicU64 = AtomicU64::new(0);
 static CALLS: AtomicU64 = AtomicU64::new(0);
+static DICT_SETS: AtomicU64 = AtomicU64::new(0);
 static RESULT: AtomicU64 = AtomicU64::new(0);
 static FIRST: AtomicU64 = AtomicU64::new(0);
 static SECOND: AtomicU64 = AtomicU64::new(0);
@@ -2890,13 +2891,16 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
 #[no_mangle] pub extern "C" fn molt_store_index(obj:u64,key:u64,value:u64)->u64 {
     if subscript_words(&[obj,key,value],&[0x101,0x101,0x102]) {obj} else {NONE}
 }
+#[no_mangle] pub extern "C" fn molt_dict_set(obj:u64,key:u64,value:u64)->u64 {
+    DICT_SETS.fetch_add(1,SeqCst);
+    // Direct dict mutation borrows its operands and returns the borrowed dict;
+    // it must not dispatch through the general __setitem__ provider.
+    if subscript_words(&[obj,key,value],&[0x101,0x101,0x102]) {obj} else {NONE}
+}
 #[no_mangle] pub extern "C" fn molt_del_index(obj:u64,key:u64)->u64 {
     if subscript_words(&[obj,key],&[0x101,0x101]) {obj} else {NONE}
 }
 #[no_mangle] pub extern "C" fn molt_dict_update_missing(obj:u64,key:u64,value:u64)->u64 {
-    molt_store_index(obj,key,value)
-}
-#[no_mangle] pub extern "C" fn molt_dict_set(obj:u64,key:u64,value:u64)->u64 {
     molt_store_index(obj,key,value)
 }
 #[no_mangle] pub extern "C" fn molt_dict_get(obj:u64,key:u64,default:u64)->u64 {
@@ -2919,11 +2923,13 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
 #[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64 {molt_exception_pending_fast()}
 #[no_mangle] pub extern "C" fn fixed_reset(failure:u64, ctor_failure:u64) {
     assert_eq!(fixed_live(),0); ATTEMPTS.store(0,SeqCst); CALLS.store(0,SeqCst);
+    DICT_SETS.store(0,SeqCst);
     FAIL.store(failure,SeqCst); CTOR_FAIL.store(ctor_failure,SeqCst); unsafe {PENDING=0;}
 }
 #[no_mangle] pub extern "C" fn fixed_live()->u64 {FIRST.load(SeqCst)+SECOND.load(SeqCst)+RESULT.load(SeqCst)}
 #[no_mangle] pub extern "C" fn fixed_attempts()->u64 {ATTEMPTS.load(SeqCst)}
 #[no_mangle] pub extern "C" fn fixed_calls()->u64 {CALLS.load(SeqCst)}
+#[no_mangle] pub extern "C" fn fixed_dict_set_calls()->u64 {DICT_SETS.load(SeqCst)}
 "#.replace("@ABI@", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)
       .replace("@NONE@", &(molt_codegen_abi::box_none_bits() as u64).to_string());
     let harness = r#"
@@ -2943,7 +2949,8 @@ extern "C" {
  fn fixed_vec_max()->u64; fn fixed_vec_max_discard();
  fn fixed_operator_index()->u64; fn fixed_operator_index_discard();
  fn fixed_reset(failure:u64,ctor_failure:u64); fn fixed_live()->u64;
- fn fixed_attempts()->u64; fn fixed_calls()->u64; fn molt_exception_pending_fast()->u64;
+ fn fixed_attempts()->u64; fn fixed_calls()->u64; fn fixed_dict_set_calls()->u64;
+ fn molt_exception_pending_fast()->u64;
  fn molt_dec_ref_obj(value:u64);
 }
 fn main() {unsafe {
@@ -3000,12 +3007,13 @@ fn main() {unsafe {
  }
  // Statements discard the borrowed container return, which aliases the first
  // operand's box; only the transaction releases that box.
- for (run,boxes) in [(fixed_store_index as unsafe extern "C" fn(),2),(fixed_del_index,1),(fixed_dict_set,2),(fixed_dict_update_missing,2),(fixed_set_add,2)] {
+ for (run,boxes,dict_sets) in [(fixed_store_index as unsafe extern "C" fn(),2,0),(fixed_del_index,1,0),(fixed_dict_set,2,1),(fixed_dict_update_missing,2,0),(fixed_set_add,2,0)] {
   for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
    fixed_reset(failure,consumer_failure); run();
    let failed_box=failure!=0 && failure<=boxes;
    assert_eq!(fixed_attempts(),if failed_box {failure} else {boxes});
    assert_eq!(fixed_calls(),u64::from(!failed_box));
+   assert_eq!(fixed_dict_set_calls(),if failed_box {0} else {dict_sets},"dict_set selects its direct provider, never the general store protocol");
    assert_eq!(fixed_live(),0);
    assert_eq!(molt_exception_pending_fast(),u64::from(failed_box || consumer_failure!=0));
   }

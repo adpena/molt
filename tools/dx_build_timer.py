@@ -576,7 +576,7 @@ def _snapshot_payload(
     }
     payload: dict[str, object] = {
         "provenance": non_canonical_provenance(
-            profile=next(iter(profiles))
+            requested_profile=next(iter(profiles))
             if len(profiles) == 1
             else "mixed"
             if profiles

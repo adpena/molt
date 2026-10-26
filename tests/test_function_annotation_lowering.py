@@ -89,11 +89,11 @@ def test_frontend_rejects_unsupported_target_python_feature_version(
 
 
 def test_frontend_admission_uses_the_canonical_catalog(monkeypatch) -> None:
-    import molt.target_python as target_python
+    import molt.target_python_policy as target_python_policy
 
     # Synthetic admission only: this does not claim Python 3.11 semantics.
     monkeypatch.setattr(
-        target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.14", "3.11")
+        target_python_policy, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.14", "3.11")
     )
     for target, eager in (((3, 11), True), ((3, 14), False)):
         generator = SimpleTIRGenerator(target_python=target)

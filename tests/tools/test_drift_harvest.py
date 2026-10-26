@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import tools.drift_harvest as dh
 
 
@@ -298,7 +300,8 @@ def test_no_fetch_flag_skips_origin_refresh(monkeypatch, capsys):
     assert "DRIFT GATE PASSED" in capsys.readouterr().out
 
 
-def test_free_lane_slots_are_neither_live_nor_prunable(monkeypatch, tmp_path):
+@pytest.mark.parametrize("entry", ["main", "free-slot", "busy-slot"])
+def test_free_lane_slots_are_neither_live_nor_prunable(monkeypatch, tmp_path, entry):
     """A released lane slot is detached at a slot path: a warm cache, not work
     in progress (HF-491). The SPRAWL count and --prune skip it; a slot that
     holds a lane, or one with changes, stays an ordinary worktree."""
@@ -320,13 +323,18 @@ def test_free_lane_slots_are_neither_live_nor_prunable(monkeypatch, tmp_path):
     monkeypatch.setattr(dh, "_last_commit_epoch", lambda _path: 0)
     monkeypatch.setattr(dh, "_unique_commit_count", lambda _ref, _root: 0)
 
-    assert dh.live_worktree_count(main) == 2
+    root = {
+        "main": main,
+        "free-slot": slots / "slot-01",
+        "busy-slot": slots / "slot-02",
+    }[entry]
+    assert dh.live_worktree_count(root) == 2
     states = {
         Path(row["path"]).name: row["state"]
-        for row in dh.classify(fresh_hours=24.0, now=1_000_000.0, root=main)
+        for row in dh.classify(fresh_hours=24.0, now=1_000_000.0, root=root)
     }
     assert states["slot-01"] == "SLOT"
-    assert states["slot-02"] == "SUPERSEDED"
+    assert states["slot-02"] == ("PROTECTED" if entry == "busy-slot" else "SUPERSEDED")
     assert states["slot-03"] == "FRESH"
-    rows = dh.classify(fresh_hours=24.0, now=1_000_000.0, root=main)
+    rows = dh.classify(fresh_hours=24.0, now=1_000_000.0, root=root)
     assert not dh.gate(rows, 1_000_000.0, max_worktrees=3, max_signal_age_hours=1.0)

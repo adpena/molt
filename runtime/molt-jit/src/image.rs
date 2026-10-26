@@ -124,7 +124,7 @@ impl JitImage {
 
     /// Decode the program's backend IR document.
     pub(crate) fn program(&self) -> Result<molt_ir::ir::BackendIrDocument, String> {
-        molt_ir::ir::BackendIrDocument::from_msgpack_reader(&mut &self.bytes[self.program_start..])
+        molt_ir::ir::BackendIrDocument::from_msgpack_bytes(&self.bytes[self.program_start..])
             .map_err(|error| format!("invalid program: {error}"))
     }
 }

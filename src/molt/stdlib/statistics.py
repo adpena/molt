@@ -9,6 +9,7 @@ from typing import Any as _Any
 import builtins as _builtins
 import fractions as _fractions
 import math
+import numbers as _numbers
 import random
 import sys
 from bisect import bisect_left as _bisect_left_impl
@@ -342,37 +343,246 @@ _MOLT_STATISTICS_NORMAL_DIST_OVERLAP = _require_intrinsic(
 # TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P1, status:partial): complete Python 3.12+ statistics API/PEP parity beyond function surface lowering (for example NormalDist and remaining edge-case text parity).
 
 
-def mean(data: _Any) -> float:
+# Adapted from CPython v3.14.9 Lib/statistics.py, lines 1453-1649 and 1706-1759.
+# https://github.com/python/cpython/blob/v3.14.9/Lib/statistics.py
+# Copyright (c) 2001-2026 Python Software Foundation. All rights reserved.
+# PSF license: collections/LICENSE.cpython (packaged with this standard library).
+# Adaptations: direct implementation imports and guarded native specializations.
+# Native kernels specialize builtin sequences; these compiled helpers own
+# generic numeric protocols, callback order and Decimal/Fraction result types.
+_sqrt_bit_width = 2 * sys.float_info.mant_dig + 3
+
+
+def _sum(data):
+    count = 0
+    types = set()
+    types_add = types.add
+    partials = {}
+    partials_get = partials.get
+    for typ, values in _groupby_impl(data, type):
+        types_add(typ)
+        for n, d in map(_exact_ratio, values):
+            count += 1
+            partials[d] = partials_get(d, 0) + n
+    if None in partials:
+        total = partials[None]
+        assert not _isfinite(total)
+    else:
+        total = sum((Fraction(n, d) for d, n in partials.items()))
+    T = _reduce_impl(_coerce, types, int)
+    return (T, total, count)
+
+
+def _ss(data, c=None):
+    if c is not None:
+        T, ssd, count = _sum(((d := (x - c)) * d for x in data))
+        return (T, ssd, c, count)
+    count = 0
+    types = set()
+    types_add = types.add
+    sx_partials = defaultdict(int)
+    sxx_partials = defaultdict(int)
+    for typ, values in _groupby_impl(data, type):
+        types_add(typ)
+        for n, d in map(_exact_ratio, values):
+            count += 1
+            sx_partials[d] += n
+            sxx_partials[d] += n * n
+    if not count:
+        ssd = c = Fraction(0)
+    elif None in sx_partials:
+        ssd = c = sx_partials[None]
+        assert not _isfinite(ssd)
+    else:
+        sx = sum((Fraction(n, d) for d, n in sx_partials.items()))
+        sxx = sum((Fraction(n, d * d) for d, n in sxx_partials.items()))
+        ssd = (count * sxx - sx * sx) / count
+        c = sx / count
+    T = _reduce_impl(_coerce, types, int)
+    return (T, ssd, c, count)
+
+
+def _isfinite(x):
+    try:
+        return x.is_finite()
+    except AttributeError:
+        return math.isfinite(x)
+
+
+def _coerce(T, S):
+    assert T is not bool, "initial type T is bool"
+    if T is S:
+        return T
+    if S is int or S is bool:
+        return T
+    if T is int:
+        return S
+    if issubclass(S, T):
+        return S
+    if issubclass(T, S):
+        return T
+    if issubclass(T, int):
+        return S
+    if issubclass(S, int):
+        return T
+    if issubclass(T, Fraction) and issubclass(S, float):
+        return S
+    if issubclass(T, float) and issubclass(S, Fraction):
+        return T
+    msg = "don't know how to coerce %s and %s"
+    raise TypeError(msg % (T.__name__, S.__name__))
+
+
+def _exact_ratio(x):
+    try:
+        return x.as_integer_ratio()
+    except AttributeError:
+        pass
+    except (OverflowError, ValueError):
+        assert not _isfinite(x)
+        return (x, None)
+    try:
+        return (x.numerator, x.denominator)
+    except AttributeError:
+        msg = f"can't convert type '{type(x).__name__}' to numerator/denominator"
+        raise TypeError(msg)
+
+
+def _convert(value, T):
+    if type(value) is T:
+        return value
+    if issubclass(T, int) and value.denominator != 1:
+        T = float
+    try:
+        return T(value)
+    except TypeError:
+        if issubclass(T, Decimal):
+            return T(value.numerator) / T(value.denominator)
+        else:
+            raise
+
+
+def _fail_neg(values, errmsg="negative value"):
+    for x in values:
+        if x < 0:
+            raise StatisticsError(errmsg)
+        yield x
+
+
+def _integer_sqrt_of_frac_rto(n: int, m: int) -> int:
+    a = math.isqrt(n // m)
+    return a | (a * a * m != n)
+
+
+def _float_sqrt_of_frac(n: int, m: int) -> float:
+    q = (n.bit_length() - m.bit_length() - _sqrt_bit_width) // 2
+    if q >= 0:
+        numerator = _integer_sqrt_of_frac_rto(n, m << 2 * q) << q
+        denominator = 1
+    else:
+        numerator = _integer_sqrt_of_frac_rto(n << -2 * q, m)
+        denominator = 1 << -q
+    return numerator / denominator
+
+
+def _decimal_sqrt_of_frac(n: int, m: int) -> Decimal:
+    if n <= 0:
+        if not n:
+            return Decimal("0.0")
+        n, m = (-n, -m)
+    root = (Decimal(n) / Decimal(m)).sqrt()
+    nr, dr = root.as_integer_ratio()
+    plus = root.next_plus()
+    np, dp = plus.as_integer_ratio()
+    if 4 * n * (dr * dp) ** 2 > m * (dr * np + dp * nr) ** 2:
+        return plus
+    minus = root.next_minus()
+    nm, dm = minus.as_integer_ratio()
+    if 4 * n * (dr * dm) ** 2 < m * (dr * nm + dm * nr) ** 2:
+        return minus
+    return root
+
+
+def mean(data):
     result = _MOLT_STATISTICS_MEAN(data)
-    if isinstance(result, float):
-        truncated = int(result)
-        if result == truncated:
-            return truncated
-    return result
+    if result is not NotImplemented:
+        return result
+    T, total, n = _sum(data)
+    if n < 1:
+        raise StatisticsError("mean requires at least one data point")
+    return _convert(total / n, T)
 
 
 def fmean(data: _Any) -> float:
     return float(_MOLT_STATISTICS_FMEAN(data))
 
 
-def stdev(data: _Any, xbar: _Any = None) -> float:
-    return float(_MOLT_STATISTICS_STDEV(data, xbar))
+def stdev(data, xbar=None):
+    result = _MOLT_STATISTICS_STDEV(data, xbar)
+    if result is not NotImplemented:
+        return result
+    T, ss, c, n = _ss(data, xbar)
+    if n < 2:
+        raise StatisticsError("stdev requires at least two data points")
+    mss = ss / (n - 1)
+    if sys.version_info < (3, 13):
+        if issubclass(T, Decimal):
+            return _decimal_sqrt_of_frac(mss.numerator, mss.denominator)
+        return _float_sqrt_of_frac(mss.numerator, mss.denominator)
+    try:
+        mss_numerator = mss.numerator
+        mss_denominator = mss.denominator
+    except AttributeError:
+        raise ValueError("inf or nan encountered in data")
+    if issubclass(T, Decimal):
+        return _decimal_sqrt_of_frac(mss_numerator, mss_denominator)
+    return _float_sqrt_of_frac(mss_numerator, mss_denominator)
 
 
-def variance(data: _Any, xbar: _Any = None) -> float:
-    return float(_MOLT_STATISTICS_VARIANCE(data, xbar))
+def variance(data, xbar=None):
+    result = _MOLT_STATISTICS_VARIANCE(data, xbar)
+    if result is not NotImplemented:
+        return result
+    T, ss, c, n = _ss(data, xbar)
+    if n < 2:
+        raise StatisticsError("variance requires at least two data points")
+    return _convert(ss / (n - 1), T)
 
 
-def pvariance(data: _Any, mu: _Any = None) -> float:
-    return float(_MOLT_STATISTICS_PVARIANCE(data, mu))
+def pvariance(data, mu=None):
+    result = _MOLT_STATISTICS_PVARIANCE(data, mu)
+    if result is not NotImplemented:
+        return result
+    T, ss, c, n = _ss(data, mu)
+    if n < 1:
+        raise StatisticsError("pvariance requires at least one data point")
+    return _convert(ss / n, T)
 
 
-def pstdev(data: _Any, mu: _Any = None) -> float:
-    return float(_MOLT_STATISTICS_PSTDEV(data, mu))
+def pstdev(data, mu=None):
+    result = _MOLT_STATISTICS_PSTDEV(data, mu)
+    if result is not NotImplemented:
+        return result
+    T, ss, c, n = _ss(data, mu)
+    if n < 1:
+        raise StatisticsError("pstdev requires at least one data point")
+    mss = ss / n
+    if sys.version_info < (3, 13):
+        if issubclass(T, Decimal):
+            return _decimal_sqrt_of_frac(mss.numerator, mss.denominator)
+        return _float_sqrt_of_frac(mss.numerator, mss.denominator)
+    try:
+        mss_numerator = mss.numerator
+        mss_denominator = mss.denominator
+    except AttributeError:
+        raise ValueError("inf or nan encountered in data")
+    if issubclass(T, Decimal):
+        return _decimal_sqrt_of_frac(mss_numerator, mss_denominator)
+    return _float_sqrt_of_frac(mss_numerator, mss_denominator)
 
 
-def median(data: _Any) -> float:
-    return float(_MOLT_STATISTICS_MEDIAN(data))
+def median(data: _Any) -> _Any:
+    return _MOLT_STATISTICS_MEDIAN(data)
 
 
 def median_low(data: _Any) -> _Any:
@@ -395,16 +605,66 @@ def multimode(data: _Any) -> list[_Any]:
     return list(_MOLT_STATISTICS_MULTIMODE(data))
 
 
-def quantiles(data: _Any, n: int = 4, *, method: str = "exclusive") -> list[float]:
+def quantiles(data: _Any, n: int = 4, *, method: str = "exclusive") -> list[_Any]:
     if n < 1:
         raise StatisticsError("n must be at least 1")
-    if method not in {"exclusive", "inclusive"}:
-        raise StatisticsError("method must be 'exclusive' or 'inclusive'")
-    return list(_MOLT_STATISTICS_QUANTILES(data, n, method == "inclusive"))
+    if type(method) is str and method in {"inclusive", "exclusive"}:
+        result = _MOLT_STATISTICS_QUANTILES(data, n, method == "inclusive")
+        if result is not NotImplemented:
+            return result
+    data = sorted(data)
+    ld = len(data)
+    if ld < 2 and sys.version_info < (3, 13):
+        raise StatisticsError("must have at least two data points")
+    if ld < 2:
+        if ld == 1:
+            return data * (n - 1)
+        raise StatisticsError("must have at least one data point")
+    if method == "inclusive":
+        m = ld - 1
+        result = []
+        for i in range(1, n):
+            j, delta = divmod(i * m, n)
+            interpolated = (data[j] * (n - delta) + data[j + 1] * delta) / n
+            result.append(interpolated)
+        return result
+    if method == "exclusive":
+        m = ld + 1
+        result = []
+        for i in range(1, n):
+            j = i * m // n
+            j = 1 if j < 1 else ld - 1 if j > ld - 1 else j
+            delta = i * m - j * n
+            interpolated = (data[j - 1] * (n - delta) + data[j] * delta) / n
+            result.append(interpolated)
+        return result
+    raise ValueError(f"Unknown method: {method!r}")
 
 
-def harmonic_mean(data: _Any) -> float:
-    return float(_MOLT_STATISTICS_HARMONIC_MEAN(data))
+def harmonic_mean(data: _Any) -> _Any:
+    result = _MOLT_STATISTICS_HARMONIC_MEAN(data)
+    if result is not NotImplemented:
+        return result
+    if iter(data) is data:
+        data = list(data)
+    errmsg = "harmonic mean does not support negative values"
+    n = len(data)
+    if n < 1:
+        raise StatisticsError("harmonic_mean requires at least one data point")
+    if n == 1:
+        x = data[0]
+        if isinstance(x, (_numbers.Real, Decimal)):
+            if x < 0:
+                raise StatisticsError(errmsg)
+            return x
+        raise TypeError("unsupported type")
+    try:
+        T, total, count = _sum(1 / x for x in _fail_neg(data, errmsg))
+    except ZeroDivisionError:
+        return 0
+    if total <= 0:
+        raise StatisticsError("Weighted sum must be positive")
+    return _convert(n / total, T)
 
 
 def geometric_mean(data: _Any) -> float:

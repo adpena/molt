@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
@@ -74,8 +76,18 @@ def test_discovery_authority_retains_raw_source_generation(
     result.scan_authority.validate_source_generations()
     assert result.scan_authority.payload()[0]["source_sha256"] == expected
     for other in (
-        _ModuleSourceScanAuthority("entry", source, "module_init"),
-        _ModuleSourceScanAuthority("entry", source, "full"),
+        _ModuleSourceScanAuthority(
+            "entry",
+            source,
+            "module_init",
+            body_selection=ModuleBodySelection("complete_source"),
+        ),
+        _ModuleSourceScanAuthority(
+            "entry",
+            source,
+            "full",
+            body_selection=ModuleBodySelection("complete_source"),
+        ),
     ):
         joined = result.scan_authority.merged(_ModuleGraphScanAuthority((other,)))
         assert joined.by_module["entry"].source_sha256 == expected
@@ -950,7 +962,11 @@ def test_frontend_analysis_keeps_the_snapshot_that_supplied_its_facts(
     authority = _ModuleGraphScanAuthority(
         (
             _ModuleSourceScanAuthority(
-                "dependency", source, "full", source_sha256=snapshot.sha256
+                "dependency",
+                source,
+                "full",
+                body_selection=ModuleBodySelection("complete_source"),
+                source_sha256=snapshot.sha256,
             ),
         )
     )
@@ -1012,7 +1028,11 @@ def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
     metadata = path.stat()
     lease = module_source._ModuleSourceLease.path_backed(path)
     digest = "a" * 64
-    result = {"functions": [], "function_metadata": {}}
+    result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
+        "functions": [],
+        "function_metadata": {},
+    }
     MC = module_cache
     MC._write_persisted_module_lowering(
         path, source_lease=lease, context_digest=digest, result=result
@@ -1034,7 +1054,11 @@ def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
         == lease.source_sha256
     )
     loaded = MC._read_persisted_module_lowering(
-        path, source_lease=lease, module_name="owner", context_digest=digest
+        path,
+        body_selection=ModuleBodySelection("complete_source"),
+        source_lease=lease,
+        module_name="owner",
+        context_digest=digest,
     )
     assert loaded is not None and loaded.pop("function_digest_seeds") == ()
     assert loaded == result
@@ -1049,13 +1073,17 @@ def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
                 path,
                 source_lease=lease,
                 context_digest=digest,
-                result={"functions": [{"name": "stale"}], "function_metadata": {}},
+                result={**result, "functions": [{"name": "stale"}]},
             )
     assert observation().payload == before.payload
     assert observation().revision == before.revision
     with pytest.raises(module_source.PythonSourceChangedError):
         MC._read_persisted_module_lowering(
-            path, source_lease=lease, module_name="owner", context_digest=digest
+            path,
+            body_selection=ModuleBodySelection("complete_source"),
+            source_lease=lease,
+            module_name="owner",
+            context_digest=digest,
         )
     assert observation().payload == before.payload
     assert observation().revision == before.revision

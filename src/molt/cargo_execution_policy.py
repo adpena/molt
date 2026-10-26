@@ -1,4 +1,4 @@
-"""Shared Cargo subprocess, resource, and timeout authority."""
+"""Shared Cargo argv, output-directory, subprocess, resource, and timeout authority."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ __molt_neutral_authority__ = True
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import functools
 import hashlib
 import math
 import os
@@ -21,7 +22,44 @@ from .disk_capacity import (
     require_build_capacity,
 )
 from .source_root import compiler_source_root
+from .flag_strings import FlagStringRule, _RUST_WHITESPACE
 from .process_environment import NameRule, ProcessEnvironment, ProcessEnvironmentBuilder
+
+
+def cargo_command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
+    """Read Cargo selectors before rustc passthrough for plans and receipts."""
+    target = None
+    configs: list[str] = []
+    iterator = iter(command[1:])
+    for token in iterator:
+        if token == "--":
+            break
+        if token in {"--target", "--config"}:
+            value = next(iterator, None)
+            if value is None or not value:
+                raise ValueError(f"runtime Cargo {token} requires a value")
+            key = token
+        elif token.startswith(("--target=", "--config=")):
+            key, value = token.split("=", 1)
+            if not value:
+                raise ValueError(f"runtime Cargo {key} requires a value")
+        else:
+            continue
+        if key == "--target":
+            if target is not None and target != value:
+                raise ValueError(
+                    "runtime Cargo multiple targets require separate artifact families"
+                )
+            target = value
+        else:
+            configs.append(value)
+    return target, tuple(configs)
+
+
+@functools.lru_cache(maxsize=64)
+def cargo_profile_directory(cargo_profile: str) -> str:
+    """Cargo maps the dev profile to debug; named profiles keep their names."""
+    return "debug" if cargo_profile == "dev" else cargo_profile
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
@@ -239,6 +277,134 @@ def sccache_compiler_wrappers(
     )
 
 
+def cargo_c_tool_environment_names(
+    role: str, *, target: str, host_target: str
+) -> tuple[str, ...]:
+    """cc-rs tool selector precedence, shared by admission and runtime capture."""
+    prefix = role.upper()
+    return (
+        f"{prefix}_{target}",
+        f"{prefix}_{target.replace('-', '_').replace('.', '_')}",
+        f"{'HOST' if target == host_target else 'TARGET'}_{prefix}",
+        prefix,
+    )
+
+
+def cargo_c_tool_words(
+    value: str, *, cwd: Path | None = None, windows: bool | None = None
+) -> tuple[str, ...]:
+    """cc-rs env_tool: exact existing path first, then Rust whitespace, no shell."""
+    value = value.strip(_RUST_WHITESPACE)
+    if not value:
+        return ()
+    path = Path(value)
+    if cwd is not None and not path.is_absolute():
+        path = cwd / path
+    if path.exists():
+        return (value,)
+    if (os.name == "nt") if windows is None else windows:
+        if Path(str(path) + ".exe").exists():
+            return (value + ".exe",)
+    return FlagStringRule.CARGO_LIST.decode(value)
+
+
+def cargo_c_tool_selections(
+    environ: Mapping[str, str],
+    *,
+    target: str | None = None,
+    host_target: str | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Effective C/C++ selectors whose host/target precedence is established."""
+    env = ProcessEnvironment(environ)
+    result: dict[str, tuple[str, str]] = {}
+    for role in ("cc", "cxx"):
+        prefix = role.upper() + "_"
+        if target is not None and host_target is not None:
+            coordinates = {(target, host_target), (host_target, host_target)}
+        else:
+            # General normalization does not own target discovery. A specific
+            # selector can shadow these generic values; the resolved Cargo
+            # plan admits that case with captured target and host coordinates.
+            if any(env.rule.key(name).startswith(prefix) for name in env):
+                continue
+            for host in (True, False):
+                names = (("HOST_" if host else "TARGET_") + role.upper(), role.upper())
+                selected = next((name for name in names if env.get(name)), None)
+                if selected is not None:
+                    result[env.rule.key(selected)] = (selected, env[selected])
+            continue
+        for selected_target, selected_host in sorted(coordinates):
+            names = cargo_c_tool_environment_names(
+                role, target=selected_target, host_target=selected_host
+            )
+            selected = next((name for name in names if env.get(name)), None)
+            if selected is not None:
+                result[env.rule.key(selected)] = (selected, env[selected])
+    return tuple(result[key] for key in sorted(result))
+
+
+def validate_sccache_epoch_environment(
+    environ: Mapping[str, str],
+    *,
+    cwd: Path | None = None,
+    target: str | None = None,
+    host_target: str | None = None,
+    admit_c_tools: bool = True,
+) -> None:
+    """Refuse the pinned wrapper's loss of a caller's reproducibility input."""
+    env = ProcessEnvironment(environ)
+    if "SOURCE_DATE_EPOCH" not in env:
+        return
+    wrappers = []
+    for direct, configured in zip(
+        CARGO_WRAPPER_ENV_NAMES[:2], CARGO_WRAPPER_ENV_NAMES[2:]
+    ):
+        name = direct if direct in env else configured
+        if (value := env.get(name)) and _wrapper_is_sccache(value):
+            wrappers.append((name, value))
+    # Preparation precedes SDK tool projection. Execution admits the resulting
+    # target and build-dependency host selections, never an unused generic tool.
+    c_tools = (
+        cargo_c_tool_selections(env, target=target, host_target=host_target)
+        if admit_c_tools
+        else ()
+    )
+    for name, value in c_tools:
+        words = cargo_c_tool_words(value, cwd=cwd, windows=env.rule is NameRule.WINDOWS)
+        if words and _executable_name(words[0]) == "sccache":
+            wrappers.append((name, value))
+    if wrappers:
+        raise ValueError(
+            "SOURCE_DATE_EPOCH is incompatible with the pinned sccache: it removes "
+            "the variable before invoking the compiler. Explicit selectors: "
+            + ", ".join(name for name, _value in wrappers)
+            + ". Select direct compilers and MOLT_USE_SCCACHE=0; "
+            "the requested epoch must be preserved."
+        )
+
+
+def sccache_auto_selection_allowed(environ: Mapping[str, str]) -> bool:
+    """Select caching only when it preserves the requested compiler environment."""
+    env = ProcessEnvironment(environ)
+    validate_sccache_epoch_environment(env, admit_c_tools=False)
+    if cargo_compiler_wrappers(env):
+        return True  # Explicit wrappers suppress automatic cache selection.
+    if "SOURCE_DATE_EPOCH" not in env:
+        return True
+    if env.get("MOLT_USE_SCCACHE", "auto").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        raise ValueError(
+            "MOLT_USE_SCCACHE explicitly enables the pinned sccache, which removes "
+            "SOURCE_DATE_EPOCH before invoking the compiler. Select "
+            "MOLT_USE_SCCACHE=0 or auto to preserve the requested epoch."
+        )
+    return False
+
+
 def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
     """Return the temporary directory of the sccache server for ``SCCACHE_DIR``.
 
@@ -353,9 +519,14 @@ def sccache_client_environment(
 def normalize_cargo_environment(
     environ: Mapping[str, str] | None,
     *,
+    cwd: str | Path | None,
     default_incremental: str | None = None,
+    admit_c_tools: bool = True,
 ) -> tuple[ProcessEnvironment, tuple[str, ...]]:
     """Return one executable Cargo environment and its applied policy names.
+
+    ``cwd`` is the actual child working directory; explicit ``None`` means
+    inherit the caller directory. Relative exact C-tool paths use that boundary.
 
     Cargo accepts compiler wrappers through both direct Rust variables and
     ``build.*`` configuration environment variables.  Every subprocess boundary
@@ -374,6 +545,9 @@ def normalize_cargo_environment(
     """
 
     child = ProcessEnvironmentBuilder(os.environ if environ is None else environ)
+    validate_sccache_epoch_environment(
+        child, cwd=None if cwd is None else Path(cwd), admit_c_tools=admit_c_tools
+    )
     if sccache_compiler_wrappers(child):
         if child.get("CARGO_INCREMENTAL", "0") != "0":
             del child["CARGO_INCREMENTAL"]
@@ -578,6 +752,7 @@ def cargo_subprocess_environment(
     command: Sequence[str],
     environ: Mapping[str, str] | None,
     *,
+    cwd: str | Path | None,
     default_incremental: str | None = None,
 ) -> tuple[ProcessEnvironment | None, tuple[str, ...]]:
     if not is_cargo_command(command):
@@ -589,6 +764,7 @@ def cargo_subprocess_environment(
     return normalize_cargo_environment(
         environ,
         default_incremental=default_incremental,
+        cwd=cwd,
     )
 
 

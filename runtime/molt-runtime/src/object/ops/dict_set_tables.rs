@@ -712,11 +712,21 @@ const SPLIT_COUNT_MAX_WORDS: usize = 1 << 12;
 /// The words of `line` as `str.split(sep)` delimits them, whitespace words when
 /// `sep` is `None`, in order; `None` when there are more than `limit`, found
 /// without scanning past the word after the limit.
-fn split_word_bounds(line: &[u8], sep: Option<&[u8]>, limit: usize) -> Option<Vec<(usize, usize)>> {
+fn split_word_bounds(
+    py: &PyToken<'_>,
+    line: &[u8],
+    sep: Option<&[u8]>,
+    limit: usize,
+) -> Option<Vec<(usize, usize)>> {
     let Some(sep) = sep else {
         // `limit` splits leave the rest of the line as one more part.
         let maxsplit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let parts = crate::builtins::strings::string_whitespace_parts(line, maxsplit, false);
+        let parts = crate::builtins::strings::string_whitespace_parts(
+            super::unicode_data_for_bytes(py, line),
+            line,
+            maxsplit,
+            false,
+        );
         return (parts.len() <= limit).then_some(parts);
     };
     let separators: Box<dyn Iterator<Item = usize> + '_> = if sep.len() == 1 {
@@ -788,7 +798,7 @@ unsafe fn split_dict_increment_exact(
         {
             return SplitIncrement::Declined;
         }
-        let Some(bounds) = split_word_bounds(line, sep, SPLIT_COUNT_MAX_WORDS) else {
+        let Some(bounds) = split_word_bounds(py, line, sep, SPLIT_COUNT_MAX_WORDS) else {
             return SplitIncrement::Declined;
         };
         if bounds.is_empty() {
@@ -1234,6 +1244,13 @@ pub(crate) unsafe fn dict_clone_into_empty(
         dict_storage(target).live = dict_len(source);
         dict_storage(target).usable = dict_storage(source).usable;
         dict_storage(target).kind = dict_storage(source).kind;
+        // A bulk clone inherits conservative source membership even when its
+        // current entries are atomic. Mutations do not demote a dict; CPython
+        // preserves that fact in PyDict_Copy and the empty-target merge path.
+        // Empty construction keeps its own target-version tracking policy.
+        if dict_len(source) != 0 && crate::object::gc::gc_is_tracked(source) {
+            crate::object::gc::gc_track_dict(py, target);
+        }
         dict_commit_reset(py, target);
         true
     }

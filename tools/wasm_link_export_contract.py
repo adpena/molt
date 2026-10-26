@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.wasm_link_transaction import WasmSectionEdit
+
+from molt.wasm_artifact import parse_wasm_export_section
 
 from molt.cli.app_export_contract import (
     app_export_call_abi,
@@ -15,12 +21,13 @@ from tools.wasm_link_edit import (
     _ensure_function_exports_by_symbol_names,
     _rename_export_names,
     _restore_output_export_aliases,
-    _strip_internal_exports,
+    _strip_internal_export_payload,
     _validate_app_export_adapters,
 )
 from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
 from tools.wasm_link_format import (
     _insert_standard_section,
+    _append_export_entry,
     _read_varuint,
     _write_string,
     _write_varuint,
@@ -203,31 +210,33 @@ def _app_export_identity_maps(
 
 
 def _strip_app_export_identity_markers(
-    data: bytes,
+    edit: WasmSectionEdit,
     *,
     identity_exports: Mapping[str, str],
     preserve_exports: set[str],
-    facts_provider: WasmFactsProvider,
-) -> bytes:
-    """Remove optimizer identity roots and reject any publication leak.
-
-    Identity roots are always removed, even when the caller's keep set still
-    names them: the split-app keep set must carry them through the optimizer,
-    and must not also publish them.
-    """
-
-    updated = _strip_internal_exports(
-        data, preserve_exports=set(preserve_exports) - set(identity_exports)
+) -> None:
+    """Remove identity roots from the planned export payload, even in keep sets."""
+    payload = edit.payload(7)
+    if payload is None:
+        return
+    updated = _strip_internal_export_payload(
+        payload, preserve_exports=set(preserve_exports) - set(identity_exports)
     )
-    stripped = data if updated is None else updated
+    if updated is not None:
+        edit.replace(7, updated)
+        payload = updated
     leaked = sorted(
-        set(identity_exports) & set(facts_provider(stripped).function_exports)
+        set(identity_exports)
+        & {
+            entry.name
+            for entry in parse_wasm_export_section(payload)
+            if entry.kind == 0
+        }
     )
     if leaked:
         raise ValueError(
             "internal adapter identity exports leaked: " + ", ".join(leaked)
         )
-    return stripped
 
 
 def _publish_app_export_identity_markers(
@@ -378,25 +387,23 @@ def _ensure_export_by_index(
 
 
 def _ensure_defined_memory_export(
-    data: bytes,
-    *,
-    facts: WasmLinkFacts,
-) -> bytes | None:
-    if any(
-        facts.exports.get(name) is not None and facts.exports[name].kind == 2
-        for name in ("molt_memory", "memory")
+    edit: WasmSectionEdit, *, facts: WasmLinkFacts
+) -> None:
+    payload = edit.payload(7)
+    if payload is not None and any(
+        entry.name in ("molt_memory", "memory") and entry.kind == 2
+        for entry in parse_wasm_export_section(payload)
     ):
-        return None
-    memory_imports = [entry for entry in facts.imports if entry.kind == 2]
-    if memory_imports:
+        return
+    if any(entry.kind == 2 for entry in facts.imports):
         raise ValueError("cannot restore linked memory export from an imported memory")
     if facts.defined_memory_count == 0:
-        return None
+        return
     if facts.defined_memory_count != 1:
         raise ValueError(
             "cannot restore linked memory export without exactly one memory section"
         )
-    return _ensure_export_by_index(data, name="molt_memory", kind=2, index=0)
+    _append_export_entry(edit, name="molt_memory", kind=2, index=0)
 
 
 def _restore_split_runtime_contract_exports(

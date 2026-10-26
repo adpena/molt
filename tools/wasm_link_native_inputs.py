@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tools.wasm_link_transaction import WasmArtifactState
+
 from tools.wasm_link_fact_provider import WasmFactsProvider
 
 from molt.wasm_artifact import skip_wasm_import_description as _parse_import_desc
@@ -315,16 +317,16 @@ def _required_native_direct_symbols(
 
 
 def _rewrite_required_native_direct_imports(
-    module_path: Path,
+    module_path: WasmArtifactState,
     required_symbols: Sequence[str],
     temp_dir: OwnedTemporaryDirectory,
-) -> Path:
+) -> WasmArtifactState:
     required = set(required_symbols)
     if not required:
         return module_path
     changed = False
     rebuilt_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in parse_sections(module_path.read_bytes()):
+    for section_id, payload in parse_sections(module_path.data):
         if section_id != 2:
             rebuilt_sections.append((section_id, payload))
             continue
@@ -350,8 +352,7 @@ def _rewrite_required_native_direct_imports(
     if not changed:
         return module_path
     rewritten_path = Path(temp_dir.name) / "output_native_direct_imports.wasm"
-    rewritten_path.write_bytes(build_sections(rebuilt_sections))
-    return rewritten_path
+    return module_path.derive(rewritten_path, build_sections(rebuilt_sections))
 
 
 def _validate_required_native_direct_symbols(

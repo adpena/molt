@@ -36,7 +36,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="TYPE_OF", args=[arg], result=res))
             return res
         if func_id == "isinstance":
-            if len(node.args) != 2:
+            if node.keywords or len(node.args) != 2:
                 return CALL_NOT_HANDLED
             obj = self.visit(node.args[0])
             clsinfo = self.visit(node.args[1])
@@ -48,7 +48,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="ISINSTANCE", args=[obj, clsinfo], result=res))
             return res
         if func_id == "issubclass":
-            if len(node.args) != 2:
+            if node.keywords or len(node.args) != 2:
                 return CALL_NOT_HANDLED
             sub = self.visit(node.args[0])
             clsinfo = self.visit(node.args[1])

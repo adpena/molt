@@ -24,12 +24,15 @@ from molt.cli.runtime_build_identity import _resolve_runtime_build_family_identi
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeBuildMemberPlan,
+    RuntimePublicationAction,
+    RuntimePublicationTransform,
     RuntimeToolchainContentManifest,
     runtime_build_fingerprint,
+    runtime_publication_executor_paths,
 )
 from molt.exact_json import canonical_json_sha256
-from molt.rust_toolchain import cargo_configuration_paths
-from tests.python_environment_test_support import runtime_identity_manifest
+from molt.tool_releases import ToolDiscovery, tool_release
+from molt.rust_toolchain import cargo_configuration_paths, rust_flag_spans
 from molt.cli.cargo_resource_custody import (
     CargoExecutableCustody,
     CargoResourceCustody,
@@ -41,8 +44,9 @@ from molt.cli.runtime_cargo_plan import (
     _cargo_build_directory_base,
     _resolve_rust_flag_resources,
     _resolve_c_build_resources,
-    _select_host_c_tools,
 )
+from molt.cli.runtime_tool_selection import select_host_c_tools
+from molt.cli.runtime_wasm_build_support import runtime_reloc_publication_action
 from molt.cli.runtime_wasm_build_spec import (
     _RuntimeWasmBuildSpec,
     _resolve_runtime_wasm_cargo_specs,
@@ -53,6 +57,23 @@ from tests.executable_test_support import native_executable_donor
 
 
 RUNTIME_FIXTURE_INPUT = "MOLT_TEST_RUNTIME_INPUT"
+
+
+def wasm_validator_discovery(root: Path) -> ToolDiscovery:
+    """An explicit admitted prerequisite for controls that do not execute tools."""
+    release = tool_release("wasm-tools")
+    prefix = root / "fixture-validator"
+    executable = prefix / "wasm-tools"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    payload = b"validator fixture; not an executable tool"
+    executable.write_bytes(payload)
+    return ToolDiscovery(
+        release=release,
+        prefix=prefix,
+        executable=executable,
+        executable_sha256=hashlib.sha256(payload).hexdigest(),
+        asset=next(iter(release.assets.values())),
+    )
 
 
 def runtime_cargo_environment_inputs(environment=None) -> CargoEnvironmentInputs:
@@ -264,21 +285,6 @@ def _tool_identity(name: str, seed: str) -> dict[str, object]:
     }
 
 
-def build_python_identity_fixture() -> dict[str, object]:
-    material = {
-        "schema": "molt.runtime-build-python.v1",
-        "logical_name": "build_python",
-        "runtime": runtime_identity_manifest(),
-        "selected_executable": {
-            "entrypoint": "python",
-            "content_filename": "python",
-            "size": 6,
-            "sha256": canonical_json_sha256("python"),
-        },
-    }
-    return {**material, "identity_sha256": canonical_json_sha256(material)}
-
-
 def runtime_toolchain_content_manifest(
     seed: str = "exact",
     *,
@@ -300,7 +306,6 @@ def runtime_toolchain_content_manifest(
             *(("wasm_linker",) if wasm else ("linker",)),
         )
     }
-    tools["build_python"] = build_python_identity_fixture()
     payload = {
         "target_triple": target_triple,
         "toolchain": {
@@ -371,13 +376,7 @@ def _identity(
 ) -> tuple[RuntimeBuildIdentity, ...]:
     wasm = target.startswith("wasm32-")
     build_script = {
-        "schema": "molt.runtime-build-script-environment.v3",
-        "build_python": {
-            "selected_by": "platform-default",
-            "selectors": {"MOLT_BUILD_PYTHON": "unset", "PYTHON": "unset"},
-            "content_digest": canonical_json_sha256(build_python_identity_fixture()),
-        },
-        "python_import_policy": "isolated-no-site-v1",
+        "schema": "molt.runtime-build-script-environment.v4",
         "MOLT_WASM_CPYTHON_ABI_EXPORTS": [] if wasm else "ignored-for-target",
         "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": [] if wasm else "ignored-for-target",
         "MOLT_WASI_C_ABI_PLAN": (
@@ -428,12 +427,23 @@ def _identity(
             "environment": {},
             "build_script_environment": build_script,
         },
-        publication_authority={
-            "schema": "molt.runtime-build-tooling-authority.v2",
-            **_tree_identity(family_seed),
-        },
         members=members,
     )
+
+
+def publication_executor(
+    transform: RuntimePublicationTransform,
+) -> dict[str, object] | None:
+    paths = runtime_publication_executor_paths(transform)
+    if not paths:
+        return None
+    return {
+        "digest": canonical_json_sha256(paths),
+        "file_count": len(paths),
+        "total_size": len(paths),
+        "roots": list(paths),
+        "missing": [],
+    }
 
 
 def runtime_build_identity(
@@ -442,12 +452,31 @@ def runtime_build_identity(
     *,
     compile_seed: str | None = None,
     member_link_args: dict[str, tuple[str, ...]] | None = None,
+    member_publications: dict[str, RuntimePublicationAction] | None = None,
 ) -> RuntimeBuildIdentity:
     if kind not in {"shared", "reloc"}:
         raise ValueError("WASM fixture member must be shared or reloc")
     members = tuple(
         RuntimeBuildMemberPlan(
-            name, (), (member_link_args or {}).get(name, (name,)), name, False
+            name,
+            (),
+            (member_link_args or {}).get(name, (name,)),
+            (
+                member_publications[name]
+                if member_publications is not None
+                else RuntimePublicationAction(
+                    RuntimePublicationTransform.SHARED,
+                    False,
+                    publication_executor(RuntimePublicationTransform.SHARED),
+                    export_renames=(("fixture", family_seed),),
+                )
+                if name == "shared"
+                else runtime_reloc_publication_action(
+                    ("-C", f"link-arg=--export={family_seed}"),
+                    module_name="molt_runtime_reloc.wasm",
+                    executor=publication_executor(RuntimePublicationTransform.RELOC),
+                )
+            ),
         )
         for name in ("shared", "reloc")
     )
@@ -482,8 +511,17 @@ def native_runtime_staticlib_identity(
                 "staticlib",
                 (),
                 ("--print", "native-static-libs"),
-                "native-staticlib-and-link-manifest-v1",
-                False,
+                RuntimePublicationAction(
+                    RuntimePublicationTransform.WASM_STATICLIB
+                    if target_triple and target_triple.startswith("wasm32-")
+                    else RuntimePublicationTransform.NATIVE_STATICLIB,
+                    False,
+                    publication_executor(
+                        RuntimePublicationTransform.WASM_STATICLIB
+                        if target_triple and target_triple.startswith("wasm32-")
+                        else RuntimePublicationTransform.NATIVE_STATICLIB
+                    ),
+                ),
             ),
         ),
     )[0]
@@ -614,17 +652,37 @@ def bind_runtime_wasm_specs(
         freestanding=False,
     )
     member_link_args = {"shared": shared.link_flags, "reloc": reloc.link_flags}
+    from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
+
+    assert shared.cargo_plan is not None
+    member_publications = {
+        "shared": RuntimePublicationAction(
+            RuntimePublicationTransform.SHARED,
+            shared.cargo_plan.preserve_debug_for_profile(shared.cargo_profile),
+            publication_executor(RuntimePublicationTransform.SHARED),
+            export_renames=tuple(
+                sorted(wasm_split_runtime_export_rename_map(None).items())
+            ),
+        ),
+        "reloc": runtime_reloc_publication_action(
+            reloc.runtime_exports,
+            module_name=reloc.publication_name,
+            executor=publication_executor(RuntimePublicationTransform.RELOC),
+        ),
+    }
     shared_identity = runtime_build_identity(
         "shared",
         family_seed,
         compile_seed=compile_seed,
         member_link_args=member_link_args,
+        member_publications=member_publications,
     )
     reloc_identity = runtime_build_identity(
         "reloc",
         family_seed,
         compile_seed=compile_seed,
         member_link_args=member_link_args,
+        member_publications=member_publications,
     )
     compile_fingerprint = runtime_build_fingerprint(shared_identity, scope="compile")
     return (
@@ -728,6 +786,22 @@ def runtime_cargo_plan(
         environment[
             "CARGO_TARGET_" + requested_target.upper().replace("-", "_") + "_LINKER"
         ] = str(wasi.linker)
+    # This fixture supplies a real plan value without spawning Cargo/rustc.
+    # Retain the production planner's source/build metadata policy explicitly.
+    build_root = _cargo_build_directory_base(root, environment)
+    remaps = (
+        f"--remap-path-prefix={root}=/molt/source",
+        f"--remap-path-prefix={build_root}=/molt/build",
+    )
+    if root.is_relative_to(build_root):
+        remaps = remaps[::-1]
+    flags = tuple(
+        token
+        for span in rust_flag_spans(flags)
+        if span.option != "--remap-path-prefix"
+        or "--remap-path-prefix=" + (span.value or "") not in remaps
+        for token in flags[span.start : span.stop]
+    )
     flag_plan = _resolve_rust_flag_resources(
         flags,
         cargo_command,
@@ -735,13 +809,13 @@ def runtime_cargo_plan(
         env=environment,
         wasi_plan=wasi,
     )
-    flags = flag_plan.flags
+    flags = (*flag_plan.flags, *remaps)
     environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     if flag_plan.dependency_linker is not None:
         tool_paths["linker"] = flag_plan.dependency_linker
     if flag_plan.final_linker is not None:
         tool_paths["final_linker"] = flag_plan.final_linker
-    _select_host_c_tools(
+    select_host_c_tools(
         tool_paths,
         environment,
         root=root,

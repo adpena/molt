@@ -3,7 +3,7 @@ use crate::hashlib::{HashHandle, build_hash_handle, builtin_hmac_name, clinic_in
 use abi::api::{errors, mapping, object, strings};
 use abi::bridge::GLOBAL_BRIDGE;
 use molt_cpython_abi as abi;
-use molt_cpython_abi::native_custody::{ByteInput, NativeObjectOwner, retire_native_reference};
+use molt_runtime_capi::{ByteInput, NativeObjectOwner, retire_native_reference};
 use molt_runtime_core::prelude::*;
 
 #[derive(Clone)]
@@ -445,14 +445,14 @@ pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
-    use molt_cpython_abi::native_custody::{
-        NativeObjectOwner, PyBUF_SIMPLE, RuntimeBufferLease, acquire_buffer_from_object,
-        buffer_bytes, exact_bytes,
-    };
     use molt_cpython_abi::{
         abi_types,
         api::{buffer, errors, strings},
         bridge::GLOBAL_BRIDGE,
+    };
+    use molt_runtime_capi::{
+        NativeObjectOwner, PyBUF_SIMPLE, RuntimeBufferLease, acquire_buffer_from_object,
+        buffer_bytes, exact_bytes,
     };
     use subtle::ConstantTimeEq;
 
@@ -526,7 +526,7 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
             if buffer::PyObject_CheckBuffer(objects[0].as_ptr()) == 0
                 && buffer::PyObject_CheckBuffer(objects[1].as_ptr()) == 0
             {
-                molt_cpython_abi::native_custody::retire_native_reference(|| {
+                molt_runtime_capi::retire_native_reference(|| {
                     errors::PyErr_Format(
                         (&raw mut abi_types::PyExc_TypeError).cast(),
                         c"unsupported operand types(s) or combination of types: '%.100s' and '%.100s'".as_ptr(),

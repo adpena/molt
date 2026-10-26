@@ -246,17 +246,15 @@ pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
 pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(name_bits);
-        let Some(name) = string_obj_to_owned(obj) else {
+        if !obj
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+        {
             let tn = type_name(_py, obj);
             let msg = format!("StrEnum name must be str, not {tn}");
             return raise_exception::<_>(_py, "TypeError", &msg);
-        };
-        let lower = name.to_lowercase();
-        let ptr = alloc_string(_py, lower.as_bytes());
-        if ptr.is_null() {
-            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
         }
-        MoltObject::from_ptr(ptr).bits()
+        crate::object::ops_string::molt_string_lower(name_bits)
     })
 }
 

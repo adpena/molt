@@ -113,6 +113,13 @@ def test_semantics_use_package_identity_not_directory_prefix_or_role(
     "consumer_layer,provider_layer,allowed",
     [
         ("core", "c_api", False),
+        ("c_api", "runtime_c_api", False),
+        ("core", "runtime_c_api", False),
+        ("runtime_c_api", "core", True),
+        ("runtime_c_api", "c_api", True),
+        ("runtime_c_api", "stdlib", False),
+        ("stdlib", "runtime_c_api", True),
+        ("runtime", "runtime_c_api", True),
         ("c_api", "core", True),
         ("stdlib", "c_api", True),
         ("c_api", "stdlib", False),
@@ -310,6 +317,7 @@ def test_real_package_aliases_and_all_workspace_crates_have_typed_metadata() -> 
     assert contract.layer_of("molt-obj-model", semantics) == "core"
     assert contract.layer_of("molt-cpython-abi", semantics) == "c_api"
     assert semantics["molt-cext-discovery"].layer == "outside"
+    assert semantics["molt-llvm-link"].layer == "outside"
     assert semantics["molt-runtime-platform"].layer == "core"
 
 

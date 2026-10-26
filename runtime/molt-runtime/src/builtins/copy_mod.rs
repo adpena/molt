@@ -170,8 +170,12 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
             bits
         }
         TYPE_ID_DICT => {
-            // Shallow copy: new dict with same key/value refs.
-            // Dict order vec stores [k1, v1, k2, v2, ...].
+            if unsafe { crate::object::iterable::builtin_receiver(_py, ptr) } {
+                return crate::object::ops_dict::copy_dict(_py, bits);
+            }
+            // Subtype fallthrough retains its physical-storage path: unlike
+            // dict.copy, it must not acquire new __iter__/mapping callbacks.
+            // The class-level __copy__ protocol above still takes precedence.
             {
                 let Some(order) = (unsafe {
                     crate::object::ops_dict::dict_snapshot(

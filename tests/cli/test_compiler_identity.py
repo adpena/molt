@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -359,7 +360,11 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         config_digest = canonical_json_sha256(configuration.read_text(encoding="utf-8"))
         # Cargo selects the configured build flags; the plan pins the policy's
         # result exactly as the real resolver does.
-        rustflags = rustflags_transform(("-Copt-level=2",))
+        rustflags = (
+            *rustflags_transform(("-Copt-level=2",)),
+            f"--remap-path-prefix={root}=/molt/source",
+            f"--remap-path-prefix={env['CARGO_TARGET_DIR']}=/molt/build",
+        )
         return SimpleNamespace(
             environment={**env, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(rustflags)},
             configuration=(),
@@ -401,8 +406,17 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         native = admission(baseline_env, RustCpuPolicy.NATIVE)
         assert native is not baseline
         assert len(seen) == 2
-    assert baseline.plan.rustflags == ("-Copt-level=2",)
-    assert native.plan.rustflags == ("-Copt-level=2", "-C", "target-cpu=native")
+    remaps = (
+        f"--remap-path-prefix={tmp_path}=/molt/source",
+        f"--remap-path-prefix={tmp_path / 'target'}=/molt/build",
+    )
+    assert baseline.plan.rustflags == ("-Copt-level=2", *remaps)
+    assert native.plan.rustflags == (
+        "-Copt-level=2",
+        "-C",
+        "target-cpu=native",
+        *remaps,
+    )
     assert native.fingerprint != baseline.fingerprint
     # The policy reaches the plan as a value; the Cargo environment the plan
     # starts from carries no Rust CPU flag of its own.
@@ -454,10 +468,17 @@ def test_lock_projection_is_mandatory_without_raw_lock_in_source_paths(tmp_path)
 def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     tmp_path, monkeypatch, mutate_during_admission, runtime_fixture_root
 ):
-    from molt import llvm_toolchain
+    from molt import llvm_toolchain, llvm_link_plan
     from molt.cli import cargo_execution, runtime_cargo_plan
     from tests.runtime_build_identity_helper import runtime_cargo_plan as fixture_plan
 
+    contract = tmp_path / "config/llvm_toolchain_arches.toml"
+    contract.parent.mkdir()
+    contract.write_bytes(
+        (
+            Path(__file__).resolve().parents[2] / "config/llvm_toolchain_arches.toml"
+        ).read_bytes()
+    )
     prefix = tmp_path / "llvm"
     library = prefix / "lib" / "libLLVM.a"
     header = prefix / "include" / "llvm-c" / "Core.h"
@@ -468,6 +489,9 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
         (header, b"/* core */"),
         (unrelated, b"# lldb"),
         (llvm_config, b"llvm-config"),
+        (prefix / "bin/clang++", b"driver"),
+        (prefix / "lib/libc++.dylib", b"C++ ABI"),
+        (prefix / "lib/libstdc++.so", b"C++ ABI"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
@@ -477,8 +501,17 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
         lambda root, **kw: SimpleNamespace(
             prefix=prefix,
             llvm_config=llvm_config,
+            version="22.1.8",
+            host_target="x86_64-unknown-linux-gnu",
             link_closure=("lib/libLLVM.a",),
             tool_versions=(
+                llvm_toolchain.LlvmToolVersionFact(
+                    "clang++",
+                    "bin/clang++",
+                    "22.1.8",
+                    6,
+                    hashlib.sha256(b"driver").hexdigest(),
+                ),
                 llvm_toolchain.LlvmToolVersionFact(
                     "llvm-config",
                     "bin/llvm-config",
@@ -494,6 +527,12 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
                 ),
             ),
         ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain, "llvm_sdk_probe_environment", ProcessEnvironment
+    )
+    monkeypatch.setattr(
+        llvm_link_plan, "_driver_library_directories", lambda *_args: (prefix / "lib",)
     )
     monkeypatch.setattr(
         llvm_toolchain,
@@ -561,23 +600,36 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     after_header = admission()
     assert after_header.fingerprint != after_library.fingerprint
     assert after_header.plan.build_directory != after_library.plan.build_directory
-    # Only the consumed content set (headers plus attested link-closure
-    # libraries) is a build input; the rest of the install is not.
+    # The selected C++ ABI library is observed/captured even though Rust keeps
+    # its intentional OS ABI selector. It must invalidate reuse like SDK bytes.
+    cpp = (
+        prefix
+        / "lib"
+        / ("libc++.dylib" if sys.platform == "darwin" else "libstdc++.so")
+    )
+    rewrite(cpp, b"new ABI")
+    with pytest.raises(compiler_identity.CompilerIdentityError):
+        after_header.verify()
+    after_abi = admission()
+    assert after_abi.fingerprint != after_header.fingerprint
+    assert after_abi.plan.build_directory != after_header.plan.build_directory
+    # Only the consumed content set is a build input; unrelated SDK files are not.
     rewrite(unrelated, b"# lldb, revised")
     after_unrelated = admission()
-    assert after_unrelated.fingerprint == after_header.fingerprint
-    assert after_unrelated.plan.build_directory == after_header.plan.build_directory
+    assert after_unrelated.fingerprint == after_abi.fingerprint
+    assert after_unrelated.plan.build_directory == after_abi.plan.build_directory
 
 
 def test_compiler_cargo_projection_never_admits_runtime_build_python(
     tmp_path, monkeypatch
 ):
-    from molt.cli import cargo_execution, runtime_cargo_plan, runtime_build_identity
+    from molt.cli import cargo_execution, runtime_cargo_plan
+    from molt.python_runtime_admission import BuildPythonAdmission
 
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
     monkeypatch.setattr(
-        runtime_build_identity,
-        "_python_identity",
+        BuildPythonAdmission,
+        "capture",
         lambda *args, **kw: pytest.fail(
             "compiler does not execute runtime Python generators"
         ),
@@ -611,18 +663,16 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
     assert key("missing-runtime-python-a") == key("missing-runtime-python-b")
 
 
-def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypatch):
+def test_runtime_captures_shared_cargo_projection_without_python(monkeypatch):
     from molt.cli import runtime_build_identity
+    from molt.python_runtime_admission import BuildPythonAdmission
 
     calls = []
-
-    def python(env, *, admission):
-        calls.append("python")
-        return {"identity": env["MOLT_BUILD_PYTHON"]}
+    cargo_content = {"tools": {"rustc": "content"}, "cargo_configuration": "config"}
 
     def cargo():
         calls.append("cargo-custody")
-        return {"tools": {"rustc": "content"}, "cargo_configuration": "config"}
+        return cargo_content
 
     cargo_custody = cargo_resource_custody.CargoResourceCustody.capture(())
 
@@ -630,14 +680,18 @@ def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypat
         calls.append("cargo-verify")
         cargo_custody.verify()
 
-    monkeypatch.setattr(runtime_build_identity, "_python_identity", python)
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("Rust capture admitted Python"),
+    )
     result = runtime_build_identity._capture_plan_toolchain(
         SimpleNamespace(
-            environment={"MOLT_BUILD_PYTHON": "runtime-python"},
+            environment={"MOLT_BUILD_PYTHON": "missing-generator"},
             toolchain_identity=cargo,
             verify=verify,
         )
     )
-    assert calls == ["python", "cargo-verify", "cargo-custody"]
-    assert result["tools"]["build_python"] == {"identity": "runtime-python"}
-    assert result["tools"]["rustc"] == "content"
+    assert calls == ["cargo-verify", "cargo-custody"]
+    assert result is cargo_content
+    assert "build_python" not in result["tools"]

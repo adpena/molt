@@ -634,7 +634,7 @@ def test_import_molt_cli_does_not_load_backend() -> None:
 _COMMAND_LAYER_OUT = (
     "cli/__init__.py",
     "cli/build_locks.py",
-    "cli/source_build_environment.py",
+    "source_build_environment.py",
     "cli/extension_seal.py",
     "cli/extension_scan.py",
     "cli/package_registry.py",

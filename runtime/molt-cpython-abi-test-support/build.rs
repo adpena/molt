@@ -7,6 +7,7 @@ use std::path::PathBuf;
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest directory"));
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("target os");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("Cargo output directory"));
     let source = manifest.join("l7_overlay_probe.c");
     let identity = manifest.join("type_identity_probe.c");
     let allocation = manifest.join("allocation_probe.c");
@@ -20,7 +21,7 @@ fn main() {
         .include(&linked_include)
         .include(&shared_abi_include)
         .include(&public_include);
-    c_codegen::apply_codegen_policy(&mut overlay, &target_os);
+    c_codegen::apply_codegen_policy(&mut overlay, &target_os, &manifest, &out_dir);
     overlay.compile("molt_l7_overlay_probe");
     // The same consumer is compiled against both distributed header facades.
     for (consumer, symbol, name, public_header) in [
@@ -68,7 +69,7 @@ fn main() {
             .include(&shared_abi_include)
             .include(&public_include)
             .define(symbol, Some(name));
-        c_codegen::apply_codegen_policy(&mut build, &target_os);
+        c_codegen::apply_codegen_policy(&mut build, &target_os, &manifest, &out_dir);
         if public_header {
             build.define("MOLT_PUBLIC_HEADER_PROBE", None);
         }

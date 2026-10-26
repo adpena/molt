@@ -312,6 +312,40 @@ def test_source_admission_binds_all_tracked_bytes_without_import_reanalysis(tmp_
     assert source_admission_problems(root=root, source_sha=sha)
 
 
+@pytest.mark.parametrize("replaced_kind", ["commit", "tree"])
+def test_source_admission_uses_original_objects_despite_replacement_refs(
+    tmp_path, monkeypatch, replaced_kind
+):
+    from tools.release_matrix_acceptance import source_admission_problems
+
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
+    root, original, git = _source_repo(tmp_path)
+    original_tree = git("rev-parse", f"{original}^{{tree}}").decode().strip()
+    assert source_admission_problems(root=root, source_sha=original) == []
+    (root / "src/dependency.py").write_bytes(b"VALUE = 2\n")
+    git("add", "src/dependency.py")
+    git(
+        "-c",
+        "user.name=Matrix fixture",
+        "-c",
+        "user.email=matrix@fixture.invalid",
+        "commit",
+        "-m",
+        "substitute tree",
+    )
+    replacement = git("rev-parse", "HEAD").decode().strip()
+    if replaced_kind == "tree":
+        replacement = git("rev-parse", "HEAD^{tree}").decode().strip()
+        original_object = original_tree
+    else:
+        original_object = original
+    git("replace", original_object, replacement)
+    # Independent Git demonstrates the redirect; admission must retain the
+    # original declared commit's VALUE=1 instead of accepting VALUE=2.
+    assert git("show", f"{original}:src/dependency.py") == b"VALUE = 2\n"
+    assert source_admission_problems(root=root, source_sha=original)
+
+
 @pytest.mark.parametrize(
     "tracked,ignored,top_level",
     [

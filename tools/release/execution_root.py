@@ -1,8 +1,9 @@
 """Closed, archive-derived Linux execution roots for release consumer replay.
 
 This module assembles data. It never downloads, installs, probes or executes a
-package. cross_run owns the container transport; the native supervisor owns
-process/image admission and event replay. Reference Python stays outside.
+package. cross_run owns the systemd service transport; the native supervisor owns
+process/image admission and event replay. Post-uninstall replay excludes Python;
+the explicit compilation projection stages its captured frontend inputs.
 """
 
 from __future__ import annotations
@@ -16,8 +17,11 @@ import tarfile
 import tomllib
 from typing import Any
 
+from tools.cross_run import SealedExecutionProjection, SEALED_REPLAY_EXECUTION
+
 from molt.file_publication import resolve_owned_path
 from molt.portable_paths import portable_relative_path
+from molt.python_identity_common import canonical_absolute_path
 from molt.cli.static_archive_identity import open_static_archive_members
 from molt.exact_json import canonical_json_sha256
 from molt.python_native_dependency_custody import _elf_dependencies, elf_interpreter
@@ -40,6 +44,19 @@ _EMPTY_DIRECTORIES = ("app", "dev", "etc", "proc", "sys", "tmp", "evidence", "po
 
 def relative_path(raw: object) -> PurePosixPath:
     return portable_relative_path(raw)
+
+
+def linux_root_relative_path(raw: object) -> PurePosixPath:
+    """Project a canonical Linux host coordinate into this sealed root.
+
+    Archive coordinates are already relative and must not pass through here.
+    Parsing retained host fields does not borrow the receiver's OS grammar;
+    the current sealed provider supports only the POSIX / namespace.
+    """
+    host = canonical_absolute_path(raw)
+    if not isinstance(host, PurePosixPath) or host.anchor != "/" or len(host.parts) < 2:
+        raise ValueError("sealed execution root requires a Linux host coordinate")
+    return relative_path(host.relative_to("/").as_posix())
 
 
 def file_identity(path: Path) -> dict[str, object]:
@@ -316,7 +333,7 @@ def _audit_native_closure(
         data = read_member(name)
         interpreter = elf_interpreter(data, architecture=arch)
         if interpreter:
-            loader = relative_path(interpreter.removeprefix("/")).as_posix()
+            loader = linux_root_relative_path(interpreter).as_posix()
             if loader not in members:
                 raise ValueError(
                     f"execution-root ELF loader is not admitted: {interpreter}"
@@ -356,15 +373,22 @@ def root_inventory(root: Path) -> list[dict[str, Any]]:
 
 
 def seal_root(
-    root: Path, archive: Path, *, expected_files: list[dict[str, Any]]
+    root: Path,
+    archive: Path,
+    *,
+    expected_files: list[dict[str, Any]],
+    projection: SealedExecutionProjection = SEALED_REPLAY_EXECUTION,
 ) -> dict[str, Any]:
-    for name in _EMPTY_DIRECTORIES:
+    for name in (
+        *_EMPTY_DIRECTORIES,
+        *(("work",) if projection.mode == "compilation" else ()),
+    ):
         (root / name).mkdir(exist_ok=True)
     rows = sorted(expected_files, key=lambda row: row["path"])
     if root_inventory(root) != rows:
         raise ValueError("execution-root differs from admitted payloads before sealing")
     by_path = {row["path"]: row for row in rows}
-    with tarfile.open(archive, "x", format=tarfile.USTAR_FORMAT) as handle:
+    with tarfile.open(archive, "x", format=tarfile.PAX_FORMAT) as handle:
         for path in sorted(root.rglob("*")):
             name = path.relative_to(root).as_posix()
             info = tarfile.TarInfo(name)
@@ -399,13 +423,19 @@ def seal_root(
 
 
 def validate_sealed_tar(
-    archive: Path, root: Path, *, expected_archive: dict[str, Any]
+    archive: Path,
+    root: Path,
+    *,
+    expected_archive: dict[str, Any],
+    projection: SealedExecutionProjection = SEALED_REPLAY_EXECUTION,
 ) -> None:
     """The imported archive must encode the retained root, not merely a hash."""
     expected = {row["path"]: row for row in root_inventory(root)}
     # ZIP retention may omit empty directories. The imported tar has this one
     # canonical directory closure regardless of the receiver filesystem.
     directories = set(_EMPTY_DIRECTORIES)
+    if projection.mode == "compilation":
+        directories.add("work")
     for name in expected:
         directories.update(
             p.as_posix() for p in PurePosixPath(name).parents if p.as_posix() != "."
@@ -432,56 +462,42 @@ def _validate_sealed_tar_handle(
     expected: dict[str, dict[str, Any]],
     directories: set[str],
 ) -> None:
-    seen_files: set[str] = set()
-    seen_directories: set[str] = set()
-    last_end = 0
-    with tarfile.open(fileobj=opened.stream, mode="r:") as handle:
-        for member in handle:
-            if member.offset != last_end:
-                raise ValueError("sealed root archive has hidden metadata")
-            last_end = member.offset_data + ((member.size + 511) // 512) * 512
-            name = relative_path(member.name).as_posix()
-            if (
-                member.uid
-                or member.gid
-                or member.mtime
-                or member.pax_headers
-                or member.linkname
-            ):
-                raise ValueError("sealed root archive has unadmitted metadata")
-            if member.isdir():
-                if (
-                    name not in directories
-                    or name in seen_directories
-                    or member.mode != 0o555
-                ):
-                    raise ValueError("sealed root archive directory closure differs")
-                seen_directories.add(name)
-            elif member.isfile():
-                row = expected.get(name)
-                if (
-                    row is None
-                    or name in seen_files
-                    or member.size != row["size"]
-                    or member.mode != row["mode"]
-                ):
-                    raise ValueError("sealed root archive file closure differs")
-                stream = handle.extractfile(member)
-                if (
-                    stream is None
-                    or hashlib.file_digest(stream, "sha256").hexdigest()
-                    != row["sha256"]
-                ):
-                    raise ValueError(
-                        "sealed root archive payload differs from retained root"
-                    )
-                seen_files.add(name)
-            else:
-                raise ValueError("sealed root archive has a link or special file")
-    if seen_files != set(expected) or seen_directories != directories:
-        raise ValueError("sealed root archive is incomplete")
-
-    opened.stream.seek(last_end)
+    # Encode the one expected header sequence instead of asking a permissive
+    # archive parser to interpret attacker-supplied PAX/longname metadata. PAX
+    # is necessary for actual content-addressed runtime member basenames. Only
+    # the exact metadata emitted by our producer is accepted, in bounded reads.
+    if len(expected) > _MAX_ARCHIVE_MEMBERS:
+        raise ValueError("sealed root archive has too many members")
+    opened.stream.seek(0)
+    for name in sorted(set(expected) | directories):
+        info = tarfile.TarInfo(name)
+        info.uid = info.gid = info.mtime = 0
+        if name in directories:
+            info.type, info.mode = tarfile.DIRTYPE, 0o555
+        else:
+            row = expected[name]
+            info.mode, info.size = row["mode"], row["size"]
+        header = info.tobuf(tarfile.PAX_FORMAT, "utf-8", "surrogateescape")
+        if opened.stream.read(len(header)) != header:
+            raise ValueError(
+                "sealed root archive has hidden metadata or its file/directory closure differs"
+            )
+        if name in directories:
+            continue
+        remaining = info.size
+        digest = hashlib.sha256()
+        while remaining:
+            block = opened.stream.read(min(remaining, 64 * 1024))
+            if not block:
+                raise ValueError("sealed root archive payload is incomplete")
+            remaining -= len(block)
+            digest.update(block)
+        if digest.hexdigest() != expected[name]["sha256"]:
+            raise ValueError("sealed root archive payload differs from retained root")
+        padding = (-info.size) % 512
+        if opened.stream.read(padding) != bytes(padding):
+            raise ValueError("sealed root archive has noncanonical member padding")
+    last_end = opened.stream.tell()
     padding = opened.stream.read(10241)
     if (
         not 1024 <= len(padding) <= 10240
@@ -489,3 +505,406 @@ def _validate_sealed_tar_handle(
         or (last_end + len(padding)) % 10240
     ):
         raise ValueError("sealed root archive has noncanonical trailing data")
+
+
+def stage_compilation_inputs(
+    root: Path,
+    *,
+    compiler: Any,
+    python_captures: list[dict[str, Any]],
+    toolchain_capture: dict[str, Any],
+    cas_root: Path,
+) -> list[dict[str, Any]]:
+    """Project existing admitted installed/Python/toolchain owners into a root.
+
+    Preserve their absolute lexical locations so launchers, venv configuration,
+    Python imports and tool resources keep the same meaning. The returned files
+    are the only read-only compile inputs; no ambient directory is mounted.
+    This function does not infer absence of undeclared inputs. Missing closure
+    fails inside the sealed namespace and remains a failed compile coordinate.
+    """
+    from dataclasses import replace
+    from molt.compiler_distribution import InstalledCompiler, installed_compiler
+    from molt.python_capture import validate_python_capture
+    from molt.source_root import MANIFEST_NAME
+    from tools.proof_queue_pkg import toolchain_capture as captures
+    from tools.proof_queue_pkg.process_image_capture import custody_path
+
+    if not isinstance(compiler, InstalledCompiler):
+        raise TypeError("sealed compilation requires an admitted installed compiler")
+    if compiler.record["platform"] != "linux":
+        raise ValueError(
+            "sealed compilation namespace is unavailable for this platform"
+        )
+    if installed_compiler(compiler.source_root) != compiler:
+        raise ValueError("installed compiler manifest changed before root projection")
+    compiler.verify_sources()
+    compiler.verify_runtime()
+    compiler.verify_binary(
+        tuple(compiler.record["features"]), compiler.record["profile"]
+    )
+    compiler.verify_wasm_facts()
+    if not python_captures:
+        raise ValueError("compilation input projection requires a frontend capture")
+    pythons = [validate_python_capture(capture) for capture in python_captures]
+    captured = captures.load_capture(toolchain_capture, cas_root=cas_root)
+    rows: dict[str, dict[str, Any]] = {}
+    retained = {row["path"]: row for row in root_inventory(root)}
+
+    def stage(
+        source: Path, expected: dict[str, Any], *, destination: Path | None = None
+    ) -> None:
+        if not source.is_absolute():
+            raise ValueError("compilation input has no absolute custody coordinate")
+        name = linux_root_relative_path(str(destination or source)).as_posix()
+        if PurePosixPath(name).parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
+            raise ValueError(
+                "read-only compilation input intersects a writable or virtual root"
+            )
+        if (
+            type(expected.get("size")) is not int
+            or expected["size"] < 0
+            or not isinstance(expected.get("sha256"), str)
+        ):
+            raise ValueError("compilation input lacks retained content custody")
+        prior = rows.get(name)
+        if prior is not None:
+            if any(prior[k] != expected[k] for k in ("size", "sha256")):
+                raise ValueError("compilation input owners disagree on one pathname")
+            return
+        target = root / name
+        if target.exists():
+            prior = retained.get(name)
+            if prior is None or any(
+                prior[k] != expected[k] for k in ("size", "sha256")
+            ):
+                raise ValueError("compilation input conflicts with the admitted root")
+            rows[name] = prior
+            return
+        result = stage_file(
+            root,
+            name,
+            source,
+            executable=bool(source.stat().st_mode & 0o111),
+            max_bytes=max(1, expected["size"]),
+        )
+        if any(result[k] != expected[k] for k in ("size", "sha256")):
+            raise ValueError("compilation input changed after owning admission")
+        rows[name] = result
+
+    for entry in compiler.files:
+        stage(compiler.source_root / entry["path"], entry)
+    manifest = compiler.source_root / MANIFEST_NAME
+    stage(manifest, file_identity(manifest))
+    for entry in (compiler.record, compiler.launcher, compiler.wasm_facts):
+        stage(compiler.source_root.parent / entry["path"], entry)
+    for cell in compiler.runtime["cells"]:
+        for entry in cell["files"]:
+            stage(compiler.verify_runtime_file(cell, entry["role"]), entry)
+    for python in pythons:
+        for entry in python["file_custody"]:
+            stage(Path(entry["path"]), entry)
+        for destination, entry in compilation_python_files(python):
+            stage(Path(entry["path"]), entry, destination=destination)
+    # The canonical capture loader verifies CAS identity and reconstructs the
+    # complete frozen file projection. A caller-authored tool list is not input.
+    for entry in captured["files"]:
+        lexical = Path(entry["path"])
+        stage(
+            custody_path(lexical).resolve(strict=True),
+            {"size": entry["size"], "sha256": entry["sha256"]},
+            destination=lexical,
+        )
+    staged_compiler = installed_compiler(
+        root / linux_root_relative_path(str(compiler.source_root))
+    )
+    if (
+        staged_compiler is None
+        or replace(staged_compiler, source_root=compiler.source_root) != compiler
+        or installed_compiler(compiler.source_root) != compiler
+    ):
+        raise ValueError("installed compiler manifest changed during root projection")
+    compiler.verify_sources()
+    compiler.verify_runtime()
+    return [rows[name] for name in sorted(rows)]
+
+
+def compilation_python_files(capture: object) -> list[tuple[Path, dict[str, Any]]]:
+    """Project lexical file consumers from the canonical capture's node bindings.
+
+    Custody paths own bytes; semantic entries own their lexical uses. Preserve
+    those uses as regular read-only copies in the new namespace. This does not
+    assert the staged environment has the original host's topology or identity.
+    Ambiguous root locations reject rather than discovering ambient directories.
+    """
+    from molt.python_capture import validate_python_capture
+
+    captured = validate_python_capture(capture)
+    identity = captured["identity"]
+    if "tree" not in identity:
+        raise ValueError(
+            "compilation requires an installed frontend environment capture"
+        )
+    bindings = {
+        row["node"]: captured["file_custody"][row["file_index"]]
+        for row in captured["node_custody"]
+    }
+    runtime = identity["runtime"]
+
+    def pool(nodes: list[dict[str, Any]], pointer: str) -> dict[str, dict[str, Any]]:
+        return {row["id"]: bindings[f"{pointer}/{i}"] for i, row in enumerate(nodes)}
+
+    runtime_files = pool(runtime["file_nodes"], "/runtime/file_nodes")
+    environment_files = pool(identity["tree"]["file_nodes"], "/tree/file_nodes")
+    base = next(
+        (
+            runtime_files[row["node"]]
+            for row in runtime["explicit_files"]
+            if row["role"] == "base-executable"
+        ),
+        None,
+    )
+    if base is None:
+        raise ValueError("compilation capture omitted its base interpreter node")
+    config = environment_files[identity["pyvenv_config"]["node"]]
+    config_path = Path(config["path"])
+    if config_path.name != "pyvenv.cfg":
+        raise ValueError(
+            "compilation environment root has no unambiguous config custody"
+        )
+    result: dict[Path, dict[str, Any]] = {}
+
+    def add(path: Path, row: dict[str, Any]) -> None:
+        prior = result.setdefault(path, row)
+        if (prior["size"], prior["sha256"]) != (row["size"], row["sha256"]):
+            raise ValueError("Python lexical input owners disagree on content")
+
+    def project(
+        root: Path, tree: dict[str, Any], files: dict[str, dict[str, Any]]
+    ) -> None:
+        entries = tree["entries"]
+        file_rows: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            if entry["kind"] not in {"file", "hardlink", "symlink"}:
+                continue
+            row = (
+                base
+                if entry.get("target_owner") == "base-runtime"
+                else files[entry["node"]]
+            )
+            file_rows[entry["path"]] = row
+            add(root / entry["path"], row)
+        # Directory aliases reference one canonical same-root directory. Expand
+        # only semantic file rows already admitted above, never a live walk.
+        for entry in entries:
+            if entry["kind"] != "directory-symlink":
+                continue
+            prefix = entry["target"] + "/"
+            for name, row in file_rows.items():
+                if name.startswith(prefix):
+                    add(root / entry["path"] / name[len(prefix) :], row)
+
+    project(config_path.parent, identity["tree"], environment_files)
+    for tree in runtime["runtime_roots"]:
+        candidates: set[Path] = set()
+        for entry in tree["entries"]:
+            if entry["kind"] != "file":
+                continue
+            physical = Path(runtime_files[entry["node"]]["path"])
+            relative = PurePosixPath(entry["path"])
+            if physical.parts[-len(relative.parts) :] == relative.parts:
+                candidates.add(physical.parents[len(relative.parts) - 1])
+        if len(candidates) != 1:
+            raise ValueError(
+                "compilation runtime root lacks unique retained path custody"
+            )
+        project(candidates.pop(), tree, runtime_files)
+    return sorted(result.items(), key=lambda item: item[0].as_posix())
+
+
+def stage_compilation_runtime(
+    root: Path,
+    *,
+    compiler: Any,
+    environment: dict[str, str],
+    kind: str,
+    key: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Hydrate the selected signed cell using its existing retention authority.
+
+    The only override is the physical destination of the new namespace. Inside
+    that namespace the normal public launcher observes its canonical MOLT_HOME
+    generation, already present and read-only. No compiler/Cargo execution and
+    no independently manufactured runtime manifest are involved.
+    """
+    from molt.compiler_distribution import (
+        InstalledCompiler,
+        NATIVE_RUNTIME_CELL,
+        WASM_RUNTIME_CELL,
+    )
+    from molt.default_paths import _default_molt_home
+    from molt.cli.installed_runtime import (
+        INSTALLED_RUNTIME_STORE,
+        select_installed_runtime_cell,
+        admit_installed_native_runtime,
+        admit_installed_wasm_runtime,
+    )
+
+    if not isinstance(compiler, InstalledCompiler):
+        raise TypeError("compilation retention requires an installed compiler")
+    home = _default_molt_home(environ=environment, cwd=Path("/work"))
+    relative = linux_root_relative_path(str(home / INSTALLED_RUNTIME_STORE))
+    if relative.parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
+        raise ValueError(
+            "retained runtime must remain outside the writable compile root"
+        )
+    store = root.joinpath(*relative.parts)
+    cell = select_installed_runtime_cell(
+        compiler, kind=kind, key=key, retention_store=store
+    )
+    if kind == NATIVE_RUNTIME_CELL:
+        admission = admit_installed_native_runtime(cell)
+        admission.verify()
+    elif kind == WASM_RUNTIME_CELL:
+        from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
+
+        admission = RuntimeWasmCodegenBinding(admit_installed_wasm_runtime(cell), None)
+        admission.verify()
+    else:
+        raise ValueError("compilation runtime has no installed cell authority")
+    rows = root_inventory(cell.retained_root)
+    for row in rows:
+        row["path"] = (relative / cell.id / row["path"]).as_posix()
+    admission.verify()
+    return rows, dict(cell.record)
+
+
+def stage_compilation_link_inputs(
+    root: Path,
+    *,
+    reproducer: Path,
+    observation: object,
+) -> list[dict[str, Any]]:
+    """Retain preflight native linker inputs missing from the replay OS root.
+
+    CRT objects, linker scripts and archives come from LLD's exact input buffers,
+    not guessed sysroot walks or selected-path hashes. Compiler output/runtime
+    have their own fresh producers and are excluded here. These bytes prepare a
+    new closed compile; only its subsequent report proves actual consumption.
+    """
+    from contextlib import contextmanager
+    from molt.cli.link_input_observation import (
+        LinkInputObservation,
+        capture_link_inputs,
+    )
+
+    declared = LinkInputObservation.from_record(observation)
+    if declared.dialect != "elf-gnu" or set(dict(declared.roles)) != {
+        "compiler_output",
+        "runtime",
+    }:
+        raise ValueError(
+            "compilation native resources require an exact native linker observation"
+        )
+    # A foreign retained record is valid raw evidence, but cannot select a
+    # host image for this Linux-only execution root.
+    linux_root_relative_path(declared.linker_path)
+    contents = {
+        name: {"size": size, "sha256": digest} for name, size, digest in declared.inputs
+    }
+    excluded = set(dict(declared.roles).values())
+    rows = {row["path"]: row for row in root_inventory(root)}
+    retained = []
+
+    @contextmanager
+    def sink(name: str, size: int):
+        if name in excluded:
+            yield None
+            return
+        relative = relative_path(name)
+        if relative.parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
+            raise ValueError(
+                "preflight linker input intersects the writable or virtual compile root: "
+                + name
+            )
+        key = relative.as_posix()
+        expected = contents.get(name)
+        if expected is None or expected["size"] != size:
+            raise ValueError(
+                "preflight linker resource is absent from its declared inventory"
+            )
+        existing = rows.get(key)
+        if existing is not None:
+            if any(existing[field] != expected[field] for field in ("size", "sha256")):
+                raise ValueError(
+                    "preflight linker resource conflicts with an admitted compilation input"
+                )
+            yield None
+            return
+        path = root.joinpath(*relative.parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as destination:
+            yield destination
+        path.chmod(0o444)
+        retained.append({"path": key, "filename": path.name, "mode": 0o444, **expected})
+
+    captured = capture_link_inputs(
+        reproducer,
+        dialect=declared.dialect,
+        linker_path=declared.linker_path,
+        expected={role: (name, contents[name]) for role, name in declared.roles},
+        input_sink=sink,
+    )
+    if captured != declared:
+        raise ValueError(
+            "preflight linker buffers differ from their declared observation"
+        )
+    return sorted(retained, key=lambda row: row["path"])
+
+
+def stage_compilation_driver_inputs(
+    root: Path, *, preparation: object
+) -> list[dict[str, Any]]:
+    """Copy selected preprocessor files; never relabel them as consumed bytes."""
+    from molt.cli.link_input_observation import validate_native_link_preparation
+
+    selected = validate_native_link_preparation(preparation)
+    linux_root_relative_path(selected["source"])
+    entries = [selected["driver"], *selected["files"]]
+    projected = [(entry, linux_root_relative_path(entry["path"])) for entry in entries]
+    # Reject an unsupported host namespace before publishing any staged file.
+    for entry in entries:
+        linux_root_relative_path(entry["content_path"])
+    existing = {row["path"]: row for row in root_inventory(root)}
+    rows = []
+    for entry, relative in projected:
+        if entry["path"] == selected["source"]:
+            continue  # The fresh build generates its own C entrypoint.
+        if relative.parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
+            raise ValueError(
+                "native preparation input intersects a writable or virtual root"
+            )
+        name = relative.as_posix()
+        old = existing.get(name)
+        if old is not None:
+            if any(old[field] != entry[field] for field in ("size", "sha256")):
+                raise ValueError(
+                    "native preparation conflicts with an admitted root input"
+                )
+            continue
+        if entry is selected["driver"]:
+            raise ValueError(
+                "native driver is absent from the admitted toolchain input root"
+            )
+        row = stage_file(
+            root,
+            name,
+            Path(entry["content_path"]),
+            executable=False,
+            max_bytes=max(1, entry["size"]),
+        )
+        if any(row[field] != entry[field] for field in ("size", "sha256")):
+            raise ValueError("native preparation selected input changed before staging")
+        rows.append(row)
+        existing[name] = row
+    return sorted(rows, key=lambda row: row["path"])

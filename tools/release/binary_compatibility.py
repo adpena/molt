@@ -28,12 +28,16 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import hashlib
 import importlib.metadata
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+from types import MappingProxyType
 import zipfile
+
+from molt.wheel_record import wheel_record_bytes
 
 from packaging.utils import parse_wheel_filename
 
@@ -113,27 +117,79 @@ def native_members(root: Path) -> dict[str, Path]:
 
 
 def _write_audit_wheel(members: Mapping[str, Path], directory: Path, tag: str) -> Path:
-    """Transient wheel carrying only native members for the tools' wheel APIs."""
+    """Carry native members with complete RECORD inventory for the audit APIs.
+
+    auditwheel discovers files through RECORD, not the ZIP central directory:
+    https://github.com/pypa/auditwheel/blob/6.8.2/src/auditwheel/wheeltools.py
+    """
     wheel = directory / f"{_AUDIT_DISTRIBUTION}-0-py3-none-{tag}.whl"
     data = PurePosixPath(f"{_AUDIT_DISTRIBUTION}-0.data", "data")
     dist_info = f"{_AUDIT_DISTRIBUTION}-0.dist-info"
+    entries: list[tuple[str, bytes, int]] = []
     with zipfile.ZipFile(wheel, "w") as archive:
         for relative, path in sorted(members.items()):
             info = zipfile.ZipInfo((data / relative).as_posix())
             info.external_attr = (
                 0o100755 if os.access(path, os.X_OK) else 0o100644
             ) << 16
-            archive.writestr(info, path.read_bytes())
+            payload = path.read_bytes()
+            archive.writestr(info, payload)
+            entries.append(
+                (info.filename, hashlib.sha256(payload).digest(), len(payload))
+            )
+            del payload
+        for name, text in (
+            (
+                "METADATA",
+                f"Metadata-Version: 2.1\nName: {_AUDIT_DISTRIBUTION}\nVersion: 0\n",
+            ),
+            (
+                "WHEEL",
+                f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-{tag}\n",
+            ),
+        ):
+            payload = text.encode("utf-8")
+            path_name = f"{dist_info}/{name}"
+            archive.writestr(path_name, payload)
+            entries.append((path_name, hashlib.sha256(payload).digest(), len(payload)))
+        record_path = f"{dist_info}/RECORD"
         archive.writestr(
-            f"{dist_info}/METADATA",
-            f"Metadata-Version: 2.1\nName: {_AUDIT_DISTRIBUTION}\nVersion: 0\n",
+            record_path, wheel_record_bytes(entries, record_path=record_path)
         )
-        archive.writestr(
-            f"{dist_info}/WHEEL",
-            f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-{tag}\n",
-        )
-        archive.writestr(f"{dist_info}/RECORD", "")
     return wheel
+
+
+def linux_shared_library_capability(
+    arch: str,
+) -> tuple[Mapping[str, object], frozenset[str]]:
+    """Select shared libraries using the latest maintained portable policy.
+
+    This is build-time selection permission, never a claimed manylinux floor.
+    The final ELF audit still checks symbols, dependency closure and ISA. Keep
+    auditwheel imports here so ordinary compiler use needs no release packages.
+    """
+    from importlib.resources import files
+
+    from auditwheel.architecture import Architecture
+    from auditwheel.libc import Libc
+    from auditwheel.policy import WheelPolicies
+
+    policy = WheelPolicies(libc=Libc.GLIBC, arch=Architecture(arch)).lowest
+    raw_policy = (
+        files("auditwheel.policy").joinpath("manylinux-policy.json").read_bytes()
+    )
+    identity: Mapping[str, object] = MappingProxyType(
+        {
+            "tool": "auditwheel",
+            "version": _tool_version("auditwheel"),
+            "platform": "linux",
+            "arch": arch,
+            "policy_name": policy.name,
+            "policy_sha256": hashlib.sha256(raw_policy).hexdigest(),
+            "shared_libraries": tuple(sorted(policy.whitelist)),
+        }
+    )
+    return identity, policy.whitelist
 
 
 def _audit_linux(wheel: Path, arch: str) -> tuple[str, dict[str, object]]:

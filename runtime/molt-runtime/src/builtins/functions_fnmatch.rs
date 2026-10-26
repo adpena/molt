@@ -1,7 +1,6 @@
 // Fnmatch pattern matching implementation.
 // Extracted from functions.rs for compilation-unit size reduction and tree shaking.
 
-use super::functions::*;
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_runtime_platform::fnmatch::{
@@ -105,24 +104,27 @@ pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bit
         }
         let invert = is_truthy(_py, obj_from_bits(invert_bits));
         let iter_bits = molt_iter(names_bits);
+        let iterator_owner = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
+        };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
 
         let mut out_bits: Vec<u64> = Vec::new();
         loop {
-            let (item_bits, done) = match iter_next_pair(_py, iter_bits) {
-                Ok(value) => value,
-                Err(bits) => {
-                    for bits in out_bits {
-                        dec_ref_bits(_py, bits);
+            let item_owner =
+                match molt_runtime_core::iter_next_owned(_py.core_token(), &iterator_owner) {
+                    Ok(Some(value)) => value,
+                    Ok(None) => break,
+                    Err(_) => {
+                        for bits in out_bits {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return MoltObject::none().bits();
                     }
-                    return bits;
-                }
-            };
-            if done {
-                break;
-            }
+                };
+            let item_bits = item_owner.bits();
             if let Some(pat) = &pat_str {
                 let Some(name) = string_obj_to_owned(obj_from_bits(item_bits)) else {
                     for bits in out_bits {

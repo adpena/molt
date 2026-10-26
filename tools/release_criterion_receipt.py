@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import copy
 import datetime as dt
@@ -30,6 +32,7 @@ from molt.portable_paths import (  # noqa: E402
     portable_relative_path,
 )
 from molt.toolchain_identity import stable_file_sha256  # noqa: E402
+from tools.git_identity import immutable_git_environment
 from tools.git_identity import is_git_object_id  # noqa: E402
 from tools.receipt_toolchain import audit_engine_problems, observe_python_audit_engine  # noqa: E402
 
@@ -245,6 +248,7 @@ def add_receipt_arguments(parser: argparse.ArgumentParser) -> None:
 def _git(repo_root: Path, *args: str) -> str:
     completed = _COMMANDS.run(
         ["git", "-C", str(repo_root), *args],
+        env=immutable_git_environment(os.environ),
         check=False,
         capture_output=True,
         text=True,

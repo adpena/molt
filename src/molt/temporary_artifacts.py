@@ -24,10 +24,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from functools import partial
 from pathlib import Path
 import errno
+from enum import StrEnum
 import json
 import os
 import re
@@ -84,6 +85,44 @@ _TARGET_RECEIPT = ".molt-scratch-target.json"
 # Process-lifetime custody: an OS crash that loses a record also killed every
 # process the record names, so a barrier would buy nothing (module docstring).
 _RECORDS = PublicationDurability.RECONSTRUCTIBLE
+
+
+class ScratchFinalizationPhase(StrEnum):
+    """Disjoint scratch-finalization operations; never deletion authority."""
+
+    TERMINAL_PUBLICATION = "terminal_publication"
+    PAYLOAD_RECLAMATION = "payload_reclamation"
+    RECEIPT_REMOVAL = "receipt_removal"
+    RETENTION_SWEEP = "retention_sweep"
+    LEASE_RELEASE = "lease_release"
+
+
+@dataclass(slots=True)
+class ScratchFinalizationTimings:
+    """One finalization's bounded wall-time diagnostics, including failures.
+
+    None means unentered. Repeated releases add their actual intervals;
+    callers must not nest measurements of the same operation.
+    """
+
+    _elapsed_s: dict[ScratchFinalizationPhase, float | None] = dataclass_field(
+        default_factory=lambda: dict.fromkeys(ScratchFinalizationPhase)
+    )
+
+    @contextmanager
+    def measure(self, phase: ScratchFinalizationPhase) -> Generator[None, None, None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = max(0.0, time.perf_counter() - started)
+            previous = self._elapsed_s[phase]
+            self._elapsed_s[phase] = elapsed + (0.0 if previous is None else previous)
+
+    def json_payload(self) -> dict[str, float | None]:
+        return {
+            phase.value: self._elapsed_s[phase] for phase in ScratchFinalizationPhase
+        }
 
 
 class ScratchBusy(RuntimeError):
@@ -387,6 +426,11 @@ class OwnedTemporaryDirectory:
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.cleanup()
+
+    def retain(self) -> Path:
+        """Keep this allocation after the owner dies; explicit cleanup stays available."""
+        self._finalizer.detach()
+        return self._path
 
     def cleanup(self) -> None:
         self._finalizer.detach()
@@ -1059,6 +1103,7 @@ def finish_guard_scratch(
     closed: bool,
     success: bool,
     evidence: Mapping[str, object],
+    timings: ScratchFinalizationTimings,
     retention: ScratchRetention = ScratchRetention(),
 ) -> dict[str, object]:
     """Called only by the owning guard after its existing closure boundary."""
@@ -1074,11 +1119,16 @@ def finish_guard_scratch(
         with _file_lock_owned_operation(handle, expected_lock_path=generation / "lock"):
             entered = True
             early = _finish_guard_scratch_owned(
-                lease, closed=closed, success=success, evidence=evidence
+                lease,
+                closed=closed,
+                success=success,
+                evidence=evidence,
+                timings=timings,
             )
     finally:
         if entered:
-            lease.release()
+            with timings.measure(ScratchFinalizationPhase.LEASE_RELEASE):
+                lease.release()
     if early is not None:
         return early
     removal: tuple[str, str] | None = None
@@ -1086,12 +1136,14 @@ def finish_guard_scratch(
         # The owner verified reclaimed under its own lock, and that state is
         # final: remove the receipts now instead of through a sweep's lock.
         try:
-            deferral = _remove_reclaimed_generation(generation)
+            with timings.measure(ScratchFinalizationPhase.RECEIPT_REMOVAL):
+                deferral = _remove_reclaimed_generation(generation)
         except OSError as error:
             removal = ("errors", str(error))
         else:
             removal = None if deferral is None else ("deferred", deferral)
-    sweep = reclaim_terminal_scratch(root, retention=retention)
+    with timings.measure(ScratchFinalizationPhase.RETENTION_SWEEP):
+        sweep = reclaim_terminal_scratch(root, retention=retention)
     if removal is not None:
         entries = sweep[removal[0]]
         assert isinstance(entries, list)
@@ -1123,40 +1175,48 @@ def _finish_guard_scratch_owned(
     closed: bool,
     success: bool,
     evidence: Mapping[str, object],
+    timings: ScratchFinalizationTimings,
 ) -> dict[str, object] | None:
     """Terminal publication/reclamation while the caller pins exact custody."""
     generation = lease.generation
     try:
-        owner = _owner(generation)
-        if owner != lease.owner:
-            raise ValueError("scratch owner changed from the parent's allocation")
-        target = _target(generation, owner)
-        if _identity(target) != owner["target_identity"]:
-            raise ValueError("scratch target changed before terminal publication")
-        if not closed:
-            owner = {
-                **owner,
-                "state": "indeterminate",
-                "closure": _closure_facts(evidence),
-            }
-            write_exact(generation / "owner.json", owner, durability=_RECORDS)
-            return {"state": "indeterminate", "receipt": str(generation / "owner.json")}
-        owner = _retire_locked(
-            generation,
-            owner,
-            target,
-            success=success,
-            closure=evidence,
-            finished_ns=time.time_ns(),
-        )
-        if owner["state"] == "blocked":
-            return {
-                "state": "blocked",
-                "receipt": str(generation / "owner.json"),
-                "error": owner.get("error"),
-            }
+        with timings.measure(ScratchFinalizationPhase.TERMINAL_PUBLICATION):
+            owner = _owner(generation)
+            if owner != lease.owner:
+                raise ValueError("scratch owner changed from the parent's allocation")
+            target = _target(generation, owner)
+            if _identity(target) != owner["target_identity"]:
+                raise ValueError("scratch target changed before terminal publication")
+            if not closed:
+                owner = {
+                    **owner,
+                    "state": "indeterminate",
+                    "closure": _closure_facts(evidence),
+                }
+                write_exact(generation / "owner.json", owner, durability=_RECORDS)
+                return {
+                    "state": "indeterminate",
+                    "receipt": str(generation / "owner.json"),
+                }
+            owner = _retire_locked(
+                generation,
+                owner,
+                target,
+                success=success,
+                closure=evidence,
+                finished_ns=time.time_ns(),
+            )
+            if owner["state"] == "blocked":
+                return {
+                    "state": "blocked",
+                    "receipt": str(generation / "owner.json"),
+                    "error": owner.get("error"),
+                }
         if success:
-            lease.reclaimed = _reclaim_locked(generation, owner)["state"] == "reclaimed"
+            with timings.measure(ScratchFinalizationPhase.PAYLOAD_RECLAMATION):
+                lease.reclaimed = (
+                    _reclaim_locked(generation, owner)["state"] == "reclaimed"
+                )
         return None
     except BaseException as error:
         # Preserve the original error even if storage failure also prevents the

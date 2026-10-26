@@ -22,13 +22,12 @@ from molt.frontend._types import (
     FuncInfo,
     MoltOp,
     MoltValue,
+    FunctionDefinitionValues,
 )
-from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.lowering.gpu_kernel_descriptor import (
     DESCRIPTOR_PUBLICATION_SYMBOL,
 )
-from molt.frontend.diagnostics import FrontendRejection
-from molt.frontend.sema import signature_contains_yield, stateful_function_frame_plan
+from molt.frontend.sema import stateful_function_frame_plan
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.frontend._mixin_base import GeneratorMixinBase
 
@@ -120,6 +119,15 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             and node.name in self.module_elided_deleted_funcs
         ):
             return None
+        if self._has_typing_overload_decorator(node):
+            return None
+        definition = self._prepare_function_definition(node)
+        with self._type_parameter_scope(definition.type_parameter_bindings):
+            self._emit_function_definition(node, definition)
+
+    def _emit_function_definition(
+        self, node: ast.FunctionDef, definition: FunctionDefinitionValues
+    ) -> None:
         self._maybe_record_local_intrinsic_wrapper(node)
         if self.current_func_name == "molt_main":
             new_globals = self._collect_global_decls(node.body)
@@ -142,7 +150,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             else:
                 return None
             poll_func_name = f"{func_symbol}_poll"
-            prev_func = self.current_func_name
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
                 node.args
             )
@@ -192,13 +199,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 result=func_val,
             )
             self.emit(function_def)
-            func_spill = None
-            if self.in_generator and signature_contains_yield(
-                decorators=node.decorator_list,
-                args=node.args,
-                returns=node.returns,
-            ):
-                func_spill = self._spill_async_value(func_val)
             name_layout = self._collect_callable_name_layout(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -220,8 +220,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 kwonly_params=kwonly_names,
                 vararg=vararg,
                 varkw=varkw,
-                default_exprs=node.args.defaults,
-                kw_default_exprs=node.args.kw_defaults,
+                defaults=definition.defaults,
                 docstring=ast.get_docstring(node, clean=False),
                 execution_kind=FunctionKind.GENERATOR,
                 varnames=list(name_layout.varnames),
@@ -229,71 +228,74 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 freevars=free_vars,
                 cellvars=cell_vars,
             )
-            if func_spill is not None:
-                func_val = self._reload_async_value(func_spill, func_val.type_hint)
-            self._emit_function_annotate(func_val, node)
-            self._publish_definition_binding(func_name, func_val)
+            self._emit_function_annotate(func_val, node, definition.type_params)
 
-            prev_state = self._capture_function_state()
-            self.start_function(
-                poll_func_name,
-                stateful_frame_plan=frame_plan,
-                python_first_arg=self._python_first_positional_arg(node.args),
-                params=["self"],
-                compiler_params={"self"},
-                type_facts_name=func_name,
-                needs_return_slot=has_return,
-            )
-            self._inherit_free_var_import_resolution(free_vars, prev_state)
-            self.global_decls = self._collect_global_decls(node.body)
-            self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
-            assigned = self._collect_assigned_names(node.body)
-            self.del_targets = self._collect_deleted_names(node.body)
-            self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
-            self.unbound_check_names = set(self.scope_assigned)
-            self.in_generator = True
-            self.async_locals_base = frame_plan.async_locals_base
-            if has_closure:
-                self.async_closure_offset = frame_plan.async_closure_offset
-                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
-                self.free_var_hints = free_var_hints
-            for i, arg in enumerate(arg_nodes):
-                self._async_local_offset(arg.arg)
-                if self._hints_enabled():
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is None:
-                        hint = self._annotation_to_hint(arg.annotation)
+            with self._function_state_scope() as prev_state:
+                self.start_function(
+                    poll_func_name,
+                    stateful_frame_plan=frame_plan,
+                    python_first_arg=self._python_first_positional_arg(node.args),
+                    params=["self"],
+                    compiler_params={"self"},
+                    type_facts_name=func_name,
+                    needs_return_slot=has_return,
+                )
+                self._inherit_free_var_import_resolution(free_vars, prev_state)
+                self.global_decls = self._collect_global_decls(node.body)
+                self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
+                assigned = self._collect_assigned_names(node.body)
+                self.del_targets = self._collect_deleted_names(node.body)
+                self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
+                self.unbound_check_names = set(self.scope_assigned)
+                self.in_generator = True
+                self.async_locals_base = frame_plan.async_locals_base
+                if has_closure:
+                    self.async_closure_offset = frame_plan.async_closure_offset
+                    self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                    self.free_var_hints = free_var_hints
+                for i, arg in enumerate(arg_nodes):
+                    self._async_local_offset(arg.arg)
+                    if self._hints_enabled():
+                        hint = self.explicit_type_hints.get(arg.arg)
+                        if hint is None:
+                            hint = self._annotation_to_hint(arg.annotation)
+                            if hint is not None:
+                                self.explicit_type_hints[arg.arg] = hint
+                self._store_return_slot_for_stateful()
+                self.emit(
+                    MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none"))
+                )
+                self._init_scope_async_locals(arg_nodes)
+                self._prebox_scope_cell_vars(
+                    cell_plan.captured, private_cells=cell_plan.private
+                )
+                if self.type_hint_policy == "check":
+                    for arg in arg_nodes:
+                        hint = self.explicit_type_hints.get(arg.arg)
                         if hint is not None:
-                            self.explicit_type_hints[arg.arg] = hint
-            self._store_return_slot_for_stateful()
-            self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-            self._init_scope_async_locals(arg_nodes)
-            self._prebox_scope_cell_vars(
-                cell_plan.captured, private_cells=cell_plan.private
-            )
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
-            self._publish_python_frame_context()
-            self._push_qualname(python_definition_name(node), True, qualname=qualname)
-            try:
-                for item in node.body:
-                    self.visit(item)
-                    if isinstance(item, (ast.Return, ast.Raise)):
-                        break
-            finally:
-                self._pop_qualname()
-            self._emit_generator_falloff()
-            self._spill_async_temporaries()
-            closure_size = self._task_closure_size(
-                frame_plan.payload_slots,
-                include_gen_control=frame_plan.include_gen_control,
-            )
-            locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
-            self.resume_function(prev_func)
-            self._restore_function_state(prev_state)
+                            self._emit_guard_type(
+                                MoltValue(arg.arg, type_hint=hint), hint
+                            )
+                self._publish_python_frame_context()
+                self._push_qualname(
+                    python_definition_name(node), True, qualname=qualname
+                )
+                try:
+                    for item in node.body:
+                        self.visit(item)
+                        if isinstance(item, (ast.Return, ast.Raise)):
+                            break
+                finally:
+                    self._pop_qualname()
+                self._emit_generator_falloff()
+                self._spill_async_temporaries()
+                closure_size = self._task_closure_size(
+                    frame_plan.payload_slots,
+                    include_gen_control=frame_plan.include_gen_control,
+                )
+                locals_layout = self._stateful_locals_layout(
+                    frame_plan, params, free_vars
+                )
             # Publish the final spilled-frame extent on the defining op.
             function_def.metadata = {
                 **(function_def.metadata or {}),
@@ -301,30 +303,14 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             }
             func_val.type_hint = frame_plan.function_type_hint(closure_size)
             self._emit_stateful_locals_register(locals_layout, poll_func_name)
-            if node.decorator_list:
-                decorated = func_val
-                for deco in reversed(node.decorator_list):
-                    decorator_val = self.visit(deco)
-                    if decorator_val is None:
-                        raise FrontendRejection(
-                            Diagnostic.SYNTAX_FORM, "Unsupported decorator"
-                        )
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_FUNC",
-                            args=[decorator_val, decorated],
-                            result=res,
-                        )
-                    )
-                    decorated = res
-                func_val = decorated
-                self._publish_definition_binding(func_name, func_val)
+            func_val = self._apply_function_decorators(func_val, definition)
+            self._publish_definition_binding(func_name, func_val)
             self._record_source_app_callable(
                 func_name,
                 kind=FunctionKind.GENERATOR,
                 symbol=poll_func_name,
                 decorated=bool(node.decorator_list),
+                has_closure=has_closure,
             )
             return None
 
@@ -349,7 +335,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         self.funcs_map[func_symbol]["return_hint"] = self._normalized_return_hint(
             node.returns
         )
-        prev_func = self.current_func_name
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
         pos_or_kw_names = [arg.arg for arg in pos_or_kw]
@@ -386,13 +371,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     kind="FUNC_NEW", args=[func_symbol, len(params)], result=func_val
                 )
             )
-        func_spill = None
-        if self.in_generator and signature_contains_yield(
-            decorators=node.decorator_list,
-            args=node.args,
-            returns=node.returns,
-        ):
-            func_spill = self._spill_async_value(func_val)
         name_layout = self._collect_callable_name_layout(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -414,8 +392,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             kwonly_params=kwonly_names,
             vararg=vararg,
             varkw=varkw,
-            default_exprs=node.args.defaults,
-            kw_default_exprs=node.args.kw_defaults,
+            defaults=definition.defaults,
             docstring=ast.get_docstring(node, clean=False),
             varnames=list(name_layout.varnames),
             code_names=list(name_layout.names),
@@ -423,111 +400,106 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             cellvars=cell_vars,
         )
         is_gpu_kernel = self._has_gpu_kernel_decorator(node)
-        if func_spill is not None:
-            func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        self._emit_function_annotate(func_val, node)
-        self._publish_definition_binding(func_name, func_val)
+        self._emit_function_annotate(func_val, node, definition.type_params)
 
         func_params, parameter_bindings = self._function_transport_params(
             params,
             has_closure=has_closure,
         )
-        prev_state = self._capture_function_state()
-        prev_first_param = self.current_method_first_param
-        # Extract type hints from parameter annotations for fast-path codegen.
-        _param_type_hints: list[str] = []
-        if self._hints_enabled():
-            for arg in arg_nodes:
-                hint = (
-                    self._annotation_to_hint(arg.annotation) if arg.annotation else None
-                )
-                wire_hint = self._wire_type_hint(hint) if hint is not None else None
-                _param_type_hints.append(wire_hint or "Any")
-        self.start_function(
-            func_symbol,
-            python_first_arg=self._python_first_positional_arg(node.args),
-            params=func_params,
-            param_types=_param_type_hints if _param_type_hints else None,
-            type_facts_name=func_name,
-            needs_return_slot=has_return,
-            has_exception_handlers=self._body_has_exception_handlers(node.body),
-            code_slots=code_slots,
-        )
-        self._inherit_free_var_import_resolution(free_vars, prev_state)
-        self.parameter_bindings = parameter_bindings
-        self.current_method_first_param = params[0] if params else None
-        if has_closure:
-            self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
-            self.free_var_hints = free_var_hints
-            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
-                _MOLT_CLOSURE_PARAM, type_hint="tuple"
-            )
-        self.global_decls = self._collect_global_decls(node.body)
-        self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
-        assigned = self._collect_assigned_names(node.body)
-        self.del_targets = self._collect_deleted_names(node.body)
-        self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
-        self.unbound_check_names = set(self.scope_assigned)
-        for arg in arg_nodes:
-            hint = None
-            if self.type_hint_policy == "ignore" and arg.annotation is not None:
-                inferred = self._annotation_to_hint(arg.annotation)
-                if (
-                    isinstance(inferred, DeclaredClass)
-                    and inferred.class_id in self.classes
-                ):
-                    hint = inferred
+        with self._function_state_scope() as prev_state:
+            # Extract type hints from parameter annotations for fast-path codegen.
+            _param_type_hints: list[str] = []
             if self._hints_enabled():
-                hint = self.explicit_type_hints.get(arg.arg)
-                if hint is None:
-                    hint = self._annotation_to_hint(arg.annotation)
-                    if hint is not None:
-                        self.explicit_type_hints[arg.arg] = hint
-            if hint is None and self._hints_enabled():
-                hint = "Any"
-            value = self._parameter_value(
-                arg.arg,
-                type_hint=hint or "Unknown",
+                for arg in arg_nodes:
+                    hint = (
+                        self._annotation_to_hint(arg.annotation)
+                        if arg.annotation
+                        else None
+                    )
+                    wire_hint = self._wire_type_hint(hint) if hint is not None else None
+                    _param_type_hints.append(wire_hint or "Any")
+            self.start_function(
+                func_symbol,
+                python_first_arg=self._python_first_positional_arg(node.args),
+                params=func_params,
+                param_types=_param_type_hints if _param_type_hints else None,
+                type_facts_name=func_name,
+                needs_return_slot=has_return,
+                has_exception_handlers=self._body_has_exception_handlers(node.body),
+                code_slots=code_slots,
             )
-            if hint is not None:
-                self._apply_hint_to_value(arg.arg, value, hint)
-            self.locals[arg.arg] = value
-        if self.type_hint_policy == "check":
+            self._inherit_free_var_import_resolution(free_vars, prev_state)
+            self.parameter_bindings = parameter_bindings
+            self.current_method_first_param = params[0] if params else None
+            if has_closure:
+                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                self.free_var_hints = free_var_hints
+                self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
+                    _MOLT_CLOSURE_PARAM, type_hint="tuple"
+                )
+            self.global_decls = self._collect_global_decls(node.body)
+            self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
+            assigned = self._collect_assigned_names(node.body)
+            self.del_targets = self._collect_deleted_names(node.body)
+            self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
+            self.unbound_check_names = set(self.scope_assigned)
             for arg in arg_nodes:
-                hint = self.explicit_type_hints.get(arg.arg)
+                hint = None
+                if self.type_hint_policy == "ignore" and arg.annotation is not None:
+                    inferred = self._annotation_to_hint(arg.annotation)
+                    if (
+                        isinstance(inferred, DeclaredClass)
+                        and inferred.class_id in self.classes
+                    ):
+                        hint = inferred
+                if self._hints_enabled():
+                    hint = self.explicit_type_hints.get(arg.arg)
+                    if hint is None:
+                        hint = self._annotation_to_hint(arg.annotation)
+                        if hint is not None:
+                            self.explicit_type_hints[arg.arg] = hint
+                if hint is None and self._hints_enabled():
+                    hint = "Any"
+                value = self._parameter_value(
+                    arg.arg,
+                    type_hint=hint or "Unknown",
+                )
                 if hint is not None:
-                    self._emit_guard_type(self.locals[arg.arg], hint)
-        self._prebox_scope_cell_vars(
-            cell_plan.captured, private_cells=cell_plan.private
-        )
-        # Only box variables that genuinely need cells (closure-captured). Every
-        # other local is unbound until its first store, as its home is: a read
-        # that may precede that store loads the home, so no missing value seeds
-        # its SSA transport.
-        for name in sorted(self.scope_assigned):
-            if name in self.closure_locals:
-                self._box_local(name)
-        self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
-        self._publish_python_frame_context()
-        self._push_qualname(python_definition_name(node), True, qualname=qualname)
-        try:
-            for item in node.body:
-                self.visit(item)
-        finally:
-            self._pop_qualname()
-        if self.return_label is not None:
-            if not self._ends_with_return_jump():
+                    self._apply_hint_to_value(arg.arg, value, hint)
+                self.locals[arg.arg] = value
+            if self.type_hint_policy == "check":
+                for arg in arg_nodes:
+                    hint = self.explicit_type_hints.get(arg.arg)
+                    if hint is not None:
+                        self._emit_guard_type(self.locals[arg.arg], hint)
+            self._prebox_scope_cell_vars(
+                cell_plan.captured, private_cells=cell_plan.private
+            )
+            # Only box variables that genuinely need cells (closure-captured). Every
+            # other local is unbound until its first store, as its home is: a read
+            # that may precede that store loads the home, so no missing value seeds
+            # its SSA transport.
+            for name in sorted(self.scope_assigned):
+                if name in self.closure_locals:
+                    self._box_local(name)
+            self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
+            self._publish_python_frame_context()
+            self._push_qualname(python_definition_name(node), True, qualname=qualname)
+            try:
+                for item in node.body:
+                    self.visit(item)
+            finally:
+                self._pop_qualname()
+            if self.return_label is not None:
+                if not self._ends_with_return_jump():
+                    res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
+                    self._emit_return_value(res)
+                self._emit_return_label()
+            elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self._emit_return_value(res)
-            self._emit_return_label()
-        elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
-            res = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-            self._emit_return_value(res)
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
-        self.current_method_first_param = prev_first_param
         if is_gpu_kernel:
             descriptor_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(
@@ -546,28 +518,14 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 [func_val, descriptor_val],
                 type_hint="None",
             )
-        if node.decorator_list:
-            decorated = func_val
-            for deco in reversed(node.decorator_list):
-                decorator_val = self.visit(deco)
-                if decorator_val is None:
-                    raise FrontendRejection(
-                        Diagnostic.SYNTAX_FORM, "Unsupported decorator"
-                    )
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC", args=[decorator_val, decorated], result=res
-                    )
-                )
-                decorated = res
-            func_val = decorated
-            self._publish_definition_binding(func_name, func_val)
+        func_val = self._apply_function_decorators(func_val, definition)
+        self._publish_definition_binding(func_name, func_val)
         self._record_source_app_callable(
             func_name,
             kind=FunctionKind.SYNC,
             symbol=func_symbol,
             decorated=bool(node.decorator_list),
+            has_closure=has_closure,
         )
         return None
 
@@ -591,6 +549,9 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             if node.args.kwarg is not None:
                 arg_nodes.append(node.args.kwarg)
 
+            defaults = self._emit_function_default_values(
+                node.args.defaults, node.args.kw_defaults, kwonly_names
+            )
             free_vars, free_var_hints, closure_val, has_closure = (
                 self._capture_lexical_closure(self._cached_free_vars_raw(node))
             )
@@ -626,13 +587,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 result=func_val,
             )
             self.emit(function_def)
-            func_spill = None
-            if self.in_generator and signature_contains_yield(
-                decorators=[],
-                args=node.args,
-                returns=None,
-            ):
-                func_spill = self._spill_async_value(func_val)
             name_layout = self._collect_callable_name_layout(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -654,8 +608,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 kwonly_params=kwonly_names,
                 vararg=vararg,
                 varkw=varkw,
-                default_exprs=node.args.defaults,
-                kw_default_exprs=node.args.kw_defaults,
+                defaults=defaults,
                 docstring=None,
                 execution_kind=FunctionKind.GENERATOR,
                 varnames=list(name_layout.varnames),
@@ -663,72 +616,71 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 freevars=free_vars,
                 cellvars=cell_vars,
             )
-            if func_spill is not None:
-                func_val = self._reload_async_value(func_spill, func_val.type_hint)
 
-            prev_func = self.current_func_name
-            prev_state = self._capture_function_state()
-            prev_first_param = self.current_method_first_param
-            self.start_function(
-                poll_func_name,
-                stateful_frame_plan=frame_plan,
-                python_first_arg=self._python_first_positional_arg(node.args),
-                params=["self"],
-                compiler_params={"self"},
-                type_facts_name=func_symbol,
-                needs_return_slot=False,
-            )
-            self._inherit_free_var_import_resolution(free_vars, prev_state)
-            self.current_method_first_param = params[0] if params else None
-            assigned = self._collect_assigned_names([ast.Expr(value=node.body)])
-            self.global_decls = set()
-            self.nonlocal_decls = set()
-            self.del_targets = set()
-            self.scope_assigned = assigned
-            self.unbound_check_names = set(self.scope_assigned)
-            self.in_generator = True
-            self.async_locals_base = frame_plan.async_locals_base
-            if has_closure:
-                self.async_closure_offset = frame_plan.async_closure_offset
-                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
-                self.free_var_hints = free_var_hints
-            for i, arg in enumerate(arg_nodes):
-                self._async_local_offset(arg.arg)
-                if self._hints_enabled():
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is None:
-                        hint = self._annotation_to_hint(arg.annotation)
+            with self._function_state_scope() as prev_state:
+                self.start_function(
+                    poll_func_name,
+                    stateful_frame_plan=frame_plan,
+                    python_first_arg=self._python_first_positional_arg(node.args),
+                    params=["self"],
+                    compiler_params={"self"},
+                    type_facts_name=func_symbol,
+                    needs_return_slot=False,
+                )
+                self._inherit_free_var_import_resolution(free_vars, prev_state)
+                self.current_method_first_param = params[0] if params else None
+                assigned = self._collect_assigned_names([ast.Expr(value=node.body)])
+                self.global_decls = set()
+                self.nonlocal_decls = set()
+                self.del_targets = set()
+                self.scope_assigned = assigned
+                self.unbound_check_names = set(self.scope_assigned)
+                self.in_generator = True
+                self.async_locals_base = frame_plan.async_locals_base
+                if has_closure:
+                    self.async_closure_offset = frame_plan.async_closure_offset
+                    self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                    self.free_var_hints = free_var_hints
+                for i, arg in enumerate(arg_nodes):
+                    self._async_local_offset(arg.arg)
+                    if self._hints_enabled():
+                        hint = self.explicit_type_hints.get(arg.arg)
+                        if hint is None:
+                            hint = self._annotation_to_hint(arg.annotation)
+                            if hint is not None:
+                                self.explicit_type_hints[arg.arg] = hint
+                self._store_return_slot_for_stateful()
+                self.emit(
+                    MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none"))
+                )
+                self._init_scope_async_locals(arg_nodes)
+                self._prebox_scope_cell_vars(
+                    cell_plan.captured, private_cells=cell_plan.private
+                )
+                if self.type_hint_policy == "check":
+                    for arg in arg_nodes:
+                        hint = self.explicit_type_hints.get(arg.arg)
                         if hint is not None:
-                            self.explicit_type_hints[arg.arg] = hint
-            self._store_return_slot_for_stateful()
-            self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-            self._init_scope_async_locals(arg_nodes)
-            self._prebox_scope_cell_vars(
-                cell_plan.captured, private_cells=cell_plan.private
-            )
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
-            self._publish_python_frame_context()
-            self._push_qualname("<lambda>", True)
-            try:
-                return_node = ast.Return(value=node.body)
-                return_node = ast.copy_location(return_node, node.body)
-                self.visit(return_node)
-            finally:
-                self._pop_qualname()
-            self._emit_generator_falloff()
-            self._spill_async_temporaries()
-            closure_size = self._task_closure_size(
-                frame_plan.payload_slots,
-                include_gen_control=frame_plan.include_gen_control,
-            )
-            locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
-            self.resume_function(prev_func)
-            self._restore_function_state(prev_state)
-            self.current_method_first_param = prev_first_param
+                            self._emit_guard_type(
+                                MoltValue(arg.arg, type_hint=hint), hint
+                            )
+                self._publish_python_frame_context()
+                self._push_qualname("<lambda>", True)
+                try:
+                    return_node = ast.Return(value=node.body)
+                    return_node = ast.copy_location(return_node, node.body)
+                    self.visit(return_node)
+                finally:
+                    self._pop_qualname()
+                self._emit_generator_falloff()
+                self._spill_async_temporaries()
+                closure_size = self._task_closure_size(
+                    frame_plan.payload_slots,
+                    include_gen_control=frame_plan.include_gen_control,
+                )
+                locals_layout = self._stateful_locals_layout(
+                    frame_plan, params, free_vars
+                )
             # Publish the final spilled-frame extent on the defining op.
             function_def.metadata = {
                 **(function_def.metadata or {}),
@@ -748,7 +700,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             ),
         )
         self.funcs_map[func_symbol]["return_hint"] = None
-        prev_func = self.current_func_name
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
         pos_or_kw_names = [arg.arg for arg in pos_or_kw]
@@ -761,6 +712,9 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         if node.args.kwarg is not None:
             arg_nodes.append(node.args.kwarg)
 
+        defaults = self._emit_function_default_values(
+            node.args.defaults, node.args.kw_defaults, kwonly_names
+        )
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(node))
         )
@@ -806,8 +760,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             kwonly_params=kwonly_names,
             vararg=vararg,
             varkw=varkw,
-            default_exprs=node.args.defaults,
-            kw_default_exprs=node.args.kw_defaults,
+            defaults=defaults,
             docstring=None,
             varnames=list(name_layout.varnames),
             code_names=list(name_layout.names),
@@ -819,92 +772,88 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             params,
             has_closure=has_closure,
         )
-        prev_state = self._capture_function_state()
-        prev_first_param = self.current_method_first_param
-        self.start_function(
-            func_symbol,
-            python_first_arg=self._python_first_positional_arg(node.args),
-            params=func_params,
-            type_facts_name=func_symbol,
-            # A lambda body is a single expression and can never contain a
-            # try/with statement, so it never pushes the exception-handler
-            # stack — only the (always-present) function exception label and
-            # post-may-raise checks are needed.
-            has_exception_handlers=False,
-            code_slots=code_slots,
-        )
-        self._inherit_free_var_import_resolution(free_vars, prev_state)
-        self.parameter_bindings = parameter_bindings
-        self.current_method_first_param = params[0] if params else None
-        if has_closure:
-            self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
-            self.free_var_hints = free_var_hints
-            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
-                _MOLT_CLOSURE_PARAM, type_hint="tuple"
+        with self._function_state_scope() as prev_state:
+            self.start_function(
+                func_symbol,
+                python_first_arg=self._python_first_positional_arg(node.args),
+                params=func_params,
+                type_facts_name=func_symbol,
+                # A lambda body is a single expression and can never contain a
+                # try/with statement, so it never pushes the exception-handler
+                # stack — only the (always-present) function exception label and
+                # post-may-raise checks are needed.
+                has_exception_handlers=False,
+                code_slots=code_slots,
             )
-        self.global_decls = set()
-        for arg in arg_nodes:
-            hint = None
-            if self.type_hint_policy == "ignore" and arg.annotation is not None:
-                inferred = self._annotation_to_hint(arg.annotation)
-                if (
-                    isinstance(inferred, DeclaredClass)
-                    and inferred.class_id in self.classes
-                ):
-                    hint = inferred
-            if self._hints_enabled():
-                hint = self.explicit_type_hints.get(arg.arg)
-                if hint is None:
-                    hint = self._annotation_to_hint(arg.annotation)
-                    if hint is not None:
-                        self.explicit_type_hints[arg.arg] = hint
-            if hint is None and self._hints_enabled():
-                hint = "Any"
-            value = self._parameter_value(
-                arg.arg,
-                type_hint=hint or "Unknown",
-            )
-            if hint is not None:
-                self._apply_hint_to_value(arg.arg, value, hint)
-            self.locals[arg.arg] = value
-        if self.type_hint_policy == "check":
+            self._inherit_free_var_import_resolution(free_vars, prev_state)
+            self.parameter_bindings = parameter_bindings
+            self.current_method_first_param = params[0] if params else None
+            if has_closure:
+                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                self.free_var_hints = free_var_hints
+                self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
+                    _MOLT_CLOSURE_PARAM, type_hint="tuple"
+                )
+            self.global_decls = set()
             for arg in arg_nodes:
-                hint = self.explicit_type_hints.get(arg.arg)
+                hint = None
+                if self.type_hint_policy == "ignore" and arg.annotation is not None:
+                    inferred = self._annotation_to_hint(arg.annotation)
+                    if (
+                        isinstance(inferred, DeclaredClass)
+                        and inferred.class_id in self.classes
+                    ):
+                        hint = inferred
+                if self._hints_enabled():
+                    hint = self.explicit_type_hints.get(arg.arg)
+                    if hint is None:
+                        hint = self._annotation_to_hint(arg.annotation)
+                        if hint is not None:
+                            self.explicit_type_hints[arg.arg] = hint
+                if hint is None and self._hints_enabled():
+                    hint = "Any"
+                value = self._parameter_value(
+                    arg.arg,
+                    type_hint=hint or "Unknown",
+                )
                 if hint is not None:
-                    self._emit_guard_type(self.locals[arg.arg], hint)
-        self._prebox_scope_cell_vars(
-            cell_plan.captured, private_cells=cell_plan.private
-        )
-        # Lambda lowering retains its existing all-local boxing policy,
-        # now backed by the runtime's dedicated closure-cell primitive.
-        for name in sorted(self.scope_assigned):
-            self._box_local(name)
-        self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
-        self._publish_python_frame_context()
-        self._push_qualname("<lambda>", True)
-        try:
-            val = self.visit(node.body)
-        finally:
-            self._pop_qualname()
-        if val is None:
-            val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-        # Mirror the non-generator `visit_Return` tail: the lambda body is a
-        # single expression whose evaluation may have left a pending exception
-        # (e.g. `lambda: int("x")`).  With every function now carrying an
-        # exception label (needs_exception_stack=True), route any pending
-        # exception to the function handler before returning the value, so the
-        # silent-None-return bug class is un-expressible.  A lambda body never
-        # contains try/with scopes, so `return_unwind_depth == 0` and there are
-        # no `try_scopes` to unwind.
-        self._emit_exception_handler_exit_cleanup()
-        _has_exc_stack = self.exception_stack_prev_baseline is not None
-        if _has_exc_stack:
-            self._emit_raise_if_pending()
-            self._emit_restore_exception_stack_depth(exit_baseline=False)
-            self._emit_raise_if_pending()
-        self._emit_return_value(val)
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
-        self.current_method_first_param = prev_first_param
+                    self._apply_hint_to_value(arg.arg, value, hint)
+                self.locals[arg.arg] = value
+            if self.type_hint_policy == "check":
+                for arg in arg_nodes:
+                    hint = self.explicit_type_hints.get(arg.arg)
+                    if hint is not None:
+                        self._emit_guard_type(self.locals[arg.arg], hint)
+            self._prebox_scope_cell_vars(
+                cell_plan.captured, private_cells=cell_plan.private
+            )
+            # Lambda lowering retains its existing all-local boxing policy,
+            # now backed by the runtime's dedicated closure-cell primitive.
+            for name in sorted(self.scope_assigned):
+                self._box_local(name)
+            self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
+            self._publish_python_frame_context()
+            self._push_qualname("<lambda>", True)
+            try:
+                val = self.visit(node.body)
+            finally:
+                self._pop_qualname()
+            if val is None:
+                val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
+            # Mirror the non-generator `visit_Return` tail: the lambda body is a
+            # single expression whose evaluation may have left a pending exception
+            # (e.g. `lambda: int("x")`).  With every function now carrying an
+            # exception label (needs_exception_stack=True), route any pending
+            # exception to the function handler before returning the value, so the
+            # silent-None-return bug class is un-expressible.  A lambda body never
+            # contains try/with scopes, so `return_unwind_depth == 0` and there are
+            # no `try_scopes` to unwind.
+            self._emit_exception_handler_exit_cleanup()
+            _has_exc_stack = self.exception_stack_prev_baseline is not None
+            if _has_exc_stack:
+                self._emit_raise_if_pending()
+                self._emit_restore_exception_stack_depth(exit_baseline=False)
+                self._emit_raise_if_pending()
+            self._emit_return_value(val)
         return func_val

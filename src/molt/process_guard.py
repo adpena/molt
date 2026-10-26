@@ -256,7 +256,7 @@ def run_completed_command(
     command = [str(part) for part in cmd]
     if not command:
         raise ValueError("command argv must not be empty")
-    env, _cargo_policies = cargo_subprocess_environment(command, env)
+    env, _cargo_policies = cargo_subprocess_environment(command, env, cwd=cwd)
     if capture_output and (stdout is not None or stderr is not None):
         raise ValueError("capture_output cannot be combined with stdout or stderr")
     supported_streams = {None, subprocess.PIPE, subprocess.DEVNULL}

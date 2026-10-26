@@ -13,9 +13,13 @@ from pathlib import Path
 import pytest
 
 from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
+from molt.cargo_execution_policy import (
+    cargo_c_tool_environment_names,
+    cargo_c_tool_words,
+    validate_sccache_epoch_environment,
+)
 from molt.cli.runtime_cargo_plan import (
     _resolve_c_build_resources,
-    _c_tool_environment_names,
     runtime_c_flag_environment_names,
     resolve_runtime_cargo_plan,
 )
@@ -25,6 +29,240 @@ from tests.rust.process_guard import run_rust_test_process
 
 
 TARGET = "wasm32-wasip1"
+
+
+def test_cc_command_words_keep_exact_paths_and_do_not_unquote(tmp_path):
+    from molt.cli.runtime_tool_selection import runtime_tool_path
+
+    executable = tmp_path / "sccache gcc"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    assert cargo_c_tool_words(str(executable)) == (str(executable),)
+    assert (
+        runtime_tool_path(str(executable), root=tmp_path, env={}, role="cc")
+        == executable
+    )
+    assert (
+        runtime_tool_path(executable.name, root=tmp_path, env={}, role="cc")
+        == executable
+    )
+    validate_sccache_epoch_environment(
+        {"SOURCE_DATE_EPOCH": "1", "CC": str(executable)}
+    )
+    assert cargo_c_tool_words('"sccache" gcc') == ('"sccache"', "gcc")
+    validate_sccache_epoch_environment(
+        {"SOURCE_DATE_EPOCH": "1", "CC": '"sccache" gcc'}
+    )
+    assert cargo_c_tool_words("sccache\u2003gcc\t-flag") == ("sccache", "gcc", "-flag")
+    assert cargo_c_tool_words("sccache\x1cgcc") == ("sccache\x1cgcc",)
+    assert cargo_c_tool_words("sccache\x1c") == ("sccache\x1c",)
+    with pytest.raises(ValueError, match="compound C commands"):
+        runtime_tool_path(str(executable) + "\x1c", root=tmp_path, env={}, role="cc")
+    for command in ("sccache clang", '"sccache" gcc', "gcc -flag"):
+        with pytest.raises(ValueError, match="compound C commands"):
+            runtime_tool_path(command, root=tmp_path, env={}, role="cc")
+
+
+@pytest.mark.parametrize("role", ["cc", "cargo"])
+def test_runtime_tool_selection_uses_child_relative_search_path(
+    tmp_path, monkeypatch, role
+):
+    from molt.cli.runtime_tool_selection import (
+        runtime_c_tool_selection,
+        runtime_tool_path,
+    )
+
+    caller, child = tmp_path / "caller", tmp_path / "child"
+    for directory in (caller, child):
+        (directory / "bin").mkdir(parents=True)
+    monkeypatch.chdir(caller)
+    suffix = ".exe" if os.name == "nt" else ""
+    selected = child / "bin" / ("gcc" + suffix)
+    selected.write_bytes(b"child compiler")
+    selected.chmod(0o755)
+    decoy = caller / "bin" / ("gcc" + suffix)
+    decoy.write_bytes(b"caller decoy")
+    decoy.chmod(0o755)
+    # Parent-only preferred cc must not displace the child's fallback gcc.
+    preferred_decoy = caller / "bin" / ("cc" + suffix)
+    preferred_decoy.write_bytes(b"parent preferred decoy")
+    preferred_decoy.chmod(0o755)
+    environment = {"PATH": "bin"}
+    assert runtime_tool_path("gcc", root=child, env=environment, role=role) == selected
+    assert (
+        runtime_c_tool_selection(
+            "cc",
+            root=child,
+            env=environment,
+            target="x86_64-unknown-linux-gnu",
+            host_target="x86_64-unknown-linux-gnu",
+        )
+        == selected
+    )
+
+
+def test_cc_windows_exact_extension_is_selected_before_word_split(tmp_path):
+    executable = tmp_path / "compiler with spaces.exe"
+    executable.write_bytes(b"MZ fixture")
+    command = str(executable)[:-4]
+    assert cargo_c_tool_words(command, windows=True) == (str(executable),)
+    assert cargo_c_tool_words(command, windows=False) == (
+        str(tmp_path / "compiler"),
+        "with",
+        "spaces",
+    )
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_epoch_admission_uses_effective_host_target_and_wrapper_precedence(rule):
+    host = "aarch64-unknown-linux-gnu"
+    env = ProcessEnvironmentBuilder(
+        {
+            "SOURCE_DATE_EPOCH": "",
+            "RUSTC_WRAPPER": "",
+            "CARGO_BUILD_RUSTC_WRAPPER": "sccache",
+            "RUSTC_WORKSPACE_WRAPPER": "direct-wrapper",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "sccache",
+            "CC": "sccache gcc",
+            "CXX": "sccache g++",
+            "HOST_CC": "gcc",
+            "HOST_CXX": "g++",
+            "TARGET_CC": "clang",
+            "TARGET_CXX": "clang++",
+            "CC_wasm32_wasip1": "sccache clang",
+            "CC_wasm32-wasip1": "clang",
+            "CXX_x86_64-pc-windows-msvc": "sccache cl",
+        },
+        rule=rule,
+    )
+    validate_sccache_epoch_environment(env, target=TARGET, host_target=host)
+    # An environment-only boundary cannot infer a target from the presence of
+    # selector names, so it defers those C roles to resolved-plan admission.
+    validate_sccache_epoch_environment(env)
+    env["HOST_CC"] = "sccache gcc"
+    env["TARGET_CXX"] = "sccache clang++"
+    with pytest.raises(ValueError) as caught:
+        validate_sccache_epoch_environment(env, target=TARGET, host_target=host)
+    assert "HOST_CC" in str(caught.value) and "TARGET_CXX" in str(caught.value)
+    assert "CC_wasm32_wasip1" not in str(caught.value)
+    assert "CARGO_BUILD_RUSTC_WRAPPER" not in str(caught.value)
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "CC_aarch64-unknown-linux-gnu",
+        "CXX_aarch64_unknown_linux_gnu",
+        "CC_x86_64-unknown-linux-gnu",
+        "CXX_x86_64_unknown_linux_gnu",
+        "HOST_CC",
+        "TARGET_CXX",
+    ],
+)
+def test_epoch_selected_c_wrapper_refuses_before_c_compiler_probe(
+    tmp_path, monkeypatch, selector, rule, runtime_fixture_root
+):
+    import molt.cli.runtime_cargo_plan as plans
+    import molt.cli.runtime_tool_selection as tool_selection
+
+    rustc = runtime_fixture_root.native_executable("rustc-identity")
+
+    def tool_path(_value, **kwargs):
+        assert kwargs["role"] == "rustc", "C tool reached before admission"
+        return rustc
+
+    monkeypatch.setattr(tool_selection, "runtime_tool_path", tool_path)
+    monkeypatch.setattr(plans, "resolve_rustup_proxy", lambda path, **_k: path)
+    monkeypatch.setattr(plans, "rust_toolchain_library_environment", lambda *_a: {})
+    env = ProcessEnvironmentBuilder(
+        {
+            "SOURCE_DATE_EPOCH": "",
+            "CARGO_HOME": str(tmp_path / "cargo-home"),
+            selector.lower() if rule is NameRule.WINDOWS else selector: "sccache clang",
+        },
+        rule=rule,
+    )
+    with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+        plans.resolve_runtime_cargo_plan(
+            tmp_path,
+            env=env,
+            cargo_command=("cargo", "build", "--target", "x86_64-unknown-linux-gnu"),
+            requested_target="x86_64-unknown-linux-gnu",
+            host_target="aarch64-unknown-linux-gnu",
+        )
+
+
+@pytest.mark.parametrize("host_wrapper", [False, True])
+def test_epoch_wasi_admits_sdk_projection_before_effective_c_tools(
+    tmp_path, monkeypatch, runtime_fixture_root, host_wrapper
+):
+    import molt.cli.runtime_cargo_plan as plans
+    import molt.cli.runtime_tool_selection as tool_selection
+    from molt.cli.cargo_execution import _cargo_build_env
+    from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
+
+    sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
+    rustc = runtime_fixture_root.native_executable("rustc-identity")
+    monkeypatch.setattr(tool_selection, "runtime_tool_path", lambda _value, **_k: rustc)
+    monkeypatch.setattr(plans, "resolve_rustup_proxy", lambda path, **_k: path)
+    monkeypatch.setattr(plans, "rust_toolchain_library_environment", lambda *_a: {})
+    monkeypatch.setattr(plans, "selected_wasi_sdk_installation", lambda *_a, **_k: sdk)
+
+    class Admitted(Exception):
+        pass
+
+    def after_admission(_config, _cli, env, _target):
+        assert env["CC_wasm32-wasip1"] != "sccache clang"
+        assert env["CC"] == "sccache clang"
+        raise Admitted
+
+    monkeypatch.setattr(plans, "cargo_flag_inputs", after_admission)
+    env = _cargo_build_env(
+        {
+            "SOURCE_DATE_EPOCH": "1",
+            "MOLT_USE_SCCACHE": "auto",
+            "CC": "sccache clang",
+            "HOST_CC": "sccache gcc" if host_wrapper else str(rustc),
+            "CARGO_HOME": str(tmp_path / "cargo-home"),
+        }
+    )
+    # A generic target tool is shadowed by the admitted SDK; a host build
+    # dependency keeps its independent selector and must still refuse.
+    with pytest.raises(ValueError if host_wrapper else Admitted):
+        plans.resolve_runtime_cargo_plan(
+            tmp_path,
+            env=env,
+            cargo_command=("cargo", "build", "--target", TARGET),
+            requested_target=TARGET,
+            host_target="aarch64-unknown-linux-gnu",
+        )
+
+
+@pytest.mark.parametrize("key", ["rustc-wrapper", "rustc-workspace-wrapper"])
+def test_epoch_configured_wrapper_refuses_before_compiler_probe(
+    tmp_path, monkeypatch, key
+):
+    import molt.cli.runtime_cargo_plan as plans
+    import molt.cli.runtime_tool_selection as tool_selection
+
+    (tmp_path / ".cargo").mkdir()
+    (tmp_path / ".cargo" / "config.toml").write_text(
+        f'[build]\n{key}="sccache"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        tool_selection,
+        "runtime_tool_path",
+        lambda *a, **k: pytest.fail("tool probe before admission"),
+    )
+    with pytest.raises(ValueError, match="SOURCE_DATE_EPOCH"):
+        plans.resolve_runtime_cargo_plan(
+            tmp_path,
+            env={"SOURCE_DATE_EPOCH": "1", "CARGO_HOME": str(tmp_path / "cargo-home")},
+            cargo_command=("cargo", "build"),
+            requested_target=None,
+            host_target="aarch64-unknown-linux-gnu",
+        )
 
 
 def _selection(resource: CargoResourceRoot) -> tuple[tuple[str, Path], ...]:
@@ -599,10 +837,10 @@ def test_explicit_host_c_tool_is_selected_and_fenced(
 
 
 def test_cc_rs_native_tool_precedence_uses_host_not_target() -> None:
-    assert _c_tool_environment_names(
+    assert cargo_c_tool_environment_names(
         "cc", target="x86_64-unknown-linux-gnu", host_target="x86_64-unknown-linux-gnu"
     ) == ("CC_x86_64-unknown-linux-gnu", "CC_x86_64_unknown_linux_gnu", "HOST_CC", "CC")
-    assert _c_tool_environment_names(
+    assert cargo_c_tool_environment_names(
         "cc", target=TARGET, host_target="x86_64-unknown-linux-gnu"
     ) == ("CC_wasm32-wasip1", "CC_wasm32_wasip1", "TARGET_CC", "CC")
 

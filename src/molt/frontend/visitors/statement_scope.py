@@ -22,7 +22,7 @@ from molt.compiler_analysis.python_binding_flow import (
 )
 from molt.compiler_analysis.python_imports import resolve_relative_import
 from molt.compiler_analysis.python_syntax import require_python_syntax_target
-from molt.compiler_analysis.python_lexical_scope import class_annotation_syntax_error
+from molt.compiler_analysis.python_lexical_scope import python_scope_syntax_error
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
@@ -163,27 +163,9 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             )
         )
 
-    def _native_support_function_roots(self) -> frozenset[str]:
-        if self.native_support_function_roots is not None:
-            return frozenset(self.native_support_function_roots)
-        roots: set[str] = set()
-        for qualified_name, spec in self.native_callable_exports.items():
-            provider_module = spec.get("provider_module")
-            if provider_module != self.module_name:
-                continue
-            name = spec.get("name")
-            if not isinstance(name, str) or not name:
-                name = qualified_name.rsplit(".", 1)[-1]
-            if name:
-                roots.add(name)
-        return frozenset(roots)
-
     def _prune_native_support_module_functions(self, node: ast.Module) -> ast.Module:
-        roots = self._native_support_function_roots()
-        if not roots:
-            return node
         pruned, _reachable, missing = _native_support_slice.prune_native_support_module(
-            node, roots
+            node, self.module_body_selection
         )
         if missing:
             raise FrontendRejection(
@@ -208,20 +190,19 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             self.module_name, node, self.target_python
         )
         future_annotations = self._module_has_future_annotations(node)
-        syntax_error = class_annotation_syntax_error(
+        syntax_error = python_scope_syntax_error(
             node,
             target_python=self.target_python,
             future_annotations=future_annotations,
         )
         if syntax_error is not None:
-            error_node, message = syntax_error
             raise_compatibility_error(
                 self.compat,
-                error_node,
+                syntax_error.node,
                 FrontendRejection(
                     Diagnostic.SYNTAX_FORM,
-                    message,
-                    "Use target Python 3.13+ or remove nested code from this annotation scope.",
+                    syntax_error.message,
+                    syntax_error.alternative,
                 ),
             )
         selected = self._prune_native_support_module_functions(node)

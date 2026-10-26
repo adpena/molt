@@ -13,8 +13,15 @@ this page explains them and never restates their content.
 - **CLI commands and their argument trees.** Every command the `molt`
   entrypoint exposes carries a stability tier in the declaration; the gate
   refuses an untiered command, so no command can ship without a stability
-  decision. The snapshot records each command's full argparse surface (flags,
-  destinations, arity, choices, scalar defaults, required-ness).
+  decision. The v2 surface snapshot retains the entrypoint and every nested
+  command in one recursive `cli` tree. It records flags (including global
+  `--version` and help), destinations, positional order, arity, typed scalar
+  choices, named converters, constants, scalar/list defaults, required subcommands,
+  mutually exclusive groups and parser abbreviation/prefix/error settings.
+  These fields follow [CPython's argparse grammar](https://docs.python.org/3.12/library/argparse.html),
+  rather than an alphabetically sorted list that loses positional meaning.
+  Converter identities name their implementation; changes inside that
+  implementation still require the actual command's behavioral tests.
   Scalar defaults here are parser values before configuration resolution. A
   `null` marks an omitted option when the request resolver must distinguish
   omission from an explicitly supplied value; it does not promise a null
@@ -25,7 +32,7 @@ this page explains them and never restates their content.
   snapshot records their omission markers and the owning contract tests verify
   these effective defaults and explicit-option precedence together.
 - **Target Python range.** The supported target versions are generated from
-  `src/molt/target_python.py` into `molt.release_matrix` and snapshotted.
+  `src/molt/target_python_policy.py` into `molt.release_matrix` and snapshotted.
 - **Release targets.** Operating system, architecture, Rust target, and archive
   format per release target, from the same generated matrix. There is no second
   release-target table.
@@ -42,6 +49,33 @@ this page explains them and never restates their content.
   The gate reads identifiers from their executable producers and compares them
   with the reviewed declaration. A snapshot update cannot bless a stale or
   undeclared schema; producer, declaration and generated surface must agree.
+
+## Opt-in linker input capture
+
+`molt build --capture-link-inputs` retains development/admission metadata: the
+linker's input buffers and a content observation published with the output.
+It defaults to off and forces a fresh final link, including a full reproducer
+write proportional to the consumed inputs. Ordinary builds do not create this
+capture.
+
+Original-emission capture covers native Cranelift/LLVM and WASM producers,
+including one-shot compilation, daemon responses and cache generations that
+retain their original observation. Native final-link capture requires ELF LLD;
+WASM requires `--linked` and WASM LLD. JIT, factgraph, object-only, transpiler and
+MLIR capture remain refused. An older bytes-only cache entry has unknown origin
+and cannot grant capture. Shared stdlib archives retain the original observations
+of their constituents. These source contracts do not widen the release-target
+or Python-version matrices; installed cold/warm and platform execution remain
+separate qualification obligations.
+
+The release-consumer receipt requires retained compilation evidence, and its
+receiver rechecks the raw linker inputs, output publication and original emission
+identity. Capture alone does not verify the compiler's loaded process image,
+authenticate a kernel receipt, establish performance admission or satisfy H0.
+It never sets `compiled_with_verified`. The
+[toolchain contract](areas/tooling/0001-toolchains.md#explicit-final-link-input-capture)
+owns the evidence joins and remaining admission obligations; recording this
+option in the stable build surface does not certify those obligations.
 
 ## Tiers
 

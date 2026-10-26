@@ -105,6 +105,30 @@ def test_exact_registered_wrapper_preserves_full_toolchain_authority():
     assert set(row.toolchains) <= set(envelope["toolchains"])
 
 
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        ["python", "tools/venv_exec.py", "--venv", ".venv"],
+        ["python", "tools/uv_project_env.py", "--python", "3.12"],
+    ],
+)
+def test_native_wrapper_declares_its_image_without_relabeling_payload(wrapper):
+    import copy
+
+    command = [*wrapper, "--", "git", "status", "--short"]
+    envelope = command_admission.envelope_for_command(command)
+    assert envelope["argv"] == ["git", "status", "--short"]
+    assert envelope["python"] is None
+    assert set(envelope["toolchains"]) == {"git", "python"}
+    assert set(envelope["process_closure"]["toolchains"]) == {"git", "python"}
+    command_admission.validate_envelope(envelope, command)
+    incomplete = copy.deepcopy(envelope)
+    incomplete["toolchains"].remove("python")
+    incomplete["process_closure"]["toolchains"].remove("python")
+    with pytest.raises(ValueError, match="does not match submitted argv"):
+        command_admission.validate_envelope(incomplete, command)
+
+
 def test_nested_wrappers_are_rejected_without_recursive_failure():
     command = ["python", *["tools/venv_exec.py", "python"] * 1000, "-c", "pass"]
     envelope = command_admission.admission_envelope(command)
@@ -205,7 +229,13 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
     launch, updates = command_admission._supervised_execution_command(
         envelope,
         exact,
-        {"python": {"executable": exact[0], "base_executable": sys._base_executable}},
+        {
+            "python": {
+                "executable": exact[0],
+                "base_executable": sys._base_executable,
+                "location": {"prefix": sys.prefix},
+            }
+        },
         environment=environment,
         cwd=tmp_path,
     )
@@ -213,7 +243,7 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
         **environment,
         **updates,
         "MOLT_PROOF_CHILD_CUSTODY_JSON": json.dumps(
-            {"schema": "molt.proof-child-custody.v1"}
+            {"schema": "molt.proof-child-custody.v2"}
         ),
         "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT": endpoint,
         "MOLT_PROOF_CHILD_CUSTODY_TOKEN": "test-only-token",
@@ -359,12 +389,27 @@ def test_wrapped_node_keeps_node_payload_custody():
     "spelling", [["tools/uv_project_env.py"], ["-m", "tools.uv_project_env"]]
 )
 def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
-    spelling, tmp_path
+    spelling, tmp_path, monkeypatch
 ):
+    from functools import partial
     import os
+    from tools import uv_project_env
     from tools.proof_queue_pkg import execution_environment
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
 
-    explicit = tmp_path / "uv-environment"
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    image = materialize_development_environment(root, artifacts, python="3.14")
+    explicit = image.root
+    # Keep parsing and pure selection real; operation capture owns recipe
+    # admission. This test explicitly selects managed ownership.
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setattr(
+        uv_project_env,
+        "uv_project_env",
+        partial(uv_project_env.uv_project_env, repo_root=root),
+    )
     command = [
         "python",
         *spelling,
@@ -385,11 +430,14 @@ def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
         envelope,
         {
             **os.environ,
-            "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+            "MOLT_EXT_ROOT": str(artifacts),
         },
     )
     assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit.resolve())
     assert env["MOLT_UV_PROJECT_PYTHON"] == "3.14"
+    assert env["UV_NO_SYNC"] == "1"
+    assert env["PYTHONPYCACHEPREFIX"] == str(image.bytecode_prefix)
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     assert envelope["python"]["kind"] == "direct"
     assert (
         "version" not in envelope["python"]
@@ -503,6 +551,7 @@ def test_wrapper_preserves_first_payload_cpython_hash_policy(tmp_path, seed, fla
     import os
     import sys
     from pathlib import Path
+    from molt.python_environment_location import environment_bytecode_arguments
     from tests.process_guard_common import run_custody_subject_process
     from tools.proof_queue_pkg import command_identity, execution_environment
 
@@ -529,8 +578,20 @@ def test_wrapper_preserves_first_payload_cpython_hash_policy(tmp_path, seed, fla
     )
     assert selected.get("PYTHONHASHSEED") == seed
     exact = command_identity._exact_command(envelope, cwd=tmp_path, env=selected)
+    # The independent reference must retain the runner's image policy even
+    # when the hash-policy subject deliberately ignores environment variables.
+    reference_command = [
+        exact[0],
+        *environment_bytecode_arguments(Path(sys.prefix)),
+        *exact[1:],
+    ]
     reference = run_custody_subject_process(
-        exact, cwd=tmp_path, env=selected, capture_output=True, text=True, timeout=30
+        reference_command,
+        cwd=tmp_path,
+        env=selected,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     completed, events, _, _ = _run_under_real_child_audit(
         envelope, exact, selected, tmp_path
@@ -586,3 +647,87 @@ def test_actual_molt_help_has_one_custodied_interpreter_without_restart(tmp_path
     assert completed.returncode == 0, completed.stderr
     assert "usage:" in completed.stdout
     assert [event["event"] for event in events] == ["hook-start", "hook-end"]
+
+
+@pytest.mark.parametrize(
+    "ownership", ["uv-project", "managed-venv", "argument", "environment"]
+)
+def test_native_wrapper_capture_selects_published_entrypoint_or_explicit_borrow(
+    tmp_path, ownership
+):
+    import os
+    from molt.python_environment_location import environment_python_path
+    from tools.proof_queue_pkg import execution_environment
+
+    root = tmp_path / "selected"
+    canonical = environment_python_path(root)
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b"canonical interpreter")
+    alias = canonical.parent / ("python3.exe" if os.name == "nt" else "python3")
+    alias.write_bytes(b"different alias interpreter")
+    wrapper = (
+        ["python", "tools/uv_project_env.py", "--python", "3.12"]
+        if ownership == "uv-project"
+        else ["python", "tools/venv_exec.py"]
+    )
+    if ownership == "argument":
+        wrapper.extend(["--venv", str(root)])
+    submitted = [*wrapper, "--", "git", "status", "--short"]
+    envelope = command_admission.envelope_for_command(submitted)
+    payload = ["git", "status", "--short"]
+    env = {"VIRTUAL_ENV": str(root)}
+    if ownership == "environment":
+        env["MOLT_VENV"] = str(root)
+
+    dependency, command = execution_environment._python_capture_envelope(
+        envelope, payload, env
+    )
+
+    borrowed = ownership in {"argument", "environment"}
+    expected = alias if borrowed and os.name != "nt" else canonical
+    assert command[0] == str(expected)
+    assert dependency["wrapper"] == envelope["wrapper"]
+    assert envelope["argv"] == payload
+    assert envelope["python"] is None
+    # A missing published entrypoint cannot turn an available alias into the
+    # image's identity. The locator must receive the missing canonical path and
+    # fail there; only explicit borrowing retains the generic alias search.
+    if not borrowed:
+        canonical.unlink()
+        _, missing = execution_environment._python_capture_envelope(
+            envelope, payload, env
+        )
+        assert missing[0] == str(canonical)
+        assert not canonical.exists() and alias.is_file()
+
+
+@pytest.mark.parametrize("borrowed", [False, True])
+def test_modeled_venv_python_matches_direct_wrapper_selection_and_startup(
+    tmp_path, borrowed
+):
+    import os
+    from molt.python_environment_location import environment_python_path
+    from tools.proof_queue_pkg import command_identity
+
+    root = tmp_path / "selected"
+    canonical = environment_python_path(root)
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b"canonical interpreter")
+    canonical.chmod(0o755)
+    alias = canonical.parent / ("python3.exe" if os.name == "nt" else "python3")
+    alias.write_bytes(b"different alias interpreter")
+    alias.chmod(0o755)
+    submitted = ["python", "tools/venv_exec.py"]
+    if borrowed:
+        submitted.extend(["--venv", str(root)])
+    payload = ["python", "-I", "-c", "pass"]
+    submitted.extend(["--", *payload])
+    envelope = command_admission.envelope_for_command(submitted)
+    exact = command_identity._exact_command(
+        envelope, cwd=tmp_path, env={"VIRTUAL_ENV": str(root)}
+    )
+
+    expected = alias if borrowed and os.name != "nt" else canonical
+    startup = [] if borrowed else ["-B", "-X", f"pycache_prefix={root / 'bytecode'}"]
+    assert exact == [str(expected), *startup, *payload[1:]]
+    assert exact == venv_exec.resolve_command(payload, venv=root, managed=not borrowed)

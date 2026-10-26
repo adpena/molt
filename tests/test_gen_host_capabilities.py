@@ -47,7 +47,11 @@ def test_runtime_and_luau_python_defaults_follow_the_target_authority(
     # and hard-coded copies of today's 3.12.0 default.
     target = TargetPythonVersion(3, 14, 7, "candidate", 2)
     monkeypatch.setattr(gen, "_DEFAULT_TARGET_PYTHON_VERSION", target)
-    for source in (gen.render_rust(gen.load_schema()), gen.render_luau_python_policy()):
+    for source in (
+        gen.render_rust_python_policy(),
+        gen.render_luau_python_policy(),
+        gen.render_rust_backend_python_policy(),
+    ):
         default = re.search(
             r"pub const DEFAULT_TARGET_PYTHON_VERSION:[^=]+=(.*?);", source
         )
@@ -67,6 +71,12 @@ def test_luau_supported_versions_follow_the_admitted_catalog(monkeypatch) -> Non
     assert ast.literal_eval(f"[{supported[1]}]") == [(3, 12), (3, 14)]
     assert "(3, 13)" not in source
     assert "(3, 15)" not in source
+    pure = gen.render_rust_python_policy()
+    supported = re.search(
+        r"pub const SUPPORTED_TARGET_PYTHON_VERSIONS:[^=]+=\s*\[(.*?)\];", pure
+    )
+    assert supported is not None
+    assert ast.literal_eval(f"[{supported[1]}]") == ["3.12", "3.14"]
 
 
 def test_explicit_policy_tier_is_ambientless_and_tiers_are_monotone() -> None:

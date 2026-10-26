@@ -213,14 +213,21 @@ def test_admission_puts_pinned_providers_ahead_of_the_ambient_shell(
     # The version contract refuses the ambient tools ...
     with pytest.raises(ValueError, match="toolchain contract violation"):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, names, environment=os.environ
+            PLAN.toolchain_policies,
+            names,
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     # ... and every executor admits through the projection CI uses, so no
     # shell needs projecting by hand. The projection lives in the result:
     # admission leaves the process environment exactly as it found it.
     before = dict(os.environ)
     admitted = proof_plan.admit_toolchains(
-        PLAN.toolchain_policies, names, root=ROOT, environ=os.environ
+        PLAN.toolchain_policies,
+        names,
+        root=ROOT,
+        environ=os.environ,
+        python_executable=Path(sys.executable),
     )
     assert dict(os.environ) == before
     assert set(names) <= set(admitted.fingerprints)

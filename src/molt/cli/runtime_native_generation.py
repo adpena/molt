@@ -10,6 +10,8 @@ selects.
 
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import json
@@ -37,7 +39,6 @@ from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
 )
-from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_publication import (
     atomic_write_bytes,
@@ -168,7 +169,7 @@ def _generation_material(
     return {
         "schema": _SCHEMA,
         "build_identity": generation.build_identity.to_dict(),
-        "profile_dir": _cargo_profile_dir(cargo_profile),
+        "profile_dir": cargo_profile_directory(cargo_profile),
         "runtime_name": generation.runtime_lib.name,
         "members": generation.records(),
     }
@@ -189,7 +190,7 @@ def _selection_payload(
     if (
         payload["schema"] != _SCHEMA
         or payload["generation"] != canonical_json_sha256(material)
-        or payload["profile_dir"] != _cargo_profile_dir(cargo_profile)
+        or payload["profile_dir"] != cargo_profile_directory(cargo_profile)
         or payload["runtime_name"] != coordinate.name
     ):
         return None
@@ -231,7 +232,7 @@ def read_native_runtime_generation(
         )
         if payload is None:
             raise ValueError("the receipt does not name its own material")
-        profile_dir = _cargo_profile_dir(cargo_profile)
+        profile_dir = cargo_profile_directory(cargo_profile)
         root = (
             coordinate.parent / ".molt-native-generations" / str(payload["generation"])
         )
@@ -283,7 +284,7 @@ def _recorded_cargo_environment(
         coordinate.parent
         / ".molt-native-generations"
         / str(payload["generation"])
-        / _cargo_profile_dir(cargo_profile)
+        / cargo_profile_directory(cargo_profile)
         / coordinate.name
     )
     manifest = read_native_link_dependency_manifest_payload(
@@ -388,7 +389,7 @@ def _select_staged_generation(
     expected_generation: object = None,
 ) -> NativeRuntimeGeneration | None:
     """Publish a staged closure under its digest, then select it atomically."""
-    profile_dir = _cargo_profile_dir(cargo_profile)
+    profile_dir = cargo_profile_directory(cargo_profile)
     material = _generation_material(staged, cargo_profile=cargo_profile)
     digest = canonical_json_sha256(material)
     if expected_generation is not None and digest != expected_generation:
@@ -448,7 +449,7 @@ def publish_native_runtime_generation(
     intact. Publication never substitutes another input capture for that check.
     """
     coordinate.parent.mkdir(parents=True, exist_ok=True)
-    profile_dir = _cargo_profile_dir(cargo_profile)
+    profile_dir = cargo_profile_directory(cargo_profile)
     generations = coordinate.parent / ".molt-native-generations"
     generations.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -541,7 +542,7 @@ def import_native_runtime_generation(
     )
     cargo_environment.verify(environment)
     coordinate = store.variant(build_identity.digest, cargo_environment) / runtime_name
-    profile_dir = _cargo_profile_dir(cargo_profile)
+    profile_dir = cargo_profile_directory(cargo_profile)
     with store.single_flight(build_identity.digest):
         existing = native_runtime_store_generation(
             store,

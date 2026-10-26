@@ -923,7 +923,7 @@ def test_guest_cache_isolation_retains_compiler_home_and_original_witnesses(
     assert module.main() == 0
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["provenance"]["authoritative"] is False
-    assert payload["provenance"]["profile"] == "dev"
+    assert payload["provenance"]["requested_profile"] == "dev"
     result = payload["results"]["molt-build-native"]
     assert result["workflow"] == "source-checkout-diagnostic"
     assert result["driver"]["installed_distribution_verified"] is False

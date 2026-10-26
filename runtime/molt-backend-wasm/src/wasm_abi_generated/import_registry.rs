@@ -1454,16 +1454,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "iter",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::IterBuiltin,
+        name: "iter_builtin",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::IterNext,
         name: "iter_next",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IterNextUnboxed,
         name: "iter_next_unboxed",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::IterBuiltin,
-        name: "iter_builtin",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IterSentinel,
@@ -2076,14 +2076,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::HeapqHeapreplace,
         name: "heapq_heapreplace",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::StatisticsMeanSlice,
-        name: "statistics_mean_slice",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::StatisticsStdevSlice,
-        name: "statistics_stdev_slice",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::IoWaitNew,
@@ -8830,10 +8822,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "fraction_numerator",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::FractionPow,
-        name: "fraction_pow",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::FractionSub,
         name: "fraction_sub",
     },
@@ -11760,12 +11748,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_unpack_sequence" => Some(WasmRuntimeImport::UnpackSequence),
         "iter" => Some(WasmRuntimeImport::Iter),
         "molt_iter_checked" => Some(WasmRuntimeImport::Iter),
+        "iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
+        "molt_iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
         "iter_next" => Some(WasmRuntimeImport::IterNext),
         "molt_iter_next" => Some(WasmRuntimeImport::IterNext),
         "iter_next_unboxed" => Some(WasmRuntimeImport::IterNextUnboxed),
         "molt_iter_next_unboxed" => Some(WasmRuntimeImport::IterNextUnboxed),
-        "iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
-        "molt_iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
         "iter_sentinel" => Some(WasmRuntimeImport::IterSentinel),
         "molt_iter_sentinel" => Some(WasmRuntimeImport::IterSentinel),
         "len" => Some(WasmRuntimeImport::Len),
@@ -12072,10 +12060,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_heapq_heappushpop" => Some(WasmRuntimeImport::HeapqHeappushpop),
         "heapq_heapreplace" => Some(WasmRuntimeImport::HeapqHeapreplace),
         "molt_heapq_heapreplace" => Some(WasmRuntimeImport::HeapqHeapreplace),
-        "statistics_mean_slice" => Some(WasmRuntimeImport::StatisticsMeanSlice),
-        "molt_statistics_mean_slice" => Some(WasmRuntimeImport::StatisticsMeanSlice),
-        "statistics_stdev_slice" => Some(WasmRuntimeImport::StatisticsStdevSlice),
-        "molt_statistics_stdev_slice" => Some(WasmRuntimeImport::StatisticsStdevSlice),
         "io_wait_new" => Some(WasmRuntimeImport::IoWaitNew),
         "molt_io_wait_new" => Some(WasmRuntimeImport::IoWaitNew),
         "async_sleep" => Some(WasmRuntimeImport::AsyncSleep),
@@ -16056,8 +16040,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_fraction_new" => Some(WasmRuntimeImport::FractionNew),
         "fraction_numerator" => Some(WasmRuntimeImport::FractionNumerator),
         "molt_fraction_numerator" => Some(WasmRuntimeImport::FractionNumerator),
-        "fraction_pow" => Some(WasmRuntimeImport::FractionPow),
-        "molt_fraction_pow" => Some(WasmRuntimeImport::FractionPow),
         "fraction_sub" => Some(WasmRuntimeImport::FractionSub),
         "molt_fraction_sub" => Some(WasmRuntimeImport::FractionSub),
         "fraction_to_float" => Some(WasmRuntimeImport::FractionToFloat),

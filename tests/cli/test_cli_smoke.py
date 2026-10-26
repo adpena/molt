@@ -781,6 +781,13 @@ def test_cli_compare_json(tmp_path: Path) -> None:
         "exitcode": True,
     }
     assert payload["data"]["molt_stdout"] == "ok\n"
+    policy = payload["data"]["python_startup_policy"]
+    assert policy["bytecode_namespace"] == "fresh-empty-read-only"
+    assert policy["timing_scope"] == "reference-process-with-empty-bytecode-cache"
+    assert policy["command"][-3:-1] == ["-B", "-X"]
+    assert policy["command"][-1].startswith("pycache_prefix=")
+    prefix = Path(policy["command"][-1].split("=", 1)[1])
+    assert prefix.name == "bytecode" and not prefix.parent.exists()
 
 
 def test_cli_parity_run_json(tmp_path: Path) -> None:
@@ -2576,12 +2583,18 @@ def test_default_cache_does_not_expand_unused_platform_root(
 def test_cli_imported_syntax_errors_keep_native_identity_and_payload(
     tmp_path: Path,
 ) -> None:
+    _assert_imported_syntax_error_payload(tmp_path, target="native")
+
+
+def _assert_imported_syntax_error_payload(tmp_path: Path, *, target: str) -> None:
     sources = {
         "bad_syntax": b"def broken(:\n    pass\n",
         "bad_indent": b"if True:\npass\n",
         "bad_tabs": b"if True:\n\tpass\n        pass\n",
         "bad_cookie": b"# coding: not-a-real-encoding\nvalue = 1\n",
         "bad_bytes": b"# coding: utf-8\nvalue = '\xff'\n",
+        "bad_bom_bytes": b"\xef\xbb\xbfvalue = '\xff'\n",
+        "bad_bytes_crlf": b"# coding: utf-8\r\nvalue = '\xff'\r\n",
         "bad_unicode": "value = ('α',\n         ) +\n".encode("utf-8"),
         "good_cookie": b"# coding: latin-1\nvalue = 'caf\xe9'\n",
     }
@@ -2622,9 +2635,20 @@ def test_cli_imported_syntax_errors_keep_native_identity_and_payload(
     assert oracle.returncode == 0, oracle.stderr
     assert oracle.stderr == ""
     assert len(oracle.stdout.splitlines()) == len(sources)
-    # Repeat the actual loader to cover persisted lowering reuse as well as cold.
+    # Check both the initial build and repeated CLI execution. The run wrapper
+    # may reuse its artifact; serial lowering-cache replay has its own witness.
     for _ in range(2):
-        result = _run_cli(["run", "--json", str(script)])
+        result = _run_cli(
+            [
+                "run",
+                "--json",
+                "--target",
+                target,
+                "--python-version",
+                f"{sys.version_info.major}.{sys.version_info.minor}",
+                str(script),
+            ]
+        )
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)["data"]
         assert data["returncode"] == 0, data.get("stderr")

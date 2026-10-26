@@ -42,21 +42,20 @@ def resolve_venv(
     explicit: str | None = None,
 ) -> Path:
     source = ProcessEnvironment(os.environ if env is None else env)
-    # UV_PROJECT_ENVIRONMENT is where uv sync placed the project environment
-    # (CI custody puts it outside the checkout); the checkout .venv is uv's
-    # default only when nothing names another location.
-    raw = (
-        explicit
-        or source.get("MOLT_VENV")
-        or source.get("UV_PROJECT_ENVIRONMENT", "").strip()
-    )
+    # MOLT_VENV/--venv deliberately borrow an external environment. UV selects
+    # an exact managed generation; no checkout or main-worktree alias exists.
+    raw = explicit or source.get("MOLT_VENV")
     if raw:
         return _resolve_path(raw, repo_root=repo_root)
-    default = (repo_root / ".venv").resolve()
-    active = source.get("VIRTUAL_ENV")
-    if active and _resolve_path(active, repo_root=repo_root) == default:
-        return default
-    return default
+    if raw := source.get("UV_PROJECT_ENVIRONMENT", "").strip():
+        selected = Path(raw).expanduser()
+        return (selected if selected.is_absolute() else repo_root / selected).absolute()
+    from molt.dx import DxConfigError, RunContext
+
+    try:
+        return RunContext(repo_root).uv_project_env_dir(source)
+    except DxConfigError as exc:
+        raise VenvExecError(str(exc)) from exc
 
 
 def venv_bin_dir(venv: Path) -> Path:
@@ -76,7 +75,8 @@ def venv_python(venv: Path) -> Path:
         if candidate.is_file():
             return candidate
     raise VenvExecError(
-        f"virtualenv Python not found under {bin_dir}; run `uv sync --frozen` "
+        f"virtualenv Python not found under {bin_dir}; run "
+        "`python -m molt.checkout_provisioning ensure uv-environment` "
         "or pass --venv/MOLT_VENV"
     )
 
@@ -85,6 +85,7 @@ def venv_env(
     *,
     venv: Path,
     env: Mapping[str, str] | None = None,
+    managed: bool = False,
 ) -> ProcessEnvironment:
     merged = ProcessEnvironmentBuilder(os.environ if env is None else env)
     bin_dir = venv_bin_dir(venv)
@@ -98,16 +99,47 @@ def venv_env(
     merged["PATH"] = (
         str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
     )
+    if managed:
+        from molt.python_environment_location import environment_bytecode_prefix
+
+        merged["UV_PROJECT_ENVIRONMENT"] = str(venv)
+        merged["PYTHONPYCACHEPREFIX"] = str(environment_bytecode_prefix(venv))
+        merged["PYTHONDONTWRITEBYTECODE"] = "1"
+        merged["UV_NO_SYNC"] = "1"
     return ProcessEnvironment(merged)
 
 
-def resolve_command(command: Sequence[str], *, venv: Path) -> list[str]:
+def resolve_command(
+    command: Sequence[str], *, venv: Path, managed: bool = False
+) -> list[str]:
     if not command:
         raise ValueError("command is required")
     resolved = list(command)
-    head = Path(resolved[0]).name.lower()
-    if head in {"python", "python3", "python.exe", "python3.exe"}:
-        resolved[0] = str(venv_python(venv))
+    from tools.proof_command_argv import is_python_command
+
+    if is_python_command(resolved[0]):
+        selected = Path(resolved[0])
+        if managed and selected.parent != Path("."):
+            if selected.absolute().parent != venv_bin_dir(venv).absolute():
+                raise VenvExecError(
+                    "Python executable conflicts with the selected development image"
+                )
+        alias = selected.name
+        if os.name == "nt" and not alias.lower().endswith(".exe"):
+            alias += ".exe"
+        if managed or selected.stem.lower() != "python":
+            executable = venv_bin_dir(venv) / alias
+            if not executable.is_file():
+                raise VenvExecError(
+                    f"Python executable alias {alias!r} is absent from the selected environment"
+                )
+            resolved[0] = str(executable)
+        else:
+            resolved[0] = str(venv_python(venv))
+        if managed:
+            from tools.proof_command_argv import python_environment_command
+
+            resolved = python_environment_command(resolved, environment_root=venv)
     return resolved
 
 
@@ -134,10 +166,24 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("command is required after --")
     try:
         venv = resolve_venv(explicit=args.venv)
-        env = venv_env(venv=venv)
-        resolved = resolve_command(command, venv=venv)
+        managed = not (args.venv or os.environ.get("MOLT_VENV"))
+        if managed:
+            from molt.dx import DxConfigError, DxProject
+            from molt.source_build_environment import admit_development_environment
+            from molt.source_build_environment_schema import (
+                SourceBuildEnvironmentError,
+            )
+
+            try:
+                venv = admit_development_environment(
+                    venv, repo_root=ROOT, groups=DxProject(ROOT).dependency_groups()
+                )
+            except (DxConfigError, SourceBuildEnvironmentError) as exc:
+                raise VenvExecError(str(exc)) from exc
+        env = venv_env(venv=venv, managed=managed)
+        resolved = resolve_command(command, venv=venv, managed=managed)
         return forward_command(resolved, env=env)
-    except VenvExecError as exc:
+    except (VenvExecError, ValueError) as exc:
         parser.exit(127, f"venv_exec: {exc}\n")
     except FileNotFoundError as exc:
         parser.exit(127, f"venv_exec: command not found: {exc.filename}\n")

@@ -125,6 +125,18 @@ REQUIRED_COMMAND_FIELDS = (
     "argv",
     "toolchains",
 )
+COMMAND_FIELDS = frozenset(REQUIRED_COMMAND_FIELDS) | {
+    "id",
+    "cargo_native_units",
+    "cwd",
+    "env",
+    "evidence_outputs",
+    "pytest",
+    "pytest_worker_memory_gb",
+    "timeout_budget",
+    "timeout_env",
+    "timeout_seconds",
+}
 REQUIRED_TOOLCHAIN_FIELDS = (
     "version_pattern",
     "setup_evidence",
@@ -192,21 +204,6 @@ class MatrixCell:
     data: dict[str, str]
 
 
-def cargo_build_python(data: Mapping[str, Any]) -> bool | None:
-    """Declared Cargo generator role; absent ad hoc policy stays conservative."""
-    if "cargo_build_python" not in data:
-        return None
-    value = data["cargo_build_python"]
-    tools = data.get("toolchains", [])
-    if type(value) is not bool or not isinstance(tools, list) or "cargo" not in tools:
-        raise ValueError("cargo_build_python requires a boolean and Cargo toolchain")
-    if "build-python" in tools:
-        raise ValueError(
-            "build-python is contextual, not a static toolchain prerequisite"
-        )
-    return value
-
-
 def cargo_native_units(data: Mapping[str, Any]) -> dict[str, list[str]]:
     """The command alone grants native build roles and source languages."""
     raw = data.get("cargo_native_units", {})
@@ -271,7 +268,7 @@ def pytest_target_spelling_error(
     path, separator, node = target.partition("::")
     if separator and not node:
         return f"pytest target {target!r} names an empty node"
-    directory = root
+    directory = root.resolve()
     for part in path.split("/"):
         names = listings.get(directory)
         if names is None:
@@ -283,6 +280,8 @@ def pytest_target_spelling_error(
         if part not in names:
             return f"pytest target does not exist with this exact spelling: {target!r}"
         directory = directory / part
+    if directory.resolve() != directory.absolute():
+        return f"pytest target must name its repository entry directly: {target!r}"
     if separator and not directory.is_file():
         return f"pytest node id must name a file: {target!r}"
     return None
@@ -464,7 +463,7 @@ class ToolchainPolicy:
 
 def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
     """Query the selected source authority without rebinding driver imports."""
-    source = root / "src/molt/target_python.py"
+    source = root / "src/molt/target_python_policy.py"
     search_path = [str(root / "src"), str(root)] + [
         entry
         for entry in sys.path
@@ -478,8 +477,12 @@ def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
                 "-P",
                 "-B",
                 "-c",
-                "import json,runpy,sys;print(json.dumps(runpy.run_path(sys.argv[1])"
-                "['SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS']))",
+                "import json,pathlib,sys\n"
+                "from molt import target_python_policy as policy\n"
+                "expected = pathlib.Path(sys.argv[1]).resolve(strict=True)\n"
+                "if pathlib.Path(policy.__file__).resolve(strict=True) != expected:\n"
+                "    raise RuntimeError('selected target-Python policy origin mismatch')\n"
+                "print(json.dumps(policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS))",
                 str(source),
             ],
             cwd=root,
@@ -502,7 +505,7 @@ def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
         not isinstance(versions, list)
         or not versions
         or any(
-            not isinstance(v, str) or re.fullmatch(r"3\.[0-9]+", v) is None
+            not isinstance(v, str) or re.fullmatch(r"[1-9][0-9]*\.[0-9]+", v) is None
             for v in versions
         )
         or len(versions) != len(set(versions))
@@ -579,7 +582,7 @@ def load_toolchain_policies(
                             "version_pattern": rf"^Python {re.escape(version)}\.[0-9]+$",
                             "setup_value": version,
                             "setup_evidence": [
-                                "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+                                "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
                             ],
                             "setup_command": f"uv python install {version}",
                         },
@@ -913,7 +916,7 @@ def _pytest_target_parts(target: str) -> tuple[str, ...]:
     )
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _PytestMemoryNode:
     children: dict[str, _PytestMemoryNode] = dataclass_field(default_factory=dict)
     owned_gb: float | None = None
@@ -929,22 +932,21 @@ class PytestMemoryUnits:
     no finer memory measurement is inferred from a -k or -m expression.
     """
 
-    def __init__(self, commands: Iterable[Mapping[str, Any]]) -> None:
+    def __init__(self, commands: Iterable[Mapping[str, Any]], *, root: Path) -> None:
         self._root = _PytestMemoryNode()
+        root = root.resolve()
+        listings: dict[Path, frozenset[str]] = {}
         for command in commands:
+            if errors := pytest_declaration_errors(
+                "pytest memory owner", command, root=root, listings=listings
+            ):
+                raise ValueError("\n".join(errors))
             # A row declares its targets and measured unit as data (HF-179);
             # nothing reads them back from argv, and no test is collected.
             unit = command.get("pytest_worker_memory_gb")
             if unit is None:
                 continue
-            if isinstance(unit, bool) or not isinstance(unit, (int, float)):
-                raise ValueError("pytest_worker_memory_gb must be a number")
             unit = float(unit)
-            size = unit * 1024**3
-            if not math.isfinite(size) or size < 1:
-                raise ValueError(
-                    "pytest_worker_memory_gb must describe a positive finite byte count"
-                )
             for target in command.get("pytest", ()):
                 node = self._root
                 node.maximum_gb = max(node.maximum_gb, unit)
@@ -976,6 +978,35 @@ class PytestMemoryUnits:
                 )
         return maximum or default
 
+    def overlapping_requests(
+        self, targets: Iterable[str]
+    ) -> tuple[tuple[str, ...], ...]:
+        """Keep requested ancestors and descendants in one collection.
+
+        Reuse the memory-ownership trie and typed declaration admission.
+        Work is linear in path/node components, with
+        no collection, filesystem reads or pairwise comparisons at selection.
+        """
+        requests = tuple((target, _pytest_target_parts(target)) for target in targets)
+        selected = _PytestMemoryNode()
+        for target, parts in requests:
+            node = selected
+            for part in parts:
+                child = node.children.get(part)
+                if child is None:
+                    child = node.children[part] = _PytestMemoryNode()
+                node = child
+            node.owned_gb = self.memory_gb((target,))
+        groups: dict[_PytestMemoryNode, list[str]] = {}
+        for target, parts in requests:
+            node = selected
+            for part in parts:
+                node = node.children[part]
+                if node.owned_gb is not None:
+                    groups.setdefault(node, []).append(target)
+                    break
+        return tuple(tuple(group) for group in groups.values())
+
 
 def local_pytest_argv(
     targets: Iterable[str],
@@ -983,11 +1014,10 @@ def local_pytest_argv(
     *,
     memory_units: PytestMemoryUnits,
 ) -> tuple[str, ...]:
-    """The one pytest invocation for local gate test targets.
+    """Format one local pytest cohort with its declared resource envelope.
 
-    Integration merges every selected rule's targets into one run, so the
-    interpreter, guard and collection costs are paid once. ``-n auto`` sizes
-    the workers from the host using the largest owning target envelope. A
+    Integration groups independent requests by prerequisites.
+    ``-n auto`` sizes workers from the host and this cohort's envelope. A
     selection (``-k`` or ``-m``) applies
     to every target of its run, so each one runs on its own.
     """
@@ -1001,6 +1031,18 @@ def local_pytest_argv(
         *select,
         *targets,
     )
+
+
+def local_pytest_collection_argv(command: tuple[str, ...]) -> tuple[str, ...]:
+    """Collect a canonical selected target projection under its declared options.
+
+    Only the executor's worker count changes. Pytest itself validates node IDs,
+    parameter IDs and imports; collection never establishes a test result.
+    """
+    prefix = (*_LOCAL_PYTEST_PREFIX, "-n", "auto")
+    if command[: len(prefix)] != prefix:
+        raise ValueError("collection requires a canonical local pytest argv")
+    return (*_LOCAL_PYTEST_PREFIX, "-n", "0", *command[len(prefix) :], "--collect-only")
 
 
 def local_pytest_command(
@@ -1278,8 +1320,7 @@ class ProofPlan:
     def required_toolchains(self, command: ProofCommand) -> tuple[str, ...]:
         """Return the static process/tool identity closure for one command.
 
-        Queue admission adds contextual prerequisites that need the command's
-        Cargo context, such as the declared ``build-python`` generator.
+        Queue admission adds prerequisites from the concrete command context.
         """
 
         return self.toolchain_closure(command.toolchains)
@@ -1509,7 +1550,6 @@ class ProofPlan:
                     "id",
                     "cargo_output_lifetime",
                     "cargo_native_units",
-                    "cargo_build_python",
                     "differential_cases",
                     "pytest",
                 }
@@ -1526,7 +1566,6 @@ class ProofPlan:
                 )
             try:
                 cargo_native_units(lane.data)
-                cargo_build_python(lane.data)
             except ValueError as exc:
                 errors.append(f"{lane.id}: {exc}")
             if lane.data.get("cache_domain") not in {"none", "cargo-workspace"}:
@@ -1722,7 +1761,6 @@ class ProofPlan:
                     "native-strip": "llvm-strip",
                     "wasm-opt": "wasm-opt",
                     "llvm-sdk": "llvm-config",
-                    "build-python": "build-python",
                 }.get(selector)
                 != policy.data.get("executable")
                 or policy.data.get("wasi_sdk_tool") is not None
@@ -1782,15 +1820,9 @@ class ProofPlan:
             if python_role == "runtime" and (
                 not policy.data.get("selection_only")
                 or not policy.data.get("version_from_content_path")
-                or (
-                    policy.data.get("compiler_tool_selector") != "build-python"
-                    and (
-                        not isinstance(policy.data.get("content_path_command"), list)
-                        or not isinstance(policy.data.get("python_version"), str)
-                        or re.fullmatch(r"3\.[0-9]+", policy.data["python_version"])
-                        is None
-                    )
-                )
+                or not isinstance(policy.data.get("content_path_command"), list)
+                or not isinstance(policy.data.get("python_version"), str)
+                or re.fullmatch(r"3\.[0-9]+", policy.data["python_version"]) is None
             ):
                 errors.append(
                     f"{policy.name}: Python runtime role requires an explicit typed isolated selection"
@@ -1798,9 +1830,7 @@ class ProofPlan:
             content_path_command = policy.data.get("content_path_command")
             selected_version = policy.data.get("version_from_content_path", False)
             if type(selected_version) is not bool or (
-                selected_version
-                and content_path_command is None
-                and selector != "build-python"
+                selected_version and content_path_command is None
             ):
                 errors.append(
                     f"{policy.name}: selected version requires a typed content resolver"
@@ -2405,6 +2435,9 @@ class ProofPlan:
         command_graph: dict[str, tuple[str, ...]] = {}
         evidence_owners: dict[str, str] = {}
         for command in self.commands:
+            extra = set(command.data) - COMMAND_FIELDS
+            if extra:
+                errors.append(f"{command.id}: unknown command fields {sorted(extra)!r}")
             if re.fullmatch(r"[a-z0-9]+(?:[.-][a-z0-9]+)*", command.id) is None:
                 errors.append(f"{command.id}: command ID is not canonical")
             for field in REQUIRED_COMMAND_FIELDS:
@@ -2462,7 +2495,6 @@ class ProofPlan:
                         )
             try:
                 cargo_native_units(command.data)
-                cargo_build_python(command.data)
             except ValueError as exc:
                 errors.append(f"{command.id}: {exc}")
             errors.extend(
@@ -3135,6 +3167,9 @@ _EVENT_TIERS = {
     "workflow_call": "main",
     "schedule": SCHEDULED_TIER,
 }
+FULL_SELECTION_EVENTS = frozenset(
+    {"merge_group", "schedule", "workflow_dispatch", "workflow_call"}
+)
 
 
 def active_tier(environ: Mapping[str, str] | None = None) -> str | None:
@@ -3173,12 +3208,7 @@ def selection_for_event(
             base = before or str(payload.get("before", ""))
             head = after or str(payload.get("after", "")) or "HEAD"
             return plan.select(_diff_paths(base, head))
-        if event_name in {
-            "merge_group",
-            "schedule",
-            "workflow_dispatch",
-            "workflow_call",
-        }:
+        if event_name in FULL_SELECTION_EVENTS:
             return plan.all_selected(
                 reason=f"{event_name}: full proof plan", fail_closed=False
             )
@@ -3415,10 +3445,6 @@ def compiler_tool_path(
             "strip", environment=environment, source_root=policy.root
         )
         selected = candidates[0] if candidates else None
-    elif selector == "build-python":
-        from molt.python_runtime_admission import resolve_build_python
-
-        selected = resolve_build_python(environment, cwd=cwd)
     elif selector == "llvm-sdk":
         from molt.llvm_toolchain import discover_llvm_toolchain
 
@@ -3759,6 +3785,7 @@ def _runtime_tool_fingerprint(
 def _version_fingerprint(
     policy: ToolchainPolicy,
     *,
+    python_executable: Path | None,
     environment: Mapping[str, str],
     python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, Any] | None:
@@ -3776,7 +3803,14 @@ def _version_fingerprint(
     if policy.projection == "runtime-tool-release":
         return _runtime_tool_fingerprint(policy, environment=environment)
     executable = str(policy.data["executable"])
-    requested = sys.executable if executable == "{python}" else executable
+    if executable == "{python}":
+        if python_executable is None:
+            raise ValueError(f"{policy.name}: environment Python was not prepared")
+        if not python_executable.is_absolute():
+            raise ValueError(
+                f"{policy.name}: environment Python must be an absolute entrypoint"
+            )
+    requested = str(python_executable) if executable == "{python}" else executable
     probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
     compiler_path = compiler_tool_path(
         policy, environment=environment, cwd=probe_directory
@@ -4084,6 +4118,7 @@ def admit_toolchains(
     policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
+    python_executable: Path | None,
     environ: Mapping[str, str],
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
@@ -4127,6 +4162,7 @@ def admit_toolchains(
             environment=environment,
             owners=owners,
             python_admissions=python_admissions,
+            python_executable=python_executable,
         )
     except ValueError as exc:
         details = [str(exc)]
@@ -4183,6 +4219,7 @@ def toolchain_fingerprints(
     toolchain_policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
+    python_executable: Path | None,
     environment: Mapping[str, str],
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
@@ -4243,9 +4280,14 @@ def toolchain_fingerprints(
                         policies[name],
                         environment=environment,
                         python_admission=python_admissions[name],
+                        python_executable=python_executable,
                     )
                     if python_admissions is not None and name in python_admissions
-                    else _version_fingerprint(policies[name], environment=environment),
+                    else _version_fingerprint(
+                        policies[name],
+                        environment=environment,
+                        python_executable=python_executable,
+                    ),
                     None,
                 )
             except Exception as exc:
@@ -4461,10 +4503,14 @@ def _command_environment(
     child_env[PROOF_COMMAND_TIMEOUT_ENV] = str(timeout)
     if "cargo" not in command.toolchains:
         return ProcessEnvironment(child_env), ()
-    return normalize_cargo_environment(child_env)
+    return normalize_cargo_environment(
+        child_env, cwd=ROOT / str(command.data.get("cwd", "."))
+    )
 
 
-def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:
+def _admitted_linker_helpers(
+    policies: Iterable[ToolchainPolicy],
+) -> dict[str, frozenset[str]]:
     """Declared linker helper basename -> the linker basenames it may outlive.
 
     Toolchain capture already binds these helpers (MSVC's link.exe leaves
@@ -4472,7 +4518,7 @@ def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:
     disposition; Job closure honors the same declaration and nothing else.
     """
     helpers: dict[str, set[str]] = {}
-    for policy in plan.toolchain_policies:
+    for policy in policies:
         for linker, names in (policy.data.get("linker_process_helpers") or {}).items():
             for name in names:
                 helpers.setdefault(str(name).casefold(), set()).add(str(linker))
@@ -4698,7 +4744,7 @@ def _run_command(
         metrics_valid=metrics_valid,
         returncode=returncode,
         cancelled=cancelled,
-        admitted_linker_helpers=_admitted_linker_helpers(plan),
+        admitted_linker_helpers=_admitted_linker_helpers(plan.toolchain_policies),
     )
     if failure_reason == "executor cancellation":
         # Raw guard cancellation remains 137. Only its admitted terminal
@@ -4821,7 +4867,11 @@ def execute_commands(
     ) -> dict[str, dict[str, Any]]:
         policies = tuple(policies)
         fingerprints = admit_toolchains(
-            policies, names, environ=baseline, root=plan.path.parent.parent
+            policies,
+            names,
+            environ=baseline,
+            root=plan.path.parent.parent,
+            python_executable=Path(sys.executable),
         ).fingerprints
         # Admission reports every selected prerequisite before any execution.
         # Its union projection serves only its own probes, never a child's

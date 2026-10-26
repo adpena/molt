@@ -51,36 +51,29 @@ pub extern "C" fn molt_importlib_resources_only(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let iter_bits = molt_iter(iterable_bits);
+        let iterator = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
+        };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let Some(first_bits) = (match importlib_iter_next_value_bits(_py, iter_bits) {
-            Ok(value) => value,
-            Err(err) => return err,
-        }) else {
-            inc_ref_bits(_py, default_bits);
-            return default_bits;
-        };
-        let second_value = match importlib_iter_next_value_bits(_py, iter_bits) {
-            Ok(value) => value,
-            Err(err) => {
-                if !obj_from_bits(first_bits).is_none() {
-                    dec_ref_bits(_py, first_bits);
-                }
-                return err;
+        let first = match molt_runtime_core::iter_next_owned(_py.core_token(), &iterator) {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                inc_ref_bits(_py, default_bits);
+                return default_bits;
             }
+            Err(_) => return MoltObject::none().bits(),
         };
-        let Some(second_bits) = second_value else {
-            return first_bits;
+        let second = match molt_runtime_core::iter_next_owned(_py.core_token(), &iterator) {
+            Ok(Some(value)) => value,
+            Ok(None) => return first.into_bits(),
+            Err(_) => return MoltObject::none().bits(),
         };
-        let first_text = importlib_best_effort_str(_py, first_bits);
-        let second_text = importlib_best_effort_str(_py, second_bits);
-        if !obj_from_bits(first_bits).is_none() {
-            dec_ref_bits(_py, first_bits);
-        }
-        if !obj_from_bits(second_bits).is_none() {
-            dec_ref_bits(_py, second_bits);
-        }
+        let first_text = importlib_best_effort_str(_py, first.bits());
+        let second_text = importlib_best_effort_str(_py, second.bits());
+        drop(first);
+        drop(second);
         let message = format!(
             "Expected exactly one item in iterable, but got {:?}, {:?}, and perhaps more.",
             first_text, second_text

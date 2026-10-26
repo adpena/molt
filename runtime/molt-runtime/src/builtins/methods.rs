@@ -246,6 +246,69 @@ mod tests {
     }
 
     #[test]
+    fn native_iterator_descriptors_keep_owner_after_exhaustion() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            // The tuple source retires at exhaustion. A cached descriptor must
+            // still admit this iterator on every later call, while rejecting a
+            // list iterator even though both use TYPE_ID_ITER physically.
+            unsafe {
+                let tuple = alloc_tuple(py, &[MoltObject::from_int(7).bits()]);
+                assert!(!tuple.is_null());
+                let source = MoltObject::from_ptr(tuple).bits();
+                let iterator = molt_iter(source);
+                dec_ref_bits(py, source);
+                let class = builtin_classes(py).tuple_iterator;
+                let next = builtin_class_method_bits(py, class, "__next__")
+                    .unwrap()
+                    .unwrap();
+                let iter = builtin_class_method_bits(py, class, "__iter__")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(crate::builtins::type_ops::type_of_bits(py, iterator), class);
+                let same = call_callable1(py, iter, iterator);
+                assert_eq!(same, iterator);
+                dec_ref_bits(py, same);
+                let value = call_callable1(py, next, iterator);
+                assert_eq!(value, MoltObject::from_int(7).bits());
+                dec_ref_bits(py, value);
+                for _ in 0..2 {
+                    let result = call_callable1(py, next, iterator);
+                    dec_ref_bits(py, result);
+                    assert!(exception_pending(py));
+                    let exception = molt_exception_last();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        exception,
+                        "StopIteration"
+                    ));
+                    crate::clear_exception(py);
+                    dec_ref_bits(py, exception);
+                    assert_eq!(crate::builtins::type_ops::type_of_bits(py, iterator), class);
+                }
+                let list = alloc_list(py, &[]);
+                assert!(!list.is_null());
+                let source = MoltObject::from_ptr(list).bits();
+                let wrong = molt_iter(source);
+                dec_ref_bits(py, source);
+                let result = call_callable1(py, next, wrong);
+                dec_ref_bits(py, result);
+                assert!(exception_pending(py));
+                let exception = molt_exception_last();
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    exception,
+                    "TypeError"
+                ));
+                crate::clear_exception(py);
+                dec_ref_bits(py, exception);
+                dec_ref_bits(py, wrong);
+                dec_ref_bits(py, iterator);
+            }
+        });
+    }
+
+    #[test]
     fn method_dispatch_distinguishes_status_from_an_admitted_error() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {

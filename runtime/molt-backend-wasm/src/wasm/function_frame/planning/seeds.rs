@@ -1,18 +1,16 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
-use crate::wasm::frame_locals::{WasmFrameAnonymousLocal, WasmLiteralScratchLocals};
+use crate::wasm::function_frame::WasmConstAnchorSlot;
 use crate::wasm::local_analysis::ValueOccupancy;
 use crate::wasm_values::box_none;
 use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::ValType;
 
 #[derive(Clone)]
 pub(in crate::wasm::function_frame) struct FrameConstAnchor {
-    pub(in crate::wasm::function_frame) local: u32,
+    pub(in crate::wasm::function_frame) slot: WasmConstAnchorSlot,
     pub(in crate::wasm::function_frame) op: OpIR,
-    pub(in crate::wasm::function_frame) scratch_aliases: Vec<WasmLiteralScratchLocals>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -28,8 +26,7 @@ pub(super) struct FrameConstSeedPlan {
     inline_locals: Vec<(u32, i64)>,
     anchors: Vec<FrameConstAnchor>,
     anchor_by_key: BTreeMap<FrameConstAnchorKey, usize>,
-    anchor_by_op_index: BTreeMap<usize, u32>,
-    anchor_scratch_seen: BTreeSet<(usize, u32, u32)>,
+    anchor_by_op_index: BTreeMap<usize, WasmConstAnchorSlot>,
 }
 
 impl FrameConstSeedPlan {
@@ -44,17 +41,8 @@ impl FrameConstSeedPlan {
         out_local_idx: u32,
         is_dead: bool,
         seed_at_entry: bool,
-        locals: &mut WasmFrameLocals,
-        local_types: &mut Vec<ValType>,
-        local_count: &mut u32,
     ) {
         if let Some(const_policy) = WasmConstOpPolicy::for_op(op) {
-            let literal_scratch = locals.ensure_literal_scratch_for_policy(
-                out,
-                const_policy,
-                local_types,
-                local_count,
-            );
             if let Some(bits) = const_policy.inline_seed_bits(op) {
                 if !is_dead && seed_at_entry && self.seen_inline_outputs.insert(out.to_string()) {
                     self.inline_locals.push((out_local_idx, bits));
@@ -69,31 +57,16 @@ impl FrameConstSeedPlan {
             let anchor_index = if let Some(&index) = self.anchor_by_key.get(&key) {
                 index
             } else {
-                let local = locals.allocate_anonymous(
-                    WasmFrameAnonymousLocal::ConstLiteralAnchor,
-                    local_types,
-                    local_count,
-                );
                 let index = self.anchors.len();
                 self.anchor_by_key.insert(key, index);
                 self.anchors.push(FrameConstAnchor {
-                    local,
+                    slot: WasmConstAnchorSlot::new(index),
                     op: op.clone(),
-                    scratch_aliases: Vec::new(),
                 });
                 index
             };
-            let anchor = &mut self.anchors[anchor_index];
-            if let Some(scratch) = literal_scratch
-                && self.anchor_scratch_seen.insert((
-                    anchor_index,
-                    scratch.ptr_local(),
-                    scratch.len_local(),
-                ))
-            {
-                anchor.scratch_aliases.push(scratch);
-            }
-            self.anchor_by_op_index.insert(op_idx, anchor.local);
+            let anchor = &self.anchors[anchor_index];
+            self.anchor_by_op_index.insert(op_idx, anchor.slot);
         }
     }
 
@@ -125,7 +98,11 @@ impl FrameConstSeedPlan {
     pub(super) fn into_frame_plans(
         self,
         needs_dispatch: bool,
-    ) -> (Vec<(u32, i64)>, Vec<FrameConstAnchor>, BTreeMap<usize, u32>) {
+    ) -> (
+        Vec<(u32, i64)>,
+        Vec<FrameConstAnchor>,
+        BTreeMap<usize, WasmConstAnchorSlot>,
+    ) {
         let inline_locals = if needs_dispatch {
             self.inline_locals
         } else {
@@ -181,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_literal_payloads_share_anchor_and_preserve_each_scratch_alias() {
+    fn equal_literal_payloads_share_anchor() {
         let plan = WasmFunctionFramePlan::for_codegen_fixture(&function(vec![
             literal("const_str", "first", "same"),
             literal("const_str", "second", "same"),
@@ -189,7 +166,6 @@ mod tests {
         let (_, frame) = plan.into_function_and_frame();
 
         assert_eq!(frame.const_anchors.len(), 1);
-        assert_eq!(frame.const_anchors[0].scratch_aliases.len(), 2);
         assert_eq!(frame.const_anchor_for_op(0), frame.const_anchor_for_op(1));
     }
 

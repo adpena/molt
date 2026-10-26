@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use molt_backend::SimpleIR;
 
-use super::super::super::native_batch::write_native_archive_objects;
+use super::super::super::native_batch::{NativeWorkerOrigin, write_native_archive_objects};
 use super::super::publish::{
     ArchiveGeneration, ContentArchive, StdlibObjectCache, hydrate_shared_stdlib_cache_archive,
 };
@@ -83,8 +83,8 @@ pub(crate) fn materialize_stdlib_cache(
         )?,
         None => None,
     };
-    let digest = match reused {
-        Some(digest) => {
+    let (digest, origins) = match reused {
+        Some((digest, origins)) => {
             eprintln!(
                 "{}: stdlib archive reuse: content {} ({} functions planned in {:?}, transferred in {:?})",
                 request.log_prefix,
@@ -94,21 +94,31 @@ pub(crate) fn materialize_stdlib_cache(
                 transfer_started.elapsed(),
             );
             drop(planned);
-            digest
+            (digest, origins)
         }
         None => {
             let mut digest = None;
-            planned.assemble(request.log_prefix, object_cache.as_ref(), |objects| {
-                digest = Some(publish_shared_stdlib_cache_archive(
-                    stdlib_path,
-                    |destination| write_native_archive_objects(destination, objects).map(|()| None),
-                    stdlib_count,
-                    request.expected_cache_key,
-                    request.expected_cache_manifest,
-                    current_partition_manifest,
-                )?);
-                Ok(())
-            })?;
+            let mut retained_origins = None;
+            planned.assemble(
+                request.log_prefix,
+                object_cache.as_ref(),
+                |objects, origins| {
+                    digest = Some(publish_shared_stdlib_cache_archive(
+                        stdlib_path,
+                        |destination| {
+                            write_native_archive_objects(destination, objects)
+                                .map(|identity| Some(identity.sha256))
+                        },
+                        stdlib_count,
+                        request.expected_cache_key,
+                        request.expected_cache_manifest,
+                        current_partition_manifest,
+                        Some(origins),
+                    )?);
+                    retained_origins = Some(origins.to_vec());
+                    Ok(())
+                },
+            )?;
             let digest = digest.expect("assembly publishes the archive");
             if let Some(content) = &content {
                 // Later programs with this partition transfer the generation.
@@ -118,9 +128,10 @@ pub(crate) fn materialize_stdlib_cache(
                     content_generation(content),
                     stdlib_count,
                     current_partition_manifest,
+                    retained_origins.as_deref(),
                 )?;
             }
-            digest
+            (digest, retained_origins)
         }
     };
 
@@ -137,6 +148,7 @@ pub(crate) fn materialize_stdlib_cache(
             },
             stdlib_count,
             current_partition_manifest,
+            origins.as_deref(),
         )?;
     }
 
@@ -166,6 +178,7 @@ fn publish_copy(
     destination: ArchiveGeneration<'_>,
     stdlib_count: usize,
     partition: &str,
+    origins: Option<&[NativeWorkerOrigin]>,
 ) -> io::Result<()> {
     publish_shared_stdlib_cache_archive(
         destination.path,
@@ -177,6 +190,7 @@ fn publish_copy(
         destination.key,
         destination.manifest,
         partition,
+        origins,
     )
     .map(drop)
 }

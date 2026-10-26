@@ -73,8 +73,9 @@ fn compile_job<Slot>(
         return response;
     }
 
-    if matches!(job.ir_source, DaemonIrSource::Probe) {
-        return response::daemon_job_probe_cache_miss_response(job.id);
+    if let DaemonIrSource::Probe(digests) = &job.ir_source {
+        let missing = cache.missing_functions(digests);
+        return response::daemon_job_needs_functions_response(job.id, missing);
     }
 
     // Concurrent requests for one artifact compile it once: the leader holds
@@ -103,8 +104,11 @@ fn compile_job<Slot>(
     };
     let _slot = compile_slot();
 
-    let document = match document::read_daemon_job_document(&job) {
-        Ok(document) => document,
+    let (document, input) = match document::read_daemon_job_document(&job.ir_source, cache) {
+        Ok(document::DaemonJobDocument::Ready(document, input)) => (*document, input),
+        Ok(document::DaemonJobDocument::MissingFunctions(positions)) => {
+            return response::daemon_job_needs_functions_response(job.id, positions);
+        }
         Err(err) => return response::daemon_job_error_response(job.id, err),
     };
 
@@ -119,8 +123,9 @@ fn compile_job<Slot>(
         keys.module.as_ref(),
         keys.function.as_ref(),
         compiled_output,
+        input,
     ) {
-        Ok(warnings) => response::daemon_job_success_response(job.id, warnings),
+        Ok((warnings, origin)) => response::daemon_job_success_response(job.id, warnings, origin),
         Err(err) => response::daemon_job_error_response(job.id, err),
     }
 }
@@ -146,7 +151,13 @@ mod tests {
             Some("backend compile panicked: static message")
         );
         let passed = contain_panic("job2".to_string(), || {
-            response::daemon_job_success_response("job2".to_string(), Vec::new())
+            response::daemon_job_success_response(
+                "job2".to_string(),
+                Vec::new(),
+                crate::backend_process::origin::DaemonCacheEntry::fixture(b"output")
+                    .origin
+                    .clone(),
+            )
         });
         assert!(passed.ok);
     }

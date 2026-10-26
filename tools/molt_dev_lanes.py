@@ -10,7 +10,8 @@ inputs are keyed by its path, so each lane inherits them warm (HF-491). Its
 coordination record is ``logs/agents/lane-<slug>/coordination.json`` in the
 main checkout, written by `tools/agent_coordination.py`.
 
-- ``lane start`` fetches the base, takes the first clean, detached slot (or
+- ``lane start`` fetches the base, prefers the caller's registered slot if
+  clean, detached and unprotected, otherwise takes the first such slot (or
   adds the next one), switches it to the new branch, writes the record and
   provisions every checkout input (`molt.checkout_provisioning`).
 - ``lane retire`` accepts a landed lane (`landing_representation`: every
@@ -75,7 +76,7 @@ from tools.molt_dev_common import (
 )
 from tools import drift_harvest, molt_dev_controller, molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
-from tools.release.git_source_snapshot import immutable_git_environment
+from tools.git_identity import immutable_git_environment
 
 LANE_BRANCH_PREFIX = "lane/"
 TASK_PREFIX = "lane-"
@@ -125,10 +126,9 @@ def lane_task(slug: str) -> str:
 def lane_environment(environ: Mapping[str, str]) -> ProcessEnvironment:
     """The environment that provisions a new lane.
 
-    The lane's ``uv run`` from a plain shell selects ``<lane>/.venv``. An
-    inherited ``UV_PROJECT_ENVIRONMENT`` names the driver checkout's
-    environment, and syncing it to the lane's lock would rewrite that
-    checkout's environment.
+    An inherited UV selection belongs to the driver checkout. The lane
+    publishes/selects its own immutable generation and records that choice
+    through checkout_provisioning's existing per-worktree control projection.
     """
     return ProcessEnvironment(environ).without(
         ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV")
@@ -418,9 +418,7 @@ def _unharvested_ignored_paths(git: Any) -> tuple[list[str], list[str]]:
 
 
 def provision_lane(worktree: Path) -> tuple[checkout_provisioning.Ensured, ...]:
-    """Make every declared input of a lane current, as `uv run` syncs its
-    environment before it runs. A current locked tree costs one stamp check;
-    the Git hooks' check starts one child Python."""
+    """Publish/select the lane's declared inputs through their existing owners."""
     return checkout_provisioning.ensure_all(
         worktree,
         lane_environment(os.environ),
@@ -475,10 +473,24 @@ def validate_lane_handoff(
     done: tuple[checkout_provisioning.Ensured, ...] = ()
     if provision:
         try:
+            inputs = {name for name, _spec in _lane_trees(worktree)}
+            environment = lane_environment(os.environ)
+            python_input = checkout_provisioning.checkout_input(
+                "uv-environment",
+                worktree,
+                environment,
+                guard_source_root=_COMMANDS.repo_root,
+            )
+            if checkout_provisioning.declares(python_input):
+                inputs.add("uv-environment")
             done = checkout_provisioning.ensure_all(
                 worktree,
-                lane_environment(os.environ),
-                [name for name, _spec in _lane_trees(worktree)],
+                environment,
+                [
+                    name
+                    for name in checkout_provisioning.CHECKOUT_INPUT_NAMES
+                    if name in inputs
+                ],
                 guard_source_root=_COMMANDS.repo_root,
             )
         except checkout_provisioning.ProvisioningError as exc:
@@ -604,20 +616,38 @@ def _lane_slots_lock(repo: Path) -> Generator[None]:
 
 
 def _choose_slot(
-    worktrees: list[dict[str, Any]], root: Path, ignore_globs: tuple[str, ...]
+    worktrees: list[dict[str, Any]],
+    root: Path,
+    ignore_globs: tuple[str, ...],
+    *,
+    preferred_repo: Path,
 ) -> tuple[Path, bool]:
-    """The slot a start takes: the first clean, detached slot, reused, or the
-    first unused slot name, to add. A detached slot with changes is skipped
-    and named, never reset; an unregistered path with a slot's name belongs to
-    someone else and is skipped untouched."""
+    """Prefer the resolved caller's admissible registered slot, then path order.
+
+    Reuse requires a clean, detached, unlocked and non-prunable registration.
+    Every registered slot keeps its number reserved even when unavailable;
+    an unregistered path with a slot's name is also left untouched. Otherwise
+    add the first unused slot name. Detach is the availability commit point:
+    the previous lane may still be finishing its ref/record retirement.
+    """
     taken: set[int] = set()
     skipped: list[str] = []
-    for row in sorted(worktrees, key=lambda row: str(row["path"])):
+    for row in sorted(
+        worktrees,
+        key=lambda row: (
+            Path(row["path"]).resolve() != preferred_repo,
+            str(row["path"]),
+        ),
+    ):
         path = Path(row["path"])
         index = lane_slot_index(path, root)
         if index is None:
             continue
         taken.add(index)
+        if row["locked"] or row["prunable"]:
+            reason = "locked" if row["locked"] else "prunable"
+            skipped.append(f"{path} ({reason} registration)")
+            continue
         if not row["detached"]:
             continue
         dirty = _dirty_paths(_driver().Git(path), ignore_globs)
@@ -631,7 +661,7 @@ def _choose_slot(
             return path, False
     raise DriverError(
         f"all {LANE_SLOT_LIMIT} lane slots under {root} hold lanes"
-        + (f"; detached slots with changes: {'; '.join(skipped)}" if skipped else "")
+        + (f"; unavailable slots: {'; '.join(skipped)}" if skipped else "")
         + ". Retire a landed lane first."
     )
 
@@ -767,7 +797,9 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
         base_ref = args.base or f"{args.remote}/{args.branch}"
         base = git.rev_parse(f"{base_ref}^{{commit}}")
 
-        worktree, reused = _choose_slot(_worktrees(git), root, ignore_globs)
+        worktree, reused = _choose_slot(
+            _worktrees(git), root, ignore_globs, preferred_repo=repo
+        )
         if not reused and (worktree.exists() or worktree.is_symlink()):
             raise DriverError(
                 f"{worktree} exists but is no registered slot; reconcile it"

@@ -159,3 +159,62 @@ def test_comprehension_cells_exclude_nested_eager_reads_and_shadowed_captures(
     generator = SimpleTIRGenerator(target_python=(3, 12))
     node = ast.parse(expression, mode="eval").body
     assert generator._collect_comprehension_cell_vars(node) == captured
+
+
+@pytest.mark.parametrize("region", ["direct", "if", "for", "try"])
+@pytest.mark.parametrize("transform", ["plain", "decorated", "dataclass"])
+def test_nested_class_publishes_once_through_its_namespace(region, transform):
+    decorators = {
+        "plain": "",
+        "decorated": "@decorate\n",
+        "dataclass": "@dataclass(slots=True)\n",
+    }
+    statement = decorators[transform] + "class Nested:\n    value: int = 1\n"
+    if region == "if":
+        statement = "if flag:\n" + "".join(
+            "    " + line for line in statement.splitlines(keepends=True)
+        )
+    elif region == "for":
+        statement = "for index in values:\n" + "".join(
+            "    " + line for line in statement.splitlines(keepends=True)
+        )
+    elif region == "try":
+        statement = (
+            "try:\n"
+            + "".join("    " + line for line in statement.splitlines(keepends=True))
+            + "finally:\n    marker = 1\n"
+        )
+    source = (
+        "from dataclasses import dataclass\nclass Owner(metaclass=Meta):\n"
+        + "".join("    " + line for line in statement.splitlines(keepends=True))
+    )
+    _generator, ir = _compile(source)
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    strings = {op["out"]: op.get("s_value") for op in main if op["kind"] == "const_str"}
+    stores = [
+        op
+        for op in main
+        if op["kind"] == "store_index" and strings.get(op["args"][1]) == "Nested"
+    ]
+    assert len(stores) == 1
+    assert not any(
+        op["kind"] == "module_set_attr" and strings.get(op["args"][1]) == "Nested"
+        for op in main
+    )
+    if transform != "plain":
+        definitions = {op["out"]: op for op in main if "out" in op}
+        assert definitions[stores[0]["args"][2]]["kind"] == "call_bind"
+
+
+def test_class_decorator_result_is_the_only_module_publication():
+    _generator, ir = _compile("@decorate\nclass Subject: pass\n")
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    strings = {op["out"]: op.get("s_value") for op in main if op["kind"] == "const_str"}
+    publications = [
+        op
+        for op in main
+        if op["kind"] == "module_set_attr" and strings.get(op["args"][1]) == "Subject"
+    ]
+    assert len(publications) == 1
+    definitions = {op["out"]: op for op in main if "out" in op}
+    assert definitions[publications[0]["args"][2]]["kind"] == "call_bind"

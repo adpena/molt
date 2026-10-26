@@ -24,7 +24,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.compilation_target import admit_target  # noqa: E402
-from molt.cli.source_build_environment import source_build_environment  # noqa: E402
+from molt.source_build_environment import source_build_environment  # noqa: E402
 from molt.cli.source_extension_set_registry import SourceExtensionVariant  # noqa: E402
 from molt.cli.source_extension_target import resolve_source_extension_target_plan  # noqa: E402
 from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json  # noqa: E402
@@ -307,7 +307,7 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
     Diagnostics-only: turns the ~480-540 s unattributed frontend-lowering +
     runtime-wasm-rebuild wall into a machine-checkable per-run line
     (phase_sec breakdown + frontend lowering-cache hit_rate + runtime_wasm_cache
-    hydrate/publish status). No effect on the build itself.
+    admit/publish status). No effect on the build itself.
     """
     diag = _load_json_object(diagnostics_path)
     if diag is None:
@@ -354,13 +354,13 @@ def _summarize_build_diagnostics(diagnostics_path: Path) -> None:
         parts.append("frontend_lowering_cache[absent]")
     rt_cache = diag.get("runtime_wasm_cache")
     if isinstance(rt_cache, Mapping):
-        h_hits = rt_cache.get("hydrate_hits")
-        h_attempts = rt_cache.get("hydrate_attempts")
+        h_hits = rt_cache.get("admit_hits")
+        h_attempts = rt_cache.get("admit_attempts")
         p_ok = rt_cache.get("publish_successes")
         p_attempts = rt_cache.get("publish_attempts")
         parts.append(
             "runtime_wasm_cache["
-            f"hydrate={h_hits}/{h_attempts} publish={p_ok}/{p_attempts}]"
+            f"admit={h_hits}/{h_attempts} publish={p_ok}/{p_attempts}]"
         )
     print("build diagnostics: " + " ".join(parts), flush=True)
 

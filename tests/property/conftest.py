@@ -11,17 +11,19 @@ from collections.abc import Mapping
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 import os
-import shutil
+import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 from hypothesis import settings as hypothesis_settings
 
 from molt.dx import development_artifact_env
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 from tests.process_guard_common import run_guarded_test_process
+from tools.compat.backends import BackendResult
+from tools.compat.comparison import Outputs, compare_outputs
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIR = _REPO_ROOT / "src"
@@ -46,68 +48,35 @@ def _run_property_process(
     *,
     timeout: float | None = None,
     env: Mapping[str, str] | None = None,
-    capture_output: bool = True,
-    text: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    return run_guarded_test_process(
+) -> BackendResult:
+    process = run_guarded_test_process(
         args,
         prefix="MOLT_PROPERTY",
         env=os.environ if env is None else env,
-        capture_output=capture_output,
-        text=text,
+        capture_output=True,
+        text=False,
         timeout=timeout,
     )
-
-
-# ---------------------------------------------------------------------------
-# Molt availability detection
-# ---------------------------------------------------------------------------
-
-
-def _molt_cli_available() -> bool:
-    """Return True if Molt can compile a trivial program."""
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
-            f.write("print('ok')\n")
-            f.flush()
-            tmp_path = f.name
-
-        env = _property_env("property-availability")
-
-        result = _run_property_process(
-            [
-                sys.executable,
-                "-m",
-                "molt.cli",
-                "build",
-                "--profile",
-                "dev",
-                tmp_path,
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
+    result = BackendResult.from_process(process)
+    if (
+        process.cancelled
+        or not process.descendants_closed
+        or result.timed_out
+        or result.infrastructure_failure is not None
+        or result.rss_limit_exceeded
+        or result.guard_signal is not None
+        or result.stdout is None
+    ):
+        error = RuntimeError(
+            f"Property process did not complete: {args!r}\n{result.stderr}"
         )
-        return result.returncode == 0
-    except Exception:
-        return False
-    finally:
-        if tmp_path is not None:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        setattr(error, "guarded_result", process)
+        raise error
+    return result
 
 
-_MOLT_AVAILABLE: bool | None = None
-
-
-def molt_is_available() -> bool:
-    global _MOLT_AVAILABLE
-    if _MOLT_AVAILABLE is None:
-        _MOLT_AVAILABLE = _molt_cli_available()
-    return _MOLT_AVAILABLE
+def _observable_outputs(result: BackendResult) -> Outputs:
+    return Outputs(result.stdout, result.child_stderr or "", result.returncode)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -152,118 +121,96 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
-    """Compile *code* through Molt and return its stdout.
+def run_via_molt(code: str, *, timeout: float = 60.0) -> Outputs:
+    """Compile *code* and retain its exact stdout, stderr and guest exit status.
 
-    Writes code to a temp file, invokes ``molt.cli build --profile dev``,
-    then executes the resulting binary.  Returns stripped stdout.
-    Raises ``subprocess.CalledProcessError`` on non-zero exit.
+    Build and harness failures raise; they are never guest-equivalence results.
+    The build's selected consumer path is the only executable admitted here.
     """
-    tmpdir = tempfile.mkdtemp(prefix="molt_prop_")
+    # Keep the compiler dependency closure off the CPython-only property path.
+    from molt.cli.wrapper_build import _parse_wrapper_build_contract_payload
+
+    owner = OwnedTemporaryDirectory(prefix="molt_prop_")
+    closed = True
+    primary: BaseException | None = None
     try:
-        src_file = os.path.join(tmpdir, "prop_test.py")
-        with open(src_file, "w", encoding="utf-8") as f:
-            f.write(code)
-
+        tmpdir = owner.name
+        src_file = Path(tmpdir) / "prop_test.py"
+        src_file.write_text(code, encoding="utf-8")
         env = _property_env(f"property-run-{os.getpid()}")
-
-        # Build
-        build_result = _run_property_process(
-            [
-                sys.executable,
-                "-m",
-                "molt.cli",
-                "build",
-                "--profile",
-                "dev",
-                src_file,
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        if build_result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                build_result.returncode,
-                build_result.args,
-                build_result.stdout,
-                build_result.stderr,
-            )
-
-        # Find binary — Molt places it next to the source or in a known location
-        binary_name = "prop_test"
-        binary_candidates = [
-            os.path.join(tmpdir, binary_name),
-            os.path.join(tmpdir, binary_name + "_molt"),
+        command = [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--profile",
+            "dev",
+            "--out-dir",
+            str(Path(tmpdir) / "build"),
+            "--json",
+            str(src_file),
         ]
-        binary_path = None
-        for cand in binary_candidates:
-            if os.path.isfile(cand) and os.access(cand, os.X_OK):
-                binary_path = cand
-                break
-
-        if binary_path is None:
-            # Search tmpdir for any executable
-            for entry in os.listdir(tmpdir):
-                full = os.path.join(tmpdir, entry)
-                if (
-                    os.path.isfile(full)
-                    and os.access(full, os.X_OK)
-                    and not entry.endswith(".py")
-                ):
-                    binary_path = full
-                    break
-
-        if binary_path is None:
-            raise FileNotFoundError(
-                f"Molt binary not found in {tmpdir}. "
-                f"Build stderr: {build_result.stderr}"
-            )
-
-        # Run
-        run_result = _run_property_process(
-            [binary_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-        if run_result.returncode != 0:
+        closed = False
+        build = _run_property_process(command, env=env)
+        closed = True
+        if build.returncode != 0:
             raise subprocess.CalledProcessError(
-                run_result.returncode,
-                run_result.args,
-                run_result.stdout,
-                run_result.stderr,
+                build.returncode, command, build.stdout, build.stderr
             )
-        return run_result.stdout.strip()
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-def run_via_cpython(code: str, *, timeout: float = 30.0) -> str:
-    """Run *code* through CPython and return its stdout."""
-    result = _run_property_process(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(
-            result.returncode,
-            result.args,
-            result.stdout,
-            result.stderr,
+        payload = json.loads(build.stdout or "")
+        contract, error = _parse_wrapper_build_contract_payload(
+            payload, json_output=False, command="property"
         )
-    return result.stdout.strip()
+        if error is not None or contract is None:
+            raise RuntimeError(
+                "Molt property build did not publish an executable contract"
+            )
+        binary = contract.consumer_output
+        if not binary.is_file():
+            raise FileNotFoundError(
+                f"Molt selected executable does not exist: {binary}"
+            )
+        closed = False
+        result = _run_property_process([str(binary)], timeout=timeout, env=env)
+        closed = True
+        return _observable_outputs(result)
+    except BaseException as error:
+        primary = error
+        guarded = getattr(error, "guarded_result", None)
+        closed = closed or (guarded is not None and guarded.descendants_closed is True)
+        raise
+    finally:
+        if closed:
+            try:
+                owner.cleanup()
+            except BaseException as error:
+                if primary is None:
+                    raise
+                primary.add_note(
+                    f"Property scratch cleanup failed at {owner.name}: {error!r}"
+                )
+        else:
+            owner.retain()
+            if primary is not None:
+                primary.add_note(
+                    f"Property scratch retained pending process-tree closure: {owner.name}"
+                )
+
+
+def run_via_cpython(code: str, *, timeout: float = 30.0) -> Outputs:
+    """Run *code* through CPython with complete, lossless observable output."""
+    return _observable_outputs(
+        _run_property_process([sys.executable, "-c", code], timeout=timeout)
+    )
 
 
 def assert_molt_matches_cpython(code: str) -> None:
-    """Assert that Molt and CPython produce identical stdout for *code*."""
+    """Require exact stdout, stderr and exit status under the shared parity law."""
     molt_out = run_via_molt(code)
     cpython_out = run_via_cpython(code)
-    assert molt_out == cpython_out, (
-        f"Molt/CPython mismatch:\n"
+    verdict = compare_outputs(cpython_out, molt_out, stderr_mode="exact")
+    assert verdict.equal, (
+        f"Molt/CPython mismatch ({verdict.detail}):\n"
         f"  Code: {code!r}\n"
         f"  Molt:    {molt_out!r}\n"
         f"  CPython: {cpython_out!r}"

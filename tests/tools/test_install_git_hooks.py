@@ -820,9 +820,40 @@ def _ledger_repo(tmp_path: Path, monkeypatch, *, with_driver: bool) -> Path:
     return repo
 
 
+@pytest.mark.skipif(os.name == "nt", reason="exercises a POSIX sh without OSTYPE")
+def test_shared_hook_launcher_accepts_posix_nounset_without_bash_platform_state(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "checkout with spaces"
+    repo.mkdir()
+    _git_init(repo)
+    completed = run_guarded_test_process(
+        [
+            "sh",
+            "-uc",
+            'repo_root=$1; unset OSTYPE OS; . "$2"; '
+            'printf "%s\\n" "$vpy" "$PYTHONPATH" "$PYTHONNOUSERSITE"',
+            "hook-launch-test",
+            str(repo),
+            str(LAUNCH),
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == [
+        str(repo / ".venv" / "bin" / "python"),
+        f"{repo}/src:{repo}",
+        "1",
+    ]
+
+
 def test_the_installed_ledger_driver_merges_rows_in_a_real_cherry_pick(
     tmp_path, monkeypatch
 ):
+    monkeypatch.delenv("OSTYPE", raising=False)
     repo = _ledger_repo(tmp_path, monkeypatch, with_driver=True)
 
     picked = run_guarded_test_process(
@@ -839,6 +870,7 @@ def test_the_installed_ledger_driver_merges_rows_in_a_real_cherry_pick(
 
 
 def test_the_ledger_wrapper_merges_as_text_without_the_driver(tmp_path, monkeypatch):
+    monkeypatch.delenv("OSTYPE", raising=False)
     repo = _ledger_repo(tmp_path, monkeypatch, with_driver=False)
 
     picked = run_guarded_test_process(

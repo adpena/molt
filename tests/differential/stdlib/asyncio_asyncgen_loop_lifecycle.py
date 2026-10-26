@@ -1,4 +1,5 @@
-"""Draft extension of asyncio_run_shutdown_asyncgens.py for loop ownership."""
+# MOLT_META: stderr=exact
+"""Async-generator finalization belongs to the loop that started iteration."""
 import asyncio
 log = []
 held = []

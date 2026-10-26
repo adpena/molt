@@ -69,6 +69,7 @@ def _run_build_pipeline(
     trusted: bool,
     verbose: bool,
     require_linked: bool,
+    capture_link_inputs: bool = False,
     wasm_opt_level: str | None = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
@@ -92,6 +93,23 @@ def _run_build_pipeline(
         prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket
     )
     output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle.output_layout
+    if capture_link_inputs and (
+        fact_graph_request is not None
+        or output_layout.emit_mode in {"jit", "obj"}
+        or output_layout.is_mlir_emit
+        or output_layout.is_rust_transpile
+        or output_layout.is_luau_transpile
+        or output_layout.is_wasm
+        and not output_layout.linked
+    ):
+        return return_after_build_diagnostics(
+            _fail(
+                "Link input capture requires a linked native/WASM artifact with retained original emission origin; "
+                "JIT, factgraph, object and transpiler capture are not implemented.",
+                json_output,
+                command="build",
+            )
+        )
     native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
     # The import plan already names every external native artifact, so an
     # output that cannot carry them is refused before the frontend runs.
@@ -243,6 +261,7 @@ def _run_build_pipeline(
         trusted=trusted,
         verbose=verbose,
         require_linked=require_linked,
+        capture_link_inputs=capture_link_inputs,
         wasm_opt_level=wasm_opt_level,
         precompile=precompile,
         snapshot=snapshot,

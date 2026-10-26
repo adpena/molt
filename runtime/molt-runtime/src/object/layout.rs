@@ -13,7 +13,8 @@ pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
 
 /// Inline string/bytes storage is `[len, data[0..len], 0]` after MoltHeader.
 /// The trailing NUL is owned storage outside the logical byte length. Native
-/// subtype fields start after this complete extent, including the terminator.
+/// bytes subtype fields start after this extent. Strings additionally own the
+/// classification trailer defined by StringStorage before their subtype fields.
 #[repr(C)]
 pub(crate) struct InlineBytesStorage {
     len: usize,
@@ -41,7 +42,8 @@ impl InlineBytesStorage {
         unsafe { object.add(std::mem::size_of::<Self>()) }
     }
 
-    /// The allocation must hold payload_size(len) writable bytes. Set only on
+    /// The allocation must hold the kind's complete payload size, including
+    /// StringStorage's trailer for strings. Set only on
     /// unpublished storage or a uniquely owned exact string whose size changes;
     /// a native subtype's immutable length fixes its field offset permanently.
     #[inline]
@@ -49,6 +51,92 @@ impl InlineBytesStorage {
         unsafe {
             Self::data(object).add(len).write(0);
             (*object.cast::<Self>()).len = len;
+            if object_type_id(object) == TYPE_ID_STRING {
+                StringStorage::initialize_ascii(object);
+            }
+        }
+    }
+}
+
+/// String-only immutable-content fact, stored after the shared inline NUL.
+/// Length/data offsets and bytes storage are unchanged. All fresh and resized
+/// storage starts Unknown; producers may publish a fact only after filling it.
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum StringAscii {
+    Unknown = 0,
+    Ascii = 1,
+    NonAscii = 2,
+}
+
+pub(crate) struct StringStorage;
+
+impl StringStorage {
+    pub(crate) fn payload_size(len: usize) -> Option<usize> {
+        InlineBytesStorage::payload_size(len)?
+            .checked_add(std::mem::size_of::<std::sync::atomic::AtomicU8>())
+    }
+
+    pub(crate) fn object_size(len: usize) -> Option<usize> {
+        super::checked_object_total_size(Self::payload_size(len)?)
+    }
+
+    /// Capacity excludes both the content terminator and classification trailer.
+    pub(crate) fn capacity(payload_size: usize) -> usize {
+        payload_size.saturating_sub(Self::payload_size(0).unwrap())
+    }
+
+    unsafe fn ascii_slot(object: *mut u8) -> *mut std::sync::atomic::AtomicU8 {
+        unsafe {
+            debug_assert_eq!(object_type_id(object), TYPE_ID_STRING);
+            InlineBytesStorage::data(object)
+                .add(InlineBytesStorage::len(object) + 1)
+                .cast()
+        }
+    }
+
+    /// Exclusive construction/resize authority only; never reset a shared value.
+    unsafe fn initialize_ascii(object: *mut u8) {
+        unsafe {
+            Self::ascii_slot(object)
+                .write(std::sync::atomic::AtomicU8::new(StringAscii::Unknown as u8));
+        }
+    }
+
+    pub(crate) unsafe fn known_ascii(object: *mut u8) -> Option<bool> {
+        match unsafe { &*Self::ascii_slot(object) }.load(std::sync::atomic::Ordering::Acquire) {
+            value if value == StringAscii::Ascii as u8 => Some(true),
+            value if value == StringAscii::NonAscii as u8 => Some(false),
+            value if value == StringAscii::Unknown as u8 => None,
+            _ => unreachable!("invalid string ASCII state"),
+        }
+    }
+
+    /// Bytes must be initialized and immutable to other readers. Concurrent
+    /// first readers may compute the same fact; publication is convergent.
+    pub(crate) unsafe fn publish_ascii(object: *mut u8, ascii: bool) {
+        unsafe { &*Self::ascii_slot(object) }.store(
+            if ascii {
+                StringAscii::Ascii
+            } else {
+                StringAscii::NonAscii
+            } as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+    }
+
+    pub(crate) unsafe fn is_ascii(object: *mut u8) -> bool {
+        unsafe {
+            if let Some(ascii) = Self::known_ascii(object) {
+                return ascii;
+            }
+            let bytes = std::slice::from_raw_parts(
+                InlineBytesStorage::data(object),
+                InlineBytesStorage::len(object),
+            );
+            let ascii = bytes.is_ascii();
+            Self::publish_ascii(object, ascii);
+            ascii
         }
     }
 }
@@ -812,32 +900,37 @@ pub(crate) unsafe fn reversed_set_index(ptr: *mut u8, idx: usize) {
     }
 }
 
+/// One physical zip payload on every pointer width. The result tuple is an
+/// owned cache, distinct from the tracked iterator vector and strict flag.
+#[repr(C)]
+pub(crate) struct ZipPayload {
+    pub(crate) iterators: *mut Vec<u64>,
+    pub(crate) strict: u64,
+    pub(crate) result: u64,
+}
+
 pub(crate) unsafe fn zip_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr as *mut *mut Vec<u64>) }
+    unsafe { std::ptr::addr_of!((*ptr.cast::<ZipPayload>()).iterators).read_unaligned() }
 }
 
 pub(crate) unsafe fn zip_strict_bits(ptr: *mut u8) -> u64 {
-    unsafe { std::ptr::read_unaligned(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *const u64) }
+    unsafe { std::ptr::addr_of!((*ptr.cast::<ZipPayload>()).strict).read_unaligned() }
 }
 
 pub(crate) unsafe fn zip_set_strict_bits(ptr: *mut u8, bits: u64) {
     unsafe {
-        std::ptr::write_unaligned(
-            ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut u64,
-            bits,
-        );
+        std::ptr::addr_of_mut!((*ptr.cast::<ZipPayload>()).strict).write_unaligned(bits);
     }
 }
 
-/// Offset of the cached result tuple inside a TYPE_ID_ZIP object. Like
-/// CPython's zip_next, a step refills it while the iterator is its only owner.
-const ZIP_CACHED_OFFSET: usize = std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<u64>();
+pub(crate) unsafe fn zip_result_bits(ptr: *mut u8) -> u64 {
+    unsafe { std::ptr::addr_of!((*ptr.cast::<ZipPayload>()).result).read_unaligned() }
+}
 
-/// Total payload bytes for a TYPE_ID_ZIP object (after the header).
-pub(crate) const ZIP_PAYLOAD_SIZE: usize = ZIP_CACHED_OFFSET + std::mem::size_of::<*mut u8>();
-
-pub(crate) unsafe fn zip_cached_tuple_slot(ptr: *mut u8) -> *mut *mut u8 {
-    unsafe { ptr.add(ZIP_CACHED_OFFSET) as *mut *mut u8 }
+pub(crate) unsafe fn zip_set_result_bits(ptr: *mut u8, bits: u64) {
+    unsafe {
+        std::ptr::addr_of_mut!((*ptr.cast::<ZipPayload>()).result).write_unaligned(bits);
+    }
 }
 
 pub(crate) unsafe fn map_func_bits(ptr: *mut u8) -> u64 {
@@ -907,6 +1000,43 @@ pub(crate) unsafe fn generic_alias_args_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn union_type_args_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
+}
+
+/// Nullable tuple caches are owned edges, with explicit publication across
+/// reentrant callbacks. Load-then-retain additionally requires the current
+/// PyToken/GilGuard runtime lock; atomics alone are not no-GIL-safe.
+pub(crate) unsafe fn generic_alias_parameters_cache(
+    ptr: *mut u8,
+) -> *mut std::sync::atomic::AtomicU64 {
+    unsafe { ptr.add(2 * std::mem::size_of::<u64>()).cast() }
+}
+
+pub(crate) unsafe fn union_type_parameters_cache(
+    ptr: *mut u8,
+) -> *mut std::sync::atomic::AtomicU64 {
+    unsafe { ptr.add(std::mem::size_of::<u64>()).cast() }
+}
+
+pub(crate) unsafe fn generic_alias_parameters_bits(ptr: *mut u8) -> u64 {
+    unsafe { &*generic_alias_parameters_cache(ptr) }.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) unsafe fn union_type_parameters_bits(ptr: *mut u8) -> u64 {
+    unsafe { &*union_type_parameters_cache(ptr) }.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) unsafe fn generic_alias_take_parameters(ptr: *mut u8) -> u64 {
+    unsafe { &*generic_alias_parameters_cache(ptr) }.swap(
+        crate::MoltObject::none().bits(),
+        std::sync::atomic::Ordering::AcqRel,
+    )
+}
+
+pub(crate) unsafe fn union_type_take_parameters(ptr: *mut u8) -> u64 {
+    unsafe { &*union_type_parameters_cache(ptr) }.swap(
+        crate::MoltObject::none().bits(),
+        std::sync::atomic::Ordering::AcqRel,
+    )
 }
 
 pub(crate) unsafe fn function_fn_ptr(ptr: *mut u8) -> u64 {
@@ -3124,8 +3254,9 @@ pub(crate) unsafe fn dict_subclass_storage_slot(ptr: *mut u8) -> Option<*mut u64
 #[cfg(test)]
 mod tests {
     use super::{
-        ListIntStorage, ensure_function_code_bits, function_arity_usize, function_code_bits,
-        function_set_code_bits, zip_set_strict_bits, zip_strict_bits,
+        ListIntStorage, ZipPayload, ensure_function_code_bits, function_arity_usize,
+        function_code_bits, function_set_code_bits, zip_iters_ptr, zip_result_bits,
+        zip_set_result_bits, zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
@@ -3396,12 +3527,21 @@ mod tests {
 
     #[test]
     fn zip_strict_bits_unaligned_roundtrip() {
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; std::mem::size_of::<ZipPayload>() + 1];
         let ptr = unsafe { buf.as_mut_ptr().add(1) };
-        let value = 0xA5A5_5A5A_DEAD_BEEFu64;
+        let strict = 0xA5A5_5A5A_DEAD_BEEFu64;
+        let result = 0x1234_5678_ABCD_EF01u64;
         unsafe {
-            zip_set_strict_bits(ptr, value);
-            assert_eq!(zip_strict_bits(ptr), value);
+            ptr.cast::<ZipPayload>().write_unaligned(ZipPayload {
+                iterators: std::ptr::null_mut(),
+                strict: 0,
+                result: 0,
+            });
+            zip_set_strict_bits(ptr, strict);
+            zip_set_result_bits(ptr, result);
+            assert!(zip_iters_ptr(ptr).is_null());
+            assert_eq!(zip_strict_bits(ptr), strict);
+            assert_eq!(zip_result_bits(ptr), result);
         }
     }
 

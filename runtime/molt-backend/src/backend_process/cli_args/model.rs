@@ -17,12 +17,16 @@ pub(crate) enum BackendCommand<'a> {
     Features,
     /// `--daemon --socket PATH`: serve compile jobs on a Unix socket.
     #[cfg(molt_backend_daemon)]
-    Daemon { socket_path: &'a str },
+    Daemon {
+        socket_path: &'a str,
+        emission_scope: Option<&'a str>,
+    },
     /// `--native-batch-job-file JOB --output OBJECT`: one batch worker job, read
     /// from stdin when JOB is `-` or from a preserved replay file.
     #[cfg(feature = "native-backend")]
     NativeBatchJob {
         job_file: &'a str,
+        emission_scope: Option<&'a str>,
         output_path: &'a str,
     },
     /// Compile one IR document, or emit one function's TIR fact graph.
@@ -36,6 +40,8 @@ pub(crate) struct BackendCompileArgs<'a> {
     pub(crate) ir_file_path: Option<&'a str>,
     pub(crate) ir_format: IrFormat,
     pub(crate) fact_graph: Option<FactGraphCliRequest<'a>>,
+    pub(crate) capture_origin: Option<&'a str>,
+    pub(crate) emission_scope: Option<&'a str>,
 }
 
 /// `--fact-graph-output PATH --fact-graph-function NAME`.

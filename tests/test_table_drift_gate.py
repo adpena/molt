@@ -44,7 +44,9 @@ def test_gate_module_paths_resolve_to_this_repo() -> None:
     assert GATE.TYPE_IDS_RS.exists()
     assert GATE.EXCEPTIONS_RS.exists()
     assert GATE.EXCEPTION_SCHEMA_RS.exists()
-    assert GATE.TARGET_PYTHON_PY.exists()
+    assert Path(GATE.target_python_policy.__file__).resolve() == (
+        ROOT / "src/molt/target_python_policy.py"
+    )
     assert GATE.STDLIB_UNION_PY.exists()
     assert GATE.GEN_STDLIB_UNION_PY.exists()
 
@@ -323,13 +325,17 @@ def test_mutation_target_python_generator_redeclare_caught() -> None:
     )
 
 
-def test_unicode_width_gate_distinguishes_same_minor_across_majors(
+def test_unicode_facts_gate_distinguishes_same_minor_across_majors(
     tmp_path, monkeypatch
 ):
     # This private catalog checks identity transport only, not version admission.
     monkeypatch.setattr(GATE, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        GATE.target_python_policy,
+        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS",
+        ("3.0", "4.0"),
+    )
     fixtures = {
-        "TARGET_PYTHON_PY": "versions = (TargetPythonVersion(3, 0, 0), TargetPythonVersion(4, 0, 0))\n",
         "STDLIB_UNION_PY": 'BASELINE_PYTHON_VERSIONS = ("3.0", "4.0")\n',
         "GEN_STDLIB_UNION_PY": "DEFAULT_PYTHONS = SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS\n",
     }
@@ -337,11 +343,21 @@ def test_unicode_width_gate_distinguishes_same_minor_across_majors(
         path = tmp_path / (attribute + ".py")
         path.write_text(source, encoding="utf-8")
         monkeypatch.setattr(GATE, attribute, path)
-    width = tmp_path / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
-    width.parent.mkdir(parents=True)
-    source = (
-        '(3, 0) => Some(("three", WIDTH_3_0)),\n(4, 0) => Some(("four", WIDTH_4_0)),\n'
+    pins = tmp_path / "config/cpython_regrtest_sources.toml"
+    pins.parent.mkdir()
+    pins.write_text(
+        'schema = "molt.cpython-regrtest-sources.v1"\n'
+        + "\n".join(
+            f'[[source]]\npython = "{version}"\ntag = "v{version}.0"\n'
+            f'revision = "{"a" * 40}"\n'
+            'git_url = "https://github.com/python/cpython.git"\n'
+            for version in ("3.0", "4.0")
+        ),
+        encoding="utf-8",
     )
+    width = tmp_path / "runtime/molt-obj-model/src/unicode_generated.rs"
+    width.parent.mkdir(parents=True)
+    source = "(3, 0) => Some(&DATA_3_0),\n(4, 0) => Some(&DATA_4_0),\n"
     width.write_text(source, encoding="utf-8")
     assert GATE.check_target_python_versions().ok
     # Same minor, wrong major must not be reported as an identical target set.
@@ -349,7 +365,7 @@ def test_unicode_width_gate_distinguishes_same_minor_across_majors(
     result = GATE.check_target_python_versions()
     assert not result.ok
     assert any(
-        item.name == "unicode-width-target-versions" and not item.ok
+        item.name == "unicode-facts-source-versions" and not item.ok
         for item in result.items
     )
     width.write_text(source, encoding="utf-8")

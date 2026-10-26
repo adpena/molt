@@ -5,8 +5,9 @@ use molt_backend::tir::pipeline_cache::request_parallel_map;
 use molt_backend::{NativeBackendModuleContext, SimpleIR};
 
 use super::super::super::native_batch::{
-    MappedObject, NativeBatchObjectJob, append_referenced_external_declarations,
-    batch_external_function_names, create_native_batch_temp_dir, finish_native_batch_temp_dir,
+    MappedObject, NativeBatchObjectJob, NativeWorkerOrigin,
+    append_referenced_external_declarations, batch_external_function_names,
+    create_native_batch_temp_dir, finish_native_batch_temp_dir,
     release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
 };
 use super::super::publish::StdlibObjectCache;
@@ -94,7 +95,7 @@ impl PlannedStdlibArchive {
         self,
         log_prefix: &str,
         cache: Option<&StdlibObjectCache>,
-        publish: impl FnOnce(&[MappedObject]) -> io::Result<()>,
+        publish: impl FnOnce(&[MappedObject], &[NativeWorkerOrigin]) -> io::Result<()>,
     ) -> io::Result<()> {
         if cache.is_none() {
             eprintln!(
@@ -120,9 +121,9 @@ impl PlannedStdlibArchive {
                     stdlib_batch_ops_budget(),
                 );
                 if let (Some(cache), Some(input)) = (cache, &batch.key)
-                    && let Some(object) = cache.admit(input)?
+                    && let Some((object, origin)) = cache.admit(input)?
                 {
-                    return Ok(Constituent::Reused(object));
+                    return Ok(Constituent::Reused(object, origin));
                 }
                 // The job is self-contained and hashed above; the worker reads
                 // it from stdin, and only a failure writes it to disk for replay.
@@ -133,7 +134,7 @@ impl PlannedStdlibArchive {
                     index + 1,
                     total
                 );
-                run_native_batch_worker_with_failure_artifacts(
+                let origin = run_native_batch_worker_with_failure_artifacts(
                     "native stdlib batch worker",
                     &job,
                     &format!("batch_{index}.json"),
@@ -142,6 +143,7 @@ impl PlannedStdlibArchive {
                 Ok::<_, io::Error>(Constituent::Emitted {
                     path: object_path,
                     key: batch.key,
+                    origin,
                 })
             })
             .into_iter()
@@ -149,12 +151,12 @@ impl PlannedStdlibArchive {
             release_native_backend_batch_memory_to_os();
             let hits = specs
                 .iter()
-                .filter(|spec| matches!(spec, Constituent::Reused(_)))
+                .filter(|spec| matches!(spec, Constituent::Reused(..)))
                 .count();
             let reused_bytes = specs
                 .iter()
                 .map(|spec| match spec {
-                    Constituent::Reused(object) => object.len(),
+                    Constituent::Reused(object, _) => object.len(),
                     Constituent::Emitted { .. } => 0,
                 })
                 .sum::<u64>();
@@ -162,31 +164,31 @@ impl PlannedStdlibArchive {
             let cache_started = Instant::now();
             // Each miss publishes under its own key's lock, so publication runs
             // on the pool too; the archive keeps batch order.
-            let emitted_bytes = request_parallel_map(&specs, |spec| match (spec, cache) {
-                (Constituent::Reused(_), _) => Ok(0),
-                (
-                    Constituent::Emitted {
-                        path,
-                        key: Some(key),
-                    },
-                    Some(cache),
-                ) => cache.publish(key, path),
-                (Constituent::Emitted { path, .. }, _) => Ok(std::fs::metadata(path)?.len()),
+            let emitted_bytes = specs
+                .iter()
+                .map(|spec| match spec {
+                    Constituent::Reused(..) => Ok(0),
+                    Constituent::Emitted { path, .. } => Ok(std::fs::metadata(path)?.len()),
+                })
+                .sum::<io::Result<u64>>()?;
+            let constituents = request_parallel_map(specs, |spec| match spec {
+                Constituent::Reused(object, origin) => Ok((object, origin)),
+                Constituent::Emitted { path, key, origin } => {
+                    let origin = match (cache, key) {
+                        (Some(cache), Some(key)) => cache.publish(&key, &path, &origin)?,
+                        _ => origin,
+                    };
+                    Ok((MappedObject::file(&path)?, origin))
+                }
             })
             .into_iter()
-            .sum::<io::Result<u64>>()?;
-            let objects = specs
-                .into_iter()
-                .map(|spec| match spec {
-                    Constituent::Reused(object) => Ok(object),
-                    Constituent::Emitted { path, .. } => MappedObject::file(&path),
-                })
-                .collect::<io::Result<Vec<_>>>()?;
+            .collect::<io::Result<Vec<_>>>()?;
+            let (objects, origins): (Vec<_>, Vec<_>) = constituents.into_iter().unzip();
             let cache_elapsed = cache_started.elapsed();
             let publication_started = Instant::now();
             // Completed objects stay mapped until assembly and its short cache
             // lock finish. No archive-sized intermediate copy.
-            publish(&objects)?;
+            publish(&objects, &origins)?;
             drop(objects);
             eprintln!(
                 "{log_prefix}: stdlib object reuse: {} hits, {} misses, {} reused bytes, {} emitted bytes; compile {:?}, cache {:?}, publication {:?}",
@@ -210,10 +212,11 @@ impl PlannedStdlibArchive {
 
 enum Constituent {
     /// An admitted cache generation, mapped in place.
-    Reused(MappedObject),
+    Reused(MappedObject, NativeWorkerOrigin),
     /// A worker's private output, published under its input key when present.
     Emitted {
         path: std::path::PathBuf,
         key: Option<[u8; 32]>,
+        origin: NativeWorkerOrigin,
     },
 }

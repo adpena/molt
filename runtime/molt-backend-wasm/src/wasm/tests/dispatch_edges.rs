@@ -58,6 +58,21 @@ fn direct_loop_edges(wasm: &[u8]) -> usize {
     count
 }
 
+// Inspect encoded branch alternatives rather than the planner under test.
+fn dispatcher_target_counts(wasm: &[u8]) -> Vec<usize> {
+    let mut counts = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.unwrap() {
+            for op in body.get_operators_reader().unwrap() {
+                if let Operator::BrTable { targets } = op.unwrap() {
+                    counts.push(targets.len() as usize);
+                }
+            }
+        }
+    }
+    counts
+}
+
 #[test]
 #[should_panic(expected = "stateful fallthrough requires an explicit terminal return")]
 fn dispatch_edges_reject_stateful_implicit_return() {
@@ -89,6 +104,48 @@ fn saved_state_guest(state_id: i64) -> Vec<u8> {
             wasm_test_op("ret_void", None, vec![]),
             marked("state_label", state_id),
             marked("line", 20),
+            wasm_test_op("ret_void", None, vec![]),
+        ],
+    ))
+}
+
+fn saved_state_roundtrip_guest(state_id: i64, anchored: bool) -> Vec<u8> {
+    emit(wasm_test_function(
+        "molt_main",
+        vec!["task"],
+        None,
+        vec![
+            marked("line", 8),
+            marked("check_exception", 90),
+            OpIR {
+                state_targets: Some(vec![(state_id, 70)]),
+                ..wasm_test_op("state_switch", None, vec![])
+            },
+            marked("line", 10),
+            marked("check_exception", 90),
+            marked("state_set", state_id),
+            OpIR {
+                value: Some(0),
+                ..wasm_test_op("const_bool", Some("initial"), vec![])
+            },
+            wasm_test_op("ret", None, vec!["initial"]),
+            // Authored operation 8 is the resume identity. Its persisted word
+            // is ~8, independently of physical blocks or dispatcher ordinals.
+            marked("state_label", 70),
+            marked("line", 20),
+            marked("check_exception", 90),
+            OpIR {
+                value: (!anchored).then_some(1),
+                s_value: anchored.then(|| "poll-anchor-β\0雪".to_string()),
+                ..wasm_test_op(
+                    if anchored { "const_str" } else { "const_bool" },
+                    Some("resumed"),
+                    vec![],
+                )
+            },
+            wasm_test_op("ret", None, vec!["resumed"]),
+            marked("label", 90),
+            marked("line", 90),
             wasm_test_op("ret_void", None, vec![]),
         ],
     ))
@@ -134,6 +191,11 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         "acyclic exception/branch edges became loop backedges"
     );
 
+    assert!(
+        dispatcher_target_counts(&linear).is_empty(),
+        "forward DAG must have no dynamic alternatives"
+    );
+
     let looping = emit(wasm_test_function(
         "molt_main",
         vec![],
@@ -156,6 +218,53 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         direct_loop_edges(&looping),
         1,
         "only the actual continue may redispatch"
+    );
+
+    assert_eq!(
+        dispatcher_target_counts(&looping),
+        vec![2],
+        "only invocation entry and the real loop header may dispatch"
+    );
+    let latch_guest = |jumpful| {
+        let mut ops = Vec::new();
+        if jumpful {
+            ops.push(marked("label", 0));
+        }
+        ops.extend([
+            wasm_test_op("loop_start", None, vec![]),
+            marked("line", 7),
+            wasm_test_op("loop_break_if_exception", None, vec![]),
+            wasm_test_op("loop_end", None, vec![]),
+            wasm_test_op("ret_void", None, vec![]),
+        ]);
+        emit(wasm_test_function("molt_main", vec![], None, ops))
+    };
+    let latch_plain = latch_guest(false);
+    let latch_jumpful = latch_guest(true);
+    assert_eq!(direct_loop_edges(&latch_plain), 1);
+    assert_eq!(direct_loop_edges(&latch_jumpful), 1);
+    assert_eq!(dispatcher_target_counts(&latch_jumpful), vec![2]);
+
+    let latch_stateful = emit(wasm_test_function(
+        "molt_main",
+        vec!["task"],
+        None,
+        vec![
+            OpIR {
+                state_targets: Some(vec![]),
+                ..wasm_test_op("state_switch", None, vec![])
+            },
+            wasm_test_op("loop_start", None, vec![]),
+            marked("line", 7),
+            wasm_test_op("loop_break_if_exception", None, vec![]),
+            wasm_test_op("loop_end", None, vec![]),
+            wasm_test_op("ret_void", None, vec![]),
+        ],
+    ));
+    assert_eq!(
+        direct_loop_edges(&latch_stateful),
+        2,
+        "saved-state entry and reachable closer both retain their canonical transfers"
     );
 
     let implicit = emit(wasm_test_function(
@@ -221,6 +330,38 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         ],
     ));
     assert_eq!(direct_loop_edges(&structured), 0);
+    assert!(dispatcher_target_counts(&structured).is_empty());
+    assert!(dispatcher_target_counts(&implicit).is_empty());
+    let marker_loop = emit(wasm_test_function(
+        "molt_main",
+        vec!["condition"],
+        None,
+        vec![
+            marked("label", 0),
+            wasm_test_op("if", None, vec!["condition"]),
+            marked("line", 8),
+            wasm_test_op("end_if", None, vec![]),
+            wasm_test_op("loop_start", None, vec![]),
+            marked("line", 7),
+            wasm_test_op("loop_break_if_exception", None, vec![]),
+            wasm_test_op("loop_end", None, vec![]),
+            wasm_test_op("ret", None, vec!["condition"]),
+        ],
+    ));
+    assert_eq!(dispatcher_target_counts(&marker_loop), vec![2]);
+    let marker_exit = emit(wasm_test_function(
+        "molt_main",
+        vec!["condition"],
+        None,
+        vec![
+            marked("label", 0),
+            wasm_test_op("if", None, vec!["condition"]),
+            marked("line", 1),
+            wasm_test_op("end_if", None, vec![]),
+        ],
+    ));
+    assert!(dispatcher_target_counts(&marker_exit).is_empty());
+
     let backward = emit(wasm_test_function(
         "molt_main",
         vec!["condition"],
@@ -261,13 +402,31 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
     for (name, wasm) in [
         ("linear", linear),
         ("looping", looping),
+        ("latch_plain", latch_plain),
+        ("latch_jumpful", latch_jumpful),
+        ("latch_stateful", latch_stateful),
         ("implicit", implicit),
         ("ready", ready),
         ("structured", structured),
+        ("marker_loop", marker_loop),
+        ("marker_exit", marker_exit),
         ("backward", backward),
         ("final_check", final_check),
         ("saved_dense", saved_state_guest(3)),
         ("saved_sparse", saved_state_guest(10000)),
+        ("roundtrip_dense", saved_state_roundtrip_guest(3, false)),
+        (
+            "roundtrip_sparse",
+            saved_state_roundtrip_guest(10000, false),
+        ),
+        (
+            "roundtrip_anchor_dense",
+            saved_state_roundtrip_guest(3, true),
+        ),
+        (
+            "roundtrip_anchor_sparse",
+            saved_state_roundtrip_guest(10000, true),
+        ),
     ] {
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
@@ -282,6 +441,7 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
             "none":molt_codegen_abi::box_none_bits().to_string(),
             "yes":molt_codegen_abi::box_bool_bits(1).to_string(),
             "no":molt_codegen_abi::box_bool_bits(0).to_string(),
+            "anchor_payload":"poll-anchor-β\0雪",
         }))
         .unwrap(),
     )
@@ -294,19 +454,85 @@ const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes), no = BigInt(config.no);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
+  const anchored = test.name.startsWith('roundtrip_anchor_');
   let lines, polls, failAt, savedState=0n;
+  let stateReads=0, stateWrites=[];
+  let anchor, nextOwner=1001n;
+  const owners=new Map(), returnedOwners=new Set();
   const hooks = {
     trace_set_line(line) { lines.push(Number(line)); return none; },
-    exception_pending() { return ++polls === failAt ? 1n : 0n; },
+    exception_pending() {
+      if (anchored && !anchor.checked) {
+        assert.equal(anchor.constructed,1,'constructor observer precedes poll prefix');
+        anchor.checked=true;
+        return anchor.pending ? 1n : 0n;
+      }
+      return ++polls === failAt ? 1n : 0n;
+    },
     is_truthy(value) { assert.ok(value === yes || value === no); return value === yes ? 1n : 0n; },
     is_truthy_int(value) { return hooks.is_truthy(value); },
-    inc_ref_obj(value) { assert.ok([none,yes,no].includes(value)); },
-    dec_ref_obj(value) { assert.ok([none,yes,no].includes(value)); },
-    obj_get_state(task) { assert.equal(task, 64n); return savedState; },
-    obj_set_state(task, state) { assert.equal(task & 0xffffffffn, 64n); },
+    inc_ref_obj(value) {
+      if (anchored && owners.has(value)) {
+        assert.equal(value,anchor.owner,'resumed use selects this poll\'s payload owner');
+        assert.equal(anchor.live,true); assert.equal(anchor.uses,0);
+        assert.equal(lines.at(-1),20,'heap use belongs only to resumed body');
+        assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(anchor.ptr,true),value);
+        assert.equal(owners.get(value),1); owners.set(value,2); anchor.uses++;
+        return;
+      }
+      assert.ok([none,yes,no].includes(value));
+    },
+    dec_ref_obj(value) {
+      if (anchored && owners.has(value)) {
+        assert.equal(value,anchor.owner); assert.equal(anchor.live,true);
+        assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(anchor.ptr,true),none,
+                     'clear this poll\'s slot before anchor release');
+        assert.ok(owners.get(value)>0); owners.set(value,owners.get(value)-1);
+        anchor.releases++; return;
+      }
+      assert.ok([none,yes,no].includes(value));
+    },
+    scratch_alloc(size) {
+      assert.equal(anchored,true,'A0 poll must not allocate');
+      assert.equal(size,8n); assert.equal(anchor.allocations++,0);
+      assert.equal(anchor.live,false);
+      if (anchor.scenario==='allocation') {anchor.pending=true;return 0n;}
+      anchor.ptr=test.memory_pages*65536+128; anchor.live=true;
+      new Uint8Array(imports.env.memory.buffer,anchor.ptr,8).fill(0xa5);
+      return BigInt(anchor.ptr);
+    },
+    scratch_free(ptr,size) {
+      assert.equal(anchored,true);assert.equal(anchor.live,true);
+      assert.equal(ptr,BigInt(anchor.ptr));assert.equal(size,8n);
+      assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(anchor.ptr,true),none);
+      if (anchor.owner!==null) assert.equal(owners.get(anchor.owner),anchor.uses,
+        'region free preserves exactly the escaped literal owner');
+      anchor.live=false;anchor.frees++;
+      new Uint8Array(imports.env.memory.buffer,anchor.ptr,8).fill(0xdd);
+    },
+    string_from_bytes(ptr,len,out) {
+      assert.equal(anchored,true);assert.equal(anchor.live,true);
+      assert.equal(anchor.constructed++,0);
+      const view=new DataView(imports.env.memory.buffer);
+      assert.equal(view.getBigInt64(anchor.ptr,true),none,'poisoned slot initialized before constructor');
+      assert.deepEqual(Buffer.from(new Uint8Array(imports.env.memory.buffer,Number(ptr),Number(len))),
+                       Buffer.from(config.anchor_payload,'utf8'));
+      view.setBigInt64(out,none,true);
+      if (anchor.scenario==='constructor') {anchor.pending=true;return 2;}
+      anchor.owner=nextOwner++;owners.set(anchor.owner,1);
+      view.setBigInt64(out,anchor.owner,true);return 0;
+    },
+    obj_get_state(task) { assert.equal(task, 64n); stateReads++; return savedState; },
+    obj_set_state(task, state) {
+      assert.equal(task & 0xffffffffn, 64n);
+      if (test.name.startsWith('roundtrip_')) {
+        assert.equal(task,64n,'compiled poll retains the raw task parameter');
+        stateWrites.push(state); savedState=state;
+      }
+    },
     future_poll(future) { assert.equal(future, none); return yes; },
   };
-  const imports = {env:{memory:new WebAssembly.Memory({initial:test.memory_pages}),
+  const imports = {env:{memory:new WebAssembly.Memory({initial:test.memory_pages+Number(anchored)}),
     __indirect_function_table:new WebAssembly.Table({initial:test.table_entries,element:'anyfunc'})}};
   for (const entry of WebAssembly.Module.imports(module)) {
     if (entry.kind !== 'function') { assert.ok(entry.name in imports.env); continue; }
@@ -321,16 +547,35 @@ for (const test of config.cases) {
       assert.deepEqual(lines, Array.from({length:failure || 64}, (_,i)=>i+1));
       assert.equal(polls, failure || 64);
     }
-    // Corrupt only the lookup's input data: dispatch must trap before guest
-    // callbacks, not interpret an invalid block index as a loop backedge.
+    // This forward-only body has no operation map to corrupt. Arbitrary
+    // lookup-data bytes cannot invent an entry alternative or skip observers.
     new Uint8Array(imports.env.memory.buffer).fill(255);
-    lines=[];
-    assert.throws(()=>app.molt_main(yes), WebAssembly.RuntimeError);
-    assert.deepEqual(lines, []);
+    lines=[]; polls=0; failAt=0;
+    assert.equal(app.molt_main(yes), yes);
+    assert.deepEqual(lines, Array.from({length:64}, (_,i)=>i+1));
+    assert.equal(polls,64);
   } else if (test.name === 'looping') {
     lines=[]; polls=0; failAt=3;
     assert.equal(app.molt_main(), yes);
     assert.deepEqual(lines, [7,7,7]); assert.equal(polls, 3);
+    // Dynamic lookup remains a checked boundary: corrupt ordinals trap before
+    // any callback, rather than selecting an unplanned body or loop backedge.
+    new Uint8Array(imports.env.memory.buffer).fill(255);
+    lines=[]; polls=0;
+    assert.throws(()=>app.molt_main(), WebAssembly.RuntimeError);
+    assert.deepEqual(lines, []); assert.equal(polls,0);
+  } else if (test.name === 'latch_plain' || test.name === 'latch_jumpful') {
+    lines=[]; polls=0; failAt=3;
+    assert.equal(app.molt_main(), none);
+    assert.deepEqual(lines,[7,7,7]); assert.equal(polls,3);
+  } else if (test.name === 'latch_stateful') {
+    // Raw negative operation4 still selects its existing containing block;
+    // the formerly incorrect closer fallthrough now takes the canonical latch.
+    for (const state of [0n,~1n,~4n]) {
+      savedState=state; lines=[]; polls=0; failAt=3;
+      assert.equal(app.molt_main(64n),none);
+      assert.deepEqual(lines,[7,7,7]); assert.equal(polls,3);
+    }
   } else if (test.name === 'ready') {
     lines=[]; polls=0; failAt=0;
     assert.equal(app.molt_main(64n), yes); assert.deepEqual(lines, [23]);
@@ -345,6 +590,90 @@ for (const test of config.cases) {
       assert.equal(app.molt_main(condition), condition);
       assert.deepEqual(lines, [condition===yes?1:2,3]);
     }
+  } else if (test.name === 'marker_loop') {
+    for (const condition of [no,yes]) {
+      lines=[]; polls=0; failAt=3;
+      assert.equal(app.molt_main(condition),condition);
+      assert.deepEqual(lines,condition===yes?[8,7,7,7]:[7,7,7]);
+      assert.equal(polls,3);
+    }
+  } else if (test.name === 'marker_exit') {
+    for (const condition of [no,yes]) {
+      lines=[]; polls=0; failAt=0;
+      assert.equal(app.molt_main(condition),none);
+      assert.deepEqual(lines,condition===yes?[1]:[]);
+    }
+  } else if (test.name.startsWith('roundtrip_')) {
+    const resume = test.name.endsWith('dense') ? 3n : 10000n;
+    // No planner/map helper supplies this expectation: the authored source
+    // continuation is operation 8, so the external saved word must be ~8.
+    const encoded = ~8n;
+    const reset = (failure=0,scenario='normal') => {
+      lines=[]; polls=0; failAt=failure; stateReads=0; stateWrites=[];
+      anchor={scenario,owner:null,ptr:null,live:false,pending:false,checked:false,
+              allocations:0,frees:0,constructed:0,uses:0,releases:0};
+    };
+    const finishAnchor = (result,uses) => {
+      assert.equal(anchor.allocations,Number(anchored),'one allocation per actual poll, none for A0');
+      assert.equal(anchor.constructed,Number(anchored && anchor.scenario!=='allocation'));
+      assert.equal(anchor.frees,Number(anchored && anchor.scenario!=='allocation'));
+      assert.equal(anchor.live,false);assert.equal(anchor.uses,uses);
+      assert.equal(anchor.releases,Number(anchor.owner!==null));
+      if (anchor.owner!==null) {
+        assert.equal(owners.get(anchor.owner),uses);
+        if (uses) {assert.equal(result,anchor.owner);returnedOwners.add(result);}
+      }
+      for (const owner of returnedOwners) assert.equal(owners.get(owner),1,
+        'later poll cannot retire an earlier returned owner');
+    };
+    const releaseReturned = (owner) => {
+      assert.equal(anchor.live,false);assert.equal(returnedOwners.delete(owner),true);
+      assert.equal(owners.get(owner),1);owners.set(owner,0);
+    };
+    savedState=0n; reset();
+    assert.equal(app.molt_main(64n), no);
+    finishAnchor(no,0);
+    assert.deepEqual(lines,[8,10]); assert.equal(polls,2);
+    assert.equal(stateReads,1); assert.deepEqual(stateWrites,[encoded]);
+    assert.equal(savedState,encoded);
+    // Feed the actual persisted runtime word back into the next poll. Entry
+    // prefix runs once again; initial body and state_set must not replay.
+    reset();
+    const resumed=app.molt_main(64n);
+    assert.equal(resumed,anchored ? anchor.owner : yes);
+    finishAnchor(resumed,Number(anchored));
+    assert.deepEqual(lines,[8,20]); assert.equal(polls,2);
+    assert.equal(stateReads,1); assert.deepEqual(stateWrites,[]);
+    assert.equal(savedState,encoded);
+    // Positive public state IDs and persisted operation identities share the
+    // same real continuation, for both dense and sparse remap plans.
+    savedState=resume; reset();
+    const positive=app.molt_main(64n);
+    assert.equal(positive,anchored ? anchor.owner : yes);
+    finishAnchor(positive,Number(anchored));
+    if (anchored) {assert.notEqual(resumed,positive);releaseReturned(resumed);releaseReturned(positive);}
+    assert.deepEqual(lines,[8,20]); assert.equal(polls,2);
+    assert.equal(stateReads,1); assert.deepEqual(stateWrites,[]);
+    assert.equal(savedState,resume);
+    // An exception in either the prefix or selected body reaches only the
+    // authored handler and cannot publish a state or replay another body.
+    for (const state of [0n,encoded]) for (const failure of [1,2]) {
+      savedState=state; reset(failure);
+      assert.equal(app.molt_main(64n),none);
+      finishAnchor(none,0);
+      assert.deepEqual(lines,failure===1 ? [8,90] : [8,state===0n?10:20,90]);
+      assert.equal(polls,failure); assert.equal(stateReads,1);
+      assert.deepEqual(stateWrites,[]); assert.equal(savedState,state);
+    }
+    if (anchored) for (const scenario of ['allocation','constructor']) {
+      savedState=encoded;reset(0,scenario);
+      assert.equal(app.molt_main(64n),none);finishAnchor(none,0);
+      assert.equal(anchor.pending,true);
+      assert.deepEqual(lines,[]);assert.equal(polls,0);assert.equal(stateReads,0);
+      assert.deepEqual(stateWrites,[]);assert.equal(savedState,encoded);
+    }
+    assert.equal(returnedOwners.size,0);
+    assert.ok([...owners.values()].every(count=>count===0));
   } else if (test.name.startsWith('saved_')) {
     const resume = test.name==='saved_dense' ? 3n : 10000n;
     for (const [state, expected] of [[0n,10],[resume,20]]) {

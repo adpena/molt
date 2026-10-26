@@ -9,6 +9,14 @@
 schema = "molt.proof-plan.v6"
 
 authority_inputs = [
+  "bench/harness.py",
+  "src/molt/compilation_target.py",
+  "src/molt/native_target.py",
+  "tools/bench_dashboard.py",
+  "tools/bench_diff.py",
+  "tools/bench_evidence.py",
+  "tools/bench_reporting.py",
+  "tools/perf_regression.py",
   "src/molt/binaryen_identity.py",
   "src/molt/binaryen_toolchain.py",
   "src/molt/llvm_wasi_tools.py",
@@ -114,6 +122,8 @@ authority_inputs = [
   "src/molt/metric_ratios.py",
   "src/molt/node_runtime.py",
   "src/molt/target_python.py",
+  "src/molt/target_python_policy.py",
+  "src/molt/_python_release_generated.py",
   "src/molt/compiler_analysis/python_syntax.py",
   "tests/tools/test_check_perf_gate_wiring.py",
   "tests/tools/test_perf_authority.py",
@@ -209,6 +219,11 @@ authority_inputs = [
   "src/molt/dx.py",
   "src/molt/checkout_state.py",
   "src/molt/checkout_provisioning.py",
+  "src/molt/source_build_environment.py",
+  "src/molt/source_build_environment_schema.py",
+  "src/molt/source_build_requirements.py",
+  "src/molt/python_interpreter.py",
+  "src/molt/compiler_analysis/__init__.py",
   "src/molt/backend_daemon_paths.py",
   "src/molt/default_paths.py",
   "src/molt/environment_registry.py",
@@ -222,6 +237,7 @@ authority_inputs = [
   "src/molt/cargo_workspace.py",
   "src/molt/process_guard.py",
   "src/molt/llvm_toolchain.py",
+  "src/molt/llvm_link_plan.py",
   "src/molt/wasi_sdk_identity.py",
   "src/molt/wasi_c_abi_protocol.txt",
   "tools/provision_wasi_sdk.py",
@@ -362,6 +378,7 @@ authority_inputs = [
   "tests/test_ci_cargo_cache.py",
   "tools/ci_cargo_cache.py",
   "tools/ci_triage.py",
+  "tools/ci_proof_evidence.py",
   "tests/tools/test_ci_triage.py",
   "tests/test_cpython_regrtest_memory_guard.py",
   "tests/test_generator_manifest.py",
@@ -680,21 +697,6 @@ version_args = ["--version"]
 version_pattern = '^lune 0\.11\.1$'
 setup_value = "0.11.1"
 setup_evidence = ["config/tool_releases.toml::version = \"0.11.1\"", ".github/workflows/ci.yml::python3 -m molt.tool_releases provision lune"]
-
-# Cargo build scripts select this isolated generator independently of the proof
-# launcher. Queue command admission adds this contextual prerequisite; static
-# partition preflight has no Cargo environment and claims no generator identity.
-[[toolchain_policy]]
-name = "build-python"
-executable = "build-python"
-compiler_tool_selector = "build-python"
-python_identity_role = "runtime"
-selection_only = true
-version_from_content_path = true
-version_args = ["--version"]
-version_pattern = '^Python 3\.[0-9]+\.[0-9]+.*$'
-setup_value = "effective Cargo build Python"
-setup_evidence = ["runtime/build_support/build_python.rs::MOLT_BUILD_PYTHON"]
 
 [[toolchain_policy]]
 name = "cargo"
@@ -1297,7 +1299,7 @@ dependencies = []
 [[ci_family]]
 name = "browser_simd"
 description = "Standalone browser SIMD source, artifact, numeric and consumer contracts without compiler/runtime builds."
-inputs = [".github/workflows/ci.yml", "rust-toolchain.toml", "src/molt/wasm_artifact.py", "deploy/browser/compute-engine.js", "deploy/browser/simd-ops-rs/**", "deploy/browser/simd-ops.wasm", "tools/build_browser_simd.py", "tests/tools/test_build_browser_simd.py", "tests/e2e/simd_test_support.js", "tests/e2e/simd_diff_harness.js", "tests/e2e/test_simd_differential.py", "tests/test_browser_compute_backend_semantics.py"]
+inputs = [".github/workflows/ci.yml", ".cargo/config.toml", "rust-toolchain.toml", "src/molt/wasm_artifact.py", "deploy/browser/compute-engine.js", "deploy/browser/simd-ops-rs/**", "deploy/browser/simd-ops.wasm", "tools/build_browser_simd.py", "tests/tools/test_build_browser_simd.py", "tests/e2e/simd_test_support.js", "tests/e2e/simd_diff_harness.js", "tests/e2e/test_simd_differential.py", "tests/test_browser_compute_backend_semantics.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "browser-simd"
@@ -1337,7 +1339,7 @@ dependencies = []
 [[ci_family]]
 name = "llvm"
 description = "LLVM, MLIR, and linker executable build/lowering/link/differential proof."
-inputs = ["runtime/test_support/native_object_execution.rs", ".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**", "config/release_acceptance_matrix.toml", "src/molt/release_lanes.py", "src/molt/compiler_distribution.py", "src/molt/cli/compiler_identity.py", "src/molt/cli/installed_runtime.py", "tools/release/native_build.py", "tools/release/runtime_cells.py", "tools/release/verify_consumer.py", "vendor/llvm/**", "tests/cli/test_compiler_identity.py", "tests/cli/test_wasm_facts_tool.py", "tests/cli/test_installed_runtime.py", "tests/tools/test_release_native_build.py", "tests/test_release_lanes.py"]
+inputs = ["runtime/test_support/native_object_execution.rs", ".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-llvm-link/**", "src/molt/llvm_link_plan.py", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**", "config/release_acceptance_matrix.toml", "src/molt/release_lanes.py", "src/molt/compiler_distribution.py", "src/molt/cli/compiler_identity.py", "src/molt/cli/installed_runtime.py", "tools/release/native_build.py", "tools/release/runtime_cells.py", "tools/release/verify_consumer.py", "vendor/llvm/**", "tests/cli/test_compiler_identity.py", "tests/cli/test_wasm_facts_tool.py", "tests/cli/test_installed_runtime.py", "tests/tools/test_release_native_build.py", "tests/test_release_lanes.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "llvm-backend"
@@ -1442,8 +1444,9 @@ inputs = ["src/molt/cli/completion.py", "src/molt/cli/arg_helpers.py", "src/molt
   "src/molt/cli/external_native.py",
   "src/molt/cli/module_graph.py",
   "src/molt/cli/python_module_names.py",
-  "src/molt/cli/source_build_environment.py",
-  "src/molt/cli/source_build_environment_schema.py",
+  "src/molt/source_build_environment.py",
+  "src/molt/source_build_environment_schema.py",
+  "src/molt/source_build_requirements.py",
   "src/molt/cli/source_build_inventory.py",
   "src/molt/python_*.py",
   "src/molt/native_artifact_header.py",
@@ -1665,7 +1668,6 @@ dependencies = []
 evidence_outputs = ["proof-results/nightly/prepare"]
 argv = ["uv", "run", "python3", "tools/nightly_prepare.py", "--output-root", "proof-results/nightly/prepare"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "nightly.conformance.aggregate"
@@ -1738,7 +1740,6 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/determinism-hello", "examples/hello.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 
 [[command]]
 id = "nightly.determinism.runtime"
@@ -1753,7 +1754,6 @@ dependencies = ["nightly.determinism.compiler-prewarm"]
 evidence_outputs = ["proof-results/nightly/deterministic-runtime.json"]
 argv = ["uv", "run", "python3", "-u", "tools/check_deterministic_runtime.py", "--corpus", "full", "--runs", "3", "--build-profile", "dev", "--json-out", "proof-results/nightly/deterministic-runtime.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 # Two checkouts of the same sources build byte-identical objects (HF-372). The
 # test copies this checkout, builds two programs with each checkout's own
@@ -1773,7 +1773,6 @@ dependencies = ["nightly.determinism.compiler-prewarm"]
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-s", "-m", "slow"]
 pytest = ["tests/cli/test_checkout_independent_objects.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
-cargo_build_python = true
 
 # The typed-IR verification and the IR hash-seed suite are CPU-bound Python
 # suites. Run beside each other on the 4-core runner, the verification ran
@@ -1793,7 +1792,6 @@ dependencies = ["nightly.determinism.ir-hashseed", "nightly.determinism.runtime"
 evidence_outputs = ["proof-results/nightly/ir-verification.json"]
 argv = ["uv", "run", "python3", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--examples", "--json-out", "proof-results/nightly/ir-verification.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 # One cold `molt build` warms the backend and runtime through the CLI's own
 # build lane, so the measured builds that follow start warm. A raw
@@ -1814,7 +1812,6 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/verification-t3-hello", "examples/hello.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 
 # Fifteen builds (three programs, five runs), each compiling the stdlib into a
 # fresh cache, plus the IR audit, with three other suites on a 4-core runner:
@@ -1834,7 +1831,6 @@ dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/reproducibility-tier3.json"]
 argv = ["uv", "run", "python3", "-u", "tools/check_reproducible_build.py", "--corpus", "full", "--runs", "5", "--audit-ir", "--json-out", "proof-results/reproducibility-tier3.json"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
-cargo_build_python = true
 
 # Nightly run 37947710312 built and ran about one program per 55 s beside the
 # other Tier 3 suites; 40 programs fit 2700 s, and the job budget leaves no
@@ -1852,7 +1848,6 @@ dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/fuzz-compiler-extended.json"]
 argv = ["uv", "run", "python3", "tools/fuzz_compiler.py", "--count", "40", "--timeout", "300", "--json-out", "proof-results/fuzz-compiler-extended.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 # The fuzz test files: the safe generator's contract (about 350 CPython runs)
 # and 20 targeted arithmetic and dead-code programs that Molt compiles and
@@ -1873,7 +1868,6 @@ argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto"]
 pytest = ["tests/fuzz/test_fuzz_differential.py", "tests/fuzz/test_fuzz_extended.py"]
 pytest_worker_memory_gb = 1.25
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "nightly.verification-t3.mutation"
@@ -1903,7 +1897,6 @@ dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/translation-tier3.json"]
 argv = ["uv", "run", "python3", "tools/translation_validate.py", "--json-out", "proof-results/translation-tier3.json", "tests/differential"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "nightly.verification-t3.model-based"
@@ -1948,7 +1941,6 @@ argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", 
 pytest = ["tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/test_python_runtime_identity.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 pytest_worker_memory_gb = 1.0
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.queue.macos"
@@ -1963,7 +1955,6 @@ argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", 
 pytest = ["tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/test_python_runtime_identity.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 pytest_worker_memory_gb = 1.0
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.queue.windows"
@@ -1978,7 +1969,6 @@ argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", 
 pytest = ["tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/test_python_runtime_identity.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 pytest_worker_memory_gb = 1.0
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-link.linux"
@@ -1994,7 +1984,6 @@ dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v"]
 pytest = ["tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-link.macos"
@@ -2010,7 +1999,6 @@ dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v"]
 pytest = ["tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-link.windows"
@@ -2030,7 +2018,6 @@ env = { MOLT_GUARD_PROFILE = "all" }
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "--durations=10"]
 pytest = ["tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.ir.macos"
@@ -2075,7 +2062,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.rust.linux-aarch64.clippy-workspace"
@@ -2095,7 +2081,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.rust.macos.runtime-gate"
@@ -2114,7 +2099,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "dev-fast", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "repository.github-actions.static"
@@ -2602,10 +2586,11 @@ resource_class = "repository-policy"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage", "repository.perf-methodology"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-p", "tools.pytest_profile", "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"]
+evidence_outputs = ["proof-receipts/evidence/repository-docs-tests"]
 pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_committed_gate_policy.py", "tests/test_molt_dev_lanes.py", "tests/test_checkout_provisioning.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
 pytest_worker_memory_gb = 1.75
-toolchains = ["python", "uv", "rustfmt"]
+toolchains = ["python", "uv", "rustc", "rustfmt"]
 
 # Repository tooling: the checkers, guards, release and measurement tools
 # under tools/ that no subject command runs yet. Linux owns it for now; the
@@ -2624,10 +2609,9 @@ timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
-pytest = ["tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_changed_clippy.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_triage.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_linux_vm.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_gen_token_metadata.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_worker_peaks.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_history.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_pytest_profile.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/tools/test_diff_results.py", "tests/tools/test_build_phase_report.py", "tests/tools/test_regrtest_results.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_native_launch_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/tools/test_toolchain_env.py", "tests/tools/test_cargo_lock_audit.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_orphan_reaper.py", "tests/tools/test_artifact_cleanup.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_queue_run_retention.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
+pytest = ["tests/test_runtime_build_python.py", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_changed_clippy.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_triage.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_linux_vm.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_gen_token_metadata.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_worker_peaks.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_history.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_pytest_profile.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/tools/test_diff_results.py", "tests/tools/test_build_phase_report.py", "tests/tools/test_regrtest_results.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_native_launch_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/tools/test_toolchain_env.py", "tests/tools/test_cargo_lock_audit.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_orphan_reaper.py", "tests/tools/test_artifact_cleanup.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_queue_run_retention.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
 pytest_worker_memory_gb = 0.75
 toolchains = ["python", "uv", "rustc", "cargo", "rustfmt"]
-cargo_build_python = true
 
 # Agent coordination: the claims ledger, landing and commit guards, session
 # hooks, and the context tool every agent session starts from.
@@ -2641,7 +2625,7 @@ timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto"]
-pytest = ["tests/test_agent_coordination.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_subagent_contract.py"]
+pytest = ["tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_subagent_contract.py"]
 pytest_worker_memory_gb = 0.5
 toolchains = ["python", "uv"]
 
@@ -2658,7 +2642,6 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "wasm", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
-cargo_build_python = false
 
 # The finally-pending native leg and the import/codec differential also compile
 # native programs, and the native backend is a separate release build of
@@ -2679,7 +2662,6 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "native", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = false
 
 # The Node runner, browser host and loader bridge: table bases, callable
 # tables and split-runtime import conversion against synthetic WAT modules,
@@ -2701,7 +2683,6 @@ argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-n", 
 pytest = ["tests/test_wasm_runner_table_base.py", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
 pytest_worker_memory_gb = 0.75
 toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo", "hosted-clang"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.build.host"
@@ -2716,7 +2697,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "build", "--locked", "--profile", "dev-fast", "-p", "molt-wasm-host"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.build.shared-runtime"
@@ -2730,7 +2710,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "dev", "--kind", "shared", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.build.split-runtime-release"
@@ -2744,7 +2723,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "release", "--kind", "both", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.compile.hello"
@@ -2759,7 +2737,6 @@ dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/hello/hello.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.run.hello"
@@ -2788,7 +2765,6 @@ dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.run.comprehension"
@@ -2816,7 +2792,6 @@ dependencies = ["wasm.build.backend"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_hello.luau"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "luau.compile.comprehension"
@@ -2831,7 +2806,6 @@ dependencies = ["wasm.build.backend"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/string_comprehension.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_string_comprehension.luau"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.compile.sieve"
@@ -2846,7 +2820,6 @@ dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/sieve/sieve.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.run.sieve"
@@ -2906,7 +2879,6 @@ dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runt
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_control_flow.py", "tests/test_wasm_longdouble_printf_link.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "ninja", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.split-runtime"
@@ -2922,7 +2894,6 @@ dependencies = ["wasm.build.backend", "wasm.build.split-runtime-release"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts", "tests/test_wasm_split_runtime.py::TestWorkerJsContent", "tests/test_wasm_split_runtime.py::TestManifestJson", "tests/test_wasm_split_runtime.py::TestRuntimeCacheability", "tests/test_browser_vfs.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 # Each isolated application may start cold. Keep its own existing cold bound
 # and receipt; a sibling timeout must not consume its execution window.
@@ -2943,7 +2914,6 @@ dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-boundaries"
@@ -2956,9 +2926,8 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
-pytest = ["tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results", "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64", "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"]
+pytest = ["tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results", "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64", "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls", "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.tinygrad-dtype"
@@ -2973,7 +2942,6 @@ dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.tinygrad-tensor"
@@ -2988,7 +2956,6 @@ dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.tensor-row-ops"
@@ -3003,7 +2970,6 @@ dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.gpu-bytes-ownership"
@@ -3018,7 +2984,6 @@ dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_split_runtime.py::test_split_runtime_host_export_bytes_survive_raw_temp_cleanup"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.integration.host-exports.falcon-driver"
@@ -3033,7 +2998,6 @@ dependencies = ["wasm.build.backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_split_runtime.py::test_linked_falcon_ocr_wasm_driver_runs_stub_generation", "tests/test_falcon_driver_scaffold.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt", "browser-acorn"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.test.freestanding-e2e"
@@ -3048,7 +3012,6 @@ dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runt
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_wasm_freestanding.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 # The finally-pending observer proof checks each target against one CPython
 # oracle. Each target is a separate row with its own budget: in CI run
@@ -3074,7 +3037,6 @@ dependencies = ["wasm.build.native-backend"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-k", "native"]
 pytest = ["tests/test_finally_pending_observer_parity.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link"]
-cargo_build_python = true
 
 [[command]]
 id = "wasm.test.finally-pending-observer-parity.wasm"
@@ -3089,7 +3051,6 @@ dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runt
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-k", "wasm"]
 pytest = ["tests/test_finally_pending_observer_parity.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 # Import, reconstructed-function and JSON callback receivers share the existing
 # differential adapters. Admit each exact backend/runtime family on its first
@@ -3108,7 +3069,6 @@ dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0", MOLT_DIFF_TIMEOUT = "60", MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC = "60", MOLT_DIFF_MEASURE_RSS = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "dev", "--build-profile", "dev", "--stdlib-profile", "full", "--target", "native,wasm", "--jobs", "1", "--files-from", "tests/fixtures/reconstructed_functions/TESTS.txt", "--evidence-dir", "runtime-import", "--json", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 
 [[command]]
 id = "python.static.ty"
@@ -3172,8 +3132,9 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
 pytest = ["tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_native_locations.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3185,8 +3146,9 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
 pytest = ["tests/test_python_environment_identity.py", "tests/test_python_external_custody.py", "tests/test_python_uv_lock_identity.py", "tests/test_python_identity_adversarial.py", "tests/test_toolchain_identity.py", "tests/test_toolchain_executable_selection.py", "tests/test_python_native_dependency_custody.py", "tests/test_python_native_locations.py", "tests/test_python_runtime_identity.py", "tests/tools/test_toolchain_capture.py"]
+pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3202,7 +3164,6 @@ argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "
 pytest = ["tests/test_python_binding_flow.py", "tests/test_gen_python_identity_catalog.py", "tests/test_python_namespace_writes.py", "tests/test_python_namespace_graph.py", "tests/test_python_binding_completion_flow.py", "tests/test_frontend_condition_flow.py", "tests/cli/test_cli_python_source_closure.py", "tests/cli/test_runtime_import_scan_custody.py", "tests/cli/test_frontend_source_snapshot_authority.py", "tests/cli/test_source_scan_authority_closure.py", "tests/test_frontend_ir_alias_ops.py", "tests/test_frontend_package_composition.py", "tests/cli/test_cli_python_import_authority.py", "tests/cli/test_python_import_topology_reads.py", "tests/tools/test_gen_protocol.py", "tests/test_python_execution_frame.py", "tests/test_class_function_lifecycle.py", "tests/test_class_method_receiver_authority.py", "tests/test_profile_python_binding_flow.py", "tests/test_debug_ir.py"]
 pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "python.unit.binding-authority.macos"
@@ -3217,7 +3178,6 @@ argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "
 pytest = ["tests/test_python_binding_flow.py", "tests/test_gen_python_identity_catalog.py", "tests/test_python_namespace_writes.py", "tests/test_python_namespace_graph.py", "tests/test_python_binding_completion_flow.py", "tests/test_frontend_condition_flow.py", "tests/cli/test_cli_python_source_closure.py", "tests/cli/test_runtime_import_scan_custody.py", "tests/cli/test_frontend_source_snapshot_authority.py", "tests/cli/test_source_scan_authority_closure.py", "tests/test_frontend_ir_alias_ops.py", "tests/test_frontend_package_composition.py", "tests/cli/test_cli_python_import_authority.py", "tests/cli/test_python_import_topology_reads.py", "tests/tools/test_gen_protocol.py", "tests/test_python_execution_frame.py", "tests/test_class_function_lifecycle.py", "tests/test_class_method_receiver_authority.py", "tests/test_profile_python_binding_flow.py", "tests/test_debug_ir.py"]
 pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 
 # Frontend lowering: AST to structured IR, diagnostics and the semantic
@@ -3307,7 +3267,6 @@ argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "
 pytest = ["tests/cli/test_cli_import_collection.py"]
 pytest_worker_memory_gb = 6.25
 toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang"]
-cargo_build_python = true
 
 # Library and surface contracts that need only Python: public API and stub
 # surfaces, stdlib and codec behavior, WASM host tooling, generators. Same
@@ -3387,7 +3346,6 @@ argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "
 pytest = ["tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/test_process_environment.py", "tests/test_flag_strings.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/test_native_symbol_table.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/cli/test_native_toolchain_transfer.py", "tests/cli/test_runtime_native_generation.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_wasm_facts_tool.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 pytest_worker_memory_gb = 1.0
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "python.unit.runtime-artifacts.macos"
@@ -3402,7 +3360,6 @@ argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "
 pytest = ["tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/test_process_environment.py", "tests/test_flag_strings.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/test_native_symbol_table.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/cli/test_native_toolchain_transfer.py", "tests/cli/test_runtime_native_generation.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_wasm_facts_tool.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 pytest_worker_memory_gb = 1.0
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "python.unit.runtime-library-boundary"
@@ -3441,7 +3398,7 @@ timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-q"]
-pytest = ["tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_cli_extension_commands.py::test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mock", "tests/cli/test_cli_extension_commands.py::test_extension_build_real_wasm_object_separates_import_and_data_relocation_closure", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py", "tests/cli/test_c_api_headers.py", "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_reports_owned_raised_exception"]
+pytest = ["tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_cli_extension_commands.py::test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mock", "tests/cli/test_cli_extension_commands.py::test_extension_build_real_wasm_object_separates_import_and_data_relocation_closure", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py", "tests/cli/test_c_api_headers.py", "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_hands_the_runtime_status_to_its_exit"]
 toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld", "llvm-sdk", "ld.lld", "lld-link", "ld64.lld", "wasi-clang"]
 
 [[command]]
@@ -3457,7 +3414,6 @@ dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q"]
 pytest = ["tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 
 # On the PR tier this is the first compiler build (bench-cli runs on main only),
 # so it must carry the cold budget. The backend daemon tests follow the dev
@@ -3478,7 +3434,6 @@ dependencies = []
 argv = ["uv", "run", "--python", "3.12", "pytest", "-vv", "-s", "--durations=0"]
 pytest = ["tests/test_manifest_pipeline_e2e.py", "tests/test_native_importlib_public_api_regressions.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/cli/test_backend_daemon_sequential.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 
 # The whole CLI smoke file: package and verify capability policy, run, build,
 # compare and completion. It runs after the capability-manifest build, so its
@@ -3496,7 +3451,6 @@ dependencies = ["native.integration.capability-manifest"]
 argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "--durations=20"]
 pytest = ["tests/cli/test_cli_smoke.py", "tests/cli/test_cli_build_identity.py", "tests/cli/test_traceback_carets.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
-cargo_build_python = true
 
 # Metamorphic compiler equivalence: each case compiles a program and a
 # semantics-preserving transformation of it (48 native builds in all), and
@@ -3517,7 +3471,6 @@ argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "-n", "auto", "--durati
 pytest = ["tests/metamorphic"]
 pytest_worker_memory_gb = 3.25
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 
 [[command]]
 id = "rust.clippy.wasi32"
@@ -3535,7 +3488,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--target", "wasm32-wasip1", "--lib", "-p", "molt-runtime", "-p", "molt-tir", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo", "wasm-ld"]
-cargo_build_python = true
 
 # Lockfiles outside the main workspace (MLIR backend, fuzz targets) are not
 # exercised by any build here; resolve each so none silently outgrows its
@@ -3551,7 +3503,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--frozen", "python3", "tools/check_cargo_locks.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = false
 
 # The cargo-fuzz workspaces sit outside the main workspace, so no other command
 # compiles their targets; two fuzz/ targets stopped compiling unseen (HF-319).
@@ -3573,7 +3524,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "check", "--locked", "--bins", "--manifest-path", "fuzz/Cargo.toml"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 [[command]]
 id = "rust.check.fuzz-backend"
@@ -3587,7 +3537,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "check", "--locked", "--bins", "--manifest-path", "runtime/molt-backend/fuzz/Cargo.toml"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 [[command]]
 id = "rust.check.fuzz-runtime"
@@ -3601,7 +3550,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "check", "--locked", "--bins", "--manifest-path", "runtime/molt-runtime/fuzz/Cargo.toml"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 # One build of the actual crate proves source/artifact synchronization, numerical
 # oracles, memory ABI and the real browser consumer. No optional binary skips.
@@ -3617,7 +3565,6 @@ dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q"]
 pytest = ["tests/tools/test_build_browser_simd.py", "tests/e2e/test_simd_differential.py", "tests/test_browser_compute_backend_semantics.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
-cargo_build_python = false
 
 # The browser SIMD crate ships deploy/browser/simd-ops.wasm but sits outside
 # the workspace; lint it so it cannot silently stop compiling. Cargo reads the
@@ -3634,7 +3581,6 @@ dependencies = []
 cwd = "deploy/browser/simd-ops-rs"
 argv = ["cargo", "clippy", "--locked", "--release", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 [[command]]
 id = "rust.check.math-aarch64"
@@ -3647,7 +3593,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "check", "--locked", "--target", "aarch64-unknown-linux-gnu", "-p", "molt-runtime-math"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 [[command]]
 id = "rust.test.default-truth"
@@ -3664,7 +3609,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "node", "wasm-ld"]
-cargo_build_python = true
 
 [[command]]
 id = "rust.test.compiler-authorities"
@@ -3688,7 +3632,6 @@ dependencies = []
 # existing rust-backend feature; --lib alone does not execute its source oracles.
 argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "--test", "native_batch_worker_spawn", "--test", "daemon_server", "--test", "integration", "--test", "basic", "--test", "native_extern_linkage", "--test", "rust_transpiler_preview", "--test", "wasm_link_facts_cli", "-p", "object@0.40.0", "-p", "cranelift-object@0.137.0", "-p", "molt-artifact-publish", "-p", "molt-host-process", "-p", "molt-wasm-facts", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-lang-cpython-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1", "--skip", "read::coff::coff_extended_relocations", "--skip", "read::elf::get_buildid_bad_elf", "--skip", "read::elf::get_buildid_less_bad_elf", "--skip", "read::elf::zero_sized_section_works", "--skip", "read::macho::test_macho_entry_point", "--skip", "read::macho::test_go_macho", "--skip", "read::macho::test_macho_load_command_offset"]
 toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
-cargo_build_python = true
 
 [[command]]
 id = "rust.test.ir-wasm-runtime-authorities"
@@ -3712,6 +3655,8 @@ dependencies = []
 # This reduced runtime cell is stdlib_micro plus GPU primitives and WebGPU
 # descriptor support. Exercise the actual object bridge and descriptor/storage
 # contracts without requesting a device or claiming hardware execution.
+# Explicit math admission also executes satellite snapshot failure propagation;
+# stdlib_micro alone does not enable that runtime consumer.
 # The WASM backend's own trace-import test consumes the same symbolic frame metadata.
 # Native errno uses the same platform build graph; its actual-C object and
 # generated-consumer controls are in errno_build_tests, with the unchanged
@@ -3719,9 +3664,8 @@ dependencies = []
 # exercises the borrowed view as well. All children use Cargo custody.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-regex", "-p", "molt-runtime-core", "-p", "molt-stdlib-text", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "counter_wrap", "memory_budget::", "tir::", "wasm::", "wasm_abi::", "wasm_binary::reloc::tests::", "async_rt::channels::", "concurrency::gil::tests::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "gpu_runtime_tests::", "kernel_storage::", "regex::", "text_storage::", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-regex", "-p", "molt-runtime-core", "-p", "molt-runtime-math", "-p", "molt-stdlib-text", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "counter_wrap", "memory_budget::", "tir::", "wasm::", "wasm_abi::", "wasm_binary::reloc::tests::", "async_rt::channels::", "concurrency::gil::tests::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "gpu_runtime_tests::", "kernel_storage::", "regex::", "unicode_target::", "numeric_ratio::", "math::statistics_reduction_tests::", "--nocapture", "--test-threads=1"]
 toolchains = ["rustc", "cargo", "node", "wasm-ld"]
-cargo_build_python = true
 
 [[command]]
 id = "rust.test.runtime-cold-lifecycle"
@@ -3738,11 +3682,11 @@ timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
 dependencies = []
 # Full default-feature shipping runtime: parallel remainder plus all gate-declared
-# fresh-process lifecycle/GIL witnesses. Performance probes remain explicit
-# unrun entries; no missing child or incomplete result accounting can pass.
+# fresh-process lifecycle/GIL witnesses plus declared core/math numeric libtests
+# in the same Cargo build. Other satellite tests and runtime performance probes
+# remain explicit unrun entries; incomplete child accounting cannot pass.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 # Small pure-Rust provider libtest, executed at the repaired 32-bit width.
 [[command]]
@@ -3756,7 +3700,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "zlib-wasi", "--profile", "dev-fast", "--build-timeout-seconds", "300", "--child-timeout-seconds", "120"]
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
-cargo_build_python = false
 
 [[command]]
 id = "rust.test.wasi-runtime-lifecycle"
@@ -3775,7 +3718,6 @@ dependencies = []
 # the gate binds the guest artifact, native driver and production host images.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "wasi-lifecycle", "--profile", "dev-fast", "--build-timeout-seconds", "1200", "--child-timeout-seconds", "600"]
 toolchains = ["python", "uv", "rustc", "cargo", "wasi-clang", "wasm-ld"]
-cargo_build_python = true
 
 [[command]]
 id = "rust.test.runtime-extension-admission"
@@ -3795,7 +3737,6 @@ dependencies = []
 # the existing binary runner owns accounting, bounded execution and receipts.
 argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--target", "x86_64-unknown-linux-gnu", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--config", "target.x86_64-unknown-linux-gnu.runner=[\"uv\",\"run\",\"--frozen\",\"python3\",\"../../tools/cargo_test_binary_runner.py\",\"--timeout-seconds\",\"300\",\"--receipt-dir\",\"../../proof-receipts/evidence/runtime-extension-admission\",\"--require-passed-test\",\"builtins::platform::tests::resolver_admission_tests::public_import_resolver_miss_and_error_do_not_load_extension_candidates\",\"--\"]", "-p", "molt-runtime", "--lib", "--features", "cext_loader", "--", "builtins::platform::tests::", "--nocapture", "--test-threads=1"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "rust.clippy.workspace-default"
@@ -3809,7 +3750,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "rust.clippy.feature-surfaces"
@@ -3822,7 +3762,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 # The stdlib_micro runtime tier compiles every satellite (http, itertools, path) through `src/bridge`.
 [[command]]
@@ -3836,7 +3775,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_micro", "--lib", "--tests", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = true
 
 # The stdlib_edge runtime tier compiles the http and path satellites through `src/bridge`.
 [[command]]
@@ -3850,7 +3788,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_edge", "--lib", "--tests", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = true
 
 # The stdlib_standard runtime tier compiles the http satellite through `src/bridge`.
 [[command]]
@@ -3864,7 +3801,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_standard", "--lib", "--tests", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = true
 
 # The backend binary the CLI builds for --target wasm (backend_features_for_target).
 [[command]]
@@ -3878,7 +3814,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 # The backend binary the CLI builds for --target luau (backend_features_for_target).
 [[command]]
@@ -3892,7 +3827,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "luau-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 # The backend binary the CLI builds for --target rust (backend_features_for_target).
 [[command]]
@@ -3906,7 +3840,6 @@ cache_domain = "cargo-workspace"
 dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "rust-backend", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
-cargo_build_python = false
 
 [[command]]
 id = "llvm.build.backend"
@@ -3920,7 +3853,6 @@ cache_domain = "llvm-cargo"
 dependencies = []
 argv = ["cargo", "build", "--locked", "--profile", "release-fast", "-p", "molt-backend", "--features", "native-backend llvm"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
-cargo_build_python = false
 
 [[command]]
 id = "llvm.test.lowering"
@@ -3938,7 +3870,6 @@ dependencies = ["llvm.build.backend"]
 # oracles and compiled separate profiles. All LLVM consumers share this profile.
 argv = ["cargo", "test", "--locked", "--profile", "release-fast", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
-cargo_build_python = false
 
 [[command]]
 id = "linker.test.generated-object-admission"
@@ -3952,7 +3883,6 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "test", "--locked", "--profile", "release-fast", "-p", "molt-backend", "--features", "native-backend llvm", "--test", "llvm_generated_object_linkage", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config", "ld.lld"]
-cargo_build_python = false
 
 [[command]]
 id = "llvm.clippy.backend"
@@ -3966,7 +3896,6 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 argv = ["cargo", "clippy", "--locked", "--profile", "release-fast", "-p", "molt-backend", "-p", "molt-backend-native", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
-cargo_build_python = false
 
 [[command]]
 id = "mlir.test.backend"
@@ -3981,7 +3910,6 @@ dependencies = ["llvm.build.backend"]
 cwd = "runtime/molt-backend-mlir"
 argv = ["cargo", "test", "--locked", "--all-targets", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config", "mlir-opt"]
-cargo_build_python = false
 
 [[command]]
 id = "linker.test.plan-authority"
@@ -4010,7 +3938,6 @@ env = { MOLT_PYTEST_TRUTH_RECEIPT = "proof-receipts/evidence/llvm-differential-t
 argv = ["uv", "run", "python3", "-m", "pytest", "-p", "tools.pytest_truth_plugin", "-q", "-k", "integer_carrier_matrix"]
 pytest = ["tests/test_native_lir_loop_join_semantics.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-sdk", "llvm-strip"]
-cargo_build_python = true
 
 # The one Python and npm lock advisory authority: OSV for every version in
 # uv.lock and the npm locks, accepted only by an ACCEPTED_ADVISORIES entry
@@ -4059,7 +3986,6 @@ dependencies = []
 # Every tracked Cargo workspace (tools/dependency_manifests.py), one shared deny.toml.
 argv = ["python3", "tools/cargo_lock_audit.py", "deny"]
 toolchains = ["python", "rustc", "cargo", "cargo-deny"]
-cargo_build_python = false
 
 [[command]]
 id = "security.rust.audit"
@@ -4072,7 +3998,6 @@ cache_domain = "cargo-security"
 dependencies = ["security.rust.deny"]
 argv = ["python3", "tools/cargo_lock_audit.py", "audit", "--db", "tmp/security/cargo-audit-advisory-db"]
 toolchains = ["python", "rustc", "cargo", "cargo-audit"]
-cargo_build_python = false
 
 [[command]]
 id = "formal.lean.build"
@@ -4499,7 +4424,10 @@ globs = [
   "src/molt/_host_capabilities_generated.py",
   "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
   "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
+  "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
   "src/molt/target_python.py",
+  "src/molt/target_python_policy.py",
+  "src/molt/_python_release_generated.py",
   "wasm/host_capabilities_generated.js",
   "docs/spec/areas/security/host_capabilities.generated.md",
   "tests/test_gen_host_capabilities.py",
@@ -4633,7 +4561,7 @@ pytest = [
 # --- Intrinsic registry (manifest/category/generated resolver sync) -------
 [[rule]]
 name = "intrinsic-registry"
-toolchains = ["python", "rustfmt"]
+toolchains = ["python", "rustc", "rustfmt"]
 description = "Intrinsic registry: generated signatures, frontend lowering, reachability and resolver ownership."
 globs = [
   "tools/gen_intrinsics.py",
@@ -4670,6 +4598,7 @@ toolchains = ["python", "uv", "rustfmt"]
 description = "Text codec registry and generated single-byte charmap tables."
 globs = [
   "tools/gen_codecs.py",
+  "config/codec_aliases.toml",
   "runtime/molt-runtime/src/object/ops_encoding.rs",
   "runtime/molt-stdlib-text/src/codec_registry.rs",
   "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
@@ -4767,7 +4696,8 @@ globs = [
   "tests/cli/test_source_extension_*.py",
   "tests/tools/test_native_link_benchmark.py",
   "tests/tools/test_scientific_stack_versions.py",
-  "src/molt/cli/source_build_environment*.py",
+  "src/molt/source_build_environment*.py",
+  "src/molt/source_build_requirements.py",
   "tests/cli/test_source_build_environment_probe.py",
 ]
 gates = []
@@ -4857,7 +4787,8 @@ globs = [
   "tests/test_proof_plan.py",
   "tests/tools/test_native_link_benchmark.py",
   "tests/tools/test_scientific_stack_versions.py",
-  "src/molt/cli/source_build_environment*.py",
+  "src/molt/source_build_environment*.py",
+  "src/molt/source_build_requirements.py",
   "tests/cli/test_source_build_environment_probe.py",
   "tools/proof_queue_pkg/command_identity.py",
   "tools/proof_queue_pkg/toolchain_capture.py",
@@ -5146,6 +5077,22 @@ pytest_select = [
   { k = "base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker", targets = ["tests/test_demo_bench_memory_guard.py"] },
 ]
 
+# --- Build-control diagnostic paths ------------------------------------
+[[rule]]
+name = "build-control-paths"
+toolchains = ["python"]
+description = "Build-control and guard path producers select their real consumer contract."
+globs = [
+  "tools/build_control_path.py",
+  "tools/harness_memory_guard.py",
+  "src/molt/build_state_layout.py",
+  "src/molt/memory_guard_paths.py",
+  "src/molt/dx.py",
+  "tests/test_build_state_layout.py",
+]
+gates = []
+pytest = ["tests/test_build_state_layout.py"]
+
 # --- Repository scan records -------------------------------------------
 # Shared producers select every consumer. Leaf tools and tests select their
 # own semantic controls; a test change does not invalidate sibling scanners.
@@ -5170,7 +5117,6 @@ pytest = [
   "tests/test_structural_audit.py",
   "tests/test_generator_manifest.py",
   "tests/test_gen_stringprep_tables.py",
-  "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
 ]
 
 [[rule]]
@@ -5198,12 +5144,12 @@ gates = []
 pytest = ["tests/tools/test_gen_cpython_coverage.py"]
 
 [[rule]]
-name = "unicode-width-scan-records"
+name = "unicode-source-facts"
 toolchains = ["python"]
-description = "Unicode-width facts replay against the admitted runtime."
+description = "Pinned source Unicode facts, schema refusal, and independent emitted-table oracle."
 globs = ["tools/gen_unicode_width.py"]
 gates = []
-pytest = ["tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime"]
+pytest = ["tests/test_runtime_build_python.py"]
 
 [[rule]]
 name = "structural-audit"
@@ -5316,7 +5262,6 @@ globs = [
   "src/molt/cli/wasm_facts_tool.py",
   "src/molt/host_tool_products.py",
   "src/molt/cli/runtime_build_identity.py",
-  "src/molt/cli/runtime_build_python.py",
   "src/molt/cli/runtime_cargo_plan.py",
   "src/molt/cli/rustc_probes.py",
   "src/molt/cli/runtime_fingerprints.py",
@@ -5394,6 +5339,20 @@ pytest_select = [
   ] },
 ]
 
+# Native compile/run diagnostics own a Python-only seam proof. The LLVM matrix
+# remains in its existing execution family; local witness changes need no LLVM.
+[[rule]]
+name = "native-test-failure-diagnostics"
+toolchains = ["python"]
+description = "Native compile/run failure retention, byte identity and original failure preservation."
+globs = [
+  "tests/native_process_guard.py",
+  "tests/test_native_process_guard.py",
+  "tests/test_native_lir_loop_join_semantics.py",
+]
+gates = []
+pytest = ["tests/test_native_process_guard.py"]
+
 # --- Rust toolchain authority -------------------------------------------
 [[rule]]
 name = "rust-toolchain"
@@ -5438,6 +5397,8 @@ globs = [
   "runtime/molt-cpython-abi/include/Python.h",
   # #4 supported target-Python version triple.
   "src/molt/target_python.py",
+  "src/molt/target_python_policy.py",
+  "src/molt/_python_release_generated.py",
   "tools/stdlib_module_union.py",
   "tools/gen_stdlib_module_union.py",
   "config/cpython_stdlib_snapshot.json",
@@ -5457,6 +5418,34 @@ pytest = [
   "tests/test_table_drift_gate.py",
   "tests/tools/test_gen_token_metadata.py",
   "tests/tools/test_gen_stdlib_module_union_memory_guard.py",
+  "tests/test_compat_multibackend_oracle.py",
+  "tests/test_molt_diff_memory_guard.py",
+  "tests/test_molt_diff_expected_failures.py",
+  "tests/test_molt_diff_scheduling.py",
+  "tests/test_target_python_oracle.py",
+  "tests/cli/test_cli_target_python.py",
+  "tests/cli/test_backend_initialization_contract.py",
+  "tests/cli/test_cli_cache_fingerprint.py",
+]
+
+# Target release identity is consumed by source-extension publication as well as
+# codegen. Keep this dependency narrow: a pin update needs the existing registry
+# and ABI-publication controls, not every extension producer/proof workflow.
+[[rule]]
+name = "target-python-extension-release-identity"
+toolchains = ["python"]
+description = "Pinned target release fields agree with registered and recorded extension variants without masking ABI rejection controls."
+globs = [
+  "src/molt/target_python.py",
+  "src/molt/target_python_policy.py",
+  "src/molt/_python_release_generated.py",
+  "tests/cli/test_source_extension_set_registry.py",
+  "tests/cli/test_source_extension_producer.py",
+]
+gates = []
+pytest = [
+  "tests/cli/test_source_extension_set_registry.py",
+  "tests/cli/test_source_extension_producer.py",
 ]
 
 # --- APPARATUS A4 findings registry + memo lint --------------------------
@@ -5549,6 +5538,7 @@ globs = [
   "tests/test_ci_cargo_cache.py",
   "tools/ci_cargo_cache.py",
   "tools/ci_triage.py",
+  "tools/ci_proof_evidence.py",
   "tests/tools/test_ci_triage.py",
   "tests/test_resource_pressure.py",
   "tests/test_translation_validate_roots.py",
@@ -5643,6 +5633,7 @@ name = "performance-measurement"
 toolchains = ["python", "uv"]
 description = "Typed sample transport, deployment selection and complete benchmark artifact lifetimes."
 globs = [
+  "tools/git_identity.py",
   "tools/bench.py", "tools/bench_audit.py", "tools/bench_reporting.py",
   "tools/safe_run.py", "tools/cold_start_decompose.py", "tools/perf_scoreboard*.py",
   "src/molt/backend_executable_names.py", "src/molt/host_tool_products.py",
@@ -5792,6 +5783,15 @@ pytest = [
   "tests/tools/test_legacy_inventory.py",
 ]
 
+# Shared Git environment/configuration rules serve transfer and source readers.
+[[rule]]
+name = "git-process-policy"
+toolchains = ["python"]
+description = "Git process settings retain inherited configuration and native failure semantics."
+globs = ["tools/git_identity.py", "tools/git_transfer.py", "tests/tools/test_command_execution.py"]
+gates = []
+pytest = ["tests/tools/test_command_execution.py"]
+
 # --- v1 public stable contract ------------------------------------------------
 [[rule]]
 name = "public-contract"
@@ -5806,23 +5806,34 @@ globs = [
   "src/molt/cli/__init__.py",
   "src/molt/release_matrix.py",
   "src/molt/target_python.py",
+  "src/molt/target_python_policy.py",
+  "src/molt/_python_release_generated.py",
   "src/molt/compiler_distribution.py",
   "src/molt/verified_subset.py",
   "tools/gen_release_matrix.py",
   "tools/legacy_inventory.py",
   "tools/pact_witness_receipt.py",
   "tools/phase_exit_manifest.py",
+  "tools/git_identity.py",
   "tools/release_exit_gate.py",
+  "tools/release_criterion_receipt.py",
+  "tools/release_matrix_acceptance.py",
   "tools/release/release_authority.py",
   "tools/release/release_model.py",
   "tools/public_contract_gate.py",
   "tests/tools/test_public_contract_gate.py",
+  "tests/tools/test_release_exit_gate.py",
+  "tests/tools/test_release_criterion_receipt.py",
+  "tests/tools/test_release_matrix_acceptance.py",
 ]
 gates = [
   "python tools/public_contract_gate.py --check",
 ]
 pytest = [
   "tests/tools/test_public_contract_gate.py",
+  "tests/tools/test_release_exit_gate.py",
+  "tests/tools/test_release_criterion_receipt.py",
+  "tests/tools/test_release_matrix_acceptance.py",
 ]
 
 [[rule]]
@@ -5830,6 +5841,8 @@ name = "installed-compiler-distribution"
 toolchains = ["python"]
 description = "Installed executable admission, provenance and complete bundle/wheel consumer projections move together."
 globs = [
+  "tools/git_identity.py",
+  "tools/release/git_source_snapshot.py",
   "src/molt/compiler_distribution.py",
   "src/molt/host_tool_products.py",
   "src/molt/cli/wasm_facts_tool.py",
@@ -5878,6 +5891,9 @@ name = "browser-simd"
 toolchains = ["python", "rustc", "cargo", "node"]
 description = "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer."
 globs = [
+  ".cargo/config.toml",
+  "rust-toolchain.toml",
+  "src/molt/wasm_artifact.py",
   "deploy/browser/compute-engine.js",
   "deploy/browser/simd-ops-rs/**",
   "deploy/browser/simd-ops.wasm",
@@ -5965,18 +5981,24 @@ gates = [
 [[rule]]
 name = "backend-daemon-cache"
 toolchains = ["python", "rustc", "cargo"]
-description = "Exercise typed daemon target identity, LRU and flights on the compiler-authorities feature graph."
+description = "Exercise daemon identity, worker processes and shared-stdlib reuse on one compiler-authorities feature graph."
 globs = [
   "runtime/molt-backend/Cargo.toml",
   "runtime/molt-backend/src/backend_process/cli_args/**/*.rs",
   "runtime/molt-backend/src/backend_process/native_artifact.rs",
+  "runtime/molt-backend/src/backend_process/input/**/*.rs",
+  "runtime/molt-backend/src/backend_process/native_batch.rs",
+  "runtime/molt-backend/src/backend_process/native_batch/**/*.rs",
+  "runtime/molt-backend/src/backend_process/shared_stdlib_cache.rs",
+  "runtime/molt-backend/src/backend_process/shared_stdlib_cache/**/*.rs",
   "runtime/molt-backend/src/backend_process/daemon/**/*.rs",
   "runtime/molt-backend/src/main_tests/daemon*.rs",
   "runtime/molt-backend/tests/daemon_server.rs",
+  "runtime/molt-backend/tests/native_batch_worker_spawn.rs",
 ]
 gates = [
   "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-  "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test rust_transpiler_preview -- --test-threads=1",
+  "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn --test rust_transpiler_preview -- --test-threads=1",
 ]
 
 [[rule]]
@@ -6059,6 +6081,19 @@ gates = [
   "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
 ]
 
+# --- Rust source backend -----------------------------------------------
+[[rule]]
+name = "backend-rust"
+toolchains = ["python", "rustc", "cargo"]
+description = "Execute emitted Rust source in its owning crate, without building a native code generator."
+globs = [
+  "runtime/molt-backend-rust/**/*.rs",
+  "runtime/molt-backend-rust/Cargo.toml",
+]
+gates = [
+  "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast",
+]
+
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
 
 [[rule]]
@@ -6068,6 +6103,9 @@ description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
 globs = [
   "runtime/test_support/native_object_execution.rs",
   "runtime/molt-backend-native/Cargo.toml",
+  "runtime/molt-backend-native/src/lib.rs",
+  "runtime/molt-llvm-link/**",
+  "src/molt/llvm_link_plan.py",
   "runtime/molt-backend-native/src/llvm_backend/**/*.rs",
 ]
 gates = [
@@ -6151,10 +6189,12 @@ pytest = [
 [[rule]]
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
-description = "Runtime/object-model Rust: one default-feature image with ordinary and isolated lifecycle semantics; performance probes remain unrun. Clippy belongs to rust-clippy-changed."
+description = "Runtime/object-model Rust: one Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed."
 globs = [
   "runtime/molt-runtime/**/*.rs",
   "runtime/molt-obj-model/**/*.rs",
+  "runtime/molt-runtime-core/src/numeric_ratio.rs",
+  "runtime/molt-runtime-math/src/math.rs",
   "runtime/**/Cargo.toml",
 ]
 gates = [
@@ -6308,8 +6348,8 @@ description = "Typed regex parser/matcher and shared lossless text codec: one fa
 globs = [
   "runtime/molt-runtime-regex/**/*.rs",
   "runtime/molt-runtime-regex/Cargo.toml",
-  "runtime/molt-runtime-core/src/text_storage.rs",
-  "runtime/molt-runtime-core/src/text_storage_tests.rs",
+  "runtime/molt-obj-model/src/text_storage.rs",
+  "runtime/molt-obj-model/src/text_storage_tests.rs",
   "runtime/molt-stdlib-text/Cargo.toml",
   "runtime/molt-runtime/src/regex_bridge.rs",
   "src/molt/stdlib/re/**/*.py",
@@ -6319,7 +6359,7 @@ globs = [
   "tests/differential/stdlib/codecs_error_handlers_basic.py",
 ]
 gates = [
-  "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
+  "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-lang-obj-model -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
   # Select dev-fast for the compiler and guest builds. Backend feature graphs
   # remain distinct. The canonical Python collector expands the regex family; new
   # re_* consumers automatically join this owning native/WASM cohort.
@@ -6360,7 +6400,6 @@ description = "Exercise native shared-code reuse across embedded capability poli
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-vv", "-s"]
 pytest = ["tests/test_manifest_pipeline_e2e.py::test_native_warm_code_cache_keeps_current_capability_policy", "tests/test_manifest_pipeline_e2e.py::test_native_stdlib_objects_reuse_across_code_slot_layouts"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
 contention_key = "cargo-native-runtime"
@@ -6372,7 +6411,6 @@ id = "runtime.lifecycle-cost-image"
 description = "Build the full default-feature runtime libtest image for independent lifecycle measurements; no semantic or performance acceptance is implied."
 argv = ["cargo", "test", "--locked", "--profile", "release-output", "-p", "molt-runtime", "--lib", "--no-run", "--message-format=json"]
 toolchains = ["cargo", "rustc", "python"]
-cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -6384,7 +6422,6 @@ id = "runtime.allocation-observer"
 description = "Build the development-only runtime and public ABI observer images once, discover required allocation/refusal controls and execute each in a fresh process with source/image-bound receipts; no timed performance acceptance is implied."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "allocation-observer"]
 toolchains = ["cargo", "rustc", "python", "uv"]
-cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -6396,7 +6433,6 @@ id = "native.jit-code-owner"
 description = "The JIT code owner and runner (HF-371): generated code runs from W^X process memory, its imports resolve through the lookup, and a missing import or ABI witness refuses the program before any code runs; the runner starts a program against a recording runtime image in the declared launch order, in a C main's process state (inherited SIGPIPE, no stack-overflow handler or alternate stack, one thread), writes its start receipt before the runtime starts and none for a program that cannot compile, and replays compiler stderr when it dies while compiling. Verified on macOS arm64 only."
 argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "--no-fail-fast", "-p", "molt-jit"]
 toolchains = ["rustc", "cargo", "python"]
-cargo_build_python = true
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
 timeout_seconds = 1800
@@ -6408,7 +6444,6 @@ description = "Run the JIT-AOT twin cases under the AOT and JIT tiers (HF-371): 
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "dev", "--build-profile", "dev", "--target", "native,jit", "--jobs", "4", "--json"]
 differential_cases = ["tests/differential/basic/args_kwargs.py", "tests/differential/basic/args_kwargs_eval_order.py", "tests/differential/basic/arith.py", "tests/differential/basic/arith_builtin_reflected.py", "tests/differential/basic/arith_dunder_floordiv_mod.py", "tests/differential/basic/arith_dunder_mul_truediv.py", "tests/differential/basic/arith_dunder_precedence.py", "tests/differential/basic/arith_dunder_subclass_precedence.py", "tests/differential/basic/arith_reflected_ops.py", "tests/differential/basic/arith_reflected_subclass_priority.py", "tests/differential/basic/assignment_aliasing_mutability.py", "tests/differential/basic/assignment_annotations.py", "tests/differential/basic/assignment_chain_descriptors.py", "tests/differential/basic/assignment_chain_order.py", "tests/differential/basic/assignment_equality_side_effects.py", "tests/differential/basic/assignment_starred_error_order.py", "tests/differential/basic/assignment_starred_nested.py", "tests/differential/basic/assignment_starred_targets.py", "tests/differential/basic/assignment_target_eval_order.py", "tests/differential/basic/assignment_unboundlocal_global.py", "tests/differential/basic/assignment_unpack_custom_iter.py", "tests/differential/basic/assignment_unpack_error_custom_iter.py", "tests/differential/basic/assignment_unpack_error_order.py", "tests/differential/basic/assignment_unpack_error_propagation.py", "tests/differential/basic/assignment_unpack_side_effects.py", "tests/differential/basic/assignment_walrus_scope.py", "tests/differential/basic/async_anext_future.py", "tests/differential/basic/async_closure_decorators.py", "tests/differential/basic/async_generator_athrow_after_close.py", "tests/differential/basic/async_generator_close_semantics.py", "tests/differential/basic/async_generator_finalization.py", "tests/differential/basic/async_generator_protocol.py", "tests/differential/basic/async_method_trampoline.py", "tests/differential/basic/async_state_spill_basic.py", "tests/differential/basic/async_try_finally.py", "tests/differential/basic/async_with_basic.py", "tests/differential/basic/async_with_instance_callable.py", "tests/differential/basic/async_with_suppress.py", "tests/differential/basic/async_yield_spill.py", "tests/differential/basic/asyncgen_hooks_api.py", "tests/differential/basic/attr_dunder_access.py", "tests/differential/basic/attr_hooks.py", "tests/differential/basic/attr_security.py", "tests/differential/basic/attribute_delete_missing.py", "tests/differential/basic/attribute_dir_behavior.py", "tests/differential/basic/attribute_error_context.py", "tests/differential/basic/attribute_error_suggestions.py", "tests/differential/basic/attribute_getattribute_fallback.py", "tests/differential/basic/attribute_getattribute_override.py", "tests/differential/basic/attribute_lookup_order.py", "tests/differential/basic/attribute_property_delete.py", "tests/differential/basic/attribute_set_delete_order.py", "tests/differential/basic/augassign_attribute_order.py", "tests/differential/basic/bigint_ops.py", "tests/differential/basic/bitwise_int.py", "tests/differential/basic/bool_bool_len_precedence.py", "tests/differential/basic/bool_len_fallback.py", "tests/differential/basic/bool_ops.py", "tests/differential/basic/bool_short_circuit_order.py", "tests/differential/basic/boolean_edges.py", "tests/differential/basic/builtin_chr_ord.py", "tests/differential/basic/builtin_constructor_dynamic.py", "tests/differential/basic/builtin_conversion_edges.py", "tests/differential/basic/builtin_default_callable_capture.py", "tests/differential/basic/builtin_formatting.py", "tests/differential/basic/builtin_keyword_args.py", "tests/differential/basic/builtin_method_error_parity.py", "tests/differential/basic/builtin_sorted.py", "tests/differential/basic/builtins_basic.py", "tests/differential/basic/builtins_in_function_loop.py", "tests/differential/basic/bytes.py", "tests/differential/basic/bytes_backslashreplace.py", "tests/differential/basic/bytes_bytearray_ops.py", "tests/differential/basic/bytes_constructors.py", "tests/differential/basic/bytes_encodings.py", "tests/differential/basic/bytes_hex_fillchar_parity.py", "tests/differential/basic/bytes_ranges.py", "tests/differential/basic/bytes_translate_maketrans.py", "tests/differential/basic/call_arity_trampoline.py", "tests/differential/basic/call_indirect_dynamic_callable.py", "tests/differential/basic/call_indirect_noncallable_deopt.py", "tests/differential/basic/call_rebind.py", "tests/differential/basic/call_task_trampoline.py", "tests/differential/basic/cha_devirt.py", "tests/differential/basic/class_attrs.py", "tests/differential/basic/class_body_default_eval.py", "tests/differential/basic/class_body_semantics.py", "tests/differential/basic/class_decorators.py", "tests/differential/basic/class_descriptors.py", "tests/differential/basic/class_dict_mappingproxy.py", "tests/differential/basic/class_field_alias_regions.py", "tests/differential/basic/class_getattr_basic.py", "tests/differential/basic/class_inheritance.py", "tests/differential/basic/class_mro_entries.py", "tests/differential/basic/class_mro_entries_init_subclass.py", "tests/differential/basic/class_mro_entries_multiple.py", "tests/differential/basic/class_mro_entries_prepare_order.py", "tests/differential/basic/class_mro_entries_with_bases.py", "tests/differential/basic/class_mro_entries_with_prepare.py", "tests/differential/basic/class_mro_super.py", "tests/differential/basic/class_mutation_deopt.py", "tests/differential/basic/class_mutation_init_deopt.py", "tests/differential/basic/class_mutation_loop_deopt.py", "tests/differential/basic/class_nested_attribute.py", "tests/differential/basic/class_super_classcell.py", "tests/differential/basic/class_super_classcell_indirect.py", "tests/differential/basic/classcell_missing_error.py", "tests/differential/basic/classmethod_staticmethod.py", "tests/differential/basic/closure_comprehension_branch_cell_regression.py", "tests/differential/basic/compare_edges.py", "tests/differential/basic/compare_eq_notimplemented.py", "tests/differential/basic/compare_errors.py", "tests/differential/basic/compare_ne_dunder.py", "tests/differential/basic/compare_not_implemented.py", "tests/differential/basic/compare_notimplemented_fallback.py", "tests/differential/basic/compare_ops.py", "tests/differential/basic/compare_rich_result_passthrough.py", "tests/differential/basic/complex_format.py", "tests/differential/basic/complex_format_errors.py", "tests/differential/basic/complex_formatting.py", "tests/differential/basic/composite_interactions.py", "tests/differential/basic/comprehension_eval_order.py", "tests/differential/basic/comprehension_exception_propagation.py", "tests/differential/basic/comprehension_nested_lambda_scope.py", "tests/differential/basic/comprehension_nested_nonlocal_defs.py", "tests/differential/basic/comprehension_nested_walrus.py", "tests/differential/basic/comprehension_nonlocal_capture.py", "tests/differential/basic/comprehension_scope_leakage.py", "tests/differential/basic/comprehension_shadowed_loop_vars.py", "tests/differential/basic/comprehension_shared_targets.py", "tests/differential/basic/comprehension_walrus_and_or_filters.py", "tests/differential/basic/comprehension_walrus_if_raise.py", "tests/differential/basic/comprehension_walrus_nested_ifs.py", "tests/differential/basic/comprehension_walrus_nested_targets.py", "tests/differential/basic/comprehension_walrus_scope.py", "tests/differential/basic/comprehension_walrus_shared_loop_target.py", "tests/differential/basic/comprehension_walrus_short_circuit.py", "tests/differential/basic/container_methods.py", "tests/differential/basic/context_closing.py", "tests/differential/basic/context_return_unwind_scope.py", "tests/differential/basic/context_unwind_try_inside_with_control_flow.py", "tests/differential/basic/control_flow_complex.py", "tests/differential/basic/control_flow_nested_break_regression.py", "tests/differential/basic/copy_arm_conversions.py", "tests/differential/basic/count_attr.py", "tests/differential/basic/counted_loop_unroll.py", "tests/differential/basic/counted_loop_unroll_exception.py", "tests/differential/basic/counted_while_sum_empty_guard.py", "tests/differential/basic/counter_unhashable_parity.py", "tests/differential/basic/dataclass.py", "tests/differential/basic/dataclass_full.py", "tests/differential/basic/dataclass_kwstar_opts.py", "tests/differential/basic/dataclass_make_dataclass.py", "tests/differential/basic/dataclasses_frozen_instance_error.py", "tests/differential/basic/dataclasses_parity.py", "tests/differential/basic/datamodel_dunder_ops.py", "tests/differential/basic/dead_branch_scope_unboundlocal.py", "tests/differential/basic/default_literals.py", "tests/differential/basic/del_global_basic.py", "tests/differential/basic/del_semantics.py", "tests/differential/basic/descriptor_data_nondata_precedence.py", "tests/differential/basic/descriptor_delete_behavior.py", "tests/differential/basic/descriptor_precedence.py", "tests/differential/basic/descriptor_set_name.py", "tests/differential/basic/descriptor_set_name_inheritance.py", "tests/differential/basic/descriptor_set_name_order.py", "tests/differential/basic/descriptor_set_name_overwrite.py", "tests/differential/basic/dict_constructor_errors.py", "tests/differential/basic/dict_insertion_order.py", "tests/differential/basic/dict_subclass_missing.py", "tests/differential/basic/dict_subclass_slots_storage.py", "tests/differential/basic/dict_subclass_storage.py", "tests/differential/basic/dict_unpack_kwstar.py", "tests/differential/basic/dict_view_dynamic.py", "tests/differential/basic/dict_view_equality.py", "tests/differential/basic/dict_view_set_ops.py", "tests/differential/basic/dir_globals_locals_vars.py", "tests/differential/basic/django_calling_conventions.py", "tests/differential/basic/ellipsis_basic.py", "tests/differential/basic/enumerate_basic.py", "tests/differential/basic/error_messages_index.py", "tests/differential/basic/error_messages_key.py", "tests/differential/basic/error_messages_value.py", "tests/differential/basic/errors.py", "tests/differential/basic/except_module_attr.py", "tests/differential/basic/except_name_binding_module_scope.py", "tests/differential/basic/exception_add_note_type_error.py", "tests/differential/basic/exception_args_mutation.py", "tests/differential/basic/exception_cause_context_chain.py", "tests/differential/basic/exception_cause_suppression_nested.py", "tests/differential/basic/exception_cause_with_return_finally.py", "tests/differential/basic/exception_chain_in_finally_else.py", "tests/differential/basic/exception_chain_repr.py", "tests/differential/basic/exception_chaining_basic.py", "tests/differential/basic/exception_complex.py", "tests/differential/basic/exception_context_manual.py", "tests/differential/basic/exception_context_suppress.py", "tests/differential/basic/exception_context_switch.py", "tests/differential/basic/exception_control_flow.py", "tests/differential/basic/exception_finally_return_overrides.py", "tests/differential/basic/exception_message.py", "tests/differential/basic/exception_notes_basic.py", "tests/differential/basic/exception_propagation_no_exc_stack.py", "tests/differential/basic/exception_reraise_clear_context.py", "tests/differential/basic/exception_subclass_definition.py", "tests/differential/basic/exception_suppress_context.py", "tests/differential/basic/exception_suppress_in_finally.py", "tests/differential/basic/exception_suppress_nested.py", "tests/differential/basic/exception_suppress_with_return_finally.py", "tests/differential/basic/exceptiongroup_basic.py", "tests/differential/basic/exceptiongroup_except_star.py", "tests/differential/basic/exceptiongroup_multiple_except_star.py", "tests/differential/basic/exceptiongroup_nested_split.py", "tests/differential/basic/exceptiongroup_reraise_partial.py", "tests/differential/basic/exceptiongroup_rethrow_flow.py", "tests/differential/basic/exceptiongroup_rethrow_ordering.py", "tests/differential/basic/fields_after_try.py", "tests/differential/basic/file_buffering_text.py", "tests/differential/basic/file_handle_attrs_basic.py", "tests/differential/basic/file_iteration_context.py", "tests/differential/basic/file_open_modes.py", "tests/differential/basic/file_reconfigure.py", "tests/differential/basic/file_seek_tell_fileno.py", "tests/differential/basic/file_text_encoding_newline.py", "tests/differential/basic/file_unsupported_operation.py", "tests/differential/basic/finalizer_exit_semantics.py", "tests/differential/basic/finalizer_resurrection_once.py", "tests/differential/basic/find_attr.py", "tests/differential/basic/float_int_compare.py", "tests/differential/basic/float_protocol.py", "tests/differential/basic/float_rounding_format.py", "tests/differential/basic/for_else.py", "tests/differential/basic/for_else_exception.py", "tests/differential/basic/for_loop_target_leakage.py", "tests/differential/basic/format_numeric.py", "tests/differential/basic/formatting.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/basic/frozenset_basic.py", "tests/differential/basic/fstring_debug_format_spec.py", "tests/differential/basic/fstring_eval_order.py", "tests/differential/basic/fstring_format_specifiers.py", "tests/differential/basic/function_call_posonly_kwonly_errors.py", "tests/differential/basic/function_default_callable_capture.py", "tests/differential/basic/function_default_capture.py", "tests/differential/basic/function_default_mutable.py", "tests/differential/basic/function_kwonly_default_eval.py", "tests/differential/basic/generator_close_multiple_yields.py", "tests/differential/basic/generator_close_return_semantics.py", "tests/differential/basic/generator_close_throw_edge.py", "tests/differential/basic/generator_close_yield_in_finally.py", "tests/differential/basic/generator_close_yield_then_raise.py", "tests/differential/basic/generator_coroutine_states.py", "tests/differential/basic/generator_decorators.py", "tests/differential/basic/generator_finally_return.py", "tests/differential/basic/generator_introspection_attrs.py", "tests/differential/basic/generator_llvm_control.py", "tests/differential/basic/generator_llvm_lifecycle.py", "tests/differential/basic/generator_methods.py", "tests/differential/basic/generator_protocol.py", "tests/differential/basic/generator_reentrancy.py", "tests/differential/basic/generator_send_after_close.py", "tests/differential/basic/generator_send_non_none_initial.py", "tests/differential/basic/generator_send_throw_after_stop.py", "tests/differential/basic/generator_state.py", "tests/differential/basic/generator_state_transitions.py", "tests/differential/basic/generator_stopiteration_value.py", "tests/differential/basic/generator_throw_generator_exit.py", "tests/differential/basic/generator_throw_signature.py", "tests/differential/basic/generator_throw_stopiteration.py", "tests/differential/basic/generator_yield_from_stop_value.py", "tests/differential/basic/genexpr_enumerate_unpack.py", "tests/differential/basic/genexpr_inline_any_all_scope.py", "tests/differential/basic/getattr_calls.py", "tests/differential/basic/getattribute_basic.py", "tests/differential/basic/guard_dict_shape_mutation.py", "tests/differential/basic/guard_tag_type_hint_fail.py", "tests/differential/basic/hash_eq_interplay.py", "tests/differential/basic/hashability.py", "tests/differential/basic/ifexp.py", "tests/differential/basic/import_graph_cache.py", "tests/differential/basic/import_module_not_found.py", "tests/differential/basic/import_namespace_packages.py", "tests/differential/basic/import_namespace_packages_pep420.py", "tests/differential/basic/import_package_init.py", "tests/differential/basic/import_star.py", "tests/differential/basic/import_star_mod.py", "tests/differential/basic/import_star_plain.py", "tests/differential/basic/import_sys_modules_override.py", "tests/differential/basic/index_dunder.py", "tests/differential/basic/init_subclass_cache_regression.py", "tests/differential/basic/inline_callee_raises_caught.py", "tests/differential/basic/inline_callee_raises_custom_exc.py", "tests/differential/basic/inline_callee_raises_propagates.py", "tests/differential/basic/inline_floordiv_preserved_op_in_try.py", "tests/differential/basic/inline_indirect_bigint_param_abi.py", "tests/differential/basic/inline_llvm_module_phase_activation.py", "tests/differential/basic/input_builtin.py", "tests/differential/basic/instance_attr_callable.py", "tests/differential/basic/int_add_inline_overflow_promotion.py", "tests/differential/basic/int_float_conversions.py", "tests/differential/basic/int_round_trunc_protocol.py", "tests/differential/basic/int_str_fused_conversion.py", "tests/differential/basic/int_string_fast_decimal.py", "tests/differential/basic/iter_consume_raises_in_try.py", "tests/differential/basic/iter_getitem_fallback.py", "tests/differential/basic/iter_len_getitem_priority.py", "tests/differential/basic/iter_len_hint_fallback.py", "tests/differential/basic/iter_methods.py", "tests/differential/basic/iter_non_iterator.py", "tests/differential/basic/iter_protocol_dunder_getitem_error.py", "tests/differential/basic/iterable_iter_returns_non_iter.py", "tests/differential/basic/iterator_dunder_next_errors.py", "tests/differential/basic/iterator_exhaustion_idempotent.py", "tests/differential/basic/iterator_mutation_during_iter.py", "tests/differential/basic/iterator_protocol_basic.py", "tests/differential/basic/iterator_reentrancy.py", "tests/differential/basic/kwargs_mapping.py", "tests/differential/basic/kwonly_method_return.py", "tests/differential/basic/lambda.py", "tests/differential/basic/len_dunder.py", "tests/differential/basic/list_append_in_except.py", "tests/differential/basic/list_dict.py", "tests/differential/basic/list_dict_loops.py", "tests/differential/basic/list_iter_dunders.py", "tests/differential/basic/list_iterator_exception_propagation.py", "tests/differential/basic/list_sort.py", "tests/differential/basic/list_sort_stability.py", "tests/differential/basic/locals_closure_capture.py", "tests/differential/basic/loop_break_continue.py", "tests/differential/basic/loop_rc_range.py", "tests/differential/basic/loop_rc_stress.py", "tests/differential/basic/loop_vector.py", "tests/differential/basic/mappingproxy_class_dict.py", "tests/differential/basic/mappingproxy_try_assignment_preserves_error.py", "tests/differential/basic/match_class_kw_attr_errors.py", "tests/differential/basic/match_class_positional_kw_order.py", "tests/differential/basic/match_dotted_shadowing.py", "tests/differential/basic/match_dotted_value_patterns.py", "tests/differential/basic/match_guard_capture_order.py", "tests/differential/basic/match_name_capture_scope.py", "tests/differential/basic/match_or_binding_consistency.py", "tests/differential/basic/match_or_guard_binding_partial.py", "tests/differential/basic/match_or_guard_branch_eval.py", "tests/differential/basic/match_or_guard_eval.py", "tests/differential/basic/match_or_inconsistent_bindings.py", "tests/differential/basic/match_sequence_guard_value_patterns.py", "tests/differential/basic/match_value_pattern_resolution.py", "tests/differential/basic/memoryview.py", "tests/differential/basic/memoryview_format.py", "tests/differential/basic/memoryview_multidim.py", "tests/differential/basic/memoryview_multidim_cast.py", "tests/differential/basic/metaclass_abc_init_super.py", "tests/differential/basic/metaclass_attr_resolution.py", "tests/differential/basic/metaclass_call_behavior.py", "tests/differential/basic/metaclass_call_override_return.py", "tests/differential/basic/metaclass_descriptor_precedence.py", "tests/differential/basic/metaclass_execution.py", "tests/differential/basic/metaclass_new_posonly_kwargs_super.py", "tests/differential/basic/metaclass_prepare_order.py", "tests/differential/basic/method_defaults_reentrancy.py", "tests/differential/basic/method_dispatch_super_devirt.py", "tests/differential/basic/method_find_custom_class.py", "tests/differential/basic/method_ic_class_transition_defaults.py", "tests/differential/basic/method_ic_default_binding.py", "tests/differential/basic/module_attribute_miss.py", "tests/differential/basic/module_global_loop.py", "tests/differential/basic/module_global_loop_exception.py", "tests/differential/basic/module_indexed_loop_binding_regression.py", "tests/differential/basic/module_metadata.py", "tests/differential/basic/module_property_getter.py", "tests/differential/basic/mro_c3_linearization.py", "tests/differential/basic/mro_diamond_super.py", "tests/differential/basic/mro_dynamic_bases.py", "tests/differential/basic/name_lookup.py", "tests/differential/basic/negative_indexing.py", "tests/differential/basic/nested_indexed_loops.py", "tests/differential/basic/nested_indexed_loops_regression.py", "tests/differential/basic/nested_loops.py", "tests/differential/basic/nested_try_handler_reraise.py", "tests/differential/basic/not_equal_fallback_semantics.py", "tests/differential/basic/number_index_round.py", "tests/differential/basic/object_dict_field_write_coherence.py", "tests/differential/basic/object_edges.py", "tests/differential/basic/object_finalizer_dict_class_lifetime.py", "tests/differential/basic/object_hash_builtin.py", "tests/differential/basic/oserror_errno.py", "tests/differential/basic/pattern_matching_core_matrix.py", "tests/differential/basic/pep448_unpacking_generalizations.py", "tests/differential/basic/pep479_stopiteration.py", "tests/differential/basic/pep526_variable_annotations.py", "tests/differential/basic/pep563_649_annotations_interop.py", "tests/differential/basic/pep563_future_annotations.py", "tests/differential/basic/pep563_future_annotations_types.py", "tests/differential/basic/pep570_posonly_args.py", "tests/differential/basic/pep572_walrus_edges.py", "tests/differential/basic/pep584_dict_union.py", "tests/differential/basic/pep585_604_generics_union.py", "tests/differential/basic/pep618_zip_strict.py", "tests/differential/basic/pep680_tomllib_basic.py", "tests/differential/basic/pep701_fstrings_full_grammar.py", "tests/differential/basic/print_keywords.py", "tests/differential/basic/print_none.py", "tests/differential/basic/qualname.py", "tests/differential/basic/raise_bare_errors.py", "tests/differential/basic/raise_from_context.py", "tests/differential/basic/recursion_limit.py", "tests/differential/basic/recursive_generator_closure_size.py", "tests/differential/basic/reflection_builtins.py", "tests/differential/basic/repr_recursion.py", "tests/differential/basic/repro_set_add_dynamic.py", "tests/differential/basic/set_algebra.py", "tests/differential/basic/set_basic.py", "tests/differential/basic/set_method_attrs.py", "tests/differential/basic/set_methods.py", "tests/differential/basic/setattr_return_ignored.py", "tests/differential/basic/slice_assign.py", "tests/differential/basic/slice_copy_vs_view.py", "tests/differential/basic/slice_deletion_behavior.py", "tests/differential/basic/slice_extended_assign.py", "tests/differential/basic/slice_index_protocol.py", "tests/differential/basic/slice_indices.py", "tests/differential/basic/slice_negative_step.py", "tests/differential/basic/slice_objects.py", "tests/differential/basic/sorted_positional_kwonly.py", "tests/differential/basic/startswith_endswith_slices.py", "tests/differential/basic/stdlib_attr_access.py", "tests/differential/basic/stdlib_attr_broad.py", "tests/differential/basic/stdlib_attr_chained.py", "tests/differential/basic/str_case_methods_extended.py", "tests/differential/basic/str_count_unicode_slices.py", "tests/differential/basic/str_isdigit_unicode.py", "tests/differential/basic/str_lowered_methods_edges.py", "tests/differential/basic/str_methods.py", "tests/differential/basic/str_predicates_surface.py", "tests/differential/basic/str_substring_arg_type.py", "tests/differential/basic/stress_structures_fail.py", "tests/differential/basic/stress_structures_pass.py", "tests/differential/basic/string_split_scalar_control.py", "tests/differential/basic/strings.py", "tests/differential/basic/struct_field_forwarding.py", "tests/differential/basic/struct_sroa.py", "tests/differential/basic/sum_genexpr_inline_scope.py", "tests/differential/basic/sum_map_function_defaults.py", "tests/differential/basic/super_bound_method.py", "tests/differential/basic/super_diamond_mro.py", "tests/differential/basic/super_no_args_errors.py", "tests/differential/basic/super_resolution_order.py", "tests/differential/basic/text_readline_size_utf8.py", "tests/differential/basic/tir_inliner_simple.py", "tests/differential/basic/triple_nested_loops.py", "tests/differential/basic/try_else_finally_break_continue.py", "tests/differential/basic/try_else_finally_return.py", "tests/differential/basic/try_except.py", "tests/differential/basic/try_except_else_return.py", "tests/differential/basic/try_except_exc_binding.py", "tests/differential/basic/try_finally_control_flow.py", "tests/differential/basic/try_finally_nested_control.py", "tests/differential/basic/tuple_keys.py", "tests/differential/basic/tuple_literal_indexed_loop_regression.py", "tests/differential/basic/tuple_range_subscript_mutation.py", "tests/differential/basic/tuple_subclass_mro.py", "tests/differential/basic/type_call_constructor_policy.py", "tests/differential/basic/type_subscript_error_regression.py", "tests/differential/basic/unary_special_methods.py", "tests/differential/basic/unhashable_context_parity.py", "tests/differential/basic/unpack_assignment.py", "tests/differential/basic/value_range_transfer_rules.py", "tests/differential/basic/walrus_compare.py", "tests/differential/basic/while_else_basic.py", "tests/differential/basic/with_context.py", "tests/differential/basic/with_exception_chaining.py", "tests/differential/basic/with_exit_raises.py", "tests/differential/basic/with_exit_suppression.py", "tests/differential/basic/with_exit_suppression_precedence.py", "tests/differential/basic/with_multi_target_order.py", "tests/differential/basic/yield_from_delegation.py", "tests/differential/basic/yield_nested_scope.py", "tests/differential/basic/native_stack_exhaustion.py", "tests/differential/basic/closed_pipe_write_signal.py", "tests/differential/basic/closed_stderr_start.py", "tests/differential/basic/reexec_keeps_parent_environment.py", "tests/differential/basic/start_ignores_caller_file_state.py", "tests/differential/basic/file_size_limit_write_signal.py", "tests/differential/stdlib/multiprocessing_pool_imap.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
 contention_key = "cargo-native-runtime"
@@ -6421,7 +6456,6 @@ description = "Compile and execute the runtime ownership, mapping, numeric, path
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "release", "--build-profile", "release", "--stdlib-profile", "full", "--target", "native", "--jobs", "1", "--json"]
 differential_cases = ["tests/differential/stdlib/asyncio_task_basic.py", "tests/differential/stdlib/codecs_error_handlers_basic.py", "tests/differential/stdlib/stream_writer_protocol.py", "tests/differential/stdlib/io_textio_errors.py", "tests/differential/stdlib/threading_shared_call_identity.py", "tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/pathlib_joinpath_fspath.py", "tests/differential/stdlib/asyncio_subprocess_fspath_failure.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
-cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "native-build"
 contention_key = "cargo-native-runtime"
@@ -6434,7 +6468,6 @@ description = "Compile and execute the shared mapping, numeric, serialization an
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "release", "--build-profile", "release", "--stdlib-profile", "full", "--target", "wasm", "--jobs", "1", "--json"]
 differential_cases = ["tests/differential/basic/attribute_lookup_transactions.py", "tests/differential/basic/exceptiongroup_notes_propagation.py", "tests/differential/stdlib/collections_chainmap_protocol.py", "tests/differential/stdlib/dictionary_callback_failure_propagation.py", "tests/differential/stdlib/logging_config_dict.py", "tests/differential/stdlib/math_numeric_protocol.py", "tests/differential/stdlib/statistics_median_grouped.py", "tests/differential/stdlib/math_floor_ceil_basic.py", "tests/differential/stdlib/colorsys_basic.py", "tests/differential/stdlib/fractions_basic.py", "tests/differential/stdlib/pickle_protocol1_basic.py", "tests/differential/stdlib/sys_runtime_state.py", "tests/differential/basic/builtin_method_error_parity.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "wasm-browser"
 contention_key = "cargo-native-runtime"
@@ -6446,7 +6479,6 @@ id = "runtime.function-module-contract"
 description = "Exercise versioned FunctionType class/direct construction, captured namespace publication and Luau frame consumers in one native development Cargo graph; release and other target cells remain separate."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--timings", "--profile", "dev-fast", "-p", "molt-runtime", "-p", "molt-backend-luau", "--lib", "--features", "molt-runtime/molt_tk_native,molt-runtime/stdlib_full", "--", "function_type_", "module_entry_", "keyword_default_lookup_returns_an_owner_independent_of_metadata_dictionary", "builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned", "locals_identity_and_snapshot_contents_follow_runtime_target_version", "lune_oracle_", "callable_and_frame_runtime_fragments_pass_shared_source_validation", "--include-ignored", "--nocapture", "--test-threads=1"]
 toolchains = ["python", "rustc", "cargo", "lune"]
-cargo_build_python = true
 cargo_native_units = { target = ["c", "c++"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -6458,7 +6490,6 @@ id = "runtime.compression-streams"
 description = "Exercise persistent compression decoder policy and its shared native integer conversion contracts without rebuilding the root runtime."
 argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "--no-fail-fast", "-p", "molt-runtime-compression", "-p", "molt-lang-cpython-abi", "--lib", "--test", "test_numbers", "--", "--test-threads=4"]
 toolchains = ["cargo", "rustc", "python"]
-cargo_build_python = true
 cargo_native_units = { target = ["c"] }
 resource_family = "rust"
 contention_key = "cargo-native-runtime"
@@ -6470,7 +6501,6 @@ id = "runtime.abi-fixture-authorities"
 description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
 toolchains = ["cargo", "rustc", "python"]
-cargo_build_python = true
 cargo_native_units = { target = ["c"] }
 resource_family = "rust"
 contention_key = "cargo:molt-lang-cpython-abi"
@@ -6483,7 +6513,6 @@ cargo_native_units = { target = ["c", "c++"] }
 description = "Pact Kernel A native acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "native"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-strip"]
-cargo_build_python = true
 resource_family = "native-build"
 contention_key = "pact:witness"
 timeout_seconds = 1800
@@ -6494,7 +6523,6 @@ id = "pact.witness.acceptance.wasm"
 description = "Pact Kernel A WASM acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools", "node", "wasi-clang", "wasm-opt"]
-cargo_build_python = true
 resource_family = "wasm-browser"
 contention_key = "pact:witness"
 timeout_seconds = 1800
@@ -6511,7 +6539,7 @@ timeout_seconds = 900
 
 # R6 target-version parity: the stdlib fixtures whose behavior depends on the
 # target CPython minor, through the differential harness, serial and fail-fast.
-# One lane per version in src/molt/target_python.py; a test gates the set.
+# One lane per version in src/molt/target_python_policy.py; a test gates the set.
 
 [[named_lane]]
 cache_domain = "cargo-workspace"
@@ -6521,7 +6549,6 @@ description = "R6 target-version parity for CPython 3.12: sys metadata, stat, qu
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--compiler-profile", "dev", "--build-profile", "dev", "--fail-fast"]
 differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py", "tests/differential/stdlib/typing_alias_repr_equality.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 resource_family = "python"
 contention_key = "python:r6-target-version-py312"
 timeout_seconds = 900
@@ -6534,7 +6561,6 @@ description = "R6 target-version parity for CPython 3.13: sys metadata, stat, qu
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--compiler-profile", "dev", "--build-profile", "dev", "--fail-fast"]
 differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py", "tests/differential/stdlib/typing_alias_repr_equality.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 resource_family = "python"
 contention_key = "python:r6-target-version-py313"
 timeout_seconds = 900
@@ -6547,7 +6573,6 @@ description = "R6 target-version parity for CPython 3.14: sys metadata, stat, qu
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--compiler-profile", "dev", "--build-profile", "dev", "--fail-fast"]
 differential_cases = ["tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py", "tests/differential/stdlib/typing_alias_repr_equality.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
-cargo_build_python = true
 resource_family = "python"
 contention_key = "python:r6-target-version-py314"
 timeout_seconds = 900
@@ -6681,7 +6706,6 @@ dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q"]
 pytest = ["tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-custody.macos"
@@ -6696,7 +6720,6 @@ dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q"]
 pytest = ["tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.cargo-custody.windows"
@@ -6711,7 +6734,6 @@ dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q"]
 pytest = ["tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_toolchain_capture.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.headers.windows"
@@ -6725,7 +6747,6 @@ dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q"]
 pytest = ["tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units", "tests/tools/test_release_native_build.py::test_msvc_release_path_maps_are_effective_across_build_roots"]
 toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang-cl", "hosted-cmake", "ninja"]
-cargo_build_python = true
 
 [[command]]
 id = "portability.guard.windows"
@@ -6779,7 +6800,6 @@ dependencies = []
 evidence_outputs = ["proof-receipts/evidence/candidate-runtime-costs"]
 argv = ["uv", "run", "--frozen", "python", "tools/run_candidate_runtime_costs.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "ld.lld"]
-cargo_build_python = true
 
 # Standalone C-API ownership and its C shims are a distinct link consumer.
 [[rule]]
@@ -6798,3 +6818,12 @@ toolchains = ["rustc", "cargo", "python"]
 description = "Compression engine and bounded stream state use one small Cargo graph, with the existing native integer oracle."
 globs = ["runtime/molt-runtime-compression/src/**/*.rs"]
 gates = ["cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-compression -p molt-lang-cpython-abi --lib --test test_numbers -- --test-threads=4"]
+
+# Release work is mutable coordination metadata; proof recipes remain above.
+[[rule]]
+name = "release-work-state"
+description = "Committed release facts and strict, explicitly declared outcome dependencies in canonical agent context."
+globs = ["tools/agent_coordination.py", "tools/release_outcomes.py", "tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py"]
+pytest = ["tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py"]
+gates = []
+toolchains = ["python", "uv"]

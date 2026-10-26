@@ -586,21 +586,6 @@ _MOLT_ABI_SASSERT(offsetof(PySliceObject, stop) == 24u, "layout drift: offsetof(
 _MOLT_ABI_SASSERT(offsetof(PySliceObject, step) == 32u, "layout drift: offsetof(PySliceObject, step) != 32");
 #endif
 
-/* PyGenericAliasObject  <-  abi_types.rs */
-#if SIZEOF_VOID_P == 4
-_MOLT_ABI_SASSERT(sizeof(PyGenericAliasObject) == 16u, "layout drift: sizeof(PyGenericAliasObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
-_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, origin) == 8u, "layout drift: offsetof(PyGenericAliasObject, origin) != 8");
-_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, args) == 12u, "layout drift: offsetof(PyGenericAliasObject, args) != 12");
-#elif SIZEOF_LONG == 4
-_MOLT_ABI_SASSERT(sizeof(PyGenericAliasObject) == 32u, "layout drift: sizeof(PyGenericAliasObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
-_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, origin) == 16u, "layout drift: offsetof(PyGenericAliasObject, origin) != 16");
-_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, args) == 24u, "layout drift: offsetof(PyGenericAliasObject, args) != 24");
-#else
-_MOLT_ABI_SASSERT(sizeof(PyGenericAliasObject) == 32u, "layout drift: sizeof(PyGenericAliasObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
-_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, origin) == 16u, "layout drift: offsetof(PyGenericAliasObject, origin) != 16");
-_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, args) == 24u, "layout drift: offsetof(PyGenericAliasObject, args) != 24");
-#endif
-
 /* PyCFunctionObject  <-  abi_types.rs */
 #if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyCFunctionObject) == 28u, "layout drift: sizeof(PyCFunctionObject) != 28 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");

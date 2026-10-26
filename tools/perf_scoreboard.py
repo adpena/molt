@@ -39,8 +39,8 @@ Backends / profiles (baseline run)
   * Native, LLVM and linked WASM use the same cold/warm/output-parity controller.
     WASM executes the compiler's manifest through the canonical Node runner.
     Luau lives in ``tools/benchmark_luau_vs_cpython.py``.
-  * release-fast is the daily-contract profile (``--build-profile release`` in
-    the CLI maps to the ``release-fast`` cargo profile for the backend).
+  * release-fast is the daily-contract runtime profile, explicitly pinned by
+    the shared release-lane selection alongside the independent host compiler.
     release-output is the incremental next fill.
 
 PyPy / Codon columns are present-but-nullable in the schema; neither is
@@ -330,7 +330,7 @@ _CODEX_EXCLUDE = "codex"  # never counted/killed (project policy)
 
 # CLI --build-profile value -> the cargo profile it resolves to (for the
 # scoreboard label). "release" is the daily contract profile and maps to the
-# release-fast cargo profile for the backend (see cli.py:_backend_profile).
+# explicit physical runtime profile from the shared release-lane authority.
 
 
 # ---------------------------------------------------------------------------

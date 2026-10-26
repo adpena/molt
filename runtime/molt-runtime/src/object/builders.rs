@@ -1545,7 +1545,7 @@ pub(crate) fn alloc_slice_obj(
 }
 
 pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 3 * std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(
         _py,
         total,
@@ -1558,6 +1558,11 @@ pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits
     unsafe {
         *(ptr as *mut u64) = origin_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = args_bits;
+        std::ptr::write(
+            ptr.add(2 * std::mem::size_of::<u64>())
+                .cast::<std::sync::atomic::AtomicU64>(),
+            std::sync::atomic::AtomicU64::new(MoltObject::none().bits()),
+        );
         inc_ref_bits(_py, origin_bits);
         inc_ref_bits(_py, args_bits);
     }
@@ -1565,13 +1570,18 @@ pub(crate) fn alloc_generic_alias(_py: &PyToken<'_>, origin_bits: u64, args_bits
 }
 
 pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_UNION);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
         *(ptr as *mut u64) = args_bits;
+        std::ptr::write(
+            ptr.add(std::mem::size_of::<u64>())
+                .cast::<std::sync::atomic::AtomicU64>(),
+            std::sync::atomic::AtomicU64::new(MoltObject::none().bits()),
+        );
         inc_ref_bits(_py, args_bits);
     }
     ptr
@@ -2175,7 +2185,11 @@ pub(crate) fn alloc_inline_bytes_with_len(
     len: usize,
     kind: InlineBytesKind,
 ) -> *mut u8 {
-    let Some(total) = super::layout::InlineBytesStorage::object_size(len) else {
+    let total = match kind {
+        InlineBytesKind::String => super::layout::StringStorage::object_size(len),
+        InlineBytesKind::Bytes => super::layout::InlineBytesStorage::object_size(len),
+    };
+    let Some(total) = total else {
         record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     };
@@ -2205,6 +2219,9 @@ fn canonical_inline_bytes(
                     super::layout::InlineBytesStorage::data(ptr),
                     bytes.len(),
                 );
+                if matches!(kind, InlineBytesKind::String) && bytes.len() <= 1 {
+                    super::layout::StringStorage::publish_ascii(ptr, bytes.is_ascii());
+                }
             }
         }
         ptr
@@ -2295,13 +2312,18 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     // Fast pre-check: all bytes must be ASCII and the string must look like an
     // identifier.  We use `is_identifier_like` from string_intern which is a
     // purely byte-level check with no allocation.
-    let is_ident = bytes.is_ascii()
+    let ascii = bytes.is_ascii();
+    let is_ident = ascii
         && crate::object::string_intern::is_identifier_like(
             // SAFETY: we just verified all bytes are ASCII which is a subset of UTF-8.
             unsafe { std::str::from_utf8_unchecked(bytes) },
         );
     if is_ident {
-        return alloc_interned_string(_py, bytes);
+        let ptr = alloc_interned_string(_py, bytes);
+        if !ptr.is_null() {
+            unsafe { super::layout::StringStorage::publish_ascii(ptr, true) };
+        }
+        return ptr;
     }
 
     let ptr = alloc_inline_bytes_with_len(_py, bytes.len(), InlineBytesKind::String);
@@ -2311,6 +2333,7 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     unsafe {
         let data_ptr = super::layout::InlineBytesStorage::data(ptr);
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+        super::layout::StringStorage::publish_ascii(ptr, ascii);
     }
     ptr
 }
@@ -3717,6 +3740,136 @@ mod tests {
     }
 
     #[test]
+    fn string_ascii_fact_is_lazy_for_nointern_and_shared_by_whole_string_consumers() {
+        use crate::object::layout::{InlineBytesStorage, StringStorage};
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for content in [
+                b"not an identifier!".as_slice(),
+                "ascii prefix é".as_bytes(),
+            ] {
+                let ptr = super::alloc_string_nointern(py, content);
+                assert!(!ptr.is_null());
+                unsafe {
+                    assert_eq!(
+                        StringStorage::known_ascii(ptr),
+                        None,
+                        "no eager nointern scan"
+                    );
+                    assert_eq!(
+                        StringStorage::payload_size(content.len()).unwrap(),
+                        InlineBytesStorage::payload_size(content.len()).unwrap() + 1
+                    );
+                    // Prefix-only iteration must neither observe type nor
+                    // classify the unread suffix, including terminal cleanup.
+                    for _ in 0..4 {
+                        let iterator = crate::molt_iter(MoltObject::from_ptr(ptr).bits());
+                        assert!(!crate::exception_pending(py));
+                        assert_eq!(
+                            crate::object::object_class_bits(
+                                crate::obj_from_bits(iterator).as_ptr().unwrap()
+                            ),
+                            0
+                        );
+                        let first = crate::molt_next_builtin(iterator, crate::missing_bits(py));
+                        assert!(!crate::exception_pending(py));
+                        let first_ptr = crate::obj_from_bits(first).as_ptr().unwrap();
+                        assert_eq!(
+                            std::slice::from_raw_parts(
+                                crate::string_bytes(first_ptr),
+                                crate::string_len(first_ptr)
+                            ),
+                            &content[..1]
+                        );
+                        dec_ref_bits(py, first);
+                        dec_ref_bits(py, iterator);
+                        assert_eq!(
+                            StringStorage::known_ascii(ptr),
+                            None,
+                            "prefix construction/advance/drop must not classify source"
+                        );
+                    }
+                    let bytes = std::slice::from_raw_parts(crate::string_bytes(ptr), content.len());
+                    // A prefix may be ASCII when the whole string is not.
+                    assert_eq!(
+                        crate::object::ops_string::utf8_codepoint_count_cached(
+                            py,
+                            &bytes[..5],
+                            Some(ptr as usize)
+                        ),
+                        5
+                    );
+                    assert_eq!(
+                        StringStorage::known_ascii(ptr),
+                        None,
+                        "prefix cannot publish whole-content fact"
+                    );
+                    let count = crate::object::ops_string::utf8_codepoint_count_cached(
+                        py,
+                        bytes,
+                        Some(ptr as usize),
+                    );
+                    assert_eq!(
+                        count,
+                        std::str::from_utf8(content).unwrap().chars().count() as i64
+                    );
+                    assert_eq!(StringStorage::known_ascii(ptr), Some(content.is_ascii()));
+                    // Warm iterator construction and type queries reuse the same fact.
+                    for _ in 0..4 {
+                        let iterator = crate::molt_iter(MoltObject::from_ptr(ptr).bits());
+                        assert!(!crate::exception_pending(py));
+                        let expected = if content.is_ascii() {
+                            crate::builtin_classes(py).str_ascii_iterator
+                        } else {
+                            crate::builtin_classes(py).str_iterator
+                        };
+                        assert_eq!(
+                            crate::builtins::type_ops::type_of_bits(py, iterator),
+                            expected
+                        );
+                        dec_ref_bits(py, iterator);
+                        assert_eq!(StringStorage::known_ascii(ptr), Some(content.is_ascii()));
+                    }
+                }
+                dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+            }
+            for clear in [false, true] {
+                let ptr = super::alloc_string_nointern(py, "é".as_bytes());
+                assert!(!ptr.is_null());
+                let source = MoltObject::from_ptr(ptr).bits();
+                let iterator = crate::molt_iter(source);
+                let iter_ptr = crate::obj_from_bits(iterator).as_ptr().unwrap();
+                unsafe {
+                    assert_eq!(StringStorage::known_ascii(ptr), None);
+                    if clear {
+                        crate::object::heap_lifecycle::clear_cycle_edges(py, iter_ptr);
+                    } else {
+                        let item = crate::molt_next_builtin(iterator, crate::missing_bits(py));
+                        assert!(!crate::exception_pending(py));
+                        dec_ref_bits(py, item);
+                        assert_eq!(StringStorage::known_ascii(ptr), None);
+                        let result = crate::molt_next_builtin(iterator, MoltObject::none().bits());
+                        assert!(!crate::exception_pending(py));
+                        assert_eq!(result, MoltObject::none().bits());
+                        dec_ref_bits(py, result);
+                    }
+                    assert_eq!(StringStorage::known_ascii(ptr), Some(false));
+                    assert!(
+                        crate::obj_from_bits(crate::object::layout::iter_target_bits(iter_ptr))
+                            .is_none()
+                    );
+                    assert_eq!(
+                        crate::builtins::type_ops::type_of_bits(py, iterator),
+                        crate::builtin_classes(py).str_iterator
+                    );
+                }
+                dec_ref_bits(py, iterator);
+                dec_ref_bits(py, source);
+            }
+        });
+    }
+
+    #[test]
     fn byte_storage_constructors_admit_only_their_physical_payload_kind() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -3768,6 +3921,17 @@ mod tests {
             let data = crate::string_bytes(ptr);
             assert_eq!(std::slice::from_raw_parts(data, expected.len()), expected);
             assert_eq!(*data.add(expected.len()), 0);
+            if object_type_id(ptr) == crate::TYPE_ID_STRING {
+                assert!(
+                    crate::object::object_payload_size(ptr)
+                        >= crate::object::layout::StringStorage::payload_size(expected.len())
+                            .unwrap()
+                );
+                assert_eq!(
+                    crate::object::layout::StringStorage::is_ascii(ptr),
+                    expected.is_ascii()
+                );
+            }
         }
     }
 
@@ -3839,23 +4003,22 @@ mod tests {
             dec_ref_bits(py, left_bits);
             dec_ref_bits(py, right_bits);
 
-            // Poison the next sentinel position so capacity reuse must write it.
+            // Prime the old fact, then append a non-ASCII suffix. The unique
+            // mutation must invalidate it while retaining the existing capacity.
             unsafe {
-                assert!(
-                    crate::object::object_payload_size(grown_ptr)
-                        >= std::mem::size_of::<usize>() + expected.len() + 2
-                );
-                (crate::string_bytes(grown_ptr) as *mut u8)
-                    .add(expected.len() + 1)
-                    .write(0x7f);
+                assert!(crate::object::layout::StringStorage::is_ascii(grown_ptr));
             }
-            let suffix = MoltObject::from_ptr(alloc_string(py, b"!")).bits();
+            let suffix = MoltObject::from_ptr(alloc_string(py, "é".as_bytes())).bits();
             let appended = crate::molt_inplace_add(grown, suffix);
             assert!(!crate::exception_pending(py));
             assert_eq!(appended, grown, "amortized capacity is reused");
-            expected.push(b'!');
+            expected.extend_from_slice("é".as_bytes());
             unsafe {
                 assert_inline_content_and_terminator(grown_ptr, &expected);
+                assert_eq!(
+                    crate::object::layout::StringStorage::known_ascii(grown_ptr),
+                    Some(false)
+                );
             }
             for bits in [suffix, grown, appended] {
                 dec_ref_bits(py, bits);

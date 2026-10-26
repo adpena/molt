@@ -1,3 +1,4 @@
+use crate::backend_process::native_batch::NativeWorkerOrigin;
 use std::io;
 use std::path::Path;
 
@@ -16,6 +17,7 @@ pub(crate) fn publish_shared_stdlib_cache_archive(
     cache_key: Option<&str>,
     cache_manifest: Option<&str>,
     partition_manifest: &str,
+    origins: Option<&[NativeWorkerOrigin]>,
 ) -> io::Result<String> {
     with_shared_stdlib_cache_publish_lock(stdlib_path, || {
         // A pre-transfer failure preserves the prior generation. A replacement
@@ -48,6 +50,7 @@ pub(crate) fn publish_shared_stdlib_cache_archive(
             cache_manifest,
             partition_manifest,
             known_digest.as_deref(),
+            origins,
         )
         .map_err(|err| {
             // Replacement has committed. This is a fail-closed transaction
@@ -94,6 +97,7 @@ mod tests {
             Some("old-manifest"),
             "old-partition",
             None,
+            None,
         )
         .expect("seed previous sidecars");
         let missing = directory.join("missing-producer-output.a");
@@ -109,7 +113,8 @@ mod tests {
                 2,
                 Some("new-key"),
                 Some("new-manifest"),
-                "new-partition"
+                "new-partition",
+                None,
             )
             .is_err()
         );
@@ -150,6 +155,7 @@ mod tests {
             Some("old-manifest"),
             "old-partition",
             None,
+            None,
         )
         .expect("seed old sidecars");
         let error = publish_shared_stdlib_cache_archive(
@@ -167,6 +173,7 @@ mod tests {
             Some("new-key"),
             Some("new-manifest"),
             "new-partition",
+            None,
         )
         .expect_err("post-transfer abort");
         assert!(error.to_string().contains("destination replaced"));
@@ -207,6 +214,7 @@ mod tests {
             Some("new-key"),
             Some("new-manifest"),
             "partition",
+            None,
         )
         .expect_err("sidecar failure aborts replaced generation");
         let detail = error.to_string();

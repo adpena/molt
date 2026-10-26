@@ -116,7 +116,7 @@ For the full setup and troubleshooting path, use
 [docs/getting-started.md](docs/getting-started.md).
 
 ```bash
-uv sync --group dev --python 3.12
+uv sync --group dev --python 3.12.15
 uv run --python 3.12 molt doctor --json
 uv run --python 3.12 molt run examples/hello.py
 ```
@@ -125,6 +125,12 @@ Run these commands from the repository root after installing the
 [prerequisites](docs/getting-started.md#prerequisites). `uv sync` creates the
 project environment but does not activate it; `uv run` selects it without
 shell-specific activation. The first build may compile the backend and runtime.
+These commands maintain a source bootstrap environment. Managed development
+and proof commands use the separate immutable image contract described in
+[checkout provisioning](docs/ops/INTEGRATION.md#checkout-provisioning); do not
+point `uv sync` at a published image.
+For the supported change-to-CI path, failure triage and source-bound proof
+coverage verification, see the [developer workflow](docs/DEVELOPER_GUIDE.md#follow-a-change-through-ci).
 For another supported Python target, select its frontend through uv and its
 language policy through `--python-version`; see
 [version selection](docs/getting-started.md#compare-against-cpython).

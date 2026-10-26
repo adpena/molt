@@ -159,18 +159,18 @@ def _observe_release_matrix_import(root: Path) -> None:
         "from pathlib import Path\n"
         "root = Path(sys.argv[1]).resolve()\n"
         "sys.path[:0] = [str(root), str(root / 'src')]\n"
-        "sys.modules.pop('molt.target_python', None)\n"
+        "sys.modules.pop('molt.target_python_policy', None)\n"
         "sys.modules.pop('molt', None)\n"
         "from tools import gen_release_matrix, generator_io\n"
         "import molt\n"
-        "from molt import target_python\n"
+        "from molt import target_python_policy\n"
         "assert gen_release_matrix.generator_main.__module__ == "
         "'tools.generator_io', gen_release_matrix.generator_main.__module__\n"
         "for module, relative in ("
         "(gen_release_matrix, 'tools/gen_release_matrix.py'),"
         "(generator_io, 'tools/generator_io.py'),"
         "(molt, 'src/molt/__init__.py'),"
-        "(target_python, 'src/molt/target_python.py')):\n"
+        "(target_python_policy, 'src/molt/target_python_policy.py')):\n"
         "    actual = Path(module.__file__).resolve()\n"
         "    expected = root / relative\n"
         "    assert actual == expected, (module.__name__, str(actual), str(expected))\n"
@@ -210,7 +210,7 @@ def test_release_matrix_import_preserves_fresh_source_tree(
         "pyproject.toml",
         "src/molt/__init__.py",
         "src/molt/package_import_custody.py",
-        "src/molt/target_python.py",
+        "src/molt/target_python_policy.py",
     ):
         destination = disposable / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -243,6 +243,15 @@ def test_live_gate_has_no_gating_violations():
     assert summary["by_kind"]["orphan"] == 0
     assert summary["by_kind"]["ungated"] == 0
     assert summary["regressions"] == 0
+    # Keep an independent ratchet comparison without scanning the live tree twice.
+    counts = dict.fromkeys(summary["closed_domains"], 0)
+    counts.update(summary["closed_domain_counts"])
+    baseline = CGM.load_baseline(ROOT)
+    for name, live in counts.items():
+        allowed = baseline.get(name, 0)
+        assert live <= allowed, (
+            f"closed domain {name} regressed: live={live} > baseline={allowed}"
+        )
 
 
 def test_generator_family_parallel_checks_preserve_source_state() -> None:
@@ -328,16 +337,28 @@ def test_closed_domains_parse_to_live_enums():
         assert variants, f"{cd['name']}: parsed 0 variants of {cd['enum_name']}"
 
 
-def test_baseline_matches_live_counts():
-    """The committed ratchet baseline equals the live counts (no silent drift in
-    either direction outside an explicit --update-baseline)."""
-    counts, _sites = CGM.collect_backlog_sites(ROOT)
-    baseline = CGM.load_baseline(ROOT)
-    for name, live in counts.items():
-        allowed = baseline.get(name, 0)
-        assert live <= allowed, (
-            f"closed domain {name} regressed: live={live} > baseline={allowed}"
-        )
+def test_backlog_collection_reports_sites_and_declared_zero_domains(tmp_path: Path):
+    """Baseline writing retains exact sites and zero entries after source edits."""
+    root = _mirror_min_tree(tmp_path)
+    relative = "runtime/molt-passes/src/collector_probe.rs"
+    offending = root / relative
+    offending.parent.mkdir(parents=True, exist_ok=True)
+    offending.write_text(_silent_default_match("Terminator"), encoding="utf-8")
+
+    counts, sites = CGM.collect_backlog_sites(root)
+    assert counts["Terminator"] == 1
+    assert sites["Terminator"] == [f"{relative}:2"]
+    assert counts["OpCode"] == 0
+    assert sites["OpCode"] == []
+    assert sum(counts.values()) == 1
+
+    offending.unlink()
+    counts, sites = CGM.collect_backlog_sites(root)
+    assert counts["Terminator"] == 0
+    assert sites["Terminator"] == []
+    assert counts["OpCode"] == 0
+    assert sites["OpCode"] == []
+    assert sum(counts.values()) == 0
 
 
 # --- 2. proven-to-find-debt: the closed-domain auditor --------------------
@@ -498,7 +519,9 @@ def test_exhaustive_no_wildcard_match_is_not_flagged():
 # --- 2b. proven-to-find-debt: end-to-end regression detection -------------
 
 
-def _mirror_min_tree(tmp_path: Path) -> Path:
+def _mirror_min_tree(
+    tmp_path: Path, *, exclude_toolchains: frozenset[str] = frozenset()
+) -> Path:
     """Build a minimal but VALID mirror of the meta-gate's inputs in tmp_path:
     the manifest, closed-domain enum files, and a CI file that satisfies every
     ci_checkable generator's --check-step requirement (so the only gating signal
@@ -544,6 +567,7 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
             for g in manifest.generators
             if g.get("ci_checkable", True) and not g.get("discovery_only", False)
             for name in g.get("toolchains", [])
+            if name not in exclude_toolchains
         }
     )
     (tmp_path / "tools" / "proof_plan.toml").write_text(
@@ -667,10 +691,24 @@ def test_injected_orphan_generated_file_fails_the_gate(tmp_path: Path):
         encoding="utf-8",
     )
 
+    # A mixed producer owns its explicit output; family prose cannot hide a
+    # generated sibling that was never declared.
+    mixed = next(
+        row
+        for row in CGM.load_manifest(root).generators
+        if row.get("output_family") and row["outputs"]
+    )
+    fixed = root / mixed["outputs"][0]
+    fixed.write_text("# @generated by the declared producer\n", encoding="utf-8")
+    sibling = fixed.with_name(f"{fixed.stem}_undeclared{fixed.suffix}")
+    sibling.write_text("# @generated by an undeclared producer\n", encoding="utf-8")
+
     _violations, _summary, gating = CGM.run_all(root)
     orphans = [v for v in gating if v.kind == "orphan"]
     assert orphans, "injected orphan generated file did NOT trip the scan"
     assert any("ghost_generated.rs" in v.location for v in orphans)
+    assert any(v.location == sibling.relative_to(root).as_posix() for v in orphans)
+    assert all(v.location != fixed.relative_to(root).as_posix() for v in orphans)
 
 
 def _scan_records(cache: Path) -> ScanRecords:
@@ -1021,11 +1059,12 @@ def test_generator_without_the_contract_fails_gate(tmp_path: Path) -> None:
 def test_generator_toolchain_missing_from_proof_receipt_fails_gate(
     tmp_path: Path,
 ) -> None:
-    root = _mirror_min_tree(tmp_path)
+    import tomllib
+
+    root = _mirror_min_tree(tmp_path, exclude_toolchains=frozenset({"rustfmt"}))
     proof_plan_path = root / "tools" / "proof_plan.toml"
-    text = proof_plan_path.read_text(encoding="utf-8")
-    proof_plan_path.write_text(text.replace('"rustfmt", ', ""), encoding="utf-8")
-    assert "rustfmt" not in proof_plan_path.read_text(encoding="utf-8")
+    plan = tomllib.loads(proof_plan_path.read_text(encoding="utf-8"))
+    assert "rustfmt" not in plan["command"][0]["toolchains"]
 
     _violations, _summary, gating = CGM.run_all(root)
     assert any(
@@ -1125,16 +1164,19 @@ def test_phantom_sync_test_fails_loud(tmp_path: Path):
     [
         ('["a"]', None, None),
         ("[]", '"stub files"', None),
-        ("[]", None, "exactly one of a non-empty outputs list or an output_family"),
-        ('["a"]', '"stub files"', "exactly one of"),
+        ("[]", None, "declare a non-empty outputs list or an output_family"),
+        ('["a"]', '"stub files"', None),
         ("[]", '"  "', "output_family must be a non-empty string"),
     ],
 )
-def test_generator_declares_fixed_outputs_or_an_output_family(
+def test_generator_declares_fixed_outputs_and_or_an_output_family(
     tmp_path: Path, outputs: str, family: str | None, error: str | None
 ) -> None:
-    """A row names the files it writes, or the dynamic family it owns, never
-    neither and never both; an unexplained empty outputs list is a lie."""
+    """A producer names its fixed outputs, dynamic family, or both.
+
+    An unexplained empty outputs list is a lie; family prose never exempts an
+    undeclared generated file from the orphan scan.
+    """
     (tmp_path / "tools").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_x.py").write_text("", encoding="utf-8")
@@ -1236,7 +1278,7 @@ def test_generator_selected_preflight_reports_all_before_any_render(
 ):
     from tools import generators, proof_plan
 
-    source = tmp_path / "src/molt/target_python.py"
+    source = tmp_path / "src/molt/target_python_policy.py"
     source.parent.mkdir(parents=True)
     source.write_text(
         "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.13', '3.14')\n", encoding="utf-8"
@@ -1431,7 +1473,7 @@ def test_all_missing_selected_unicode_providers_refuse_before_any_generator_impo
     monkeypatch.setattr(generators, "BuildPythonAdmission", fixture.admission_class)
     current = fixture.minor
     other = f"3.{int(current.split('.')[1]) + 1}"
-    source = tmp_path / "src/molt/target_python.py"
+    source = tmp_path / "src/molt/target_python_policy.py"
     source.parent.mkdir(parents=True)
     source.write_text(
         f"SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ({current!r}, {other!r})\n",
@@ -1489,65 +1531,17 @@ python_versions = "supported-targets"
     assert error.count("FileNotFoundError") == 2
 
 
-def test_unicode_query_consumes_new_admitted_selection_while_old_python_exists(
-    tmp_path, monkeypatch
-):
-    import os
-    from tools import gen_unicode_width, proof_plan
-    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
+def test_unicode_generation_has_no_target_interpreter_prerequisite():
+    from tools import gen_unicode_width
 
-    from tools.proof_queue_pkg import command_identity
-
-    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
-
-    def identify():
-        return command_identity._tool_identity(
-            fixture.plan,
-            fixture.policy.name,
-            {"python": None},
-            [sys.executable, "-c", "pass"],
-            cwd=tmp_path,
-            env=os.environ,
-            reuse_root=tmp_path / "reuse",
-        )
-
-    previous = identify()
-    first = fixture.selected[0]
-    second = Path(list(fixture.installations)[1])
-    fixture.selected[0] = second
-    current = identify()
-    assert previous["content_path"] == str(first)
-    assert current["content_path"] == str(second)
-    monkeypatch.setattr(
-        gen_unicode_width, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", (fixture.minor,)
+    entry = next(
+        item
+        for item in CGM.load_manifest(ROOT).generators
+        if item["tool"] == "tools/gen_unicode_width.py"
     )
-    calls = []
-    original = gen_unicode_width.harness_memory_guard.guarded_completed_process
-
-    def query(command, **kwargs):
-        calls.append(list(command))
-        return original(command, **kwargs)
-
-    monkeypatch.setattr(
-        gen_unicode_width.harness_memory_guard, "guarded_completed_process", query
-    )
-    from molt.python_runtime_admission import BuildPythonAdmission
-
-    with BuildPythonAdmission(with_custody=True) as admission:
-        selected = proof_plan.capture_selected_python_runtime(
-            fixture.policy,
-            second,
-            environment=os.environ,
-            admission=admission,
-        )
-        assert proof_plan.selected_python_runtime_material(
-            selected
-        ) == proof_plan.selected_python_runtime_material(current["python_runtime"])
-        text = gen_unicode_width.render(
-            python_runtimes={fixture.minor: (selected, admission)}
-        )
-    assert first.is_file() and second.is_file()
-    assert calls[0][:4] == [str(second), "-B", "-I", "-S"]
-    assert "uv" not in calls[0]
-    assert f"WIDTH_{fixture.minor.replace('.', '_')}" in text
-    assert "Some((" in text
+    assert not entry.get("toolchains", [])
+    assert entry["outputs"] == ["runtime/molt-obj-model/src/unicode_generated.rs"]
+    assert not hasattr(gen_unicode_width, "harness_memory_guard")
+    # Generation consumes the admitted source catalog; interpreter selection is
+    # only a differential-test oracle and cannot alter a production table.
+    assert gen_unicode_width.OUTPUT == ROOT / entry["outputs"][0]

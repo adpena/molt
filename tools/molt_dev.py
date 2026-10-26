@@ -185,13 +185,13 @@ from tools.git_identity import (  # noqa: E402
     clean_checkout_status_arguments,
     require_git_object_id,
 )
-from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
+from tools.git_identity import immutable_git_environment  # noqa: E402
 from molt.file_locks import (  # noqa: E402
     _acquire_file_lock,
     _release_file_lock,
     _try_acquire_file_lock,
 )
-from molt.dx import project_cargo_target_dir  # noqa: E402
+from molt.dx import configured_artifact_root, project_cargo_target_dir  # noqa: E402
 
 from tools.molt_dev_detached import (  # noqa: E402
     cmd_detached_run,
@@ -214,7 +214,7 @@ from tools.molt_dev_gates import (  # noqa: E402
     retire_gate_logs,
     run_selected_gates,
 )
-from tools.molt_dev_policy import GateConfig, select_landing_gates  # noqa: E402
+from tools.molt_dev_policy import GateConfig, GateEnvironment, select_landing_gates  # noqa: E402
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
@@ -516,50 +516,96 @@ def _integration_lock_path(repo: Path) -> Path:
 
 
 def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
-    """Use the shared explicit selectors, then the checkout or main-worktree venv.
-
-    An existing or explicitly selected environment is returned even when broken:
-    validation must diagnose it rather than silently choose another interpreter.
-    Only an absent automatic checkout default permits main-worktree discovery.
-    In a checkout that declares a uv project (``uv.lock``), its own
-    environment (``UV_PROJECT_ENVIRONMENT``, else an existing ``.venv``) is
-    first ensured from the lock, as ``uv run`` syncs before it runs: a missing
-    one is built and an unstamped one is confirmed by ``uv sync --frozen``
-    (`molt.checkout_provisioning`). A memory-guarded child inherits dx's
-    default ``UV_PROJECT_ENVIRONMENT`` even where that managed environment was
-    never built. An explicit ``MOLT_VENV`` and a borrowed main-worktree
-    environment are used as they are.
-    """
-    selected = venv_exec.resolve_venv(repo_root=repo, env=env)
-    own = repo / ".venv"
+    """Select one exact managed generation or an explicit external borrower."""
     if env.get("MOLT_VENV"):
-        return selected
-    if (
-        env.get("UV_PROJECT_ENVIRONMENT", "").strip()
-        or own.exists()
-        or own.is_symlink()
-    ):
-        from molt import checkout_provisioning
+        return venv_exec.resolve_venv(repo_root=repo, env=env)
+    from molt import checkout_provisioning
+    from molt.dx import DxConfigError, DxProject
+    from molt.source_build_environment import load_development_environment
+    from molt.source_build_environment_schema import SourceBuildEnvironmentError
 
-        project = checkout_provisioning.checkout_input(
+    try:
+        if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
+            selected = venv_exec.resolve_venv(repo_root=repo, env=env)
+            return load_development_environment(
+                selected, repo_root=repo, groups=DxProject(repo).dependency_groups()
+            ).root
+        spec = checkout_provisioning.checkout_input(
             "uv-environment", repo, env, guard_source_root=_COMMANDS.repo_root
         )
-        if checkout_provisioning.declares(project):
-            try:
-                checkout_provisioning.ensure_input(project)
-            except checkout_provisioning.ProvisioningError as exc:
-                raise DriverError(str(exc)) from exc
-        return selected
-    common = _git_common_directory(repo)
-    if common is not None:
-        main_repo = common.parent
-        candidate = main_repo / ".venv"
-        if candidate.exists() or candidate.is_symlink():
-            return venv_exec.resolve_venv(repo_root=main_repo, env=env)
-    return None
+        if not checkout_provisioning.declares(spec):
+            return None
+        return checkout_provisioning.ensure_input(spec).environment_root
+    except (
+        checkout_provisioning.ProvisioningError,
+        DxConfigError,
+        SourceBuildEnvironmentError,
+        venv_exec.VenvExecError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise DriverError(f"managed development image refused: {exc}") from exc
 
 
-def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) -> int:
+def prepare_gate_environment(
+    repo: Path, env: ProcessEnvironment, *, requires_python: bool
+) -> GateEnvironment:
+    """Select once by declared demand; explicit selectors always validate."""
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(repo, env)
+    if selected is not None:
+        env = selected
+    explicit = bool(
+        env.get("MOLT_VENV") or env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+    )
+    venv = _resolve_repo_venv(repo, env) if requires_python or explicit else None
+    if venv is None:
+        if requires_python:
+            raise DriverError(
+                "development image not selected; run "
+                "`python -m molt.checkout_provisioning ensure uv-environment`"
+            )
+        return GateEnvironment(env, None, False)
+    managed = not bool(env.get("MOLT_VENV"))
+    try:
+        venv_exec.venv_python(venv)
+        activated = venv_exec.venv_env(venv=venv, env=env, managed=managed)
+        if not managed:
+            activated = activated.updated({"MOLT_VENV": str(venv)})
+    except (venv_exec.VenvExecError, ValueError) as exc:
+        raise DriverError(str(exc)) from exc
+    return GateEnvironment(activated, venv, managed)
+
+
+def _validate_gate_image(repo: Path, context: GateEnvironment) -> None:
+    """Recheck the selected recipe and entrypoint before guarded admission.
+
+    This cheap check is not a physical image attestation. The existing guarded
+    command boundary still owns fresh admission for the actual launch.
+    """
+    if context.python_root is None:
+        return
+    if context.managed:
+        from molt.dx import DxConfigError, DxProject
+        from molt.source_build_environment import load_development_environment
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+
+        try:
+            load_development_environment(
+                context.python_root,
+                repo_root=repo,
+                groups=DxProject(repo).dependency_groups(),
+            )
+        except (DxConfigError, SourceBuildEnvironmentError, OSError, ValueError) as exc:
+            raise DriverError(f"managed development image refused: {exc}") from exc
+    try:
+        venv_exec.venv_python(context.python_root)
+    except (venv_exec.VenvExecError, ValueError) as exc:
+        raise DriverError(str(exc)) from exc
+
+
+def run_gate(cmd: str | tuple[str, ...], repo: Path, context: GateEnvironment) -> int:
     """Run one shell gate or structured argument vector in the selected environment.
 
     The command is a shell string from the manifest (so it can use
@@ -572,22 +618,37 @@ def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) ->
     a substitute. Explicit invalid selections always fail before shell launch.
     """
     _say(f"    gate: {cmd if isinstance(cmd, str) else shlex.join(cmd)}")
-    cmd, env = _gate_environment(cmd, repo, env)
+    cmd, env = _gate_environment(cmd, repo, context)
     return _run_live_gate(cmd, repo=repo, env=env)
 
 
 def run_captured_gate(
     cmd: str | tuple[str, ...],
     repo: Path,
-    env: ProcessEnvironment,
+    context: GateEnvironment,
     cancelled: Callable[[], bool],
     streams: tuple[Path, Path] | None = None,
 ) -> GateOutcome:
     """Run one landing gate in ``run_gate``'s environment, writing its streams
     to ``streams`` while it runs, under the executor's cancellation."""
-    cmd, env = _gate_environment(cmd, repo, env)
+    try:
+        cmd, env = _gate_environment(cmd, repo, context)
+    except BaseException as error:
+        # The guard exclusively creates streams for admitted gates. A refusal
+        # before that handoff still needs the empty evidence paths its event
+        # publishes, without replacing its original admission failure.
+        if streams is not None:
+            for path in streams:
+                try:
+                    with path.open("x", encoding="utf-8"):
+                        pass
+                except OSError as output_error:
+                    error.add_note(
+                        f"cannot create refused gate stream {path}: {output_error}"
+                    )
+        raise
     return GateOutcome(
-        *_run_captured_gate(
+        _run_captured_gate(
             cmd,
             repo=repo,
             env=env,
@@ -600,47 +661,108 @@ def run_captured_gate(
 
 
 def _gate_environment(
-    cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment
+    cmd: str | tuple[str, ...], repo: Path, context: GateEnvironment
 ) -> tuple[str | tuple[str, ...], ProcessEnvironment]:
+    _validate_gate_image(repo, context)
+    env = context.environment
+    shell_syntax = False
     if isinstance(cmd, str):
         try:
-            words = shlex.split(cmd, posix=os.name != "nt")
+            if os.name == "nt":
+                from molt.backend_daemon_custody import _split_windows_command
+
+                words = list(_split_windows_command(cmd))
+                shell_syntax = any(character in cmd for character in "&|<>^%!")
+            else:
+                lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>()")
+                lexer.whitespace_split = True
+                words = list(lexer)
+                shell_syntax = any(
+                    word and set(word) <= set(";&|<>()") for word in words
+                ) or any(character in cmd for character in "$`\n")
         except ValueError:
-            # The shell owns syntax errors; environment admission must not replace
-            # its error status with a parser-specific exception.
+            # The shell owns syntax errors; do not replace their exit status.
             words = []
+            shell_syntax = True
     else:
-        words = cmd
+        words = list(cmd)
     head = words[0].lower() if words else ""
-    if os.name == "nt" and len(head) >= 2 and head[0] == head[-1] == '"':
-        head = head[1:-1]
-    python_gate = head in {"python", "python3", "python.exe", "python3.exe"}
-    venv = _resolve_repo_venv(repo, env)
-    if venv is None and python_gate:
-        venv = venv_exec.resolve_venv(repo_root=repo, env=env)
-    if venv is not None:
-        try:
-            venv_exec.venv_python(venv)
-            if python_gate:
-                alias = (
-                    head + ".exe"
-                    if os.name == "nt" and not head.endswith(".exe")
-                    else head
+    from tools.proof_command_argv import is_python_command
+
+    python_gate = is_python_command(head)
+    shell_python = []
+    if shell_syntax:
+        # Inspect literal command heads without rewriting shell text. Dynamic
+        # shell expansion remains the shell's responsibility; direct isolated
+        # Python arms need structured argv so startup policy is explicit.
+        starts = (
+            index
+            for index in range(len(words))
+            if index == 0 or words[index - 1] in {";", "&&", "||", "|", "("}
+        )
+        for index in starts:
+            if is_python_command(words[index]):
+                end = next(
+                    (
+                        offset
+                        for offset in range(index + 1, len(words))
+                        if words[offset] in {";", "&&", "||", "|", ")"}
+                    ),
+                    len(words),
                 )
-                executable = venv_exec.venv_bin_dir(venv) / alias
-                if not executable.is_file() or not os.access(executable, os.X_OK):
-                    raise venv_exec.VenvExecError(
-                        f"virtualenv command {head!r} not executable under "
-                        f"{venv_exec.venv_bin_dir(venv)}; use the project Python alias"
-                    )
-                if not isinstance(cmd, str):
-                    # Windows direct spawn does not resolve Python using child PATH.
-                    cmd = (os.fspath(executable), *cmd[1:])
-            env = venv_exec.venv_env(venv=venv, env=env).updated(
-                {"MOLT_VENV": str(venv)}
+                shell_python.append(words[index:end])
+    venv = context.python_root
+    if venv is None:
+        if python_gate or shell_python:
+            raise DriverError(
+                "development image not selected; run "
+                "`python -m molt.checkout_provisioning ensure uv-environment`"
             )
-        except venv_exec.VenvExecError as exc:
-            raise DriverError(str(exc)) from exc
+        return cmd, env
+    managed = context.managed
+    try:
+        venv_exec.venv_python(venv)
+        env = venv_exec.venv_env(venv=venv, env=env, managed=managed)
+        if managed and shell_python:
+            from molt.python_interpreter import (
+                parse_python_invocation,
+                python_environment_options,
+            )
+            from tools.proof_command_argv import (
+                validate_python_environment_command,
+            )
+
+            if any(
+                python_environment_options(parse_python_invocation(arm))[0]
+                for arm in shell_python
+            ):
+                raise DriverError(
+                    "isolated Python in a compound shell gate requires structured argv"
+                )
+            for arm in shell_python:
+                validate_python_environment_command(
+                    arm, environment_root=venv, environment=env
+                )
+        if python_gate:
+            alias = Path(head).name
+            if os.name == "nt" and not alias.endswith(".exe"):
+                alias += ".exe"
+            executable = venv_exec.venv_bin_dir(venv) / alias
+            if not executable.is_file() or not os.access(executable, os.X_OK):
+                raise venv_exec.VenvExecError(
+                    f"virtualenv command {Path(head).name!r} not executable under "
+                    f"{venv_exec.venv_bin_dir(venv)}; use the project Python alias"
+                )
+            if not (isinstance(cmd, str) and shell_syntax):
+                cmd = tuple(
+                    venv_exec.resolve_command(words, venv=venv, managed=managed)
+                )
+        # An external borrower keeps its explicit contract. Managed roots stay
+        # selected as UV images rather than being relabeled as borrowed venvs.
+        if not managed:
+            env = env.updated({"MOLT_VENV": str(venv)})
+    except (venv_exec.VenvExecError, ValueError) as exc:
+        raise DriverError(str(exc)) from exc
     return cmd, env
 
 
@@ -746,13 +868,15 @@ def _gate_runtime(
     repo: Path,
     policy: str,
     config: GateConfig,
-    environments: dict[tuple[str, ...], ProcessEnvironment],
+    environments: dict[tuple[str, ...], GateEnvironment],
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]],
     capacity_requirements: dict[tuple[str, ...], int],
     progress: _IntegrationProgress,
     toolchains: dict[str, dict],
     receipt_kind: str = "gates",
 ) -> GateRuntime:
+    from tools.proof_plan import load_toolchain_policies
+
     def source_changes() -> tuple[str, ...]:
         status = git._run(list(clean_checkout_status_arguments(null_terminated=True)))
         return tuple(entry for entry in status.stdout.split("\0") if entry)
@@ -791,6 +915,9 @@ def _gate_runtime(
         observe_capacity=observe_gate_capacity,
         say=_say,
         ok=_ok,
+        toolchain_policies=load_toolchain_policies(
+            config.prerequisite_policy, root=config.root, names=tuple(toolchains)
+        ),
     )
 
 
@@ -806,6 +933,7 @@ class _IntegrationProgress:
     # (amended, original) while resolved change citations are unpublished:
     # a failed landing restores the original, so its citations stay stable.
     unpublished_citation_amend: tuple[str, str] | None = None
+    environments: dict[tuple[str, ...], GateEnvironment] = field(default_factory=dict)
     # Concurrent gates emit from their own threads; one line at a time.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -859,6 +987,11 @@ def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilde
     from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
 
     env = immutable_git_environment(os.environ)
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(repo, env)
+    if selected is not None:
+        env.update(selected)
     # Gates are proof executions: bytecode a gate writes under src/ changes the
     # checkout's import topology while later gates read it (a fresh worktree's
     # first landing failed that way). The canonical environment forbids writes;
@@ -877,6 +1010,7 @@ def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilde
 
 
 def cmd_integrate(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
     progress = _IntegrationProgress()
     returncode = None
     error: BaseException | None = None
@@ -885,7 +1019,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         if args.dry_run:
             returncode = _integrate_exclusive(args, progress=progress)
             return returncode
-        lock_path = _integration_lock_path(Path(args.repo).resolve())
+        lock_path = _integration_lock_path(repo)
         if args.wait_for_lock:
             # The landing queue's runner waits out another integrator's
             # landing; an interactive integrate still refuses at once.
@@ -907,7 +1041,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             _release_file_lock(handle)
     except BaseException as exc:
         error = exc
-        _restore_unpublished_citations(Path(args.repo).resolve(), progress)
+        _restore_unpublished_citations(repo, progress)
         raise
     finally:
         if error is not None:
@@ -932,6 +1066,13 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             returncode=returncode,
             dry_run=args.dry_run,
         )
+        if not args.dry_run:
+            seen: set[Path | None] = set()
+            for context in progress.environments.values():
+                root = configured_artifact_root(context.environment, relative_to=repo)
+                if root not in seen:
+                    seen.add(root)
+                    _collect_driver_maintenance(repo, context.environment)
 
 
 def _integrate_exclusive(
@@ -1110,14 +1251,21 @@ def _integrate_exclusive(
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
     env = gate_environment(repo, session_id=args.session_id)
+    progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry:
         _assert_integration_source(git, selected_commit)
-        toolchains = config.admit(
-            touched, matched_rules, list(args.extra_gate or []), environ=env
+        prepared = config.prepare(
+            gate_cmds,
+            baseline=env,
+            prepare_python=lambda baseline, needed: prepare_gate_environment(
+                repo, baseline, requires_python=needed
+            ),
         )
-        environments = config.environments(gate_cmds, baseline=env)
+        toolchains = prepared.fingerprints
+        environments = prepared.environments
+        progress.environments = environments
         try:
             cargo_outputs = config.cargo_outputs(environments)
             capacity_requirements = admit_selected_output_capacity(
@@ -1396,11 +1544,15 @@ def cmd_probe(args: argparse.Namespace) -> int:
 def cmd_python_oracle(args: argparse.Namespace) -> int:
     try:
         target = python_interpreter.parse_target_python_version(args.python_version)
-        resolved = python_interpreter.resolve_target_python(
-            target,
-            cwd=DEFAULT_REPO,
-            prefer_uv=not args.no_uv,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            resolved = python_interpreter.resolve_target_python(
+                target,
+                verifier=verifier,
+                cwd=DEFAULT_REPO,
+                prefer_uv=not args.no_uv,
+            )
     except (ValueError, python_interpreter.PythonInterpreterError) as exc:
         raise DriverError(str(exc), code=EXIT_USAGE) from exc
     exe = resolved.executable
@@ -1469,7 +1621,10 @@ def _difftest_toolchain_env(
             )
         key, value = kv.split("=", 1)
         env[key] = value
-    return ProcessEnvironment(env)
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(root, env)
+    return ProcessEnvironment(env) if selected is None else selected
 
 
 def _difftest_capture(
@@ -1554,11 +1709,15 @@ def cmd_difftest(args: argparse.Namespace) -> int:
         target_python = python_interpreter.parse_target_python_version(
             args.python_version
         )
-        cpython_identity = python_interpreter.probe_python_command(
-            cpython_command,
-            cwd=root,
-            timeout=30.0,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            cpython_identity = python_interpreter.probe_python_command(
+                cpython_command,
+                verifier=verifier,
+                cwd=root,
+                timeout=30.0,
+            )
     except (ValueError, python_interpreter.PythonInterpreterError) as exc:
         raise DriverError(f"difftest: {exc}", code=EXIT_USAGE) from exc
     if cpython_identity.major_minor != target_python.short:
@@ -1691,11 +1850,16 @@ def cmd_difftest(args: argparse.Namespace) -> int:
                     "failures": failures,
                     "passed": not failures,
                 }
-            )
+            ),
+            flush=True,
         )
     if failures:
-        raise DriverError(f"difftest: {len(failures)} target(s) failed: {failures}")
+        raise DriverError(
+            f"difftest: {len(failures)} target(s) failed: {failures}",
+            maintenance_selection=(root, base_env),
+        )
     _ok(f"difftest PASS on all targets: {args.target}")
+    _collect_driver_maintenance(root, base_env)
     return EXIT_OK
 
 
@@ -1711,7 +1875,9 @@ def cmd_fix(args: argparse.Namespace) -> int:
     unstaged work); this is the one command their failures point to.
     """
     repo = Path(args.repo).resolve()
-    env = ProcessEnvironment(os.environ)
+    context = prepare_gate_environment(
+        repo, ProcessEnvironment(os.environ), requires_python=True
+    )
     python = "python"
     steps = (
         ("pin text encodings", f"{python} tools/encoding_gate.py --fix"),
@@ -1723,10 +1889,20 @@ def cmd_fix(args: argparse.Namespace) -> int:
     )
     for name, command in steps:
         _step(name)
-        if run_gate(command, repo, env) != 0:
+        if run_gate(command, repo, context) != 0:
+            _fail(f"fix: {name} failed")
+            _collect_driver_maintenance(repo, context.environment)
             return 1
     _say("fix: encodings pinned, formatted, every generated output current")
+    _collect_driver_maintenance(repo, context.environment)
     return 0
+
+
+def _collect_driver_maintenance(repo: Path, env: ProcessEnvironment) -> None:
+    if not env.get("MOLT_PROOF_QUEUE"):
+        from molt.dx import collect_checkout_state_after_result
+
+        collect_checkout_state_after_result(env, cwd=repo)
 
 
 # --------------------------------------------------------------------------
@@ -1778,7 +1954,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-controller",
         action="store_true",
         help="run this checkout's own driver instead of main's pinned controller; "
-        "only to repair a broken controller on main (the progress stream records it)",
+        "only for a reviewed controller repair or input-contract adoption "
+        "(all gates remain mandatory; the progress stream records it)",
     )
     # Set only by the pinned-controller handoff; names the controller this
     # process must be (molt_dev_controller.verify_pinned_controller).
@@ -1904,7 +2081,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=30,
         help="min-age-s echoed into the printed detached-verify instruction",
     )
-    p_dr.add_argument("--json", action="store_true", help="emit JSON to stdout")
+    p_dr.add_argument(
+        "--json",
+        action="store_true",
+        help="emit launch state and verify_argv for the required later call",
+    )
     p_dr.add_argument(
         "argv",
         nargs=argparse.REMAINDER,
@@ -2053,6 +2234,9 @@ def main(argv: list[str]) -> int:
         _say("")
         _fail(str(exc))
         _say("")
+        if isinstance(exc, DriverError) and exc.maintenance_selection is not None:
+            repo, environment = exc.maintenance_selection
+            _collect_driver_maintenance(repo, environment)
         return exc.code if isinstance(exc, DriverError) else EXIT_USAGE
 
 

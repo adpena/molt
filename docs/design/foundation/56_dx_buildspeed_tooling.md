@@ -278,12 +278,26 @@ names; `tools/molt_dev_gates.py` owns gate execution. The executor's admission
 bounds the block: the plan's `executor_max_workers` and the `repository-policy`
 resource class, each capped by `molt.host_capacity` at one GiB per gate (the
 largest gate tree peaks at 0.69 GB). Each gate's streams print in declared
-order. A gate failure and a moot gate are partition-scoped, so the executor never
-cancels a gate declared before the failure, and the first failure in declared
-order is the one reported. Later gates are skipped or cancelled through the
-guard. Each landing leaves an executor receipt with every gate's duration, peak
+order. Integration explicitly selects the executor's `CANCEL_REMAINING` failure
+policy: the first observed failure stops scheduling and cancels active siblings
+through their existing guards, regardless of declared order. The receipt keeps
+that immutable trigger and every actual outcome; cancellation cannot erase a
+racing failure or uncertain guard closure. Generic proofs retain the default
+`COLLECT_INDEPENDENT` policy, including dependency blocking and global safety stops.
+This follows the explicit collection choice in
+[Cargo's `--keep-going`](https://doc.rust-lang.org/cargo/commands/cargo-build.html#miscellaneous-options)
+and the in-flight test cancellation of
+[Bazel's `--notest_keep_going`](https://github.com/bazelbuild/bazel/blob/7.0.0/site/en/docs/user-manual.md#L1341-L1346).
+The scheduler policy adds one failed-outcome enum comparison and receipt fields.
+Gate admission also retains the selected toolchain policies and projects each
+actual terminal guard result through the existing safety classifier; declared
+Windows linker helpers keep the same admission rule. This adds one selected-policy
+decode per runtime and a bounded outcome projection per gate, with no new poller,
+process scan or cancellation implementation. Each landing leaves an executor
+receipt with every gate's duration, peak
 RSS and outcome beside the integration lock in the Git common directory. Rule
-gates, pytest batches and Cargo gates still run alone; every gate writes its
+gates and pytest batches can overlap; Cargo gates share one target and serialize.
+Every gate writes its
 streams to files while it runs (section 2.9, item 6).
 
 `CANONICAL_EXECUTION_ENV` forbids bytecode writes so a gate cannot change the
@@ -539,13 +553,81 @@ applies it through `assert_safe_to_delete` and `molt.file_deletion`:
   the removed checkout's target and sessions with them. A checkout target's
   retirement takes its session targets along.
 
-The disk guard applies the policy at most once a day from
-`RunContext.canonical_env` (a stamp at `target/.molt-checkout-state-gc`, so the
-common case costs one `stat`), and on demand with `tools/disk_guard.py --gc`.
+The disk guard applies the policy at most once a day after a command publishes
+its result, and on demand with `tools/disk_guard.py --gc`.
+`RunContext.canonical_env` only materializes and stamps its finite selected
+roots; resolving an environment or preparing a capsule never starts global
+collection. `molt.dx.collect_checkout_state_after_result` is the shared
+source-only invocation boundary. It uses the command's captured environment,
+preserves its result, reports ordinary collection failures (including returned
+reclaim errors), and defers to an enclosing memory guard's completion.
+
+The automatic owners are the CLI build scope after its artifact claims release
+(including a cached build), outer CLI source work after dispatch publication
+(`run`, `compare`, `test`, `diff`, `bench`, `profile`, `lint`, `harness`, `deploy`),
+DX run after its returned result, standalone
+`memory_guard` and `guarded_exec` after terminal publication, synchronous `molt_dev`
+integration/difftest/fix completion, and the proof-queue runner after source
+verification and persisted terminal custody. The build scope captures an
+immutable initial maintenance-policy environment and cwd before work. The
+outer CLI source-work owner does the same; its guarded wrapper builds
+defer to that outer result. Initial maintenance selection uses
+the guarded child's canonical artifact-root policy, including for no-child
+cache hits, and does not pin later payload selection. If external-root
+availability changes during a build, a child can choose a different default;
+that root waits for its next eligible maintenance owner. Other command owners
+retain their actual selected environments. Maintenance does not reconstruct
+either selection from the ambient environment after work.
+Terminal JSON and human output, including the proof queue's final status,
+flush to their output streams before synchronous maintenance can block.
+Published failures are eligible too. Startup-report workers and proof
+payload workers defer to their verifying caller; the timed guarded-execution
+phase never runs this global sweep. Result publication grants scheduling only:
+it neither asserts descendant closure nor grants deletion permission. Live
+operations retain their existing shared checkout-state use; every candidate
+still requires a fresh policy check under its nonblocking exclusive retirement
+lock. No collector runs in low-level process/probe helpers, directory
+materialization, checkout provisioning or environment-only library APIs.
+The outer CLI hook excludes metadata/configuration, provisioning, persistent
+services, CPython-only parity execution and commands without an old automatic
+GC producer. Build/factgraph library builds retain their build-scope owner;
+the outer hook adds no duplicate build scheduling.
+Exec-forwarding wrappers have no post-exec result; raw detached launch and its
+direct `wait()` have no terminal publication owner. Those facades do not
+collect: their guarded command's eligible outer owner does. Long-lived
+batch/daemon users retain their existing shared state custody and do not
+acquire a second maintenance lifetime.
+
+The existing stamp at `target/.molt-checkout-state-gc` remains the cadence
+authority: after resolving the selected root, a warm completion reads its stamp
+once. A due attempt takes a stable
+external nonblocking file lock under `target/.disk_guard`, rechecks the stamp,
+records its start, and holds the lock through collection. Competing automatic
+callers skip without inventory or waiting. A failed or interrupted attempt
+keeps the original daily throttle; root-specific retirement locks and policy
+rechecks still authorize every deletion, including explicit/manual collection.
+This follows [Cargo's opportunistic automatic-GC admission](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/gc.rs.html#40-89)
+and [uv's owned pruning after a CI job](https://docs.astral.sh/uv/concepts/cache/#caching-in-continuous-integration).
+
+This scheduling removes global scan/deletion work from environment and payload
+startup, not from total command wall time. A due completion still pays O(managed
+roots + reclaimed directory entries), without a new process or daemon.
+The pressure pass's between-candidate budget cannot bound one recursive tree
+deletion. No bounded whole-command latency or reduction in deletion operations
+follows from moving maintenance to completion.
+
 Worktree retirement (`integrate --cleanup-worktree` and `lane retire`)
 retires the worktree's daemons, removes it, and then reclaims its roots at
 once, without the idle window: it is the explicit owner action, as `bazel
 clean --expunge` is. A failed removal keeps the roots.
+
+Explicit checkout retirement reads bounded owner records first to reject unrelated
+roots before resolving their paths or target addresses. This still inventories
+all managed roots, including build controls whose target has disappeared: O(N)
+record reads and full binding only for the K matching candidates. A matching
+record is never deletion authority; the original binding, absence, protection,
+lock and exclusive owner reread checks remain required. Ordinary global GC must
+still validate every candidate against its own retention policy.
 
 Before removing a worktree, the canonical
 retirement consumer binds its complete known inventory from
@@ -777,6 +859,46 @@ Cargo-incremental quarantine receipt names a directory that survives the run,
 and artifact, cache-entry and release publications are outputs other
 processes trust. Neither runs on a successful guarded command.
 
+
+#### Scratch finalization phase diagnostics
+
+The terminal guard's `temporary_artifacts.finalize_elapsed_s` measures the
+complete scratch finalizer, including error handling and lease release.
+`temporary_artifacts.finalize_phase_elapsed_s` adds five fixed wall-time fields
+from `molt.temporary_artifacts.ScratchFinalizationTimings`:
+
+- `terminal_publication`: exact owner/payload admission and terminal publication,
+  indexing and retirement; an indeterminate owner publication is included.
+- `payload_reclamation`: this successful owner's receipt validation, payload
+  deletion and resulting owner publication.
+- `receipt_removal`: this reclaimed owner's receipt-directory removal.
+- `retention_sweep`: the entire indexed retention operation, including any other
+  payload or receipt reclamation it performs.
+- `lease_release`: actual normal and fallback release invocations, added without
+  overlapping another measured phase. An idempotent fallback is still timed.
+
+A null field means the phase was never entered; zero means it was entered but
+no positive interval was observed. A `finally` boundary records failed phases
+without converting or suppressing their exceptions. These fields are diagnostic
+wall time, not CPU time or acceptance evidence. They are disjoint, but need not
+sum to the total: lock-operation admission, final state reads and exceptional
+receipt publication remain in the total. The accumulator is explicit and local
+to one finalization. No timer, phase field or digest enters the scratch owner or
+terminal deletion-authority receipts. Guard summaries, terminal markers and
+harness profile events preserve the diagnostic mapping through their existing
+`temporary_artifacts` projection.
+
+Each entered phase adds two `perf_counter` calls and one bounded scalar update;
+a normal successful guard finalizer enters five phases plus its idempotent
+release fallback (twelve clock reads). Storage stays at five nullable scalars.
+There is no extra filesystem scan, syscall to inspect a process, retained tree,
+new process, durability barrier or changed retention/custody decision. Use the
+next required operation's terminal summary to distinguish payload deletion from
+publication or retention cost before selecting a repair. Preserve command,
+source/image and child identity; concurrent guard CPU measurements and native
+samples of a different supervising PID do not attribute these phases.
+
+
 ### 2.8 One product store per host (HF-390)
 
 Each checkout used to select its Rust products (the native runtime archive per
@@ -846,16 +968,15 @@ tests that place their target in a temporary directory.
   sources by content and logical root and never by checkout path. A store miss
   builds once in the checkout's own target and publishes; every later build of
   the same inputs on the host reuses the entry with no Cargo build. "The same
-  inputs" is narrower than "unchanged Rust": the identity also covers the
-  toolchain content root, and the runtime's covers about 116 Python tooling
-  files (`runtime_build_tooling_paths`), so a lane that edits only, say,
-  `src/molt/dx.py` rebuilds the runtime cold, and a clone with its own toolchain root shares nothing
-  (one such clone's first build took 710.2 s with four Cargo runs, against the
-  330.8 s baseline). Measured after this change on the integrator Mac
-  (2026-10-21, another session and load than the baseline, so not a paired
-  comparison): a second clone of one commit and toolchain built
-  `examples/hello.py` in 39.4 s with no Cargo build; one 1.3 s Cargo probe and
-  three `rustc` version probes still ran.
+  inputs" includes the resolved Cargo action and its source/tool/resource closure,
+  plus each member's captured publication action and narrow actual byte/sidecar
+  executor content. Python planner source bytes do
+  not independently invalidate runtime products: a planner edit that changes the
+  resolved action changes its identity; an unrelated edit can reuse the archive.
+  See [runtime compilation and publication identity](../../spec/areas/tooling/0001-toolchains.md#runtime-compilation-and-publication-identity).
+  The historical broad tooling-source key caused runtime rebuilds after unrelated
+  tooling edits. The action migration retains product-byte admission and does not
+  by itself establish a measured warm-build latency improvement.
 - A variant inside an entry holds what one observed Cargo environment
   (`CargoEnvironmentInputs`) produced, named by its digest. A build-script
   variable can change bytes without changing the declared identity, so a
@@ -1049,8 +1170,16 @@ section 2.9 item 4 requires.
 The runtime WASM pair already lives in one host directory
 (`<MOLT_EXT_ROOT>/wasm`, `molt.cli.runtime_wasm_generation`) keyed by a
 location-independent identity, so it is built once per input on a host that
-sets an artifact root; it has its own store and retention. Folding it into
-this store is open.
+sets an artifact root; it has its own store and retention. Ordinary cache hits
+admit the existing family-addressed generation under
+`MOLT_CACHE/runtime_wasm_generations/<family digest>` directly. Cargo environment,
+member content and exports still pass their owning admission checks, and the
+existing generation ledger renews member use before codegen pins the receipt.
+A different family's mutable host selection cannot force copying or publication
+of the retained pair. The diagnostics call these `admit_*` observations.
+Low-level hydration remains for explicit installed-runtime relocation and its
+physical-copy benchmark; those consumers need a new storage location. Folding
+the WASM store into the product store is open.
 
 Host-wide build state keeps three retention policies, one per kind of
 content; section 2.9 item 4's single table will carry the same rows (HF-434).

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 from molt import custody_layout
 from molt import dx as molt_dx
 from tools import dev
+from tests.python_environment_test_support import materialize_development_environment
 
 
 def _fake_dx_env(module):
@@ -20,11 +22,13 @@ def _fake_dx_env(module):
 
 
 @pytest.mark.parametrize("command", ["doctor", "setup", "update", "validate"])
-def test_dev_py_maintenance_uses_default_frontend(monkeypatch, command) -> None:
+def test_dev_py_maintenance_uses_declared_frontend(monkeypatch, command) -> None:
     module = dev
     calls: list[tuple[list[str], str | None, bool]] = []
     monkeypatch.setattr(
-        module.target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.15", "3.13")
+        module.target_python_policy,
+        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS",
+        ("3.15", "3.13"),
     )
 
     def fake_run_uv(args, python=None, env=None, tty=False):
@@ -42,7 +46,7 @@ def test_dev_py_maintenance_uses_default_frontend(monkeypatch, command) -> None:
     assert calls == [
         (
             ["python", "-m", "molt.cli", command, "--check", "--all"],
-            "3.12",
+            None,
             False,
         )
     ]
@@ -469,7 +473,7 @@ def test_dev_py_test_argv_is_consumed_by_real_runner(
 
     module = dev
     monkeypatch.setattr(
-        module.target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", catalog
+        module.target_python_policy, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", catalog
     )
     batches = []
 
@@ -482,6 +486,8 @@ def test_dev_py_test_argv_is_consumed_by_real_runner(
     monkeypatch.delenv("MOLT_CAPABILITY_TIER", raising=False)
     monkeypatch.delenv("MOLT_PYTEST_RANDOM_ORDER", raising=False)
     monkeypatch.delenv("MOLT_PYTEST_RANDOM_SEED", raising=False)
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     monkeypatch.setattr(module, "run_uv", capture_batch)
     monkeypatch.setattr(module.sys, "argv", ["tools/dev.py", "test", *flags])
     module.main()
@@ -521,9 +527,84 @@ def _isolated_checkout(module, monkeypatch, tmp_path: Path) -> Path:
     return clone
 
 
+@pytest.mark.usefixtures("developer_host_context")
+@pytest.mark.parametrize("command", ["doctor", "setup", "update", "validate"])
+def test_dev_py_maintenance_borrows_without_selecting_a_managed_image(
+    monkeypatch, tmp_path: Path, command: str
+) -> None:
+    from molt import checkout_provisioning
+    from tools.venv_exec import VenvExecError
+
+    clone = _isolated_checkout(dev, monkeypatch, tmp_path)
+    borrowed = tmp_path / "borrowed"
+    scripts = borrowed / ("Scripts" if os.name == "nt" else "bin")
+    scripts.mkdir(parents=True)
+    executable = scripts / ("python.exe" if os.name == "nt" else "python3")
+    executable.write_bytes(b"borrowed interpreter fixture")
+    # Explicit borrowed ownership wins over an unrelated managed selection.
+    unrelated = tmp_path / "unrelated managed image"
+    monkeypatch.setenv("MOLT_VENV", str(borrowed))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(unrelated))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "toolchains"))
+
+    def forbid_managed_selection(*args, **kwargs):
+        raise AssertionError(
+            "borrowed execution must not admit, install or normalize an image"
+        )
+
+    monkeypatch.setattr(checkout_provisioning, "ensure", forbid_managed_selection)
+    monkeypatch.setattr(dev.DX, "normalized_uv_run_env", forbid_managed_selection)
+    calls = []
+    limits = object()
+    monkeypatch.setattr(
+        dev.harness_memory_guard, "limits_from_env", lambda prefix, env: limits
+    )
+
+    def capture(cmd, env, *, limits=None):
+        calls.append((list(cmd), dict(env), limits))
+
+    monkeypatch.setattr(dev, "_check_call_guarded", capture)
+    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", command, "--check"])
+    dev.main()
+    assert len(calls) == 1
+    argv, environment, actual_limits = calls[0]
+    assert argv == [str(executable), "-m", "molt.cli", command, "--check"]
+    assert environment["MOLT_VENV"] == str(borrowed)
+    assert environment["VIRTUAL_ENV"] == str(borrowed)
+    assert environment["UV_PROJECT_ENVIRONMENT"] == str(unrelated)
+    assert Path(environment["PATH"].split(os.pathsep)[0]) == scripts
+    assert actual_limits is limits
+    assert not unrelated.exists()
+    assert sorted(path.relative_to(borrowed) for path in borrowed.rglob("*")) == [
+        scripts.relative_to(borrowed),
+        executable.relative_to(borrowed),
+    ]
+
+    # Version-matrix selection and installation may never replace a borrower.
+    with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
+        dev.run_uv(["python", "--version"], python="3.13")
+    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", "install"])
+    with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
+        dev.main()
+    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", "test"])
+    with pytest.raises(RuntimeError, match="version matrix requires managed"):
+        dev.main()
+    with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
+        dev._run_repo_cmd(["python", "-c", "pass"], environment, tty=False)
+    # An absent explicit borrower cannot turn into a managed selection or PATH run.
+    monkeypatch.setenv("MOLT_VENV", str(clone / "missing"))
+    with pytest.raises(VenvExecError, match="virtualenv Python not found"):
+        dev.run_uv(["python", "--version"])
+    assert len(calls) == 1
+
+
 def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> None:
     module = dev
-    _isolated_checkout(module, monkeypatch, tmp_path)
+    clone = _isolated_checkout(module, monkeypatch, tmp_path)
+    image = materialize_development_environment(
+        clone, clone, python="3.12", select=True
+    )
     calls: list[tuple[list[str], dict[str, str], object | None]] = []
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
@@ -539,7 +620,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
     )
 
     module.run_uv(
-        ["python3", "-c", "print('ok')"],
+        ["python", "-c", "print('ok')"],
         python="3.12",
         env={
             "PATH": "/usr/bin",
@@ -552,9 +633,18 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
     assert cmd == [
         "uv",
         "run",
+        "--active",
+        "--project",
+        str(module.ROOT),
         "--python",
-        "3.12",
-        "python3",
+        str(image.python_executable),
+        "--no-sync",
+        "--no-config",
+        "--",
+        str(image.python_executable),
+        "-B",
+        "-X",
+        f"pycache_prefix={image.root / 'bytecode'}",
         "-c",
         "print('ok')",
     ]
@@ -566,17 +656,32 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
     assert env["CARGO_TARGET_DIR"] == str(module.ROOT / "target")
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
+    module._run_repo_cmd(["python", "-IE", "-c", "pass"], env, tty=False)
+    assert calls[1][0] == [
+        str(image.python_executable),
+        "-B",
+        "-X",
+        f"pycache_prefix={image.root / 'bytecode'}",
+        "-IE",
+        "-c",
+        "pass",
+    ]
+    with pytest.raises(RuntimeError, match="explicitly borrowed MOLT_VENV"):
+        module._run_repo_cmd(
+            ["python", "-c", "pass"],
+            {**env, "MOLT_VENV": str(tmp_path / "external")},
+            tty=False,
+        )
+    assert len(calls) == 2, "an external request must not silently use ambient PATH"
     # Scratch is <artifact root>/tmp unless that sits inside the checkout, as
     # it does here; the custody layout then places it out of tree.
     scratch = custody_layout.scratch_root(module.ROOT, module.ROOT)
     assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
-    assert env["UV_PROJECT_ENVIRONMENT"].startswith(
-        str(module.ROOT / "uv-project-envs")
-    )
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(image.root)
     assert env["PIP_CACHE_DIR"] == str(module.ROOT / ".pip-cache")
-    assert env["PYTHONPYCACHEPREFIX"] == str(scratch / "pycache")
+    assert env["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
     assert env["TMPDIR"] == str(scratch)
     assert env["TMP"] == env["TMPDIR"]
     assert env["TEMP"] == env["TMPDIR"]
@@ -589,13 +694,20 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
 ) -> None:
     module = dev
     clone = _isolated_checkout(module, monkeypatch, tmp_path)
-    calls: list[dict[str, str]] = []
+    calls: list[tuple[list[str], dict[str, str]]] = []
     explicit_root = tmp_path / "external-root"
     explicit_cache = tmp_path / "cache"
+    image = materialize_development_environment(clone, explicit_root, select=True)
+    # Alias preservation is part of dispatch: the synthetic image must actually
+    # supply the requested entry, rather than relying on a canonical fallback.
+    alias = image.python_executable.with_name(
+        "python3.exe" if os.name == "nt" else "python3"
+    )
+    alias.write_bytes(image.python_executable.read_bytes())
 
-    def fake_check_call_guarded(_cmd, env, *, limits=None):
+    def fake_check_call_guarded(cmd, env, *, limits=None):
         del limits
-        calls.append(dict(env))
+        calls.append((list(cmd), dict(env)))
 
     monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
     monkeypatch.setattr(
@@ -616,7 +728,17 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     )
 
     assert len(calls) == 1
-    env = calls[0]
+    command, env = calls[0]
+    assert command[:2] == ["uv", "run"]
+    assert "--no-sync" in command
+    assert command[-6:] == [
+        str(alias),
+        "-B",
+        "-X",
+        f"pycache_prefix={image.root / 'bytecode'}",
+        "-c",
+        "print('ok')",
+    ]
     assert env["MOLT_EXT_ROOT"] == str(explicit_root)
     assert env["MOLT_CACHE"] == str(explicit_cache)
     assert env["MOLT_SESSION_ID"] == "caller-session"
@@ -664,92 +786,45 @@ def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> No
     assert calls == [("guarded", ["pytest", "-q"])]
 
 
-def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(
+def test_dev_py_uv_no_sync_uses_exact_projection_without_runtime_reprobe(
     monkeypatch, tmp_path
 ) -> None:
-    module = dev
-    clone = _isolated_checkout(module, monkeypatch, tmp_path)
-    # Any existing file stands in for the project interpreter.
-    fake_python = clone / "python3"
-    fake_python.write_text("", encoding="utf-8")
-    fake_limits = object()
-    calls: list[tuple[list[str], dict[str, object]]] = []
+    from molt import source_build_environment as publisher
+    from molt.checkout_provisioning import ProvisioningError
 
+    clone = _isolated_checkout(dev, monkeypatch, tmp_path)
+    image = materialize_development_environment(
+        clone, clone, python="3.12", select=True
+    )
+    next_image = materialize_development_environment(
+        clone, clone, python="3.13", select=True
+    )
+    calls = []
     monkeypatch.setattr(
-        module,
-        "_uv_project_python",
-        lambda _env=None: fake_python,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        module.harness_memory_guard,
-        "limits_from_env",
-        lambda prefix, env: fake_limits,
-        raising=True,
+        dev, "_check_call_guarded", lambda cmd, env, **kwargs: calls.append(cmd)
     )
 
-    def fake_guarded_completed_process(cmd, **kwargs):
-        calls.append((list(cmd), dict(kwargs)))
-        return SimpleNamespace(returncode=0, stdout="3.12\n", stderr="")
+    def forbid_runtime_probe(*args, **kwargs):
+        raise AssertionError("a current selector must not reprobe or publish")
 
-    monkeypatch.setattr(
-        module.harness_memory_guard,
-        "guarded_completed_process",
-        fake_guarded_completed_process,
-        raising=True,
-    )
-
-    assert module._uv_project_env_matches_python(
-        "3.12",
-        {
-            "PATH": "/usr/bin",
-            "MOLT_EXT_ROOT": str(module.ROOT),
-        },
-    )
-
+    monkeypatch.setattr(publisher, "development_environment", forbid_runtime_probe)
+    env = {"MOLT_EXT_ROOT": str(clone), "UV_PROJECT_ENVIRONMENT": str(image.root)}
+    dev.run_uv(["python", "--version"], python="3.12", env=env)
+    assert len(calls) == 1 and "--no-sync" in calls[0] and "--no-config" in calls[0]
+    with pytest.raises(ProvisioningError, match="different requested Python"):
+        dev.run_uv(["python", "--version"], python="3.13", env=env)
+    assert len(calls) == 1, "a conflicting exact request must never launch or resync"
+    # Installation reaches the existing ensure owner directly. It must not
+    # require another managed Python child to select the first image.
+    monkeypatch.setattr(dev, "_canonical_env", lambda: env)
+    monkeypatch.setattr(dev.sys, "argv", ["tools/dev.py", "install"])
+    dev.main()
     assert len(calls) == 1
-    cmd, kwargs = calls[0]
-    assert cmd == [
-        str(fake_python),
-        "-c",
-        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
-    ]
-    assert kwargs["prefix"] == "MOLT_TEST_SUITE"
-    assert kwargs["cwd"] == module.ROOT
-    assert kwargs["capture_output"] is True
-    assert kwargs["text"] is True
-    assert kwargs["limits"] is fake_limits
-    assert kwargs["env"]["MOLT_EXT_ROOT"] == str(module.ROOT)
-
-
-def test_dev_py_uv_no_sync_normalization_uses_guarded_probe(monkeypatch) -> None:
-    module = dev
-    probes: list[tuple[str | None, dict[str, str]]] = []
-
-    def fake_probe(requested, env):
-        probes.append((requested, dict(env)))
-        return requested == "3.12"
-
-    monkeypatch.setattr(
-        module,
-        "_uv_project_env_matches_python",
-        fake_probe,
-        raising=True,
+    # A requested matrix intent is bound before DX can rediscover the default
+    # image. Both current projections stay reusable without a runtime probe.
+    dev.run_uv(
+        ["python", "--version"], python="3.13", env={"MOLT_EXT_ROOT": str(clone)}
     )
-
-    matching = module._normalized_uv_run_env({"UV_NO_SYNC": "1"}, python="3.12")
-    mismatched = module._normalized_uv_run_env({"UV_NO_SYNC": "1"}, python="3.13")
-
-    assert matching["UV_NO_SYNC"] == "1"
-    assert "UV_NO_SYNC" not in mismatched
-    assert probes == [
-        ("3.12", {"UV_NO_SYNC": "1"}),
-        ("3.13", {"UV_NO_SYNC": "1"}),
-    ]
-
-
-def test_dx_normalized_uv_no_sync_requires_guarded_probe() -> None:
-    module = dev
-
-    with pytest.raises(RuntimeError, match="guarded project Python version probe"):
-        module.DX.normalized_uv_run_env({"UV_NO_SYNC": "1"}, python="3.12")
+    assert calls[-1][calls[-1].index("--python") + 1] == str(
+        next_image.python_executable
+    )

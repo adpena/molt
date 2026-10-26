@@ -1,4 +1,4 @@
-"""Cargo argv parsing and exact pinned configuration projection."""
+"""Exact pinned Cargo configuration projection."""
 
 from __future__ import annotations
 
@@ -6,35 +6,6 @@ import json
 import os
 from pathlib import Path
 from typing import Mapping, Sequence
-
-
-def _command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
-    target = None
-    configs: list[str] = []
-    iterator = iter(command[1:])
-    for token in iterator:
-        if token == "--":
-            break
-        if token in {"--target", "--config"}:
-            value = next(iterator, None)
-            if value is None or not value:
-                raise ValueError(f"runtime Cargo {token} requires a value")
-            key = token
-        elif token.startswith(("--target=", "--config=")):
-            key, value = token.split("=", 1)
-            if not value:
-                raise ValueError(f"runtime Cargo {key} requires a value")
-        else:
-            continue
-        if key == "--target":
-            if target is not None and target != value:
-                raise ValueError(
-                    "runtime Cargo multiple targets require separate artifact families"
-                )
-            target = value
-        else:
-            configs.append(value)
-    return target, tuple(configs)
 
 
 def cargo_environment_force_overrides(

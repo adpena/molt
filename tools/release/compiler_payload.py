@@ -18,6 +18,7 @@ from molt.compiler_distribution import (
     validate_wasm_facts_record,
 )
 from molt.host_tool_products import HostToolProduct
+from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 from molt.exact_json import write_exact
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.toolchain_identity import (
@@ -26,11 +27,12 @@ from molt.toolchain_identity import (
 )
 from molt.cli.native_binary import validate_native_binary_architecture
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
+from tools.git_identity import immutable_git_environment
 from .git_source_snapshot import (
     GitSourceSnapshot,
     capture_git_source_snapshot,
     materialize_git_source_snapshot,
-    immutable_git_environment,
+    read_git_commit_epoch,
 )
 
 # Harvested from the preserved release-source lane; current config consumers
@@ -114,6 +116,30 @@ def source_environment() -> ProcessEnvironmentBuilder:
         }
     )
     return immutable_git_environment(env)
+
+
+def reproducible_build_environment(epoch: int) -> dict[str, str]:
+    """Release-only Cargo and C metadata policy, shared by native and runtime builds."""
+    if type(epoch) is not int or epoch <= 0:
+        raise ValueError("release source epoch must be a positive integer")
+    return {
+        **dict.fromkeys(CARGO_WRAPPER_ENV_NAMES, ""),
+        "MOLT_USE_SCCACHE": "0",
+        "CARGO_INCREMENTAL": "0",
+        "SOURCE_DATE_EPOCH": str(epoch),
+        "LC_ALL": "C",
+        "TZ": "UTC",
+    }
+
+
+def source_commit_epoch(repo_root: Path, source_sha: str) -> int:
+    env = source_environment()
+    return read_git_commit_epoch(
+        repo_root,
+        source_sha,
+        git=resolve_executable("git", environment=env, label="release source Git"),
+        environment=env,
+    )
 
 
 def source_snapshot(repo_root: Path, source_sha: str) -> GitSourceSnapshot:

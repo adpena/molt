@@ -12,10 +12,6 @@ from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 from molt.compiler_analysis.python_call_arguments import call_form
 
-from molt.compiler_analysis.python_lexical_scope import (
-    expression_contains_yield,
-)
-
 import ast
 import json
 from dataclasses import dataclass
@@ -26,11 +22,16 @@ from molt.frontend.lowering.gpu_kernel_descriptor import project_kernel_ops
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     CodeSlotDeclaration,
+    FunctionDefinitionValues,
     MoltOp,
     MoltValue,
     _builtin_func_abi_arity,
 )
-from molt.frontend.sema import stateful_function_frame_plan
+from molt.frontend.sema import stateful_function_frame_plan, signature_contains_yield
+from molt.frontend.diagnostics import (
+    FrontendDiagnostic as Diagnostic,
+    FrontendRejection,
+)
 from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
     normalize_function_kind,
@@ -340,28 +341,45 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             "has_decorators": False,
         }
 
+    def _prepare_function_definition(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> FunctionDefinitionValues:
+        suspend = self.in_generator and signature_contains_yield(
+            decorators=node.decorator_list, args=node.args, returns=node.returns
+        )
+        decorators: list[tuple[MoltValue, int | None]] = []
+        for expression in node.decorator_list:
+            value = self.visit(expression)
+            if value is None:
+                raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unsupported decorator")
+            decorators.append(
+                (value, self._spill_async_value(value) if suspend else None)
+            )
+        defaults = self._emit_function_default_values(
+            node.args.defaults,
+            node.args.kw_defaults,
+            [argument.arg for argument in node.args.kwonlyargs],
+        )
+        values, bindings = self._emit_type_params_values(node)
+        return FunctionDefinitionValues(
+            tuple(decorators), defaults, tuple(values), bindings
+        )
+
+    def _apply_function_decorators(
+        self, function: MoltValue, definition: FunctionDefinitionValues
+    ) -> MoltValue:
+        for decorator, spill in reversed(definition.decorators):
+            if spill is not None:
+                decorator = self._reload_async_value(spill, decorator.type_hint)
+            function = self._emit_call_bound_or_func(decorator, [function])
+        return function
+
     def _emit_function_default_values(
         self,
-        func_val: MoltValue,
         default_exprs: list[ast.expr],
         kw_default_exprs: list[ast.expr | None],
         kwonly_params: list[str],
-    ) -> tuple[MoltValue, MoltValue, MoltValue]:
-        yield_in_defaults = False
-        yield_in_kwdefaults = False
-        func_spill: int | None = None
-        if self.in_generator:
-            yield_in_defaults = any(
-                expression_contains_yield(expr) for expr in default_exprs
-            )
-            yield_in_kwdefaults = any(
-                expression_contains_yield(expr)
-                for expr in kw_default_exprs
-                if expr is not None
-            )
-            if yield_in_defaults or yield_in_kwdefaults:
-                func_spill = self._spill_async_value(func_val)
-
+    ) -> tuple[MoltValue, MoltValue]:
         if default_exprs:
             default_vals: list[MoltValue] = []
             for expr in default_exprs:
@@ -374,8 +392,6 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(kind="TUPLE_NEW", args=default_vals, result=defaults_tuple)
             )
-            if func_spill is not None and yield_in_defaults:
-                func_val = self._reload_async_value(func_spill, func_val.type_hint)
             defaults_val = defaults_tuple
         else:
             defaults_none = MoltValue(self.next_var(), type_hint="None")
@@ -397,22 +413,16 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             if kw_pairs:
                 kw_defaults = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="DICT_NEW", args=kw_pairs, result=kw_defaults))
-                if func_spill is not None and yield_in_kwdefaults:
-                    func_val = self._reload_async_value(func_spill, func_val.type_hint)
                 kwdefaults_val = kw_defaults
             else:
                 kw_defaults_none = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=kw_defaults_none))
-                if func_spill is not None and yield_in_kwdefaults:
-                    func_val = self._reload_async_value(func_spill, func_val.type_hint)
                 kwdefaults_val = kw_defaults_none
         else:
             kw_defaults_none = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=kw_defaults_none))
             kwdefaults_val = kw_defaults_none
-        if func_spill is not None and (yield_in_defaults or yield_in_kwdefaults):
-            func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        return func_val, defaults_val, kwdefaults_val
+        return defaults_val, kwdefaults_val
 
     def _emit_function_metadata(
         self,
@@ -428,8 +438,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         kwonly_params: list[str],
         vararg: str | None,
         varkw: str | None,
-        default_exprs: list[ast.expr],
-        kw_default_exprs: list[ast.expr | None],
+        defaults: tuple[MoltValue, MoltValue],
         docstring: str | None,
         module_override: str | None = None,
         execution_kind: FunctionKind = FunctionKind.SYNC,
@@ -453,12 +462,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         emit_materialized_function_metadata(
             _FrontendFunctionMetadataEmitter(self),
             function=func_val,
-            materialize_defaults=lambda function: self._emit_function_default_values(
-                function,
-                default_exprs,
-                kw_default_exprs,
-                kwonly_params,
-            ),
+            materialize_defaults=lambda function: (function, *defaults),
             metadata=MaterializedFunctionMetadata(
                 name=name,
                 qualname=qualname,

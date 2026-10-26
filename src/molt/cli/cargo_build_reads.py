@@ -22,7 +22,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import re
 import stat
 import tomllib
@@ -390,15 +390,15 @@ def cargo_build_reads(
         raise TypeError("Cargo build reads require a ProcessEnvironment")
     root = Path(os.path.realpath(workspace_root))
     base = Path(os.path.realpath(dep_info_base))
-    skipped = tuple(Path(os.path.realpath(path)) for path in product_roots)
-    covered = tuple(Path(os.path.realpath(path)) for path in toolchain_roots)
+    skipped = frozenset(Path(os.path.realpath(path)) for path in product_roots)
+    covered = frozenset(Path(os.path.realpath(path)) for path in toolchain_roots)
     files: set[Path] = set()
     directories: set[Path] = set()
     ambient_names: set[str] = set()
 
     def admit(path: Path, *, whole_package: bool = False) -> None:
         resolved = Path(os.path.realpath(path))
-        if _under_any(resolved, skipped) or _under_any(resolved, covered):
+        if _covered_by_roots(resolved, skipped) or _covered_by_roots(resolved, covered):
             return
         if not resolved.is_relative_to(root):
             raise CargoBuildReadsError(
@@ -502,11 +502,11 @@ def paths_outside(
 ) -> tuple[str, ...]:
     """The workspace-relative paths that no root covers."""
     root = Path(os.path.realpath(workspace_root))
-    covering = tuple(Path(os.path.realpath(path)) for path in roots)
+    covering = frozenset(Path(os.path.realpath(path)) for path in roots)
     return tuple(
         path.relative_to(root).as_posix()
         for path in paths
-        if not _under_any(path, covering)
+        if not _covered_by_roots(path, covering)
     )
 
 
@@ -923,5 +923,13 @@ def _local_package_root(package_id: object) -> Path | None:
     return Path(os.path.realpath(url2pathname(path)))
 
 
-def _under_any(path: Path, roots: Sequence[Path]) -> bool:
-    return any(path == root or path.is_relative_to(root) for root in roots)
+def _covered_by_roots(path: PurePath, roots: frozenset[PurePath]) -> bool:
+    """Query normalized roots once per ancestor, independent of root count.
+
+    Both admission and publication build the operation's index after their
+    existing realpath boundary. Path equality/hashing retains host drive and
+    case semantics; no string prefix or filesystem/cache observation is added.
+    """
+    if not roots:
+        return False
+    return path in roots or any(parent in roots for parent in path.parents)

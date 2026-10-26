@@ -76,7 +76,7 @@ The **plane gate** (`board_gate_exit_code`) is nonzero iff ANY board's
 release-fast regression — the asymmetry is enforced by separate verdicts, not a
 reader's diligence. PyPy/Codon comparator boards are `ADVISORY` when the host
 lacks the binary (recorded as host-absent — never a faked ratio, per
-`bench_evidence.METRIC_OK_GATES`).
+`bench_evidence.METRIC_POLICIES`).
 
 Quiescence governs warm-RED authority (Rule 3): on a non-authoritative /
 non-quiescent source board, an absolute warm RED downgrades to `ADVISORY` (a

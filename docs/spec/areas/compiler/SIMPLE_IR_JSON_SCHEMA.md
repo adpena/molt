@@ -48,16 +48,24 @@ whitespace and rejects any second value or other suffix. MessagePack and CBOR
 require immediate EOF after the decoded value, including for buffered stdin.
 Malformed input returns an error before target admission or emission.
 
-Compiler-owned leases use MessagePack for daemon, one-shot and factgraph
-dispatch. JSON exports and the MLIR stdin boundary retain JSON. Both file
-receivers use the same typed complete-document reader, including regular-file
-admission and EOF validation. File sizes are not bounded by the stdin ceiling.
-Daemon protocol 2 keeps its small control frame in JSON, but admits only a
-cache probe without an IR path or a compile with a nonempty MessagePack
-`ir_path`; inline `ir` is rejected, including null. A cache hit need not open
-an unused lease. Native batch jobs retain their separate complete JSON
-artifact/request decoding. None of these boundaries adds a cache receipt or
-changes the semantic digest domain.
+Compiler-owned leases use content-addressed MessagePack for daemon, one-shot,
+factgraph and JIT-image dispatch (`runtime/molt-ir/src/addressed_program.rs`):
+one map with the header fields `code_slots`, `module_registry` and `profile`,
+`function_digests` (one `bin` of 32-byte body digests in program order) and
+`function_bodies` (one `bin` per shipped body). Each receiver hashes every
+shipped body in the `molt.function-body.msgpack.v1\0` domain below; a body can
+only fill the slot its own bytes name. One-shot receivers require every body.
+The backend daemon fills the rest from its resident store and names the
+positions it lacks (`docs/design/backend_compile_daemon.md`). JSON, CBOR and
+NDJSON inputs keep their `functions` array, and JSON exports and the MLIR stdin
+boundary retain JSON. All file receivers share regular-file admission and EOF
+validation. File sizes are not bounded by the stdin ceiling. The daemon protocol
+keeps its small control frame in JSON and admits only a cache probe that names
+the program's digests (`function_digests`, hex) without an IR path, or a
+compile with a nonempty MessagePack `ir_path`; inline `ir` is rejected,
+including null. A cache hit need not open an unused lease. Native batch jobs
+retain their separate complete JSON artifact/request decoding. None of these
+boundaries adds a cache receipt or changes the semantic digest domain.
 
 The boundary follows [Serde JSON's whole-reader EOF contract](https://docs.rs/serde_json/1.0.151/serde_json/fn.from_reader.html).
 The binary value decoders require an explicit EOF check on their retained reader;
@@ -179,7 +187,7 @@ reference (design 20 §1.6). A `transferred` argument moves into the
 activation, which releases it at the binding's Python boundaries; a
 `borrowed` one stays the caller's. The field names every parameter and at
 least one `transferred` entry, never on the closure parameter; all-borrowed
-custody is the absent field. It belongs to the function contract (version 3),
+custody is the absent field. It belongs to the function contract (version 4),
 so every cache digest covers it. An extern declaration, a megafunction stub
 and a native linkage row keep it, and megafunction chunks borrow every
 parameter.
@@ -242,8 +250,9 @@ is `molt.cache-payload.merkle.msgpack-functions.v2\0`; rich header encoding is
 unchanged. `MOLT_VERIFY_FUNCTION_DIGESTS=1` deliberately re-encodes seeded bodies
 once for compiler debugging, following
 [rustc's incremental fingerprint verification](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html).
-Normal builds pay no such verification walk. Whole-backend JSON/optional
-MessagePack transport and worker object IPC remain distinct measured costs.
+Normal builds pay no such verification walk. The backend lease reuses these
+digests, so an unchanged body is neither encoded nor sent to a daemon that holds
+it; worker object IPC remains a distinct measured cost.
 
 The pipeline creates that owner after final backend rewrites and shares it
 between optional binary-image analysis and every backend cache projection.
@@ -263,36 +272,72 @@ semantic inputs, and import requests complete against the current project
 roots and custody after reuse. SQL applies each reader's byte bound before
 payload allocation; lowering explicitly retains its uncapped role. There is
 one decode per hit, no retained parsed-document cache, and no per-project copy.
-The schema stores opaque payloads in an ordinary rowid table with a
-unique `(kind, key)` primary-key index. Each record's last use lives in a
-separate narrow `recency` table (`WITHOUT ROWID`, ordered by a
-`(used_ns, kind, key)` index), because SQLite rewrites a whole row on
-`UPDATE`: with the stamp in the payload row, 10.8k import-scan renewals
-rewrote their payloads, 3.6 s and 33.1 MB of WAL, against 0.11 s and 0.7 MB in
-the narrow table. A record write stamps it in the same transaction, and a
-delete trigger retires the stamp of a deleted record. Renewals are queued and
-saved in one transaction when 4,096 accumulate and when the store closes, as
-Cargo's `DeferredGlobalLastUse` saves last-use stamps; each renewal stays
-fenced on the revision and stamp it observed. The small generation table
-retains its `WITHOUT ROWID` layout. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
-recommends small rows for `WITHOUT ROWID`: its intermediate nodes carry record
-content, reducing fan-out for large values. Source records include uncapped
-binary lowerings, so key lookup uses the narrow index, followed by a rowid-table
-lookup; record data lives in table leaves and their overflow pages. This changes no
-semantic key, byte bound, revision fence or consumer codec.
-Each schema owns its own store file, `source_records.<digest>.sqlite`, named by
-the first 16 hex digits of the SHA-256 of its DDL; `user_version` holds 28 bits
-of the same digest. Checkouts of different code share one cache root, so a store
-migrated in place by a newer checkout refused the whole cache to every older
-one: every record read missed, every write was dropped, and each operation
-reconnected. On 2026-10-23 a 27-line asyncio program spent 349 s in
-`module_graph`, 253 s of it reconnecting. A hand-numbered version did not keep
-schemas apart either: two changes that both bump to the next number merge
-without a conflict and would share one file. As rustc keys incremental state by
-compiler identity, a different schema starts an empty store; the cache pruner
-retires the files of other schemas, including the earlier `v<n>` and
-unversioned names, by last use (`superseded_store_file`). A fresh file at
-version zero enters one cold bootstrap owner through the existing
+Opaque payloads live in an ordinary rowid table with a unique `(kind, key)`
+primary-key index. Each record's last use lives in a separate narrow
+`recency` table (`WITHOUT ROWID`, indexed by `(used_ns, kind, key)`). A record
+and its stamp publish in one transaction; a delete trigger retires the stamp.
+A revision-and-use-fenced renewal updates only this small row, avoiding a
+rewrite of the opaque payload. The original HF-515 measurement was 3.6 seconds
+and 33.1 MB of WAL for 10.8k renewals in payload rows, versus 0.11 seconds and
+0.7 MB in the narrow table. Due observations enter a bounded queue, as
+[Cargo's deferred last-use tracking](https://github.com/rust-lang/cargo/blob/rust-1.90.0/src/cargo/core/global_cache_tracker.rs)
+delays advisory writes. One nonwaiting transaction saves at most 4,096
+observations at the batch boundary, normal owning operation exit or explicit
+close. Reentrant operations share the outer owner; fresh identity scopes do not
+flush a borrowed outer owner. Generator finalization skips these writes. A queued renewal is
+advisory acceptance, not a successful SQL update; `save_renewals()` reports
+actual changed rows. GC drops pending advisory renewals rather than performing
+SQL writes from arbitrary finalization contexts. No generation-level retention
+table or trim exists. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
+recommends small rows for `WITHOUT ROWID`, whose intermediate nodes carry record
+content. Uncapped lowerings therefore live in table leaves and overflow pages;
+the narrow key index preserves lookup fan-out.
+
+Each schema owns `toolchain_source_records/<schema digest>/records.sqlite`.
+The namespace is derived from the DDL rather than a manually incremented version;
+concurrent schema changes cannot accidentally claim the same next version.
+As rustc keys incremental state by compiler identity, a different schema starts an empty
+optional cache, without migrating or reading another version's records. The
+store derives its database, namespace and persistent lifetime lock from one
+cache root. A shared lock in the existing cache control directory protects every
+SQLite connection, including maintenance, until SQLite closes. Warm record
+operations take no additional file lock or syscall. A contested retirement lock
+is a retryable miss before SQLite opens. Explicit close releases the paired
+SQLite connection and lease synchronously. Implicit weakref or generator-context
+finalization closes SQLite first and parks its small lock handle for bounded
+release at a normal cold admission or explicit close (or OS process exit); it never enters
+Python file-lock mutexes from GC. This also covers abandoned context generators:
+[CPython 3.12.15's `_PyGen_Finalize`](https://github.com/python/cpython/blob/v3.12.15/Objects/genobject.c#L63)
+closes suspended generators, and [PEP 442](https://peps.python.org/pep-0442/)
+includes their cyclic finalization. The short conservative lease extension avoids
+reentrant deadlock without retaining SQLite page caches or adding a worker.
+
+The existing pruner exclusively locks another digest namespace or a known prior
+version namespace (v1–v3), then uses the
+shared atomic namespace-retirement authority before physical deletion. A
+partial reclamation remains isolated from any new live database and is retried
+under the existing prune owner. A foreign digest may belong to newer code:
+exclusive lifetime custody makes its retirement safe, but interleaved schemas
+can lose idle cache warmth under byte/age pressure. Digest-schema participants
+must retain the lifetime and recency-write protocol; incompatible protocols
+require a distinct namespace grammar or identity. A post-rename reclamation failure is reported as
+failed without crediting reclaimed bytes; malformed or changed residue remains
+evidence while unrelated entries continue. A read-only sweep cannot recreate a
+missing lifetime control and reports that store unavailable. The current digest and unknown future version namespaces remain outside file
+eviction; current rows keep their bounded metadata/CAS policy. Flat legacy
+stores cannot prove connection lifetime and are reported as
+`legacy_source_record_state`, without automatic unlinking. New namespace
+directories also prevent the previously deployed flat-file pruner from deleting
+future stores. This follows [SQLite's live-file safety contract](https://sqlite.org/howtocorrupt.html#_unlinking_or_renaming_a_database_file_while_in_use):
+a database and its WAL/SHM are one identity, never independent eviction leaves.
+
+The earlier in-place schema change made older checkouts refuse every record
+and repeatedly reconnect; the original namespace repair's measured build cost
+is retained under HF-513. These are development-side cache costs; emitted
+programs perform none of this storage or retention work.
+
+A fresh
+file at version zero enters one cold bootstrap owner through the existing
 portable file lock; that owner rechecks admission, establishes incremental
 vacuum and WAL, then publishes the schema, indexes and the version in one SQL
 transaction. Failure rolls back the whole transition and refuses the optional
@@ -303,7 +348,7 @@ read the admitted version and set connection-local synchronous mode; they
 do not repeat persistent pragmas, DDL or the bootstrap file lock. Write maintenance
 tries cold ownership once and preserves its nonwaiting refusal contract.
 Read-only maintenance admits the same version inside its read snapshot and
-never bootstraps or migrates the database.
+never bootstraps the database.
 This distinction follows [SQLite’s busy-handler contract](https://sqlite.org/c3ref/busy_handler.html):
 a deadlock-prone lock upgrade may return `SQLITE_BUSY` without calling the
 configured handler, so a larger timeout cannot serialize competing WAL

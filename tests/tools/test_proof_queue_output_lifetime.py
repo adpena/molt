@@ -175,6 +175,8 @@ def test_cli_inline_and_detached_propagate_lifetime(monkeypatch, detach, subcomm
 def test_toml_submit_persists_lifetime_and_does_not_admit_raw_cargo(
     tmp_path, monkeypatch
 ):
+    source = tmp_path / "source"
+    source.mkdir()
     command = policy._canonical_cargo_proof_command(["check"])
     monkeypatch.setattr(
         commands,
@@ -193,7 +195,7 @@ def test_toml_submit_persists_lifetime_and_does_not_admit_raw_cargo(
     args = argparse.Namespace(
         db=str(tmp_path / "queue.sqlite3"),
         logs_root=str(tmp_path / "runs"),
-        repo_root=str(tmp_path),
+        repo_root=str(source),
         dsl="unused",
     )
     assert commands._cmd_submit(args) == 0

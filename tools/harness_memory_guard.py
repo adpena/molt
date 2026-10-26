@@ -45,13 +45,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 from molt.dx import (  # noqa: E402
     CANONICAL_ROOT_ENV_KEYS as _CANONICAL_ROOT_ENV_KEYS,
     CANONICAL_RUN_ENV_KEYS as _CANONICAL_RUN_ENV_KEYS,
-    DxProject,
     RunContext,
-    development_artifacts_requested,
+    prefers_external_artifacts,
 )
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
 from molt.llvm_linker_roles import lexical_executable_path  # noqa: E402
+from molt import process_model as _process_model  # noqa: E402
 from molt.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs  # noqa: E402
 from molt.process_environment import NameRule as NameRule  # noqa: E402
 from molt.process_environment import (  # noqa: E402
@@ -353,15 +353,6 @@ def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return ProcessEnvironment(merged)
 
 
-def _harness_prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
-    if development_artifacts_requested(env):
-        return True
-    try:
-        return bool(DxProject(root).load_config().get("prefer_external_artifacts"))
-    except (OSError, ValueError):
-        return False
-
-
 def canonical_harness_env(
     env: Mapping[str, str] | None = None,
     *,
@@ -376,7 +367,7 @@ def canonical_harness_env(
         RunContext(
             root,
             session_prefix="guard",
-            prefer_external_artifacts=_harness_prefers_external_artifacts(root, merged),
+            prefer_external_artifacts=prefers_external_artifacts(root, merged),
         ).canonical_env(
             merged,
             create_dirs=False,
@@ -726,6 +717,11 @@ def command_profile_log_path(
     return harness_guard_artifact_dir(root, source) / "commands.jsonl"
 
 
+def command_profile_incident_dir(profile_log: Path) -> Path:
+    """The retained incident directory beside the selected command profile."""
+    return profile_log.parent / "incidents"
+
+
 def _max_bytes_from_mb(value: float | None) -> int | None:
     if value is None:
         return None
@@ -916,6 +912,9 @@ def _append_guarded_command_profile(
     limits: HarnessMemoryLimits,
     returncode: int,
     elapsed_s: float | None,
+    child_elapsed_s: float | None,
+    cleanup_elapsed_s: float | None,
+    sampling_telemetry: memory_guard.GuardSamplingTelemetry | None,
     timeout_s: float | None,
     violation: memory_guard.RssViolation | None,
     timed_out: bool,
@@ -989,6 +988,9 @@ def _append_guarded_command_profile(
         ),
         "status": status,
         "elapsed_s": None if elapsed_s is None else round(elapsed_s, 6),
+        "child_elapsed_s": child_elapsed_s,
+        "cleanup_elapsed_s": cleanup_elapsed_s,
+        "sampling_telemetry": _reporting.sampling_telemetry_payload(sampling_telemetry),
         "memory_guard": limits_summary(limits),
         "memory_guard_enabled": limits.enabled,
         "timed_out": timed_out,
@@ -1062,7 +1064,7 @@ def _append_guarded_command_profile(
     if not name_incident or not isinstance(repro, Mapping):
         return path, None, None
     try:
-        incident = _write_incident_record(path.parent / "incidents", payload)
+        incident = _write_incident_record(command_profile_incident_dir(path), payload)
     except OSError as exc:
         return (
             path,
@@ -1188,7 +1190,7 @@ def guarded_completed_process(
         command, cwd=cwd, env=env, capture_output=capture_output
     )
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
-    env, _cargo_policies = cargo_subprocess_environment(command, env)
+    env, _cargo_policies = cargo_subprocess_environment(command, env, cwd=cwd)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing interpreter against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.
@@ -1350,6 +1352,9 @@ def guarded_completed_process(
         limits=resolved_limits,
         returncode=guarded.returncode,
         elapsed_s=guarded.elapsed_s,
+        child_elapsed_s=guarded.child_elapsed_s,
+        cleanup_elapsed_s=guarded.cleanup_elapsed_s,
+        sampling_telemetry=guarded.sampling_telemetry,
         timeout_s=timeout,
         violation=guarded.violation,
         timed_out=guarded.timed_out,
@@ -1485,7 +1490,7 @@ def guarded_completed_process_to_tempfiles(
     command, env, no_output_timeout = _bound_git_transfer(
         command, cwd=cwd, env=env, capture_output=True
     )
-    env, _cargo_policies = cargo_subprocess_environment(command, env)
+    env, _cargo_policies = cargo_subprocess_environment(command, env, cwd=cwd)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing executable against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.
@@ -1617,6 +1622,9 @@ def guarded_completed_process_to_tempfiles(
         limits=resolved_limits,
         returncode=guarded.returncode,
         elapsed_s=guarded.elapsed_s,
+        child_elapsed_s=guarded.child_elapsed_s,
+        cleanup_elapsed_s=guarded.cleanup_elapsed_s,
+        sampling_telemetry=guarded.sampling_telemetry,
         timeout_s=timeout,
         violation=guarded.violation,
         timed_out=guarded.timed_out,
@@ -1811,6 +1819,7 @@ class RepoProcessMemorySentinel:
         self._daemon_suite_scope = contextlib.ExitStack()
         self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
         self._sample_observed_at_ns: int | None = None
+        self._custody_lineage: frozenset[int] | None = None
         self._suite_adopted_pids: set[int] = set()
         self._baseline_pgids: set[int] = set()
         self._observed_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
@@ -2087,7 +2096,25 @@ class RepoProcessMemorySentinel:
         update_observed: bool = True,
     ) -> list[process_sentinel.ProcessGroup]:
         self._sample_observed_at_ns = time.monotonic_ns()
-        samples = memory_guard.sample_processes()
+        if self._scope_to_current_tree:
+            if self._custody_lineage is None:
+                self._custody_lineage = _process_model.posix_custody_lineage(
+                    os.getpid()
+                )
+            interest = self._suite_custody.sentinel_sampling_interest(
+                os.environ,
+                project_root=self._repo_root,
+                receiver=self._daemon_suite_lease,
+            )
+            samples = memory_guard.sample_processes_custody(
+                _process_model.CustodyInterest(
+                    tree_pids=frozenset(self._tree_tracker.known_pids or ())
+                    | interest.tree_pids,
+                    exact_pids=self._custody_lineage | interest.exact_pids,
+                )
+            )
+        else:
+            samples = memory_guard.sample_processes()
         owned_pids = self._owned_pids_from_samples(samples)
         self._record_skipped_protected_groups(
             samples,
