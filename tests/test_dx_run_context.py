@@ -771,6 +771,102 @@ def test_run_context_env_preserves_explicit_uv_project_environment(
     assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit.resolve())
 
 
+@pytest.mark.parametrize("projection", ["canonical", "dx", "cli", "dev", "setup"])
+def test_managed_bytecode_policy_survives_environment_projections(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    projection: str,
+) -> None:
+    import argparse
+    import shlex
+    import sys
+
+    from molt.cli import dx_cli, setup_readiness
+    from tests.process_guard_common import run_custody_subject_process
+    from tools import dev
+
+    _clear_run_context_env(monkeypatch)
+    _without_compiler_wasm_toolchain(monkeypatch)
+    repo = tmp_path / "repo"
+    artifacts = tmp_path / "artifacts"
+    image = materialize_development_environment(repo, artifacts)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "")
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+
+    if projection in {"canonical", "dx"}:
+        args = ["--root", str(repo), "--format", "json"]
+        if projection == "dx":
+            args.append("--dx")
+        assert run_context_env.main(args) == 0
+        exported = json.loads(capsys.readouterr().out)["env"]
+    elif projection == "cli":
+        monkeypatch.setattr(dx_cli, "_dx_project_from_cwd", lambda: DxProject(repo))
+        assert (
+            dx_cli._handle_env(
+                argparse.Namespace(create_dirs=False, json=True, format="json")
+            )
+            == 0
+        )
+        exported = json.loads(capsys.readouterr().out)["env"]
+    elif projection == "setup":
+        exported = setup_readiness._canonical_env_defaults(repo)
+    else:
+        dev._print_canonical_env(DxProject(repo).dx_env(os.environ, create_dirs=False))
+        exported = dict(
+            shlex.split(line)[1].split("=", 1)
+            for line in capsys.readouterr().out.splitlines()
+        )
+
+    assert exported["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+    # Deliberately omit -B: the serialized environment, not the parent's
+    # interpreter flags or the process guard, must establish startup policy.
+    # -S avoids importing the real test image while observing that policy.
+    command = [
+        sys.executable,
+        "-S",
+        "-c",
+        "import sys; print(int(sys.dont_write_bytecode))",
+    ]
+    if projection == "canonical":
+        without_policy = {
+            key: value
+            for key, value in exported.items()
+            if key != "PYTHONDONTWRITEBYTECODE"
+        }
+        control = run_custody_subject_process(
+            command,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "", **without_policy},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert control.stdout == "0\n"
+    completed = run_custody_subject_process(
+        command,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "", **exported},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert completed.stdout == "1\n"
+
+
+@pytest.mark.parametrize(
+    ("format", "expected"),
+    [
+        ("dotenv", "PYTHONDONTWRITEBYTECODE=1"),
+        ("posix", 'export PYTHONDONTWRITEBYTECODE="1"'),
+        ("powershell", "$env:PYTHONDONTWRITEBYTECODE = '1'"),
+        ("cmd", 'set "PYTHONDONTWRITEBYTECODE=1"'),
+    ],
+)
+def test_shell_exports_retain_bytecode_write_policy(format, expected) -> None:
+    assert render_env({"PYTHONDONTWRITEBYTECODE": "1"}, DX_ENV_KEYS, format) == expected
+
+
 def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     tmp_path: Path,
 ) -> None:
