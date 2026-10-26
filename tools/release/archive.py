@@ -126,6 +126,7 @@ def _inventory_regular_files(
     *,
     policy: ArchivePolicy,
     mode_resolver: Callable[[PurePosixPath], int] | None = None,
+    selected: tuple[PurePosixPath, ...] | None = None,
 ) -> tuple[list[_SourceFile], dict[Path, tuple[int, int, int, int]]]:
     files: list[_SourceFile] = []
     directories: dict[Path, tuple[int, int, int, int]] = {}
@@ -146,6 +147,13 @@ def _inventory_regular_files(
             for entry in entries:
                 path = directory / entry.name
                 relative = PurePosixPath(path.relative_to(root).as_posix())
+                if selected is not None and not any(
+                    relative == name
+                    or relative.is_relative_to(name)
+                    or name.is_relative_to(relative)
+                    for name in selected
+                ):
+                    continue
                 identity = portable_path_identity(relative.as_posix())
                 if identity in identities:
                     raise ValueError("archive paths collide under portable identity")
@@ -185,7 +193,7 @@ def _inventory_regular_files(
                     if metadata.st_mode & 0o111 or relative.parent.name == "bin"
                     else 0o644
                 )
-                if type(mode) is not int or mode not in {0o644, 0o755}:
+                if type(mode) is not int or mode not in {0o444, 0o555, 0o644, 0o755}:
                     raise ValueError(
                         "archive mode resolver returned an unsupported mode"
                     )
@@ -282,6 +290,7 @@ def write_reproducible_zip(
     prefix: str | None = None,
     policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY,
     mode_resolver: Callable[[PurePosixPath], int] | None = None,
+    selected: tuple[str, ...] | None = None,
 ) -> None:
     """Publish canonical ZIP_STORED bytes, never a partial public archive."""
     date_time = _zip_timestamp(source_date_epoch)
@@ -290,10 +299,31 @@ def write_reproducible_zip(
         raise ValueError("archive prefix must be one portable path component")
     root = resolve_owned_path(root)
     output = resolve_owned_path(output)
-    if output == root or root in output.parents:
+    selected_paths = (
+        tuple(portable_relative_path(name) for name in selected)
+        if selected is not None
+        else None
+    )
+    if selected_paths is not None and (
+        not selected_paths
+        or len(set(selected_paths)) != len(selected_paths)
+        or any(not (root / name).exists() for name in selected_paths)
+    ):
+        raise ValueError("archive selected paths must be unique existing inputs")
+    if output == root or (
+        root in output.parents
+        and (
+            selected_paths is None
+            or any(
+                output.relative_to(root) == name
+                or output.relative_to(root).is_relative_to(name)
+                for name in selected_paths
+            )
+        )
+    ):
         raise ValueError("archive output must be outside the source tree")
     files, directories = _inventory_regular_files(
-        root, policy=policy, mode_resolver=mode_resolver
+        root, policy=policy, mode_resolver=mode_resolver, selected=selected_paths
     )
     if (
         len(files) + len(directories) - 1 + (prefix_path is not None)
@@ -318,6 +348,18 @@ def write_reproducible_zip(
         raise ValueError("archive output exceeds compressed-size policy")
     output, parent_identity = _prepare_output(output)
     stage = Path(tempfile.mkdtemp(prefix=".molt-archive-", dir=output.parent))
+    # An explicitly excluded output may share the source parent. The private
+    # stage changes only that parent's directory metadata before streaming.
+    if output.parent in directories:
+        original = directories[output.parent]
+        _check_directory(output.parent, (original[0], original[1]))
+        metadata = output.parent.lstat()
+        directories[output.parent] = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
     stage_identity = _directory_identity(stage)
     staged = stage / "archive.zip"
     try:
@@ -508,8 +550,14 @@ def extract_zip_strict(
                         metadata.st_ino,
                     ) != (written.st_dev, written.st_ino):
                         raise ValueError("archive extracted file changed during write")
-                    mode = (member.external_attr >> 16) & 0o111
-                    destination.chmod(0o755 if mode else 0o644)
+                    mode = (member.external_attr >> 16) & 0o777
+                    destination.chmod(
+                        mode
+                        if mode in {0o444, 0o555}
+                        else 0o755
+                        if mode & 0o111
+                        else 0o644
+                    )
                     expected[relative.as_posix()] = (member.file_size, digest)
         # Rehash destination bytes, not only source bytes or retained CRC metadata.
         actual, directories = _inventory_regular_files(stage, policy=policy)
