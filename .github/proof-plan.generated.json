@@ -6771,7 +6771,7 @@
           "c++"
         ]
       },
-      "cell": "macos-arm64-py312-unit",
+      "cell": "macos-arm64-py312-compiled",
       "dependencies": [],
       "evidence_outputs": [
         "proof-results/compiled-contracts/macos"
@@ -6815,7 +6815,7 @@
           "c++"
         ]
       },
-      "cell": "macos-arm64-py312-unit",
+      "cell": "macos-arm64-py312-compiled",
       "dependencies": [
         "python.unit.compiled-contracts.prepare.macos"
       ],
@@ -9234,15 +9234,25 @@
             "python-tests": 2160
           }
         },
-        "macos-arm64-py312-unit": {
+        "macos-arm64-py312-compiled": {
           "budget_seconds": 2580,
           "critical_path_seconds": 1800,
+          "headroom_seconds": 720,
+          "job_reserve_seconds": 60,
+          "projected_makespan_seconds": 1800,
+          "required_job_seconds": 1860,
+          "resource_capacity_floor_seconds": {
+            "compiler-build-resource": 1800
+          }
+        },
+        "macos-arm64-py312-unit": {
+          "budget_seconds": 2580,
+          "critical_path_seconds": 900,
           "headroom_seconds": 120,
           "job_reserve_seconds": 60,
           "projected_makespan_seconds": 2400,
           "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "compiler-build-resource": 1800,
             "python-tests": 2160
           }
         }
@@ -13475,6 +13485,16 @@
       "arch": "aarch64",
       "backend": "python-tooling",
       "id": "macos-arm64-py312-unit",
+      "os": "macos",
+      "profile": "test",
+      "python": "3.12",
+      "runner": "macos-14",
+      "target": "host"
+    },
+    {
+      "arch": "aarch64",
+      "backend": "python-tooling",
+      "id": "macos-arm64-py312-compiled",
       "os": "macos",
       "profile": "test",
       "python": "3.12",

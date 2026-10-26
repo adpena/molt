@@ -1984,6 +1984,7 @@ def test_python_unit_runs_the_same_partitions_on_linux_and_macos() -> None:
     } == {
         "linux-x86_64-py312-unit": ("linux", "ubuntu-latest"),
         "macos-arm64-py312-unit": ("macos", "macos-14"),
+        "macos-arm64-py312-compiled": ("macos", "macos-14"),
     }
     linux = by_cell["linux-x86_64-py312-unit"]
     macos = by_cell["macos-arm64-py312-unit"]
@@ -1991,11 +1992,12 @@ def test_python_unit_runs_the_same_partitions_on_linux_and_macos() -> None:
         "python.unit.compiled-contracts.prepare.macos",
         "python.unit.compiled-contracts.macos",
     }
-    # The original Mac native/WASM coordinate remains in the unit job;
-    # Linux uses its equipped native/WASM integration owners. Its exact source,
-    # prerequisites and unchanged caps are independently checked below.
-    assert {command.id for command in macos if command.id in native_ids} == native_ids
-    macos = [command for command in macos if command.id not in native_ids]
+    # Compiled preparation and execution share a dedicated runner cell;
+    # ordinary unit partitions remain twins of Linux tooling partitions.
+    assert {
+        command.id for command in by_cell["macos-arm64-py312-compiled"]
+    } == native_ids
+    assert not any(command.id in native_ids for command in macos)
 
     def contract(command: proof_plan.ProofCommand) -> dict[str, object]:
         return {
@@ -2021,6 +2023,7 @@ def test_each_matrix_family_receives_only_its_own_runner_cells() -> None:
     assert [(entry["cell"], entry["runner"]) for entry in unit] == [
         ("linux-x86_64-py312-unit", "ubuntu-latest"),
         ("macos-arm64-py312-unit", "macos-14"),
+        ("macos-arm64-py312-compiled", "macos-14"),
     ]
     for entry in unit:
         assert entry["family"] == "python_unit"
@@ -2033,21 +2036,25 @@ def test_each_matrix_family_receives_only_its_own_runner_cells() -> None:
     assert all(entry["family"] == "platform_portability" for entry in portability)
 
 
-def test_local_matrix_family_run_selects_only_the_host_cell(monkeypatch) -> None:
+def test_local_matrix_family_requires_explicit_cell_when_host_has_two_jobs(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(proof_plan, "_normalized_os", lambda: "macos")
     monkeypatch.setattr(proof_plan, "_normalized_arch", lambda: "aarch64")
-    assert proof_plan.host_matrix_cell(PLAN, "python_unit") == "macos-arm64-py312-unit"
-    monkeypatch.setattr(proof_plan, "_normalized_os", lambda: "linux")
     with pytest.raises(ValueError) as error:
         proof_plan.host_matrix_cell(PLAN, "python_unit")
     assert str(error.value) == (
         "python_unit runs one job per matrix cell and no unique cell matches host "
-        "linux/aarch64; pass --matrix-cell with one of: "
-        "linux-x86_64-py312-unit (linux/x86_64), macos-arm64-py312-unit (macos/aarch64)"
+        "macos/aarch64; pass --matrix-cell with one of: "
+        "linux-x86_64-py312-unit (linux/x86_64), macos-arm64-py312-unit (macos/aarch64), "
+        "macos-arm64-py312-compiled (macos/aarch64)"
     )
+    monkeypatch.setattr(proof_plan, "_normalized_os", lambda: "linux")
+    monkeypatch.setattr(proof_plan, "_normalized_arch", lambda: "x86_64")
+    assert proof_plan.host_matrix_cell(PLAN, "python_unit") == "linux-x86_64-py312-unit"
 
 
-def test_run_family_without_cell_executes_only_the_host_cell(
+def test_ambiguous_local_family_refuses_before_execution_and_explicit_cell_runs(
     tmp_path, monkeypatch, capsys
 ) -> None:
     executed: list[str] = []
@@ -2060,16 +2067,15 @@ def test_run_family_without_cell_executes_only_the_host_cell(
     monkeypatch.setattr(proof_plan, "_normalized_os", lambda: "macos")
     monkeypatch.setattr(proof_plan, "_normalized_arch", lambda: "aarch64")
     receipt = tmp_path / "receipt.json"
-    assert (
-        proof_plan.main(["--run-family", "python_unit", "--receipt", str(receipt)]) == 0
-    )
+    args = ["--run-family", "python_unit", "--receipt", str(receipt)]
+    assert proof_plan.main(args) != 0
+    assert not executed
+    assert "pass --matrix-cell" in capsys.readouterr().err
+    assert proof_plan.main([*args, "--matrix-cell", "macos-arm64-py312-compiled"]) == 0
     assert executed == [
-        command.id
-        for command in PLAN.commands
-        if command.family == "python_unit"
-        and command.data["cell"] == "macos-arm64-py312-unit"
+        "python.unit.compiled-contracts.prepare.macos",
+        "python.unit.compiled-contracts.macos",
     ]
-    assert "runs host matrix cell macos-arm64-py312-unit" in capsys.readouterr().err
 
 
 def test_github_job_family_cannot_span_runners() -> None:
@@ -2120,8 +2126,8 @@ def test_matrix_family_budget_binds_each_cell() -> None:
     # Harness holds one Python slot until 2401 s; custody, binding,
     # frontend, CLI and surface fill the other until 2700 s. Runtime artifacts
     # then run on the first slot until 3001 s; the 120 s boundary ends at
-    # 2820 s on the second. The independent compiler slot finishes its
-    # host/compiled dependency at 1800 s. Only Mac exceeds its fixed cap.
+    # 2820 s on the second. The dedicated compiled cell has its own
+    # 1800 s dependency chain. Only ordinary Mac tooling exceeds its fixed cap.
     assert [error for error in errors if "timeout envelope" in error] == [
         "python_unit: projected resource-aware timeout envelope 3001s in matrix "
         "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2580s"
@@ -10588,7 +10594,7 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
     assert resource.dependencies == (host.id,)
     for command in (host, resource):
         assert command.family == "python_unit"
-        assert command.data["cell"] == "macos-arm64-py312-unit"
+        assert command.data["cell"] == "macos-arm64-py312-compiled"
         assert command.data["resource_class"] == "compiler-build-resource"
         assert {"pre-push", "pr", "main"} == set(command.data["tiers"])
         assert {"rustc", "cargo"} <= set(PLAN.required_toolchains(command))
@@ -10627,12 +10633,20 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
     family = next(family for family in PLAN.families if family.name == "python_unit")
     assert family.data["timeout_minutes"] == 43
     assert family.data["job_reserve_seconds"] == 60
-    # This is the existing command-only scheduler envelope. Setup time,
-    # cold completion and concurrent memory still require actual qualification.
-    for cell in ("linux-x86_64-py312-unit", "macos-arm64-py312-unit"):
+    # Independent compiler work occupies the dedicated runner cell. Its
+    # memory slice covers that cell alone; unrelated unit slots cannot divide it.
+    for cell, expected in (
+        ("linux-x86_64-py312-unit", 2400),
+        ("macos-arm64-py312-unit", 2400),
+        ("macos-arm64-py312-compiled", 1800),
+    ):
         envelope = PLAN.timeout_envelope("python_unit", matrix_cell=cell)
-        assert envelope.projected_makespan_seconds == 2400
+        assert envelope.projected_makespan_seconds == expected
         assert envelope.projected_makespan_seconds + 60 <= 43 * 60
+    compiled = proof_plan._topological_commands(
+        PLAN, family="python_unit", matrix_cell="macos-arm64-py312-compiled"
+    )
+    assert {command.id for command in compiled} == {host.id, resource.id}
 
 
 def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admission() -> (
@@ -10663,7 +10677,7 @@ def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admissio
         assert len(matching) == 1
         index, step = matching[0]
         assert index < admission
-        assert "if: matrix.cell == 'macos-arm64-py312-unit'" in step
+        assert "if: matrix.cell == 'macos-arm64-py312-compiled'" in step
         if requirement.endswith("setup-llvm"):
             assert "profile: wasm" in step and 'wasi: "true"' in step
             assert "profile: full" not in step
@@ -10699,10 +10713,19 @@ def test_compiled_preparation_directory_survives_merged_receipt_transport(
     downloaded = tmp_path / "proof-receipts"
     receipts = downloaded / "proof-receipts"
     receipts.mkdir(parents=True)
-    for cell in ("linux-x86_64-py312-unit", "macos-arm64-py312-unit"):
+    cells = PLAN.family_cells("python_unit")
+    assert set(cells) == {
+        "linux-x86_64-py312-unit",
+        "macos-arm64-py312-unit",
+        "macos-arm64-py312-compiled",
+    }
+    assert command.data["cell"] == "macos-arm64-py312-compiled"
+    for cell in cells:
         (receipts / f"python-unit-{cell}.json").write_text("{}\n", encoding="utf-8")
     shutil.copytree(directory, downloaded / relative)
-    assert len(list(receipts.glob("python-unit-*.json"))) == 2
+    assert {path.name for path in receipts.glob("python-unit-*.json")} == {
+        f"python-unit-{cell}.json" for cell in cells
+    }
     assert (
         proof_receipts._verify_receipt_evidence(
             command.id, command, [evidence], downloaded

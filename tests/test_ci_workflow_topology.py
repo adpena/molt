@@ -4634,7 +4634,7 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
                 == "uv run --no-sync python -m molt.tool_releases provision node"
             ]
             assert len(provision) == 1
-            assert provision[0]["if"] == "matrix.cell == 'macos-arm64-py312-unit'"
+            assert provision[0]["if"] == "matrix.cell == 'macos-arm64-py312-compiled'"
             execute = next(
                 step
                 for step in steps
