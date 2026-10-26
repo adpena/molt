@@ -1318,31 +1318,28 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
 
 pub(super) fn assert_single_anchor_epilogue(operators: &[String], dec_ref_index: u32) {
     let release = format!("Call {{ function_index: {dec_ref_index} }}");
-    let exit_positions: Vec<usize> = operators
-        .iter()
-        .enumerate()
-        .filter_map(|(index, operator)| (operator == "Return").then_some(index))
-        .collect();
     assert_eq!(
-        exit_positions.len(),
-        1,
-        "all normal and pending-exception exits must share one epilogue; operators={operators:?}"
+        operators
+            .iter()
+            .filter(|op| op.as_str() == "Return")
+            .count(),
+        1
     );
     assert_eq!(operators.last().map(String::as_str), Some("End"));
-    let return_index = exit_positions[0];
-    assert_eq!(
-        operators.get(return_index.wrapping_sub(1)),
-        Some(&release),
-        "the shared epilogue must release its unique anchor before returning; operators={operators:?}"
+    let release_index = operators.iter().rposition(|op| op == &release).unwrap();
+    assert!(
+        operators[release_index - 1].starts_with("I64Store {"),
+        "publish an empty owner before the cleanup callback: {operators:?}"
     );
     assert!(
-        operators[return_index.saturating_sub(3)].starts_with("I64Const {"),
-        "anchor owner must be cleared before release; operators={operators:?}"
+        operators
+            .iter()
+            .filter(|op| op.starts_with("Loop {"))
+            .count()
+            >= 2,
+        "initialization and cleanup loops coexist with authored dispatch loops"
     );
-    assert!(
-        operators[return_index.saturating_sub(2)].starts_with("LocalSet {"),
-        "anchor owner must be cleared before release; operators={operators:?}"
-    );
+    assert!(!operators.iter().any(|op| op.starts_with("MemoryFill")));
 }
 
 #[test]
@@ -1444,9 +1441,17 @@ fn anchor_cleanup_size_is_independent_of_return_site_count() {
             let (operators, imports) = compile_literal_body(vec!["cond"], ops);
             assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
             assert_eq!(
+                operators
+                    .iter()
+                    .filter(|op| op.starts_with("Loop {"))
+                    .count(),
+                2,
+                "initialization and cleanup code do not grow with anchor or return count"
+            );
+            assert_eq!(
                 call_count(&operators, imports["dec_ref_obj"]),
-                constant_count * 2,
-                "one release per discarded result and anchor, independent of {return_count} exits"
+                constant_count + 1,
+                "one release per discarded result plus one anchor-loop call site, independent of {return_count} exits"
             );
         }
     }
@@ -1499,19 +1504,35 @@ const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes), no = BigInt(config.no);
 const module = new WebAssembly.Module(fs.readFileSync(config.path));
-for (const failure of [0, 1, 2, 3]) {
+for (const failure of [-1, 0, 1, 2, 3]) {
   for (const condition of [no, yes]) {
-    let constructed = 0, pending = false;
+    let constructed = 0, pending = false, live = false, frees = 0;
+    const range = BigInt(config.memory_pages * 65536 + 64);
     const owners = new Map(), destroyed = [];
     const imports = {env: {
-      memory: new WebAssembly.Memory({initial:config.memory_pages}),
+      memory: new WebAssembly.Memory({initial:config.memory_pages + 1}),
       __indirect_function_table: new WebAssembly.Table({initial:config.table_entries, element:'anyfunc'}),
     }};
     const hooks = {
+      scratch_alloc(size) {
+        assert.equal(size, 24n); assert.equal(live, false);
+        if (failure === -1) { pending = true; return 0n; }
+        live = true;
+        new Uint8Array(imports.env.memory.buffer, Number(range), 24).fill(0xa5);
+        return range;
+      },
+      scratch_free(ptr, size) {
+        assert.equal(ptr, range); assert.equal(size, 24n); assert.equal(live, true);
+        const view = new DataView(imports.env.memory.buffer);
+        for (let i = 0; i < 3; i++) assert.equal(view.getBigInt64(Number(range) + 8*i, true), none);
+        live = false; frees++;
+      },
       string_from_bytes(ptr, length, out) {
         assert.equal(pending, false, 'constructor called after a failure');
         constructed++;
+        assert.equal(live, true);
         const view = new DataView(imports.env.memory.buffer);
+        for (let i = constructed - 1; i < 3; i++) assert.equal(view.getBigInt64(Number(range) + 8*i, true), none, 'all holes initialized before constructors');
         view.setBigInt64(out, none, true);
         if (constructed === failure) { pending = true; return 2; }
         const owner = BigInt(constructed);
@@ -1543,9 +1564,10 @@ for (const failure of [0, 1, 2, 3]) {
     const app = new WebAssembly.Instance(module, imports).exports;
     assert.equal(app.molt_main(condition), failure || condition === no ? none : yes);
     assert.equal(pending, failure !== 0, 'cleanup preserves the constructor exception');
-    assert.equal(constructed, failure || 3);
+    assert.equal(constructed, failure === -1 ? 0 : failure || 3);
+    assert.equal(live, false); assert.equal(frees, failure === -1 ? 0 : 1);
     assert.ok([...owners.values()].every(count => count === 0), 'all owners must be retired');
-    assert.deepEqual(destroyed, Array.from({length:failure ? failure - 1 : 3}, (_, i) => i + 1).reverse());
+    assert.deepEqual(destroyed, Array.from({length:failure === -1 ? 0 : failure ? failure - 1 : 3}, (_, i) => i + 1).reverse());
   }
 }
 "#,

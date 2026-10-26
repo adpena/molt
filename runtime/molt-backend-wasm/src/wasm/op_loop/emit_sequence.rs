@@ -198,7 +198,9 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     const_cache,
                     func_index,
                     reloc_enabled,
-                    anchor_local: frame.const_anchor_for_op(op_idx),
+                    anchor: frame
+                        .const_anchor_for_op(op_idx)
+                        .map(|slot| (frame.const_anchor_region(), slot)),
                 },
                 func,
                 op,

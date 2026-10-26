@@ -6,7 +6,9 @@ mod seeds;
 use super::{WasmFrameControlMode, WasmFunctionFrame, WasmFunctionFramePlan};
 use crate::FunctionIR;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
+use crate::wasm::frame_locals::{
+    WasmFrameAnonymousLocal, WasmFrameLocals, WasmFrameSyntheticLocal,
+};
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use debug::emit_seed_debug;
 use local_alloc::FrameLocalAllocator;
@@ -195,6 +197,19 @@ impl WasmFunctionFramePlan {
         let (const_seed_locals, const_anchors, const_anchor_by_op_index) =
             seed_plan.into_frame_plans(stateful || jumpful);
 
+        let const_anchor_region = (!const_anchors.is_empty()).then(|| {
+            let base = locals.allocate_anonymous(
+                WasmFrameAnonymousLocal::ConstAnchorRegionBase,
+                &mut local_types,
+                &mut local_count,
+            );
+            let temporary = locals.allocate_anonymous(
+                WasmFrameAnonymousLocal::ConstAnchorTemporary,
+                &mut local_types,
+                &mut local_count,
+            );
+            super::WasmConstAnchorRegion::new(base, temporary, const_anchors.len())
+        });
         emit_seed_debug(func_ir, &locals, &const_seed_locals, const_anchors.len());
 
         let control_mode = if stateful {
@@ -225,6 +240,7 @@ impl WasmFunctionFramePlan {
                 const_cache,
                 const_seed_locals,
                 const_anchors,
+                const_anchor_region,
                 const_anchor_by_op_index,
             },
         }

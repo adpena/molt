@@ -1,7 +1,8 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
-use crate::wasm::frame_locals::{WasmFrameAnonymousLocal, WasmLiteralScratchLocals};
+use crate::wasm::frame_locals::WasmLiteralScratchLocals;
+use crate::wasm::function_frame::WasmConstAnchorSlot;
 use crate::wasm::local_analysis::ValueOccupancy;
 use crate::wasm_values::box_none;
 use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
@@ -10,7 +11,7 @@ use wasm_encoder::ValType;
 
 #[derive(Clone)]
 pub(in crate::wasm::function_frame) struct FrameConstAnchor {
-    pub(in crate::wasm::function_frame) local: u32,
+    pub(in crate::wasm::function_frame) slot: WasmConstAnchorSlot,
     pub(in crate::wasm::function_frame) op: OpIR,
     pub(in crate::wasm::function_frame) scratch_aliases: Vec<WasmLiteralScratchLocals>,
 }
@@ -28,7 +29,7 @@ pub(super) struct FrameConstSeedPlan {
     inline_locals: Vec<(u32, i64)>,
     anchors: Vec<FrameConstAnchor>,
     anchor_by_key: BTreeMap<FrameConstAnchorKey, usize>,
-    anchor_by_op_index: BTreeMap<usize, u32>,
+    anchor_by_op_index: BTreeMap<usize, WasmConstAnchorSlot>,
     anchor_scratch_seen: BTreeSet<(usize, u32, u32)>,
 }
 
@@ -69,15 +70,10 @@ impl FrameConstSeedPlan {
             let anchor_index = if let Some(&index) = self.anchor_by_key.get(&key) {
                 index
             } else {
-                let local = locals.allocate_anonymous(
-                    WasmFrameAnonymousLocal::ConstLiteralAnchor,
-                    local_types,
-                    local_count,
-                );
                 let index = self.anchors.len();
                 self.anchor_by_key.insert(key, index);
                 self.anchors.push(FrameConstAnchor {
-                    local,
+                    slot: WasmConstAnchorSlot::new(index),
                     op: op.clone(),
                     scratch_aliases: Vec::new(),
                 });
@@ -93,7 +89,7 @@ impl FrameConstSeedPlan {
             {
                 anchor.scratch_aliases.push(scratch);
             }
-            self.anchor_by_op_index.insert(op_idx, anchor.local);
+            self.anchor_by_op_index.insert(op_idx, anchor.slot);
         }
     }
 
@@ -125,7 +121,11 @@ impl FrameConstSeedPlan {
     pub(super) fn into_frame_plans(
         self,
         needs_dispatch: bool,
-    ) -> (Vec<(u32, i64)>, Vec<FrameConstAnchor>, BTreeMap<usize, u32>) {
+    ) -> (
+        Vec<(u32, i64)>,
+        Vec<FrameConstAnchor>,
+        BTreeMap<usize, WasmConstAnchorSlot>,
+    ) {
         let inline_locals = if needs_dispatch {
             self.inline_locals
         } else {

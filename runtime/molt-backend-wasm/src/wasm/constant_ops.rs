@@ -2,6 +2,7 @@ mod anchors;
 
 use super::const_materialization::WasmConstOpPolicy;
 use super::context::CompileFuncContext;
+use super::function_frame::{WasmConstAnchorRegion, WasmConstAnchorSlot};
 use super::{WasmBackend, WasmFrameLocals};
 use crate::OpIR;
 use crate::wasm_data::DataSegmentRef;
@@ -10,9 +11,7 @@ use crate::wasm_values::ConstantCache;
 use std::collections::BTreeMap;
 use wasm_encoder::Function;
 
-pub(in crate::wasm) use anchors::{
-    emit_const_anchor_materialization, emit_const_anchor_result, emit_release_const_anchors,
-};
+pub(in crate::wasm) use anchors::{emit_const_anchor_materialization, emit_const_anchor_result};
 
 pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) backend: &'a mut WasmBackend,
@@ -22,7 +21,7 @@ pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) const_cache: &'a ConstantCache,
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
-    pub(super) anchor_local: Option<u32>,
+    pub(super) anchor: Option<(WasmConstAnchorRegion, WasmConstAnchorSlot)>,
 }
 
 impl WasmConstOpPolicy {
@@ -63,11 +62,11 @@ impl WasmConstOpPolicy {
             const_cache,
             func_index,
             reloc_enabled,
-            anchor_local,
+            anchor,
         } = context;
 
-        if let Some(anchor_local) = anchor_local {
-            emit_const_anchor_result(func, op, locals, anchor_local, import_ids, reloc_enabled);
+        if let Some((region, slot)) = anchor {
+            emit_const_anchor_result(func, op, locals, region, slot, import_ids, reloc_enabled);
         } else if !self.emit_inline_seed(func, op, locals, const_cache) {
             self.emit_materialized(
                 backend,
@@ -80,7 +79,7 @@ impl WasmConstOpPolicy {
                 ctx.const_str_scratch_segment,
             );
         }
-        if anchor_local.is_some() {
+        if anchor.is_some() {
             self.clear_raw_int_output(op, locals, known_raw_ints);
         } else {
             self.apply_raw_int_effect(op, locals, known_raw_ints);
