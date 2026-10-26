@@ -448,7 +448,6 @@ def _compilation_captures(
     from molt.python_capture import validate_python_capture
     from tools.proof_queue_pkg import (
         command_identity,
-        command_admission,
         execution_environment,
         toolchain_capture,
     )
@@ -476,23 +475,12 @@ def _compilation_captures(
             )
     captured: dict[str, Any] = {}
     for tool in dict.fromkeys(tools):
-        exact = [str(tool), "--version"]
-        envelope = command_admission.envelope_for_command(exact)
-        _, located, _, updates = execution_environment._locate_toolchain_watch_roots(
-            envelope, exact, cwd=cwd, env=env, supervisor_binary=supervisor
-        )
-        if updates:
-            raise ValueError(
-                "installed compilation tool capture changed the selected environment"
-            )
-        _, identities = execution_environment._capture_toolchains(
-            envelope,
-            exact,
+        identities = execution_environment.capture_selected_tool_input(
+            tool,
             cwd=cwd,
             env=env,
             source_root=compiler.source_root,
-            hash_workers=1,
-            located_toolchains=located,
+            supervisor_binary=supervisor,
         )
         for name, identity in identities.items():
             if name in captured and captured[name] != identity:
