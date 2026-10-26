@@ -419,6 +419,11 @@ scratch owner through child closure. It validates the image namespace by
 explicit path without changing `sys.pycache_prefix`. After admission, payloads
 select `-B -X pycache_prefix=<image>/bytecode` before interpreter startup;
 environment variables alone cannot establish this policy under `-I` or `-E`.
+RunContext's serialized environments retain `PYTHONDONTWRITEBYTECODE` alongside
+the selected cache prefix: this includes CLI and developer exports, setup
+defaults, and coordination JSON, shell and PowerShell records. Ordinary Python
+children consume that no-write policy at startup; isolated children still require
+the explicit argv policy above.
 Existing process-state leases retain the selected generation until observed
 process closure, even when a newer generation is selected. Owner/use metadata
 stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
