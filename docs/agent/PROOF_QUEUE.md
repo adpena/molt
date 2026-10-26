@@ -277,11 +277,11 @@ This classification adds no guest instrumentation. Kernel notifications do not
 identify a writer, and inotify does not directly report mmap stores; this is
 bounded event custody, not proof against every possible external writer.
 
-WASI Cargo library links use the selected SDK's raw linker with Rust's
-self-contained C runtime disabled. C and C++ compilation retain their selected
-driver roles and driver argument grammar. Command and reactor startup objects
-belong only to their respective executable producers; runtime libraries do not
-receive a startup object. Proof-tool selection binds the SDK compiler and its
+Molt runtime WASI C-ABI library links use the selected SDK's raw linker with
+Rust's self-contained C runtime disabled. C and C++ compilation retain their
+selected driver roles and driver argument grammar. Command and reactor startup
+objects belong only to their respective executable producers; runtime libraries
+do not receive a startup object. Proof-tool selection binds the SDK compiler and its
 resource generation separately from the native LLVM compiler. Selection,
 resource capture, identity checks and proof instrumentation run in development
 and compiler tooling, outside emitted guest execution.
@@ -292,6 +292,14 @@ plan. The selected native search context resolves the original SDK object;
 neither dependency flags nor production runtime libraries acquire that entry
 point. The lifecycle gate must link and execute this image through the actual
 production host before claiming a passing WASI lifecycle cell.
+
+That same policy also owns the platform crate's separate pure-Rust WASI libtest.
+It uses Cargo's ordinary WASI command startup and proves Molt's conversion of
+Rust standard-library errors into guest errno on WASI. The runtime image remains
+the managed SDK C-ABI witness. Both images execute through the existing
+manifest-bound production-host command path, with separate captured image
+identities and exact Rust-owned test rosters. The pure-Rust operation acquires no
+C-tool requirement.
 
 Compiler-producing commands declare the helpers their target and profile can
 execute. Native stripping and WASM optimization reuse the compiler's existing

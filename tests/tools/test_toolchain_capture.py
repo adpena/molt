@@ -2453,6 +2453,8 @@ def _native_build_capture_fixture(
             if (
                 registered_command is not None
                 and "wasi-lifecycle" in registered_command
+                and "link-arg=--export-table"
+                in kwargs["env"].get("CARGO_ENCODED_RUSTFLAGS", "")
             ):
                 expected = (
                     '#[link(name = ":crt1-command.o", kind = "static", modifiers = "-bundle")]\n'
@@ -2467,7 +2469,9 @@ def _native_build_capture_fixture(
                         "fixture: WASI command CRT declaration missing or wrong",
                     )
             else:
-                assert "#[link(" not in source, "pure Rust zlib owns its bundled CRT"
+                assert "#[link(" not in source, (
+                    "pure Rust providers own their bundled CRT"
+                )
             selected = kwargs["env"].get(
                 "CARGO_TARGET_WASM32_WASIP1_LINKER", "rust-lld"
             )
@@ -4203,7 +4207,7 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
     )
     if args is not None:
         expected = (
-            ["runtime", "host"]
+            ["runtime", "host", "provider"]
             if args.policy == "wasi-lifecycle"
             else ["provider"]
             if args.policy == "zlib-wasi"
@@ -4214,6 +4218,7 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
             assert [row["selection"]["target"] for row in selection["operations"]] == [
                 "wasm32-wasip1",
                 "x86_64-unknown-linux-gnu",
+                "wasm32-wasip1",
             ]
             assert [
                 row["selection"]["target"] for row in selection["native_build"]
@@ -4830,6 +4835,13 @@ def test_runtime_gate_rust_operation_receiver_rejects_incomplete_or_mutated_plan
         "host-startup",
         "test-harness",
         "startup-target",
+        "provider-C",
+        "runtime-C-lost",
+        "host-C-lost",
+        "provider-omitted",
+        "provider-duplicate",
+        "provider-foreign",
+        "provider-managed",
     ],
 )
 def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
@@ -4845,11 +4857,21 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
     assert [operation["selection"]["target"] for operation in raw["operations"]] == [
         "wasm32-wasip1",
         "x86_64-unknown-linux-gnu",
+        "wasm32-wasip1",
     ]
     assert [row["selection"]["units"] for row in raw["native_build"]] == [
         {"target": ["c"]},
         {"target": ["c"]},
     ]
+    assert [row["native_required"] for row in raw["operations"]] == [
+        {"target": ["c"]},
+        {"target": ["c"]},
+        {},
+    ]
+    provider = raw["operations"][2]
+    assert provider["role"] == "provider" and provider["environment"] == "cargo"
+    assert provider["c_units"] == "none" and provider["projection"] is None
+    assert "molt-runtime-platform" in provider["source_command"]
     wasi, host = raw["native_build"]
     assert "--target=wasm32-wasip1" in wasi["selection"]["compilers"]["c"]
     assert host["selection"]["target"] == "x86_64-unknown-linux-gnu"
@@ -4925,6 +4947,23 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
         target_unit["artifact_selection"]["test_harness"] = False
     elif mutation == "startup-target":
         raw["operations"][0]["selection"]["target"] = "x86_64-unknown-linux-gnu"
+    elif mutation == "provider-C":
+        raw["operations"][2]["native_required"] = {"target": ["c"]}
+    elif mutation == "runtime-C-lost":
+        raw["operations"][0]["native_required"] = {}
+    elif mutation == "host-C-lost":
+        raw["operations"][1]["native_required"] = {}
+    elif mutation == "provider-omitted":
+        raw["operations"].pop()
+    elif mutation == "provider-duplicate":
+        raw["operations"].append(deepcopy(raw["operations"][2]))
+    elif mutation == "provider-foreign":
+        raw["operations"][2]["source_command"][
+            raw["operations"][2]["source_command"].index("-p") + 1
+        ] = "molt-runtime"
+    elif mutation == "provider-managed":
+        raw["operations"][2]["projection"] = deepcopy(projection)
+
     with pytest.raises(ValueError):
         toolchain_capture.validate_rust_link_selection(
             changed, command_argv=command, full_capture=True
@@ -5004,7 +5043,17 @@ def test_runtime_gate_lifecycle_uses_real_libtest_command_startup(
         monkeypatch,
         registered_command=_runtime_gate_registered_command("wasi-lifecycle"),
     )
-    runtime, host = identity["link_selection"]["operations"]
+    runtime, host, provider = identity["link_selection"]["operations"]
+    assert [operation["role"] for operation in (runtime, host, provider)] == [
+        "runtime",
+        "host",
+        "provider",
+    ]
+    for operation in (runtime, host, provider):
+        assert [unit["unit"] for unit in operation["selection"]["units"]] == [
+            "target",
+            "host-proc-macro",
+        ]
     abi = WasiCAbiProjection.decode(runtime["projection"]["c_abi"])
     target, proc_macro = runtime["selection"]["units"]
     declaration = (
@@ -5025,7 +5074,15 @@ def test_runtime_gate_lifecycle_uses_real_libtest_command_startup(
     assert proc_macro["startup"] is None
     assert proc_macro["artifact_selection"]["test_harness"] is False
     assert all(unit["startup"] is None for unit in host["selection"]["units"])
-    assert len([argv for argv in calls if "link-args" in argv]) == 4
+    assert provider["projection"] is None
+    assert provider["environment"] == "cargo"
+    assert all(unit["startup"] is None for unit in provider["selection"]["units"])
+    assert (
+        provider["selection"]["units"][0]["artifact_selection"]["test_harness"] is True
+    )
+    # Shared metadata/configuration capture does not reuse link-selection probes:
+    # each of the three operations proves its target and host proc-macro link.
+    assert len([argv for argv in calls if "link-args" in argv]) == 6
     before = len(calls)
     crt.write_bytes(crt.read_bytes() + b"changed startup")
     with pytest.raises(ValueError, match="WASI command startup changed"):

@@ -740,6 +740,31 @@ Every other Molt host service, runtime or native import requires the current
 deployment manifest, including when mixed with valid indirect calls. Molt
 applications must enter through their manifest.
 
+The Rust host's explicit `--wasi-command-manifest PATH` selector admits SDK
+services for a WASI command through that same current version 3 reader, module
+size and SHA authority. It requires one `linked` module, no runtime provider or
+other module role, and `entry.module=linked`, `entry.function=_start`. This is an
+explicit execution input binding, not a new manifest mode: a positional manifest
+continues to select Molt application startup. The admitted bytes and compiled
+module remain one private owner through import planning, and another module
+cannot borrow that permission. The command retains its own table dispatch,
+core start, exported `_start`, guest arguments and `proc_exit` behavior, without
+Molt application entry/shutdown calls. Raw `--wasi-command` retains its existing
+SDK refusal, including for a valid precompiled module.
+
+`--precompile --wasi-command-manifest PATH` uses the same input selection and
+protects both source and manifest against destination collisions. It compiles
+once without instantiating or running either start function; execution still
+performs ordinary import/signature and command entrypoint admission. Native
+container identity and schema are unchanged. The real WASI libtest producer
+copies each already captured compiler image once into its existing retained
+Cargo test artifact owner, publishes the current manifest last, and preserves
+both on failure. This adds one image-sized write and manifest serialization per
+image, not a second compiler or native compilation. Admission hashes the owned
+source once; the captured source buffer retires before execution. The runtime
+and platform test roots use the same producer and host loader with their actual
+independent errno and lifecycle assertions.
+
 Workers preserve static module compilation. The CLI passes its already-built
 in-memory manifest to its split worker generator inside the existing deployment
 publication; fixed lexical app/runtime files are the same manifest-bound files

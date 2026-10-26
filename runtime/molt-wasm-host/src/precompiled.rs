@@ -36,6 +36,39 @@ impl ModuleRole {
     }
 }
 
+/// The module and its admitted source identity stay together through execution.
+#[derive(Debug)]
+pub(super) struct LoadedWasiCommandManifest {
+    module: Module,
+    manifest_path: PathBuf,
+    source_sha256: [u8; 32],
+}
+
+impl LoadedWasiCommandManifest {
+    pub(super) fn module(&self) -> &Module {
+        &self.module
+    }
+
+    pub(super) fn manifest_path(&self) -> &Path {
+        &self.manifest_path
+    }
+
+    pub(super) fn source_sha256(&self) -> &[u8; 32] {
+        &self.source_sha256
+    }
+}
+
+impl ResolvedWasiCommandManifest {
+    pub(super) fn load(self, engine: &Engine) -> Result<LoadedWasiCommandManifest> {
+        let module = load_or_compile_module(engine, self.module(), ModuleRole::Main)?;
+        Ok(LoadedWasiCommandManifest {
+            module,
+            manifest_path: self.manifest_path().to_path_buf(),
+            source_sha256: *self.module().sha256(),
+        })
+    }
+}
+
 fn header(source: &ModuleSource, payload: &[u8]) -> [u8; HEADER_SIZE] {
     let mut bytes = [0; HEADER_SIZE];
     bytes[..8].copy_from_slice(MAGIC);
@@ -341,6 +374,9 @@ pub(super) fn precompile_execution(
             Some(modules.manifest_path.as_path()),
         ),
         ResolvedExecution::WasiCommand { module } => (module, None, None),
+        ResolvedExecution::WasiCommandManifest(command) => {
+            (command.module(), None, Some(command.manifest_path()))
+        }
     };
     let mut members = vec![(
         ModuleRole::Main,

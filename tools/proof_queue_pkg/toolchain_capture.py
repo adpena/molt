@@ -2653,7 +2653,10 @@ def _capture_runtime_gate_rust_operations(
     env = ProcessEnvironment(env)
     from tools.proof_queue_pkg import command_admission
     from tools.proof_queue_pkg.command_identity import _rust_target
-    from tools.runtime_test_gate_plan import cargo_operations
+    from tools.runtime_test_gate_plan import (
+        cargo_operations,
+        project_native_requirements,
+    )
 
     envelope = command_admission.envelope_for_command(admitted_command)
     args = command_admission.runtime_gate_arguments(envelope)
@@ -2684,13 +2687,11 @@ def _capture_runtime_gate_rust_operations(
         raise ValueError("runtime native requirements differ from admission")
     operations, images, native_selections = [], [], []
     capture_cache = {}
-    for operation in cargo_operations(
+    planned = cargo_operations(
         args.policy, args.profile, cargo=str(cargo), compiler_host=host
-    ):
-        if not operation.admits_native_requirements(declared):
-            raise ValueError(
-                "runtime Cargo operation C declaration differs from its source plan"
-            )
+    )
+    requirements_by_operation = project_native_requirements(planned, declared)
+    for operation, requirements in zip(planned, requirements_by_operation, strict=True):
         command, operation_env, plan = resolve_runtime_gate_cargo_operation(
             operation, cwd=cwd, env=env, compiler_host=host
         )
@@ -2723,7 +2724,6 @@ def _capture_runtime_gate_rust_operations(
             wasi_command_abi=None if plan is None else plan.wasi_c_abi,
         )
         images.extend(child_images)
-        requirements = declared
         selected_native = select_cargo_native_units(
             required=requirements,
             target=child_target,
@@ -3849,7 +3849,10 @@ def _validate_runtime_gate_rust_selection(
 ):
     from molt.wasi_sdk_identity import WasiCAbiProjection
     from tools.proof_queue_pkg import command_admission
-    from tools.runtime_test_gate_plan import cargo_operations
+    from tools.runtime_test_gate_plan import (
+        cargo_operations,
+        project_native_requirements,
+    )
 
     if set(raw) != {
         "schema",
@@ -3908,7 +3911,12 @@ def _validate_runtime_gate_rust_selection(
     operation_keys = set()
     native_expected = {}
     managed = {}
-    for operation, row in zip(planned, rows, strict=True):
+    requirements_by_operation = project_native_requirements(
+        planned, raw["native_required"]
+    )
+    for operation, row, requirements in zip(
+        planned, rows, requirements_by_operation, strict=True
+    ):
         if (
             not isinstance(row, Mapping)
             or set(row)
@@ -4001,10 +4009,7 @@ def _validate_runtime_gate_rust_selection(
         ):
             raise ValueError("runtime Cargo child target differs from its operation")
         operation_keys.update(keys)
-        requirements = raw["native_required"]
-        if row[
-            "native_required"
-        ] != requirements or not operation.admits_native_requirements(requirements):
+        if row["native_required"] != requirements:
             raise ValueError("runtime Cargo operation lost its C source declaration")
         target = selection["target"] or host
         for unit, languages in requirements.items():

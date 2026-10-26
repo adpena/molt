@@ -216,8 +216,13 @@ pub(super) fn table_limits(module: &Module) -> Option<TableType> {
 pub(super) fn plan_call_indirect_imports(
     output: &Module,
     runtime: Option<&Module>,
-    kind: LoadedGuestKind,
+    kind: LoadedGuestKind<'_>,
 ) -> Result<Vec<(String, FuncType)>> {
+    if let LoadedGuestKind::WasiCommandManifest(command) = kind
+        && !std::ptr::eq(output, command.module())
+    {
+        bail!("manifest-bound WASI command requires its captured module");
+    }
     let mut imports = std::collections::BTreeMap::<String, FuncType>::new();
     for module in std::iter::once(output).chain(runtime) {
         for import in module.imports() {
@@ -247,7 +252,7 @@ pub(super) fn plan_call_indirect_imports(
         }
     }
     match kind {
-        LoadedGuestKind::WasiCommand => {
+        LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_) => {
             if !imports.is_empty() {
                 validate_command_indirect_table(output)?;
             }
@@ -330,14 +335,16 @@ pub(super) fn define_call_indirect_imports(
     linker: &mut Linker<HostState>,
     store: &mut Store<HostState>,
     imports: &[(String, FuncType)],
-    kind: LoadedGuestKind,
+    kind: LoadedGuestKind<'_>,
 ) -> Result<()> {
     let registry = store.data().call_indirect.clone();
     for (name, ty) in imports {
         let target = match kind {
-            LoadedGuestKind::WasiCommand => IndirectDispatch::CommandTable {
-                callee_type: FuncType::new(ty.engine(), ty.params().skip(1), ty.results()),
-            },
+            LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_) => {
+                IndirectDispatch::CommandTable {
+                    callee_type: FuncType::new(ty.engine(), ty.params().skip(1), ty.results()),
+                }
+            }
             LoadedGuestKind::MoltApplication { .. } => {
                 IndirectDispatch::ApplicationExports(registry.clone())
             }

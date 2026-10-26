@@ -6,22 +6,47 @@ mod support;
 use molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
 use support::host;
 
-/// Artifacts in a directory this process alone owns, removed when it drops.
-struct ArtifactFixture(tempfile::TempDir);
+// This retained-artifact owner also exposes external-compiler utilities.
+#[allow(dead_code)]
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+/// Artifacts retained under the actual Cargo test image, including failures.
+struct ArtifactFixture(std::path::PathBuf);
 
 impl ArtifactFixture {
     fn new() -> Self {
-        Self(
-            tempfile::Builder::new()
-                .prefix("molt-precompile-cli-")
-                .tempdir()
-                .unwrap(),
-        )
+        let owner = cargo_test_artifacts::CargoTestArtifacts::new("wasm-host-cli").unwrap();
+        let path = owner.path().join("inputs");
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
     }
     fn write(&self, name: &str, content: &[u8]) -> std::path::PathBuf {
-        let path = self.0.path().join(name);
+        let path = self.path().join(name);
         std::fs::write(&path, content).unwrap();
         path
+    }
+    fn command_manifest(
+        &self,
+        name: &str,
+        content: &[u8],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let source = self.write(name, content);
+        let manifest = serde_json::json!({
+            "version": WASM_EXECUTION_MANIFEST_VERSION,
+            "mode": "linked",
+            "modules": {"linked": {"path": name, "size": content.len(), "sha256": molt_wasm_host::sha256_hex(content)}},
+            "entry": {"module": "linked", "function": "_start"},
+        });
+        let manifest = self.write("manifest.json", &serde_json::to_vec(&manifest).unwrap());
+        (source, manifest)
     }
 }
 
@@ -29,7 +54,7 @@ impl ArtifactFixture {
 fn actual_precompile_command_roundtrips_through_source_bound_loader() {
     let fixture = ArtifactFixture::new();
     let source = fixture.write("command.wat", b"(module (func (export \"_start\")))");
-    let artifact = fixture.0.path().join("explicit.molt.cwasm");
+    let artifact = fixture.path().join("explicit.molt.cwasm");
     let output = host()
         .args(["--precompile", "--wasi-command"])
         .arg(&source)
@@ -50,7 +75,7 @@ fn actual_precompile_command_roundtrips_through_source_bound_loader() {
     let original = std::fs::read(&artifact).unwrap();
     assert_eq!(main["sha256"], molt_wasm_host::sha256_hex(&original));
     assert_eq!(main["size"], original.len());
-    assert_eq!(std::fs::read_dir(fixture.0.path()).unwrap().count(), 2);
+    assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 2);
     let run = || {
         host()
             .arg("--wasi-command")
@@ -121,7 +146,7 @@ fn actual_manifest_precompile_resolves_every_member_without_executing_guest() {
         assert_eq!(member["sha256"], molt_wasm_host::sha256_hex(&bytes));
     }
     assert_eq!(
-        std::fs::read_dir(fixture.0.path()).unwrap().count(),
+        std::fs::read_dir(fixture.path()).unwrap().count(),
         5,
         "no custody sidecars"
     );
@@ -157,7 +182,7 @@ fn actual_precompile_rejects_source_alias_and_retired_write_mode() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("is retired"));
-    assert_eq!(std::fs::read_dir(fixture.0.path()).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 1);
 }
 
 #[test]
@@ -224,4 +249,246 @@ fn upstream_compiler_timings_are_available_through_the_actual_host() {
         stderr.contains("Compilation passes"),
         "missing upstream pass breakdown: {stderr}"
     );
+}
+
+#[test]
+fn actual_manifest_command_sdk_and_indirect_dispatch_keep_command_exit_semantics() {
+    let fixture = ArtifactFixture::new();
+    let bytes = br#"(module
+      (import "env" "molt_os_close_host" (func $close (param i64) (result i32)))
+      (import "env" "molt_call_indirect0" (func $dispatch (param i64) (result i64)))
+      (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+      (table (export "__indirect_function_table") 2 funcref)
+      (func $target (result i64) i64.const 42) (elem (i32.const 1) $target)
+      (func (export "_start")
+        i64.const -1 call $close i32.const -9 i32.ne if unreachable end
+        i64.const 1 call $dispatch i64.const 42 i64.ne if unreachable end
+        i32.const 23 call $exit))"#;
+    let (source, manifest) = fixture.command_manifest("command.wat", bytes);
+    let artifact = fixture.path().join("command.molt.cwasm");
+    let compiled = host()
+        .args(["--precompile", "--wasi-command-manifest"])
+        .arg(&manifest)
+        .env("MOLT_WASM_PRECOMPILED_PATH", &artifact)
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let receipt: serde_json::Value = serde_json::from_slice(&compiled.stdout).unwrap();
+    assert_eq!(
+        receipt["artifacts"]["main"]["source_sha256"],
+        molt_wasm_host::sha256_hex(bytes)
+    );
+    let run = host()
+        .arg("--wasi-command-manifest")
+        .arg(&manifest)
+        .env("MOLT_WASM_PRECOMPILED", "1")
+        .env("MOLT_WASM_PRECOMPILED_PATH", &artifact)
+        .output()
+        .unwrap();
+    assert_eq!(
+        run.status.code(),
+        Some(23),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let raw = host()
+        .arg("--wasi-command")
+        .arg(&source)
+        .env("MOLT_WASM_PRECOMPILED", "1")
+        .env("MOLT_WASM_PRECOMPILED_PATH", &artifact)
+        .output()
+        .unwrap();
+    assert!(!raw.status.success());
+    let diagnostic = String::from_utf8_lossy(&raw.stderr);
+    assert!(
+        diagnostic.contains("Molt host imports require a current deployment manifest"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("env.molt_os_close_host"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("missing precompiled"), "{diagnostic}");
+}
+
+#[test]
+fn actual_manifest_command_rejects_unattested_versions_before_module_reads() {
+    for version in [
+        None,
+        Some(serde_json::json!(2)),
+        Some(serde_json::json!(4)),
+        Some(serde_json::json!(true)),
+        Some(serde_json::json!("3")),
+        Some(serde_json::json!(3.0)),
+        Some(serde_json::Value::Null),
+    ] {
+        let fixture = ArtifactFixture::new();
+        let (source, manifest) = fixture.command_manifest("command.wat", b"(module)");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        if let Some(version) = version {
+            value["version"] = version;
+        } else {
+            value.as_object_mut().unwrap().remove("version");
+        }
+        std::fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        std::fs::remove_file(&source).unwrap();
+        for precompile in [false, true] {
+            let mut child = host();
+            if precompile {
+                child.arg("--precompile");
+            }
+            let output = child
+                .arg("--wasi-command-manifest")
+                .arg(&manifest)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                diagnostic.contains("Molt deployment manifest version must be 3"),
+                "{diagnostic}"
+            );
+        }
+        assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn actual_manifest_command_requires_linked_start_and_exact_descriptor() {
+    let fixture = ArtifactFixture::new();
+    let (_, manifest) =
+        fixture.command_manifest("command.wat", b"(module (func (export \"_start\")))");
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    let mut cases = Vec::new();
+    for entry in [
+        serde_json::Value::Null,
+        serde_json::json!({"module":"linked","function":"molt_main"}),
+        serde_json::json!({"module":"app","function":"_start"}),
+    ] {
+        let mut value = original.clone();
+        value["entry"] = entry;
+        cases.push((value, "requires entry.module=linked"));
+    }
+    for role in ["runtime", "app", "unselected"] {
+        let mut value = original.clone();
+        value["modules"][role] = original["modules"]["linked"].clone();
+        cases.push((value, "requires one linked module"));
+    }
+    let mut value = original.clone();
+    value["mode"] = serde_json::json!("split-runtime");
+    cases.push((value, "requires one linked module"));
+    let mut value = original.clone();
+    value["modules"]["linked"]["sha256"] = serde_json::json!("0".repeat(64));
+    cases.push((value, "linked SHA-256 mismatch"));
+    let mut value = original.clone();
+    value["modules"]["linked"]["size"] = serde_json::json!(0);
+    cases.push((value, "linked size mismatch"));
+    let mut value = original.clone();
+    value["modules"]["linked"]["path"] = serde_json::json!("../command.wat");
+    cases.push((value, "must name an adjacent file"));
+    for (value, expected) in cases {
+        std::fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        let output = host()
+            .arg("--wasi-command-manifest")
+            .arg(&manifest)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains(expected), "{expected}: {diagnostic}");
+    }
+}
+
+#[test]
+fn actual_manifest_command_precompile_preserves_collisions_and_never_runs_core_start() {
+    let fixture = ArtifactFixture::new();
+    let (source, manifest) = fixture.command_manifest(
+        "command.wat",
+        br#"(module (func $s unreachable) (start $s) (func (export "_start")))"#,
+    );
+    let original = std::fs::read(&manifest).unwrap();
+    for destination in [&source, &manifest] {
+        let output = host()
+            .args(["--precompile", "--wasi-command-manifest"])
+            .arg(&manifest)
+            .env("MOLT_WASM_PRECOMPILED_PATH", destination)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("collides"));
+        assert_eq!(std::fs::read(&manifest).unwrap(), original);
+    }
+    let artifact = fixture.path().join("command.molt.cwasm");
+    let output = host()
+        .args(["--precompile", "--wasi-command-manifest"])
+        .arg(&manifest)
+        .env("MOLT_WASM_PRECOMPILED_PATH", &artifact)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = host()
+        .arg("--wasi-command-manifest")
+        .arg(&manifest)
+        .env("MOLT_WASM_PRECOMPILED", "1")
+        .env("MOLT_WASM_PRECOMPILED_PATH", &artifact)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unreachable"));
+}
+
+#[test]
+fn actual_manifest_command_checks_sdk_signature_before_core_start_and_keeps_guest_traps() {
+    for (bytes, expected, forbidden) in [
+        (br#"(module (import "env" "molt_os_close_host" (func)) (func $s unreachable) (start $s) (func (export "_start")))"#.as_slice(), "incompatible import type", Some("unreachable")),
+        (br#"(module (func (export "_start") unreachable))"#.as_slice(), "unreachable", None),
+        (br#"(module (func (export "_start") (param i32)))"#.as_slice(), "_start", None),
+    ] {
+        let fixture = ArtifactFixture::new();
+        let (_, manifest) = fixture.command_manifest("command.wat", bytes);
+        let output = host().arg("--wasi-command-manifest").arg(&manifest).output().unwrap();
+        assert!(!output.status.success());
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains(expected), "{diagnostic}");
+        if let Some(forbidden) = forbidden { assert!(!diagnostic.contains(forbidden), "{diagnostic}"); }
+    }
+}
+
+#[test]
+fn actual_manifest_command_core_start_exit_precedes_exported_start() {
+    let fixture = ArtifactFixture::new();
+    let (_, manifest) = fixture.command_manifest(
+        "command.wat",
+        br#"(module
+      (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+      (func $core i32.const 19 call $exit) (start $core)
+      (func (export "_start") unreachable))"#,
+    );
+    let output = host()
+        .arg("--wasi-command-manifest")
+        .arg(&manifest)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(19),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let positional = host().arg(&manifest).output().unwrap();
+    assert!(!positional.status.success());
+    let diagnostic = String::from_utf8_lossy(&positional.stderr);
+    assert!(diagnostic.contains("molt_main"), "{diagnostic}");
+    assert!(!diagnostic.contains("unreachable"), "{diagnostic}");
 }
