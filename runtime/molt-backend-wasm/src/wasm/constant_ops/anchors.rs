@@ -1,6 +1,7 @@
 use crate::OpIR;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::WasmFrameLocalKind;
+use crate::wasm::function_frame::{WasmConstAnchorRegion, WasmConstAnchorSlot};
 use crate::wasm::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
@@ -19,12 +20,13 @@ impl WasmConstOpPolicy {
         reloc_enabled: bool,
         import_ids: &TrackedImportIds,
         const_str_scratch_segment: DataSegmentRef,
-        anchor_local: u32,
+        region: WasmConstAnchorRegion,
+        slot: WasmConstAnchorSlot,
     ) {
         if self.inline_seed_bits(op).is_some() {
             panic!("inline const op {} does not need a runtime anchor", op.kind);
         }
-        self.simple_ir_materialization_into(op, locals, anchor_local)
+        self.simple_ir_materialization_into(op, locals, region.temporary())
             .emit_with_imports(
                 backend,
                 func,
@@ -33,6 +35,8 @@ impl WasmConstOpPolicy {
                 import_ids,
                 const_str_scratch_segment,
             );
+        // Publish the constructor owner before the pending-exception check.
+        region.emit_store_temporary(func, slot);
     }
 }
 
@@ -45,7 +49,8 @@ pub(in crate::wasm) fn emit_const_anchor_materialization(
     reloc_enabled: bool,
     import_ids: &TrackedImportIds,
     const_str_scratch_segment: DataSegmentRef,
-    anchor_local: u32,
+    region: WasmConstAnchorRegion,
+    slot: WasmConstAnchorSlot,
 ) {
     let policy = WasmConstOpPolicy::for_op(op)
         .unwrap_or_else(|| panic!("unsupported anchored runtime const op {}", op.kind));
@@ -63,7 +68,8 @@ pub(in crate::wasm) fn emit_const_anchor_materialization(
         reloc_enabled,
         import_ids,
         const_str_scratch_segment,
-        anchor_local,
+        region,
+        slot,
     );
 }
 
@@ -71,7 +77,8 @@ pub(in crate::wasm) fn emit_const_anchor_result(
     func: &mut Function,
     op: &OpIR,
     locals: &WasmFrameLocals,
-    anchor_local: u32,
+    region: WasmConstAnchorRegion,
+    slot: WasmConstAnchorSlot,
     import_ids: &TrackedImportIds,
     reloc_enabled: bool,
 ) {
@@ -80,13 +87,13 @@ pub(in crate::wasm) fn emit_const_anchor_result(
         .as_ref()
         .unwrap_or_else(|| panic!("anchored const op {} requires an output", op.kind));
     let out_local = locals.result_slot(out_name);
-    func.instruction(&wasm_encoder::Instruction::LocalGet(anchor_local));
+    region.emit_load(func, slot);
     emit_call(
         func,
         reloc_enabled,
         import_ids[WasmRuntimeImport::IncRefObj],
     );
-    func.instruction(&wasm_encoder::Instruction::LocalGet(anchor_local));
+    region.emit_load(func, slot);
     func.instruction(&wasm_encoder::Instruction::LocalSet(out_local));
 
     if locals.bound_result_slot(Some(out_name)).is_none()
@@ -98,26 +105,6 @@ pub(in crate::wasm) fn emit_const_anchor_result(
         )
     {
         func.instruction(&wasm_encoder::Instruction::LocalGet(out_local));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[WasmRuntimeImport::DecRefObj],
-        );
-    }
-}
-
-pub(in crate::wasm) fn emit_release_const_anchors(
-    func: &mut Function,
-    anchor_locals: impl DoubleEndedIterator<Item = u32>,
-    import_ids: &TrackedImportIds,
-    reloc_enabled: bool,
-) {
-    for anchor_local in anchor_locals.rev() {
-        func.instruction(&wasm_encoder::Instruction::LocalGet(anchor_local));
-        // Transfer the owner before release can reenter or unwind. The outer
-        // unwind cleanup must never release the same anchor a second time.
-        crate::wasm_values::emit_boxed_none(func);
-        func.instruction(&wasm_encoder::Instruction::LocalSet(anchor_local));
         emit_call(
             func,
             reloc_enabled,

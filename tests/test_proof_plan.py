@@ -32,6 +32,7 @@ from tools import (
     check_subprocess_guard_coverage,
     gen_proof_plan,
     proof_command_argv,
+    proof_executor,
     proof_plan,
     proof_plan_cli,
     proof_receipts,
@@ -6165,6 +6166,276 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     assert receipt["execution"]["skipped_commands"] == 2
 
 
+def _execute_synthetic_policy_commands(
+    plan,
+    commands,
+    receipt_path,
+    run_command,
+    **execution_options,
+):
+    """Exercise the scheduler's caller policy without tool/process admission."""
+    return proof_executor.execute_commands(
+        plan,
+        commands,
+        receipt_path,
+        _source_tree_changes=lambda: (),
+        toolchain_fingerprints=_admit_synthetic_python,
+        _authority_sha256=lambda _plan: "0" * 64,
+        _source_identity=lambda: {"commit": "a" * 40, "tree": "b" * 40},
+        _normalized_os=lambda: "linux",
+        _normalized_arch=lambda: "x86_64",
+        _required_toolchains=lambda command: command.toolchains,
+        _run_command=run_command,
+        _cache_disposition=lambda _command: "none",
+        **execution_options,
+    )
+
+
+@pytest.mark.parametrize("failure_first", [False, True])
+@pytest.mark.parametrize("status, returncode", [("failure", 7), ("timeout", 124)])
+@pytest.mark.parametrize(
+    ("failure_policy", "failure_scope"),
+    [
+        (proof_executor.FailurePolicy.CANCEL_REMAINING, "partition"),
+        (proof_executor.FailurePolicy.COLLECT_INDEPENDENT, "global"),
+    ],
+)
+def test_executor_cancellation_policy_stops_active_and_queued_work_in_either_order(
+    tmp_path, failure_first, status, returncode, failure_policy, failure_scope
+):
+    live = _synthetic_executor_command("synthetic.live")
+    failure = _synthetic_executor_command("synthetic.fail", resource_class="resource-b")
+    commands = (
+        *((failure, live) if failure_first else (live, failure)),
+        _synthetic_executor_command("synthetic.queued-a"),
+        _synthetic_executor_command("synthetic.queued-b", resource_class="resource-b"),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
+    live_started = threading.Event()
+    live_closed = threading.Event()
+    started = []
+    lock = threading.Lock()
+
+    def run(_plan, command, cancel):
+        with lock:
+            started.append(command.id)
+        if command.id == failure.id:
+            assert live_started.wait(5), "live sibling did not reach its ready boundary"
+            return {
+                **_successful_synthetic_record(command),
+                "status": status,
+                "returncode": returncode,
+                "failure_scope": failure_scope,
+                "failure_reason": "independent assertion failed",
+            }
+        assert command.id == live.id, "queued work started after the stop trigger"
+        live_started.set()
+        assert cancel.wait(5), "executor joined a live sibling without cancelling it"
+        live_closed.set()
+        return {
+            **_successful_synthetic_record(command),
+            "status": "cancelled",
+            "returncode": 130,
+            "failure_scope": "global",
+            "failure_reason": "executor cancellation",
+        }
+
+    receipt_path = tmp_path / "receipt.json"
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            commands,
+            receipt_path,
+            run,
+            failure_policy=failure_policy,
+        )
+        == returncode
+    )
+    assert live_closed.is_set()
+    assert set(started) == {live.id, failure.id}
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    records = {row["id"]: row for row in receipt["commands"]}
+    assert [row["id"] for row in receipt["commands"]] == [
+        command.id for command in commands
+    ]
+    assert {name: row["status"] for name, row in records.items()} == {
+        live.id: "cancelled",
+        failure.id: status,
+        "synthetic.queued-a": "skipped",
+        "synthetic.queued-b": "skipped",
+    }
+    assert records[failure.id]["failure_scope"] == failure_scope
+    assert receipt["execution"]["failure_policy"] == failure_policy.value
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": failure.id,
+        "failure_scope": failure_scope,
+        "reason": "independent assertion failed",
+    }
+    assert receipt["execution"]["global_stop_triggered"] is True
+    assert receipt["execution"]["scheduled_commands"] == 2
+
+
+def test_executor_cancellation_policy_preserves_racing_failures_and_trigger_returncode(
+    tmp_path,
+):
+    commands = (
+        _synthetic_executor_command("synthetic.earlier"),
+        _synthetic_executor_command("synthetic.trigger", resource_class="resource-b"),
+        _synthetic_executor_command("synthetic.live", resource_class="resource-c"),
+        _synthetic_executor_command("synthetic.success", resource_class="resource-d"),
+        _synthetic_executor_command(
+            "synthetic.blocked", dependencies=["synthetic.trigger"]
+        ),
+    )
+    plan = _synthetic_executor_plan(
+        commands,
+        limits={f"resource-{name}": 1 for name in "abcd"},
+        max_workers=4,
+    )
+    ready = {
+        name: threading.Event()
+        for name in ("synthetic.earlier", "synthetic.live", "synthetic.success")
+    }
+
+    def run(_plan, command, cancel):
+        if command.id == "synthetic.trigger":
+            assert all(event.wait(5) for event in ready.values())
+            return {
+                **_successful_synthetic_record(command),
+                "status": "failure",
+                "returncode": 7,
+                "failure_scope": "partition",
+                "failure_reason": "trigger assertion failed",
+            }
+        assert command.id in ready, "blocked dependency entered execution"
+        ready[command.id].set()
+        assert cancel.wait(5), "failed partition did not cancel independent work"
+        if command.id == "synthetic.earlier":
+            # The runner supplies a classified actual failure after another
+            # outcome requested cancellation; the scheduler must preserve it.
+            return {
+                **_successful_synthetic_record(command),
+                "status": "failure",
+                "returncode": 9,
+                "failure_scope": "partition",
+                "failure_reason": "racing assertion failed",
+            }
+        if command.id == "synthetic.success":
+            return _successful_synthetic_record(command)
+        return {
+            **_successful_synthetic_record(command),
+            "status": "cancelled",
+            "returncode": 130,
+            "failure_scope": "global",
+            "failure_reason": "executor cancellation",
+        }
+
+    receipt_path = tmp_path / "receipt.json"
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            commands,
+            receipt_path,
+            run,
+            failure_policy=proof_executor.FailurePolicy.CANCEL_REMAINING,
+        )
+        == 7
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert [row["status"] for row in receipt["commands"]] == [
+        "failure",
+        "failure",
+        "cancelled",
+        "success",
+        "skipped",
+    ]
+    assert [row["returncode"] for row in receipt["commands"][:4]] == [9, 7, 130, 0]
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "synthetic.trigger",
+        "failure_scope": "partition",
+        "reason": "trigger assertion failed",
+    }
+    assert receipt["commands"][-1]["blocked_by"] == ["synthetic.trigger"]
+    assert receipt["executed_partitions"] == ["synthetic.success"]
+
+
+@pytest.mark.parametrize("status", ["cancelled", "skipped"])
+def test_executor_cancellation_policy_does_not_invent_a_failure_from_a_stopped_record(
+    tmp_path, status
+):
+    commands = (
+        _synthetic_executor_command("synthetic.stopped"),
+        _synthetic_executor_command("synthetic.independent"),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
+    started = []
+
+    def run(_plan, command, cancel):
+        assert not cancel.is_set()
+        started.append(command.id)
+        if command.id == "synthetic.stopped":
+            return {
+                **_successful_synthetic_record(command),
+                "status": status,
+                "returncode": None,
+                "failure_scope": "partition",
+                "failure_reason": "no actual failed command",
+            }
+        return _successful_synthetic_record(command)
+
+    receipt_path = tmp_path / "receipt.json"
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            commands,
+            receipt_path,
+            run,
+            failure_policy=proof_executor.FailurePolicy.CANCEL_REMAINING,
+        )
+        == 2
+    )
+    assert started == [command.id for command in commands]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["execution"]["failure_trigger"] is None
+    assert receipt["execution"]["global_stop_triggered"] is False
+    assert receipt["commands"][-1]["status"] == "success"
+
+
+def test_executor_default_policy_keeps_independent_partitions_collecting(tmp_path):
+    commands = (
+        _synthetic_executor_command("synthetic.fail"),
+        _synthetic_executor_command("synthetic.independent"),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
+    started = []
+
+    def run(_plan, command, cancel):
+        assert not cancel.is_set()
+        started.append(command.id)
+        if command.id == "synthetic.fail":
+            return {
+                **_successful_synthetic_record(command),
+                "status": "failure",
+                "returncode": 7,
+                "failure_scope": "partition",
+                "failure_reason": "ordinary command failure",
+            }
+        return _successful_synthetic_record(command)
+
+    receipt_path = tmp_path / "receipt.json"
+    assert _execute_synthetic_policy_commands(plan, commands, receipt_path, run) == 7
+    assert started == [command.id for command in commands]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["execution"]["failure_policy"] == "collect_independent"
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "synthetic.fail",
+        "failure_scope": "partition",
+        "reason": "ordinary command failure",
+    }
+    assert receipt["execution"]["global_stop_triggered"] is False
+    assert receipt["commands"][-1]["status"] == "success"
+
+
 def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -6835,7 +7106,7 @@ def _job_cleanup_with_survivor(image: Path) -> dict[str, object]:
 def test_job_closure_admits_only_declared_helpers_beside_their_linker(
     tmp_path: Path,
 ) -> None:
-    admitted = proof_plan._admitted_linker_helpers(PLAN)
+    admitted = proof_plan._admitted_linker_helpers(PLAN.toolchain_policies)
     assert admitted["vctip.exe"] == frozenset({"link.exe"})
     msvc = tmp_path / "MSVC" / "bin"
     msvc.mkdir(parents=True)

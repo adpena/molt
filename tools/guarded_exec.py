@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--progress-file", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    maintenance_cwd = args.cwd.resolve()
     command = list(args.command)
     if command and command[0] == "--":
         command = command[1:]
@@ -191,6 +192,12 @@ def main(argv: list[str] | None = None) -> int:
         f"profile={profile_path}",
         file=sys.stderr,
     )
+    if not worker_env.get("MOLT_MEMORY_GUARD_STARTUP_JSON") and not worker_env.get(
+        "MOLT_PROOF_QUEUE"
+    ):
+        from molt.dx import collect_checkout_state_after_result
+
+        collect_checkout_state_after_result(worker_env, cwd=maintenance_cwd)
     return int(result.returncode)
 
 

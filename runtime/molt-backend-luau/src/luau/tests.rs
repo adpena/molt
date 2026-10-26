@@ -2,6 +2,7 @@ use super::*;
 
 mod class_attrs;
 mod core;
+mod counted_loops;
 mod exceptions;
 mod numeric_async;
 mod pipeline;

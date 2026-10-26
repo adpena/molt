@@ -3430,7 +3430,7 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
             armed_capture()
     else:
         full = armed_capture()[1]["quint"]
-        assert str(changed) in {
+        assert custody_spelling(changed) in {
             row.path for row in toolchain_capture.frozen_files(full)
         }
     observed.clear()
@@ -6429,6 +6429,157 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
     assert record["phase"] == "failed"
     assert record["command_started"] is False
     assert "TimeoutExpired" in record["error"]
+    assert not marker.exists()
+
+
+def test_guarded_execution_rejects_frozen_file_outside_armed_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "source"
+    repo.mkdir()
+    outside = tmp_path / "unwatched-input.py"
+    outside.write_bytes(b"input absent from the pre-arm selection\n")
+    marker = tmp_path / "must-not-run"
+    command = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; Path({str(marker)!r}).touch()",
+    ]
+    result = tmp_path / "unwatched.execution.json"
+    request = tmp_path / "unwatched.request.json"
+    request.write_text(
+        json.dumps(
+            {
+                "schema": command_admission.EXECUTION_SCHEMA,
+                "run_id": "unwatched-frozen-input",
+                "execution_nonce": "d" * 64,
+                "env_override_names": [],
+                "command": command,
+                "envelope": command_admission.envelope_for_command(command),
+                "cwd": str(repo),
+                "resource_family": "python-tests",
+                "result_path": str(result),
+                "timeout_seconds": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Provisioning, native event transport and full tool discovery are outside
+    # this receiver claim. Keep request admission, frozen-file projection,
+    # watch selection/ownership, session cleanup and failure publication real.
+    supervisor = tmp_path / native_executable_name("fixture-supervisor")
+    supervisor.write_bytes(b"supervisor transport is never executed\n")
+    layout = SimpleNamespace(
+        declaration=None,
+        admit_supervisor_target_path=lambda: None,
+        scratch=lambda nonce: tmp_path / "scratch" / nonce,
+        supervisor_target=tmp_path / "supervisor-target",
+        supervisor_store=tmp_path / "supervisor-store",
+    )
+    monkeypatch.setattr(
+        cargo_output_layout.CargoOutputLayout,
+        "for_envelope",
+        lambda *_args, **_kwargs: layout,
+    )
+    monkeypatch.setattr(policy, "_ensure_run_toolchain_preflight", lambda **_kw: [])
+    monkeypatch.setattr(
+        supervisor_generation, "provision", lambda **_kwargs: (supervisor, {})
+    )
+    monkeypatch.setattr(
+        supervisor_generation, "publish_receipt", lambda receipt, **_kw: receipt
+    )
+    monkeypatch.setattr(
+        supervisor_generation, "validate_receipt", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        supervisor_custody, "required_execution_environment", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        execution_environment,
+        "_git_snapshot",
+        lambda *_args: {"root": str(repo)},
+    )
+    monkeypatch.setattr(execution_environment, "_git_tracked_paths", lambda *_args: [])
+    monkeypatch.setattr(
+        execution_environment,
+        "_locate_toolchain_watch_roots",
+        lambda *_args, **_kwargs: ([], {}, {}, {}),
+    )
+    monkeypatch.setattr(
+        command_admission,
+        "_supervised_execution_command",
+        lambda _envelope, exact, *_args, **_kwargs: (list(exact), {}),
+    )
+    monkeypatch.setattr(
+        execution_environment,
+        "_execution_environment_executable_identities",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        process_image_capture, "platform_auxiliary_images", lambda *_args: []
+    )
+    # Reuse an already watched native image for a finite captured tool. The
+    # deliberately omitted resource is the independent coverage witness;
+    # keep the ordinary capture validators and CAS publication enabled.
+    image = process_image_capture.capture_image("posix-file", Path(sys.executable))
+    captured = {
+        "posix-file": {
+            "path": image["path"],
+            "content_path": image["path"],
+            "launcher_sha256": image["sha256"],
+            "executable_sha256": image["sha256"],
+            "version": "file-5.0 (fixture)",
+            "process_images": [image],
+            "resource": {
+                "path": str(outside),
+                "sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+                "size": outside.stat().st_size,
+            },
+        }
+    }
+    captures = []
+
+    def capture(*_args, **_kwargs):
+        captures.append(captured)
+        return None, captured
+
+    monkeypatch.setattr(execution_environment, "_capture_toolchains", capture)
+    monitors = []
+
+    def arm(monitor):
+        monitors.append(monitor)
+        monitor._transition("CREATED", "ARMING")
+        monitor._transition("ARMING", "ARMED")
+        return monitor
+
+    monkeypatch.setattr(execution_custody.LiveCustodyMonitor, "__enter__", arm)
+    child_admissions = []
+    dispatches = []
+
+    def refuse_child_admission(*_args, **_kwargs):
+        child_admissions.append(True)
+        pytest.fail("unwatched frozen input passed the coverage receiver")
+
+    def refuse_dispatch(*_args, **_kwargs):
+        dispatches.append(True)
+        pytest.fail("unwatched frozen input reached command dispatch")
+
+    monkeypatch.setattr(execution_custody, "child_policy", refuse_child_admission)
+    monkeypatch.setattr(
+        guarded_execution, "_run_supervisor_with_transcripts", refuse_dispatch
+    )
+    assert guarded_execution.execute_guarded_request(request) == 2
+    record = json.loads(result.read_text(encoding="utf-8"))
+    assert captures == [captured]
+    assert len(monitors) == 1
+    assert any(spec.root == repo and spec.paths is None for spec in monitors[0].specs)
+    assert monitors[0].receipt()["state"] == "DRAINED"
+    assert record["phase"] == "failed" and record["command_started"] is False
+    assert record["error"] == (
+        "ValueError: toolchain capture contains paths outside armed custody: "
+        + custody_spelling(outside)
+    )
+    assert child_admissions == [] and dispatches == []
     assert not marker.exists()
 
 
@@ -10399,6 +10550,7 @@ def test_queue_process_fake_is_scoped_to_custody_constructor(
     ("child_rc", "infrastructure", "bad_sampling", "unclosed"),
     [
         (0, False, False, False),
+        (7, False, False, False),
         (0, True, False, False),
         (137, True, False, False),
         (0, True, True, False),
@@ -10517,6 +10669,21 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     monkeypatch.setattr(
         diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
+    from molt import dx
+
+    published = []
+
+    def collect(env, *, cwd):
+        row = _rows(db)[0]
+        assert row["status"] == ("passed" if child_rc == 0 else "failed")
+        assert row["returncode"] == child_rc
+        assert env["MOLT_PROOF_QUEUE_RUN_ID"] == row["run_id"]
+        assert cwd == state.ROOT
+        output = capsys.readouterr().out
+        assert f"rc={child_rc}" in output
+        published.append(output)
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
 
     rc = cli.main(
         [
@@ -10544,11 +10711,14 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
         ]
     )
 
-    assert rc == (2 if infrastructure else 0)
-    out = capsys.readouterr().out
+    assert rc == (2 if infrastructure else child_rc)
+    out = "".join(published) + capsys.readouterr().out
     expected_status = (
-        ("non-evidence" if child_rc == 0 else "failed") if infrastructure else "passed"
+        ("non-evidence" if child_rc == 0 else "failed")
+        if infrastructure
+        else ("passed" if child_rc == 0 else "failed")
     )
+    assert len(published) == (0 if infrastructure else 1)
     assert expected_status + " " in out
     rows = _rows(db)
     assert rows[0]["status"] == expected_status
@@ -10568,7 +10738,10 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     assert "proof_queue stale-running terminalization" not in log_text
     assert "running-proof-windows-child-runner-missing" not in log_text
     if not infrastructure:
-        assert "proof_queue finished status=passed exit_code=0" in log_text
+        assert (
+            f"proof_queue finished status={expected_status} exit_code={child_rc}"
+            in log_text
+        )
 
 
 def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
@@ -10918,9 +11091,12 @@ def test_proof_queue_wasm_preflight_fails_before_command(
 
 
 @capability_aware_proof_execution
+@pytest.mark.parametrize("returncode", [0, 7])
 def test_proof_queue_run_id_executes_only_selected_queued_row(
-    tmp_path: Path, custody_python: Path
+    tmp_path: Path, custody_python: Path, monkeypatch, returncode
 ) -> None:
+    from molt import dx
+
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     repo = tmp_path / "repo"
@@ -10932,7 +11108,11 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
             run_id=run_id,
             logical_id=run_id,
             reason=f"run {marker}",
-            command=[str(custody_python), "-c", f"print('{marker}')"],
+            command=[
+                str(custody_python),
+                "-c",
+                f"print('{marker}'); raise SystemExit({returncode})",
+            ],
             cwd=repo,
             resource_family="python",
             contention_key=f"python:{marker}",
@@ -10942,6 +11122,24 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
             cargo_output_root=_real_cargo_output_root(),
         )
 
+    observed = []
+
+    def collect(env, *, cwd):
+        row = next(row for row in _rows(db) if row["run_id"] == "queued-b")
+        assert row["status"] == ("passed" if returncode == 0 else "failed")
+        assert row["returncode"] == returncode
+        context = json.loads(row["receipt_context_json"])
+        summary = json.loads(
+            Path(context["guard_receipt"]["path"]).read_text(encoding="utf-8")
+        )
+        closure = summary["temporary_artifacts"]["closure"]
+        assert closure["closed"] is True
+        assert closure["direct_child_reaped"] is True
+        assert cwd == repo
+        assert env["MOLT_PROOF_QUEUE_RUN_ID"] == "queued-b"
+        observed.append("terminal-verified")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
     rc = cli.main(
         [
             "--db",
@@ -10957,10 +11155,11 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
     )
 
     rows = {row["run_id"]: row for row in _rows(db)}
-    assert rc == 0
+    assert rc == returncode
     assert rows["queued-a"]["status"] == "queued"
-    assert rows["queued-b"]["status"] == "passed"
+    assert rows["queued-b"]["status"] == ("passed" if returncode == 0 else "failed")
     assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
+    assert observed == ["terminal-verified"]
 
 
 @capability_aware_proof_execution
@@ -21187,12 +21386,16 @@ def test_selected_runtime_watch_capture_compact_and_cas_receivers(
     specs = execution_custody.watch_specs(
         source_root=source, tracked_paths=[], identities=[located], broad_roots=roots
     )
+    # Every semantic runtime node retains its absolute content owner even when
+    # relative topology references are excluded from generic path discovery.
+    for row in located[fixture.policy.name]["python_runtime"]["file_custody"]:
+        path = Path(row["path"])
+        assert path.is_absolute()
+        assert any(spec.owns(path) for spec in specs)
     for row in startup["startup_configuration"]:
         for spelling in ("lexical", "resolved"):
             path = Path(row[spelling])
-            assert any(
-                path.is_relative_to(spec.root) and spec.owns(path) for spec in specs
-            )
+            assert any(spec.owns(path) for spec in specs)
 
     # CPython's absent ZIP landmark is an exact negative input. Its appearance
     # must invalidate custody without admitting unrelated system resources.
@@ -21235,7 +21438,7 @@ def test_selected_runtime_watch_capture_compact_and_cas_receivers(
     assert compact[fixture.policy.name]["python_runtime"]["file_count"] == len(
         full[fixture.policy.name]["python_runtime"]["file_custody"]
     )
-    assert any(row["path"] == str(unicode_file) for row in loaded["files"])
+    assert any(row["path"] == custody_spelling(unicode_file) for row in loaded["files"])
     assert toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)[
         "stable"
     ]

@@ -228,7 +228,7 @@ def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
         reference, workers=2, cas_root=tmp_path / "cas"
     )
     assert verification["stable"] is False
-    assert verification["mismatches"][0]["path"] == str(owned)  # type: ignore[index]
+    assert verification["mismatches"][0]["path"] == custody_spelling(owned)  # type: ignore[index]
 
 
 def test_toolchain_capture_deduplicates_references_and_rejects_conflicts(
@@ -244,6 +244,41 @@ def test_toolchain_capture_deduplicates_references_and_rejects_conflicts(
     ] = "f" * 64
     with pytest.raises(ValueError, match="conflicting identities"):
         toolchain_capture.frozen_files(conflict)
+
+
+def test_frozen_file_coordinates_survive_canonical_json_order(tmp_path: Path) -> None:
+    owned = tmp_path / "owned.py"
+    owned.write_bytes(b"owned\n")
+    canonical = custody_spelling(owned)
+    selected = str(owned)
+    if os.name == "nt":
+        # Drive and UNC anchors are case aliases of the same actual entry.
+        anchor, rest = os.path.splitdrive(canonical)
+        selected = anchor.upper() + rest
+        if selected == canonical:
+            pytest.skip("Windows anchor has no distinct case alias")
+        assert Path(selected).samefile(owned)
+    digest = hashlib.sha256(owned.read_bytes()).hexdigest()
+    payload = {
+        "z_selected": {"path": selected, "sha256": digest, "size": 6},
+        "a_custody": {"path": canonical, "sha256": digest, "size": 6},
+    }
+    expected = [{"path": canonical, "sha256": digest, "size": 6}]
+    assert [
+        row.as_dict() for row in toolchain_capture.frozen_files(payload)
+    ] == expected
+    reordered = json.loads(json.dumps(payload, sort_keys=True))
+    assert [
+        row.as_dict() for row in toolchain_capture.frozen_files(reordered)
+    ] == expected
+    # Exercise the real canonical JSON store and reconstruction receiver too.
+    cas = tmp_path / "cas"
+    _, reference, _ = toolchain_capture.publish_capture(cas, {"fixture": payload})
+    loaded = toolchain_capture.load_capture(reference, cas_root=cas)
+    assert loaded["files"] == expected
+    assert toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)[
+        "stable"
+    ]
 
 
 def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
@@ -265,7 +300,7 @@ def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
     assert "file_custody" not in summaries["python"]
     assert "node_custody" not in summaries["python"]
     loaded = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
-    assert loaded["files"][0]["path"] == str(owned)
+    assert loaded["files"][0]["path"] == custody_spelling(owned)
     assert loaded["toolchains"]["python"]["file_custody"] == python["file_custody"]
     assert loaded["toolchains"]["python"]["node_custody"] == python["node_custody"]
     owned.write_bytes(b"after!")
@@ -273,7 +308,7 @@ def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
         reference, workers=1, cas_root=tmp_path / "cas"
     )
     assert verification["stable"] is False
-    assert verification["mismatches"][0]["path"] == str(owned)
+    assert verification["mismatches"][0]["path"] == custody_spelling(owned)
 
 
 @pytest.mark.parametrize(
@@ -1190,7 +1225,7 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     assert reused_telemetry == telemetry
     assert len(observed) == 2
 
-    assert str(original_manifest) in {
+    assert custody_spelling(original_manifest) in {
         row.path for row in toolchain_capture.frozen_files(selected_identity)
     }
     _, reference, _ = toolchain_capture.publish_capture(

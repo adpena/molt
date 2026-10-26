@@ -199,6 +199,18 @@ Source, sysroot, SDK compiler-rt and executable inputs enter live custody
 before execution. Native requests preserve host CC/CXX selection separately
 from their recorded effective target triple.
 
+Frozen file manifests store the canonical lexical coordinate used for identity,
+so canonical JSON reordering cannot change which spelling a receiver verifies.
+Portable runtime inventory members remain relative to their declared roots;
+only their validated absolute file custody and startup selectors select watches.
+Every watch owns only its canonical root and descendants, including broad source
+watches. Finite watches additionally require a selected entry or its ancestor.
+Canonical entry strings preserve distinct Windows case-sensitive entries and
+aliases. Relative paths and parent traversal are refused. Deleted entries retain
+their nearest existing ancestor's coordinate; an unresolved event (including a
+vanished ambiguous 8.3 spelling) records a custody error and invalidates the
+receipt. Uncertainty never establishes that an input is covered before launch.
+
 Admitted environment overrides participate in output validation, capacity
 admission and DX environment resolution before tool capture. Applying them only
 to the resolved child environment is too late: cache opt-outs must prevent
