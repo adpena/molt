@@ -909,13 +909,15 @@ fails the build with its original diagnostic and selects nothing. The CLI
 does not rerun the unchanged Cargo plan to conceal that failed outcome.
 
 Immutable artifact transfers use `molt.file_publication.clone_file`: APFS
-copy-on-write clones, Linux reflinks where supported, and the platform kernel
-copy on other volumes. This follows [Rust's platform file-copy selection](https://doc.rust-lang.org/std/fs/fn.copy.html)
+copy-on-write clones, Linux reflinks where supported, and bounded copying through
+retained descriptors on other volumes. This follows [Rust's platform file-copy selection](https://doc.rust-lang.org/std/fs/fn.copy.html)
 while retaining Molt's stricter absent-destination contract. The
 [Apple clone contract](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/clonefile.2)
-provides atomic failure; the Linux and portable copy paths reclaim only partial
-destinations they exclusively created. Source symlinks retain the byte-copy
-semantics of the existing callers. Each successful transfer creates an
+provides atomic failure. Source descriptors admit regular files before cloning;
+source links to directories are refused. The Linux and portable copy paths
+retain acquired handles and reclaim only the same physical node they created.
+Source symlinks to regular files retain the byte-copy semantics of the existing
+callers. Each successful transfer creates an
 independent inode; no hardlink shares mutable artifact storage.
 
 The shared staged-copy authority registers cleanup after acquisition and keeps
@@ -923,17 +925,20 @@ the existing digest checks and observed-source streaming fences. Preparation
 receives a writable private stage before the source mode is restored. Final
 WASM link-cache bundles hash role files in place and transfer them under the
 entry lock, without retaining whole role byte arrays. Admission returns a closed
-hit-or-miss union: only a hit carries verified role paths, and the restore
-consumer exhausts both variants. A typed path still requires the same temporal
-content and lock fences. Cache publication uses
+hit-or-miss union: only a hit carries canonical `StableRegularFileIdentity`
+records, and the restore consumer exhausts both variants. Transfer requires that
+captured identity and verifies the private stage against its digest before
+publication. Types retain the temporal content and lock fences. Cache publication uses
 reconstructible durability because readers validate recorded content digests.
 Deployment moves an owned private file on the same volume through the existing
 exclusive namespace move; other volumes use the same clone authority. Neither a
 chosen stage name nor a failed collision authorizes cleanup.
 
 Clone-capable transfers add metadata operations without writing artifact-sized
-payloads; verification remains linear in bytes read. Kernel-copy fallback still
-reads and writes the artifact. Owned cleanup adds work only after a failed copy;
+payloads; verification remains linear in bytes read, including the private stage's
+content fence. Descriptor fallback uses a bounded 1 MiB buffer and linear reads
+and writes. Retained handles and a physical-node fence replace pathname reopening;
+this correctness trade has no claimed fallback speedup. Owned cleanup adds work only after a failed copy;
 the mode adjustment runs only when preparation needs a read-only clone. Tests
 cover content isolation, source symlinks, read-only preparation, corruption,
 collision refusal and partial-copy cleanup. These are developer/build costs;

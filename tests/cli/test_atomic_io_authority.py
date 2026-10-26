@@ -65,10 +65,10 @@ def test_clone_file_copies_when_the_volume_cannot_share_blocks(
 
         class Libc:
             def __init__(self, *_args, **_kwargs) -> None:
-                self.clonefile = self
+                self.fclonefileat = self
 
             def __call__(self, *_args) -> int:
-                attempts.append("clonefile")
+                attempts.append("fclonefileat")
                 ctypes.set_errno(errno.EXDEV)
                 return -1
 
@@ -113,14 +113,14 @@ def test_failed_kernel_copy_reclaims_only_its_own_partial_destination(
     destination = tmp_path / "destination"
     primary = OSError(errno.EIO, "copy interrupted")
 
-    def fail_copy(_source, target):
-        target.write_bytes(b"partial")
+    def fail_copy(_source, target, *, length):
+        target.write(b"partial")
         raise primary
 
     # The portable path must enforce the same acquisition boundary as clones.
     install_module_view(monkeypatch, "sys", sys, file_publication, platform="win32")
     install_module_view(
-        monkeypatch, "shutil", shutil, file_publication, copyfile=fail_copy
+        monkeypatch, "shutil", shutil, file_publication, copyfileobj=fail_copy
     )
     with pytest.raises(OSError) as caught:
         file_publication.clone_file(source, destination)
@@ -131,6 +131,139 @@ def test_failed_kernel_copy_reclaims_only_its_own_partial_destination(
         file_publication.clone_file(source, destination)
     assert destination.read_bytes() == b"rival"
     assert source.read_bytes() == b"complete"
+
+
+@pytest.mark.parametrize("indirect", [False, True], ids=["directory", "directory-link"])
+def test_clone_file_refuses_nonregular_source_before_creating_destination(
+    tmp_path, monkeypatch, indirect
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "child").write_bytes(b"must not clone a directory")
+    if indirect:
+        link = tmp_path / "source-link"
+        try:
+            link.symlink_to(source, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+        source = link
+    destination = tmp_path / "destination"
+    opened = []
+
+    def observe_open(path, flags):
+        descriptor = os.open(path, flags)
+        opened.append(descriptor)
+        return descriptor
+
+    install_module_view(monkeypatch, "os", os, file_publication, open=observe_open)
+    with pytest.raises(OSError):
+        file_publication.clone_file(source, destination)
+    assert not destination.exists()
+    for descriptor in opened:
+        with pytest.raises(OSError) as caught:
+            os.fstat(descriptor)
+        assert caught.value.errno == errno.EBADF
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permits replacing an open file")
+@pytest.mark.parametrize("fail", [False, True], ids=["copy-success", "copy-failure"])
+@pytest.mark.parametrize("replacement", ["file", "symlink"])
+def test_copy_preserves_replacement_of_its_acquired_destination(
+    tmp_path, monkeypatch, fail, replacement
+):
+    source = tmp_path / "source"
+    source.write_bytes(b"complete")
+    destination = tmp_path / "destination"
+    displaced = tmp_path / "displaced-owned-file"
+    rival = tmp_path / "rival"
+    rival.write_bytes(b"rival bytes")
+    primary = OSError(errno.EIO, "copy interrupted")
+
+    def replace_then_copy(reader, writer, *, length):
+        destination.rename(displaced)
+        if replacement == "symlink":
+            destination.symlink_to(rival)
+        else:
+            shutil.copyfile(rival, destination)
+        writer.write(reader.read())
+        if fail:
+            raise primary
+
+    install_module_view(monkeypatch, "sys", sys, file_publication, platform="win32")
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        file_publication,
+        copyfileobj=replace_then_copy,
+    )
+    with pytest.raises(OSError if fail else ValueError) as caught:
+        file_publication.clone_file(source, destination)
+    if fail:
+        assert caught.value is primary
+    assert destination.read_bytes() == b"rival bytes"
+    assert destination.is_symlink() == (replacement == "symlink")
+    assert rival.read_bytes() == b"rival bytes"
+    assert displaced.read_bytes() == b"complete"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permits replacing an open file")
+def test_copy_reads_the_acquired_source_after_its_path_is_replaced(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.write_bytes(b"acquired bytes")
+    rival = tmp_path / "rival"
+    rival.write_bytes(b"replacement bytes")
+    destination = tmp_path / "destination"
+    copyfileobj = shutil.copyfileobj
+
+    def replace_then_copy(reader, writer, *, length):
+        rival.replace(source)
+        copyfileobj(reader, writer, length=length)
+
+    install_module_view(monkeypatch, "sys", sys, file_publication, platform="win32")
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        file_publication,
+        copyfileobj=replace_then_copy,
+    )
+    file_publication.clone_file(source, destination)
+    assert destination.read_bytes() == b"acquired bytes"
+    assert source.read_bytes() == b"replacement bytes"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="real Darwin descriptor clone")
+def test_darwin_clone_uses_the_acquired_regular_source(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.write_bytes(b"acquired bytes")
+    source.chmod(0o751)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    destination = tmp_path / "destination"
+    libc = ctypes.CDLL(None, use_errno=True)
+    native = libc.fclonefileat
+    native.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32)
+    native.restype = ctypes.c_int
+    calls = []
+
+    class Libc:
+        def __init__(self, *_args, **_kwargs):
+            self.fclonefileat = self
+
+        def __call__(self, source_fd, parent_fd, leaf, flags):
+            calls.append(os.fstat(source_fd).st_mode)
+            source.rename(tmp_path / "old-source")
+            source.symlink_to(replacement, target_is_directory=True)
+            return native(source_fd, parent_fd, leaf, flags)
+
+    install_module_view(monkeypatch, "ctypes", ctypes, file_publication, CDLL=Libc)
+    file_publication.clone_file(source, destination)
+    assert len(calls) == 1 and stat.S_ISREG(calls[0])
+    assert destination.read_bytes() == b"acquired bytes"
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o751
 
 
 def test_owned_path_has_one_spelling_before_and_after_allocation(tmp_path):

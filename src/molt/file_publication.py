@@ -28,7 +28,7 @@ WINDOWS_REPLACE_RETRY_ERRORS = frozenset({5, 32, 33})
 _AT_FDCWD = -100
 _FICLONE = 0x40049409
 # A volume or pair of volumes that cannot share blocks answers with one of
-# these; the platform copy then copies in the kernel, as Rust's std::fs::copy.
+# these; the fallback copies through the already-owned file descriptors.
 _CLONE_UNSUPPORTED_ERRNOS = frozenset(
     {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.EINVAL, errno.ENOTTY}
 )
@@ -807,59 +807,103 @@ def staged_file_destination_key(
     return match.group("identity")
 
 
-def clone_file(source: Path, destination: Path) -> None:
-    """Copy `source` to the missing `destination` with the platform file copy.
+def unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
+    """Reclaim a partial file only while the leaf still names the acquired node.
 
-    A copy-on-write clone on APFS (``clonefile``) and on btrfs and XFS
-    (``FICLONE``) shares the source's blocks and writes no data; other volumes,
-    and a destination on another volume, copy in the kernel. This is the
-    contract of Rust's ``std::fs::copy``, which ``molt_artifact_publish``
-    uses, so both languages transfer immutable generations alike. A 67 MB
-    archive clones in under a millisecond where a byte copy took seconds on a
-    USB volume. The destination must not exist: a clone never replaces a file.
-    Like shutil.copyfile, source symlinks are followed. Failure removes only a
-    partial destination this call exclusively created; a collision grants no
-    cleanup authority. Successful clones own independent file nodes.
+    Callers own the parent namespace; this identity fence refuses replacements
+    observed before unlink, not hostile concurrent mutation of that namespace.
     """
 
-    if sys.platform == "darwin":
-        libc = ctypes.CDLL(None, use_errno=True)
-        clonefile = libc.clonefile
-        clonefile.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
-        clonefile.restype = ctypes.c_int
-        ctypes.set_errno(0)
-        if not clonefile(os.fsencode(source), os.fsencode(destination), 0):
-            return
-        error_code = ctypes.get_errno()
-        if error_code not in _CLONE_UNSUPPORTED_ERRNOS:
-            raise OSError(
-                error_code,
-                os.strerror(error_code),
-                os.fspath(source),
-                os.fspath(destination),
+    if identity is None or not identity.st_ino:
+        return
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if not metadata_is_link_like(current) and os.path.samestat(identity, current):
+        path.unlink()
+
+
+def clone_file(source: Path, destination: Path) -> None:
+    """Copy an opened regular source into a missing, independently owned leaf.
+
+    APFS fclonefileat and Linux FICLONE share blocks without traversing bytes.
+    Unsupported volumes use bounded copying through the same held descriptors;
+    no path is reopened for writing. Source symlinks are followed, but a
+    directory or special source is refused before destination acquisition.
+    The caller owns the destination parent namespace. On a partial-copy error,
+    cleanup checks the acquired node's identity and preserves any replacement.
+    """
+
+    # Nonblocking open lets fstat reject FIFOs without waiting for a producer.
+    source_fd = os.open(
+        source, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        source_metadata = os.fstat(source_fd)
+        if not stat.S_ISREG(source_metadata.st_mode):
+            raise OSError(errno.EINVAL, "clone source is not a regular file", source)
+        reader = os.fdopen(source_fd, "rb")
+    except BaseException:
+        os.close(source_fd)
+        raise
+    with reader:
+        if sys.platform == "darwin":
+            libc = ctypes.CDLL(None, use_errno=True)
+            fclonefileat = libc.fclonefileat
+            fclonefileat.argtypes = (
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint32,
             )
-    # clonefile is atomic on failure. Other paths acquire a missing leaf before
-    # entering cleanup, keeping collision refusal distinct from partial-copy
-    # failure on every platform.
-    with open(source, "rb") as reader:
+            fclonefileat.restype = ctypes.c_int
+            parent_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                ctypes.set_errno(0)
+                if not fclonefileat(
+                    reader.fileno(), parent_fd, os.fsencode(destination.name), 0
+                ):
+                    return
+                error_code = ctypes.get_errno()
+            finally:
+                os.close(parent_fd)
+            if error_code not in _CLONE_UNSUPPORTED_ERRNOS:
+                raise OSError(
+                    error_code,
+                    os.strerror(error_code),
+                    os.fspath(source),
+                    os.fspath(destination),
+                )
+        # fclonefileat is atomic on failure. Acquisition sits outside cleanup:
+        # a collision never grants permission to reclaim the existing leaf.
         writer = open(destination, "xb")
+        identity: os.stat_result | None = None
         try:
             with writer:
+                identity = os.fstat(writer.fileno())
+                cloned = False
                 if sys.platform.startswith("linux"):
                     import fcntl
 
                     try:
                         fcntl.ioctl(writer.fileno(), _FICLONE, reader.fileno())
-                        return
+                        cloned = True
                     except OSError as exc:
                         if exc.errno not in _CLONE_UNSUPPORTED_ERRNOS:
                             raise
-            shutil.copyfile(source, destination)
+                if not cloned:
+                    shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            current = destination.lstat()
+            if metadata_is_link_like(current) or not os.path.samestat(
+                identity, current
+            ):
+                raise ValueError(
+                    f"clone destination changed during copy: {destination}"
+                )
         except BaseException as primary:
             try:
-                destination.unlink()
-            except FileNotFoundError:
-                pass
+                unlink_owned_file(destination, identity)
             except BaseException as cleanup_error:
                 BaseException.add_note(
                     primary,

@@ -1046,7 +1046,7 @@ def test_snapshot_growth_cannot_write_beyond_pinned_byte_allowance(
     source = tmp_path / "source"
     source.write_bytes(b"tiny")
     original_open = identity.open_stable_regular_file
-    original_unlink = identity._unlink_owned_file
+    original_unlink = identity.unlink_owned_file
     copied_sizes = []
 
     class GrowingStream:
@@ -1081,8 +1081,8 @@ def test_snapshot_growth_cannot_write_beyond_pinned_byte_allowance(
     )
     monkeypatch.setattr(
         identity,
-        "_unlink_owned_file",
-        current_thread_only(observe_cleanup, identity._unlink_owned_file),
+        "unlink_owned_file",
+        current_thread_only(observe_cleanup, identity.unlink_owned_file),
     )
     # Windows may deny the attempted conflicting append before any bytes change;
     # either real OS denial or the finite stream limit must leave no snapshot.
