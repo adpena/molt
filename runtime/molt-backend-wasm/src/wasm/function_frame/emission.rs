@@ -127,7 +127,7 @@ impl WasmFunctionFrame {
             }
         }
 
-        if self.control_mode.needs_dispatch() {
+        if self.control_plan.is_some() {
             for (local_idx, bits) in self.const_seed_locals.iter().copied() {
                 func.instruction(&Instruction::I64Const(bits));
                 func.instruction(&Instruction::LocalSet(local_idx));

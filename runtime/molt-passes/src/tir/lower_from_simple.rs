@@ -9,8 +9,8 @@ mod pre_ssa;
 mod type_inference;
 
 use self::loop_structure::{detect_loop_cond_blocks, detect_loop_structure};
+pub use self::pre_ssa::normalize_loop_indices;
 use self::pre_ssa::rewrite_cell_locals_to_store_load;
-pub use self::pre_ssa::rewrite_loop_index_to_store_load;
 use self::type_inference::param_string_to_tir_type;
 #[cfg(test)]
 use self::type_inference::string_to_tir_type;
@@ -120,12 +120,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
             source
         })
         .collect();
-    let rewritten_ops = rewrite_loop_index_to_store_load(&source_ops);
-    let mut working_ops = if rewritten_ops.is_empty() {
-        source_ops
-    } else {
-        rewritten_ops
-    };
+    let mut working_ops = normalize_loop_indices(&ir.name, source_ops);
     // RC drop-insertion substrate (design 20): function-level attrs do not live
     // in FunctionIR, so drop facts round-trip as leading SimpleIR marker ops. The
     // full `drop_inserted` marker tells native to disable its legacy value-tracker

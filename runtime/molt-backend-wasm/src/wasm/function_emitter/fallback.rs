@@ -4,9 +4,7 @@ use crate::wasm::WasmBackend;
 use crate::wasm::context::CompileFuncContext;
 use crate::wasm::function_frame::{WasmFrameControlMode, WasmFunctionFramePlan};
 use crate::wasm::op_loop::{WasmFunctionAnalysis, WasmFunctionEmitContext};
-use crate::wasm::state_dispatch::{
-    NonLinearDispatchPlan, emit_jumpful_dispatch, emit_stateful_dispatch,
-};
+use crate::wasm::state_dispatch::emit_non_linear_control;
 use std::cell::Cell;
 
 pub(super) fn emit_fallback_function_body(
@@ -23,11 +21,14 @@ pub(super) fn emit_fallback_function_body(
     let (mut func, mut frame) = frame_plan.into_function_and_frame();
     frame.emit_debug_local_map(func_ir, func_index);
 
-    let dispatch_plan =
-        NonLinearDispatchPlan::build(backend, func_ir, reloc_enabled, frame.control_mode());
-    let dispatch_locals = frame.dispatch_locals();
-    if let (Some(plan), Some(locals)) = (dispatch_plan.as_ref(), dispatch_locals) {
-        plan.emit_table_bases(backend, func_index, &mut func, reloc_enabled, locals);
+    if let Some(plan) = frame.control_plan() {
+        plan.emit_table_bases(
+            backend,
+            func_index,
+            &mut func,
+            reloc_enabled,
+            frame.dispatch_locals(),
+        );
     }
     frame.emit_entry_initializers(&mut func);
     frame.emit_guard_profile_flag(&mut func, reloc_enabled, import_ids);
@@ -76,27 +77,11 @@ pub(super) fn emit_fallback_function_body(
         };
 
         match frame.control_mode() {
-            WasmFrameControlMode::Stateful => {
-                let plan = dispatch_plan
-                    .as_ref()
-                    .expect("dispatch plan missing for stateful wasm");
-                emit_stateful_dispatch(
-                    &mut func,
-                    &mut op_emitter,
-                    plan,
-                    dispatch_locals.expect("dispatch locals missing for stateful wasm"),
-                );
-            }
-            WasmFrameControlMode::Jumpful => {
-                let plan = dispatch_plan
-                    .as_ref()
-                    .expect("dispatch plan missing for jumpful wasm");
-                emit_jumpful_dispatch(
-                    &mut func,
-                    &mut op_emitter,
-                    plan,
-                    dispatch_locals.expect("dispatch locals missing for jumpful wasm"),
-                );
+            WasmFrameControlMode::Stateful | WasmFrameControlMode::Jumpful => {
+                let plan = frame
+                    .control_plan()
+                    .expect("non-linear control plan missing");
+                emit_non_linear_control(&mut func, &mut op_emitter, plan, frame.dispatch_locals());
             }
             WasmFrameControlMode::Plain => {
                 plain::emit_plain_function_body(func_ir, &mut func, &mut op_emitter);

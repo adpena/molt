@@ -5,8 +5,7 @@ mod state_values;
 
 pub(super) use branches::{
     emit_conditional_state_branch, emit_dispatch_check_exception, emit_dispatch_if,
-    emit_dispatch_loop_break_cond, emit_static_dispatch_edge, label_target, loop_break_target,
-    require_stateful,
+    emit_dispatch_loop_break_cond, emit_static_dispatch_edge, require_stateful,
 };
 pub(super) use resume::emit_stateful_resume_prelude;
 pub(super) use returns::emit_dispatch_trailing_return;

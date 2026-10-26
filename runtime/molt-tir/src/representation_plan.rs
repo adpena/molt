@@ -357,6 +357,8 @@ impl ScalarRepresentationPlan {
         );
         drop(std::mem::take(&mut func_ir.ops));
         let (ops, names) = crate::tir::lower_to_simple::lower_to_simple_ir_with_names(tir_func);
+        molt_ir::ir_schema::validate_normalized_simple_ir_ops(&func_ir.name, &ops)
+            .unwrap_or_else(|error| panic!("final TIR projection admission failed: {error}"));
         debug_assert!(
             crate::tir::lower_to_simple::validate_labels(&ops),
             "final typed projection emitted invalid labels for '{}'",
