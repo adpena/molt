@@ -603,6 +603,7 @@ jobs:
             proof-receipts/llvm.json
             proof-receipts/evidence/llvm-differential-truth.json
             proof-receipts/evidence/llvm-backend-debug/native-batch-failures/
+            proof-receipts/evidence/llvm-backend-debug/native-execution-failures/
             ${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log', steps.build-control.outputs.root) || '' }}
             ${{ steps.build-control.outputs.root != '' && format('{0}/backend_daemon/*.log.old', steps.build-control.outputs.root) || '' }}
           include-hidden-files: true
