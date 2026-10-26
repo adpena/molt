@@ -3488,7 +3488,10 @@
         "pytest",
         "-q",
         "-n",
-        "auto"
+        "auto",
+        "-p",
+        "tools.pytest_profile",
+        "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -3499,6 +3502,9 @@
         "repository.canonicalization",
         "repository.call-fact-coverage",
         "repository.perf-methodology"
+      ],
+      "evidence_outputs": [
+        "proof-receipts/evidence/repository-docs-tests"
       ],
       "family": "repository_policy",
       "id": "repository.docs-tests",
