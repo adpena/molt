@@ -539,9 +539,54 @@ applies it through `assert_safe_to_delete` and `molt.file_deletion`:
   the removed checkout's target and sessions with them. A checkout target's
   retirement takes its session targets along.
 
-The disk guard applies the policy at most once a day from
-`RunContext.canonical_env` (a stamp at `target/.molt-checkout-state-gc`, so the
-common case costs one `stat`), and on demand with `tools/disk_guard.py --gc`.
+The disk guard applies the policy at most once a day after a command publishes
+its result, and on demand with `tools/disk_guard.py --gc`.
+`RunContext.canonical_env` only materializes and stamps its finite selected
+roots; resolving an environment or preparing a capsule never starts global
+collection. `molt.dx.collect_checkout_state_after_result` is the shared
+source-only invocation boundary. It uses the command's captured environment,
+preserves its result, reports ordinary collection failures (including returned
+reclaim errors), and defers to an enclosing memory guard's completion.
+
+The automatic owners are the CLI build scope after its artifact claims release
+(including a cached build), DX run after its returned result, standalone
+`memory_guard` and `guarded_exec` after terminal publication, synchronous `molt_dev`
+integration/difftest/fix completion, and the proof-queue runner after source
+verification and persisted terminal custody. The build scope and driver gate
+selections capture an immutable artifact environment and cwd before work;
+maintenance does not reconstruct them from the ambient environment after work.
+Published failures are eligible too. Startup-report workers and proof
+payload workers defer to their verifying caller; the timed guarded-execution
+phase never runs this global sweep. Result publication grants scheduling only:
+it neither asserts descendant closure nor grants deletion permission. Live
+operations retain their existing shared checkout-state use; every candidate
+still requires a fresh policy check under its nonblocking exclusive retirement
+lock. No collector runs in low-level process/probe helpers, directory
+materialization, checkout provisioning or environment-only library APIs.
+Exec-forwarding wrappers have no post-exec result; raw detached launch and its
+direct `wait()` have no terminal publication owner. Those facades do not
+collect: their guarded command's eligible outer owner does. Long-lived
+batch/daemon users retain their existing shared state custody and do not
+acquire a second maintenance lifetime.
+
+The existing stamp at `target/.molt-checkout-state-gc` remains the cadence
+authority: after resolving the selected root, a warm completion reads its stamp
+once. A due attempt takes a stable
+external nonblocking file lock under `target/.disk_guard`, rechecks the stamp,
+records its start, and holds the lock through collection. Competing automatic
+callers skip without inventory or waiting. A failed or interrupted attempt
+keeps the original daily throttle; root-specific retirement locks and policy
+rechecks still authorize every deletion, including explicit/manual collection.
+This follows [Cargo's opportunistic automatic-GC admission](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/gc.rs.html#40-89)
+and [uv's owned pruning after a CI job](https://docs.astral.sh/uv/concepts/cache/#caching-in-continuous-integration).
+
+This scheduling removes global scan/deletion work from environment and payload
+startup, not from total command wall time. A due completion still pays O(managed
+roots + reclaimed directory entries), without a new process or daemon.
+The pressure pass's between-candidate budget cannot bound one recursive tree
+deletion. No bounded whole-command latency or reduction in deletion operations
+follows from moving maintenance to completion.
+
 Worktree retirement (`integrate --cleanup-worktree` and `lane retire`)
 retires the worktree's daemons, removes it, and then reclaims its roots at
 once, without the idle window: it is the explicit owner action, as `bazel

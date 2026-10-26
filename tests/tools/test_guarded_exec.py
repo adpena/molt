@@ -67,6 +67,45 @@ def _install_fake_context(module, monkeypatch, result=None):
     return captured
 
 
+@pytest.mark.parametrize("closed", [True, False])
+@pytest.mark.parametrize("worker", [False, True])
+def test_guarded_exec_collects_after_published_standalone_result(
+    tmp_path, monkeypatch, closed, worker
+):
+    from molt import dx
+
+    result = guarded_exec.harness_memory_guard.GuardedCompletedProcess(
+        ["fixture"],
+        7,
+        "",
+        "",
+        elapsed_s=0,
+        descendants_closed=closed,
+        child_stderr="",
+    )
+    _install_fake_context(guarded_exec, monkeypatch, result)
+    metrics = tmp_path / "terminal.json"
+    if worker:
+        monkeypatch.setenv(
+            "MOLT_MEMORY_GUARD_STARTUP_JSON", str(tmp_path / "startup.json")
+        )
+    else:
+        monkeypatch.delenv("MOLT_MEMORY_GUARD_STARTUP_JSON", raising=False)
+    monkeypatch.delenv("MOLT_PROOF_QUEUE", raising=False)
+    observed = []
+
+    def collect(_env, *, cwd):
+        payload = json.loads(metrics.read_text())
+        assert payload["returncode"] == 7
+        assert payload["descendants_closed"] is closed
+        assert cwd == guarded_exec.ROOT
+        observed.append("published")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    assert guarded_exec.main(["--metrics-json", str(metrics), "--", "fixture"]) == 7
+    assert observed == ([] if worker else ["published"])
+
+
 def test_guarded_exec_metrics_preserve_child_and_infrastructure_outcomes(
     tmp_path, monkeypatch
 ) -> None:

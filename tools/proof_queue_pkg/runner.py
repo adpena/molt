@@ -2054,6 +2054,13 @@ def _run_one(
         print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
         print(f"log: {log_path}")
         _apply_automatic_retention(db=db, logs_root=logs_root)
+        if env is not None and process_cleanup_safe and execution_error is None:
+            from molt.dx import collect_checkout_state_after_result
+
+            # The existing proof qualification and publication are complete.
+            # Use the actual payload selection, including a failed payload's
+            # roots, instead of rebuilding it from the runner's environment.
+            collect_checkout_state_after_result(env, cwd=repo_root)
         return (
             2
             if disposition_failed

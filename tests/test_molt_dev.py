@@ -130,6 +130,110 @@ def drv():
     return molt_dev
 
 
+@pytest.mark.parametrize("command", ["fix", "difftest", "probe", "detached-run"])
+def test_driver_dispatcher_leaves_maintenance_to_selection_owner(
+    drv, monkeypatch, command
+):
+    from types import SimpleNamespace
+    from molt import dx
+
+    events = []
+
+    def completed(_args):
+        events.append("returned")
+        return 7
+
+    args = SimpleNamespace(command=command, func=completed, dry_run=False)
+    parser = SimpleNamespace(parse_args=lambda _argv: args)
+    monkeypatch.setattr(drv, "build_parser", lambda: parser)
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "resume_controller_cwd", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "runs_from_pinned_controller", lambda _a: False
+    )
+
+    def collect(_env, *, cwd):
+        pytest.fail("the dispatcher has no captured command selection")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    assert drv.main([]) == 7
+    assert events == ["returned"]
+
+
+def test_completed_driver_failure_publishes_before_selected_maintenance(
+    drv, monkeypatch, tmp_path, capsys
+):
+    from types import SimpleNamespace
+    from molt import dx
+
+    selected = ProcessEnvironment({"MOLT_EXT_ROOT": str(tmp_path / "selected")})
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "ambient"))
+
+    def completed(_args):
+        raise drv.DriverError(
+            "published failed differential",
+            code=7,
+            maintenance_selection=(tmp_path, selected),
+        )
+
+    args = SimpleNamespace(command="difftest", func=completed)
+    monkeypatch.setattr(
+        drv, "build_parser", lambda: SimpleNamespace(parse_args=lambda _argv: args)
+    )
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "resume_controller_cwd", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "runs_from_pinned_controller", lambda _a: False
+    )
+    observed = []
+
+    def collect(env, *, cwd):
+        assert "published failed differential" in capsys.readouterr().err
+        assert env is selected and cwd == tmp_path
+        observed.append("published")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    assert drv.main([]) == 7
+    assert observed == ["published"]
+
+
+def test_integrate_maintenance_retains_cwd_before_command_changes_it(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from molt import dx
+
+    _, work = origin_and_clone
+    selected = ProcessEnvironment({"MOLT_EXT_ROOT": str(tmp_path / "selected")})
+    context = GateEnvironment(selected, None, False)
+    monkeypatch.chdir(work.parent)
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "integration_controller", lambda _a: "fixture"
+    )
+
+    def exclusive(_args, *, progress):
+        progress.environments = {(): context}
+        monkeypatch.chdir(tmp_path)
+        return 7
+
+    monkeypatch.setattr(drv, "_integrate_exclusive", exclusive)
+    observed = []
+
+    def collect(env, *, cwd):
+        terminal = json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert terminal["event"] == "integration_finished"
+        assert terminal["returncode"] == 7
+        assert env is selected
+        assert cwd == work and Path.cwd() == tmp_path
+        observed.append("captured")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    args = _integrate_ns(drv, repo=work.name)
+    assert drv.cmd_integrate(args) == 7
+    assert observed == ["captured"]
+
+
 # --------------------------------------------------------------------------
 # git repo scaffolding (real repos, bare origin) — exercises the real flows
 # --------------------------------------------------------------------------
@@ -4809,9 +4913,11 @@ def test_integration_progress_preserves_gate_outcomes(
     selected = [SelectedGate(command, ()) for command in commands]
     monkeypatch.setattr(GateConfig, "select", lambda *a, **kw: (selected, []))
     seen = []
+    selected_environments = []
 
     def run_gate(command, repo, environment):
         seen.append(command)
+        selected_environments.append(environment.environment)
         if command == argv:
             if outcome == "interrupt":
                 raise KeyboardInterrupt("independent interrupted child")
@@ -4823,6 +4929,19 @@ def test_integration_progress_preserves_gate_outcomes(
 
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(run_gate))
     monkeypatch.setenv("MOLT_EVENT_SECRET_CONTROL", "must-not-appear-in-events")
+    from molt import dx
+
+    published = []
+
+    def collect(env, *, cwd):
+        output = capsys.readouterr().out
+        terminal = json.loads(output.splitlines()[-1])
+        assert terminal["event"] == "integration_finished"
+        assert env is selected_environments[-1]
+        assert cwd == work
+        published.append(output)
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
     args = _integrate_ns(drv, repo=str(work), no_push=True)
     if outcome == "interrupt":
         with pytest.raises(KeyboardInterrupt, match="independent interrupted child"):
@@ -4835,7 +4954,8 @@ def test_integration_progress_preserves_gate_outcomes(
             raise LookupError("unrelated caller exception")
         except LookupError:
             assert drv.cmd_integrate(args) == 0
-    output = capsys.readouterr().out
+    assert len(published) == 1
+    output = "".join(published) + capsys.readouterr().out
     events = [json.loads(line) for line in output.splitlines()]
     expected_commands = commands if outcome == "success" else commands[:2]
     assert seen == expected_commands

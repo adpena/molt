@@ -97,3 +97,30 @@ def test_build_scope_owns_cached_managed_target_and_control(tmp_path, monkeypatc
         assert allowed is True
     with checkout_state.checkout_state_retirement(control) as allowed:
         assert allowed is True
+
+
+def test_build_scope_captures_guard_artifact_default_and_cwd_before_work(
+    tmp_path, monkeypatch
+):
+    import os
+    from molt import dx
+    from molt.process_environment import ProcessEnvironment
+    from molt.source_root import compiler_source_root
+    from tools.harness_memory_guard import canonical_harness_env
+
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    captured = ProcessEnvironment(os.environ)
+    expected = canonical_harness_env(captured, repo_root=compiler_source_root())
+    cwd = os.getcwd()
+    with build_output_layout.build_scope() as scope:
+        assert scope.maintenance_environment is not None
+        assert (
+            scope.maintenance_environment["MOLT_EXT_ROOT"] == expected["MOLT_EXT_ROOT"]
+        )
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "later-selection"))
+        monkeypatch.chdir(tmp_path)
+    assert str(scope.cwd) == cwd
+    assert scope.maintenance_environment["MOLT_EXT_ROOT"] == expected["MOLT_EXT_ROOT"]
+    assert dx.configured_artifact_root(
+        scope.maintenance_environment, relative_to=scope.cwd
+    )

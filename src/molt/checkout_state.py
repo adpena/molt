@@ -57,6 +57,7 @@ DEFAULT_SESSION_IDLE_HOURS = 6.0
 # The automatic GC runs at most once per interval per artifact root.
 GC_INTERVAL_S = 24 * 3600.0
 GC_STAMP = ("target", ".molt-checkout-state-gc")
+_GC_LOCK = ("target", ".disk_guard", "checkout-state-gc.lock")
 # `molt.dx.checkout_component`: a sanitized name prefix and 12 hex digits.
 _COMPONENT = re.compile(r"[A-Za-z0-9_.-]{1,24}-[0-9a-f]{12}")
 # `molt.build_state_layout.build_state_address`: a SHA-256 digest.
@@ -1145,12 +1146,40 @@ def checkout_state_gc_due(artifact_root: Path, *, now: float | None = None) -> b
     return not 0 <= moment - stamp < GC_INTERVAL_S
 
 
-def claim_checkout_state_gc(artifact_root: Path) -> None:
-    """Record that a GC of ``artifact_root`` started, so others skip it today."""
-    stamp = artifact_root.joinpath(*GC_STAMP)
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.touch()
-    os.utime(stamp)
+@contextmanager
+def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
+    """Admit one daily attempt without waiting, retaining ownership until done.
+
+    The stamp remains the cadence authority. The stable external interlock
+    coalesces callers that observed the same due stamp, including collections
+    lasting longer than the interval. Failed/interrupted attempts keep the
+    existing daily throttle. Explicit collection retains its own root locks.
+    """
+    if not checkout_state_gc_due(artifact_root):
+        yield False
+        return
+    from .file_locks import (
+        _file_lock_owned_operation,
+        _release_file_lock,
+        _try_acquire_file_lock,
+    )
+
+    lock_path = artifact_root.joinpath(*_GC_LOCK)
+    handle = _try_acquire_file_lock(lock_path)
+    if handle is None:
+        yield False
+        return
+    try:
+        with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
+            if not checkout_state_gc_due(artifact_root):
+                yield False
+                return
+            stamp = artifact_root.joinpath(*GC_STAMP)
+            stamp.touch()
+            os.utime(stamp)
+            yield True
+    finally:
+        _release_file_lock(handle)
 
 
 def record_checkout_owner(root: Path, *, owner: Path, kind: CheckoutStateKind) -> None:

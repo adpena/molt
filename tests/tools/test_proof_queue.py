@@ -10399,6 +10399,7 @@ def test_queue_process_fake_is_scoped_to_custody_constructor(
     ("child_rc", "infrastructure", "bad_sampling", "unclosed"),
     [
         (0, False, False, False),
+        (7, False, False, False),
         (0, True, False, False),
         (137, True, False, False),
         (0, True, True, False),
@@ -10517,6 +10518,21 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     monkeypatch.setattr(
         diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
+    from molt import dx
+
+    published = []
+
+    def collect(env, *, cwd):
+        row = _rows(db)[0]
+        assert row["status"] == ("passed" if child_rc == 0 else "failed")
+        assert row["returncode"] == child_rc
+        assert env["MOLT_PROOF_QUEUE_RUN_ID"] == row["run_id"]
+        assert cwd == state.ROOT
+        output = capsys.readouterr().out
+        assert f"rc={child_rc}" in output
+        published.append(output)
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
 
     rc = cli.main(
         [
@@ -10544,11 +10560,14 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
         ]
     )
 
-    assert rc == (2 if infrastructure else 0)
-    out = capsys.readouterr().out
+    assert rc == (2 if infrastructure else child_rc)
+    out = "".join(published) + capsys.readouterr().out
     expected_status = (
-        ("non-evidence" if child_rc == 0 else "failed") if infrastructure else "passed"
+        ("non-evidence" if child_rc == 0 else "failed")
+        if infrastructure
+        else ("passed" if child_rc == 0 else "failed")
     )
+    assert len(published) == (0 if infrastructure else 1)
     assert expected_status + " " in out
     rows = _rows(db)
     assert rows[0]["status"] == expected_status
@@ -10568,7 +10587,10 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     assert "proof_queue stale-running terminalization" not in log_text
     assert "running-proof-windows-child-runner-missing" not in log_text
     if not infrastructure:
-        assert "proof_queue finished status=passed exit_code=0" in log_text
+        assert (
+            f"proof_queue finished status={expected_status} exit_code={child_rc}"
+            in log_text
+        )
 
 
 def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
@@ -10918,9 +10940,12 @@ def test_proof_queue_wasm_preflight_fails_before_command(
 
 
 @capability_aware_proof_execution
+@pytest.mark.parametrize("returncode", [0, 7])
 def test_proof_queue_run_id_executes_only_selected_queued_row(
-    tmp_path: Path, custody_python: Path
+    tmp_path: Path, custody_python: Path, monkeypatch, returncode
 ) -> None:
+    from molt import dx
+
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
     repo = tmp_path / "repo"
@@ -10932,7 +10957,11 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
             run_id=run_id,
             logical_id=run_id,
             reason=f"run {marker}",
-            command=[str(custody_python), "-c", f"print('{marker}')"],
+            command=[
+                str(custody_python),
+                "-c",
+                f"print('{marker}'); raise SystemExit({returncode})",
+            ],
             cwd=repo,
             resource_family="python",
             contention_key=f"python:{marker}",
@@ -10942,6 +10971,22 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
             cargo_output_root=_real_cargo_output_root(),
         )
 
+    observed = []
+
+    def collect(env, *, cwd):
+        row = next(row for row in _rows(db) if row["run_id"] == "queued-b")
+        assert row["status"] == ("passed" if returncode == 0 else "failed")
+        assert row["returncode"] == returncode
+        context = json.loads(row["receipt_context_json"])
+        summary = json.loads(Path(context["guard_receipt"]["path"]).read_text())
+        closure = summary["temporary_artifacts"]["closure"]
+        assert closure["closed"] is True
+        assert closure["direct_child_reaped"] is True
+        assert cwd == repo
+        assert env["MOLT_PROOF_QUEUE_RUN_ID"] == "queued-b"
+        observed.append("terminal-verified")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
     rc = cli.main(
         [
             "--db",
@@ -10957,10 +11002,11 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
     )
 
     rows = {row["run_id"]: row for row in _rows(db)}
-    assert rc == 0
+    assert rc == returncode
     assert rows["queued-a"]["status"] == "queued"
-    assert rows["queued-b"]["status"] == "passed"
+    assert rows["queued-b"]["status"] == ("passed" if returncode == 0 else "failed")
     assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
+    assert observed == ["terminal-verified"]
 
 
 @capability_aware_proof_execution

@@ -3343,6 +3343,7 @@ def main(
     environ: Mapping[str, str] | None = None,
 ) -> int:
     current_env = os.environ if environ is None else environ
+    maintenance_cwd = Path.cwd()
     args = _parser().parse_args(argv)
     command = list(args.command)
     if command and command[0] == "--":
@@ -3357,6 +3358,11 @@ def main(
             print("memory_guard: command is required", file=sys.stderr)
             return 2
         command = internal_command
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(ROOT, current_env)
+    if selected is not None:
+        current_env = selected
     current_env = test_custody_launch_env(command, environ=current_env)
     try:
         budget = adaptive_memory_budget(environ=current_env)
@@ -3582,6 +3588,15 @@ def main(
     )
     if summary_failed:
         return 2 if result.returncode == 0 else result.returncode
+    # A worker with startup custody belongs to a caller that still verifies
+    # source and publishes its own terminal receipt. It collects at that outer
+    # boundary; this standalone facade has already published its guard result.
+    if not current_env.get("MOLT_MEMORY_GUARD_STARTUP_JSON") and not current_env.get(
+        "MOLT_PROOF_QUEUE"
+    ):
+        from molt.dx import collect_checkout_state_after_result
+
+        collect_checkout_state_after_result(current_env, cwd=maintenance_cwd)
     return result.returncode
 
 
