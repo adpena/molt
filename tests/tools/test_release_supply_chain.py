@@ -1594,6 +1594,16 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
             record.write_bytes(
                 _transport_compilation_bytes(candidate, owner, proof["python"])
             )
+            cold = record.parent.with_name(record.parent.name + "-cold") / record.name
+            cold.parent.mkdir(parents=True)
+            cold.write_bytes(record.read_bytes())
+        from tools.proof_queue_pkg import custody_cas
+
+        resource = tmp_path / "transport-resource"
+        resource.write_bytes(b"transport fixture")
+        custody_cas.put_file(
+            output / "execution-inputs", resource, logical_name="payload"
+        )
         consumer_replay.publish_archive(
             candidate_dir=output,
             receipt=output / "consumer-verification.json",
@@ -1641,10 +1651,34 @@ def consumer_transport_boundary(monkeypatch):
     )
 
 
+def _transport_resource_root():
+    # Literal fixture buffer and its independent hash own the transport seam.
+    rows = [
+        {
+            "path": "fixture",
+            "filename": "fixture",
+            "size": len(b"transport fixture"),
+            "sha256": hashlib.sha256(b"transport fixture").hexdigest(),
+            "mode": 0o444,
+        }
+    ]
+    return {
+        "schema": "molt.release-execution-root.v2",
+        "files": rows,
+        "files_sha256": canonical_json_sha256(rows),
+        "archive": {
+            "filename": "rootfs.tar",
+            "size": 10240,
+            "sha256": "872e33a382c28157608ffd97940e4b7bbea55c5b3b7a3d45fc70cfe688bf430d",
+        },
+    }
+
+
 def _transport_compilation_bytes(candidate, owner, minor):
     return json.dumps(
         {
             "boundary": "fixture, no kernel admission",
+            "root": _transport_resource_root(),
             "candidate": canonical_json_sha256(candidate),
             "owner": owner,
             "python": minor,
@@ -1678,6 +1712,7 @@ def _transport_replay_bytes(candidate):
     return canonical_json_bytes(
         {
             "fixture": "transport only; no execution claim",
+            "root": _transport_resource_root(),
             "candidate_sha256": canonical_json_sha256(candidate),
         }
     )
@@ -1943,7 +1978,7 @@ def _consumer_transport_receipt(
     ]
     count = (len(references) + 1) * len(lane_values)
     return {
-        "schema": "molt.release-consumer-proof.v11",
+        "schema": "molt.release-consumer-proof.v12",
         "candidate": "candidate.json",
         "candidate_sha256": canonical_json_sha256(candidate),
         "target": candidate["target"],
@@ -2788,7 +2823,7 @@ def test_consumer_guest_program_stdout_is_its_argv_under_cpython(tmp_path: Path)
     source = tmp_path / "release_consumer.py"
     source.write_bytes(release_authority.consumer_guest_source(minor).encode())
     result = _COMMANDS.run(
-        [sys.executable, "-I", str(source), "--guest-flag", "two words"],
+        [sys.executable, "-I", "-B", str(source), "--guest-flag", "two words"],
         capture_output=True,
         check=True,
         timeout=30,
@@ -3260,6 +3295,22 @@ def test_consumer_archive_candidate_is_the_admitted_object(release_inputs):
         )
 
 
+@pytest.mark.parametrize("defect", ["unreferenced-buffer", "unretired-root"])
+def test_consumer_resource_transport_refuses_extra_storage(release_inputs, defect):
+    from tools.release import consumer_replay
+
+    candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
+    consumer = json.loads((candidate_dir / "consumer-verification.json").read_text())
+    if defect == "unreferenced-buffer":
+        (candidate_dir / "execution-inputs/extra").write_bytes(b"unadmitted")
+    else:
+        (candidate_dir / "consumer-evidence/rootfs").mkdir()
+    with pytest.raises(ValueError, match="resource closure|unretired root"):
+        consumer_replay.validate_resources(
+            evidence_root=candidate_dir, consumer=consumer
+        )
+
+
 @pytest.mark.parametrize("indices", [(0,), (8,), (0, 8)])
 def test_component_scope_retains_transport_closure_but_never_release_acceptance(
     release_inputs, indices
@@ -3275,7 +3326,7 @@ def test_component_scope_retains_transport_closure_but_never_release_acceptance(
         candidate, python_minor="3.12", lane_values=lane_values
     )
     payload.update(
-        schema="molt.release-consumer-component-proof.v1",
+        schema="molt.release-consumer-component-proof.v2",
         scope={
             "python": "3.12",
             "lanes": [dict(zip(LANE_FIELDS, row, strict=True)) for row in lane_values],
@@ -3302,7 +3353,7 @@ def test_component_scope_retains_transport_closure_but_never_release_acceptance(
     for promote in (False, True):
         invalid = copy.deepcopy(payload)
         if promote:
-            invalid["schema"] = "molt.release-consumer-proof.v11"
+            invalid["schema"] = "molt.release-consumer-proof.v12"
             invalid.pop("scope")
         with pytest.raises(ValueError):
             release_authority.validate_consumer_proof(invalid, candidate, **kwargs)

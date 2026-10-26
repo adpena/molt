@@ -8,6 +8,7 @@ import sys
 from pathlib import Path, PurePosixPath
 import secrets
 import tempfile
+import zipfile
 from typing import Any
 
 from molt.browser_asset_closure import (
@@ -19,6 +20,7 @@ from molt.exact_json import (
     capture_exact,
     loads_exact,
     read_exact,
+    write_exact,
 )
 from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.release_lanes import ReleaseLane, capture_release_lanes
@@ -38,10 +40,29 @@ from tools.cross_run import (
 )
 from tools.proof_queue_pkg import supervisor_custody, supervisor_generation
 from . import execution_root
-from .archive import extract_zip_strict, write_reproducible_zip, same_regular_file_bytes
+from .archive import (
+    ArchivePolicy,
+    extract_zip_strict,
+    write_reproducible_zip,
+    same_regular_file_bytes,
+)
 from .release_model import ROOT, validate_artifact_record, write_json
 
-SCHEMA = "molt.release-consumer-replay.v3"
+SCHEMA = "molt.release-consumer-replay.v4"
+# One admitted source closure already exceeds the generic 4096-member envelope.
+# Shared CAS paths can contain two nodes per unique input plus bucket parents;
+# the existing root bound is 65536 regular files. ZIP32 is the smaller hard
+# transport limit. Byte, ratio and per-file limits remain the generic limits.
+CONSUMER_ARCHIVE_POLICY = ArchivePolicy(max_members=zipfile.ZIP_FILECOUNT_LIMIT)
+
+
+def _evidence_inventory(evidence: Path) -> list[dict[str, Any]]:
+    """Completed records retain resources and raw evidence, not materializations."""
+    return execution_root.root_inventory(
+        evidence, excluded_names=frozenset({"rootfs", "rootfs.tar"})
+    )
+
+
 ENVIRONMENT = {"PATH": "/absent", "HOME": "/absent", "LANG": "C", "LC_ALL": "C"}
 
 
@@ -410,8 +431,17 @@ def execute(
             raise
     if execution_root.root_inventory(evidence / "rootfs") != replay["root"]["files"]:
         raise ValueError("sealed standalone input bytes changed during execution")
-    replay["files"] = execution_root.root_inventory(evidence)
-    write_json(evidence / "replay.json", replay)
+    execution_root.retain_root(
+        evidence / "rootfs",
+        evidence / "rootfs.tar",
+        sealed=replay["root"],
+        resources=evidence.parent / "execution-inputs",
+    )
+    replay["files"] = _evidence_inventory(evidence)
+    write_exact(evidence / "replay.json", replay, exclusive=True)
+    execution_root.retire_root(
+        evidence / "rootfs", evidence / "rootfs.tar", sealed=replay["root"]
+    )
     return {
         "path": evidence.name + "/replay.json",
         **execution_root.file_identity(evidence / "replay.json"),
@@ -520,233 +550,297 @@ def validate(
             "standalone consumer filesystem adapter is unavailable for target"
         )
     actual_files = [
-        row
-        for row in execution_root.root_inventory(evidence)
-        if row["path"] != "replay.json"
+        row for row in _evidence_inventory(evidence) if row["path"] != "replay.json"
     ]
     if actual_files != replay["files"]:
         raise ValueError("standalone evidence file closure changed")
     retained_files = {row["path"]: row for row in replay["files"]}
-    root_files = {row["path"]: row for row in replay["root"]["files"]}
-    rootfs = evidence / "rootfs"
-    if (
-        execution_root.root_inventory(rootfs) != replay["root"]["files"]
-        or canonical_json_sha256(replay["root"]["files"])
-        != replay["root"]["files_sha256"]
+    with execution_root.materialized_root(
+        evidence / "rootfs",
+        evidence / "rootfs.tar",
+        sealed=replay["root"],
+        resources=evidence_root / "execution-inputs",
     ):
-        raise ValueError("standalone sealed root changed")
-    execution_root.validate_sealed_tar(
-        evidence / "rootfs.tar", rootfs, expected_archive=replay["root"]["archive"]
-    )
-    arch = candidate["target"]["arch"]
-    transport = replay["transport"]
-    _validate_transport(
-        transport,
-        sealed_root=replay["root"],
-        arch=arch,
-        projection=SEALED_REPLAY_EXECUTION,
-    )
-    support, providers = execution_root.support_payloads(
-        evidence / "archives", arch=arch
-    )
-    if providers != replay["providers"]:
-        raise ValueError("standalone OS/Node providers differ from source pins")
-    admitted = set(support)
-    for name, data in support.items():
-        _equal_artifact(
-            execution_root.file_identity(rootfs / name),
-            {
-                "size": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            },
-        )
-    generation = _artifact_json(
-        evidence / "supervisor-generation.json",
-        retained_files["supervisor-generation.json"],
-        max_bytes=16 * 1024 * 1024,
-        label="retained supervisor generation",
-    )
-    _validate_generation(generation, rootfs)
-    admitted.add("bin/molt-proof-supervisor")
-    for name, data in wasm_loader_asset_payloads(
-        ROOT / "wasm", NODE_RUNNER_ENTRY_ASSETS
-    ).items():
-        selected = "app/wasm/" + name
+        root_files = {row["path"]: row for row in replay["root"]["files"]}
+        rootfs = evidence / "rootfs"
         if (
-            execution_root.file_identity(rootfs / selected)["sha256"]
-            != hashlib.sha256(data).hexdigest()
+            execution_root.root_inventory(rootfs) != replay["root"]["files"]
+            or canonical_json_sha256(replay["root"]["files"])
+            != replay["root"]["files_sha256"]
         ):
-            raise ValueError("standalone Node runner source closure changed")
-        admitted.add(selected)
-    expected = expected_runs(proofs, pip_proof, selected_lanes=lanes)
-    if not isinstance(replay["runs"], list) or len(replay["runs"]) != len(expected):
-        raise ValueError("standalone replay coordinate closure is incomplete")
-    nonces: set[str] = set()
-    executables = ["bin/node", "bin/molt-proof-supervisor"]
-    for wanted, row in zip(expected, replay["runs"], strict=True):
-        if (
-            not isinstance(row, dict)
-            or set(row) != set(wanted) | {"command", "policy", "nonce", "execution"}
-            or any(row.get(key) != value for key, value in wanted.items())
-        ):
-            raise ValueError("standalone replay coordinate/artifact binding differs")
-        command = guest_command(wanted, argv)
-        policy = f"policies/{row['id']}.json"
-        if (
-            row["command"] != command
-            or row["policy"] != policy
-            or row["nonce"] in nonces
-        ):
-            raise ValueError("standalone replay command/policy binding differs")
-        nonces.add(row["nonce"])
-        if wanted["lane"]["target"] == "native":
-            name = f"app/{wanted['id']}/program"
-            _equal_artifact(
-                execution_root.file_identity(rootfs / name), wanted["artifact"]
-            )
-            executables.append(name)
-            admitted.add(name)
-        else:
-            prefix = f"app/{wanted['id']}/"
-            manifest = _artifact_json(
-                rootfs / prefix / "manifest.json",
-                wanted["manifest"],
-                max_bytes=4 * 1024 * 1024,
-                label="retained WASM manifest",
-            )
-            relative, descriptor = _linked_wasm_descriptor(manifest)
-            name = prefix + relative
-            _equal_artifact(execution_root.file_identity(rootfs / name), descriptor)
-            _equal_artifact(descriptor, wanted["artifact"])
-            admitted.update({prefix + "manifest.json", name})
-        image = rootfs / execution_root.linux_root_relative_path(command[0])
-        actual_policy = _artifact_json(
-            rootfs / policy,
-            root_files[policy],
-            max_bytes=65536,
-            label="standalone policy",
+            raise ValueError("standalone sealed root changed")
+        execution_root.validate_sealed_tar(
+            evidence / "rootfs.tar", rootfs, expected_archive=replay["root"]["archive"]
         )
-        if actual_policy != _policy(
-            command, execution_root.file_identity(image)["sha256"], row["nonce"]
-        ):
-            raise ValueError(
-                "standalone policy grants another executable or environment"
-            )
-        admitted.add(policy)
-        execution = row["execution"]
-        if not isinstance(execution, dict) or set(execution) != {
-            "nonce",
-            "observation",
-            "teardown",
-            "stdout",
-            "stderr",
-            "receipt",
-            "guest_stderr_sha256",
-            "execution",
-        }:
-            raise ValueError("standalone execution record fields are invalid")
-        if (
-            SealedExecutionProjection.from_dict(execution["execution"])
-            != SEALED_REPLAY_EXECUTION
-        ):
-            raise ValueError(
-                "standalone replay cannot use a compilation root projection"
-            )
-        supervisor_command = [
-            "/bin/molt-proof-supervisor",
-            "run-export",
-            "--policy",
-            "/" + policy,
-            "--receipt",
-            "/evidence/receipt.json",
-        ]
-        nonce = execution["nonce"]
-        observed = validate_sealed_systemd_configuration(
-            execution["observation"],
-            nonce=nonce,
-            root=transport["root"],
-            command=supervisor_command,
-        )
-        validate_sealed_systemd_terminal(
-            execution["observation"], invocation=observed["InvocationID"]
-        )
-        validate_sealed_systemd_stop(
-            execution["teardown"],
-            unit=observed["Id"],
-            invocation=observed["InvocationID"],
-        )
-        if (
-            execution["stdout"] != f"transport/{nonce}.stdout"
-            or execution["stderr"] != f"transport/{nonce}.stderr"
-        ):
-            raise ValueError("standalone streams belong to another systemd invocation")
-        for key in ("stdout", "stderr", "receipt"):
-            execution_root.relative_path(execution[key])
-        stdout = evidence / execution["stdout"]
-        if (
-            _artifact_bytes(
-                stdout,
-                retained_files[execution["stdout"]],
-                label="retained standalone stdout",
-                max_bytes=max(1, len(expected_stdout.encode())),
-            )
-            != expected_stdout.encode()
-        ):
-            raise ValueError("retained standalone stdout differs from reference")
-        receipt = evidence / execution["receipt"]
-        if execution["receipt"] != f"runs/{row['id']}/receipt.json":
-            raise ValueError("standalone receipt belongs to another coordinate")
-        prefix, receipt_bytes, events = supervisor_custody.read_supervisor_export(
-            evidence / execution["stderr"], expected=retained_files[execution["stderr"]]
-        )
-        retained_receipt = _artifact_bytes(
-            receipt,
-            retained_files[execution["receipt"]],
-            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
-            label="exported receipt",
-        )
-        descriptor = loads_exact(retained_receipt)["event_log"]
-        event_path = receipt.with_name(descriptor["file"])
-        retained_events = _artifact_bytes(
-            event_path,
-            retained_files[event_path.relative_to(evidence).as_posix()],
-            max_bytes=max(1, len(events)),
-            label="exported events",
-        )
-        if (
-            retained_receipt != receipt_bytes
-            or retained_events != events
-            or hashlib.sha256(prefix).hexdigest() != execution["guest_stderr_sha256"]
-        ):
-            raise ValueError(
-                "standalone captured export differs from retained native evidence"
-            )
-        verified = supervisor_custody._validated_supervisor_receipt(
-            binary=supervisor,
-            policy_path=rootfs / policy,
-            receipt_path=receipt,
-            rootfs=rootfs,
-            cwd=ROOT,
-            env=os.environ,
-        )
-        require_success(verified)
-    if admitted != {row["path"] for row in replay["root"]["files"]}:
-        raise ValueError("standalone root contains unadmitted files or lost inputs")
-    if (
-        execution_root.audit_native_closure(
-            rootfs,
+        arch = candidate["target"]["arch"]
+        transport = replay["transport"]
+        _validate_transport(
+            transport,
+            sealed_root=replay["root"],
             arch=arch,
-            executable_paths=executables,
-            expected_files=replay["root"]["files"],
+            projection=SEALED_REPLAY_EXECUTION,
         )
-        != replay["dependencies"]
-    ):
-        raise ValueError("standalone ELF dependency closure differs")
+        support, providers = execution_root.support_payloads(
+            evidence / "archives", arch=arch
+        )
+        if providers != replay["providers"]:
+            raise ValueError("standalone OS/Node providers differ from source pins")
+        admitted = set(support)
+        for name, data in support.items():
+            _equal_artifact(
+                execution_root.file_identity(rootfs / name),
+                {
+                    "size": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                },
+            )
+        generation = _artifact_json(
+            evidence / "supervisor-generation.json",
+            retained_files["supervisor-generation.json"],
+            max_bytes=16 * 1024 * 1024,
+            label="retained supervisor generation",
+        )
+        _validate_generation(generation, rootfs)
+        admitted.add("bin/molt-proof-supervisor")
+        for name, data in wasm_loader_asset_payloads(
+            ROOT / "wasm", NODE_RUNNER_ENTRY_ASSETS
+        ).items():
+            selected = "app/wasm/" + name
+            if (
+                execution_root.file_identity(rootfs / selected)["sha256"]
+                != hashlib.sha256(data).hexdigest()
+            ):
+                raise ValueError("standalone Node runner source closure changed")
+            admitted.add(selected)
+        expected = expected_runs(proofs, pip_proof, selected_lanes=lanes)
+        if not isinstance(replay["runs"], list) or len(replay["runs"]) != len(expected):
+            raise ValueError("standalone replay coordinate closure is incomplete")
+        nonces: set[str] = set()
+        executables = ["bin/node", "bin/molt-proof-supervisor"]
+        for wanted, row in zip(expected, replay["runs"], strict=True):
+            if (
+                not isinstance(row, dict)
+                or set(row) != set(wanted) | {"command", "policy", "nonce", "execution"}
+                or any(row.get(key) != value for key, value in wanted.items())
+            ):
+                raise ValueError(
+                    "standalone replay coordinate/artifact binding differs"
+                )
+            command = guest_command(wanted, argv)
+            policy = f"policies/{row['id']}.json"
+            if (
+                row["command"] != command
+                or row["policy"] != policy
+                or row["nonce"] in nonces
+            ):
+                raise ValueError("standalone replay command/policy binding differs")
+            nonces.add(row["nonce"])
+            if wanted["lane"]["target"] == "native":
+                name = f"app/{wanted['id']}/program"
+                _equal_artifact(
+                    execution_root.file_identity(rootfs / name), wanted["artifact"]
+                )
+                executables.append(name)
+                admitted.add(name)
+            else:
+                prefix = f"app/{wanted['id']}/"
+                manifest = _artifact_json(
+                    rootfs / prefix / "manifest.json",
+                    wanted["manifest"],
+                    max_bytes=4 * 1024 * 1024,
+                    label="retained WASM manifest",
+                )
+                relative, descriptor = _linked_wasm_descriptor(manifest)
+                name = prefix + relative
+                _equal_artifact(execution_root.file_identity(rootfs / name), descriptor)
+                _equal_artifact(descriptor, wanted["artifact"])
+                admitted.update({prefix + "manifest.json", name})
+            image = rootfs / execution_root.linux_root_relative_path(command[0])
+            actual_policy = _artifact_json(
+                rootfs / policy,
+                root_files[policy],
+                max_bytes=65536,
+                label="standalone policy",
+            )
+            if actual_policy != _policy(
+                command, execution_root.file_identity(image)["sha256"], row["nonce"]
+            ):
+                raise ValueError(
+                    "standalone policy grants another executable or environment"
+                )
+            admitted.add(policy)
+            execution = row["execution"]
+            if not isinstance(execution, dict) or set(execution) != {
+                "nonce",
+                "observation",
+                "teardown",
+                "stdout",
+                "stderr",
+                "receipt",
+                "guest_stderr_sha256",
+                "execution",
+            }:
+                raise ValueError("standalone execution record fields are invalid")
+            if (
+                SealedExecutionProjection.from_dict(execution["execution"])
+                != SEALED_REPLAY_EXECUTION
+            ):
+                raise ValueError(
+                    "standalone replay cannot use a compilation root projection"
+                )
+            supervisor_command = [
+                "/bin/molt-proof-supervisor",
+                "run-export",
+                "--policy",
+                "/" + policy,
+                "--receipt",
+                "/evidence/receipt.json",
+            ]
+            nonce = execution["nonce"]
+            observed = validate_sealed_systemd_configuration(
+                execution["observation"],
+                nonce=nonce,
+                root=transport["root"],
+                command=supervisor_command,
+            )
+            validate_sealed_systemd_terminal(
+                execution["observation"], invocation=observed["InvocationID"]
+            )
+            validate_sealed_systemd_stop(
+                execution["teardown"],
+                unit=observed["Id"],
+                invocation=observed["InvocationID"],
+            )
+            if (
+                execution["stdout"] != f"transport/{nonce}.stdout"
+                or execution["stderr"] != f"transport/{nonce}.stderr"
+            ):
+                raise ValueError(
+                    "standalone streams belong to another systemd invocation"
+                )
+            for key in ("stdout", "stderr", "receipt"):
+                execution_root.relative_path(execution[key])
+            stdout = evidence / execution["stdout"]
+            if (
+                _artifact_bytes(
+                    stdout,
+                    retained_files[execution["stdout"]],
+                    label="retained standalone stdout",
+                    max_bytes=max(1, len(expected_stdout.encode())),
+                )
+                != expected_stdout.encode()
+            ):
+                raise ValueError("retained standalone stdout differs from reference")
+            receipt = evidence / execution["receipt"]
+            if execution["receipt"] != f"runs/{row['id']}/receipt.json":
+                raise ValueError("standalone receipt belongs to another coordinate")
+            prefix, receipt_bytes, events = supervisor_custody.read_supervisor_export(
+                evidence / execution["stderr"],
+                expected=retained_files[execution["stderr"]],
+            )
+            retained_receipt = _artifact_bytes(
+                receipt,
+                retained_files[execution["receipt"]],
+                max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
+                label="exported receipt",
+            )
+            descriptor = loads_exact(retained_receipt)["event_log"]
+            event_path = receipt.with_name(descriptor["file"])
+            retained_events = _artifact_bytes(
+                event_path,
+                retained_files[event_path.relative_to(evidence).as_posix()],
+                max_bytes=max(1, len(events)),
+                label="exported events",
+            )
+            if (
+                retained_receipt != receipt_bytes
+                or retained_events != events
+                or hashlib.sha256(prefix).hexdigest()
+                != execution["guest_stderr_sha256"]
+            ):
+                raise ValueError(
+                    "standalone captured export differs from retained native evidence"
+                )
+            verified = supervisor_custody._validated_supervisor_receipt(
+                binary=supervisor,
+                policy_path=rootfs / policy,
+                receipt_path=receipt,
+                rootfs=rootfs,
+                cwd=ROOT,
+                env=os.environ,
+            )
+            require_success(verified)
+        if admitted != {row["path"] for row in replay["root"]["files"]}:
+            raise ValueError("standalone root contains unadmitted files or lost inputs")
+        if (
+            execution_root.audit_native_closure(
+                rootfs,
+                arch=arch,
+                executable_paths=executables,
+                expected_files=replay["root"]["files"],
+            )
+            != replay["dependencies"]
+        ):
+            raise ValueError("standalone ELF dependency closure differs")
 
 
 def archive_filename(candidate: dict[str, Any]) -> str:
     target = candidate["target"]
     return f"molt-consumer-evidence-{candidate['version']}-{target['platform']}-{target['arch']}.zip"
+
+
+def validate_resources(*, evidence_root: Path, consumer: dict[str, Any]) -> None:
+    """Require exactly the CAS buffers selected by admitted root descriptions."""
+    resources = evidence_root / "execution-inputs"
+    paths = [consumer["standalone"]["path"]]
+    for proof in [*consumer["python_proofs"], consumer["pip_proof"]]:
+        path = execution_root.relative_path(proof["compilation"]["path"])
+        paths.extend(
+            (
+                path.as_posix(),
+                (
+                    path.parent.with_name(path.parent.name + "-cold") / path.name
+                ).as_posix(),
+            )
+        )
+    expected = {}
+    nodes: set[str] = set()
+    for name in paths:
+        owner = evidence_root / execution_root.relative_path(name)
+        if (owner.parent / "rootfs").exists() or (owner.parent / "rootfs.tar").exists():
+            raise ValueError(
+                "consumer evidence still contains an unretired root materialization"
+            )
+        record = read_exact(
+            owner,
+            max_bytes=64 * 1024**2,
+            label="retained resource owner",
+        )
+        for resource in execution_root.validate_root_record(record["root"]):
+            row = resource.as_record()
+            reference = resource.reference(resources)
+            relative = Path(reference.path).relative_to(resources).as_posix()
+            relative_path = PurePosixPath(relative)
+            nodes.update(
+                parent.as_posix()
+                for parent in (relative_path, *relative_path.parents)
+                if parent.as_posix() != "."
+            )
+            if len(nodes) > CONSUMER_ARCHIVE_POLICY.max_members:
+                raise ValueError("consumer resources exceed ZIP32 member-count policy")
+            expected[relative] = {
+                "path": relative,
+                "filename": "payload",
+                "sha256": row["sha256"],
+                "size": row["size"],
+                "mode": 0o444,
+            }
+    if execution_root.root_inventory(resources) != [
+        expected[name] for name in sorted(expected)
+    ]:
+        raise ValueError(
+            "consumer retained resource closure differs from admitted roots"
+        )
 
 
 def publish_archive(
@@ -755,28 +849,33 @@ def publish_archive(
     """Retain proof inputs with the existing bounded reproducible ZIP owner."""
     if receipt != candidate_dir / "consumer-verification.json":
         raise ValueError("consumer proof must publish beside its candidate")
+    validate_resources(
+        evidence_root=candidate_dir,
+        consumer=read_exact(
+            receipt, max_bytes=1024 * 1024, label="consumer publication receipt"
+        ),
+    )
     output = candidate_dir / archive_filename(candidate)
-    with tempfile.TemporaryDirectory(prefix="molt-consumer-retention-") as raw:
-        staged = Path(raw).resolve()
-        execution_root.stage_file(
-            staged, "candidate.json", candidate_dir / "candidate.json", executable=False
-        )
-        execution_root.stage_file(
-            staged, "consumer-verification.json", receipt, executable=False
-        )
-        for owner in ("compilation-evidence", "consumer-evidence"):
-            for row in execution_root.root_inventory(candidate_dir / owner):
-                captured = execution_root.stage_file(
-                    staged,
-                    owner + "/" + row["path"],
-                    candidate_dir / owner / row["path"],
-                    executable=bool(row["mode"] & 0o111),
-                    max_bytes=row["size"],
-                )
-                _equal_artifact(captured, row)
-        write_reproducible_zip(
-            staged, output, source_date_epoch=candidate["source_date_epoch"]
-        )
+    write_reproducible_zip(
+        candidate_dir,
+        output,
+        source_date_epoch=candidate["source_date_epoch"],
+        policy=CONSUMER_ARCHIVE_POLICY,
+        mode_resolver=lambda name: (
+            0o444
+            if name.is_relative_to("execution-inputs")
+            else 0o755
+            if (candidate_dir / name).stat().st_mode & 0o111
+            else 0o644
+        ),
+        selected=(
+            "candidate.json",
+            "consumer-verification.json",
+            "compilation-evidence",
+            "consumer-evidence",
+            "execution-inputs",
+        ),
+    )
     return output
 
 
@@ -789,7 +888,9 @@ def admit_archive(
     archive = candidate_dir / archive_filename(candidate)
     with tempfile.TemporaryDirectory(prefix="molt-consumer-admission-") as raw:
         extracted = Path(raw).resolve() / "consumer"
-        identity = extract_zip_strict(archive, extracted)
+        identity = extract_zip_strict(
+            archive, extracted, policy=CONSUMER_ARCHIVE_POLICY
+        )
         archived_candidate = read_exact(
             extracted / "candidate.json",
             max_bytes=4 * 1024 * 1024,
@@ -807,6 +908,7 @@ def admit_archive(
             "consumer-verification.json",
             "consumer-evidence",
             "compilation-evidence",
+            "execution-inputs",
         }:
             raise ValueError("consumer archive root closure differs")
         consumer = read_exact(
@@ -1389,7 +1491,14 @@ def execute_compilation(
                 raise ValueError(
                     "seeded compilation did not retain any original cached emission"
                 )
-    compilation["files"] = execution_root.root_inventory(evidence)
+    execution_root.retain_root(
+        rootfs,
+        evidence / "rootfs.tar",
+        sealed=compilation["root"],
+        resources=evidence.parent.parent / "execution-inputs",
+        projection=projection,
+    )
+    compilation["files"] = _evidence_inventory(evidence)
     from molt.exact_json import encode_exact
     from molt.file_publication import atomic_write_bytes
 
@@ -1397,6 +1506,12 @@ def execute_compilation(
     # sealed cache artifact or overwrite an earlier completed compilation.
     atomic_write_bytes(
         evidence / "compilation.json", encode_exact(compilation), exclusive=True
+    )
+    execution_root.retire_root(
+        rootfs,
+        evidence / "rootfs.tar",
+        sealed=compilation["root"],
+        projection=projection,
     )
     return compilation
 
@@ -1539,7 +1654,7 @@ def validate_compilation(
         raise ValueError("retained compilation record is not exact")
     if [
         row
-        for row in execution_root.root_inventory(evidence)
+        for row in _evidence_inventory(evidence)
         if row["path"] != "compilation.json"
     ] != compilation["files"]:
         raise ValueError("retained compilation evidence file closure changed")
@@ -1632,7 +1747,7 @@ def validate_compilation(
                 )
     if [
         row
-        for row in execution_root.root_inventory(evidence)
+        for row in _evidence_inventory(evidence)
         if row["path"] != "compilation.json"
     ] != compilation["files"]:
         raise ValueError("retained compilation evidence changed during replay")
@@ -1698,170 +1813,195 @@ def validate_installed_compilation(
     )
     if not isinstance(compilation, dict):
         raise ValueError("installed compilation evidence is not an object")
-    source_relative = execution_root.linux_root_relative_path(
-        compilation["compiler_source_root"]
-    )
-    source_root = PurePosixPath("/") / source_relative
-    source = record_path.parent / "rootfs" / source_relative
-    installed = installed_compiler(source)
-    if (
-        installed is None
-        or installed.source_sha != candidate["source_sha"]
-        or installed.record != candidate["compiler"]
-        or installed.launcher != candidate["launcher"]
-        or installed.wasm_facts != candidate["wasm_facts"]
-        or installed.runtime != candidate["runtime"]
-        or canonical_json_sha256(list(installed.files))
-        != candidate["native_build"]["source"]["files_sha256"]
+    with execution_root.materialized_root(
+        record_path.parent / "rootfs",
+        record_path.parent / "rootfs.tar",
+        sealed=compilation["root"],
+        resources=evidence_root / "execution-inputs",
+        projection=SealedExecutionProjection.from_dict(compilation["execution"]),
     ):
-        raise ValueError(
-            "retained compilation installed inputs differ from the release candidate"
+        source_relative = execution_root.linux_root_relative_path(
+            compilation["compiler_source_root"]
         )
-    interpreter = proof["execution"]["python"]
-    if interpreter["executable"] != controller_python.as_posix():
-        raise ValueError(
-            "installed compilation selected another controller interpreter"
+        source_root = PurePosixPath("/") / source_relative
+        source = record_path.parent / "rootfs" / source_relative
+        installed = installed_compiler(source)
+        if (
+            installed is None
+            or installed.source_sha != candidate["source_sha"]
+            or installed.record != candidate["compiler"]
+            or installed.launcher != candidate["launcher"]
+            or installed.wasm_facts != candidate["wasm_facts"]
+            or installed.runtime != candidate["runtime"]
+            or canonical_json_sha256(list(installed.files))
+            != candidate["native_build"]["source"]["files_sha256"]
+        ):
+            raise ValueError(
+                "retained compilation installed inputs differ from the release candidate"
+            )
+        interpreter = proof["execution"]["python"]
+        if interpreter["executable"] != controller_python.as_posix():
+            raise ValueError(
+                "installed compilation selected another controller interpreter"
+            )
+        interpreter_file = (
+            record_path.parent
+            / "rootfs"
+            / execution_root.linux_root_relative_path(str(controller_python))
         )
-    interpreter_file = (
-        record_path.parent
-        / "rootfs"
-        / execution_root.linux_root_relative_path(str(controller_python))
-    )
-    _equal_artifact(execution_root.file_identity(interpreter_file), interpreter)
-    installed.verify_launcher()
-    installed.verify_wasm_facts()
-    if (
-        capture_release_lanes(installed.source_root).require_selection(selected_lanes)
-        != lanes
-    ):
-        raise ValueError("installed compilation lane policy differs from release")
-    validate_compilation(
-        evidence=record_path.parent,
-        compilation=compilation,
-        compiler=installed,
-        lanes=lanes,
-        python_minor=proof["python"],
-        supervisor=supervisor,
-        launcher=launcher,
-        controller_python=controller_python,
-    )
-    cold_evidence = record_path.parent.with_name(record_path.parent.name + "-cold")
-    cold = read_exact(
-        cold_evidence / "compilation.json",
-        max_bytes=64 * 1024**2,
-        label="cold installed compilation",
-    )
-    validate_compilation(
-        evidence=cold_evidence,
-        compilation=cold,
-        compiler=installed,
-        lanes=lanes,
-        python_minor=proof["python"],
-        supervisor=supervisor,
-        launcher=launcher,
-        controller_python=controller_python,
-    )
-    if selected_stdlib_profile is not None and any(
-        cell["runtime_cell"]["key"]["stdlib_profile"] != selected_stdlib_profile
-        for phase in (compilation, cold)
-        for cell in phase["cells"]
-    ):
-        raise ValueError("installed compilation used another runtime stdlib profile")
-    if cold["cache_seed"] or cold["origins"] or not compilation["cache_seed"]:
-        raise ValueError(
-            "installed cold/warm compilation phases have incorrect reuse inputs"
+        _equal_artifact(execution_root.file_identity(interpreter_file), interpreter)
+        installed.verify_launcher()
+        installed.verify_wasm_facts()
+        if (
+            capture_release_lanes(installed.source_root).require_selection(
+                selected_lanes
+            )
+            != lanes
+        ):
+            raise ValueError("installed compilation lane policy differs from release")
+        validate_compilation(
+            evidence=record_path.parent,
+            compilation=compilation,
+            compiler=installed,
+            lanes=lanes,
+            python_minor=proof["python"],
+            supervisor=supervisor,
+            launcher=launcher,
+            controller_python=controller_python,
         )
-    expected_origins = []
-    for scope, cell_id, _, receipt_path in _compilation_reuse_scopes(
-        cold_evidence, cold
-    ):
-        receipt = read_exact(
-            receipt_path,
-            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
-            label="cold emission receipt",
+        cold_evidence = record_path.parent.with_name(record_path.parent.name + "-cold")
+        cold = read_exact(
+            cold_evidence / "compilation.json",
+            max_bytes=64 * 1024**2,
+            label="cold installed compilation",
         )
-        expected_origins.append(
-            {
-                "scope": scope,
-                "cell": cell_id,
-                "identity_sha256": receipt["identity_sha256"],
-            }
-        )
-    expected_seed = []
-    for cell in cold["cells"]:
-        for row in cell["outputs"]["files"]:
-            relative = PurePosixPath(row["path"])
-            if relative.is_relative_to("cache-export"):
-                expected_seed.append(
+        with execution_root.materialized_root(
+            cold_evidence / "rootfs",
+            cold_evidence / "rootfs.tar",
+            sealed=cold["root"],
+            resources=evidence_root / "execution-inputs",
+            projection=SealedExecutionProjection.from_dict(cold["execution"]),
+        ):
+            validate_compilation(
+                evidence=cold_evidence,
+                compilation=cold,
+                compiler=installed,
+                lanes=lanes,
+                python_minor=proof["python"],
+                supervisor=supervisor,
+                launcher=launcher,
+                controller_python=controller_python,
+            )
+            if selected_stdlib_profile is not None and any(
+                cell["runtime_cell"]["key"]["stdlib_profile"] != selected_stdlib_profile
+                for phase in (compilation, cold)
+                for cell in phase["cells"]
+            ):
+                raise ValueError(
+                    "installed compilation used another runtime stdlib profile"
+                )
+            if cold["cache_seed"] or cold["origins"] or not compilation["cache_seed"]:
+                raise ValueError(
+                    "installed cold/warm compilation phases have incorrect reuse inputs"
+                )
+            expected_origins = []
+            for scope, cell_id, _, receipt_path in _compilation_reuse_scopes(
+                cold_evidence, cold
+            ):
+                receipt = read_exact(
+                    receipt_path,
+                    max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
+                    label="cold emission receipt",
+                )
+                expected_origins.append(
                     {
-                        "path": "app/cache/"
-                        + cell["id"]
-                        + "/"
-                        + relative.relative_to("cache-export").as_posix(),
-                        "sha256": row["sha256"],
-                        "size": row["size"],
-                        "mode": 0o444,
+                        "scope": scope,
+                        "cell": cell_id,
+                        "identity_sha256": receipt["identity_sha256"],
                     }
                 )
-    if compilation["origins"] != expected_origins or compilation[
-        "cache_seed"
-    ] != sorted(expected_seed, key=lambda row: row["path"]):
-        raise ValueError(
-            "warm compilation did not import the selected cold cache generation"
-        )
-    cells = proof["cells"]
-    if len(cells) != len(compilation["cells"]):
-        raise ValueError("release proof omits an installed compilation product")
-    by_role = {row["role"]: row for row in proof["commands"]}
-    prefix = "pip_" if owner == "pip" else ""
-    for lane, produced in zip(lanes, cold["cells"], strict=True):
-        command = by_role[
-            f"{prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}"
-        ]
-        _validate_compilation_command(
-            command, produced["outputs"], cold_evidence / "outputs" / lane.id
-        )
-    for lane, cell, produced in zip(lanes, cells, compilation["cells"], strict=True):
-        retained = record_path.parent / "outputs" / lane.id
-        output = produced["outputs"]
-        artifact = output["artifact"]
-        if (
-            cell["lane"] != produced["lane"]
-            or any(cell["artifact"][key] != artifact[key] for key in ("size", "sha256"))
-            or PurePosixPath(cell["artifact"]["path"]).name
-            != PurePosixPath(artifact["path"]).name
-        ):
-            raise ValueError(
-                "standalone product differs from its installed compilation"
-            )
-        command = by_role[
-            f"{prefix}{'build' if lane.target == 'native' else 'run'}_{lane.id}"
-        ]
-        _validate_compilation_command(command, output, retained)
-        diagnostics = read_exact(
-            retained / "diagnostics.json",
-            max_bytes=16 * 1024**2,
-            label="installed compilation diagnostics",
-        )
-        compiler_row = (
-            diagnostics.get("compiler", {}) if isinstance(diagnostics, dict) else {}
-        )
-        compiler_path = source_root.parent / installed.record["path"]
-        if (
-            diagnostics.get("program") != lane.as_record()
-            or compiler_row.get("path") != compiler_path.as_posix()
-            or compiler_row.get("sha256") != cell["compiler_sha256"]
-            or compiler_row.get("fingerprint") != cell["compiler_fingerprint"]
-            or compiler_row.get("cargo_profile") != lane.compiler_profile
-        ):
-            raise ValueError(
-                "installed product diagnostics differ from admitted compiler or lane"
-            )
-        if lane.target == "wasm":
-            _equal_artifact(
-                execution_root.file_identity(retained / "manifest.json"),
-                cell["manifest"],
-            )
+            expected_seed = []
+            for cell in cold["cells"]:
+                for row in cell["outputs"]["files"]:
+                    relative = PurePosixPath(row["path"])
+                    if relative.is_relative_to("cache-export"):
+                        expected_seed.append(
+                            {
+                                "path": "app/cache/"
+                                + cell["id"]
+                                + "/"
+                                + relative.relative_to("cache-export").as_posix(),
+                                "sha256": row["sha256"],
+                                "size": row["size"],
+                                "mode": 0o444,
+                            }
+                        )
+            if compilation["origins"] != expected_origins or compilation[
+                "cache_seed"
+            ] != sorted(expected_seed, key=lambda row: row["path"]):
+                raise ValueError(
+                    "warm compilation did not import the selected cold cache generation"
+                )
+            cells = proof["cells"]
+            if len(cells) != len(compilation["cells"]):
+                raise ValueError("release proof omits an installed compilation product")
+            by_role = {row["role"]: row for row in proof["commands"]}
+            prefix = "pip_" if owner == "pip" else ""
+            for lane, produced in zip(lanes, cold["cells"], strict=True):
+                command = by_role[
+                    f"{prefix}cold_{'build' if lane.target == 'native' else 'run'}_{lane.id}"
+                ]
+                _validate_compilation_command(
+                    command, produced["outputs"], cold_evidence / "outputs" / lane.id
+                )
+            for lane, cell, produced in zip(
+                lanes, cells, compilation["cells"], strict=True
+            ):
+                retained = record_path.parent / "outputs" / lane.id
+                output = produced["outputs"]
+                artifact = output["artifact"]
+                if (
+                    cell["lane"] != produced["lane"]
+                    or any(
+                        cell["artifact"][key] != artifact[key]
+                        for key in ("size", "sha256")
+                    )
+                    or PurePosixPath(cell["artifact"]["path"]).name
+                    != PurePosixPath(artifact["path"]).name
+                ):
+                    raise ValueError(
+                        "standalone product differs from its installed compilation"
+                    )
+                command = by_role[
+                    f"{prefix}{'build' if lane.target == 'native' else 'run'}_{lane.id}"
+                ]
+                _validate_compilation_command(command, output, retained)
+                diagnostics = read_exact(
+                    retained / "diagnostics.json",
+                    max_bytes=16 * 1024**2,
+                    label="installed compilation diagnostics",
+                )
+                compiler_row = (
+                    diagnostics.get("compiler", {})
+                    if isinstance(diagnostics, dict)
+                    else {}
+                )
+                compiler_path = source_root.parent / installed.record["path"]
+                if (
+                    diagnostics.get("program") != lane.as_record()
+                    or compiler_row.get("path") != compiler_path.as_posix()
+                    or compiler_row.get("sha256") != cell["compiler_sha256"]
+                    or compiler_row.get("fingerprint") != cell["compiler_fingerprint"]
+                    or compiler_row.get("cargo_profile") != lane.compiler_profile
+                ):
+                    raise ValueError(
+                        "installed product diagnostics differ from admitted compiler or lane"
+                    )
+                if lane.target == "wasm":
+                    _equal_artifact(
+                        execution_root.file_identity(retained / "manifest.json"),
+                        cell["manifest"],
+                    )
 
 
 def compilation_runtime_selection(
@@ -1944,94 +2084,108 @@ def _retain_compilation_reuse(
         max_bytes=64 * 1024**2,
         label="prior completed compilation",
     )
-    validate_compilation(
-        evidence=previous,
-        compilation=prior,
-        compiler=compiler,
-        lanes=lanes,
-        python_minor=python_minor,
-        supervisor=supervisor,
-        launcher=launcher,
-        controller_python=controller_python,
-    )
-    expected = {row["path"]: row for row in prior["files"]}
-
-    def snapshot(source: Path, destination: str, *, root: Path) -> dict[str, Any]:
-        relative = source.relative_to(previous).as_posix()
-        row = expected.get(relative)
-        if row is None:
-            raise ValueError(
-                "original emission evidence is outside completed inventory"
-            )
-        actual = execution_root.stage_file(
-            root, destination, source, executable=False, max_bytes=row["size"]
-        )
-        _equal_artifact(actual, row)
-        return {
-            "path": destination,
-            "sha256": actual["sha256"],
-            "size": actual["size"],
-            "mode": 0o444,
-        }
-
-    origins = []
-    for scope, cell_id, policy_path, receipt_path in _compilation_reuse_scopes(
-        previous, prior
+    with execution_root.materialized_root(
+        previous / "rootfs",
+        previous / "rootfs.tar",
+        sealed=prior["root"],
+        resources=previous.parent.parent / "execution-inputs",
+        projection=SealedExecutionProjection.from_dict(prior["execution"]),
     ):
-        receipt = read_exact(
-            receipt_path,
-            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
-            label="original closed receipt",
+        validate_compilation(
+            evidence=previous,
+            compilation=prior,
+            compiler=compiler,
+            lanes=lanes,
+            python_minor=python_minor,
+            supervisor=supervisor,
+            launcher=launcher,
+            controller_python=controller_python,
         )
-        receipt_identity = receipt["identity_sha256"]
-        from molt.backend_protocol import validate_emission_scope
+        expected = {row["path"]: row for row in prior["files"]}
+        expected.update(
+            {"rootfs/" + row["path"]: row for row in prior["root"]["files"]}
+        )
 
-        if validate_emission_scope(receipt_identity) is None:
-            raise ValueError("original emission receipt has no exact identity")
-        owner = "origins/" + receipt_identity
-        config_path = (
-            previous / "rootfs" / ("app/compilation-" + cell_id + ".json")
-            if policy_path.is_relative_to(previous / "rootfs")
-            else policy_path.with_name("config.json")
-        )
-        snapshot(policy_path, owner + "/policy.json", root=evidence)
-        snapshot(config_path, owner + "/config.json", root=evidence)
-        snapshot(receipt_path, owner + "/receipt.json", root=evidence)
-        event_name = receipt["event_log"]["file"]
-        execution_root.relative_path(event_name)
-        if Path(event_name).name != event_name:
-            raise ValueError("original emission event reference escapes its session")
-        snapshot(
-            receipt_path.with_name(event_name), owner + "/" + event_name, root=evidence
-        )
-        origins.append(
-            {
-                "scope": scope,
-                "cell": cell_id,
-                "identity_sha256": receipt_identity,
-            }
-        )
-    seeds = []
-    for cell in prior["cells"]:
-        for row in cell["outputs"]["files"]:
-            relative = PurePosixPath(row["path"])
-            if not relative.is_relative_to("cache-export"):
-                continue
-            leaf = relative.relative_to("cache-export").as_posix()
-            source = previous / "outputs" / cell["id"] / relative
-            seeds.append(
-                snapshot(
-                    source,
-                    "app/cache/" + cell["id"] + "/" + leaf,
-                    root=evidence / "rootfs",
+        def snapshot(source: Path, destination: str, *, root: Path) -> dict[str, Any]:
+            relative = source.relative_to(previous).as_posix()
+            row = expected.get(relative)
+            if row is None:
+                raise ValueError(
+                    "original emission evidence is outside completed inventory"
                 )
+            actual = execution_root.stage_file(
+                root, destination, source, executable=False, max_bytes=row["size"]
             )
-    if not seeds:
-        raise ValueError("prior compilation retained no cache export to reuse")
-    verify_stable_regular_file_identity(
-        identity, label="prior completed compilation", hash_content=True
-    )
-    return origins, sorted(seeds, key=lambda row: row["path"])
+            _equal_artifact(actual, row)
+            return {
+                "path": destination,
+                "sha256": actual["sha256"],
+                "size": actual["size"],
+                "mode": 0o444,
+            }
+
+        origins = []
+        for scope, cell_id, policy_path, receipt_path in _compilation_reuse_scopes(
+            previous, prior
+        ):
+            receipt = read_exact(
+                receipt_path,
+                max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
+                label="original closed receipt",
+            )
+            receipt_identity = receipt["identity_sha256"]
+            from molt.backend_protocol import validate_emission_scope
+
+            if validate_emission_scope(receipt_identity) is None:
+                raise ValueError("original emission receipt has no exact identity")
+            owner = "origins/" + receipt_identity
+            config_path = (
+                previous / "rootfs" / ("app/compilation-" + cell_id + ".json")
+                if policy_path.is_relative_to(previous / "rootfs")
+                else policy_path.with_name("config.json")
+            )
+            snapshot(policy_path, owner + "/policy.json", root=evidence)
+            snapshot(config_path, owner + "/config.json", root=evidence)
+            snapshot(receipt_path, owner + "/receipt.json", root=evidence)
+            event_name = receipt["event_log"]["file"]
+            execution_root.relative_path(event_name)
+            if Path(event_name).name != event_name:
+                raise ValueError(
+                    "original emission event reference escapes its session"
+                )
+            snapshot(
+                receipt_path.with_name(event_name),
+                owner + "/" + event_name,
+                root=evidence,
+            )
+            origins.append(
+                {
+                    "scope": scope,
+                    "cell": cell_id,
+                    "identity_sha256": receipt_identity,
+                }
+            )
+        seeds = []
+        for cell in prior["cells"]:
+            for row in cell["outputs"]["files"]:
+                relative = PurePosixPath(row["path"])
+                if not relative.is_relative_to("cache-export"):
+                    continue
+                leaf = relative.relative_to("cache-export").as_posix()
+                source = previous / "outputs" / cell["id"] / relative
+                seeds.append(
+                    snapshot(
+                        source,
+                        "app/cache/" + cell["id"] + "/" + leaf,
+                        root=evidence / "rootfs",
+                    )
+                )
+        if not seeds:
+            raise ValueError("prior compilation retained no cache export to reuse")
+        verify_stable_regular_file_identity(
+            identity, label="prior completed compilation", hash_content=True
+        )
+        return origins, sorted(seeds, key=lambda row: row["path"])
 
 
 def _compilation_cache_contract(
@@ -2325,7 +2479,7 @@ def prepare_compilation(
         rootfs, evidence / "rootfs.tar", expected_files=files, projection=projection
     )
     return {
-        "schema": "molt.installed-compilation.v2",
+        "schema": "molt.installed-compilation.v3",
         "origins": origins,
         "cache_seed": cache_seed,
         "execution": projection.to_dict(),
@@ -2639,7 +2793,7 @@ def _validate_compilation_plan(
     from molt.process_environment import NameRule
 
     if (
-        compilation.get("schema") != "molt.installed-compilation.v2"
+        compilation.get("schema") != "molt.installed-compilation.v3"
         or compilation.get("python") != python_minor
         or compilation.get("launcher") != launcher
         or compilation.get("controller_python") != controller_python.as_posix()
