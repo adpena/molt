@@ -10,6 +10,8 @@ M05/M06/M12/M14/M17-M20/M23/M28/M33/M62/M63/M70.
 """
 
 from __future__ import annotations
+from dataclasses import asdict
+import json
 from tests.process_guard_common import run_guarded_test_process
 
 import sys
@@ -23,6 +25,88 @@ from tools import dispatch_prompt as dp
 from tools import subagent_contract as sc
 
 _REPO = Path(__file__).resolve().parents[2]
+_BOUNDS = dp.DispatchBounds(
+    outcome="Reduce end-to-end edit-to-result latency",
+    deliverable="Identify the dominant repeated harness cost and return evidence",
+    integration_owner="parent",
+    proof_owner="parent",
+    owned_paths=(),
+    proof_commands=(),
+    budget_minutes=5,
+    stop_when="The retained profile identifies the dominant cost or evidence is insufficient",
+)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "outcome",
+        "deliverable",
+        "integration_owner",
+        "proof_owner",
+        "owned_paths",
+        "proof_commands",
+        "budget_minutes",
+        "stop_when",
+    ],
+)
+def test_dispatch_refuses_each_missing_bound(field: str) -> None:
+    payload = json.loads(json.dumps(asdict(_BOUNDS)))
+    del payload[field]
+    with pytest.raises((TypeError, ValueError)):
+        dp.DispatchBounds.from_payload(payload)
+
+
+@pytest.mark.parametrize("budget", [0, -1, True, 1.5, "5"])
+def test_dispatch_refuses_invalid_budget(budget) -> None:
+    payload = json.loads(json.dumps(asdict(_BOUNDS)))
+    payload["budget_minutes"] = budget
+    with pytest.raises(ValueError, match="positive integer"):
+        dp.DispatchBounds.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "outcome",
+        "deliverable",
+        "integration_owner",
+        "proof_owner",
+        "stop_when",
+    ],
+)
+def test_dispatch_refuses_empty_assignment(field: str) -> None:
+    payload = json.loads(json.dumps(asdict(_BOUNDS)))
+    payload[field] = " "
+    with pytest.raises(ValueError, match=field):
+        dp.DispatchBounds.from_payload(payload)
+
+
+def test_bounds_are_required_even_without_routing_sections() -> None:
+    with pytest.raises(TypeError, match="bounds"):
+        dp.compose("Inspect retained profile", sections=[])
+    prompt = dp.compose("Inspect retained profile", bounds=_BOUNDS, sections=[])
+    assert "Write scope: read only" in prompt
+    assert "none; inspect retained evidence only" in prompt
+    assert "Proof owner: parent" in prompt
+    assert "Work budget: 5 minutes" in prompt
+    assert "Return new scope" in prompt
+    assert "AGENTS.md" in prompt
+
+
+def test_cli_requires_and_renders_explicit_bounds(tmp_path, capsys) -> None:
+    with pytest.raises(SystemExit) as error:
+        dp.main(["--task-text", "Inspect retained profile"])
+    assert error.value.code == 2
+    path = tmp_path / "bounds.json"
+    path.write_text(json.dumps(asdict(_BOUNDS)), encoding="utf-8")
+    assert (
+        dp.main(["--task-text", "Inspect retained profile", "--bounds", str(path)]) == 0
+    )
+    assert (
+        "Assigned deliverable: Identify the dominant repeated harness cost"
+        in capsys.readouterr().out
+    )
 
 
 # --- (module invariants) -------------------------------------------------------------------
@@ -56,21 +140,23 @@ def test_gate_required_set_matches_module_registry() -> None:
 
 
 def test_compose_all_contains_every_block() -> None:
-    prompt = dp.compose("TASK BODY", sections=None)
+    prompt = dp.compose("TASK BODY", bounds=_BOUNDS, sections=None)
     assert prompt.startswith("TASK BODY")
     for name in sc.CONTRACT_CONSTANT_NAMES:
         assert getattr(sc, name) in prompt, f"compose(all) missing {name}"
 
 
 def test_compose_subset_contains_only_requested_blocks() -> None:
-    prompt = dp.compose("TASK BODY", sections=["landing", "web", "git", "verify"])
+    prompt = dp.compose(
+        "TASK BODY", bounds=_BOUNDS, sections=["landing", "web", "git", "verify"]
+    )
     # 'verify' expands to two constants; all four keys -> five blocks.
     for name in (
         "LANDING_CONTRACT",
         "WEB_AUTHORITY",
         "GIT_CUSTODY",
-        "VERIFY_FULL_SUITE",
-        "FRESH_CONTEXT_VERIFIER",
+        "VERIFY_CHANGED_CONTRACT",
+        "EVIDENCE_REVIEW",
     ):
         assert getattr(sc, name) in prompt, f"requested block {name} missing"
     for name in (
@@ -86,21 +172,21 @@ def test_compose_subset_contains_only_requested_blocks() -> None:
 
 
 def test_compose_is_order_stable_regardless_of_key_order() -> None:
-    a = dp.compose("T", sections=["git", "web", "landing"])
-    b = dp.compose("T", sections=["landing", "web", "git"])
+    a = dp.compose("T", bounds=_BOUNDS, sections=["git", "web", "landing"])
+    b = dp.compose("T", bounds=_BOUNDS, sections=["landing", "web", "git"])
     assert a == b, "composed prompt must be canonical-ordered, not typed-order"
 
 
-def test_compose_verify_block_is_the_recent_miss() -> None:
+def test_compose_verify_reuses_evidence_and_bounds_proofs() -> None:
     # The exact clause a recent lane was missing must be present when 'verify' is selected.
-    prompt = dp.compose("T", sections=["verify"])
-    assert "cargo test -p <crate>" in prompt
-    assert "NOT a single narrow gate" in prompt
+    prompt = dp.compose("T", bounds=_BOUNDS, sections=["verify"])
+    assert "Reuse matching evidence" in prompt
+    assert "no automatic full-suite run" in prompt
 
 
 def test_compose_unknown_section_fails_loud() -> None:
     with pytest.raises(KeyError):
-        dp.compose("T", sections=["landing", "not-a-section"])
+        dp.compose("T", bounds=_BOUNDS, sections=["landing", "not-a-section"])
 
 
 def test_standard_contract_rejects_unknown_name() -> None:
@@ -129,10 +215,12 @@ def _clone_module_namespace() -> types.SimpleNamespace:
 
 def test_gate_fails_on_deleted_constant() -> None:
     ns = _clone_module_namespace()
-    delattr(ns, "VERIFY_FULL_SUITE")  # synthetic removal of the recent-miss block
+    delattr(ns, "VERIFY_CHANGED_CONTRACT")  # synthetic removal of the recent-miss block
     result = gate.audit(ns)
     assert not result.ok
-    assert any("VERIFY_FULL_SUITE" in f and "MISSING" in f for f in result.failures)
+    assert any(
+        "VERIFY_CHANGED_CONTRACT" in f and "MISSING" in f for f in result.failures
+    )
 
 
 def test_gate_fails_on_blanked_constant() -> None:
@@ -190,17 +278,21 @@ def test_example_real_lane_prompt_renders() -> None:
         "scalar_carriers.rs so the result stringifies as its integer value, not raw i64 bits."
     )
     prompt = dp.compose(
-        task, sections=["verify", "fakes", "git", "build", "landing", "triality"]
+        task,
+        bounds=_BOUNDS,
+        sections=["verify", "fakes", "git", "build", "landing", "triality"],
     )
     # Task body first, then the selected blocks, blank-line separated.
     assert prompt.startswith(task)
     assert "\n\n" in prompt
     # The lane inherits the exact clauses it needs, mechanically:
-    assert "cargo test -p <crate>" in prompt  # VERIFY_FULL_SUITE (M05)
+    assert "Reuse matching evidence" in prompt  # VERIFY_CHANGED_CONTRACT (M05)
     assert "zero stubs, zero theater" in prompt  # NO_FAKES (M05)
     assert "NEVER `git add -A`" in prompt  # GIT_CUSTODY
     assert "never change source, seal, worktree, or toolchain custody" in prompt
-    assert "every work turn lands something real" in prompt  # LANDING_CONTRACT (M12)
+    assert "integration owner" in prompt  # LANDING_CONTRACT (M12)
     assert "all three legs" in prompt  # TRIALITY_WIRING (M63)
     # And does NOT carry the blocks it did not request.
-    assert "Fable orchestrates" not in prompt  # MODEL_TIER not selected
+    assert (
+        "Respect operator concurrency limits" not in prompt
+    )  # MODEL_TIER not selected

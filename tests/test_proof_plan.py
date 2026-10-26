@@ -10708,7 +10708,7 @@ def test_compiled_preparation_directory_survives_merged_receipt_transport(
     assert files["child-policy.py"]["size"] == len(source)
     assert files["host.stdout.log"]["size"] == 0
 
-    # Multi-path uploads retain the common root; two cell receipts remain
+    # Multi-path uploads retain the common root; three cell receipts remain
     # distinct after download-artifact merges their proof-receipt-* artifacts.
     downloaded = tmp_path / "proof-receipts"
     receipts = downloaded / "proof-receipts"

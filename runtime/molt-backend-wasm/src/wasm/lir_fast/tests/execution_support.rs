@@ -1,7 +1,7 @@
 //! One linker/validator for executable LIR test bodies.
 use crate::wasm::WasmBackend;
 use crate::wasm::body::WasmBody;
-use crate::wasm_data::DataSegmentRef;
+use crate::wasm_data::WasmDataSegments;
 use crate::wasm_function_types::WasmFunctionTypes;
 use std::collections::BTreeMap;
 use wasm_encoder::{
@@ -29,34 +29,36 @@ pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
     }
     let mut functions = FunctionSection::new();
     functions.function(function_type);
-    // Word-range transports (tuple construction, unpack outputs) address
-    // linear memory; hosts read it through the exported memory.
-    let mut memories = MemorySection::new();
-    memories.memory(MemoryType {
-        minimum: 1,
-        maximum: None,
-        memory64: false,
-        shared: false,
-        page_size_log2: None,
-    });
     let mut exports = ExportSection::new();
     exports.export("run", ExportKind::Func, import_indices.len() as u32);
     exports.export("memory", ExportKind::Memory, 0);
     let mut function = Function::new(body.locals.iter().map(|&ty| (1, ty)));
+    let mut backend = WasmBackend::new();
+    backend.data_segments = WasmDataSegments::new(64);
+    let literal_out = backend.add_data_segment_mutable(false, &[0; 8]);
     body.emit_into(
         "lir_test_execution",
-        &mut WasmBackend::new(),
+        &mut backend,
         0,
         false,
-        DataSegmentRef {
-            offset: 0,
-            index: 0,
-        },
+        literal_out,
         |import| import_indices[&import],
         &mut function,
     );
     let mut code = CodeSection::new();
     code.function(&function);
+    // Keep the same data authority that emitted literal pointers. A zero-filled
+    // memory without these segments cannot exercise constructor payloads.
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: u64::from(backend.data_segments.offset())
+            .div_ceil(65_536)
+            .max(1),
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     let mut module = Module::new();
     module.section(&types);
     module.section(&imports);
@@ -64,6 +66,7 @@ pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
     module.section(&memories);
     module.section(&exports);
     module.section(&code);
+    module.section(backend.data_segments.section());
     let bytes = module.finish();
     wasmparser::Validator::new()
         .validate_all(&bytes)

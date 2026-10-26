@@ -1,34 +1,9 @@
 #!/usr/bin/env python3
-"""Canonical molt subagent-dispatch contract, as NAMED CODE CONSTANTS (APPARATUS A7).
+"""Bounded dispatch support; AGENTS.md owns standing project policy.
 
-Every molt spawn prompt already needs the same blocks by convention (grounded
-progress, land-or-blocker, verify-the-full-surface, web-authority, no-fakes, git
-custody, build-env, distill, model-tier, triality wiring). When those blocks are
-hand-typed per dispatch they DRIFT — a clause silently goes missing and the lane
-inherits a gap. The concrete failure this module extinguishes: a recent lane
-shipped a change verified only by a NARROW gate, not the full test surface,
-because "verify the FULL test surface" was not in its prompt.
-
-This module holds each block as a named constant, documents the M## directive it
-mechanizes (see ``MECHANIZES``), and pins the verbatim-grade fragment each block
-must keep (see ``KEY_PHRASES``). ``tools/dispatch_prompt.py`` COMPOSES spawn
-prompts from these constants (a dispatcher composes, never re-types), and
-``tools/check_subagent_contract.py`` is the anti-rot gate: it hardcodes the
-required constant names so removing/renaming/blanking any of them fails the gate
-(a removed constant cannot self-waive its own check).
-
-Doctrine anchors: docs/agent/APPARATUS_FROM_COMMA_LAB.md sections A7 + 1.10, and
-memory M05/M06/M12/M14/M17/M18/M19/M20/M23/M28/M33/M62/M63/M70.
-
-Usage (dispatcher side)::
-
-    from tools.subagent_contract import standard_contract
-    prompt = f"{task_body}\n\n{standard_contract()}"
-
-or, to pick a subset of sections::
-
-    from tools.dispatch_prompt import compose
-    prompt = compose(task_body, sections=["landing", "web", "git", "verify"])
+Routing blocks do not add proof, research or landing obligations. The composer
+requires an outcome, deliverable, owners, write scope, proof commands, budget and
+stop condition. Historical doctrine is documented in the owning apparatus doc.
 """
 
 from __future__ import annotations
@@ -37,7 +12,7 @@ __all__ = [
     "BUILD_ENV",
     "CONTRACT_CONSTANT_NAMES",
     "DISTILL",
-    "FRESH_CONTEXT_VERIFIER",
+    "EVIDENCE_REVIEW",
     "GIT_CUSTODY",
     "GROUNDED_PROGRESS",
     "KEY_PHRASES",
@@ -48,7 +23,7 @@ __all__ = [
     "NO_FAKES",
     "PREMISE_VERIFICATION",
     "TRIALITY_WIRING",
-    "VERIFY_FULL_SUITE",
+    "VERIFY_CHANGED_CONTRACT",
     "WEB_AUTHORITY",
     "standard_contract",
 ]
@@ -60,138 +35,93 @@ __all__ = [
 # the KEY_PHRASES fragment verbatim so the anti-rot gate can prove the block still says what
 # it must.
 
-#: The honest-status floor: never promote an unverified claim to a reported result.
-#: Also the background-lane restate convention (the extractor reads only message text).
 GROUNDED_PROGRESS = (
-    "GROUNDED PROGRESS: before you report any result, audit each claim against a tool "
-    "result from THIS session; report only what you can point to evidence for, and say "
-    "'not yet verified' for anything you cannot. Restate outcomes in your own words even "
-    "when a tool already printed them -- the reader saw none of the tool output."
+    "GROUNDED PROGRESS: audit each claim against a tool result or matching retained evidence. "
+    "Report the assigned outcome, evidence, failures and unknowns concisely; test counts and "
+    "activity are not progress."
 )
 
-#: M12 -- do not end a turn on a plan/promise; do the work or name a real external blocker.
 NO_ENDING_ON_PROMISES = (
-    "NO ENDING ON PROMISES (M12): before ending your turn, check your last paragraph. If "
-    "it is a plan, a question, or a promise about undone work, do that work now with tool "
-    "calls instead of ending -- or name the concrete external blocker. Reporting/planning/"
-    "handing-off without landing is POISON."
+    "COMPLETE THE ASSIGNMENT: check your last paragraph against the assigned deliverable and "
+    "stop condition. Finish that deliverable and return it; a bounded audit or review ends with "
+    "its findings. The parent owns integration and scope expansion."
 )
 
-#: M05 -- the exact recent miss: verify the FULL surface a change can touch, not one gate.
-VERIFY_FULL_SUITE = (
-    "VERIFY THE FULL SURFACE (M05): a change is verified only when you run the FULL test "
-    "surface it can touch -- `cargo test -p <crate>` for every crate you edited (plus the "
-    "differential/E2E path where behavior changed), NOT a single narrow gate that happens "
-    "to pass. A green narrow gate over a broken full suite is the exact miss this contract "
-    "exists to kill. A PASS is a hypothesis until you reproduce it."
+VERIFY_CHANGED_CONTRACT = (
+    "VERIFY THE CHANGED CONTRACT: use the assigned proof owner and commands. Reuse matching "
+    "evidence; no automatic full-suite run, repeated PASS, benchmark or extra verifier. A "
+    "changed input, new failure or uncovered obligation must justify a rerun. Mandatory landing "
+    "and release gates remain required once."
 )
 
-#: M05 -- fresh-context verifier subagents beat self-critique; verify against the spec.
-FRESH_CONTEXT_VERIFIER = (
-    "FRESH-CONTEXT VERIFICATION (M05): independently verify every deliverable, including a "
-    "subagent's -- a fresh-context verifier checking against the written specification beats "
-    "self-critique from the recollection that produced the work. Reproduce the claimed PASS "
-    "yourself before you rely on it."
+EVIDENCE_REVIEW = (
+    "EVIDENCE REVIEW: review the result against the written specification and its "
+    "source/tool/environment/workload identities. Inspect existing receipts first. Independent "
+    "review challenges the oracle and changed contract; it does not reproduce a matching PASS "
+    "by default."
 )
 
-#: M06 -- full web access; verify every spec/API against the PRIMARY source; cite.
 WEB_AUTHORITY = (
-    "WEB AUTHORITY (M06): you have full WebSearch/WebFetch. Verify every spec, API, ABI "
-    "detail, or version claim against the PRIMARY source (the CPython/numpy/Cranelift/WASI "
-    "docs or source, never from memory -- especially anything post-cutoff) and cite the "
-    "source you checked. An uncited spec claim is an unverified claim."
+    "WEB AUTHORITY: use primary sources for uncertain, changing or load-bearing design facts "
+    "needed by this task. Reuse applicable research and cite it. Broader surveys require a "
+    "concrete unresolved decision on the critical path."
 )
 
-#: M12 -- land a commit/proof/passing test via the queue every turn, or name a real blocker.
 LANDING_CONTRACT = (
-    "LANDING CONTRACT (M12): every work turn lands something real -- a commit, a proof, or a "
-    "passing test via the queue -- or names a concrete external blocker. Land incrementally "
-    "so a harness exit cannot lose the work; burn blockers down foundational-first. "
-    "Report-without-landing does not count as a turn."
+    "LANDING OWNERSHIP: the integration owner carries the authorized change through landing and "
+    "retirement. Workers return their assigned artifact and evidence; read-only work does not "
+    "create a commit, proof run or second lane merely to show progress."
 )
 
-#: M05 -- zero fakes: no stubs, theater, weakened asserts, or unmeasured perf claims.
 NO_FAKES = (
-    "NO FAKES (M05, non-negotiable): zero stubs, zero theater, no weakened/commented-out "
-    "asserts, no perf claim you did not measure. A gate that cannot fail certifies nothing; "
-    "an assert you relaxed to get green is a silent regression. If you cannot do it for "
-    "real this turn, say so and name the blocker instead of shipping a placeholder."
+    "NO FAKES: zero stubs, zero theater, weakened assertions, silent fallbacks or unmeasured "
+    "performance claims. Solve the complete owned contract through its canonical authority. "
+    "More tests cannot substitute for a coherent design."
 )
 
-#: M17/M18/M19/M20/M23/M24 -- git custody: SSH push, pathspec commits, no destructive git,
-#: work in your own worktree.
 GIT_CUSTODY = (
-    "GIT CUSTODY (M17/M18/M19/M20/M23): work in your OWN `git worktree` off latest "
-    "origin/main -- prove `git rev-parse --show-toplevel` is not the shared checkout before "
-    "any write. Commit with `git commit -m ... -- <pathspec>` (NEVER `git add -A`/`git add .` "
-    "-- that sweeps a sibling lane's staged WIP). Push over SSH (git@github.com; the HTTPS "
-    "cred lacks `workflow` scope). NEVER run destructive git (reset --hard / checkout -- / "
-    "clean -fd / stash drop) on the shared checkout."
+    "GIT CUSTODY: use the assigned managed checkout and exact owned paths; preserve other work. "
+    "NEVER `git add -A` or broadly stage, reset, clean or overwrite. Reuse existing WIP and "
+    "lanes; the integration owner owns publication and retirement under AGENTS.md."
 )
 
-#: M14/M28/M29/M62/M66 -- build env: canonical checkout-family target, .venv python, native
-#: cpython-abi tests don't set MOLT_SESSION_ID.
 BUILD_ENV = (
-    "BUILD ENV (M14/M28/M62): the molt CLI needs `.venv/Scripts/python.exe` (Py3.12; the "
-    "host python lacks the deps). Use the checkout-family DX root for shared build state; "
-    "an explicit output/scratch directory must never change source, seal, worktree, or "
-    "toolchain custody. The perf gate is `molt build "
-    "--release` (default dev is unoptimized); differential is serial "
-    "(`tests/molt_diff.py --jobs 1`). Native cpython-abi tests must NOT set MOLT_SESSION_ID."
+    "BUILD ENV: resolve the supported CPython 3.12+ interpreter and child environment through "
+    "canonical DX/toolchain authorities. Artifact placement must never change source, seal, "
+    "worktree, or toolchain custody. Use the proof plan for actual profiles and prerequisites."
 )
 
-#: The distill philosophy -- delete as much code as possible; the right primitive makes
-#: swaths deletable; boxing is poison (M33 keep-vs-rip).
 DISTILL = (
-    "DISTILL: delete as much code as possible -- the win is the primitive that makes whole "
-    "swaths deletable, not the clever addition. Boxing/indirection layered to paper over a "
-    "missing primitive is poison; find the primitive instead. Distinguish poison (a fake or "
-    "a mask over a primitive -> rip) from misplaced-but-valuable (right code, wrong layer -> "
-    "git mv, never delete)."
+    "DISTILL: simplify the canonical mechanism when it advances the assigned outcome. Remove "
+    "replaced consumers together; preserve valuable fast paths until measured. Do not pursue a "
+    "deletion quota or adjacent cleanup at the expense of the critical path."
 )
 
-#: M70 -- model-tier delegation: Fable orchestrates + does the hard novel work; Opus takes
-#: hard-specified lanes; Sonnet takes mechanical/doc lanes.
 MODEL_TIER = (
-    "MODEL TIER (M70): Fable orchestrates and does the novel/hard work itself; delegate "
-    "hard-but-specified lanes to Opus and mechanical/doc lanes to Sonnet. Keep concurrent "
-    "Fable subagents at most one, very rarely -- over-spawning the top tier burns the token "
-    "budget and re-trips the rate limit. Saturate independent P0s with concurrent lanes; "
-    "never single-lane-and-sleep."
+    "MODEL AND CONCURRENCY: inherit the selected model and effort unless the operator or "
+    "AGENTS.md directs otherwise. Respect operator concurrency limits. No recursive delegation, "
+    "independent proof fanout or new integration lane without the parent assigning it."
 )
 
-#: M63 -- triality: a real fix lands in all three legs together (a gate/registry + a
-#: memory/ledger row alongside the code).
 TRIALITY_WIRING = (
-    "TRIALITY WIRING (M63): a finding is 'known' only when it agrees across all three legs "
-    "-- the code/DAG, the gate/registry that enforces it, and the memory/ledger row that "
-    "records it. Land the gate (or registry ratchet) and the ledger/CLAIMS row in the SAME "
-    "commit batch as the code; a fix that moves only one leg is drift."
+    "KEEP AUTHORITIES ALIGNED: reconcile all three legs where applicable: implementation, "
+    "existing proof authority and owning public contract or ledger. Update affected consumers; "
+    "do not create a new gate, registry or ledger ritual for every finding."
 )
 
-#: M22/M24 -- premise verification: before the first Write, prove no sister lane already
-#: landed or is mid-flight on this surface (the A11 preflight); commit named-files-only.
 PREMISE_VERIFICATION = (
-    "PREMISE VERIFICATION (M22/M24): before your first Write, run "
-    "`python tools/check_sister_landed.py --files <targets> --topic <lane>` -- exit 8 "
-    "STAND_DOWN_DUPLICATE means a sister lane already LANDED this surface, exit 9 "
-    "WAIT_AND_REASSESS means one is MID-FLIGHT on it. On 8/9, re-read docs/agent/CLAIMS.md "
-    "plus the recent landings (git log) and pick a different lane or a genuinely remaining "
-    "slice -- never duplicate work or collide on shared files. When you land, commit through "
-    "`tools/commit_serializer.py` (named files only, never `git add -A`), and self-retire a "
-    "dead lane with a terminal CLAIMS status (FALSIFIED / SUPERSEDED / "
-    "MEASURED_IMPLEMENTATION_RETIRED / STALE_ASSUMED_DEAD) so stale custody cannot block it."
+    "PREMISE VERIFICATION: before your first Write, check the canonical owner, relevant history "
+    "and preserved WIP for an existing solution. Reuse or reconcile it. Return ownership "
+    "conflicts or new scope to the parent; do not open a competing lane."
 )
 
 # --- Registry (consumed by the anti-rot gate + the tests) ----------------------------------
 
-#: Every named contract block this module guarantees. The anti-rot gate hardcodes the same
-#: names independently so emptying THIS tuple cannot self-waive the gate.
 CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "GROUNDED_PROGRESS",
     "NO_ENDING_ON_PROMISES",
-    "VERIFY_FULL_SUITE",
-    "FRESH_CONTEXT_VERIFIER",
+    "VERIFY_CHANGED_CONTRACT",
+    "EVIDENCE_REVIEW",
     "WEB_AUTHORITY",
     "LANDING_CONTRACT",
     "NO_FAKES",
@@ -203,13 +133,11 @@ CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "PREMISE_VERIFICATION",
 )
 
-#: The M## directive(s) each constant mechanizes -- so every block documents its provenance
-#: and the gate can prove no block lost its anchor.
 MECHANIZES: dict[str, str] = {
     "GROUNDED_PROGRESS": "M05",
     "NO_ENDING_ON_PROMISES": "M12",
-    "VERIFY_FULL_SUITE": "M05",
-    "FRESH_CONTEXT_VERIFIER": "M05",
+    "VERIFY_CHANGED_CONTRACT": "M05",
+    "EVIDENCE_REVIEW": "M05",
     "WEB_AUTHORITY": "M06",
     "LANDING_CONTRACT": "M12",
     "NO_FAKES": "M05",
@@ -221,20 +149,18 @@ MECHANIZES: dict[str, str] = {
     "PREMISE_VERIFICATION": "M22/M24",
 }
 
-#: The verbatim-grade fragment each block must keep. A block may be reworded, but if it drops
-#: its key phrase it has lost its load-bearing instruction and the gate fails.
 KEY_PHRASES: dict[str, str] = {
     "GROUNDED_PROGRESS": "audit each claim against a tool result",
     "NO_ENDING_ON_PROMISES": "check your last paragraph",
-    "VERIFY_FULL_SUITE": "cargo test -p <crate>",
-    "FRESH_CONTEXT_VERIFIER": "against the written specification",
-    "WEB_AUTHORITY": "Verify every spec, API",
-    "LANDING_CONTRACT": "every work turn lands something real",
+    "VERIFY_CHANGED_CONTRACT": "Reuse matching evidence",
+    "EVIDENCE_REVIEW": "against the written specification",
+    "WEB_AUTHORITY": "primary sources",
+    "LANDING_CONTRACT": "integration owner",
     "NO_FAKES": "zero stubs, zero theater",
     "GIT_CUSTODY": "NEVER `git add -A`",
     "BUILD_ENV": "never change source, seal, worktree, or toolchain custody",
-    "DISTILL": "delete as much code as possible",
-    "MODEL_TIER": "Fable orchestrates",
+    "DISTILL": "advances the assigned outcome",
+    "MODEL_TIER": "Respect operator concurrency limits",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
 }

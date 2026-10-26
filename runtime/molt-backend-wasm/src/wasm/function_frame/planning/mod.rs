@@ -135,9 +135,6 @@ impl WasmFunctionFramePlan {
                     out_local_idx,
                     is_dead,
                     seed_at_entry,
-                    &mut locals,
-                    &mut local_types,
-                    &mut local_count,
                 );
             }
         }
