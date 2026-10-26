@@ -432,27 +432,47 @@ fn precompile_selector_accepts_only_execution_inputs() {
 
 #[test]
 fn execution_kind_rejects_runtime_import_drift() {
+    let engine = build_engine().expect("production host engine");
+    let standalone = Module::new(
+        &engine,
+        r#"(module (import "wasi_snapshot_preview1" "proc_exit" (func (param i32))))"#,
+    )
+    .expect("valid standalone import fixture");
+    let split = Module::new(
+        &engine,
+        r#"(module (import "molt_runtime" "anchor" (func)))"#,
+    )
+    .expect("valid runtime import fixture");
     assert!(
-        validate_execution_imports(true, true, true)
+        validate_execution_imports(LoadedGuestKind::WasiCommand, &split)
             .unwrap_err()
             .to_string()
-            .contains("must not import molt_runtime")
+            .contains("Molt host imports require a current deployment manifest")
     );
     assert!(
-        validate_execution_imports(false, true, true)
+        validate_execution_imports(LoadedGuestKind::MoltApplication { linked: true }, &split)
             .unwrap_err()
             .to_string()
             .contains("linked wasm still imports molt_runtime")
     );
     assert!(
-        validate_execution_imports(false, false, false)
-            .unwrap_err()
-            .to_string()
-            .contains("split-runtime app does not import molt_runtime")
+        validate_execution_imports(
+            LoadedGuestKind::MoltApplication { linked: false },
+            &standalone,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("split-runtime app does not import molt_runtime")
     );
-    validate_execution_imports(true, true, false).expect("standalone command imports");
-    validate_execution_imports(false, true, false).expect("linked application imports");
-    validate_execution_imports(false, false, true).expect("split application imports");
+    validate_execution_imports(LoadedGuestKind::WasiCommand, &standalone)
+        .expect("standalone command imports");
+    validate_execution_imports(
+        LoadedGuestKind::MoltApplication { linked: true },
+        &standalone,
+    )
+    .expect("linked application imports");
+    validate_execution_imports(LoadedGuestKind::MoltApplication { linked: false }, &split)
+        .expect("split application imports");
 }
 
 #[test]
@@ -1094,8 +1114,11 @@ fn execute_split_import_fixture(
         ),
     )
     .expect("valid application fixture");
-    validate_execution_imports(false, false, super::has_runtime_imports(&application))
-        .expect("split fixture must pass protocol admission before its injected import failure");
+    validate_execution_imports(
+        LoadedGuestKind::MoltApplication { linked: false },
+        &application,
+    )
+    .expect("split fixture must pass protocol admission before its injected import failure");
     execute_test_guest(
         engine,
         &application,

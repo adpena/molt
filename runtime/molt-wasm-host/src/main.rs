@@ -284,19 +284,27 @@ fn parse_host_args(args: impl IntoIterator<Item = String>) -> Result<ParsedHostA
     }))
 }
 
-fn validate_execution_imports(
-    is_wasi_command: bool,
-    use_linked: bool,
-    needs_runtime: bool,
-) -> Result<()> {
-    if is_wasi_command && needs_runtime {
-        bail!("WASI command module must not import molt_runtime");
-    }
-    if !is_wasi_command && use_linked && needs_runtime {
-        bail!("linked wasm still imports molt_runtime; link step incomplete");
-    }
-    if !is_wasi_command && !use_linked && !needs_runtime {
-        bail!("split-runtime app does not import molt_runtime");
+fn validate_execution_imports(kind: LoadedGuestKind, module: &Module) -> Result<()> {
+    match kind {
+        LoadedGuestKind::WasiCommand => {
+            if module.imports().any(|import| {
+                matches!(import.module(), "molt_runtime" | "molt_native")
+                    || (import.module() == "env" && import.name().starts_with("molt_"))
+            }) {
+                bail!(
+                    "Molt host imports require a current deployment manifest; use manifest.json instead of --wasi-command"
+                );
+            }
+        }
+        LoadedGuestKind::MoltApplication { linked } => {
+            let needs_runtime = has_runtime_imports(module);
+            if linked && needs_runtime {
+                bail!("linked wasm still imports molt_runtime; link step incomplete");
+            }
+            if !linked && !needs_runtime {
+                bail!("split-runtime app does not import molt_runtime");
+            }
+        }
     }
     Ok(())
 }
@@ -326,22 +334,8 @@ fn execute_loaded_guest(
         guest_args,
         wasm_table_base,
     } = options;
-    let (is_wasi_command, use_linked) = match kind {
-        LoadedGuestKind::MoltApplication { linked } => (false, linked),
-        LoadedGuestKind::WasiCommand => (true, true),
-    };
-    let needs_runtime = has_runtime_imports(output_module);
-    validate_execution_imports(is_wasi_command, use_linked, needs_runtime)?;
-    if is_wasi_command
-        && output_module.imports().any(|import| {
-            matches!(import.module(), "molt_runtime" | "molt_native")
-                || (import.module() == "env" && import.name().starts_with("molt_"))
-        })
-    {
-        bail!(
-            "Molt host imports require a current deployment manifest; use manifest.json instead of --wasi-command"
-        );
-    }
+    validate_execution_imports(kind, output_module)?;
+    let is_wasi_command = matches!(kind, LoadedGuestKind::WasiCommand);
 
     match kind {
         LoadedGuestKind::WasiCommand => {
