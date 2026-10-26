@@ -157,9 +157,7 @@ def test_snapshot_rejects_incompatible_execution_version_before_module_read(
         manifest["version"] = version
     path.write_text(json.dumps(manifest), encoding="utf-8")
     (tmp_path / "program.wasm").unlink()
-    with pytest.raises(
-        ValueError, match="Molt deployment manifest version must be 3"
-    ):
+    with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
         _snapshot_execution_identity(tmp_path / "output.wasm")
 
 
