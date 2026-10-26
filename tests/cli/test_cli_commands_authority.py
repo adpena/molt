@@ -18,11 +18,13 @@ _COMMAND_AUTHORITIES = {
         "_format_duration",
         "_run_command",
         "_run_command_timed",
+        "_timed_process_result",
     ),
     script_commands: (
         "_apply_run_capability_policy",
         "_deploy",
         "_run_script_cross",
+        "_run_wasm_with_guest_stderr",
         "_wasm_node_runner",
         "_wasm_run_build_args",
         "compare",

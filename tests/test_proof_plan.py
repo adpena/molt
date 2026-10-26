@@ -33,6 +33,7 @@ from tools import (
     gen_proof_plan,
     proof_command_argv,
     proof_plan,
+    proof_plan_cli,
     proof_receipts,
     toolchain_probe,
 )
@@ -431,7 +432,7 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
 
 
 def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> None:
-    from tools import molt_dev_common, molt_dev_policy
+    from tools import molt_dev, molt_dev_common, molt_dev_policy
 
     upstream = "a" * 40
     raw = "echo {integration_upstream_commit}..HEAD"
@@ -445,11 +446,19 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     assert bound == f"echo {upstream}..HEAD"
     assert [gate.command for gate in commands] == [raw]
     assert cfg.prerequisites == {"local.always.0": (raw, ())}
-    assert cfg.admit(["feature.rs"], matched, [raw], environ=os.environ) == {}
+    selected, _ = cfg.select(["feature.rs"], extra=[raw])
+    prepared = cfg.prepare(
+        selected,
+        baseline={},
+        prepare_python=lambda env, needed: molt_dev.prepare_gate_environment(
+            cfg.root, env, requires_python=needed
+        ),
+    )
+    assert prepared.fingerprints == {}
     with pytest.raises(
         molt_dev_common.DriverError, match="lack declared prerequisite custody"
     ):
-        cfg.admit(["feature.rs"], matched, [bound], environ=os.environ)
+        cfg.select(["feature.rs"], extra=[bound])
     literal = ("python", "-m", "pytest", "tests/test_proof_plan.py")
     assert (
         proof_plan.bind_local_gate_command(literal, upstream_commit=upstream) is literal
@@ -3060,10 +3069,15 @@ def test_source_extension_toolchain_requires_target_context_capture() -> None:
     assert "executable" not in policy.data
     assert "version_args" not in policy.data
     with pytest.raises(ValueError, match="requires target-context capture"):
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     with pytest.raises(ValueError, match="requires target-context capture"):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("source-extension",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("source-extension",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -3460,7 +3474,9 @@ def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
         return subprocess.CompletedProcess(command, 0, banner, "")
 
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
-    actual = proof_plan._version_fingerprint(policy, environment=os.environ)
+    actual = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert actual is not None
     assert actual["path"] == str(selected)
     assert (
@@ -3487,7 +3503,10 @@ def test_missing_sdk_role_is_a_toolchain_preflight_error(
         ValueError, match="wasm-ld toolchain selection failed.*provision SDK explicitly"
     ):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("wasm-ld",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("wasm-ld",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -3524,7 +3543,9 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
     )
 
-    fingerprint = proof_plan._version_fingerprint(policy, environment=os.environ)
+    fingerprint = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     expected_cwd = (proof_plan.ROOT / "formal/lean").resolve()
     assert fingerprint is not None
     assert calls == [
@@ -3572,7 +3593,9 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
         monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
     )
 
-    fingerprint = proof_plan._version_fingerprint(policy, environment=os.environ)
+    fingerprint = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert fingerprint is not None
     assert fingerprint["content_path"] == str(content.resolve())
     assert (
@@ -3640,7 +3663,9 @@ def test_toolchain_content_probe_failure_preserves_selection_cause(
         lambda *_args, **_kwargs: pytest.fail("a failed resolver has no runtime image"),
     )
     with pytest.raises(ValueError) as caught:
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     message = str(caught.value)
     assert "selected-runtime: content resolver failed" in message
     assert expected_cause in message
@@ -3682,7 +3707,9 @@ def test_toolchain_content_probe_failure_bounds_both_output_excerpts(
 
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     with pytest.raises(ValueError) as caught:
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     message = str(caught.value)
     assert "exit status 17" in message
     for boundary in ("stdout-head:", ":stdout-tail", "stderr-head:", ":stderr-tail"):
@@ -3737,7 +3764,10 @@ def test_toolchain_version_probe_failure_preserves_selection_cause(
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     with pytest.raises(ValueError) as caught:
         proof_plan.toolchain_fingerprints(
-            (policy,), (policy.name,), environment=os.environ
+            (policy,),
+            (policy.name,),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     message = str(caught.value)
     assert "selected-image: version query failed" in message
@@ -3835,7 +3865,10 @@ def test_toolchain_probe_sibling_stage_failures_are_aggregated(
     )
     with pytest.raises(ValueError) as caught:
         proof_plan.toolchain_fingerprints(
-            policies, (*failures, "version-c"), environment=os.environ
+            policies,
+            (*failures, "version-c"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     message = str(caught.value)
     for name, (code, detail) in failures.items():
@@ -5153,7 +5186,10 @@ def test_executor_rejects_toolchain_version_outside_contract(monkeypatch) -> Non
     )
     with pytest.raises(ValueError, match="toolchain contract violation"):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("python", "uv"), environment=os.environ
+            PLAN.toolchain_policies,
+            ("python", "uv"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -5166,7 +5202,10 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
     calls: list[str] = []
 
     def fake_fingerprint(
-        policy: proof_plan.ToolchainPolicy, *, environment: object
+        policy: proof_plan.ToolchainPolicy,
+        *,
+        environment: object,
+        python_executable,
     ) -> dict[str, str]:
         nonlocal active_rustup, overlap_detected
         if policy.data.get("fingerprint_domain") == "rustup":
@@ -5196,7 +5235,10 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
 
     monkeypatch.setattr(proof_plan, "_version_fingerprint", fake_fingerprint)
     fingerprints = proof_plan.toolchain_fingerprints(
-        PLAN.toolchain_policies, ("rustc", "cargo", "rustfmt"), environment=os.environ
+        PLAN.toolchain_policies,
+        ("rustc", "cargo", "rustfmt"),
+        environment=os.environ,
+        python_executable=Path(sys.executable),
     )
     assert set(fingerprints) == {"rustc", "cargo", "git", "rustfmt"}
     assert set(calls[:3]) == {"rustc", "git", "rustfmt"}
@@ -5423,10 +5465,18 @@ def test_admission_leaves_the_process_environment_for_the_next_admission(
     )
     before = dict(os.environ)
     first = proof_plan.admit_toolchains(
-        policies, ("sdk",), environ=os.environ, root=tmp_path
+        policies,
+        ("sdk",),
+        environ=os.environ,
+        root=tmp_path,
+        python_executable=Path(sys.executable),
     )
     second = proof_plan.admit_toolchains(
-        policies, ("python",), environ=os.environ, root=tmp_path
+        policies,
+        ("python",),
+        environ=os.environ,
+        root=tmp_path,
+        python_executable=Path(sys.executable),
     )
     assert dict(os.environ) == before
     assert first.environment == sdk_projection
@@ -5473,13 +5523,17 @@ def test_version_probe_searches_the_probed_environment_not_the_process(
         monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
     )
     found = proof_plan._version_fingerprint(
-        policy, environment={**os.environ, "PATH": str(selected)}
+        policy,
+        environment={**os.environ, "PATH": str(selected)},
+        python_executable=Path(sys.executable),
     )
     assert found is not None
     assert Path(found["path"]) == (selected / image).absolute()
     assert (
         proof_plan._version_fingerprint(
-            policy, environment={**os.environ, "PATH": str(empty)}
+            policy,
+            environment={**os.environ, "PATH": str(empty)},
+            python_executable=Path(sys.executable),
         )
         is None
     )
@@ -5880,6 +5934,64 @@ def test_source_bound_commands_bind_one_whole_placeholder_in_ci_tiers() -> None:
     assert row_errors(evidence_outputs=[]) == [
         f"{row.id}: a source-bound command must declare evidence_outputs"
     ]
+
+
+def test_docs_profile_is_command_owned_and_transported_with_proof_receipt() -> None:
+    profiled = [
+        command
+        for command in PLAN.commands
+        if any(argument.startswith("--molt-profile") for argument in command.argv)
+    ]
+    assert [command.id for command in profiled] == ["repository.docs-tests"]
+    command = profiled[0]
+    assert command.data["argv"] == [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "-p",
+        "tools.pytest_profile",
+        "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json",
+    ]
+    # The directory owns controller and worker siblings for cleanup and hashing.
+    assert command.evidence_outputs == (
+        "proof-receipts/evidence/repository-docs-tests",
+    )
+    assert command.data["timeout_seconds"] == 900
+    assert command.data["pytest_worker_memory_gb"] == 1.75
+    root = Path(__file__).resolve().parents[1]
+    job = proof_plan._workflow_job_block(
+        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        "docs-gates",
+    )
+    assert job is not None
+    assert (
+        "python3 tools/proof_plan.py --run-family repository_policy "
+        "--receipt proof-receipts/repository_policy.json"
+    ) in job
+    # A diagnostics-only upload passes the broad path-presence validator but
+    # neither real receipt receiver downloads it. Bind the actual upload step.
+    uploads = [
+        step
+        for step in re.split(r"(?m)^      - name: ", job)
+        if "          name: proof-receipt-repository-policy\n" in step
+    ]
+    assert len(uploads) == 1
+    upload = uploads[0]
+    assert "uses: actions/upload-artifact@" in upload
+    assert (
+        "          path: |\n"
+        "            proof-receipts/repository_policy.json\n"
+        "            proof-receipts/evidence/repository-docs-tests\n"
+    ) in upload
+    assert (
+        "if: always() && (hashFiles('proof-receipts/repository_policy.json') != '' "
+        "|| hashFiles('proof-receipts/evidence/repository-docs-tests/*.json') != '')"
+    ) in upload
 
 
 def test_every_family_transports_its_declared_evidence() -> None:
@@ -6979,6 +7091,429 @@ def test_empty_verified_selection_fails_with_its_cause(tmp_path, capsys) -> None
     assert "classifier produced no selection" in capsys.readouterr().err
 
 
+def _selection_artifact_fixture():
+    family = next(item for item in PLAN.families if item.name == "python_static")
+    family = replace(
+        family, data={**family.data, "inputs": ["owned.py"], "dependencies": []}
+    )
+    commands = tuple(
+        replace(command, data={**command.data, "dependencies": []})
+        for command in PLAN.commands
+        if command.family == family.name
+    )
+    plan = replace(PLAN, families=(family,), commands=commands, authority_inputs=())
+    context = {"run_id": 42, "run_attempt": 2, "event_name": "pull_request"}
+    # Independent wire oracle: no serializer/classifier output populates it.
+    payload = {
+        "schema": "molt.proof-selection.v1",
+        "source_commit": "a" * 40,
+        "source_tree": "b" * 40,
+        "source_tree_state": "clean",
+        "authority_sha256": "c" * 64,
+        "tier": "pr",
+        "github_context": context,
+        "selection": {
+            "mode": "changed-paths",
+            "changed_paths": ["owned.py"],
+            "reason": None,
+            "reasons": {"python_static": ["owned.py"]},
+        },
+        "selected": ["python_static"],
+    }
+    return plan, payload
+
+
+def _selection_options(payload):
+    return {
+        "tier": "pr",
+        "source_identity": {"commit": "a" * 40, "tree": "b" * 40},
+        "authority_sha256": "c" * 64,
+        "github_context": {
+            "run_id": 42,
+            "run_attempt": 2,
+            "event_name": "pull_request",
+        },
+        "event_tiers": proof_plan._EVENT_TIERS,
+        "full_selection_events": proof_plan.FULL_SELECTION_EVENTS,
+        "family_outputs": proof_plan.family_outputs,
+    }
+
+
+def _selection_api(plan):
+    return SimpleNamespace(
+        **{
+            **vars(proof_plan),
+            "ProofPlan": SimpleNamespace(load=lambda _path: plan),
+            "_source_identity": lambda: {"commit": "a" * 40, "tree": "b" * 40},
+            "_source_tree_changes": lambda: (),
+            "_authority_sha256": lambda _plan: "c" * 64,
+        }
+    )
+
+
+def test_selection_artifact_matches_independent_wire_and_declared_paths():
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    assert (
+        proof_receipts.selection_record(
+            plan, plan.select(["owned.py"]), mode="changed-paths", **options
+        )
+        == payload
+    )
+    assert proof_receipts.validate_selection(payload, plan, **options) == (
+        "python_static",
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "omitted",
+        "unknown",
+        "duplicate",
+        "tier",
+        "missing-tier",
+        "run",
+        "attempt",
+        "boolean-attempt",
+        "event",
+        "commit",
+        "tree",
+        "dirty",
+        "authority",
+        "schema",
+        "paths",
+        "reasons",
+        "mode",
+        "extra-key",
+    ],
+)
+def test_selection_artifact_refuses_tampering_before_receipts(fault):
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    if fault == "omitted":
+        payload["selected"] = []
+    elif fault == "unknown":
+        payload["selected"] = ["unknown"]
+    elif fault == "duplicate":
+        payload["selected"] *= 2
+    elif fault == "tier":
+        payload["tier"] = "main"
+    elif fault == "missing-tier":
+        del payload["tier"]
+    elif fault in {"run", "attempt", "boolean-attempt", "event"}:
+        key, value = {
+            "run": ("run_id", 43),
+            "attempt": ("run_attempt", 1),
+            "boolean-attempt": ("run_attempt", True),
+            "event": ("event_name", "push"),
+        }[fault]
+        payload["github_context"][key] = value
+    elif fault in {"commit", "tree", "dirty", "authority", "schema"}:
+        key = {
+            "commit": "source_commit",
+            "tree": "source_tree",
+            "dirty": "source_tree_state",
+            "authority": "authority_sha256",
+            "schema": "schema",
+        }[fault]
+        payload[key] = "wrong"
+    elif fault == "paths":
+        payload["selection"]["changed_paths"] = []
+    elif fault == "reasons":
+        payload["selection"]["reasons"] = {}
+    elif fault == "mode":
+        payload["selection"]["mode"] = []
+    else:
+        payload["unexpected"] = True
+    with pytest.raises(ValueError):
+        proof_receipts.validate_selection(payload, plan, **options)
+
+
+@pytest.mark.parametrize("mode", ["full", "fail-closed"])
+def test_selection_artifact_reconstructs_full_modes(mode):
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    options["github_context"] = {
+        "run_id": 42,
+        "run_attempt": 2,
+        "event_name": "merge_group",
+    }
+    options["tier"] = "main"
+    reason = (
+        "merge_group: full proof plan"
+        if mode == "full"
+        else "fail-closed event selection: missing base"
+    )
+    selection = plan.all_selected(reason=reason, fail_closed=mode == "fail-closed")
+    record = proof_receipts.selection_record(plan, selection, mode=mode, **options)
+    assert record["selection"] == {
+        "mode": mode,
+        "changed_paths": [],
+        "reason": reason,
+        "reasons": {"python_static": [reason]},
+    }
+    assert proof_receipts.validate_selection(record, plan, **options) == (
+        "python_static",
+    )
+    record["selected"] = []
+    with pytest.raises(ValueError, match="incomplete"):
+        proof_receipts.validate_selection(record, plan, **options)
+
+
+def test_selection_artifact_cannot_make_full_event_empty():
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    options.update(
+        tier="main",
+        github_context={"run_id": 42, "run_attempt": 2, "event_name": "merge_group"},
+    )
+    with pytest.raises(ValueError, match="full-plan event"):
+        proof_receipts.selection_record(
+            plan, plan.select([]), mode="changed-paths", **options
+        )
+
+
+def test_selection_file_requires_executable_coverage_and_allows_canonical_empty(
+    tmp_path,
+):
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    path = tmp_path / "selection.json"
+    proof_receipts.write_selection(path, payload, receipt_root=receipts)
+    errors = proof_plan_cli.verify_selection_file(
+        api, plan, path, receipts, tier="pr", github_context=payload["github_context"]
+    )
+    expected = proof_plan._topological_commands(plan, family="python_static", tier="pr")
+    assert errors == [
+        f"{command.id}: required executable receipt is missing" for command in expected
+    ]
+    assert errors
+    for command in expected:
+        receipt = _receipt_for(command, receipts)
+        receipt.update(
+            source_commit="a" * 40, source_tree="b" * 40, authority_sha256="c" * 64
+        )
+        (receipts / f"{command.id}.json").write_text(
+            json.dumps(receipt), encoding="utf-8"
+        )
+    assert (
+        proof_plan_cli.verify_selection_file(
+            api,
+            plan,
+            path,
+            receipts,
+            tier="pr",
+            github_context=payload["github_context"],
+        )
+        == []
+    )
+    # No receipt discovery can invent the expected selected set.
+    payload["selection"] = {
+        "mode": "changed-paths",
+        "changed_paths": [],
+        "reason": None,
+        "reasons": {},
+    }
+    payload["selected"] = []
+    empty = tmp_path / "empty.json"
+    empty_receipts = tmp_path / "empty-receipts"
+    empty_receipts.mkdir()
+    proof_receipts.write_selection(empty, payload, receipt_root=empty_receipts)
+    assert (
+        proof_plan_cli.verify_selection_file(
+            api,
+            plan,
+            empty,
+            empty_receipts,
+            tier="pr",
+            github_context=payload["github_context"],
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("fault", ["dirty", "commit-drift", "authority-drift"])
+def test_selection_file_rejects_source_drift(tmp_path, fault):
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    # Empty canonical selection isolates source fencing from missing receipts.
+    payload["selection"] = {
+        "mode": "changed-paths",
+        "changed_paths": [],
+        "reason": None,
+        "reasons": {},
+    }
+    payload["selected"] = []
+    path, receipts = tmp_path / "selection.json", tmp_path / "receipts"
+    receipts.mkdir()
+    proof_receipts.write_selection(path, payload, receipt_root=receipts)
+    if fault == "dirty":
+        api._source_tree_changes = lambda: (" M owned.py",)
+    elif fault == "commit-drift":
+        identities = iter(
+            [
+                {"commit": "a" * 40, "tree": "b" * 40},
+                {"commit": "d" * 40, "tree": "b" * 40},
+            ]
+        )
+        api._source_identity = lambda: next(identities)
+    else:
+        identities = iter(["c" * 64, "d" * 64])
+        api._authority_sha256 = lambda _plan: next(identities)
+    with pytest.raises(ValueError, match="source|authority"):
+        proof_plan_cli.verify_selection_file(
+            api,
+            plan,
+            path,
+            receipts,
+            tier="pr",
+            github_context=payload["github_context"],
+        )
+
+
+def test_selection_file_custody_refuses_missing_nested_duplicate_and_replacement(
+    tmp_path,
+):
+    _, payload = _selection_artifact_fixture()
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    with pytest.raises(ValueError, match="outside"):
+        proof_receipts.write_selection(
+            receipts / "selection.json", payload, receipt_root=receipts
+        )
+    path = tmp_path / "selection.json"
+    from molt.toolchain_identity import StableRegularFileError
+
+    with pytest.raises(StableRegularFileError, match="unavailable"):
+        proof_receipts.read_selection(path, receipt_root=receipts)
+    ambiguous = tmp_path / "multiple-selections"
+    ambiguous.mkdir()
+    with pytest.raises(StableRegularFileError):
+        proof_receipts.read_selection(ambiguous, receipt_root=receipts)
+    path.write_text('{"schema":1,"schema":2}', encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
+        proof_receipts.read_selection(path, receipt_root=receipts)
+    with pytest.raises(FileExistsError):
+        proof_receipts.write_selection(path, payload, receipt_root=receipts)
+
+
+def test_selection_cli_produces_artifact_and_verifies_same_context(
+    tmp_path, monkeypatch, capsys
+):
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        proof_plan_cli,
+        environ={"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2"},
+    )
+    path, receipts = tmp_path / "selection.json", tmp_path / "receipts"
+    receipts.mkdir()
+    argv = [
+        "--selection-output",
+        str(path),
+        "--receipt-dir",
+        str(receipts),
+        "--path",
+        "owned.py",
+        "--event-name",
+        "pull_request",
+        "--tier",
+        "pr",
+    ]
+    assert proof_plan_cli.main(api, argv) == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+    verify = [
+        "--verify-selection",
+        str(path),
+        "--receipt-dir",
+        str(receipts),
+        "--event-name",
+        "pull_request",
+        "--tier",
+        "pr",
+    ]
+    assert proof_plan_cli.main(api, verify) == 1
+    assert "required executable receipt is missing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["", "0", "-1", "1.0", " 2", "２"])
+def test_selection_cli_requires_positive_decimal_run_context(value):
+    with pytest.raises(ValueError, match="GITHUB_RUN_ATTEMPT"):
+        proof_plan_cli._github_selection_context(
+            {"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": value}, "pull_request"
+        )
+
+
+def test_selection_file_context_refusal_precedes_receipt_discovery(
+    tmp_path, monkeypatch
+):
+    plan, payload = _selection_artifact_fixture()
+    path, receipts = tmp_path / "selection.json", tmp_path / "receipts"
+    proof_receipts.write_selection(path, payload, receipt_root=receipts)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("mismatched selection reached executable receipt discovery")
+
+    monkeypatch.setattr(proof_receipts, "verify_receipts", forbidden)
+    with pytest.raises(ValueError, match="github_context"):
+        proof_plan_cli.verify_selection_file(
+            _selection_api(plan),
+            plan,
+            path,
+            receipts,
+            tier="pr",
+            github_context={
+                "run_id": 42,
+                "run_attempt": 3,
+                "event_name": "pull_request",
+            },
+        )
+
+
+@pytest.mark.parametrize("fault", ["tier", "namespace", "dirty"])
+def test_selection_cli_refuses_invalid_publication_before_artifact(
+    tmp_path, monkeypatch, fault
+):
+    plan, _ = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    api.active_tier = lambda: proof_plan.active_tier({})
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        proof_plan_cli,
+        environ={"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2"},
+    )
+    receipts = tmp_path / "receipts"
+    path = (
+        receipts / "selection.json"
+        if fault == "namespace"
+        else tmp_path / "selection.json"
+    )
+    if fault == "dirty":
+        api._source_tree_changes = lambda: (" M owned.py",)
+    argv = [
+        "--selection-output",
+        str(path),
+        "--receipt-dir",
+        str(receipts),
+        "--path",
+        "owned.py",
+        "--event-name",
+        "pull_request",
+    ]
+    if fault != "tier":
+        argv.extend(["--tier", "pr"])
+    assert proof_plan_cli.main(api, argv) == 2
+    assert not path.exists()
+
+
 def test_active_tier_rejects_unknown_explicit_tiers() -> None:
     with pytest.raises(ValueError, match="MOLT_PROOF_TIER='weekly'"):
         proof_plan.active_tier({"MOLT_PROOF_TIER": "weekly"})
@@ -7628,9 +8163,13 @@ def test_wasi_compiler_fingerprint_bypasses_native_path_and_binds_helpers(
 
     with monkeypatch.context() as io_scope:
         io_scope.setattr(Path, "open", no_duplicate_image_read)
-        first = proof_plan._version_fingerprint(policy, environment=os.environ)
+        first = proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
         closure["resources"] = "changed helper"
-        second = proof_plan._version_fingerprint(policy, environment=os.environ)
+        second = proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
         assert first["path"] == str(compiler) == second["path"]
         assert first["identity_sha256"] != second["identity_sha256"]
         assert selected == ["clang", "clang"]
@@ -7685,7 +8224,9 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
             argv, 0, observed + "\n", ""
         ),
     )
-    fingerprint = proof_plan._version_fingerprint(policy, environment=os.environ)
+    fingerprint = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert fingerprint["version"] == observed
     assert (
         fingerprint["executable_sha256"]
@@ -7773,7 +8314,10 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
             ),
         )
         sdk = proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("wasi-clang",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("wasi-clang",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )["wasi-clang"]
     command = next(item for item in PLAN.commands if item.id == "python.static.ty")
     receipt_root = tmp_path / "receipts"
@@ -8243,7 +8787,9 @@ def test_rust_fingerprint_keeps_selected_physical_tool_without_rustup(
         lambda *args, **kwargs: pytest.fail("physical component invoked rustup"),
     )
     policy = next(row for row in PLAN.toolchain_policies if row.name == name)
-    result = proof_plan._version_fingerprint(policy, environment=os.environ)
+    result = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert result["content_path"] == str(selected)
     assert (
         result["executable_sha256"] == hashlib.sha256(selected.read_bytes()).hexdigest()
@@ -8280,7 +8826,10 @@ def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
         ValueError, match="helper differs from its provisioned generation"
     ):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("wasi-clang",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("wasi-clang",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -8600,7 +9149,7 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
     )
     calls = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         calls.append(policy.name)
         if policy.name == "raises":
             failure = OSError("independent injected probe failure")
@@ -8619,6 +9168,7 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
             tuple(p.name for p in policies),
             owners={p.name: ("local.example.0",) for p in policies},
             environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     message = str(caught.value)
     for expected in (
@@ -8777,14 +9327,17 @@ def test_selected_dependency_chain_has_linear_fact_traversal(monkeypatch):
     )
     probed = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         probed.append(policy.name)
         return None
 
     monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
     with pytest.raises(ValueError) as caught:
         proof_plan.toolchain_fingerprints(
-            policies, (f"image-{size - 1}",), environment=os.environ
+            policies,
+            (f"image-{size - 1}",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     assert probed == ["image-0"]
     message = str(caught.value)
@@ -8813,7 +9366,7 @@ def test_selected_executable_group_dependencies_admit_before_consumers(monkeypat
     )
     probed = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         if policy.name == "consumer":
             assert set(probed) == {"root", "second"}
         probed.append(policy.name)
@@ -8822,7 +9375,10 @@ def test_selected_executable_group_dependencies_admit_before_consumers(monkeypat
     monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
     assert set(
         proof_plan.toolchain_fingerprints(
-            policies, ("consumer",), environment=os.environ
+            policies,
+            ("consumer",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     ) == {
         "root",
@@ -8921,7 +9477,10 @@ def test_locked_node_package_admission_reports_real_node_missing_and_version_mis
     )
     with pytest.raises(ValueError) as first:
         proof_plan.toolchain_fingerprints(
-            policies, ("missing", "mismatch"), environment=os.environ
+            policies,
+            ("missing", "mismatch"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     assert "missing:" in str(first.value)
     assert "mismatch:" in str(first.value)
@@ -8929,13 +9488,19 @@ def test_locked_node_package_admission_reports_real_node_missing_and_version_mis
     install("missing", "1.0.0")
     with pytest.raises(ValueError) as second:
         proof_plan.toolchain_fingerprints(
-            policies, ("missing", "mismatch"), environment=os.environ
+            policies,
+            ("missing", "mismatch"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     assert "missing:" not in str(second.value)
     assert "mismatch:" in str(second.value)
     install("mismatch", "1.0.0")
     identities = proof_plan.toolchain_fingerprints(
-        policies, ("missing", "mismatch"), environment=os.environ
+        policies,
+        ("missing", "mismatch"),
+        environment=os.environ,
+        python_executable=Path(sys.executable),
     )
     assert set(identities) == {"node", "missing", "mismatch"}
     assert (
@@ -8981,7 +9546,9 @@ def test_selected_runtime_relative_entrypoint_uses_declared_probe_cwd(
         "find_executable",
         lambda _command, *, environment, cwd=None: Path(str(fixture.uv)),
     )
-    identity = proof_plan._version_fingerprint(policy, environment=os.environ)
+    identity = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     proof_plan.validate_selected_python_fingerprint(policy, identity)
     assert launches == [[str(selected), "--version"]]
     assert identity["content_path"] == str(selected)
@@ -9054,7 +9621,9 @@ def test_selected_runtime_rejects_alias_normalization_that_changes_physical_imag
         ),
     )
     with pytest.raises(ValueError) as caught:
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     message = str(caught.value)
     assert "selected-runtime: content resolver failed" in message
     assert "canonical entrypoint alias selects a different physical image" in message
@@ -9086,7 +9655,9 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
         "find_executable",
         lambda _command, *, environment, cwd=None: Path(str(fixture.uv)),
     )
-    before = proof_plan._version_fingerprint(fixture.policy, environment=os.environ)
+    before = proof_plan._version_fingerprint(
+        fixture.policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     proof_plan.validate_selected_python_fingerprint(fixture.policy, before)
     assert before["path"] == str(fixture.uv)
     assert before["launcher_path"] == str(fixture.uv.resolve())
@@ -9100,7 +9671,9 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
     library, unicode_file = fixture.installations[custody_spelling(fixture.selected[0])]
     with unicode_file.open("ab") as stream:
         stream.write(b"changed database provider with unchanged process images")
-    after = proof_plan._version_fingerprint(fixture.policy, environment=os.environ)
+    after = proof_plan._version_fingerprint(
+        fixture.policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert after["version"] == before["version"]
     assert after["launcher_sha256"] == before["launcher_sha256"]
     assert after["executable_sha256"] == before["executable_sha256"]
@@ -9394,7 +9967,11 @@ def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_i
     environ = {"PATH": "/usr/bin", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
     with pytest.raises(ValueError) as refused:
         proof_plan.admit_toolchains(
-            PLAN.toolchain_policies, ("npm",), environ=environ, root=proof_plan.ROOT
+            PLAN.toolchain_policies,
+            ("npm",),
+            environ=environ,
+            root=proof_plan.ROOT,
+            python_executable=Path(sys.executable),
         )
     message = str(refused.value)
     npm = tool_releases.tool_release("npm", proof_plan.ROOT)
@@ -9471,6 +10048,7 @@ def test_a_failed_checkout_input_never_claims_admission_does_not_download(
             ("browser-acorn",),
             environ={"PATH": ""},
             root=proof_plan.ROOT,
+            python_executable=Path(sys.executable),
         )
     message = str(refused.value)
     assert "browser-acorn: cannot provision archive: offline" in message
@@ -9618,7 +10196,9 @@ def test_a_runtime_tool_is_admitted_by_its_attested_installation(
         )
         is None
     )
-    identity = proof_plan._version_fingerprint(npm, environment=environment)
+    identity = proof_plan._version_fingerprint(
+        npm, environment=environment, python_executable=Path(sys.executable)
+    )
     projected = proof_plan.project_toolchains(
         (npm,), ("npm",), environ=environment, root=root
     )
@@ -9651,7 +10231,12 @@ def test_a_runtime_tool_is_admitted_by_its_attested_installation(
     retired = getattr(command, retired_installation)
     receipt = retired.prefix / tool_releases.TOOL_ATTESTATION_FILENAME
     receipt.unlink()
-    assert proof_plan._version_fingerprint(npm, environment=environment) is None
+    assert (
+        proof_plan._version_fingerprint(
+            npm, environment=environment, python_executable=Path(sys.executable)
+        )
+        is None
+    )
     projected = proof_plan.project_toolchains(
         (npm,), ("npm",), environ=environment, root=root
     )
@@ -9698,7 +10283,7 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
                     "auto",
                     "-m",
                     "not slow",
-                    "--molt-worker-memory-gb=10.0",
+                    "--molt-worker-memory-gb=20.0",
                     resource_file,
                     wasm_file,
                 )
@@ -9763,7 +10348,7 @@ def test_compiled_resource_and_wasm_files_have_complete_equipped_owners() -> Non
     assert host.data["timeout_seconds"] == 1200
     assert host.evidence_outputs == ("proof-results/compiled-contracts/macos",)
     assert resource.data["timeout_seconds"] == 600
-    assert resource.data["pytest_worker_memory_gb"] == 10.0
+    assert resource.data["pytest_worker_memory_gb"] == 20.0
     assert resource.argv[-2:] == (resource_file, wasm_file)
     policies = {policy.name: policy.max_parallel for policy in PLAN.resource_policies}
     assert policies["compiler-build-resource"] == 1
@@ -9857,3 +10442,259 @@ def test_compiled_preparation_directory_survives_merged_receipt_transport(
     assert proof_receipts._verify_receipt_evidence(
         command.id, command, [evidence], downloaded
     ) == [f"{command.id}: downloaded evidence bytes do not match receipt: {relative}"]
+
+
+@pytest.mark.parametrize(
+    "selected", [None, Path("python"), Path("relative/bin/python")]
+)
+def test_environment_fingerprint_requires_an_exact_prepared_entrypoint(
+    tmp_path, monkeypatch, selected
+):
+    policy = proof_plan.ToolchainPolicy(
+        "source-interpreter",
+        {
+            "executable": "{python}",
+            "python_identity_role": "environment",
+            "version_args": ["--version"],
+            "version_pattern": "^Python",
+        },
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        proof_plan,
+        "_find_tool",
+        lambda *args: pytest.fail("unbound Python reached PATH discovery"),
+    )
+    with pytest.raises(ValueError, match="environment Python"):
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=selected
+        )
+
+
+@pytest.mark.parametrize(
+    ("event_name", "expected_tier"),
+    [("pull_request", "pr"), ("pull_request_target", "pr"), ("push", "main")],
+)
+def test_selection_cli_derives_artifact_tier_from_supported_event(
+    tmp_path, monkeypatch, event_name, expected_tier
+):
+    plan, expected = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    environ = {
+        "GITHUB_RUN_ID": "42",
+        "GITHUB_RUN_ATTEMPT": "2",
+        "GITHUB_EVENT_NAME": event_name,
+    }
+    # Exercise the real tier owner with explicit input, without changing the
+    # process environment or duplicating its event mapping in a fake API.
+    api.active_tier = lambda: proof_plan.active_tier(environ)
+    install_module_view(monkeypatch, "os", os, proof_plan_cli, environ=environ)
+    expected["tier"] = expected_tier
+    expected["github_context"]["event_name"] = event_name
+    path = tmp_path / "selection.json"
+    assert (
+        proof_plan_cli.main(
+            api,
+            [
+                "--selection-output",
+                str(path),
+                "--receipt-dir",
+                str(tmp_path / "receipts"),
+                "--path",
+                "owned.py",
+            ],
+        )
+        == 0
+    )
+    assert json.loads(path.read_text(encoding="utf-8")) == expected
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "wrong-tested-source",
+        "missing-proof",
+        "receipt-command",
+        "transfer-source-mutation",
+        "final-read-source-mutation",
+        "zip-traversal",
+    ],
+)
+def test_ci_selection_transport_joins_real_selection_zip_and_receipt_owners(
+    tmp_path, monkeypatch, fault
+):
+    import io
+    import zipfile
+
+    from tools import ci_proof_evidence
+
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    source = repo / "non-authority.py"
+    original_source = b"VALUE = 1\n"
+    source.write_bytes(original_source)
+    # Explicit source observations use real fixture bytes. The authority digest
+    # stays fixed, so an authority-only closing fence cannot satisfy this test.
+    api._source_tree_changes = lambda: (
+        () if source.read_bytes() == original_source else (" M non-authority.py",)
+    )
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        ci_proof_evidence,
+        environ={"MOLT_EXT_ROOT": str(tmp_path / "artifacts")},
+    )
+    run = {
+        "databaseId": 42,
+        "attempt": 2,
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "success",
+        # GitHub's PR head is not the merge checkout actually tested by CI.
+        "headSha": "d" * 40,
+    }
+    assert payload["source_commit"] != run["headSha"]
+    if fault == "wrong-tested-source":
+        payload["source_commit"] = run["headSha"]
+
+    def make_zip(members):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, contents in members.items():
+                archive.writestr(name, contents)
+        return stream.getvalue()
+
+    selection_members = {"selection.json": json.dumps(payload).encode("utf-8")}
+    if fault == "zip-traversal":
+        selection_members["../escape.py"] = b"must not be published"
+    archives = {101: make_zip(selection_members)}
+    receipt_members = {}
+    expected_commands = ("python.static.ty", "python.static.stdlib-intrinsics")
+    assert tuple(command.id for command in plan.commands) == expected_commands
+    for index, command in enumerate(plan.commands):
+        evidence_root = tmp_path / f"declared-evidence-{index}"
+        receipt = _receipt_for(command, evidence_root)
+        receipt.update(
+            source_commit="a" * 40,
+            source_tree="b" * 40,
+            authority_sha256="c" * 64,
+        )
+        if fault == "receipt-command" and index == 0:
+            receipt["commands"][0]["argv"] = ["not-the-declared-command"]
+        receipt_members[f"receipt-{index}.json"] = json.dumps(receipt).encode("utf-8")
+        for relative in command.evidence_outputs:
+            assert relative not in receipt_members
+            receipt_members[relative] = (evidence_root / relative).read_bytes()
+    archives[102] = make_zip(receipt_members)
+    artifact_ids = [101] if fault == "missing-proof" else [101, 102]
+    artifacts = [
+        {
+            "id": artifact_id,
+            "name": (
+                "proof-selection-2" if artifact_id == 101 else "proof-receipt-static"
+            ),
+            "expired": False,
+            "digest": "sha256:" + hashlib.sha256(archives[artifact_id]).hexdigest(),
+            "workflow_run": {"id": 42, "head_sha": run["headSha"]},
+        }
+        for artifact_id in artifact_ids
+    ]
+    downloaded = []
+    observed_runs = []
+
+    def inventory(argv, **kwargs):
+        assert argv == [
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            "repos/{owner}/{repo}/actions/runs/42/artifacts?per_page=100",
+        ]
+        assert kwargs["cwd"] == repo
+        return json.dumps([{"artifacts": artifacts}])
+
+    def download(argv, **kwargs):
+        artifact_id = artifact_ids[len(downloaded)]
+        assert argv == [
+            "gh",
+            "api",
+            f"repos/{{owner}}/{{repo}}/actions/artifacts/{artifact_id}/zip",
+        ]
+        assert kwargs["cwd"] == repo
+        assert kwargs["check"] is True and kwargs["text"] is False
+        assert kwargs["capture_output"] is True
+        kwargs["stdout_capture_path"].write_bytes(archives[artifact_id])
+        kwargs["stderr_capture_path"].write_bytes(b"")
+        downloaded.append(artifact_id)
+        if artifact_id == 102 and fault == "transfer-source-mutation":
+            source.write_bytes(b"VALUE = 2\n")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    def read_run(run_id):
+        assert run_id == 42
+        observed_runs.append(run_id)
+        if fault == "final-read-source-mutation":
+            source.write_bytes(b"VALUE = 2\n")
+        return dict(run)
+
+    # Only remote inventory, archive transport, and run observation are faked.
+    # Extraction, selection reconstruction, exact source/context checks, receipt
+    # discovery, command/toolchain verification and both source fences are real.
+    result = ci_proof_evidence.verify_run(
+        run,
+        repo_root=repo,
+        commands=SimpleNamespace(check_output=inventory, run=download),
+        read_run=read_run,
+        proof_api=api,
+    )
+    if fault is None:
+        assert result.status == "verified", result.errors
+        assert result.errors == ()
+        assert result.receipt_artifacts == 1
+        assert downloaded == [101, 102]
+        assert observed_runs == [42]
+        assert source.read_bytes() == original_source
+        assert result.evidence_dir is not None
+        evidence = Path(result.evidence_dir)
+        assert (
+            json.loads(
+                (evidence / "selection" / "101" / "selection.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            == payload
+        )
+        for index in range(len(expected_commands)):
+            assert (evidence / "receipts" / "102" / f"receipt-{index}.json").is_file()
+    elif fault == "wrong-tested-source":
+        assert result.status == "unavailable"
+        assert any("source_commit" in error for error in result.errors)
+        assert downloaded == [101] and observed_runs == []
+    elif fault == "missing-proof":
+        assert result.status == "failed"
+        assert result.errors == tuple(
+            f"{command_id}: required executable receipt is missing"
+            for command_id in expected_commands
+        )
+        assert downloaded == [101] and observed_runs == [42]
+    elif fault == "receipt-command":
+        assert result.status == "failed"
+        assert result.errors == (
+            "python.static.ty: receipt command does not match authority",
+        )
+        assert downloaded == [101, 102] and observed_runs == [42]
+    elif fault == "zip-traversal":
+        assert result.status == "unavailable"
+        assert result.errors == ("archive member path escapes extraction root",)
+        assert downloaded == [101] and observed_runs == []
+        assert not list(tmp_path.rglob("escape.py"))
+    else:
+        assert result.status == "unavailable"
+        assert any("source" in error for error in result.errors)
+        assert downloaded == [101, 102]
+        assert observed_runs == ([42] if fault == "final-read-source-mutation" else [])
+        assert source.read_bytes() == b"VALUE = 2\n"

@@ -385,7 +385,7 @@ class RuntimeWasmExpectedPair:
         return cls.from_dict(payload)
 
     def write(self, path: Path) -> None:
-        _atomic_write_json(path, self.to_dict(), sort_keys=True)
+        _atomic_write_json(path, self.to_dict(), sort_keys=True, skip_if_unchanged=True)
 
 
 def runtime_wasm_generation_path(shared: Path) -> Path:

@@ -702,7 +702,11 @@ def test_integrate_child_refuses_a_missing_inherited_uv_environment(
     seed = tmp_path / "seed"
     _init_repo(seed)
     materialize_development_environment(seed, tmp_path / "fixture-images")
-    gate = "python -c \"import sys; print('gate-prefix=' + sys.prefix)\""
+    gate = (
+        'python -c "from pathlib import Path; import sys; '
+        "Path('gate-launched.txt').write_text('launched', encoding='utf-8'); "
+        "print('gate-prefix=' + sys.prefix)\""
+    )
     (seed / "tools").mkdir()
     (seed / "tools/proof_plan.toml").write_text(
         "always = [" + json.dumps(gate) + "]\n", encoding="utf-8"
@@ -739,7 +743,23 @@ def test_integrate_child_refuses_a_missing_inherited_uv_environment(
     )
     assert result.returncode != 0, result.stdout + result.stderr
     assert "managed development image refused" in result.stdout + result.stderr
-    assert kept_gate_stdout(result.stdout) == [""]
+    # Preparation refuses the exact selector before gate scheduling. No child
+    # marker or output stream may exist, rather than one empty finished gate.
+    events = [
+        json.loads(line)
+        for line in result.stdout.splitlines()
+        if line.startswith('{"schema": "molt.integration-progress.v1"')
+    ]
+    assert any(
+        event["event"] == "candidate_selected" and event["gate_total"] == 1
+        for event in events
+    )
+    assert not any(
+        event["event"] in {"gate_started", "gate_finished"} for event in events
+    )
+    assert kept_gate_stdout(result.stdout) == []
+    assert not (work / "gate-launched.txt").exists()
+    assert not list((work / ".git/molt-integrate/receipts").rglob("*.stdout.log"))
     assert not managed.exists(), (
         "an exact unpublished request must not become an install destination"
     )
@@ -792,7 +812,11 @@ def test_admission_provisions_only_selected_checkout_inputs(
         ValueError, match="checkout input provisioning failed"
     ) as raised:
         proof_plan.admit_toolchains(
-            policies, ("acorn-tree",), root=checkout, environ=os.environ
+            policies,
+            ("acorn-tree",),
+            root=checkout,
+            environ=os.environ,
+            python_executable=Path(sys.executable),
         )
     assert "provision.py" in str(raised.value)
 

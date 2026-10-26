@@ -677,7 +677,7 @@ def _write_run_outputs(
         "manifest_path": str(manifest_path),
         "git_rev": git_rev,
         "provenance": perf_authority.non_canonical_provenance(
-            profile="manifest-defined",
+            requested_profile="manifest-defined",
             source="tools/bench_friends.py",
             git_rev=git_rev,
         ),

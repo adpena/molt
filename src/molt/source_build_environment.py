@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
 from pathlib import Path
 from typing import cast
 
@@ -41,6 +40,7 @@ from molt.python_environment_location import (
 )
 from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
+    PythonIdentityVerifier,
     environment_matches_lock_closure,
     selected_uv_lock_group_closure,
     validate_python_environment_identity,
@@ -53,9 +53,12 @@ def _python_identity() -> dict[str, object]:
     # are not the interpreter recipe. Capture through the same isolated probe
     # used to attest provisioned environments, before arbitrary client imports.
     base = getattr(sys, "_base_executable", None) or sys.executable
-    return _probe_source_build_python(
-        Path(base).resolve(strict=True), capture_wheel_target=True
-    )
+    with PythonIdentityVerifier() as verifier:
+        return _probe_source_build_python(
+            Path(base).resolve(strict=True),
+            verifier=verifier,
+            capture_wheel_target=True,
+        )
 
 
 def _uv_identity(
@@ -180,10 +183,20 @@ def _editable_binding(repo_root: Path) -> dict[str, object]:
 def _selected_python_recipe(
     repo_root: Path, selector: str | None, environ: Mapping[str, str]
 ) -> tuple[Path, dict[str, object], dict[str, str], dict[str, object]]:
-    from molt.python_interpreter import resolve_python_selector, probe_python_command
+    from molt.python_interpreter import (
+        is_python_version_selector,
+        parse_python_interpreter_request,
+        probe_python_command,
+        resolve_python_selector,
+    )
 
     if selector is None:
         selector = (repo_root / ".python-version").read_text(encoding="utf-8").strip()
+    request = (
+        parse_python_interpreter_request(selector)
+        if is_python_version_selector(selector)
+        else None
+    )
     bootstrap_env = ProcessEnvironment(environ).updated(
         {"UV_PYTHON_DOWNLOADS": "never"}
     )
@@ -195,42 +208,42 @@ iv='.'.join(map(str,(v.major,v.minor,v.micro)))
 if v.releaselevel != 'final': iv += v.releaselevel[0] + str(v.serial)
 print(json.dumps(dict(implementation_name=sys.implementation.name,implementation_version=iv,os_name=os.name,platform_machine=platform.machine(),platform_python_implementation=platform.python_implementation(),platform_release=platform.release(),platform_system=platform.system(),platform_version=platform.version(),python_full_version=platform.python_version(),python_version='.'.join(platform.python_version_tuple()[:2]),sys_platform=sys.platform)))
 """
-    with (
-        python_environment_identity.python_identity_verifier_prefix() as verifier_prefix
-    ):
+    with PythonIdentityVerifier() as verifier:
         command = resolve_python_selector(
             selector,
             env=bootstrap_env,
             cwd=repo_root,
-            verifier_bytecode_prefix=verifier_prefix,
+            verifier=verifier,
         )
         selected = probe_python_command(
             command,
             env=bootstrap_env,
             cwd=repo_root,
-            verifier_bytecode_prefix=verifier_prefix,
+            verifier=verifier,
         )
         python = Path(selected.executable).absolute()
         capture = _probe_source_build_python(
-            python, verifier_bytecode_prefix=verifier_prefix, capture_wheel_target=True
+            python, verifier=verifier, capture_wheel_target=True
         )
         runtime = cast(dict[str, object], capture["runtime"])
         wheel_target = cast(dict[str, object], capture["wheel_target"])
-        result = process_guard.run_completed_command(
+        result = verifier.run(
             [
                 str(python),
                 *python_environment_identity.python_identity_verifier_arguments(
-                    verifier_prefix
+                    verifier.prefix
                 ),
                 "-S",
                 "-c",
                 script,
             ],
+            memory_guard_prefix=process_guard.CLI_MEMORY_GUARD_PREFIX,
             env=bootstrap_env,
             capture_output=True,
             text=True,
             check=False,
             timeout=120,
+            encoding="utf-8",
         )
         if result.returncode != 0:
             raise _schema.SourceBuildEnvironmentError(
@@ -239,6 +252,21 @@ print(json.dumps(dict(implementation_name=sys.implementation.name,implementation
         markers = _schema.canonical_source_marker_environment(
             loads_exact(result.stdout)
         )
+        # Discovery, runtime capture and marker capture are separate process
+        # observations. Bind all of them before any recipe can be constructed.
+        runtime_version = str(runtime["version"])
+        if request is not None and not request.matches_version(runtime_version):
+            raise _schema.SourceBuildEnvironmentError(
+                f"requested CPython {request.selector} differs from captured runtime {runtime_version}"
+            )
+        if selected.version != runtime_version:
+            raise _schema.SourceBuildEnvironmentError(
+                "selected interpreter identity differs from captured runtime"
+            )
+        if not _schema._marker_environment_matches_runtime(markers, runtime):
+            raise _schema.SourceBuildEnvironmentError(
+                "dependency markers differ from selected Python runtime"
+            )
     return python, runtime, markers, wheel_target
 
 
@@ -362,12 +390,14 @@ def _probe_environment_identity(
 ) -> dict[str, object]:
     """Capture the selected environment through the shared content authority."""
 
-    return _probe_source_build_python(
-        python_executable,
-        root=root,
-        external_root=external_root,
-        source_root=source_root,
-    )
+    with PythonIdentityVerifier() as verifier:
+        return _probe_source_build_python(
+            python_executable,
+            verifier=verifier,
+            root=root,
+            external_root=external_root,
+            source_root=source_root,
+        )
 
 
 def _probe_source_build_python(
@@ -377,7 +407,7 @@ def _probe_source_build_python(
     external_root: Path | None = None,
     source_root: Path | None = None,
     publish_bytecode: bool = False,
-    verifier_bytecode_prefix: Path | None = None,
+    verifier: PythonIdentityVerifier,
     capture_wheel_target: bool = False,
     development_admission: _schema.DevelopmentEnvironmentAdmission | None = None,
 ) -> dict[str, object]:
@@ -414,31 +444,26 @@ def _probe_source_build_python(
             )
         probe_arguments.extend(("--wheel-tag-source", str(packaging_tag_source())))
     kind = "runtime" if root is None else "environment"
-    prefix_owner = (
-        python_environment_identity.python_identity_verifier_prefix()
-        if verifier_bytecode_prefix is None
-        else nullcontext(verifier_bytecode_prefix)
+    probe_argv = [
+        str(python_executable),
+        *python_environment_identity.python_identity_probe_arguments(
+            probe_arguments,
+            no_site=root is None,
+            verifier_bytecode_prefix=verifier.prefix,
+            source_root=source_root,
+        ),
+    ]
+    result = verifier.run(
+        probe_argv,
+        memory_guard_prefix=process_guard.CLI_MEMORY_GUARD_PREFIX,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        env=ProcessEnvironment(probe_environment),
+        timeout=120,
     )
-    with prefix_owner as verifier_prefix:
-        probe_argv = [
-            str(python_executable),
-            *python_environment_identity.python_identity_probe_arguments(
-                probe_arguments,
-                no_site=root is None,
-                verifier_bytecode_prefix=verifier_prefix,
-                source_root=source_root,
-            ),
-        ]
-        result = process_guard.run_completed_command(
-            probe_argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            env=ProcessEnvironment(probe_environment),
-            timeout=120,
-        )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise _schema.SourceBuildEnvironmentError(
@@ -703,13 +728,15 @@ def _publish_environment_bytecode(
     external_root: Path | None = None,
     source_root: Path | None = None,
 ) -> None:
-    _probe_source_build_python(
-        python_executable,
-        root=root,
-        external_root=external_root,
-        source_root=source_root,
-        publish_bytecode=True,
-    )
+    with PythonIdentityVerifier() as verifier:
+        _probe_source_build_python(
+            python_executable,
+            verifier=verifier,
+            root=root,
+            external_root=external_root,
+            source_root=source_root,
+            publish_bytecode=True,
+        )
 
 
 def _provision_source_build_environment(
@@ -1054,7 +1081,7 @@ def admit_development_environment(
         )
     repo_root = repo_root.resolve(strict=True)
     admission = _schema.DevelopmentEnvironmentAdmission(repo_root, python, groups)
-    with PythonFileCaptureContext() as context:
+    with PythonFileCaptureContext() as context, PythonIdentityVerifier() as verifier:
         for path in python_environment_identity.python_capture_authority_paths(
             source_root=repo_root
         ):
@@ -1062,6 +1089,7 @@ def admit_development_environment(
         context.verify()
         _probe_source_build_python(
             environment_python_path(root),
+            verifier=verifier,
             root=root,
             external_root=repo_root,
             source_root=repo_root,
@@ -1103,12 +1131,23 @@ def load_development_environment(
             "selected development image has different requested groups"
         )
     if python is not None:
+        from molt.python_interpreter import (
+            is_python_version_selector,
+            parse_python_interpreter_request,
+        )
+
         version = str(cast(Mapping[str, object], custody["python_runtime"])["version"])
-        if not python or not all(part.isdigit() for part in python.split(".")):
+        if not is_python_version_selector(python):
             raise _schema.SourceBuildEnvironmentError(
                 "an interpreter command requires explicit runtime selection before image reuse"
             )
-        if not (version == python or version.startswith(python + ".")):
+        try:
+            request = parse_python_interpreter_request(python)
+        except ValueError as exc:
+            raise _schema.SourceBuildEnvironmentError(
+                f"invalid Python interpreter request: {exc}"
+            ) from exc
+        if not request.matches_version(version):
             raise _schema.SourceBuildEnvironmentError(
                 "selected development image has a different requested Python"
             )
@@ -1164,8 +1203,19 @@ def development_environment(
         version = str(
             cast(Mapping[str, object], image.custody["python_runtime"])["version"]
         )
-        if selector and all(part.isdigit() for part in selector.split(".")):
-            if not (version == selector or version.startswith(selector + ".")):
+        from molt.python_interpreter import (
+            is_python_version_selector,
+            parse_python_interpreter_request,
+        )
+
+        if is_python_version_selector(selector):
+            try:
+                request = parse_python_interpreter_request(selector)
+            except ValueError as exc:
+                raise _schema.SourceBuildEnvironmentError(
+                    f"invalid Python interpreter request: {exc}"
+                ) from exc
+            if not request.matches_version(version):
                 raise _schema.SourceBuildEnvironmentError(
                     "explicit development image has a different requested Python"
                 )

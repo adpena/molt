@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
 
-from molt import process_guard  # noqa: E402
+from molt import process_guard, toolchain_identity  # noqa: E402
 from molt.dx import DX_ENV_KEYS, development_artifact_env, render_env  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
@@ -462,39 +463,20 @@ def read_git_identity(repo_root: Path) -> tuple[str, str]:
     return (branch, head[:12] if head else "unknown")
 
 
-def command_paths(name: str, environ: dict[str, str] | None = None) -> list[str]:
-    env = environ if environ is not None else os.environ
-    path_value = env.get("PATH", os.defpath)
-    path_exts = [""]
-    if os.name == "nt":
-        configured_exts = env.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-        path_exts = [ext.lower() for ext in configured_exts.split(";") if ext]
-        if Path(name).suffix:
-            path_exts = [""]
-
-    seen: set[str] = set()
-    found: list[str] = []
-    for directory in path_value.split(os.pathsep):
-        if not directory:
-            continue
-        base = Path(directory)
-        for ext in path_exts:
-            candidate = base / f"{name}{ext}"
-            if not candidate.is_file():
-                continue
-            if os.name != "nt" and not os.access(candidate, os.X_OK):
-                continue
-            key = str(candidate).lower() if os.name == "nt" else str(candidate)
-            if key in seen:
-                continue
-            seen.add(key)
-            found.append(str(candidate))
-    return found
+def command_paths(name: str, environ: Mapping[str, str] | None = None) -> list[str]:
+    env = os.environ if environ is None else environ
+    return [
+        str(path)
+        for path in dict.fromkeys(
+            toolchain_identity.executable_candidates(name, environment=env)
+        )
+    ]
 
 
-def command_path(name: str, environ: dict[str, str] | None = None) -> str | None:
-    paths = command_paths(name, environ)
-    return paths[0] if paths else None
+def command_path(name: str, environ: Mapping[str, str] | None = None) -> str | None:
+    env = os.environ if environ is None else environ
+    path = toolchain_identity.find_executable(name, environment=env)
+    return None if path is None else str(path)
 
 
 def is_windows_app_execution_alias(path: str | None) -> bool:
@@ -517,7 +499,7 @@ def usable_command(path: str | None) -> bool:
     return bool(path) and not is_windows_app_execution_alias(path)
 
 
-def bash_candidates(environ: dict[str, str] | None = None) -> list[str]:
+def bash_candidates(environ: Mapping[str, str] | None = None) -> list[str]:
     candidates = command_paths("bash", environ)
     if os.name == "nt":
         for path in (
@@ -526,20 +508,23 @@ def bash_candidates(environ: dict[str, str] | None = None) -> list[str]:
             Path("C:/Program Files (x86)/Git/bin/bash.exe"),
             Path("C:/Program Files (x86)/Git/usr/bin/bash.exe"),
         ):
-            if path.is_file() and str(path) not in candidates:
+            if (
+                toolchain_identity.is_searchable_executable(path)
+                and str(path) not in candidates
+            ):
                 candidates.append(str(path))
     return candidates
 
 
-def choose_bash(environ: dict[str, str] | None = None) -> str | None:
+def choose_bash(environ: Mapping[str, str] | None = None) -> str | None:
     for candidate in bash_candidates(environ):
         if not is_wsl_bash_shim(candidate):
             return candidate
     return None
 
 
-def detect_python_command(environ: dict[str, str] | None = None) -> str:
-    env = environ if environ is not None else os.environ
+def detect_python_command(environ: Mapping[str, str] | None = None) -> str:
+    env = ProcessEnvironment(os.environ if environ is None else environ)
     explicit = env.get("PYTHON")
     if explicit:
         return explicit
@@ -552,9 +537,9 @@ def detect_python_command(environ: dict[str, str] | None = None) -> str:
 def environment_snapshot(
     repo_root: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    env = environ if environ is not None else os.environ
+    env = ProcessEnvironment(os.environ if environ is None else environ)
     release = platform.release()
     is_wsl = bool(env.get("WSL_DISTRO_NAME")) or "microsoft" in release.lower()
     python_path = command_path("python", env)

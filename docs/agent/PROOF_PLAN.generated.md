@@ -16,8 +16,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 391 |
-| Local path rules | 35 | 91 |
+| Hashed executable authority inputs | 1 | 400 |
+| Local path rules | 35 | 93 |
 | Unique local commands | 73 | 78 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
@@ -367,7 +367,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm-abi-registry` | 13 | 0 |
 | `tinygrad-op-contract` | 9 | 2 |
 | `intrinsic-registry` | 15 | 0 |
-| `codec-tables` | 7 | 0 |
+| `codec-tables` | 8 | 0 |
 | `stringprep-tables` | 3 | 0 |
 | `llvm-runtime-abi` | 8 | 1 |
 | `source-extension-package-sets` | 45 | 0 |
@@ -385,6 +385,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `host-capacity` | 11 | 0 |
 | `guard-marker-custody` | 10 | 0 |
 | `process-environment-consumers` | 9 | 0 |
+| `build-control-paths` | 6 | 0 |
 | `repository-scan-records` | 4 | 0 |
 | `subprocess-guard-coverage` | 2 | 0 |
 | `environment-registry-audit` | 2 | 0 |
@@ -397,12 +398,13 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
 | `runtime-cargo-input-custody` | 54 | 0 |
+| `native-test-failure-diagnostics` | 3 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |
 | `target-python-extension-release-identity` | 5 | 0 |
 | `findings-registry` | 4 | 0 |
 | `memory-graph` | 4 | 1 |
-| `ci-wiring` | 56 | 0 |
+| `ci-wiring` | 57 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
 | `timing-ratio-authority` | 2 | 0 |

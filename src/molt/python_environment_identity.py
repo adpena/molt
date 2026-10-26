@@ -6,12 +6,11 @@ import importlib.machinery
 import importlib.util
 import json
 import sys
-from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from io import TextIOWrapper
 from pathlib import Path
 from types import ModuleType
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 
 
 if __name__ == "__main__":
@@ -215,30 +214,152 @@ def _probe_error(message: str) -> NoReturn:
     raise SystemExit(2)
 
 
-@contextmanager
-def python_identity_verifier_prefix() -> Generator[Path, None, None]:
-    """Own an empty verifier read namespace until the child has fully closed.
+class PythonIdentityVerifier:
+    """One owned read namespace and serial guarded-child lifetime.
 
-    Callers with existing scratch custody may instead create an empty directory
-    there and pass it directly to ``python_identity_probe_arguments``. Neither
-    path is the published image namespace; admission reads that by explicit path.
+    Every launch resets closure before the core executor can create a child.
+    Unknown closure poisons this owner permanently: a swallowed exception or a
+    later successful child can neither authorize another launch nor cleanup.
+    Pure argv helpers receive ``prefix`` only; they never acquire this owner.
     """
-    from molt.temporary_artifacts import OwnedTemporaryDirectory
 
-    temporary = OwnedTemporaryDirectory(prefix="molt-python-verifier-")
-    try:
-        yield Path(temporary.name).resolve(strict=True)
-    except BaseException as primary:
-        try:
-            temporary.cleanup()
-        except BaseException as cleanup_error:
+    def __init__(self, *, prefix: str = "molt-python-verifier-") -> None:
+        from threading import Lock
+        from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+        self._allocation = OwnedTemporaryDirectory(prefix=prefix)
+        self.prefix = Path(self._allocation.name).resolve(strict=True)
+        self._launch_lock = Lock()
+        self._entered = False
+        self._finished = False
+        self._closed = True  # No child has started.
+        self._failure: BaseException | None = None
+        self.last_guarded_result: Any = None
+
+    def __enter__(self) -> "PythonIdentityVerifier":
+        if self._entered or self._finished:
+            raise RuntimeError("Python verifier owner cannot be reentered")
+        self._entered = True
+        return self
+
+    def __exit__(
+        self, kind: object, error: BaseException | None, traceback: object
+    ) -> None:
+        del kind, traceback
+        self._finished = True
+        self._entered = False
+        if self._launch_lock.locked():
+            self._closed = False
+            if self._failure is None:
+                self._failure = RuntimeError(
+                    "Python verifier exited during a child launch"
+                )
+        if not self._closed or self._failure is not None:
+            self._allocation.retain()
+            primary = self._failure if self._failure is not None else error
+            if primary is None:
+                primary = RuntimeError(
+                    "Python verifier has no proven process-tree closure"
+                )
+                self._failure = primary
             primary.add_note(
-                f"Python verifier scratch cleanup also failed at {temporary.name}: "
+                "Python verifier cache retained pending process-tree closure: "
+                f"{self.prefix}"
+            )
+            if error is not primary:
+                raise primary
+            return
+        try:
+            self._allocation.cleanup()
+        except BaseException as cleanup_error:
+            if error is None:
+                raise
+            error.add_note(
+                f"Python verifier scratch cleanup also failed at {self.prefix}: "
                 f"{type(cleanup_error).__name__}: {cleanup_error}"
             )
-        raise
-    else:
-        temporary.cleanup()
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        memory_guard_prefix: str,
+        env: Mapping[str, str] | None = None,
+        cwd: str | Path | None = None,
+        capture_output: bool = False,
+        input: str | bytes | None = None,
+        timeout: float | None = None,
+        text: bool | None = True,
+        check: bool = False,
+        encoding: str | None = None,
+        errors: str | None = None,
+        guard_source_root: Path | None = None,
+        progress_label: str | None = None,
+    ) -> Any:
+        """Use the core guard explicitly; metadata flags cannot bypass it."""
+        from molt import process_guard
+        from molt.process_environment import ProcessEnvironment
+
+        if not self._entered or self._finished:
+            raise RuntimeError("Python verifier child requires its active owner")
+        if self._failure is not None:
+            raise self._failure
+        if not isinstance(memory_guard_prefix, str) or not memory_guard_prefix.strip():
+            raise ValueError("Python verifier requires an explicit memory-guard prefix")
+        if isinstance(command, (str, bytes)):
+            raise TypeError("Python verifier child requires typed argv")
+        if not command:
+            raise ValueError("Python verifier child command must not be empty")
+        if not self._launch_lock.acquire(blocking=False):
+            raise RuntimeError("Python verifier child launches must be serial")
+        try:
+            if not self._closed:
+                raise RuntimeError(
+                    "Python verifier previous child has no proven closure"
+                )
+            try:
+                self._closed = False
+                self.last_guarded_result = None
+                # Detach before the core executor can create a child; only a
+                # terminal closed result permits explicit context cleanup.
+                self._allocation.retain()
+                result = process_guard.run_completed_command(
+                    command,
+                    memory_guard_prefix=memory_guard_prefix,
+                    env=None if env is None else ProcessEnvironment(env),
+                    cwd=cwd,
+                    capture_output=capture_output,
+                    input=input,
+                    timeout=timeout,
+                    text=text,
+                    check=check,
+                    encoding=encoding,
+                    errors=errors,
+                    guard_source_root=guard_source_root,
+                    progress_label=progress_label,
+                )
+                self.last_guarded_result = result
+                self._closed = getattr(result, "descendants_closed", None) is True
+                if not self._closed:
+                    primary = RuntimeError(
+                        "Python verifier child returned without process-tree closure"
+                    )
+                    setattr(primary, "guarded_result", result)
+                    self._failure = primary
+                    raise primary
+                return result
+            except BaseException as primary:
+                self.last_guarded_result = getattr(primary, "guarded_result", None)
+                self._closed = (
+                    self.last_guarded_result is not None
+                    and getattr(self.last_guarded_result, "descendants_closed", None)
+                    is True
+                )
+                if not self._closed:
+                    self._failure = primary
+                raise
+        finally:
+            self._launch_lock.release()
 
 
 def python_identity_verifier_arguments(verifier_bytecode_prefix: Path) -> list[str]:

@@ -4,7 +4,7 @@ from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from molt.cargo_execution_policy import cargo_profile_directory
 
-from molt import native_target
+from molt import host_capacity, native_target
 
 from molt.compilation_target import admit_target
 
@@ -18941,22 +18941,16 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
+    # Declare the capacity required by this parallel scheduling oracle.
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "2")
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(4 * 1024**3))
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 4)
     monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 2
+        host_capacity, "_probe_memory_bytes", lambda: (8 * 1024**3, 6 * 1024**3)
     )
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
-    )
-    monkeypatch.setattr(
-        cli_frontend_parallel,
-        "_resolve_frontend_parallel_min_predicted_cost",
-        lambda: 0.0,
-    )
-    monkeypatch.setattr(
-        cli_frontend_parallel,
-        "_resolve_frontend_parallel_target_cost_per_worker",
-        lambda: 1.0,
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_MODULES", "2")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST", "0")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_TARGET_COST_PER_WORKER", "1")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
@@ -19008,6 +19002,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             initializer: Callable[..., object] | None = None,
             initargs: tuple[object, ...] = (),
         ) -> None:
+            assert max_workers == 2
             self.max_workers = max_workers
             assert mp_context.get_start_method() == "spawn"
             # Its in-process worker starts the way a pool worker does.
@@ -19115,22 +19110,16 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
+    # Declare the capacity required by this parallel scheduling oracle.
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "2")
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(4 * 1024**3))
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 4)
     monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 2
+        host_capacity, "_probe_memory_bytes", lambda: (8 * 1024**3, 6 * 1024**3)
     )
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
-    )
-    monkeypatch.setattr(
-        cli_frontend_parallel,
-        "_resolve_frontend_parallel_min_predicted_cost",
-        lambda: 0.0,
-    )
-    monkeypatch.setattr(
-        cli_frontend_parallel,
-        "_resolve_frontend_parallel_target_cost_per_worker",
-        lambda: 1.0,
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_MODULES", "2")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST", "0")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_TARGET_COST_PER_WORKER", "1")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
@@ -19180,6 +19169,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             initializer: Callable[..., object] | None = None,
             initargs: tuple[object, ...] = (),
         ) -> None:
+            assert max_workers == 2
             self.max_workers = max_workers
             assert mp_context.get_start_method() == "spawn"
             # Its in-process worker starts the way a pool worker does.
@@ -19274,22 +19264,16 @@ def test_parallel_build_allows_scoped_type_facts(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
+    # Declare the capacity required by this parallel scheduling oracle.
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "2")
+    monkeypatch.setenv(host_capacity.MEMORY_SLICE_ENV, str(4 * 1024**3))
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: 4)
     monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 2
+        host_capacity, "_probe_memory_bytes", lambda: (8 * 1024**3, 6 * 1024**3)
     )
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
-    )
-    monkeypatch.setattr(
-        cli_frontend_parallel,
-        "_resolve_frontend_parallel_min_predicted_cost",
-        lambda: 0.0,
-    )
-    monkeypatch.setattr(
-        cli_frontend_parallel,
-        "_resolve_frontend_parallel_target_cost_per_worker",
-        lambda: 1.0,
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_MODULES", "2")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST", "0")
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_TARGET_COST_PER_WORKER", "1")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_frontend_pipeline,
@@ -19341,6 +19325,7 @@ def test_parallel_build_allows_scoped_type_facts(
             initializer: Callable[..., object] | None = None,
             initargs: tuple[object, ...] = (),
         ) -> None:
+            assert max_workers == 2
             self.max_workers = max_workers
             assert mp_context.get_start_method() == "spawn"
             # Its in-process worker starts the way a pool worker does.
@@ -19427,9 +19412,7 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
@@ -19489,9 +19472,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
@@ -19592,9 +19573,7 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     for key, value in partition_env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
@@ -26093,9 +26072,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
@@ -26265,9 +26242,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
     monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
-    )
+    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
     monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
     monkeypatch.setattr(
         cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
@@ -29539,15 +29514,16 @@ def test_compare_uses_build_profile_flag_for_nested_build(
         del kwargs
         seen_cmds.append(list(cmd))
         if len(seen_cmds) == 1:
-            return _TimedResult(0, "ok\n", "", 0.01)
+            return _TimedResult(0, "ok\n", "", 0.01, descendants_closed=True)
         if len(seen_cmds) == 2:
             return _TimedResult(
                 0,
                 json.dumps({"data": {"output": str(built_binary)}}),
                 "",
                 0.02,
+                descendants_closed=True,
             )
-        return _TimedResult(0, "ok\n", "", 0.01)
+        return _TimedResult(0, "ok\n", "", 0.01, descendants_closed=True)
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
@@ -29556,10 +29532,23 @@ def test_compare_uses_build_profile_flag_for_nested_build(
         "resolve_python_selector",
         lambda exe, **_kwargs: ("python3",),
     )
+    from molt.python_interpreter import PythonInterpreter
+    from molt.python_environment_location import _active_environment_prefix
+
+    monkeypatch.setattr(
+        cli_commands,
+        "probe_python_command",
+        lambda command, **kwargs: PythonInterpreter(
+            tuple(command), "oracle-python", "3.12.15", "CPython"
+        ),
+    )
     monkeypatch.setattr(
         cli_commands, "_resolve_binary_output", lambda output: built_binary
     )
     monkeypatch.setattr(cli_commands, "_run_command_timed", fake_run_command_timed)
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", fake_run_command_timed)
 
     rc = cli_commands.compare(
         str(entry),
@@ -29572,6 +29561,9 @@ def test_compare_uses_build_profile_flag_for_nested_build(
     assert rc == 0
     assert seen_cmds[1] == [
         sys.executable,
+        "-B",
+        "-X",
+        f"pycache_prefix={_active_environment_prefix() / 'bytecode'}",
         "-m",
         "molt.cli",
         "build",
@@ -32768,6 +32760,7 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="function",
+        stdlib_object_path=None,
         source_key="function-key",
         cache_path=cache_path,
         warnings=warnings,
@@ -32973,7 +32966,8 @@ def test_try_cached_backend_candidates_preserves_invalid_candidate(
 
     assert hit is None
     assert candidate.exists()
-    assert warnings == [f"Ignoring invalid cache artifact: {candidate}"]
+    assert len(warnings) == 1 and "Cache candidate admission failed" in warnings[0]
+    assert not output_artifact.exists()
 
 
 def test_try_cached_backend_candidates_rejects_native_hit_without_shared_stdlib(
@@ -33024,6 +33018,7 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,
@@ -33044,6 +33039,7 @@ def test_materialize_cached_backend_artifact_skips_recopy_when_synced(
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,
@@ -33080,6 +33076,7 @@ def test_materialize_cached_backend_artifact_isolates_mutable_output_from_immuta
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,
@@ -33136,6 +33133,7 @@ def test_materialize_cached_backend_artifact_uses_known_sync_state_without_rerea
             target=admit_target("native"), emit_mode="obj"
         ),
         tier="module",
+        stdlib_object_path=None,
         source_key="module-key",
         cache_path=candidate,
         warnings=warnings,
@@ -35073,24 +35071,17 @@ def _real_frontend_fake_backend(
         patch.setenv("MOLT_CACHE", str(cache_root))
         patch.setenv("CARGO_TARGET_DIR", str(cache_root / "cargo-target"))
         patch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-        patch.setattr(
-            cli_frontend_parallel,
-            "_resolve_frontend_parallel_module_workers",
-            lambda: workers,
-        )
-        patch.setattr(
-            cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
-        )
-        patch.setattr(
-            cli_frontend_parallel,
-            "_resolve_frontend_parallel_min_predicted_cost",
-            lambda: 0.0,
-        )
-        patch.setattr(
-            cli_frontend_parallel,
-            "_resolve_frontend_parallel_target_cost_per_worker",
-            lambda: 1.0,
-        )
+        patch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", str(workers))
+        if workers:
+            # Keep real admission and pool creation under declared test inputs.
+            patch.setenv(host_capacity.MEMORY_SLICE_ENV, str(4 * 1024**3))
+            patch.setattr(host_capacity, "cpu_count", lambda: 4)
+            patch.setattr(
+                host_capacity, "_probe_memory_bytes", lambda: (8 * 1024**3, 6 * 1024**3)
+            )
+        patch.setenv("MOLT_FRONTEND_PARALLEL_MIN_MODULES", "2")
+        patch.setenv("MOLT_FRONTEND_PARALLEL_MIN_PREDICTED_COST", "0")
+        patch.setenv("MOLT_FRONTEND_PARALLEL_TARGET_COST_PER_WORKER", "1")
         patch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
         patch.setattr(
             cli_backend_compile,
@@ -35158,6 +35149,10 @@ def _capture_hashseed_cli_builds(
             _cli_build_diagnostics(project, "main.py", output, parse_codec)
             for _generation in ("cold", "warm")
         ]
+    for generation in diagnostics:
+        parallel = generation["frontend_parallel"]
+        assert parallel["workers"] == workers
+        assert parallel["enabled"] is (workers > 0)
     assert len(records) == 2
     assert records[0] == records[1], (
         "warm frontend hydration changed emitted IR/cache identity"
@@ -35194,6 +35189,9 @@ def test_programs_share_the_lowered_form_of_every_imported_module(
     with _real_frontend_fake_backend(project, tmp_path / "cache", 0, []):
         first = _cli_build_diagnostics(project, "first.py", "first.o")
         second = _cli_build_diagnostics(project, "second.py", "second.o")
+    for generation in (first, second):
+        assert generation["frontend_parallel"]["workers"] == 0
+        assert generation["frontend_parallel"]["enabled"] is False
     cold, warm = first["frontend_lowering_cache"], second["frontend_lowering_cache"]
     assert cold["hits"] == 0 and cold["observed"] == warm["observed"] > 2
     assert warm["hits"] == warm["observed"] - 1

@@ -65,6 +65,12 @@ def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
     assert entry["molt_ok"] is True, res.stderr
     assert len(entry["molt_samples_s"]) == 1
     assert entry["molt_speedup"] is None
+    assert entry["requested_profile"] == "dev"
+    observation = entry["build_observation"]
+    assert observation["kind"] == "molt-build-observation-v1"
+    assert observation["selected_profiles"]["guest_profile"] == "dev"
+    assert observation["selected_profiles"]["runtime_profile"]
+    assert observation["selected_profiles"]["compiler_profile"]
     assert entry["molt_output_parity"] == {
         "checked": False,
         "ok": None,
@@ -800,7 +806,7 @@ def test_compare_baseline_rejects_incompatible_timing_metadata() -> None:
         "incompatible benchmark baseline: "
         "timing_mode differs: current='warm_throughput', baseline='cold_first_run'; "
         "warmup differs: current=1, baseline=0; "
-        "regenerate the baseline with matching benchmark timing settings"
+        "regenerate the baseline with matching benchmark timing settings and observed build profiles"
     ]
 
 
@@ -858,6 +864,8 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
     assert captured["use_molt_build_cache"] is True
     payload = captured["payload"]
     assert payload["system"]["platform"] == bench_tool._platform_label()
+    assert payload["provenance"]["requested_profile"] == "release"
+    assert "profile" not in payload["provenance"]
 
 
 def test_bench_cli_defaults_molt_profile_to_release(
@@ -964,6 +972,7 @@ def _bench_results_with_mocked_native_outputs(
     molt_outputs: list[tuple[str, str]],
     samples: int | None = None,
     warmup: int = 0,
+    build_observation: dict | None = None,
 ) -> dict:
     script = tmp_path / "bench_native_output.py"
     script.write_text("print('real path is not executed')\n", encoding="utf-8")
@@ -977,7 +986,7 @@ def _bench_results_with_mocked_native_outputs(
         bench_tool,
         "prepare_molt_binary",
         lambda *args, **kwargs: bench_tool.MoltBinary(
-            tmp_path / "molt-bin", _TempDirStub(), 0.25, 64.0
+            tmp_path / "molt-bin", _TempDirStub(), 0.25, 64.0, build_observation
         ),
     )
 
@@ -2834,3 +2843,79 @@ def test_native_invocation_does_no_node_work(monkeypatch, tmp_path):
         assert invocation.command == (str(binary.path),)
     finally:
         owner.cleanup()
+
+
+def test_bench_serializes_actual_profiles_without_reselecting_request(
+    monkeypatch, tmp_path
+):
+    observation = {
+        "kind": "molt-build-observation-v1",
+        "compiled_with_verified": False,
+        "selected_profiles": {
+            "backend": "native",
+            "target": "native",
+            "guest_profile": "release",
+            "runtime_profile": "release-output",
+            "compiler_profile": "dev-fast",
+        },
+    }
+    monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "release-fast")
+    entry = _bench_results_with_mocked_native_outputs(
+        monkeypatch,
+        tmp_path,
+        cpython_outputs=[("ok", "")],
+        molt_outputs=[("ok", "")],
+        build_observation=observation,
+    )
+    assert entry["requested_profile"] == "release"
+    assert entry["build_observation"] is observation
+    assert (
+        entry["build_observation"]["selected_profiles"]["runtime_profile"]
+        == "release-output"
+    )
+    assert (
+        entry["build_observation"]["selected_profiles"]["compiler_profile"]
+        == "dev-fast"
+    )
+    assert entry["molt_ok"] is True
+
+
+def test_baseline_and_summary_consume_observation_without_profile_inference():
+    from tools.bench_reporting import render_bench_summary_markdown
+
+    observation = {
+        "kind": "molt-build-observation-v1",
+        "compiled_with_verified": False,
+        "selected_profiles": {
+            "backend": "native",
+            "target": "native",
+            "guest_profile": "release",
+            "runtime_profile": "release-output",
+            "compiler_profile": "dev-fast",
+        },
+    }
+    cell = {
+        "requested_profile": "release",
+        "build_observation": observation,
+        "molt_ok": True,
+        "molt_cpython_ratio": 1.0,
+    }
+    payload = {
+        "timing_mode": "warm_throughput",
+        "samples": 3,
+        "warmup": 1,
+        "benchmarks": {"sample.py": cell},
+    }
+    assert bench_tool.compare_baseline(payload, payload, 0.15) == []
+    summary = render_bench_summary_markdown(payload)
+    assert "requested=`release`" in summary
+    assert "runtime=release-output compiler=dev-fast" in summary
+    assert "release-fast" not in summary
+
+    legacy_cell = {
+        key: value for key, value in cell.items() if key != "build_observation"
+    }
+    legacy = {**payload, "benchmarks": {"sample.py": legacy_cell}}
+    errors = bench_tool.compare_baseline(payload, legacy, 0.15)
+    assert len(errors) == 1 and "baseline selected profiles unbound" in errors[0]
+    assert "observed=`unbound`" in render_bench_summary_markdown(legacy)

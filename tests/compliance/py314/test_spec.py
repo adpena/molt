@@ -45,13 +45,17 @@ def _python_for(min_version: tuple[int, int]) -> list[str]:
     Windows `py -3.14`, uv-managed interpreters, and explicit overrides are all
     verified before use.
     """
-    return list(
-        python_interpreter.python_command_for_min_version(
-            min_version,
-            override=os.environ.get("MOLT_COMPLIANCE_PYTHON", "").strip() or None,
-            cwd=MOLT_DIR,
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    with PythonIdentityVerifier() as verifier:
+        return list(
+            python_interpreter.python_command_for_min_version(
+                min_version,
+                verifier=verifier,
+                override=os.environ.get("MOLT_COMPLIANCE_PYTHON", "").strip() or None,
+                cwd=MOLT_DIR,
+            )
         )
-    )
 
 
 def _target_version_arg(min_version: tuple[int, int]) -> list[str]:

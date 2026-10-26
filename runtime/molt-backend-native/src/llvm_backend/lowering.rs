@@ -34,7 +34,7 @@ use crate::llvm_backend::runtime_imports::{
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
 use crate::runtime_import_abi::{
-    MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, MOLT_TASK_NEW, RuntimeImportSignature, RuntimeReturnAbi,
+    MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, RuntimeImportSignature, RuntimeReturnAbi,
 };
 #[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
@@ -105,6 +105,10 @@ mod preserved_ops;
 mod runtime_helpers;
 #[cfg(feature = "llvm")]
 mod state_machine_ops;
+#[cfg(feature = "llvm")]
+mod task_construction;
+#[cfg(feature = "llvm")]
+mod task_trampoline;
 #[cfg(feature = "llvm")]
 mod value_materialization;
 #[cfg(feature = "llvm")]

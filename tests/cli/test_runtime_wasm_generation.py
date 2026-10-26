@@ -53,6 +53,44 @@ def test_expected_pair_is_one_exact_shared_reloc_pair(tmp_path: Path) -> None:
         RuntimeWasmExpectedPair(_identity("reloc"), reloc)
 
 
+def test_expected_pair_reuses_only_exact_existing_wire_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import file_publication
+
+    pair = RuntimeWasmExpectedPair(_identity("shared"), _identity("reloc"))
+    path = tmp_path / "expected.json"
+    pair.write(path)
+    original_bytes = path.read_bytes()
+    original_identity = stable_regular_file_identity(path, label="expected pair")
+    publish = file_publication.atomic_write_bytes
+    writes = []
+
+    def record(destination, data, **kwargs):
+        writes.append(data)
+        publish(destination, data, **kwargs)
+
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", record)
+    pair.write(path)
+    assert writes == []
+    assert (
+        stable_regular_file_identity(path, label="expected pair") == original_identity
+    )
+    assert RuntimeWasmExpectedPair.read(path) == pair
+    path.write_bytes(b"corrupt expected pair")
+    pair.write(path)
+    assert writes == [original_bytes]
+    assert path.read_bytes() == original_bytes
+    assert RuntimeWasmExpectedPair.read(path) == pair
+    changed = RuntimeWasmExpectedPair(
+        _identity("shared", "changed"), _identity("reloc", "changed")
+    )
+    changed.write(path)
+    assert len(writes) == 2
+    assert path.read_bytes() != original_bytes
+    assert RuntimeWasmExpectedPair.read(path) == changed
+
+
 @pytest.mark.parametrize(
     "text",
     (

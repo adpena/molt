@@ -6,7 +6,7 @@ development; consult [current status](spec/STATUS.md) for compatibility limits.
 ## Prerequisites
 
 - A [supported CPython compiler host](../packaging/INSTALL.md#requirements)
-  (the examples select 3.12 through `uv`)
+  (the repository pins its development host to CPython 3.12.15 through `uv`)
 - Rust via `rustup`, using the version pinned in `rust-toolchain.toml`
 - `uv`
 - A native C compiler and linker: a platform toolchain on macOS/Linux, or MSVC
@@ -36,7 +36,7 @@ Run from the cloned repository root. The commands below work in PowerShell and
 POSIX shells without activating a virtual environment:
 
 ```bash
-uv sync --group dev --python 3.12
+uv sync --group dev --python 3.12.15
 ```
 
 This creates the source bootstrap environment. Run it without a
@@ -145,6 +145,15 @@ uv run --python 3.14 molt build examples/hello.py --python-version 3.14
 
 The target comes from the explicit option, project configuration or supported
 project floor; changing the host interpreter alone does not change that policy.
+`molt compare` resolves a matching CPython oracle for that target and refuses an
+explicit interpreter whose observed minor differs, before either workload runs.
+The compiler build continues under the invoking frontend. Numeric `--python`
+selections retain their explicit target shorthand; interpreter paths do not
+silently select a different guest target.
+The oracle uses a fresh empty bytecode read namespace with writes disabled;
+ordinary site and environment behavior is retained. Its reported startup timing
+is diagnostic and does not compare matched warm image caches or qualify release
+performance. See the [compare contract](cli-reference.md#molt-compare).
 Differential tooling also uses its launching interpreter as the frontend, so
 `uv run --python 3.14 python tests/molt_diff.py --python-version 3.14 <test.py>`
 selects the frontend and matching CPython oracle without an interpreter override.

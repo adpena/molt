@@ -105,8 +105,8 @@ def test_python_command_candidates_are_versioned_not_process_python(
 ) -> None:
     target = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"]
 
-    candidates = python_interpreter.target_python_command_candidates(
-        target,
+    candidates = python_interpreter.python_command_candidates(
+        python_interpreter.PythonInterpreterRequest(target.major, target.minor),
         override=None,
     )
 
@@ -117,30 +117,59 @@ def test_python_command_candidates_are_versioned_not_process_python(
 
 
 def test_target_python_command_prefers_uv_python_find_path(monkeypatch) -> None:
+    from molt import process_guard
+    from tests.process_guard_common import guard_result_for_test
+
     target = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
+    selected = "C:/py313/python.exe"
+    calls = []
+    prefixes = []
 
     monkeypatch.delenv("MOLT_TV_PYTHON", raising=False)
-    monkeypatch.setattr(
-        toolchain_identity, "find_executable", lambda name, **_kwargs: Path("uv.exe")
-    )
 
-    def fake_run_command(cmd, **kwargs):
-        if cmd[:3] == ["uv.exe", "python", "find"]:
-            return "C:/py313/python.exe\n", "", 0
-        if cmd[:2] == ["C:/py313/python.exe", "-c"]:
-            return (
-                '{"executable":"C:/py313/python.exe",'
-                '"implementation":"CPython","version":"3.13.7"}\n',
-                "",
-                0,
+    def find(name, **_kwargs):
+        assert name == "uv", "verified uv selection must not reach PATH fallback"
+        return Path("uv.exe")
+
+    monkeypatch.setattr(toolchain_identity, "find_executable", find)
+
+    def guarded(command, **kwargs):
+        calls.append(command)
+        assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+        assert kwargs["cwd"] == translation_validate._REPO_ROOT
+        assert kwargs["timeout"] == 10.0
+        if len(calls) == 1:
+            assert command == ["uv.exe", "python", "find", "3.13"]
+            return guard_result_for_test(
+                command, 0, selected + "\n", "", descendants_closed=True
             )
-        raise AssertionError(f"unexpected command: {cmd}")
+        assert len(calls) == 2 and len(command) == 8
+        prefix = Path(command[4].removeprefix("pycache_prefix="))
+        assert command[:7] == [
+            selected,
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-S",
+            "-c",
+        ]
+        assert prefix.is_dir() and not list(prefix.iterdir())
+        prefixes.append(prefix)
+        return guard_result_for_test(
+            command,
+            0,
+            '{"executable":"C:/py313/python.exe",'
+            '"implementation":"CPython","version":"3.13.7"}\n',
+            "",
+            descendants_closed=True,
+        )
 
-    monkeypatch.setattr(python_interpreter, "_run_command", fake_run_command)
+    monkeypatch.setattr(process_guard, "run_completed_command", guarded)
 
-    assert translation_validate._target_python_command(target) == [
-        "C:/py313/python.exe"
-    ]
+    assert translation_validate._target_python_command(target) == [selected]
+    assert len(calls) == 2 and len(prefixes) == 1
+    assert not prefixes[0].exists()
 
 
 def test_run_cpython_uses_verified_target_python_command(monkeypatch) -> None:

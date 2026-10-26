@@ -15,6 +15,7 @@ import shlex
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import replace
 from pathlib import Path
 from collections.abc import Mapping
@@ -81,12 +82,16 @@ from molt.cli.project_roots import (
 from molt.target_python import (
     _parse_target_python_version,
     _resolve_target_python_version,
+    resolve_target_python_for_oracle,
 )
 from molt.node_runtime import resolve_node_runtime
 from molt.python_interpreter import (
     PythonInterpreterError,
     format_python_command,
+    probe_python_command,
+    readonly_python_command,
     resolve_python_selector,
+    resolve_target_python,
 )
 from molt.cli.wrapper_build import (
     _build_args_has_python_version_flag,
@@ -1034,7 +1039,7 @@ def compare(
                 project_root=project_root,
                 env=env,
             )
-            _resolve_target_python_version(
+            effective_target_python = _resolve_target_python_version(
                 explicit=compare_request.python_version,
                 build_config=compare_request.build_config,
                 project_root=project_root,
@@ -1048,30 +1053,73 @@ def compare(
                 json_output,
                 command="compare",
             )
-        try:
-            python_command = resolve_python_selector(
-                python_exe,
-                env=env,
-                cwd=project_root,
-            )
-        except (PythonInterpreterError, ValueError) as exc:
-            return _fail(str(exc), json_output, command="compare")
-        if module:
-            cpy_cmd = [*python_command, "-m", module, *script_args]
-        else:
-            cpy_cmd = [*python_command, str(source_path), *script_args]
-        cpy_res = _run_command_timed(
-            cpy_cmd,
-            env=env,
-            cwd=project_root,
-            verbose=verbose,
-            capture_output=True,
-            memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
-        )
+        from molt.python_environment_location import _active_environment_prefix
+        from molt.python_identity_common import PythonEnvironmentIdentityError
 
-        build_python_command = (
-            python_command if requested_target_python is not None else (sys.executable,)
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+        from molt.cli.process_execution import _timed_process_result
+
+        with PythonIdentityVerifier(prefix="molt-compare-reference-") as verifier:
+            try:
+                if python_exe is None:
+                    oracle = resolve_target_python(
+                        effective_target_python,
+                        env=env,
+                        cwd=project_root,
+                        prefer_current=True,
+                        verifier=verifier,
+                    )
+                    python_command = oracle.command
+                else:
+                    python_command = resolve_python_selector(
+                        python_exe,
+                        verifier=verifier,
+                        env=env,
+                        cwd=project_root,
+                    )
+                    oracle = probe_python_command(
+                        python_command,
+                        verifier=verifier,
+                        env=env,
+                        cwd=project_root,
+                    )
+                oracle_major, oracle_minor = map(int, oracle.major_minor.split("."))
+                resolve_target_python_for_oracle(
+                    (oracle_major, oracle_minor),
+                    effective_target_python,
+                )
+                reference_command = readonly_python_command(
+                    python_command, environment_root=verifier.prefix
+                )
+                build_python_command = readonly_python_command(
+                    (sys.executable,), environment_root=_active_environment_prefix()
+                )
+            except (
+                PythonInterpreterError,
+                PythonEnvironmentIdentityError,
+                ValueError,
+                OSError,
+            ) as exc:
+                return _fail(str(exc), json_output, command="compare")
+            if module:
+                cpy_cmd = [*reference_command, "-m", module, *script_args]
+            else:
+                cpy_cmd = [*reference_command, str(source_path), *script_args]
+            if verbose:
+                print(f"Running: {shlex.join(cpy_cmd)}", file=sys.stderr)
+            reference_started = time.perf_counter()
+            cpy_res = _timed_process_result(
+                verifier.run(
+                    cpy_cmd,
+                    env=env,
+                    cwd=project_root,
+                    capture_output=True,
+                    memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
+                ),
+                started=reference_started,
+            )
+
+        # The selected CPython oracle does not own the compiler frontend.
         build_cmd = [
             *build_python_command,
             "-m",
@@ -1161,6 +1209,11 @@ def compare(
         data = {
             "entry": str(source_path),
             "python": format_python_command(python_command),
+            "python_startup_policy": {
+                "command": list(reference_command),
+                "bytecode_namespace": "fresh-empty-read-only",
+                "timing_scope": "reference-process-with-empty-bytecode-cache",
+            },
             "output": str(output_path),
             "returncodes": {
                 "cpython": cpy_res.returncode,
@@ -1193,7 +1246,7 @@ def compare(
 
     print("Compare (CPython vs Molt):")
     print(
-        f"- CPython run: {_format_duration(cpy_res.duration_s)} "
+        f"- CPython run (fresh read-only bytecode cache): {_format_duration(cpy_res.duration_s)} "
         f"(rc={cpy_res.returncode})"
     )
     print(f"- Molt build: {_format_duration(build_res.duration_s)}")
@@ -1205,7 +1258,7 @@ def compare(
     print(f"- Molt total: {_format_duration(total)}")
     if cpy_res.duration_s > 0 and molt_res.duration_s > 0:
         speedup = cpy_res.duration_s / molt_res.duration_s
-        print(f"- Molt speedup (run): {speedup:.2f}x")
+        print(f"- Diagnostic process-time ratio (cold CPython / Molt): {speedup:.2f}x")
     print(
         "- Output match: "
         f"stdout={'yes' if stdout_match else 'no'}, "
@@ -1288,11 +1341,15 @@ def parity_run(
     env = ProcessEnvironment(env)
 
     try:
-        python_command = resolve_python_selector(
-            python_exe,
-            env=env,
-            cwd=project_root,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            python_command = resolve_python_selector(
+                python_exe,
+                verifier=verifier,
+                env=env,
+                cwd=project_root,
+            )
     except (PythonInterpreterError, ValueError) as exc:
         return _fail(str(exc), json_output, command="parity-run")
     if module:

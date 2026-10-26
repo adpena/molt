@@ -260,16 +260,6 @@ unsafe impl Send for PyDateTime_DateTime {}
 unsafe impl Sync for PyDateTime_DateTime {}
 
 #[repr(C)]
-pub struct PyGenericAliasObject {
-    pub ob_base: PyObject,
-    pub origin: *mut PyObject,
-    pub args: *mut PyObject,
-}
-
-unsafe impl Send for PyGenericAliasObject {}
-unsafe impl Sync for PyGenericAliasObject {}
-
-#[repr(C)]
 pub struct PyTypeObject {
     pub ob_base: PyVarObject,
     pub tp_name: *const c_char,
@@ -2051,9 +2041,12 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         PyFloat_Type.tp_dealloc = Some(crate::api::numbers::molt_numeric_scalar_dealloc);
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
         // PyDictProxy_Type is a static projection of the runtime mappingproxy.
-        Py_GenericAliasType.tp_basicsize =
-            std::mem::size_of::<PyGenericAliasObject>() as Py_ssize_t;
-        Py_GenericAliasType.tp_dealloc = Some(crate::api::object::molt_generic_alias_dealloc);
+        // GenericAlias is an opaque projection of its sole runtime owner.
+        // Runtime traversal owns origin, arguments and the parameter cache.
+        Py_GenericAliasType.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        Py_GenericAliasType.tp_flags |= Py_TPFLAGS_HAVE_GC;
+        Py_GenericAliasType.tp_traverse = Some(crate::api::memory::molt_managed_gc_traverse);
+        Py_GenericAliasType.tp_clear = None;
         PyContextVar_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
         PyContext_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
         PyContextToken_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;

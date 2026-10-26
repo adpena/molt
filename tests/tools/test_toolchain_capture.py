@@ -2327,6 +2327,9 @@ def _native_build_capture_fixture(
     """Real capture boundary with independent C/C++ driver transcripts."""
     from tools import proof_plan
 
+    native_images = (
+        registered_command is not None and "wasi-lifecycle" in registered_command
+    )
     tools = {}
     for name in (
         "rustc",
@@ -2344,13 +2347,18 @@ def _native_build_capture_fixture(
         )
         directory.mkdir(exist_ok=True)
         path = directory / (name + (".exe" if os.name == "nt" else ""))
-        path.write_bytes(
-            Path(sys.executable).read_bytes()
-            if registered_command is not None and "wasi-lifecycle" in registered_command
-            else name.encode()
-        )
-        path.chmod(0o755)
+        if not native_images:
+            path.write_bytes(name.encode())
+            path.chmod(0o755)
         tools[name] = path
+    if native_images:
+        from tests.runtime_build_identity_helper import RuntimeFixtureRoot
+
+        # These tools supply native image custody; the transcript below owns
+        # their behavior. Keep independent mutable images in the test's root.
+        RuntimeFixtureRoot(tmp_path).native_executables(
+            tuple(str(path.relative_to(tmp_path)) for path in tools.values())
+        )
     calls = []
     bundled = tmp_path / "lib/rustlib/x86_64-unknown-linux-gnu/bin" / "rust-lld"
     bundled.parent.mkdir(parents=True)

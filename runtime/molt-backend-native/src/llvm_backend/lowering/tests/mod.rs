@@ -229,3 +229,4 @@ mod dynamic_attrs;
 mod preserved_ops;
 mod runtime_declarations;
 mod scalar_ops;
+mod task_trampoline;

@@ -122,6 +122,22 @@ def test_structural_audit_producers_select_all_parser_consumers(source):
     }
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "tools/build_control_path.py",
+        "tools/harness_memory_guard.py",
+        "src/molt/build_state_layout.py",
+        "src/molt/memory_guard_paths.py",
+        "src/molt/dx.py",
+        "tests/test_build_state_layout.py",
+    ],
+)
+def test_build_control_path_producers_select_their_consumer_contract(source):
+    cfg = GateConfig.load(COMMITTED_GATES)
+    assert "tests/test_build_state_layout.py" in _selected_pytest_targets(cfg, [source])
+
+
 def test_unicode_source_facts_select_their_complete_pinned_source_owner():
     cfg = GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, ["tools/gen_unicode_width.py"]) == {
@@ -652,6 +668,18 @@ def test_committed_gate_manifest_selects_codec_table_registry():
         == 1
     )
 
+    gates, matched = cfg.select(["config/codec_aliases.toml"])
+    gates = [gate.command for gate in gates]
+    assert "codec-tables" in {r.name for r in matched}
+    assert gates.count("python tools/generators.py check") == 1
+    assert (
+        sum(
+            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
+            for gate in gates
+        )
+        == 1
+    )
+
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet():
     cfg = GateConfig.load(COMMITTED_GATES)
@@ -711,7 +739,12 @@ def test_transitive_cargo_metadata_availability_adds_no_build_requirement():
     gates, _ = cfg.select(["docs/agent/V1_HANDOFF_FINDINGS.md"])
     # This is the real ledger-only policy, including its generator dependency.
     assert ("python", "git", "generators") in [gate.toolchains for gate in gates]
-    environments = {gate.toolchains: ProcessEnvironment({}) for gate in gates}
+    from tools.molt_dev_policy import GateEnvironment
+
+    environments = {
+        gate.toolchains: GateEnvironment(ProcessEnvironment({}), None, False)
+        for gate in gates
+    }
     assert cfg.cargo_outputs(environments) == {}
 
 

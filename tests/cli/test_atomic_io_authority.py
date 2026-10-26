@@ -590,11 +590,12 @@ def test_observed_copy_rejects_same_size_content_with_matching_metadata(
     assert not list(tmp_path.glob(".molt-*.tmp"))
 
 
-@pytest.mark.parametrize("exclusive", [False, True])
+@pytest.mark.parametrize("route", ["ordinary", "exclusive", "if-changed"])
 @pytest.mark.parametrize("primary_type", [OSError, KeyboardInterrupt])
 def test_atomic_write_cleanup_failure_preserves_primary_error(
-    tmp_path, monkeypatch, exclusive, primary_type
+    tmp_path, monkeypatch, route, primary_type
 ):
+    exclusive = route == "exclusive"
     destination = tmp_path / "destination"
     destination.write_bytes(b"previous")
     if exclusive:
@@ -621,9 +622,14 @@ def test_atomic_write_cleanup_failure_preserves_primary_error(
     monkeypatch.setattr(file_publication, "_publish_exclusive", fail_publish)
     monkeypatch.setattr(Path, "unlink", fail_cleanup)
     with pytest.raises(primary_type) as caught:
-        file_publication.atomic_write_bytes(
-            destination, b"replacement", exclusive=exclusive
-        )
+        if route == "if-changed":
+            atomic_io._atomic_write_text(
+                destination, "replacement", skip_if_unchanged=True
+            )
+        else:
+            file_publication.atomic_write_bytes(
+                destination, b"replacement", exclusive=exclusive
+            )
     assert caught.value is primary
     assert any(
         "stage cleanup denied" in note and str(stage) in note
@@ -746,3 +752,239 @@ def test_stage_destination_key_is_routing_not_physical_custody(tmp_path):
     assert not file_publication.is_owned_staged_file_path(
         other / stage.name, destination
     )
+
+
+@pytest.mark.parametrize("text", ["", "café\n"], ids=["empty", "utf8"])
+def test_unchanged_text_requires_no_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    path = tmp_path / "existing.txt"
+    path.write_bytes(text.encode("utf-8"))
+    before = path.stat()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an equal direct leaf must not require publication permission")
+
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", forbidden)
+    atomic_io._atomic_write_text(path, text, skip_if_unchanged=True)
+    assert path.read_bytes() == text.encode("utf-8")
+    assert (path.stat().st_ino, path.stat().st_mtime_ns) == (
+        before.st_ino,
+        before.st_mtime_ns,
+    )
+
+
+@pytest.mark.parametrize(
+    "previous", [None, b"different", b"value\r\n", b"value", b"\xff" * 6]
+)
+def test_changed_text_uses_exact_bytes_and_existing_publisher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previous: bytes | None
+) -> None:
+    path = tmp_path / "generated.txt"
+    if previous is not None:
+        path.write_bytes(previous)
+    publish = file_publication.atomic_write_bytes
+    writes = []
+
+    def record(destination, data, **kwargs):
+        writes.append((destination, data))
+        publish(destination, data, **kwargs)
+
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", record)
+    atomic_io._write_text_if_changed(path, "value\n")
+    assert writes == [(path, b"value\n")]
+    assert path.read_bytes() == b"value\n"
+
+
+@pytest.mark.parametrize("skip", [False, True])
+def test_json_equality_is_opt_in_and_preserves_wire_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skip: bool
+) -> None:
+    path = tmp_path / "receipt.json"
+    expected = b'{\n  "a": "caf\\u00e9",\n  "z": 1\n}\n'
+    path.write_bytes(expected)
+    publish = file_publication.atomic_write_bytes
+    writes = []
+
+    def record(destination, data, **kwargs):
+        writes.append(data)
+        publish(destination, data, **kwargs)
+
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", record)
+    atomic_io._atomic_write_json(
+        path, {"z": 1, "a": "café"}, sort_keys=True, skip_if_unchanged=skip
+    )
+    assert writes == ([] if skip else [expected])
+    assert path.read_bytes() == expected
+
+
+@pytest.mark.parametrize("invalid", ["durability", "directory", "indirect"])
+def test_unchanged_text_cannot_bypass_publication_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str
+) -> None:
+    path = tmp_path / "output"
+    if invalid == "directory":
+        path.mkdir()
+    else:
+        path.write_bytes(b"same")
+    if invalid == "indirect":
+        is_link_like = file_publication.is_link_like
+        monkeypatch.setattr(
+            file_publication,
+            "is_link_like",
+            lambda candidate: candidate == path or is_link_like(candidate),
+        )
+    policy = (
+        "invalid"
+        if invalid == "durability"
+        else file_publication.PublicationDurability.DURABLE
+    )
+    with pytest.raises(ValueError):
+        atomic_io._atomic_write_text(
+            path, "same", durability=policy, skip_if_unchanged=True
+        )
+    if invalid != "directory":
+        assert path.read_bytes() == b"same"
+
+
+def test_unchanged_text_size_mismatch_does_not_read_existing_extent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "output"
+    path.write_bytes(b"longer than requested")
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a size mismatch must publish without traversing old contents")
+
+    monkeypatch.setattr(atomic_io, "iter_stable_regular_file_chunks", forbidden)
+    atomic_io._atomic_write_text(path, "new", skip_if_unchanged=True)
+    assert path.read_bytes() == b"new"
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("read denied"), atomic_io.StableRegularFileError("unstable")]
+)
+@pytest.mark.parametrize("publish_fails", [False, True])
+def test_unchanged_text_read_failure_uses_publisher_and_preserves_its_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    publish_fails: bool,
+) -> None:
+    path = tmp_path / "output"
+    path.write_bytes(b"same")
+    publish = file_publication.atomic_write_bytes
+    primary = OSError("publication denied")
+    calls = []
+
+    def unreadable(*_args, **_kwargs):
+        raise failure
+
+    def record(destination, data, **kwargs):
+        calls.append(data)
+        if publish_fails:
+            raise primary
+        publish(destination, data, **kwargs)
+
+    monkeypatch.setattr(atomic_io, "open_stable_regular_file", unreadable)
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", record)
+    if publish_fails:
+        with pytest.raises(OSError) as caught:
+            atomic_io._atomic_write_text(path, "same", skip_if_unchanged=True)
+        assert caught.value is primary
+    else:
+        atomic_io._atomic_write_text(path, "same", skip_if_unchanged=True)
+    assert calls == [b"same"]
+    assert path.read_bytes() == b"same"
+
+
+@pytest.mark.parametrize(
+    "mutation", ["same-size-restored-mtime", "growth", "replacement"]
+)
+def test_unchanged_text_closing_fence_cannot_justify_skipping_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    from contextlib import contextmanager
+
+    path = tmp_path / "output"
+    path.write_bytes(b"same")
+    before = path.stat()
+    stable_open = atomic_io.open_stable_regular_file
+    publish = file_publication.atomic_write_bytes
+    writes = []
+    attempts = []
+
+    @contextmanager
+    def mutate_after_comparison(candidate, **kwargs):
+        with stable_open(candidate, **kwargs) as opened:
+            yield opened
+            attempts.append(mutation)
+            # POSIX allows this mutation and the real closing fence must catch
+            # it. Windows denies it while the reader owns its descriptor; that
+            # read failure must also fall through after descriptor closure.
+            if mutation == "replacement":
+                replacement = tmp_path / "replacement"
+                replacement.write_bytes(b"evil")
+                replacement.replace(path)
+            else:
+                path.write_bytes(
+                    b"evil" if mutation == "same-size-restored-mtime" else b"grown!"
+                )
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    def record(destination, data, **kwargs):
+        writes.append(data)
+        publish(destination, data, **kwargs)
+
+    monkeypatch.setattr(atomic_io, "open_stable_regular_file", mutate_after_comparison)
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", record)
+    atomic_io._atomic_write_text(path, "same", skip_if_unchanged=True)
+    assert attempts == [mutation]
+    assert writes == [b"same"]
+    assert path.read_bytes() == b"same"
+
+
+def test_unchanged_text_comparison_has_a_fixed_read_extent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "output"
+    text = "a" * (2 * 1024 * 1024 + 17)
+    path.write_bytes(text.encode("utf-8"))
+    chunks = atomic_io.iter_stable_regular_file_chunks
+    sizes = []
+
+    def observe(opened):
+        for chunk in chunks(opened):
+            sizes.append(len(chunk))
+            yield chunk
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("bounded equal traversal must not publish")
+
+    monkeypatch.setattr(atomic_io, "iter_stable_regular_file_chunks", observe)
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", forbidden)
+    atomic_io._atomic_write_text(path, text, skip_if_unchanged=True)
+    assert sum(sizes) == len(text)
+    assert max(sizes) <= 256 * 1024
+    assert len(sizes) > 1
+
+
+def test_unchanged_text_interrupt_is_not_reclassified_as_a_comparison_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "output"
+    path.write_bytes(b"same")
+    primary = KeyboardInterrupt("interrupted comparison")
+
+    def interrupt(*_args, **_kwargs):
+        raise primary
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("comparison interruption must not launch publication")
+
+    monkeypatch.setattr(atomic_io, "open_stable_regular_file", interrupt)
+    monkeypatch.setattr(file_publication, "atomic_write_bytes", forbidden)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        atomic_io._atomic_write_text(path, "same", skip_if_unchanged=True)
+    assert caught.value is primary
+    assert path.read_bytes() == b"same"

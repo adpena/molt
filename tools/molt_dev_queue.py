@@ -743,7 +743,6 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
     if not candidate.included:
         retire_batch_plan(paths, batch)
         return
-    _provision_landing_sandbox(sandbox.repo)
     integration = drv.build_parser().parse_args(
         [
             "integrate",
@@ -783,33 +782,6 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
     landed = drv.require_git_object_id(sandbox.head_sha(), label="landed batch")
     _after_landing(sandbox.repo, candidate.included, args, paths, landed)
     retire_batch_plan(paths, batch)
-
-
-def _provision_landing_sandbox(sandbox: Path) -> None:
-    """The sandbox's own environment and trees, built from the candidate's locks.
-
-    Repository-scoped inputs (the shared hooks) wait for the landing: they may
-    install only what main publishes.
-    """
-    from molt import checkout_provisioning as provisioning
-
-    specs = [
-        provisioning.checkout_input(
-            name, sandbox, guard_source_root=_COMMANDS.repo_root
-        )
-        for name in provisioning.DEFAULT_CHECKOUT_INPUT_NAMES
-    ]
-    names = [
-        spec.name
-        for spec in specs
-        if spec.scope == "checkout" and provisioning.declares(spec)
-    ]
-    try:
-        provisioning.ensure_all(
-            sandbox, names=names, guard_source_root=_COMMANDS.repo_root
-        )
-    except provisioning.ProvisioningError as exc:
-        raise DriverError(f"landing sandbox provisioning failed: {exc}") from exc
 
 
 def _after_landing(

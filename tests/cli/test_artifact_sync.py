@@ -369,6 +369,7 @@ def test_all_backend_sync_consumers_reject_replacement_and_materialize_requested
         tier="module",
         source_key=source_key,
         cache_path=None,
+        stdlib_object_path=None,
         warnings=warnings,
         state_path=state_path,
         state=state,
@@ -581,6 +582,7 @@ def test_self_consistent_receipt_cannot_hide_same_key_content_conflict(
             tier="module",
             source_key=source_key,
             cache_path=None,
+            stdlib_object_path=None,
             warnings=warnings,
             artifact_contract=contract,
         )
@@ -1225,3 +1227,281 @@ def test_admission_cache_export_fences_consumed_stdlib_generation(
             }
         assert stdlib.workers[0].scope == "b" * 64
     assert archive.read_bytes() == archive_bytes
+
+
+@pytest.mark.parametrize("first_state", ["valid", "bad-magic", "bad-structure"])
+def test_candidate_materialization_validates_wasm_once_and_preserves_fallback(
+    tmp_path, monkeypatch, first_state
+):
+    import subprocess
+
+    from tests.process_guard_common import current_thread_only
+
+    module = tmp_path / "module.wasm"
+    function = tmp_path / "function.wasm"
+    first_bytes = b"\0asm\x01\0\0\0\0\x02\x01a"
+    second_bytes = b"\0asm\x01\0\0\0\0\x02\x01b"
+    module.write_bytes(b"invalid" if first_state == "bad-magic" else first_bytes)
+    function.write_bytes(second_bytes)
+    original_module = module.read_bytes()
+    output = tmp_path / "output.wasm"
+    tool_inputs = []
+
+    def validate_tool(tool, arguments, **kwargs):
+        assert tool == "wasm-tools" and arguments[0] == "validate"
+        path = Path(arguments[1])
+        tool_inputs.append((path, path.read_bytes()))
+        rejected = first_state == "bad-structure" and path == module
+        return subprocess.CompletedProcess(
+            arguments,
+            1 if rejected else 0,
+            stdout="",
+            stderr="fixture structural rejection" if rejected else "",
+        )
+
+    monkeypatch.setattr(
+        runtime_wasm_validation,
+        "run_pinned_tool",
+        current_thread_only(validate_tool, runtime_wasm_validation.run_pinned_tool),
+    )
+    timings = {}
+    warnings = []
+    hit = cache._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=[("module", module), ("function", function)],
+        output_artifact=output,
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.WASM),
+        cache_key="module-key",
+        function_cache_key="function-key",
+        cache_path=None,
+        stdlib_object_path=None,
+        stdlib_object_cache_key=None,
+        warnings=warnings,
+        stage_timings_ms=timings,
+    )
+    assert hit is not None
+    expected = first_bytes if first_state == "valid" else second_bytes
+    assert hit.tier == ("module" if first_state == "valid" else "function")
+    assert output.read_bytes() == expected
+    assert hit.identity.sha256 == hashlib.sha256(expected).hexdigest()
+    assert module.read_bytes() == original_module
+    assert function.read_bytes() == second_bytes
+    expected_tools = (
+        [(module, first_bytes)]
+        if first_state == "valid"
+        else [(function, second_bytes)]
+    )
+    if first_state == "bad-structure":
+        expected_tools.insert(0, (module, first_bytes))
+    assert tool_inputs == expected_tools
+    assert len(warnings) == (0 if first_state == "valid" else 1)
+    if warnings:
+        assert "Cache candidate admission failed" in warnings[0]
+    receipt = json.loads(sync._artifact_sync_state_path(tmp_path, output).read_bytes())
+    assert (receipt["sha256"], receipt["size"]) == (
+        hashlib.sha256(expected).hexdigest(),
+        len(expected),
+    )
+    assert "backend_cache_try_materialize" in timings
+    assert "backend_cache_try_artifact_valid" not in timings
+    assert "backend_cache_try_unresolved_chunks" not in timings
+
+
+@pytest.mark.parametrize("provider", ["missing", "wrong", "matching"])
+@pytest.mark.parametrize("synchronized", [False, True])
+def test_materialization_checks_native_chunk_provider_before_output_reuse(
+    tmp_path, provider, synchronized
+):
+    target = "x86_64-unknown-linux-gnu"
+    chunk = "user__molt_module_chunk_1"
+    content = native_relocatable_object(
+        target_triple=target,
+        symbols=("molt_main",),
+        undefined_symbols=(chunk,),
+    )
+    candidate = tmp_path / "function.o"
+    candidate.write_bytes(content)
+    stdlib = None
+    if provider != "missing":
+        stdlib = tmp_path / "stdlib.o"
+        stdlib.write_bytes(
+            native_relocatable_object(
+                target_triple=target,
+                symbols=(chunk if provider == "matching" else "other_chunk",),
+            )
+        )
+    output = tmp_path / "output.o"
+    receipt = sync._artifact_sync_state_path(tmp_path, output)
+    previous_receipt = None
+    if synchronized:
+        output.write_bytes(content)
+        sync._write_artifact_sync_state(
+            receipt, source_key="key", tier="function", artifact=output
+        )
+        previous_receipt = receipt.read_bytes()
+    promoted = tmp_path / "module.o"
+    warnings = []
+    hit = cache._materialize_cached_backend_artifact(
+        tmp_path,
+        candidate,
+        output,
+        tier="function",
+        source_key="key",
+        cache_path=promoted,
+        stdlib_object_path=stdlib,
+        warnings=warnings,
+        artifact_contract=BackendArtifactContract(
+            BackendArtifactKind.NATIVE_OBJECT, target
+        ),
+    )
+    assert candidate.read_bytes() == content
+    if provider == "matching":
+        assert hit is not None and output.read_bytes() == content
+        assert warnings == []
+        if not synchronized:
+            assert promoted.read_bytes() == content
+    else:
+        assert hit is None
+        assert warnings == [
+            "Ignoring native cache artifact with unresolved user module chunks: "
+            f"{candidate}"
+        ]
+        assert not promoted.exists()
+        assert not backend_cache_sync_receipt_path(promoted).exists()
+        if synchronized:
+            assert output.read_bytes() == content
+            assert receipt.read_bytes() == previous_receipt
+        else:
+            assert not output.exists() and not receipt.exists()
+
+
+@pytest.mark.parametrize(
+    "first_failure", ["unresolved", "changed", "artifact-error", "reader-error"]
+)
+def test_locked_native_eligibility_preserves_origin_order_and_error_classification(
+    tmp_path, monkeypatch, first_failure
+):
+    from contextlib import contextmanager
+
+    from tests.process_guard_common import current_thread_only
+
+    target = "x86_64-unknown-linux-gnu"
+    contract = BackendArtifactContract(BackendArtifactKind.NATIVE_OBJECT, target)
+    module = tmp_path / "module.o"
+    first_bytes = native_relocatable_object(
+        target_triple=target,
+        symbols=("first_symbol",),
+        undefined_symbols=("user__molt_module_chunk_1",)
+        if first_failure == "unresolved"
+        else (),
+    )
+    module.write_bytes(first_bytes)
+    function = tmp_path / "function.o"
+    content = native_relocatable_object(
+        target_triple=target, symbols=("second_symbol",)
+    )
+    function.write_bytes(content)
+    origin_payload = _original_emission_payload(content, process_id=101, scope="a" * 64)
+    sync._write_artifact_sync_state(
+        backend_cache_sync_receipt_path(function),
+        source_key=function.name,
+        tier="immutable",
+        artifact=function,
+        emission_origin=BackendEmissionOrigin.from_payload(origin_payload),
+    )
+    sealed_function_receipt = backend_cache_sync_receipt_path(function).read_bytes()
+    output = tmp_path / "output.o"
+    output_receipt = sync._artifact_sync_state_path(tmp_path, output)
+    original_lock = cache._shared_cache_lock
+    original_eligibility = cache._native_object_has_unresolved_module_chunks
+    original_generation = cache._backend_cache_generation
+    held_locks = []
+    inspected = []
+    error_type = (
+        native_symbol_inspection.NativeSymbolArtifactError
+        if first_failure == "artifact-error"
+        else native_symbol_inspection.NativeSymbolInspectionError
+    )
+    injected = error_type(module, ["independent eligibility failure"])
+
+    @contextmanager
+    def locked(name, **kwargs):
+        with original_lock(name, **kwargs):
+            held_locks.append(name)
+            try:
+                yield
+            finally:
+                assert held_locks.pop() == name
+
+    def eligibility(candidate, stdlib, **kwargs):
+        assert held_locks, "native eligibility escaped publication custody"
+        assert not output.exists() and not output_receipt.exists()
+        inspected.append(candidate)
+        if candidate == module:
+            if first_failure in {"artifact-error", "reader-error"}:
+                raise injected
+            if first_failure == "changed":
+                changed = native_relocatable_object(
+                    target_triple=target, symbols=("other_symbol",)
+                )
+                _replace_restoring_mtime(module, changed, in_place=True)
+        return original_eligibility(candidate, stdlib, **kwargs)
+
+    def generation(candidate, **kwargs):
+        assert candidate != module, "ineligible candidate reached origin admission"
+        return original_generation(candidate, **kwargs)
+
+    monkeypatch.setattr(
+        cache, "_shared_cache_lock", current_thread_only(locked, original_lock)
+    )
+    monkeypatch.setattr(
+        cache,
+        "_native_object_has_unresolved_module_chunks",
+        current_thread_only(eligibility, original_eligibility),
+    )
+    monkeypatch.setattr(
+        cache,
+        "_backend_cache_generation",
+        current_thread_only(generation, original_generation),
+    )
+    warnings = []
+    arguments = dict(
+        project_root=tmp_path,
+        cache_candidates=[("module", module), ("function", function)],
+        output_artifact=output,
+        artifact_contract=contract,
+        cache_key="module-key",
+        function_cache_key="function-key",
+        cache_path=None,
+        stdlib_object_path=None,
+        stdlib_object_cache_key=None,
+        warnings=warnings,
+        require_origin=True,
+    )
+    if first_failure == "reader-error":
+        with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError) as exc:
+            cache._try_cached_backend_candidates(**arguments)
+        assert exc.value is injected
+        assert inspected == [module]
+        assert not output.exists() and not output_receipt.exists()
+    else:
+        hit = cache._try_cached_backend_candidates(**arguments)
+        assert hit is not None and hit.tier == "function"
+        assert hit.emission_origin is not None
+        assert hit.emission_origin.payload() == origin_payload
+        assert inspected == [module, function]
+        assert output.read_bytes() == content
+        receipt = json.loads(output_receipt.read_bytes())
+        assert receipt["emission_origin"] == origin_payload
+    assert not held_locks
+    if first_failure == "unresolved":
+        assert warnings == [
+            "Ignoring native cache artifact with unresolved user module chunks: "
+            f"{module}"
+        ]
+    else:
+        assert warnings == []
+    assert module.exists() and not backend_cache_sync_receipt_path(module).exists()
+    assert function.read_bytes() == content
+    current_function_receipt = backend_cache_sync_receipt_path(function).read_bytes()
+    assert current_function_receipt == sealed_function_receipt

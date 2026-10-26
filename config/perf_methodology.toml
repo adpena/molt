@@ -4,11 +4,11 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-# Version 9 preserves the selected immutable Python image and bytecode policy
-# during conformance/benchmark setup. That can change measured build startup;
-# version 8 boards remain historical and are not a comparable baseline.
-version = 9
-content_sha256 = "c55f57b398314add2db9390cd643feec1a8192f9c5489d242f73293ee1098d89"
+# Version 10 separates requested labels from observed build profiles. Refusing
+# historical/unbound or mismatched selections changes comparison verdicts;
+# version 9 boards remain historical in their original methodology class.
+version = 10
+content_sha256 = "a307ebf02ab90b6018b6e2572f3515df00c77114e511a40af9f7ab89fb1b58ea"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -209,18 +209,50 @@ reason = "build transport outside sample timing; selected compiler and runtime i
 path = "tools/bench_metadata.py"
 reason = "classifies external benchmark reference requirements outside sample timing"
 
-[[mechanics]]
+[[methodology]]
 path = "tools/bench_reporting.py"
-reason = "formats build diagnostics and artifact destinations; never supplies sample metrics"
+role = "rejects incompatible baseline profile/timing evidence before regression classification"
 
 [[mechanics]]
 path = "src/molt/cli/build_request.py"
 reason = "compiler build-request transport outside guest sampling; selected compiler, runtime and deployment identities are recorded separately"
 
-[[mechanics]]
+[[methodology]]
 path = "src/molt/compilation_target.py"
-reason = "compiler target admission outside guest sampling; emitted deployment and compiler/runtime identities are recorded separately"
+role = "admits the observed target used by metric-lane comparison policy"
 
 [[mechanics]]
 path = "src/molt/cli/config_resolution.py"
 reason = "compiler option admission outside sampling; selected backend and profile coordinates are recorded independently"
+
+[[methodology]]
+path = "tools/bench_evidence.py"
+role = "owns success gates, exact metric lane and observed profile comparability"
+
+[[methodology]]
+path = "tools/bench_diff.py"
+role = "classifies cross-run Molt metric changes and threshold refusals"
+
+[[methodology]]
+path = "tools/bench_dashboard.py"
+role = "classifies cross-run baseline improvements and regressions"
+
+[[methodology]]
+path = "tools/perf_regression.py"
+role = "admits pairwise and historical trend comparisons and computes verdicts"
+
+[[methodology]]
+path = "bench/harness.py"
+role = "retains status regressions and refuses unbound timing comparisons"
+
+[[methodology]]
+path = "src/molt/native_target.py"
+role = "admits explicit native targets for metric-lane classification"
+
+[[methodology]]
+path = "src/molt/native_target_shape.py"
+role = "normalizes the native architectures admitted by target policy"
+
+[[methodology]]
+path = "src/molt/llvm_linker_roles.py"
+role = "typed dependency of the admitted native target model"

@@ -279,11 +279,7 @@ typedef struct {
 /* The runtime owns mappingproxy semantics; C receives an opaque bridge view. */
 typedef PyObject PyDictProxyObject;
 
-typedef struct {
-    PyObject_HEAD
-    PyObject *origin;
-    PyObject *args;
-} PyGenericAliasObject;
+/* GenericAlias is opaque; Py_GenericAlias returns the runtime-owned view. */
 
 /* ── PyTypeObject ─────────────────────────────────────────────────────────── */
 

@@ -244,11 +244,11 @@ integration speedup.
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
 | `python-oracle` | Resolve + PIN + verify a CPython version before use. `--python-version`, `--no-uv`, `--json`. |
-| `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
+| `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call using the published recovery command or JSON `verify_argv`. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
-| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
-| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
+| `lane start <slug>` | Create `lane/<slug>` at the fetched base in an admissible slot, preferring the checkout selected by `--repo`; write its coordination record and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
+| `lane retire <slug>` | Retire a landed lane's local and remote branches and close its record. Detach a managed slot and retain its checkout state; remove a legacy non-slot lane's worktree and checkout state. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
 | `lane list` | Each lane's tip, base, commits ahead and behind, landed, dirty and provisioned state. `--json`, `--no-fetch`. |
 
 ### Lanes (`lane start | retire | list`)
@@ -291,14 +291,24 @@ out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
 `_` or `-`.
 
 - **`lane start <slug>`** fetches `origin/main` (or `--base <ref>`), then
-  takes the first clean, detached slot `<root>/worktrees/slot-NN` beside the
-  main checkout `<root>/molt-src` and runs `git switch --no-track -c
+  prefers the checkout selected by `--repo` when it is a registered, clean,
+  detached, unlocked and non-prunable slot under the selected worktree root.
+  Otherwise it takes the first such slot in path order. It runs `git switch --no-track -c
   lane/<slug>` in it, or adds the next slot with `git worktree add`
   (`molt.custody_layout`: twelve slots, the live worktree limit; another
   layout must pass `--root`). A slot outlives its lanes, so its path-keyed
   Cargo target, sccache keys and checkout inputs stay warm for the next lane
   (HF-491). A detached slot with changes, or a slot path that is no
-  registered worktree, is skipped untouched. It writes the record `logs/agents/lane-<slug>/coordination.json`
+  registered worktree, is skipped untouched. Locked and prunable registrations
+  keep their slot numbers reserved. An active caller is not switched; ordinary
+  slot selection applies. The default family is `<root>/worktrees` beside
+  `<root>/molt-src`; a symlink spelling of `--repo` denotes its resolved checkout.
+  This preference retains the checkout's artifact namespace, not a promise of
+  cache validity: provisioning and each build still validate their inputs.
+  Activating a released slot consumes one active WIP position even though it
+  adds no worktree registration. Detach makes a slot available; the old lane's
+  ref deletion and record completion can finish after a new lane claims it.
+  It writes the record `logs/agents/lane-<slug>/coordination.json`
   in the main checkout through `tools/agent_coordination.py`, with the lane
   worktree as its source checkout. Then it provisions every checkout input
   (`molt.checkout_provisioning`): the lane's immutable development image, the Acorn
@@ -472,10 +482,15 @@ bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
    manual merge resolutions, including through the final citation amendment.
    A conflicting lane is aborted back to the preceding candidate and leaves the
    batch with result `conflict`; inability to restore that candidate stops the runner.
-2. Provision the sandbox's declared checkout-scoped inputs (its development
-   image and the Acorn tree) through `molt.checkout_provisioning`.
-   Run `integrate` on the sandbox, waiting for the repository integration lock
-   held by any other integrator. The union of the batch's selected gates runs
+2. Run `integrate` on the sandbox, waiting for the repository integration lock
+   held by any other integrator. Its selected toolchain closures prepare only
+   the inputs they require from the candidate's locks. A source-Python
+   environment role selects the sandbox's development image before tool
+   fingerprinting; selected non-Python checkout inputs use the same canonical
+   provisioning authority. Gates without that role and without an explicit
+   environment selector do not create an image. Explicit selectors still
+   validate before any gate. Each launch revalidates its prepared image; the
+   plan is not permission to reuse stale physical admission. The union of the batch's selected gates runs
    once; change citations resolve across the batch.
 3. On publication the runner refreshes shared hooks from published main and
    retires each managed lane. Only completed retirement records `landed` with
@@ -563,21 +578,33 @@ guard.
 
 ```bash
 # Tool call 1 (UNSANDBOXED — the sandbox is precisely what kills daemons):
-python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip \
+python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip --json \
   -- python3 tests/molt_diff.py tests/differential/basic --jobs 4 \
      --json-output /tmp/sweep.json
 
 # Tool call 2+ (any later call; --min-age-s proves it survived teardown):
-python3 tools/molt_dev.py detached-verify --name flip_sweep --min-age-s 30 --json
+# Run the published POSIX command, or pass the returned verify_argv directly
+# to the process launcher without a shell. Do not reconstruct its state root.
 # → running        keep waiting (poll again later)
 # → done, rc=N     read the artifacts; rc≠0 exits 1
 # → died-silent    the hazard-11 group-kill class, reported LOUDLY
 ```
 
-`detached-run` prints the exact verify command to run next: its own
-interpreter and the driver by absolute path, with the `--state-dir` it ran
-under (the landing queue's runners live under
-`.git/molt/landing-queue/runners`).
+`detached-run --json` returns `name`, `pid`, the per-run `state_dir`, and
+`verify_argv`: the argument array for the required later observation. It pins
+this interpreter, its isolation flag, the absolute driver, and the selected
+state root through `--state-dir`, including when launch used the default.
+A later call can therefore use a different temporary environment or working
+directory. The landing queue's runners still live under
+`.git/molt/landing-queue/runners`; state placement and lookup defaults are
+unchanged. Observation does not restart the payload.
+
+The human hint displays the same argv as a POSIX shell command on POSIX hosts
+and a labeled JSON argument array on Windows. Pass the array directly to a
+process launcher; POSIX quoting is not a Windows shell command. The JSON
+`state_dir` names the run's directory, while the argv's `--state-dir` names its
+parent, as required by the verifier. Preserve the returned handoff instead of
+reconstructing either path in a new environment.
 
 Discovered 2026-06-06 (twice in one session): a backgrounded 807-test sweep
 died at harness detach with an **empty log** — block buffering ate every line —

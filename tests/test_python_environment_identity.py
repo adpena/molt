@@ -243,7 +243,8 @@ def test_verifier_prefix_cleanup_keeps_primary_failure(
             )
             patch.setattr(temporary_artifacts, "delete_path", refuse_owned_cleanup)
             with pytest.raises(RuntimeError if body_fails else OSError) as raised:
-                with identity.python_identity_verifier_prefix() as prefix:
+                with identity.PythonIdentityVerifier() as verifier:
+                    prefix = verifier.prefix
                     assert prefix.is_dir()
                     if body_fails:
                         raise primary
@@ -357,7 +358,8 @@ def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkey
     before = snapshot()
     assert not list(disposable.rglob("__pycache__"))
     for _ in range(2):
-        with identity.python_identity_verifier_prefix() as verifier_prefix:
+        with identity.PythonIdentityVerifier() as verifier:
+            verifier_prefix = verifier.prefix
             command = [
                 str(getattr(sys, "_base_executable", sys.executable)),
                 *identity.python_identity_probe_arguments(
@@ -366,7 +368,7 @@ def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkey
                     verifier_bytecode_prefix=verifier_prefix,
                 ),
             ]
-            completed = _COMMANDS.run(
+            completed = verifier.run(
                 command,
                 cwd=disposable,
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "0"},
@@ -375,6 +377,7 @@ def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkey
                 encoding="utf-8",
                 timeout=60,
                 check=False,
+                memory_guard_prefix=_COMMANDS.prefix,
             )
             assert not list(verifier_prefix.iterdir())
         assert completed.returncode == 0, completed.stderr
@@ -2445,8 +2448,9 @@ def test_standalone_refusal_uses_utf8_after_ascii_child_pipe_startup(tmp_path, f
         + startup
         + "runpy.run_path(sys.argv[0], run_name='__main__')"
     )
-    with identity.python_identity_verifier_prefix() as prefix:
-        completed = _COMMANDS.run(
+    with identity.PythonIdentityVerifier() as verifier:
+        prefix = verifier.prefix
+        completed = verifier.run(
             [
                 str(getattr(sys, "_base_executable", sys.executable)),
                 *identity.python_identity_verifier_arguments(prefix),
@@ -2463,6 +2467,7 @@ def test_standalone_refusal_uses_utf8_after_ascii_child_pipe_startup(tmp_path, f
             errors="strict",
             timeout=30,
             check=False,
+            memory_guard_prefix=_COMMANDS.prefix,
         )
         assert not list(prefix.iterdir())
     assert completed.returncode == 2
@@ -2604,7 +2609,8 @@ def test_probe_reader_selection_uses_explicit_source_without_ambient_fallback(
     script.parent.mkdir(parents=True)
     script.write_bytes(Path(identity.__file__).read_bytes())
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path / "unrelated"))
-    with identity.python_identity_verifier_prefix() as prefix:
+    with identity.PythonIdentityVerifier() as verifier:
+        prefix = verifier.prefix
         arguments = identity.python_identity_probe_arguments(
             ("--capture-runtime",),
             verifier_bytecode_prefix=prefix,
@@ -2643,7 +2649,8 @@ def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
 def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault):
     # Interpreter-wide cache policy belongs only to spawned children, never the
     # pytest process with concurrently active guard and sentinel threads.
-    with identity.python_identity_verifier_prefix() as verifier_prefix:
+    with identity.PythonIdentityVerifier() as verifier:
+        verifier_prefix = verifier.prefix
         command = [
             sys.executable,
             "-B",
@@ -2658,7 +2665,7 @@ def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault
             str(tmp_path),
             fault,
         ]
-        result = _COMMANDS.run(
+        result = verifier.run(
             command,
             cwd=tmp_path,
             capture_output=True,
@@ -2666,6 +2673,7 @@ def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault
             encoding="utf-8",
             timeout=60,
             check=False,
+            memory_guard_prefix=_COMMANDS.prefix,
         )
         assert result.returncode == 0, result.stderr
 
@@ -2837,3 +2845,151 @@ def test_immutable_image_excludes_only_mutable_editable_source_bytes():
     assert environment.immutable_environment_image(changed) == original
     changed["external_import_custody"]["trees"][0]["source_path"] = "other"
     assert environment.immutable_environment_image(changed) != original
+
+
+@pytest.mark.parametrize(
+    "failure_kind", ["timeout", "guard", "interrupt", "receiptless"]
+)
+@pytest.mark.parametrize("closed", [False, True])
+def test_verifier_owner_preserves_guard_fact_and_poisoned_namespace(
+    tmp_path, monkeypatch, failure_kind, closed
+):
+    import gc
+    import subprocess
+    import weakref
+    from types import SimpleNamespace
+    from molt import process_guard, temporary_artifacts
+    from tests.process_guard_common import guard_result_for_test
+
+    # Receiptless exceptions cannot authorize cleanup, even if a test labels
+    # the other branch closed. The producer must prove closure explicitly.
+    proven_closed = closed and failure_kind != "receiptless"
+    receipt = SimpleNamespace(
+        descendants_closed=closed,
+        child_returncode=None,
+        infrastructure_failure=SimpleNamespace(
+            phase="drain", details=("independent failure",)
+        ),
+    )
+    if failure_kind == "timeout":
+        failure = subprocess.TimeoutExpired(["identity"], 1, output=b"preserved")
+    elif failure_kind == "guard":
+        failure = process_guard.GuardInfrastructureError(["identity"], receipt)
+    elif failure_kind == "interrupt":
+        failure = KeyboardInterrupt()
+    else:
+        failure = FileNotFoundError("spawn raced with executable retirement")
+    if failure_kind != "receiptless":
+        failure.guarded_result = receipt
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+        if len(calls) == 1:
+            raise failure
+        return guard_result_for_test(command, 0, "", "", descendants_closed=True)
+
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
+
+    def exercise():
+        nonlocal path, allocation_identity, allocation_ref
+        with identity.PythonIdentityVerifier() as owner:
+            path = owner.prefix
+            allocation_identity = temporary_artifacts._identity(path)
+            allocation_ref = weakref.ref(owner._allocation)
+            with pytest.raises(type(failure)) as caught:
+                owner.run(
+                    ["identity", "--help"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                )
+            assert caught.value is failure
+            if failure_kind != "receiptless":
+                assert caught.value.guarded_result is receipt
+            assert path.is_dir()
+            if proven_closed:
+                owner.run(
+                    ["second-identity"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                )
+            else:
+                with pytest.raises(type(failure)) as repeated:
+                    owner.run(
+                        ["second-identity"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                    )
+                assert repeated.value is failure
+
+    path = allocation_identity = allocation_ref = None
+    if proven_closed:
+        exercise()
+    else:
+        with pytest.raises(type(failure)) as terminal:
+            exercise()
+        assert terminal.value is failure
+        del terminal
+    assert len(calls) == (2 if proven_closed else 1)
+    assert path.exists() is (not proven_closed)
+    failure.__traceback__ = None
+    gc.collect()
+    assert allocation_ref() is None
+    if not proven_closed:
+        assert path.is_dir()
+        temporary_artifacts._cleanup_temporary_directory(path, allocation_identity)
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "unclosed", "absent-closure"])
+def test_verifier_owner_unknown_result_retains_after_swallowed_error_and_gc(
+    monkeypatch, outcome
+):
+    import gc
+    import subprocess
+    import weakref
+    from types import SimpleNamespace
+    from molt import process_guard, temporary_artifacts
+    from tests.process_guard_common import guard_result_for_test
+
+    if outcome == "timeout":
+        receipt = SimpleNamespace(descendants_closed=False)
+        failure = subprocess.TimeoutExpired(["first"], 1)
+        failure.guarded_result = receipt
+    elif outcome == "unclosed":
+        receipt = guard_result_for_test(
+            ["first"], 0, "apparent success", "", descendants_closed=False
+        )
+        failure = None
+    else:
+        receipt = SimpleNamespace(returncode=0, stdout="apparent success", stderr="")
+        failure = None
+    error_type = subprocess.TimeoutExpired if outcome == "timeout" else RuntimeError
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if failure is not None:
+            raise failure
+        return receipt
+
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
+    with pytest.raises(error_type) as outer:
+        with identity.PythonIdentityVerifier() as owner:
+            path = owner.prefix
+            allocation_identity = temporary_artifacts._identity(path)
+            allocation_ref = weakref.ref(owner._allocation)
+            with pytest.raises(error_type) as inner:
+                owner.run(["first"], memory_guard_prefix="MOLT_PYTHON_IDENTITY")
+            original = inner.value
+            if failure is not None:
+                assert original is failure
+            assert original.guarded_result is receipt
+            del inner
+            with pytest.raises(error_type) as repeated:
+                owner.run(
+                    ["would-mask-first"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                )
+            assert repeated.value is original
+            del repeated
+    assert outer.value is original and outer.value.guarded_result is receipt
+    assert len(calls) == 1 and path.is_dir()
+    original.__traceback__ = None
+    del outer, owner
+    gc.collect()
+    assert allocation_ref() is None and path.is_dir()
+    temporary_artifacts._cleanup_temporary_directory(path, allocation_identity)

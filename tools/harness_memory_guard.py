@@ -727,6 +727,11 @@ def command_profile_log_path(
     return harness_guard_artifact_dir(root, source) / "commands.jsonl"
 
 
+def command_profile_incident_dir(profile_log: Path) -> Path:
+    """The retained incident directory beside the selected command profile."""
+    return profile_log.parent / "incidents"
+
+
 def _max_bytes_from_mb(value: float | None) -> int | None:
     if value is None:
         return None
@@ -917,6 +922,9 @@ def _append_guarded_command_profile(
     limits: HarnessMemoryLimits,
     returncode: int,
     elapsed_s: float | None,
+    child_elapsed_s: float | None,
+    cleanup_elapsed_s: float | None,
+    sampling_telemetry: memory_guard.GuardSamplingTelemetry | None,
     timeout_s: float | None,
     violation: memory_guard.RssViolation | None,
     timed_out: bool,
@@ -990,6 +998,9 @@ def _append_guarded_command_profile(
         ),
         "status": status,
         "elapsed_s": None if elapsed_s is None else round(elapsed_s, 6),
+        "child_elapsed_s": child_elapsed_s,
+        "cleanup_elapsed_s": cleanup_elapsed_s,
+        "sampling_telemetry": _reporting.sampling_telemetry_payload(sampling_telemetry),
         "memory_guard": limits_summary(limits),
         "memory_guard_enabled": limits.enabled,
         "timed_out": timed_out,
@@ -1063,7 +1074,7 @@ def _append_guarded_command_profile(
     if not name_incident or not isinstance(repro, Mapping):
         return path, None, None
     try:
-        incident = _write_incident_record(path.parent / "incidents", payload)
+        incident = _write_incident_record(command_profile_incident_dir(path), payload)
     except OSError as exc:
         return (
             path,
@@ -1351,6 +1362,9 @@ def guarded_completed_process(
         limits=resolved_limits,
         returncode=guarded.returncode,
         elapsed_s=guarded.elapsed_s,
+        child_elapsed_s=guarded.child_elapsed_s,
+        cleanup_elapsed_s=guarded.cleanup_elapsed_s,
+        sampling_telemetry=guarded.sampling_telemetry,
         timeout_s=timeout,
         violation=guarded.violation,
         timed_out=guarded.timed_out,
@@ -1618,6 +1632,9 @@ def guarded_completed_process_to_tempfiles(
         limits=resolved_limits,
         returncode=guarded.returncode,
         elapsed_s=guarded.elapsed_s,
+        child_elapsed_s=guarded.child_elapsed_s,
+        cleanup_elapsed_s=guarded.cleanup_elapsed_s,
+        sampling_telemetry=guarded.sampling_telemetry,
         timeout_s=timeout,
         violation=guarded.violation,
         timed_out=guarded.timed_out,

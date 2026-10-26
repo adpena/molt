@@ -424,31 +424,44 @@ def _file_sha256(path: Path) -> str:
 def _reference_python_identity(
     coordinate: VerifiedSubsetCoordinate,
 ) -> dict[str, object]:
-    interpreter = python_interpreter.probe_python_command(
-        (sys.executable,),
-        env=os.environ,
-        cwd=ROOT,
+    from molt.python_environment_identity import (
+        PythonIdentityVerifier,
+        python_identity_verifier_arguments,
     )
-    probe_code = (
-        "import json,struct,sys,sysconfig;"
-        "v=sys.version_info;"
-        "print(json.dumps({"
-        "'abi_flags':getattr(sys,'abiflags',''),"
-        "'cache_tag':sys.implementation.cache_tag,"
-        "'gil_disabled':bool(sysconfig.get_config_var('Py_GIL_DISABLED') or 0),"
-        "'hexversion':sys.hexversion,"
-        "'pointer_bits':struct.calcsize('P')*8,"
-        "'version_info':[v.major,v.minor,v.micro,v.releaselevel,v.serial]"
-        "},sort_keys=True))"
-    )
-    completed = harness_memory_guard.guarded_completed_process(
-        # Isolation ignores inherited no-write/cache-prefix environment controls.
-        [*interpreter.command, "-B", "-I", "-c", probe_code],
-        prefix="MOLT_VERIFIED_SUBSET_PYTHON",
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
+
+    with PythonIdentityVerifier() as verifier:
+        interpreter = python_interpreter.probe_python_command(
+            (sys.executable,),
+            verifier=verifier,
+            env=os.environ,
+            cwd=ROOT,
+        )
+        probe_code = (
+            "import json,struct,sys,sysconfig;"
+            "v=sys.version_info;"
+            "print(json.dumps({"
+            "'abi_flags':getattr(sys,'abiflags',''),"
+            "'cache_tag':sys.implementation.cache_tag,"
+            "'gil_disabled':bool(sysconfig.get_config_var('Py_GIL_DISABLED') or 0),"
+            "'hexversion':sys.hexversion,"
+            "'pointer_bits':struct.calcsize('P')*8,"
+            "'version_info':[v.major,v.minor,v.micro,v.releaselevel,v.serial]"
+            "},sort_keys=True))"
+        )
+        completed = verifier.run(
+            # Isolation ignores inherited no-write/cache-prefix environment controls.
+            [
+                *interpreter.command,
+                *python_identity_verifier_arguments(verifier.prefix),
+                "-c",
+                probe_code,
+            ],
+            memory_guard_prefix="MOLT_VERIFIED_SUBSET_PYTHON",
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
     if completed.returncode != 0:
         raise ValueError("reference CPython identity probe failed")
     try:

@@ -1,6 +1,6 @@
+use super::task_construction::TaskConstruction;
 use super::*;
-use crate::runtime_import_abi::{MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_REGISTER_EXECUTION};
-use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
+use molt_tir::trampolines::TaskConstructorLayout;
 use std::collections::BTreeMap;
 
 /// A runtime-call argument: a borrowed operand of the lowered operation, or a
@@ -1214,7 +1214,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // the phis the SSA pass placed), and `record_branch_args` supplies
                 // each dispatch edge's incomings, which `finalize_phis` fills.
                 let i64_ty = self.backend.context.i64_type();
-                let self_bits = self.generator_self_bits();
+                let self_bits = self.poll_frame_address();
                 let get_state_fn = self.ensure_runtime_i64_fn("molt_obj_get_state", 1);
                 let state_val = self
                     .backend
@@ -1892,72 +1892,26 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             false,
             crate::GENERATOR_CONTROL_BYTES,
         );
-        let kind_bits = crate::native_task_runtime_kind_bits(layout.runtime_kind());
         let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
         let i64_ty = self.backend.context.i64_type();
-        let task_new_fn = self.ensure_runtime_import(MOLT_TASK_NEW);
-        let task_bits = self
-            .backend
-            .builder
-            .build_call(
-                task_new_fn,
-                &[
-                    poll_addr.into(),
-                    i64_ty.const_int(closure_size as u64, true).into(),
-                    i64_ty.const_int(kind_bits as u64, true).into(),
-                ],
-                call_name,
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        // A failed task allocation returns boxed None with an exception pending.
-        // It is not a task address and must not acquire payload/token ownership.
-        // Rejoin with the allocator's exact result rather than returning here:
-        // the surrounding TIR owns exception dispatch, frame exits, and drops.
-        let initialized = self.backend.context.append_basic_block(
-            self.llvm_fn,
-            &format!("task_init{}", self.synthetic_block_counter),
-        );
+        let init_name = format!("task_init{}", self.synthetic_block_counter);
         self.synthetic_block_counter += 1;
-        let continuation = self.backend.context.append_basic_block(
-            self.llvm_fn,
-            &format!("task_ready{}", self.synthetic_block_counter),
-        );
+        let ready_name = format!("task_ready{}", self.synthetic_block_counter);
         self.synthetic_block_counter += 1;
-        self.all_llvm_blocks.push(initialized);
-        self.all_llvm_blocks.push(continuation);
-        let allocated = self
-            .backend
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                self.ensure_i64(task_bits),
-                i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
-                "task_allocated",
-            )
-            .unwrap();
-        let allocation_block = self.backend.builder.get_insert_block().unwrap();
-        self.record_llvm_edge(allocation_block, initialized);
-        self.record_llvm_edge(allocation_block, continuation);
-        self.backend
-            .builder
-            .build_conditional_branch(allocated, initialized, continuation)
-            .unwrap();
-        self.backend.builder.position_at_end(initialized);
-        let ptr_ty = self
-            .backend
-            .context
-            .ptr_type(inkwell::AddressSpace::default());
-        // `molt_task_new` returns a NaN-boxed task handle. Frame payload stores
-        // address raw heap memory, so strip the boxing tag before writing slots,
-        // matching native `unbox_ptr_value` and WASM `handle_resolve`.
-        let task_ptr_bits = self.unbox_ptr_bits(self.ensure_i64(task_bits));
-        let task_ptr = self
-            .backend
-            .builder
-            .build_int_to_ptr(task_ptr_bits, ptr_ty, "task_obj_ptr")
-            .unwrap();
+        let construction = TaskConstruction::begin(
+            self.backend,
+            &self.backend.builder,
+            self.llvm_fn,
+            poll_addr,
+            self.task_constructor_imports(layout),
+            closure_size,
+            (call_name, &init_name, &ready_name),
+        );
+        self.all_llvm_blocks
+            .extend([construction.initialized, construction.continuation]);
+        self.record_llvm_edge(construction.allocation, construction.initialized);
+        self.record_llvm_edge(construction.allocation, construction.continuation);
+        let task_ptr = construction.payload;
         let payload_base_words = (payload_base / 8) as usize;
         // Every payload slot owns one reference. A repeated value keeps one
         // identity: its first slot takes the operand's owned word (an object is
@@ -1999,38 +1953,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .build_store(field_ptr, arg_bits)
                 .unwrap();
         }
-        match layout.completion() {
-            TaskCompletion::ReturnTask => {}
-            TaskCompletion::RegisterCancelToken => {
-                let get_token = self.ensure_runtime_import(MOLT_CANCEL_TOKEN_GET_CURRENT);
-                let token = self
-                    .backend
-                    .builder
-                    .build_call(get_token, &[], "task_current_token")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let register = self.ensure_runtime_import(MOLT_TASK_REGISTER_EXECUTION);
-                self.backend
-                    .builder
-                    .build_call(
-                        register,
-                        &[task_bits.into(), token.into(), self.none_word().into()],
-                        "",
-                    )
-                    .unwrap();
-            }
-            TaskCompletion::WrapAsyncGen => {
-                panic!("LLVM async-generator wrappers must use the callable trampoline")
-            }
-        }
         let initialized_end = self.backend.builder.get_insert_block().unwrap();
-        self.record_llvm_edge(initialized_end, continuation);
-        self.backend
-            .builder
-            .build_unconditional_branch(continuation)
-            .unwrap();
-        self.backend.builder.position_at_end(continuation);
-        task_bits
+        self.record_llvm_edge(initialized_end, construction.continuation);
+        construction
+            .finish(self.backend, &self.backend.builder)
+            .into()
     }
 }

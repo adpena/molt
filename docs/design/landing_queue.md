@@ -193,9 +193,14 @@ A checkout's inputs come from its lock files, on demand, as `uv run` does.
   from the shared caches. `gen_browser_asset_graph.py` stops asking a person
   to run a bootstrap script. `lane start` provisions the default prerequisites. Optional registered inputs,
   such as the Edgebox TypeScript tree, are provisioned only when explicitly
-  selected. Status and queue setup share the default selection; retirement
-  recognizes all registered inputs so an explicitly provisioned tree keeps its
-  custody.
+  selected. Status and lane start share the default selection. Queue gate
+  preparation follows the selected proof toolchain closures instead: only an
+  environment-role prerequisite requests a source development image, and
+  non-Python inputs are provisioned only when selected. Preparation binds tool
+  identity to the selected interpreter before execution; every launch still
+  checks the image. Explicit selectors remain fail-closed even for generic
+  shell gates. Retirement recognizes all registered inputs so an explicitly
+  provisioned tree keeps its custody.
 - **Editable-source custody.** The uv stamp also binds its resolved checkout.
   A current editable environment rechecks its exact PEP 610 metadata path; a
   foreign checkout is refused, even with identical lock bytes. Cold
@@ -243,7 +248,15 @@ The driver creates, provisions and retires each lane.
   sandbox it owns.
 - **Design.** `molt_dev.py lane start <slug>` creates the `lane/<slug>`
   branch from main in a slot worktree, writes the coordination record, and
-  provisions it. `lane retire <slug>` accepts a landed lane, or an abandoned
+  provisions it. The checkout selected by `--repo` is preferred only when its
+  Git registration is a clean, detached, unlocked, non-prunable slot under the
+  selected root; otherwise selection keeps path order. Protected registrations
+  reserve their numbers. This preserves a selected checkout's artifact namespace
+  without weakening provisioning or build identity checks, and starting a lane
+  still consumes an active WIP position. Detach is the availability commit
+  point: a new lane may claim the slot while the old lane finishes deleting its
+  refs and closing its record, with no further checkout mutation by retirement.
+  `lane retire <slug>` accepts a landed lane, or an abandoned
   one after it writes a Git bundle. It deletes the branches, detaches the
   clean slot at main and closes the record; the slot keeps its checkout state
   for the next lane (HF-491). A long-lived monorepo checkout and Bazel's
@@ -400,6 +413,42 @@ One runner owns main. Agents enqueue and continue.
   its terminal result identifies the remaining integration-owner action.
 - This replaces three-day red stretches of main, each repaired by hand after
   the fact, with one bounded run per candidate.
+
+## Hosted evidence handoff
+
+The existing classifier publishes its canonical selection as
+`molt.proof-selection.v1`, separately from executable receipts. The artifact
+binds the exact tested commit/tree, proof authority, declared tier and GitHub
+run/attempt. Its changed paths or full-plan mode reconstruct the complete
+family selection; received receipt files never determine the required set.
+The same `family_outputs` projection continues to feed CI job outputs and its
+aggregate verdict. This adds transport for an existing fact, not a second
+selection registry or scheduler.
+
+`ci_triage.py --verify` joins that artifact with the existing receipt verifier
+and strict ZIP reader. It pins a completed successful run, retrieves immutable
+artifact IDs and digests, verifies source and coverage, then rechecks the run
+and source before reporting success. Unique earlier-attempt receipts can
+prove the same unchanged source; duplicates remain errors. A missing current
+classifier is unavailable, including a partial rerun that retained its older
+classifier. No timestamps, newest-artifact choice, automatic rerun or checkout
+mutation substitute for evidence. CI lifecycle and coverage are separate
+results, and neither grants installed-release acceptance.
+
+This follows [Bazel's structured build-event contract](https://bazel.build/remote/bep):
+announced work and its completion must be joined programmatically. It retains
+Molt's existing proof plan and receipts rather than introducing Bazel or a
+second execution system. [rustc's supported workflows](https://rustc-dev-guide.rust-lang.org/building/suggested.html)
+likewise keep routine development behind maintained project commands.
+
+Ordinary triage keeps its existing lazy startup and completed-log cache.
+Explicit verification costs one paginated artifact inventory, one streamed
+download per selected artifact, bounded archive validation/extraction and the
+existing evidence hash checks, plus source/run fences. Time and storage scale
+with downloaded evidence bytes; no compiler, environment publication or proof
+execution occurs. Failed downloads and receipts remain recoverable. Guard
+incidents/current-test evidence are exported by one shared CI action; no
+additional profiler or per-test write is introduced by this handoff.
 
 ## Migration
 

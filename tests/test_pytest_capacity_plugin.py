@@ -228,7 +228,7 @@ def test_reserve_is_a_clamped_fraction_of_physical_memory(total, expected) -> No
     assert host_capacity.reserve_bytes(total) == expected
 
 
-@pytest.mark.parametrize(("slice_gib", "expected"), [(24, 2), (12, 1)])
+@pytest.mark.parametrize(("slice_gib", "expected"), [(40, 2), (24, 1), (12, 1)])
 def test_compiled_contract_worker_estimate_limits_actual_capacity_planner(
     monkeypatch, slice_gib: int, expected: int
 ) -> None:
