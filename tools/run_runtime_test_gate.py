@@ -10,8 +10,9 @@ descendant receipts (tools/runtime_descendant_receipts.py); this gate has no
 CPython target-minor coordinate authority. The allocation observer policy builds
 both feature images once and runs only its declared controls in fresh processes;
 process-global allocator counters and refusal must never share a libtest run.
-The WASI lifecycle policy builds a target libtest and hands its exact image to
-the existing native production-host integration; Rust owns its semantic roster.
+The WASI lifecycle policy builds separate managed-SDK runtime and Rust-only
+platform libtests and hands each exact image to the existing native production-
+host integration; Rust owns both semantic rosters.
 The native semantic policy also owns the declared core/math numeric libtests in
 that same Cargo build; primitive timings are observations, not performance gates.
 Cargo build streams go directly to the shared guard's exclusive capture files,
@@ -694,6 +695,7 @@ def execute_child(
 
 
 WASI_CONSUMER = "actual_wasi_runtime_lifecycle_cases_through_production_host"
+WASI_PLATFORM_CONSUMER = "actual_wasi_platform_errno_cases_through_production_host"
 
 
 def lifecycle_artifact(
@@ -766,7 +768,8 @@ def cargo_build(
 
 def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
     # Keep Rust's CASES as the sole semantic roster. The Python policy owns only
-    # its three-image production/handoff and the exact native integration consumer.
+    # four compiler images and two native integration consumers. Rust owns the
+    # runtime nine and platform three semantic laws, never Python case copies.
     from tools.proof_queue_pkg.toolchain_capture import (
         resolve_runtime_gate_cargo_operation,
     )
@@ -791,16 +794,23 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
     (run / "cargo.metadata.json").write_text(metadata, encoding="utf-8")
     aggregate["metadata_sha256"] = hashlib.sha256(metadata.encode("utf-8")).hexdigest()
     images = {}
-    for package, target, kind, triple in (
-        ("molt-runtime", "molt_runtime", "rlib", WASI_TARGET),
-        ("molt-wasm-host", "wasi_runtime_lifecycle", "test", host_target),
+    for role, package, target, kind, triple in (
+        ("runtime", "molt-runtime", "molt_runtime", "rlib", WASI_TARGET),
+        ("host", "molt-wasm-host", "wasi_runtime_lifecycle", "test", host_target),
+        (
+            "provider",
+            "molt-runtime-platform",
+            "molt_runtime_platform",
+            "lib",
+            WASI_TARGET,
+        ),
     ):
         operation = next(
             operation
             for operation in cargo_operations(
                 args.policy, args.profile, cargo=cargo, compiler_host=host_target
             )
-            if operation.role == ("runtime" if triple == WASI_TARGET else "host")
+            if operation.role == role
         )
         command, environment, plan = resolve_runtime_gate_cargo_operation(
             operation, cwd=ROOT, env=dict(os.environ), compiler_host=host_target
@@ -832,10 +842,11 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
                     raise RuntimeError(
                         "WASI compiler artifact is not a WebAssembly module"
                     )
+        if role == "runtime":
             aggregate["abi_dependency"] = observed_abi_dependency(
                 build.stdout, metadata, policy="semantic", source_root=ROOT
             )
-        if triple == WASI_TARGET:
+        if role == "runtime":
             aggregate["abi_dependency"]["retained_files"] = {
                 name: descendants.retain_file(Path(name), run)
                 for name in aggregate["abi_dependency"]["filenames"]
@@ -877,52 +888,72 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         truth._file_identity(binary) != identity for binary, identity in images.values()
     ):
         raise RuntimeError("lifecycle source/image changed before handoff")
-    wasm, wasm_identity = images["molt_runtime"]
     binary, identity = images["wasi_runtime_lifecycle"]
-    environment = dict(os.environ)
-    environment.update(
-        MOLT_WASI_LIBTEST_ARTIFACT=str(wasm), MOLT_WASI_LIBTEST_SHA256=wasm_identity[1]
+    consumers = (
+        ("molt_runtime", WASI_CONSUMER),
+        ("molt_runtime_platform", WASI_PLATFORM_CONSUMER),
     )
-    aggregate["wasi_handoff"] = {
-        key: environment[key]
-        for key in ("MOLT_WASI_LIBTEST_ARTIFACT", "MOLT_WASI_LIBTEST_SHA256")
-    }
     selection = {
-        WASI_CONSUMER: (
-            ["--exact", WASI_CONSUMER, "--ignored", "--test-threads=1", "--nocapture"],
-            {WASI_CONSUMER},
+        consumer: (
+            ["--exact", consumer, "--ignored", "--test-threads=1", "--nocapture"],
+            {consumer},
         )
+        for _, consumer in consumers
     }
-    child_args, required = selection[WASI_CONSUMER]
-    directory = run / "wasi_runtime_lifecycle" / "child-0"
-    directory.mkdir()
-    child, receipts = execute_child(
-        binary,
-        child_args,
-        required,
-        directory=directory,
-        run_id=aggregate["run_id"],
-        source=source,
-        timeout=args.child_timeout_seconds,
-        require_passed=True,
-        retained_root=run,
-        environment=environment,
-    )
+    aggregate["wasi_handoffs"] = []
     image = aggregate["images"]["wasi_runtime_lifecycle"]
-    image["children"] = {
-        WASI_CONSUMER: {
+    image["children"] = {}
+    children = {}
+    for index, (target, consumer) in enumerate(consumers):
+        wasm, wasm_identity = images[target]
+        environment = dict(os.environ)
+        environment.update(
+            MOLT_WASI_LIBTEST_ARTIFACT=str(wasm),
+            MOLT_WASI_LIBTEST_SHA256=wasm_identity[1],
+        )
+        aggregate["wasi_handoffs"].append(
+            {
+                "consumer": consumer,
+                "target": target,
+                "environment": {
+                    key: environment[key]
+                    for key in (
+                        "MOLT_WASI_LIBTEST_ARTIFACT",
+                        "MOLT_WASI_LIBTEST_SHA256",
+                    )
+                },
+            }
+        )
+        child_args, required = selection[consumer]
+        directory = run / "wasi_runtime_lifecycle" / f"child-{index}"
+        directory.mkdir()
+        child, receipts = execute_child(
+            binary,
+            child_args,
+            required,
+            directory=directory,
+            run_id=aggregate["run_id"],
+            source=source,
+            timeout=args.child_timeout_seconds,
+            require_passed=True,
+            retained_root=run,
+            environment=environment,
+        )
+        children[consumer] = receipts
+        image["children"][consumer] = {
             "returncode": child.returncode,
             "receipts": [str(p) for p in directory.glob("*.json")],
         }
-    }
-    if child.returncode:
-        raise RuntimeError(
-            child_failure_summary(
-                WASI_CONSUMER, child.returncode, receipts, child.stderr
+        if child.returncode:
+            raise RuntimeError(
+                child_failure_summary(
+                    consumer, child.returncode, receipts, child.stderr
+                )
             )
-        )
+    # One validator sees both ledgers and shares the invocation-id set, so an
+    # otherwise valid first-child receipt cannot be replayed for the second.
     validate_children(
-        {WASI_CONSUMER: receipts},
+        children,
         selection,
         source=source,
         run_id=aggregate["run_id"],
@@ -934,13 +965,13 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         truth._file_identity(binary) != identity for binary, identity in images.values()
     ):
         raise RuntimeError("lifecycle source/image changed during execution")
-    # This is one integration pass. Its five semantic cases are enforced and
-    # reported by Rust; no invented Python test count or native WASM inventory.
+    # Two integration passes: Rust enforces runtime nine/platform three laws.
+    # Python accounts for those consumers, never inventing a WASM inventory.
     for path, row in aggregate["abi_dependency"]["retained_files"].items():
         descendants.retained_file(row, root=run)
         if truth._file_identity(Path(path)) != (row["size_bytes"], row["sha256"]):
             raise RuntimeError("ABI dependency changed during execution")
-    image["passed_test_count"] = aggregate["passed_test_count"] = 1
+    image["passed_test_count"] = aggregate["passed_test_count"] = 2
     aggregate["status"] = "success"
 
 
@@ -1246,7 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
         "scope": (
             "full default-feature runtime semantics and declared core/math numeric controls; runtime performance probes unrun"
             if args.policy == "semantic"
-            else "declared WASI micro-runtime lifecycle cases through the production host only"
+            else "declared WASI micro-runtime lifecycle and Rust-only platform errno cases through the production host only"
             if args.policy == "wasi-lifecycle"
             else "maintained provider four wasm32 counter controls only; no Molt WASM runtime claim"
             if args.policy == "zlib-wasi"

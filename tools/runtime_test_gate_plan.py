@@ -95,10 +95,27 @@ class CargoOperation:
         # the native Wasmtime host also has C build dependencies. zlib is Rust.
         return {} if self.c_units == "none" else {"target": ["c"]}
 
-    def admits_native_requirements(self, declared: Mapping[str, Sequence[str]]) -> bool:
+    def project_native_requirements(
+        self, declared: Mapping[str, Sequence[str]]
+    ) -> dict[str, list[str]]:
         if self.c_units == "none":
-            return not declared
-        return "c" in declared.get("target", ())
+            return {}
+        if "c" not in declared.get("target", ()):
+            raise ValueError("runtime Cargo operation lacks its C source declaration")
+        return {unit: list(languages) for unit, languages in declared.items()}
+
+
+def project_native_requirements(
+    operations: Sequence[CargoOperation], declared: Mapping[str, Sequence[str]]
+) -> tuple[dict[str, list[str]], ...]:
+    """Bind outer C custody once, then project only actual C-owning operations."""
+    if declared and not any(operation.native_requirements for operation in operations):
+        raise ValueError(
+            "runtime Cargo policy has no operation owning declared C units"
+        )
+    return tuple(
+        operation.project_native_requirements(declared) for operation in operations
+    )
 
 
 def cargo_operations(
@@ -170,6 +187,21 @@ def cargo_operations(
                 ),
                 "cargo",
                 "native",
+            ),
+            CargoOperation(
+                "provider",
+                (
+                    *base,
+                    "-p",
+                    "molt-runtime-platform",
+                    "--lib",
+                    "--target",
+                    WASI_TARGET,
+                    "--no-default-features",
+                    *tail,
+                ),
+                "cargo",
+                "none",
             ),
         )
     if policy not in {"semantic", "allocation-observer"}:

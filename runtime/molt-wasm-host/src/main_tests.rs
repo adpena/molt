@@ -49,7 +49,7 @@ fn execute_test_guest(
     engine: &Engine,
     output: &Module,
     runtime: Option<&Module>,
-    kind: LoadedGuestKind,
+    kind: LoadedGuestKind<'_>,
     guest_args: &[String],
     wasm_table_base: Option<u64>,
 ) -> wasmtime::Result<GuestTermination> {
@@ -281,7 +281,9 @@ fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
                 GuestTermination::Returned,
             );
         }
-        ResolvedExecution::MoltApplication(_) => panic!("command resolved as application"),
+        ResolvedExecution::MoltApplication(_) | ResolvedExecution::WasiCommandManifest(_) => {
+            panic!("raw command resolved through a manifest")
+        }
     }
 }
 
@@ -398,7 +400,9 @@ fn command_selector_separates_host_options_from_guest_argv() {
     };
     match options.execution {
         ExecutionRequest::WasiCommand { module } => assert_eq!(module, "tests.wasm"),
-        ExecutionRequest::MoltApplication { .. } => panic!("command parsed as application"),
+        ExecutionRequest::MoltApplication { .. } | ExecutionRequest::WasiCommandManifest { .. } => {
+            panic!("raw command parsed through a manifest")
+        }
     }
     assert_eq!(options.bundle_path.as_deref(), Some("bundle.pack"));
     assert_eq!(options.vfs_tmp_quota, Some(8));
@@ -419,7 +423,9 @@ fn application_selector_keeps_manifest_out_of_guest_argv() {
         ExecutionRequest::MoltApplication { manifest } => {
             assert_eq!(manifest.as_deref(), Some("manifest.json"));
         }
-        ExecutionRequest::WasiCommand { .. } => panic!("application parsed as command"),
+        ExecutionRequest::WasiCommand { .. } | ExecutionRequest::WasiCommandManifest { .. } => {
+            panic!("application parsed as command")
+        }
     }
     assert_eq!(
         options.guest_args,
@@ -1661,4 +1667,107 @@ fn isolate_export_registration_validates_both_abis_before_publication() {
         assert!(store.data().isolate_bootstrap_export.is_none());
         assert!(store.data().isolate_import_export.is_none());
     }
+}
+
+#[test]
+fn manifest_command_selector_preserves_command_argv_and_precompile_identity() {
+    let ParsedHostArgs::Run(options) = parse_host_args(
+        [
+            "--wasi-command-manifest",
+            "manifest.json",
+            "--",
+            "--exact",
+            "case",
+        ]
+        .map(str::to_string),
+    )
+    .unwrap() else {
+        panic!("expected command run");
+    };
+    assert!(matches!(options.execution,
+        ExecutionRequest::WasiCommandManifest { manifest } if manifest == "manifest.json"));
+    assert_eq!(options.guest_args, ["--exact", "case"]);
+    assert!(matches!(parse_host_args(
+        ["--precompile", "--wasi-command-manifest", "manifest.json"].map(str::to_string)
+    ).unwrap(), ParsedHostArgs::Precompile(ExecutionRequest::WasiCommandManifest { manifest })
+        if manifest == "manifest.json"));
+    for args in [
+        vec!["--wasi-command-manifest"],
+        vec![
+            "--precompile",
+            "--wasi-command-manifest",
+            "manifest.json",
+            "guest",
+        ],
+    ] {
+        assert!(parse_host_args(args.into_iter().map(str::to_string)).is_err());
+    }
+}
+
+#[test]
+fn manifest_command_captures_source_and_cannot_admit_an_unrelated_module() {
+    let original =
+        br#"(module (func (export "_start")) (func (export "answer") (result i32) i32.const 17))"#;
+    let root = runtime_manifest_fixture("command-capture", original, &sha256_hex(original));
+    let path = root.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["entry"] = serde_json::json!({"module":"linked","function":"_start"});
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let ResolvedExecution::WasiCommandManifest(resolved) =
+        resolve_execution(ExecutionRequest::WasiCommandManifest {
+            manifest: path.to_string_lossy().into_owned(),
+        })
+        .unwrap()
+    else {
+        panic!("manifest did not resolve as a command");
+    };
+    fs::write(root.path().join("program.wasm"), b"changed after admission").unwrap();
+    let engine = build_engine().unwrap();
+    let command = resolved.load(&engine).unwrap();
+    assert_eq!(
+        molt_wasm_host::sha256_digest_hex(command.source_sha256()),
+        sha256_hex(original)
+    );
+    let mut store = Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, command.module(), &[]).unwrap();
+    assert_eq!(
+        instance
+            .get_typed_func::<(), i32>(&mut store, "answer")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap(),
+        17
+    );
+    assert_eq!(
+        execute_test_guest(
+            &engine,
+            command.module(),
+            None,
+            LoadedGuestKind::WasiCommandManifest(&command),
+            &[],
+            None
+        )
+        .unwrap(),
+        GuestTermination::Returned
+    );
+    let unrelated = Module::new(
+        &engine,
+        r#"(module (func $s unreachable) (start $s) (func (export "_start")))"#,
+    )
+    .unwrap();
+    let error = execute_test_guest(
+        &engine,
+        &unrelated,
+        None,
+        LoadedGuestKind::WasiCommandManifest(&command),
+        &[],
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("requires its captured module"),
+        "{error:#}"
+    );
+    assert!(!format!("{error:#}").contains("unreachable"), "{error:#}");
 }
