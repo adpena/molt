@@ -339,16 +339,10 @@ MEASUREMENT-CORRUPTING" family. The lifecycle discipline molt should copy:
 
 ### 1.10 Subagent contract as code
 
-`src/tac/subagent_contract.py` holds the harvested prompting patterns as
-NAMED CODE CONSTANTS (`GROUNDED_PROGRESS` — "audit each claim against a tool
-result from this session"; `NO_ENDING_ON_PROMISES`; `FINAL_MESSAGE_REGROUNDING`;
-`ANTI_GOLDPLATING`; `FRESH_CONTEXT_VERIFIER`). `tools/dispatch_prompt.py`
-composes spawn prompts from these constants (re-typed prompts drift), and a
-preflight integrity check asserts the constants still exist. Skills
-(`.claude/skills/verify-landing`, `witness-status`) encode the verify chain
-and honest-status protocol as invocable procedures, with honesty rules inline
-("say 'pointer unmoved' if asked about the score"; "list what you did NOT
-verify").
+`AGENTS.md` owns policy. `tools/dispatch_prompt.py` validates bounded assignments
+and composes the routing blocks in `tools/subagent_contract.py`; see A7 below.
+The parent owns integration and proof scheduling. Reviewers inspect matching
+evidence and return findings without automatic reruns or independent landings.
 
 ### 1.11 fmtools (the local-AI classification pattern)
 
@@ -501,15 +495,17 @@ closures (no finding closes as "measured, not worth it") carries the intent.
 
 ### A7. Dispatch prompts + subagent contract as code
 
-**Build:** `tools/dispatch_prompt.py` + `tools/subagent_contract.py`:
-named constants for the blocks every molt spawn already needs by convention —
-GROUNDED_PROGRESS ("audit each claim against a tool result from this
-session"), NO_ENDING_ON_PROMISES, FRESH_CONTEXT_VERIFIER (M05's independent
-verification), WEB_AUTHORITY (M06's grant + require WebSearch/WebFetch,
-cite primary sources), LANDING_CONTRACT (M12 block), TRIALITY_WIRING (A3
-legs), model-tier guidance (M70). Dispatchers compose prompts from constants;
-a gate asserts the constants exist (anti-rot). Kills the drift class where
-each hand-typed spawn prompt forgets a different clause.
+**Current contract:** `AGENTS.md` owns standing policy. `tools/dispatch_prompt.py`
+requires validated task bounds: outcome, deliverable, integration and proof
+owners, write scope, permitted proof commands, time budget and stop condition.
+`tools/subagent_contract.py` supplies optional routing blocks aligned with that
+policy. The former unconditional full-suite, reproduce-every-PASS and per-turn
+landing instructions are replaced by changed-contract proof, evidence reuse and
+parent-owned integration. Read-only work returns findings; it does not create
+another proof or landing lane. `tools/check_subagent_contract.py` checks routing
+integrity; the existing behavioral tests exercise missing/invalid bounds and
+composed assignments. These checks cannot enforce an agent's later tool use;
+the parent monitors the declared budget and stops scope drift.
 **Mechanizes:** M05, M06, M12, M70. **Composes with:** agent_coordination.py,
 ORCHESTRATION.md conventions.
 
