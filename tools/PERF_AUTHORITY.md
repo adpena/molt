@@ -235,6 +235,15 @@ iteration controls remain available; only bound nonincremental products may
 publish to the shared cache. [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#incremental)
 own effective settings after canonical sccache normalization.
 
+Local filtered pytest cohorts now carry their own typed prerequisite selection.
+On the retained 39-command assembly-policy aperture, all commands and collection
+requests remain identical; only the 34-test Python GPU frontend selector loses
+its inherited Rust/Cargo requirements. That session occupied 6.05 seconds in the
+previous Cargo chain and can now overlap the real writer. This is a verified
+classification and dependency reduction, not a new end-to-end timing comparison.
+Unfiltered consumers that build native fixtures keep their prerequisites, and
+writer serialization, pytest-session limits and memory envelopes are unchanged.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 
