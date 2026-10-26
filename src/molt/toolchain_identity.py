@@ -26,7 +26,7 @@ from molt.file_hashing import (
     content_change_time_ns_from_fd,
     open_stable_read_descriptor,
 )
-from molt.file_publication import metadata_is_link_like
+from molt.file_publication import metadata_is_link_like, unlink_owned_file
 from molt.llvm_linker_roles import lexical_executable_path
 
 
@@ -148,19 +148,6 @@ def _stored_path_handle_identity(
 
     device, inode, mode, size, mtime_ns, _ctime_ns = value
     return device, inode, stat.S_IFMT(mode), size, mtime_ns
-
-
-def _unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
-    """Unlink only the file object created by the current operation."""
-
-    if identity is None:
-        return
-    try:
-        current = path.lstat()
-    except FileNotFoundError:
-        return
-    if os.path.samestat(identity, current):
-        path.unlink()
 
 
 def stable_regular_file_path_is_current(
@@ -1046,14 +1033,14 @@ def snapshot_stable_regular_file(
                 f"{label} snapshot changed during independent attestation: {snapshot}"
             ) from exc
     except BaseException:
-        _unlink_owned_file(snapshot, owned_snapshot_identity)
+        unlink_owned_file(snapshot, owned_snapshot_identity)
         raise
     digest = hasher.hexdigest()
     if (
         opened.stat.st_size != snapshot_identity.size
         or digest != snapshot_identity.sha256
     ):
-        _unlink_owned_file(snapshot, owned_snapshot_identity)
+        unlink_owned_file(snapshot, owned_snapshot_identity)
         raise StableRegularFileSnapshotError(
             f"{label} snapshot content changed after its source stream: {snapshot}"
         )

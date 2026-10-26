@@ -17,8 +17,12 @@ import hashlib
 import os
 from pathlib import Path
 import sys
+from typing import assert_never
 
 from molt.cli.wasm_link_cache import (
+    WasmLinkCacheBundleHit,
+    WasmLinkCacheBundleMiss,
+    WasmLinkCacheBundleMissReason,
     WasmLinkCacheEntry,
     _invalidate_wasm_link_cache_bundle,
     _locked_wasm_link_cache_entry,
@@ -107,14 +111,18 @@ def restore_final_link_result(
     """
     with _locked_wasm_link_cache_entry(entry):
         cached = _read_wasm_link_cache_bundle(entry, outputs.keys())
-        if cached.status == "corrupt":
-            _invalidate_wasm_link_cache_bundle(entry)
-        if cached.files is None:
-            return False
-        # Transfer the verified generation before its lock releases.
-        for role, path in outputs.items():
-            _transfer_file(cached.files[role], path)
-    return True
+        match cached:
+            case WasmLinkCacheBundleMiss(reason=reason):
+                if reason is WasmLinkCacheBundleMissReason.CORRUPT:
+                    _invalidate_wasm_link_cache_bundle(entry)
+                return False
+            case WasmLinkCacheBundleHit(files=files):
+                # Transfer the verified generation before its lock releases.
+                for role, path in outputs.items():
+                    _transfer_file(files[role], path)
+                return True
+            case _:
+                assert_never(cached)
 
 
 def publish_final_link_result(
