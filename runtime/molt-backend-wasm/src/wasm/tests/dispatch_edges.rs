@@ -109,7 +109,7 @@ fn saved_state_guest(state_id: i64) -> Vec<u8> {
     ))
 }
 
-fn saved_state_roundtrip_guest(state_id: i64) -> Vec<u8> {
+fn saved_state_roundtrip_guest(state_id: i64, anchored: bool) -> Vec<u8> {
     emit(wasm_test_function(
         "molt_main",
         vec!["task"],
@@ -135,8 +135,13 @@ fn saved_state_roundtrip_guest(state_id: i64) -> Vec<u8> {
             marked("line", 20),
             marked("check_exception", 90),
             OpIR {
-                value: Some(1),
-                ..wasm_test_op("const_bool", Some("resumed"), vec![])
+                value: (!anchored).then_some(1),
+                s_value: anchored.then(|| "poll-anchor-β\0雪".to_string()),
+                ..wasm_test_op(
+                    if anchored { "const_str" } else { "const_bool" },
+                    Some("resumed"),
+                    vec![],
+                )
             },
             wasm_test_op("ret", None, vec!["resumed"]),
             marked("label", 90),
@@ -409,8 +414,19 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         ("final_check", final_check),
         ("saved_dense", saved_state_guest(3)),
         ("saved_sparse", saved_state_guest(10000)),
-        ("roundtrip_dense", saved_state_roundtrip_guest(3)),
-        ("roundtrip_sparse", saved_state_roundtrip_guest(10000)),
+        ("roundtrip_dense", saved_state_roundtrip_guest(3, false)),
+        (
+            "roundtrip_sparse",
+            saved_state_roundtrip_guest(10000, false),
+        ),
+        (
+            "roundtrip_anchor_dense",
+            saved_state_roundtrip_guest(3, true),
+        ),
+        (
+            "roundtrip_anchor_sparse",
+            saved_state_roundtrip_guest(10000, true),
+        ),
     ] {
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
         let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
@@ -425,6 +441,7 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
             "none":molt_codegen_abi::box_none_bits().to_string(),
             "yes":molt_codegen_abi::box_bool_bits(1).to_string(),
             "no":molt_codegen_abi::box_bool_bits(0).to_string(),
+            "anchor_payload":"poll-anchor-β\0雪",
         }))
         .unwrap(),
     )
@@ -437,15 +454,74 @@ const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes), no = BigInt(config.no);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
+  const anchored = test.name.startsWith('roundtrip_anchor_');
   let lines, polls, failAt, savedState=0n;
   let stateReads=0, stateWrites=[];
+  let anchor, nextOwner=1001n;
+  const owners=new Map(), returnedOwners=new Set();
   const hooks = {
     trace_set_line(line) { lines.push(Number(line)); return none; },
-    exception_pending() { return ++polls === failAt ? 1n : 0n; },
+    exception_pending() {
+      if (anchored && !anchor.checked) {
+        assert.equal(anchor.constructed,1,'constructor observer precedes poll prefix');
+        anchor.checked=true;
+        return anchor.pending ? 1n : 0n;
+      }
+      return ++polls === failAt ? 1n : 0n;
+    },
     is_truthy(value) { assert.ok(value === yes || value === no); return value === yes ? 1n : 0n; },
     is_truthy_int(value) { return hooks.is_truthy(value); },
-    inc_ref_obj(value) { assert.ok([none,yes,no].includes(value)); },
-    dec_ref_obj(value) { assert.ok([none,yes,no].includes(value)); },
+    inc_ref_obj(value) {
+      if (anchored && owners.has(value)) {
+        assert.equal(value,anchor.owner,'resumed use selects this poll\'s payload owner');
+        assert.equal(anchor.live,true); assert.equal(anchor.uses,0);
+        assert.equal(lines.at(-1),20,'heap use belongs only to resumed body');
+        assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(anchor.ptr,true),value);
+        assert.equal(owners.get(value),1); owners.set(value,2); anchor.uses++;
+        return;
+      }
+      assert.ok([none,yes,no].includes(value));
+    },
+    dec_ref_obj(value) {
+      if (anchored && owners.has(value)) {
+        assert.equal(value,anchor.owner); assert.equal(anchor.live,true);
+        assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(anchor.ptr,true),none,
+                     'clear this poll\'s slot before anchor release');
+        assert.ok(owners.get(value)>0); owners.set(value,owners.get(value)-1);
+        anchor.releases++; return;
+      }
+      assert.ok([none,yes,no].includes(value));
+    },
+    scratch_alloc(size) {
+      assert.equal(anchored,true,'A0 poll must not allocate');
+      assert.equal(size,8n); assert.equal(anchor.allocations++,0);
+      assert.equal(anchor.live,false);
+      if (anchor.scenario==='allocation') {anchor.pending=true;return 0n;}
+      anchor.ptr=test.memory_pages*65536+128; anchor.live=true;
+      new Uint8Array(imports.env.memory.buffer,anchor.ptr,8).fill(0xa5);
+      return BigInt(anchor.ptr);
+    },
+    scratch_free(ptr,size) {
+      assert.equal(anchored,true);assert.equal(anchor.live,true);
+      assert.equal(ptr,BigInt(anchor.ptr));assert.equal(size,8n);
+      assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(anchor.ptr,true),none);
+      if (anchor.owner!==null) assert.equal(owners.get(anchor.owner),anchor.uses,
+        'region free preserves exactly the escaped literal owner');
+      anchor.live=false;anchor.frees++;
+      new Uint8Array(imports.env.memory.buffer,anchor.ptr,8).fill(0xdd);
+    },
+    string_from_bytes(ptr,len,out) {
+      assert.equal(anchored,true);assert.equal(anchor.live,true);
+      assert.equal(anchor.constructed++,0);
+      const view=new DataView(imports.env.memory.buffer);
+      assert.equal(view.getBigInt64(anchor.ptr,true),none,'poisoned slot initialized before constructor');
+      assert.deepEqual(Buffer.from(new Uint8Array(imports.env.memory.buffer,Number(ptr),Number(len))),
+                       Buffer.from(config.anchor_payload,'utf8'));
+      view.setBigInt64(out,none,true);
+      if (anchor.scenario==='constructor') {anchor.pending=true;return 2;}
+      anchor.owner=nextOwner++;owners.set(anchor.owner,1);
+      view.setBigInt64(out,anchor.owner,true);return 0;
+    },
     obj_get_state(task) { assert.equal(task, 64n); stateReads++; return savedState; },
     obj_set_state(task, state) {
       assert.equal(task & 0xffffffffn, 64n);
@@ -456,7 +532,7 @@ for (const test of config.cases) {
     },
     future_poll(future) { assert.equal(future, none); return yes; },
   };
-  const imports = {env:{memory:new WebAssembly.Memory({initial:test.memory_pages}),
+  const imports = {env:{memory:new WebAssembly.Memory({initial:test.memory_pages+Number(anchored)}),
     __indirect_function_table:new WebAssembly.Table({initial:test.table_entries,element:'anyfunc'})}};
   for (const entry of WebAssembly.Module.imports(module)) {
     if (entry.kind !== 'function') { assert.ok(entry.name in imports.env); continue; }
@@ -528,29 +604,54 @@ for (const test of config.cases) {
       assert.deepEqual(lines,condition===yes?[1]:[]);
     }
   } else if (test.name.startsWith('roundtrip_')) {
-    const resume = test.name==='roundtrip_dense' ? 3n : 10000n;
+    const resume = test.name.endsWith('dense') ? 3n : 10000n;
     // No planner/map helper supplies this expectation: the authored source
     // continuation is operation 8, so the external saved word must be ~8.
     const encoded = ~8n;
-    const reset = (failure=0) => {
+    const reset = (failure=0,scenario='normal') => {
       lines=[]; polls=0; failAt=failure; stateReads=0; stateWrites=[];
+      anchor={scenario,owner:null,ptr:null,live:false,pending:false,checked:false,
+              allocations:0,frees:0,constructed:0,uses:0,releases:0};
+    };
+    const finishAnchor = (result,uses) => {
+      assert.equal(anchor.allocations,Number(anchored),'one allocation per actual poll, none for A0');
+      assert.equal(anchor.constructed,Number(anchored && anchor.scenario!=='allocation'));
+      assert.equal(anchor.frees,Number(anchored && anchor.scenario!=='allocation'));
+      assert.equal(anchor.live,false);assert.equal(anchor.uses,uses);
+      assert.equal(anchor.releases,Number(anchor.owner!==null));
+      if (anchor.owner!==null) {
+        assert.equal(owners.get(anchor.owner),uses);
+        if (uses) {assert.equal(result,anchor.owner);returnedOwners.add(result);}
+      }
+      for (const owner of returnedOwners) assert.equal(owners.get(owner),1,
+        'later poll cannot retire an earlier returned owner');
+    };
+    const releaseReturned = (owner) => {
+      assert.equal(anchor.live,false);assert.equal(returnedOwners.delete(owner),true);
+      assert.equal(owners.get(owner),1);owners.set(owner,0);
     };
     savedState=0n; reset();
     assert.equal(app.molt_main(64n), no);
+    finishAnchor(no,0);
     assert.deepEqual(lines,[8,10]); assert.equal(polls,2);
     assert.equal(stateReads,1); assert.deepEqual(stateWrites,[encoded]);
     assert.equal(savedState,encoded);
     // Feed the actual persisted runtime word back into the next poll. Entry
     // prefix runs once again; initial body and state_set must not replay.
     reset();
-    assert.equal(app.molt_main(64n),yes);
+    const resumed=app.molt_main(64n);
+    assert.equal(resumed,anchored ? anchor.owner : yes);
+    finishAnchor(resumed,Number(anchored));
     assert.deepEqual(lines,[8,20]); assert.equal(polls,2);
     assert.equal(stateReads,1); assert.deepEqual(stateWrites,[]);
     assert.equal(savedState,encoded);
     // Positive public state IDs and persisted operation identities share the
     // same real continuation, for both dense and sparse remap plans.
     savedState=resume; reset();
-    assert.equal(app.molt_main(64n),yes);
+    const positive=app.molt_main(64n);
+    assert.equal(positive,anchored ? anchor.owner : yes);
+    finishAnchor(positive,Number(anchored));
+    if (anchored) {assert.notEqual(resumed,positive);releaseReturned(resumed);releaseReturned(positive);}
     assert.deepEqual(lines,[8,20]); assert.equal(polls,2);
     assert.equal(stateReads,1); assert.deepEqual(stateWrites,[]);
     assert.equal(savedState,resume);
@@ -559,10 +660,20 @@ for (const test of config.cases) {
     for (const state of [0n,encoded]) for (const failure of [1,2]) {
       savedState=state; reset(failure);
       assert.equal(app.molt_main(64n),none);
+      finishAnchor(none,0);
       assert.deepEqual(lines,failure===1 ? [8,90] : [8,state===0n?10:20,90]);
       assert.equal(polls,failure); assert.equal(stateReads,1);
       assert.deepEqual(stateWrites,[]); assert.equal(savedState,state);
     }
+    if (anchored) for (const scenario of ['allocation','constructor']) {
+      savedState=encoded;reset(0,scenario);
+      assert.equal(app.molt_main(64n),none);finishAnchor(none,0);
+      assert.equal(anchor.pending,true);
+      assert.deepEqual(lines,[]);assert.equal(polls,0);assert.equal(stateReads,0);
+      assert.deepEqual(stateWrites,[]);assert.equal(savedState,encoded);
+    }
+    assert.equal(returnedOwners.size,0);
+    assert.ok([...owners.values()].every(count=>count===0));
   } else if (test.name.startsWith('saved_')) {
     const resume = test.name==='saved_dense' ? 3n : 10000n;
     for (const [state, expected] of [[0n,10],[resume,20]]) {

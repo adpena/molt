@@ -21,7 +21,10 @@ function reset(label, inherited = false, exceptionAt = 0, failEntry = false) {
            initialDepth: inherited ? 1 : 0, attempts: [], failEntry,
            lines: [], polls: 0, exceptionAt, pending: false,
            taskReads: 0, expectsTask: false, homeCase: false,
-           homeLends: 0, homeOwners: new Map(), homeRetains: 0, homeReleases: 0};
+           homeLends: 0, homeOwners: new Map(), homeRetains: 0, homeReleases: 0,
+           anchorCase: false, anchorFailure: 'none', anchorLive: false, anchorPtr: null,
+           anchorAllocations: 0, anchorFrees: 0, anchorConstructed: 0, anchorChecks: 0,
+           anchorOwners: new Map(), anchorRetains: 0, anchorReleases: 0};
 }
 function ensure(condition, message) {
   assert.ok(condition, state.label + ': ' + message + '; state=' + JSON.stringify(state));
@@ -33,6 +36,40 @@ function instantiate(path) {
     __indirect_function_table: new WebAssembly.Table({initial: config.table_entries, element: 'anyfunc'}),
   }};
   const hooks = {
+    scratch_alloc(size) {
+      ensure(state.anchorCase && size===8n && state.anchorAllocations===0,
+             'only A1 invocation may allocate its one anchor slot');
+      ensure(state.enters===0 && state.depth===state.initialDepth,
+             'anchor allocation must precede owned frame entry');
+      state.anchorAllocations++;
+      if (state.anchorFailure==='allocation') {state.pending=true;return 0n;}
+      state.anchorPtr=config.memory_pages*65536+128;
+      state.anchorLive=true;
+      new Uint8Array(imports.env.memory.buffer,state.anchorPtr,8).fill(0xa5);
+      return BigInt(state.anchorPtr);
+    },
+    scratch_free(ptr,size) {
+      ensure(state.anchorCase && state.anchorLive && size===8n
+             && ptr===BigInt(state.anchorPtr),'anchor region freed incorrectly');
+      ensure(new DataView(imports.env.memory.buffer).getBigInt64(state.anchorPtr,true)===boxedNone,
+             'anchor slot must be cleared before free');
+      ensure([...state.anchorOwners.values()].every(count=>count===0),
+             'anchor region freed before its owners');
+      state.anchorLive=false;state.anchorFrees++;
+      new Uint8Array(imports.env.memory.buffer,state.anchorPtr,8).fill(0xdd);
+    },
+    string_from_bytes(ptr,len,out) {
+      ensure(state.anchorCase && state.anchorLive && state.anchorConstructed===0
+             && state.enters===0,'unexpected anchor construction');
+      const view=new DataView(imports.env.memory.buffer);
+      ensure(view.getBigInt64(state.anchorPtr,true)===boxedNone,
+             'poisoned anchor slot was not initialized before construction');
+      assert.deepEqual(Buffer.from(new Uint8Array(imports.env.memory.buffer,Number(ptr),Number(len))),
+                       Buffer.from(config.anchor_payload,'utf8'));
+      state.anchorConstructed++;view.setBigInt64(out,boxedNone,true);
+      if (state.anchorFailure==='constructor') {state.pending=true;return 2;}
+      state.anchorOwners.set(909n,1);view.setBigInt64(out,909n,true);return 0;
+    },
     frame_homes(count) {
       ensure(state.homeCase && count === 2n, 'wrong home layout request');
       ensure(state.enters === 1 && state.attempts.length === 1, 'homes lent before frame entry');
@@ -99,6 +136,8 @@ function instantiate(path) {
       const pushed = state.attempts.pop();
       ensure(state.depth === state.initialDepth + Number(pushed),
              'frame depth does not match the owned entry attempt');
+      if (state.anchorCase) ensure(!state.anchorLive && state.anchorFrees===1,
+                                  'anchor region must retire before home/frame cleanup');
       if (pushed) state.depth--;
       if (state.homeCase && state.homeOwners.size) {
         // The runtime owns the homes. Exit unlinks the frame before releasing
@@ -124,6 +163,12 @@ function instantiate(path) {
       state.lines.push(Number(line)); return boxedNone;
     },
     exception_pending() {
+      if (state.anchorCase && state.enters===0) {
+        ensure(state.anchorConstructed===1 && state.anchorChecks===0,
+               'only constructor failure is observed before owned entry');
+        state.anchorChecks++;
+        return state.pending ? 1n : 0n;
+      }
       ensure(state.attempts.length === 1 || (state.enters === 0 && state.depth === 1),
              'exception observer outside the owned attempt or inherited frame');
       state.polls++;
@@ -134,6 +179,14 @@ function instantiate(path) {
       return hooks.exception_pending();
     },
     inc_ref_obj(value) {
+      if (state.anchorCase && state.anchorOwners.has(value)) {
+        ensure(value===909n && state.anchorLive && state.anchorRetains===0
+               && state.anchorOwners.get(value)===1,
+               'literal use must retain its selected live anchor');
+        ensure(new DataView(imports.env.memory.buffer).getBigInt64(state.anchorPtr,true)===value,
+               'literal use must load the private anchor slot');
+        state.anchorRetains++;state.anchorOwners.set(value,2);return;
+      }
       if (state.homeCase && state.homeOwners.has(value)) {
         ensure(value === 777n && state.homeRetains === 0 && state.homeOwners.get(value) === 1,
                'only the explicit borrowed return may retain a home binding');
@@ -145,6 +198,15 @@ function instantiate(path) {
              'unexpected heap retain in scalar split fixture');
     },
     dec_ref_obj(value) {
+      if (state.anchorCase && state.anchorOwners.has(value)) {
+        ensure(state.anchorLive && state.anchorOwners.get(value)>0,
+               'literal owner released early or twice');
+        const count=state.anchorOwners.get(value)-1;
+        state.anchorOwners.set(value,count);state.anchorReleases++;
+        if (!count) ensure(new DataView(imports.env.memory.buffer).getBigInt64(state.anchorPtr,true)===boxedNone,
+                           'publish empty anchor before final release');
+        return;
+      }
       ensure(!state.homeCase || !state.homeOwners.has(value),
              'compiled borrowed view released its home owner');
       ensure(value === boxedNone || value === boxedFalse || value === boxedTrue,
@@ -249,28 +311,42 @@ for (const test of config.activation_modules) {
 // Actual generator/coroutine bindings use the distinct task-payload authority.
 for (const test of config.home_modules) {
   const states = test.stateful ? [0,5] : [0];
-  for (const resume of states) for (const [failure,failEntry,failLend] of [
+  for (const resume of states) for (const [failure,failEntry,failLend,anchorFailure='none'] of [
     [0,false,false], [1,false,false], [2,false,false], [0,true,false], [0,false,true],
+    ...(test.anchor ? [[0,false,false,'allocation'],[0,false,false,'constructor']] : []),
   ]) {
-    reset('borrowed home '+test.lane+' state='+resume+' failure='+failure
+    reset('borrowed home '+test.lane+' anchor='+test.anchor+' state='+resume+' failure='+failure
+          +' anchorFailure='+anchorFailure
           +' entry='+failEntry+' lend='+failLend,true,failure,failEntry);
     state.homeCase = true;
+    state.anchorCase = test.anchor;
+    state.anchorFailure = anchorFailure;
     state.failLend = failLend;
     state.expectsTask = test.stateful;
     state.resumeState = resume;
     const homeApp = instantiate(test.module);
     const result = test.stateful ? homeApp.molt_main(64n) : homeApp.molt_main();
-    const failed = failure !== 0 || failEntry || failLend;
+    const early = anchorFailure!=='none';
+    const failed = failure !== 0 || failEntry || failLend || early;
     assert.equal(result,failed ? boxedNone : 777n,state.label);
-    ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
+    ensure(state.depth === state.initialDepth && state.enters === Number(!early) && state.exits === Number(!early)
            && state.attempts.length === 0,'home return lost frame-attempt custody');
-    assert.equal(state.homeLends,1,state.label);
-    assert.equal(state.taskReads,test.stateful ? 1 : 0,state.label);
-    assert.equal(state.polls,failEntry || failLend || failure===1 ? 1 : 2,state.label);
-    assert.deepEqual(state.lines,failEntry || failLend || failure===1 ? [] : [resume ? 2 : 1],state.label);
+    assert.equal(state.homeLends,Number(!early),state.label);
+    assert.equal(state.taskReads,test.stateful && !early ? 1 : 0,state.label);
+    assert.equal(state.polls,early ? 0 : failEntry || failLend || failure===1 ? 1 : 2,state.label);
+    assert.deepEqual(state.lines,early || failEntry || failLend || failure===1 ? [] : [resume ? 2 : 1],state.label);
     assert.equal(state.pending,failed,state.label);
     assert.equal(state.homeRetains,failed ? 0 : 1,state.label);
-    assert.equal(state.homeReleases,failEntry || failLend ? 0 : 2,state.label);
+    assert.equal(state.homeReleases,early || failEntry || failLend ? 0 : 2,state.label);
+    const used=test.anchor && !early && !failEntry && !failLend && failure!==1;
+    assert.equal(state.anchorAllocations,Number(test.anchor),state.label+': A0/A1 allocation count');
+    assert.equal(state.anchorFrees,Number(test.anchor && anchorFailure!=='allocation'),state.label);
+    assert.equal(state.anchorConstructed,Number(test.anchor && anchorFailure!=='allocation'),state.label);
+    assert.equal(state.anchorChecks,state.anchorConstructed,state.label);
+    assert.equal(state.anchorRetains,Number(used),state.label);
+    assert.equal(state.anchorReleases,test.anchor && !early ? 1+Number(used) : 0,state.label);
+    ensure(!state.anchorLive && [...state.anchorOwners.values()].every(count=>count===0),
+           'anchor storage or owner escaped home cleanup');
     if (!failed) {
       // Frame exit released the home's owner; the returned alias alone lives.
       assert.equal(state.homeOwners.get(777n),1,state.label);
@@ -790,7 +866,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         );
     }
     let mut home_modules = Vec::new();
-    for stateful in [false, true] {
+    for (stateful, anchor) in [(false, false), (true, false), (false, true), (true, true)] {
         let marked = |kind: &str, value| OpIR {
             value: Some(value),
             ..wasm_test_op(kind, None, vec![])
@@ -817,8 +893,14 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
                 }
                 ops.push(marked("state_label", 50));
             }
+            ops.push(marked("line", line));
+            if anchor {
+                ops.push(OpIR {
+                    s_value: Some("home-anchor-β\0雪".into()),
+                    ..wasm_test_op("const_str", Some("unused_anchor"), vec![])
+                });
+            }
             ops.extend([
-                marked("line", line),
                 OpIR {
                     value: Some(1),
                     ..wasm_test_op("frame_home_load", Some(result), vec![])
@@ -859,19 +941,20 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             .unwrap();
         if !stateful {
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
-            assert!(
-                operators
-                    .iter()
-                    .all(|op| !op.starts_with("Loop") && !op.starts_with("BrTable"))
+            assert!(operators.iter().all(|op| !op.starts_with("BrTable")));
+            assert_eq!(
+                operators.iter().filter(|op| op.starts_with("Loop")).count(),
+                if anchor { 2 } else { 0 },
+                "only anchor initialization/cleanup loops in forward-only control"
             );
         }
         let (pages, entries) = wasm_import_minimums(&output.wasm);
         memory_pages = memory_pages.max(pages);
         table_entries = table_entries.max(entries);
         let lane = if stateful { "stateful" } else { "forward" };
-        let module = temp.join(format!("borrowed_home_{lane}.wasm"));
+        let module = temp.join(format!("borrowed_home_{lane}_{anchor}.wasm"));
         fs::write(&module, output.wasm).expect("write borrowed home module");
-        home_modules.push(json!({"lane":lane,"module":module,"stateful":stateful}));
+        home_modules.push(json!({"lane":lane,"module":module,"stateful":stateful,"anchor":anchor}));
     }
     // A Python throw from an inherited callee returns pending state across
     // the call ABI, so the caller retires its activation and call guards.
@@ -962,6 +1045,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "boxed_false": molt_codegen_abi::box_bool_bits(0).to_string(),
             "boxed_true": molt_codegen_abi::box_bool_bits(1).to_string(),
             "boxed_pending": molt_codegen_abi::box_pending_bits().to_string(),
+            "anchor_payload": "home-anchor-β\0雪",
             "cases": cases,
             "return_modules": return_modules,
             "activation_modules": activation_modules,
