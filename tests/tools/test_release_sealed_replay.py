@@ -353,10 +353,12 @@ def test_consumer_resource_archive_exceeds_generic_envelope_without_nesting(tmp_
     ):
         path = candidate_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"root": seal}))
-    (candidate_dir / "candidate.json").write_text(json.dumps(candidate))
+        path.write_text(json.dumps({"root": seal}), encoding="utf-8")
+    (candidate_dir / "candidate.json").write_text(
+        json.dumps(candidate), encoding="utf-8"
+    )
     receipt = candidate_dir / "consumer-verification.json"
-    receipt.write_text(json.dumps(consumer))
+    receipt.write_text(json.dumps(consumer), encoding="utf-8")
     retained = consumer_replay.publish_archive(
         candidate_dir=candidate_dir, receipt=receipt, candidate=candidate
     )

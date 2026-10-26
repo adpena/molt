@@ -3300,7 +3300,9 @@ def test_consumer_resource_transport_refuses_extra_storage(release_inputs, defec
     from tools.release import consumer_replay
 
     candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
-    consumer = json.loads((candidate_dir / "consumer-verification.json").read_text())
+    consumer = json.loads(
+        (candidate_dir / "consumer-verification.json").read_text(encoding="utf-8")
+    )
     if defect == "unreferenced-buffer":
         (candidate_dir / "execution-inputs/extra").write_bytes(b"unadmitted")
     else:
