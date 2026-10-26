@@ -1,15 +1,12 @@
 mod anonymous_locals;
 mod constant_cache_locals;
 mod dispatch_locals;
-mod literal_scratch;
 mod synthetic_locals;
 
 pub(in crate::wasm) use anonymous_locals::WasmFrameAnonymousLocal;
 pub(in crate::wasm) use dispatch_locals::WasmDispatchFrameLocals;
-pub(in crate::wasm) use literal_scratch::WasmLiteralScratchLocals;
 pub(in crate::wasm) use synthetic_locals::WasmFrameSyntheticLocal;
 
-use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::ops::Index;
@@ -20,7 +17,6 @@ pub(in crate::wasm) struct WasmFrameLocals {
     slots: BTreeMap<String, u32>,
     name_kinds: BTreeMap<String, WasmFrameLocalKind>,
     anonymous_kinds: BTreeMap<u32, WasmFrameAnonymousLocal>,
-    literal_scratch_payloads: BTreeMap<String, OwnedLiteralPayloadKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,8 +24,6 @@ pub(in crate::wasm) enum WasmFrameLocalKind {
     Value,
     NoneSingleton,
     FixedSynthetic(WasmFrameSyntheticLocal),
-    LiteralScratchPtr,
-    LiteralScratchLen,
 }
 
 impl WasmFrameLocalKind {
@@ -159,16 +153,6 @@ impl WasmFrameLocals {
         }
     }
 
-    fn ensure_named_i64(
-        &mut self,
-        name: String,
-        kind: WasmFrameLocalKind,
-        local_types: &mut Vec<ValType>,
-        local_count: &mut u32,
-    ) -> u32 {
-        self.ensure_named_local(name, kind, ValType::I64, local_types, local_count)
-    }
-
     fn ensure_named_local(
         &mut self,
         name: String,
@@ -205,7 +189,6 @@ impl From<BTreeMap<String, u32>> for WasmFrameLocals {
             slots,
             name_kinds,
             anonymous_kinds: BTreeMap::new(),
-            literal_scratch_payloads: BTreeMap::new(),
         }
     }
 }

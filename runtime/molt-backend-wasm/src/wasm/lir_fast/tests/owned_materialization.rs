@@ -142,9 +142,11 @@ const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes), wide = 1n << 60n;
 let refs, children, integers, next, attempts, calls, pending, failAt, truthFail, mutationFailAt, mutations, constructorFail, unboxes;
 let memory = null, scratch = null, scratchFail = false;
+let literalCase = null, literalResult = null, literalOut = null;
 function reset(fail = 0) {
   refs = new Map(); children = new Map(); integers = new Map(); next = 0x700000000000n; attempts = calls = mutations = unboxes = 0;
   pending = ''; failAt = fail; truthFail = constructorFail = scratchFail = false; mutationFailAt = 0; scratch = null;
+  literalCase = literalResult = literalOut = null;
 }
 function allocate() { const id = ++next; refs.set(id, 1); return id; }
 function live(value) { assert.ok(refs.has(value), 'using dead box ' + value); }
@@ -171,7 +173,37 @@ function append(container, values) {
   for (const value of values) { inc(value); children.get(container).push(value); }
   return 0;
 }
+function literal(kind, ptr, len, out) {
+  assert.equal(kind, literalCase.kind, 'dispatch the source literal kind');
+  assert.equal(typeof ptr, 'number'); assert.equal(typeof len, 'bigint');
+  const expected = Buffer.from(literalCase.bytes);
+  assert.equal(len, BigInt(expected.length), 'byte length, including NUL and UTF-8');
+  const payload = Buffer.from(new Uint8Array(memory.buffer, ptr, Number(len)));
+  assert.deepEqual(payload, expected, 'read actual backend data at the constructor pointer');
+  if (kind === 'bigint') {
+    let integer = 0n;
+    for (const byte of payload) integer = (integer << 8n) | BigInt(byte);
+    if (payload[0] & 0x80) integer -= 1n << (8n * len);
+    assert.equal(integer, BigInt(literalCase.integer), 'minimal signed big-endian payload');
+    assert.equal(out, undefined, 'bigint returns its owner directly');
+  } else {
+    assert.equal(typeof out, 'number'); assert.equal(out % 8, 0);
+    assert.ok(out + 8 <= ptr || ptr + Number(len) <= out, 'mutable output must not alias source bytes');
+    literalOut = out;
+  }
+  calls++;
+  literalResult = constructorFail ? none : allocate();
+  if (constructorFail) pending = 'MemoryError';
+  if (kind === 'bigint') return literalResult;
+  new DataView(memory.buffer).setBigInt64(out, literalResult, true);
+  // A deliberately unrelated status distinguishes loading the written owner
+  // from using the constructor's machine return or stale scratch contents.
+  return 0x1234;
+}
 const hooks = {
+  string_from_bytes(ptr, len, out) { return literal('string', ptr, len, out); },
+  bytes_from_bytes(ptr, len, out) { return literal('bytes', ptr, len, out); },
+  bigint_from_bytes(ptr, len) { return literal('bigint', ptr, len); },
   int_from_i64(value) {
     assert.ok(value >= (1n << 46n) || value < -(1n << 46n));
     if (++attempts === failAt) { pending = 'MemoryError'; return none; }
@@ -200,11 +232,13 @@ const hooks = {
   set_new(capacity) { assert.equal(capacity, BigInt(config.raw_two)); return newContainer(); },
   set_add(set, value) { append(set, [value]); return none; },
   scratch_alloc(size) {
+    assert.equal(literalCase, null, 'LIR literals have no invocation anchor allocation');
     assert.equal(scratch, null, 'one private operand range at a time');
     if (scratchFail) { pending = 'MemoryError'; return 0n; }
     scratch = {ptr: 64n, size}; return scratch.ptr;
   },
   scratch_free(ptr, size) {
+    assert.equal(literalCase, null, 'LIR literals have no invocation anchor cleanup');
     assert.deepEqual({ptr, size}, scratch, 'free exactly the live operand range'); scratch = null;
   },
   list_from_values(ptr, len) { return hooks.tuple_from_values(ptr, len); },
@@ -319,6 +353,37 @@ for (const name of ['tuple', 'list', 'dict']) {
 // Return boxing is owned by the caller, never an operation scratch lifetime.
 reset(); const returned = loaded.return_box(); assert.equal(refs.get(returned), 1); dec(returned);
 reset(1); assert.equal(loaded.return_box(), none); assert.equal(pending, 'MemoryError');
+// Expectations are authored from the source values, independently of emitted
+// segment offsets, constructor operands and materialization policy tables.
+const literalCases = [
+  {name: 'string_empty', kind: 'string', bytes: []},
+  {name: 'string_nul_utf8', kind: 'string', bytes: [...Buffer.from('A\0β雪', 'utf8')]},
+  {name: 'bytes_empty', kind: 'bytes', bytes: []},
+  {name: 'bytes_nul_non_utf8', kind: 'bytes', bytes: [0, 128, 255, 65, 0]},
+  {name: 'bigint_positive', kind: 'bigint', bytes: [1, 0, 0, 0, 0, 0, 0, 0, 0], integer: '18446744073709551616'},
+  {name: 'bigint_negative', kind: 'bigint', bytes: [254, 255, 255, 255, 255, 255, 255, 255, 255], integer: '-18446744073709551617'},
+];
+for (const test of literalCases) {
+  for (const abi of ['native', 'boxed']) {
+    const name = 'literal_' + test.name + '_' + abi;
+    reset(); literalCase = test;
+    let previous = null;
+    for (let invocation = 1; invocation <= 2; invocation++) {
+      const result = loaded[name]();
+      assert.equal(result, literalResult, name + ': return exactly the constructor owner');
+      assert.notEqual(result, previous, name + ': do not reuse an earlier scratch result');
+      assert.equal(refs.get(result), 1, name + ': one owner transferred to the caller');
+      assert.equal(refs.size, 1); assert.equal(calls, invocation); assert.equal(pending, '');
+      dec(result); assert.equal(refs.size, 0); previous = result;
+      if (literalOut !== null) new DataView(memory.buffer).setBigInt64(literalOut, 0x5678n, true);
+    }
+    // Exercise failure after success in the same instance with poisoned output.
+    constructorFail = true;
+    assert.equal(loaded[name](), none, name + ': load failure output, not a previous owner');
+    assert.equal(calls, 3); assert.equal(pending, 'MemoryError'); assert.equal(refs.size, 0);
+    assert.equal(scratch, null);
+  }
+}
 console.log('owned-materialization: success, partial failure, lazy arms, aliases, RC and transfers passed');
 "#;
 
@@ -473,6 +538,68 @@ fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
         )
         .unwrap();
         modules.insert(name.into(), json!(path));
+    }
+    for (name, opcode, ty, attr, payload) in [
+        (
+            "string_empty",
+            OpCode::ConstStr,
+            TirType::Str,
+            "s_value",
+            AttrValue::Str("".into()),
+        ),
+        (
+            "string_nul_utf8",
+            OpCode::ConstStr,
+            TirType::Str,
+            "s_value",
+            AttrValue::Str("A\0β雪".into()),
+        ),
+        (
+            "bytes_empty",
+            OpCode::ConstBytes,
+            TirType::Bytes,
+            "bytes",
+            AttrValue::Bytes(vec![]),
+        ),
+        (
+            "bytes_nul_non_utf8",
+            OpCode::ConstBytes,
+            TirType::Bytes,
+            "bytes",
+            AttrValue::Bytes(vec![0, 0x80, 0xff, b'A', 0]),
+        ),
+        (
+            "bigint_positive",
+            OpCode::ConstBigInt,
+            TirType::DynBox,
+            "bytes",
+            AttrValue::Bytes(vec![1, 0, 0, 0, 0, 0, 0, 0, 0]),
+        ),
+        (
+            "bigint_negative",
+            OpCode::ConstBigInt,
+            TirType::DynBox,
+            "bytes",
+            AttrValue::Bytes(vec![0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        ),
+    ] {
+        let mut attrs = AttrDict::new();
+        attrs.insert(attr.into(), payload);
+        let function = make_scalar_const_return_func(name, opcode, ty, attrs);
+        for (abi, body) in [
+            ("native", lower_tir_to_wasm(&function)),
+            (
+                "boxed",
+                lower_tir_to_wasm_boxed_i64_abi(&function)
+                    .expect("literal fits production boxed LIR ABI"),
+            ),
+        ] {
+            assert_eq!(body.bail_to_generic_reason(), None);
+            let module_name = format!("literal_{name}_{abi}");
+            let path = directory.join(format!("{module_name}.wasm"));
+            fs::write(&path, executable_module(&body)).unwrap();
+            modules.insert(module_name, json!(path));
+        }
     }
     let config = directory.join("cases.json");
     fs::write(
