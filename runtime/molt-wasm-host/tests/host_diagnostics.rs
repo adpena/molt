@@ -258,6 +258,7 @@ fn actual_manifest_command_sdk_and_indirect_dispatch_keep_command_exit_semantics
       (import "env" "molt_os_close_host" (func $close (param i64) (result i32)))
       (import "env" "molt_call_indirect0" (func $dispatch (param i64) (result i64)))
       (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+      (memory (export "memory") 1)
       (table (export "__indirect_function_table") 2 funcref)
       (func $target (result i64) i64.const 42) (elem (i32.const 1) $target)
       (func (export "_start")
@@ -472,6 +473,7 @@ fn actual_manifest_command_core_start_exit_precedes_exported_start() {
         "command.wat",
         br#"(module
       (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+      (memory (export "memory") 1)
       (func $core i32.const 19 call $exit) (start $core)
       (func (export "_start") unreachable))"#,
     );
