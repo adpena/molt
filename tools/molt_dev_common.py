@@ -217,7 +217,7 @@ def _run_captured_gate(
     cancelled: Callable[[], bool],
     streams: tuple[Path, Path] | None = None,
     label: str | None = None,
-) -> tuple[int, str, str, int | None]:
+) -> harness_memory_guard.GuardedCompletedProcess[str]:
     """Run one gate: capture its streams, honor cancellation.
 
     The guard owns the child tree; ``cancelled`` lets the scheduler stop a gate
@@ -246,6 +246,8 @@ def _run_captured_gate(
         progress_label=label,
         **files,
     )
-    peak = proc.peak_total or proc.peak
-    peak_bytes = None if peak is None else peak.rss_kb * 1024
-    return proc.returncode, proc.stdout or "", proc.stderr or "", peak_bytes
+    if not isinstance(proc, harness_memory_guard.GuardedCompletedProcess) or tuple(
+        proc.args
+    ) != tuple(argv):
+        raise DriverError("gate guard returned an unavailable or mismatched outcome")
+    return proc

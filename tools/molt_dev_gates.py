@@ -1,8 +1,9 @@
 """Landing-gate execution for ``tools/molt_dev.py integrate``.
 
 Explicit pytest nodes collect first under the same environment without executing
-test bodies or replacing mandatory gates. Gates report in declared order and the first failure in that order halts the
-landing. A gate's nonzero exit raises ``GateFailure``, a ``CandidateFailure``
+test bodies or replacing mandatory gates. The first observed gate failure cancels
+remaining work through the existing guards. Outcomes report in declared order.
+A gate's nonzero exit raises ``GateFailure``, a ``CandidateFailure``
 the landing queue bisects on; a stop of the runner itself stays a plain
 ``DriverError``. Every gate executes through the one proof executor
 (``tools/proof_executor.py``) in its plan resource class: gates that may build
@@ -20,7 +21,7 @@ from __future__ import annotations
 from tools.molt_dev_policy import GateEnvironment
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import datetime as dt
 import hashlib
 import json
@@ -32,12 +33,13 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 
-from tools import proof_executor, proof_receipts
+from tools import harness_memory_guard, proof_executor, proof_receipts
 from tools.molt_dev_common import DriverError, GateFailure, _say, _warn
 from tools.memory_guard_core.reporting import NAMED_RECORD_MIN_AGE_S
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityProbe
+    from tools.proof_plan import ToolchainPolicy
 
 # Local always gates share the repository-policy resource class with their CI
 # commands; a policy without that class admits up to the executor ceiling.
@@ -67,10 +69,91 @@ class Progress(Protocol):
 
 @dataclass(frozen=True)
 class GateOutcome:
-    returncode: int
-    stdout: str
-    stderr: str
-    peak_rss_bytes: int | None
+    guard_result: harness_memory_guard.GuardedCompletedProcess[str]
+
+    @property
+    def returncode(self) -> int:
+        return self.guard_result.returncode
+
+    @property
+    def stdout(self) -> str:
+        return self.guard_result.stdout or ""
+
+    @property
+    def stderr(self) -> str:
+        return self.guard_result.stderr or ""
+
+    @property
+    def peak_rss_bytes(self) -> int | None:
+        peak = self.guard_result.peak_total or self.guard_result.peak
+        return None if peak is None else peak.rss_kb * 1024
+
+
+def _classify_gate(
+    outcome: GateOutcome, policies: tuple[ToolchainPolicy, ...]
+) -> dict[str, Any]:
+    """Project the actual guard result through the shared failure authority."""
+    from tools.proof_plan import _admitted_linker_helpers, _guarded_failure_scope
+
+    if not isinstance(outcome, GateOutcome) or not isinstance(
+        outcome.guard_result, harness_memory_guard.GuardedCompletedProcess
+    ):
+        raise DriverError("guard outcome unavailable or inconsistent")
+    guard = outcome.guard_result
+    memory = harness_memory_guard.memory_guard
+    metrics = {
+        "schema": "molt.local-gate-guard-outcome.v1",
+        "command": list(guard.args),
+        "returncode": guard.returncode,
+        "child_returncode": guard.child_returncode,
+        "cancelled": guard.cancelled,
+        "descendants_closed": guard.descendants_closed,
+        "timed_out": guard.timed_out,
+        "memory_violation": harness_memory_guard._rss_record_payload(guard.violation),
+        "guard_signal": guard.guard_signal,
+        "exit_signal": (
+            None
+            if guard.cancelled
+            or guard.timed_out
+            or guard.violation
+            or guard.guard_signal
+            else memory.exit_signal_payload(guard.returncode)
+        ),
+        "infrastructure_failure": memory.infrastructure_failure_payload(
+            guard.infrastructure_failure
+        ),
+        "termination_reports": memory.termination_reports_payload(
+            guard.termination_reports
+        ),
+        "windows_job_cleanup": memory.windows_job_cleanup_payload(
+            guard.windows_job_cleanup
+        ),
+        "cargo_incremental_quarantine": memory._cargo_incremental_quarantine_payload(
+            guard.cargo_incremental_quarantine
+        ),
+        "temporary_artifacts": guard.temporary_artifacts,
+    }
+    scope, reason = _guarded_failure_scope(
+        metrics,
+        metrics_valid=True,
+        returncode=guard.returncode,
+        cancelled=guard.cancelled,
+        admitted_linker_helpers=_admitted_linker_helpers(policies),
+    )
+    if reason == "command failed":
+        reason = f"exit {guard.returncode}"
+    return {
+        "status": (
+            "cancelled"
+            if reason == "executor cancellation"
+            else "failure"
+            if scope == "global" or guard.returncode != 0
+            else "success"
+        ),
+        "failure_scope": scope,
+        "failure_reason": reason,
+        "guard_outcome": metrics,
+    }
 
 
 #: A failed gate's terminal excerpt: the last lines of each stream, each cut
@@ -187,6 +270,7 @@ class GateRuntime:
     observe_capacity: Callable[..., Any]
     say: Callable[[str], None]
     ok: Callable[[str], None]
+    toolchain_policies: tuple[ToolchainPolicy, ...] = ()
 
 
 def display(command: str | tuple[str, ...]) -> str:
@@ -373,8 +457,8 @@ def run_selected_gates(
     therefore stops every build before it starts. The heavy gates (Cargo and
     pytest) then share one executor block: Cargo gates run one at a time on
     their shared target while pytest sessions run beside them, each sized
-    within the exported memory slice. The first failure in declared order
-    within a phase halts the landing and cancels the gates declared after it.
+    within the exported memory slice. The first observed failure within a
+    phase halts the landing and cancels its remaining gates through their guards.
     """
     ordered = list(enumerate(gates, start=1))
     for ordinal, gate in ordered:
@@ -437,6 +521,7 @@ def _run_serial_gate(
     runtime.progress.emit(f"{phase}_started", **details)
     rc = None
     outcome: GateOutcome | None = None
+    classified: dict[str, Any] = {}
     streams, stream_error = prepare_gate_streams(
         runtime.output_dir / "collection" if collection else runtime.output_dir,
         ordinal,
@@ -450,6 +535,7 @@ def _run_serial_gate(
             lambda: False,
             streams,
         )
+        classified = _classify_gate(outcome, runtime.toolchain_policies)
         rc = outcome.returncode
     finally:
         elapsed = time.monotonic() - started
@@ -457,6 +543,7 @@ def _run_serial_gate(
             f"{phase}_finished",
             **details,
             **record,
+            **classified,
             returncode=rc,
             duration_seconds=elapsed,
         )
@@ -471,6 +558,8 @@ def _run_serial_gate(
     if not collection:
         gate_seconds.append((elapsed, shown))
     runtime.check_source()
+    if classified["failure_scope"] == "global":
+        raise DriverError(f"gate runner stopped: {classified['failure_reason']}")
     if rc != 0:
         runtime.say(f"    gate: {shown}")
         sys.stderr.write(gate_failure_report(outcome, record))
@@ -508,20 +597,6 @@ class _LocalGateCommand:
     ordinal: int
     dependencies: tuple[str, ...] = ()
     evidence_outputs: tuple[str, ...] = ()
-
-
-@dataclass
-class _BlockState:
-    first_failure: int
-    outcomes: dict[str, GateOutcome | BaseException] = field(default_factory=dict)
-    lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def moot(self, ordinal: int) -> bool:
-        return ordinal > self.first_failure
-
-    def fail(self, ordinal: int) -> None:
-        with self.lock:
-            self.first_failure = min(self.first_failure, ordinal)
 
 
 def _local_plan(
@@ -601,7 +676,7 @@ def _run_executor_block(
     commands = _cargo_chain(
         [_local_command(ordinal, gate, cell) for ordinal, gate in gates]
     )
-    state = _BlockState(first_failure=max(ordinal for ordinal, _gate in gates) + 1)
+    outcomes: dict[str, GateOutcome | BaseException] = {}
     receipt_path = (
         runtime.receipt_path
         if receipt_kind is None
@@ -635,18 +710,11 @@ def _run_executor_block(
             "guard_metrics_schema": None,
             "returncode": None,
         }
-        # A moot gate's record is partition-scoped: it must not stop the
-        # executor, which would cancel the earlier gates still running.
-        moot = {
-            "failure_scope": "partition",
-            "failure_reason": "an earlier gate failed",
-        }
-        if state.moot(command.ordinal):
+        if cancel.is_set():
             return {
                 **record,
-                **moot,
                 "status": "skipped",
-                "skip_reason": "earlier gate failed",
+                "skip_reason": "executor global stop before launch",
             }
         runtime.progress.emit(
             "gate_started", **gate_details(command.ordinal, command.gate)
@@ -671,9 +739,10 @@ def _run_executor_block(
                 command.gate.command,
                 runtime.repo,
                 environments[command.gate.toolchains],
-                lambda: cancel.is_set() or state.moot(command.ordinal),
+                cancel.is_set,
                 streams,
             )
+            classified = _classify_gate(outcome, runtime.toolchain_policies)
             if paths:
                 runtime.observe_capacity(
                     paths,
@@ -686,8 +755,7 @@ def _run_executor_block(
             # The runner itself failed, not the gate: stop the block, and keep
             # this record (its streams and duration) for the receipt; the
             # declared-order report below raises the original error.
-            state.outcomes[command.id] = exc
-            state.fail(command.ordinal)
+            outcomes[command.id] = exc
             return {
                 **record,
                 "duration_seconds": round(time.monotonic() - started, 6),
@@ -698,37 +766,23 @@ def _run_executor_block(
                 "failure_reason": "the gate runner raised",
             }
         except BaseException as exc:  # an interrupt stops the block at once
-            state.outcomes[command.id] = exc
-            state.fail(command.ordinal)
+            outcomes[command.id] = exc
             raise
         record["duration_seconds"] = round(time.monotonic() - started, 6)
         record["peak_rss_bytes"] = outcome.peak_rss_bytes
         record["returncode"] = outcome.returncode
-        state.outcomes[command.id] = outcome
-        if outcome.returncode == 0:
-            return {**record, "status": "success"}
-        if state.moot(command.ordinal):
-            return {**record, **moot, "status": "cancelled"}
-        if cancel.is_set():
-            return {**record, "status": "cancelled"}
-        state.fail(command.ordinal)
-        # A gate failure does not stop gates declared before it: the landing
-        # reports the first failure in declared order.
-        return {
-            **record,
-            "status": "failure",
-            "failure_scope": "partition",
-            "failure_reason": f"exit {outcome.returncode}",
-        }
+        outcomes[command.id] = outcome
+        return {**record, **classified}
 
     runtime.check_source()
-    authority = hashlib.sha256(b"molt.local-integration-gates.v1\0")
+    authority = hashlib.sha256(b"molt.local-integration-gates.v2\0")
     authority.update(runtime.policy_text.encode("utf-8"))
     block_started = time.monotonic()
     proof_executor.execute_commands(
         plan,
         commands,
         receipt_path,
+        failure_policy=proof_executor.FailurePolicy.CANCEL_REMAINING,
         _source_tree_changes=runtime.source_changes,
         toolchain_fingerprints=lambda _policies, _names: dict(runtime.toolchains),
         _authority_sha256=lambda _plan: authority.hexdigest(),
@@ -750,8 +804,10 @@ def _run_executor_block(
             f"gate block stopped {where}: {errors}; receipt {receipt_path}"
         )
 
+    runner_errors: list[BaseException] = []
+    control_failures: list[str] = []
     for command in commands:
-        outcome = state.outcomes.get(command.id)
+        outcome = outcomes.get(command.id)
         record = records.get(command.id, {})
         status = record.get("status")
         shown = display(command.gate.command)
@@ -762,8 +818,8 @@ def _run_executor_block(
             runtime.say(f"    gate {status}: {shown}")
             continue
         if outcome is None:
-            # Every earlier gate passed or was stopped, and this one never ran.
-            raise stopped(f"before {shown}")
+            control_failures.append(f"before {shown}")
+            continue
         elapsed = float(record.get("duration_seconds") or 0.0)
         runtime.progress.emit(
             "gate_finished",
@@ -783,16 +839,45 @@ def _run_executor_block(
             sys.stderr.flush()
         gate_seconds.append((elapsed, shown))
         if isinstance(outcome, BaseException):
-            raise outcome
+            runner_errors.append(outcome)
+            continue
         # The executor observed the source after every completion; a gate
         # that changed it reports the canonical clean-source refusal.
         if record.get("source_tree_state_after") == "changed":
             runtime.check_source()
         if status == "failure" and outcome.returncode != 0:
-            raise gate_failure(outcome.returncode, elapsed, shown, gate_seconds, record)
+            if record.get("failure_scope") == "global":
+                control_failures.append(f"at {shown}: {record.get('failure_reason')}")
+            continue
         if status != "success":
-            raise stopped(f"at {shown} ({status})")
+            control_failures.append(
+                f"at {shown}: {record.get('failure_reason') or status}"
+            )
+            continue
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
+    if runner_errors:
+        error = runner_errors[0]
+        if len(runner_errors) > 1:
+            error.add_note(f"additional gate runner failures: {runner_errors[1:]!r}")
+            error.guard_errors = tuple(runner_errors)
+        raise error
+    if control_failures:
+        raise stopped("; ".join(control_failures))
+    trigger = receipt.get("execution", {}).get("failure_trigger")
+    if trigger is not None:
+        command = next(
+            command for command in commands if command.id == trigger["command_id"]
+        )
+        outcome = outcomes[command.id]
+        record = records[command.id]
+        assert isinstance(outcome, GateOutcome)
+        raise gate_failure(
+            outcome.returncode,
+            float(record.get("duration_seconds") or 0.0),
+            display(command.gate.command),
+            gate_seconds,
+            record,
+        )
     if receipt.get("status") != "success":
         raise stopped("without a classified gate failure")
     runtime.say(
