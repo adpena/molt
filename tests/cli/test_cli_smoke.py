@@ -430,6 +430,32 @@ def test_default_molt_home_prefers_explicit_override(
     assert DEFAULT_PATHS._default_molt_home() == explicit_home
 
 
+@pytest.mark.parametrize("selected", [None, "", "runtime", "~/runtime", "absolute"])
+def test_installed_runtime_store_has_independent_path_ownership(tmp_path, selected):
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    env = {home_key: str(tmp_path / "user"), "MOLT_HOME": "frontend"}
+    if selected is not None:
+        env["MOLT_INSTALLED_RUNTIME_STORE"] = (
+            str(tmp_path / "absolute") if selected == "absolute" else selected
+        )
+    expected = (
+        tmp_path / "frontend/installed-runtime"
+        if not selected
+        else tmp_path / "user/runtime"
+        if selected == "~/runtime"
+        else tmp_path / selected
+    )
+    assert (
+        DEFAULT_PATHS._default_installed_runtime_store(environ=env, cwd=tmp_path)
+        == expected
+    )
+    assert (
+        DEFAULT_PATHS._default_molt_home(environ=env, cwd=tmp_path)
+        == tmp_path / "frontend"
+    )
+    assert not expected.exists()
+
+
 def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

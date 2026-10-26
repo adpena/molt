@@ -167,6 +167,7 @@ def _installed_bundle(
     tmp_path: Path, monkeypatch, *, custody_input: bool = False
 ) -> Path:
     monkeypatch.setenv("MOLT_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("MOLT_INSTALLED_RUNTIME_STORE", raising=False)
     monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
     monkeypatch.delenv("MOLT_BUNDLE_ROOT", raising=False)
     root = tmp_path / "bundle"
@@ -2276,24 +2277,28 @@ def test_installed_cell_binds_retention_home_before_ambient_change(
 @pytest.mark.parametrize(
     "defect", [None, "inside-bundle", "noncanonical-store", "changed-shipped-member"]
 )
-def test_compilation_root_hydrates_through_installed_runtime_owner(
+def test_compilation_workspace_hydrates_through_installed_runtime_owner(
     bundle, tmp_path, monkeypatch, defect
 ):
     from tools.release import execution_root
 
     _forbid_cargo(monkeypatch)
-    cell = _cell(bundle)
-    root = tmp_path / "rootfs"
-    root.mkdir()
+    home = Path(os.environ["MOLT_HOME"])
+    store = tmp_path / "work/state/installed-runtime"
+    monkeypatch.setenv("MOLT_INSTALLED_RUNTIME_STORE", str(store))
+    before = execution_root.root_inventory(bundle)
     if defect == "inside-bundle":
-        with pytest.raises(InstalledRuntimeError, match="outside the immutable"):
-            installed_runtime.select_installed_runtime_cell(
-                cell.installed,
-                kind=cell.kind,
-                key=cell.record["key"],
-                retention_store=bundle / "forged-store",
-            )
+        invalid = bundle / "forged-store"
+        monkeypatch.setenv("MOLT_INSTALLED_RUNTIME_STORE", str(invalid))
+        with pytest.raises(
+            InstalledRuntimeError, match="outside the immutable"
+        ) as error:
+            _cell(bundle)
+        assert str(invalid) in str(error.value)
+        assert Path(os.environ["MOLT_HOME"]) == home
         return
+    cell = _cell(bundle)
+    assert cell.retained_root == store / cell.id
     if defect == "noncanonical-store":
         (tmp_path / "owned").mkdir()
         with pytest.raises(
@@ -2302,7 +2307,7 @@ def test_compilation_root_hydrates_through_installed_runtime_owner(
             installed_runtime.select_installed_runtime_cell(
                 cell.installed,
                 kind=cell.kind,
-                key=cell.record["key"],
+                key=cell.key,
                 retention_store=tmp_path / "owned" / ".." / "forged-store",
             )
         assert not (tmp_path / "forged-store").exists()
@@ -2311,37 +2316,57 @@ def test_compilation_root_hydrates_through_installed_runtime_owner(
         member = cell.members_root / cell.file_record("runtime_archive")["name"]
         member.write_bytes(b"X" * member.stat().st_size)
         with pytest.raises(InstalledRuntimeError):
-            execution_root.stage_compilation_runtime(
-                root,
-                compiler=cell.installed,
-                environment={"MOLT_HOME": "/installed-home"},
-                kind=cell.kind,
-                key=dict(cell.record["key"]),
-            )
-        assert not list(root.rglob("*.a"))
+            installed_runtime.admit_installed_native_runtime(cell)
+        assert not list(store.rglob("*.a"))
         return
-    rows, record = execution_root.stage_compilation_runtime(
-        root,
-        compiler=cell.installed,
-        environment={"MOLT_HOME": "/installed-home"},
-        kind=cell.kind,
-        key=dict(cell.record["key"]),
+    admission = installed_runtime.admit_installed_native_runtime(cell)
+    admission.verify()
+    assert (
+        cell.runtime_lib.read_bytes()
+        == (
+            cell.members_root / cell.file_record("runtime_archive")["name"]
+        ).read_bytes()
     )
-    assert record == cell.record
-    assert rows == execution_root.root_inventory(root)
-    runtime = (
-        root
-        / "installed-home/installed-runtime"
-        / cell.id
-        / cell.file_record("runtime_archive")["name"]
+    assert execution_root.root_inventory(bundle) == before
+    assert Path(os.environ["MOLT_HOME"]) == home
+    assert not (home / "installed-runtime").exists()
+
+
+@pytest.mark.parametrize("changed", [None, "shared", "reloc"])
+def test_compilation_workspace_hydrates_installed_wasm_pair(
+    bundle, tmp_path, monkeypatch, changed
+):
+    from tools.release import execution_root
+
+    _forbid_cargo(monkeypatch)
+    _ship_installed_wasm_cell(bundle, tmp_path)
+    home = Path(os.environ["MOLT_HOME"])
+    store = tmp_path / "work/state/installed-runtime"
+    monkeypatch.setenv("MOLT_INSTALLED_RUNTIME_STORE", str(store))
+    before = execution_root.root_inventory(bundle)
+    cell = _select_installed_wasm(bundle)
+    assert cell.retained_root == store / cell.id
+    if changed is not None:
+        role = "wasm_shared_member" if changed == "shared" else "wasm_reloc_member"
+        path = cell.members_root / cell.file_record(role)["name"]
+        path.write_bytes(b"changed shipped WASM")
+        with pytest.raises(InstalledRuntimeError):
+            installed_runtime.admit_installed_wasm_runtime(cell)
+        return
+    binding = bind_runtime_wasm_codegen(
+        installed_runtime.admit_installed_wasm_runtime(cell), None
     )
-    assert runtime.read_bytes() == (cell.members_root / runtime.name).read_bytes()
-    # Sealing uses the existing final root authority; this is data retention,
-    # not a kernel execution positive or a newly selected runtime generation.
-    seal = execution_root.seal_root(root, tmp_path / "root.tar", expected_files=rows)
-    execution_root.validate_sealed_tar(
-        tmp_path / "root.tar", root, expected_archive=seal["archive"]
-    )
+    binding.verify()
+    for kind, role in (
+        ("shared", "wasm_shared_member"),
+        ("reloc", "wasm_reloc_member"),
+    ):
+        path = cell.retained_root / cell.file_record(role)["name"]
+        assert path.read_bytes() == _WASM_FIXTURE_BYTES[kind]
+    assert binding.generation.manifest.is_relative_to(store)
+    assert execution_root.root_inventory(bundle) == before
+    assert Path(os.environ["MOLT_HOME"]) == home
+    assert not (home / "installed-runtime").exists()
 
 
 @pytest.mark.parametrize("target", ["native", "wasm"])
@@ -2480,6 +2505,14 @@ def test_compilation_input_projection_preserves_captured_tool_alias(
     args = dict(
         root=root,
         compiler=compiler,
+        runtime_cells=(
+            installed_runtime.select_installed_runtime_cell(
+                compiler,
+                retention_store=tmp_path / "work/state/installed-runtime",
+                kind=compiler.runtime["cells"][0]["kind"],
+                key=compiler.runtime["cells"][0]["key"],
+            ).record,
+        ),
         python_captures=[{}, {}],
         toolchain_capture={},
         cas_root=tmp_path / "cas",

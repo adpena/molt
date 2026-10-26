@@ -1217,6 +1217,8 @@ def compilation_process_images(
 # The controller runs only in the compilation projection. Its source is retained
 # in the sealed input root and its command/environment are native-policy inputs.
 # stdout is a bounded output archive; stderr remains available to run-export.
+_COMPILATION_RUNTIME_STORE = "/work/state/installed-runtime"
+
 _COMPILATION_CONTROLLER = r"""import hashlib,json,os,pathlib,shutil,stat,subprocess,sys,time,zipfile
 config=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 if set(config)!={"command","environment","timeout","output_max_bytes","cache_seed","cache_contract","compiler_source_root"}:
@@ -1323,7 +1325,7 @@ def _validate_compilation_inputs(
     launcher: list[str],
     controller_python: Path,
 ) -> Any:
-    from molt.compiler_distribution import installed_compiler
+    from molt.compiler_distribution import installed_compiler, verify_runtime_tree
 
     projection = SealedExecutionProjection.from_dict(compilation["execution"])
     if projection.mode != "compilation":
@@ -1364,7 +1366,10 @@ def _validate_compilation_inputs(
     ):
         raise ValueError("compilation input root belongs to another installed compiler")
     installed.verify_sources()
-    installed.verify_runtime()
+    runtime = execution_root.compilation_runtime_inventory(
+        installed, tuple(cell["runtime_cell"] for cell in compilation["cells"])
+    )
+    verify_runtime_tree(installed.runtime_root, runtime)
     return installed
 
 
@@ -2230,6 +2235,7 @@ def prepare_compilation(
     copies, full input hashing and linker reproducer writes are admission-only.
     """
     from molt.compiler_distribution import InstalledCompiler
+    from molt.cli.installed_runtime import select_installed_runtime_cell
     from molt.exact_json import encode_exact
     from tools.proof_queue_pkg.execution_environment import (
         _deterministic_execution_environment,
@@ -2286,6 +2292,7 @@ def prepare_compilation(
             "MOLT_EXT_ROOT": "/work/state",
             "MOLT_CACHE": "/work/cache",
             "MOLT_BUILD_STATE_DIR": "/work/build-state",
+            "MOLT_INSTALLED_RUNTIME_STORE": _COMPILATION_RUNTIME_STORE,
             "CARGO_TARGET_DIR": "/work/cargo",
             "MOLT_BACKEND_DAEMON_SOCKET_DIR": "/work/sockets",
             "UV_CACHE_DIR": "/work/uv-cache",
@@ -2299,9 +2306,22 @@ def prepare_compilation(
     )
     if not compile_env.get("MOLT_HOME"):
         raise ValueError("installed compilation must retain its prepared MOLT_HOME")
+    selected_cells = [
+        (
+            lane,
+            select_installed_runtime_cell(
+                compiler,
+                kind=runtime_kind,
+                key=runtime_key,
+                retention_store=Path(_COMPILATION_RUNTIME_STORE),
+            ),
+        )
+        for lane, runtime_kind, runtime_key in cells
+    ]
     execution_root.stage_compilation_inputs(
         rootfs,
         compiler=compiler,
+        runtime_cells=tuple(cell.record for _, cell in selected_cells),
         python_captures=python_captures,
         toolchain_capture=toolchain_capture,
         cas_root=cas_root,
@@ -2311,16 +2331,6 @@ def prepare_compilation(
             rootfs, reproducer=reproducer, observation=observation
         )
         execution_root.stage_compilation_driver_inputs(rootfs, preparation=preparation)
-    retained_cells = []
-    for lane, runtime_kind, runtime_key in cells:
-        _, runtime_cell = execution_root.stage_compilation_runtime(
-            rootfs,
-            compiler=compiler,
-            environment=compile_env,
-            kind=runtime_kind,
-            key=runtime_key,
-        )
-        retained_cells.append((lane, runtime_cell))
     payloads, providers = execution_root.support_payloads(
         archive_cache, arch=compiler.record["arch"]
     )
@@ -2401,7 +2411,8 @@ def prepare_compilation(
             }
         )
     prepared_cells = []
-    for lane, runtime_cell in retained_cells:
+    for lane, selected_cell in selected_cells:
+        runtime_cell = dict(selected_cell.record)
         output = (
             "/work/output/program.wasm"
             if lane.target == "wasm"
@@ -2479,7 +2490,7 @@ def prepare_compilation(
         rootfs, evidence / "rootfs.tar", expected_files=files, projection=projection
     )
     return {
-        "schema": "molt.installed-compilation.v3",
+        "schema": "molt.installed-compilation.v4",
         "origins": origins,
         "cache_seed": cache_seed,
         "execution": projection.to_dict(),
@@ -2793,7 +2804,7 @@ def _validate_compilation_plan(
     from molt.process_environment import NameRule
 
     if (
-        compilation.get("schema") != "molt.installed-compilation.v3"
+        compilation.get("schema") != "molt.installed-compilation.v4"
         or compilation.get("python") != python_minor
         or compilation.get("launcher") != launcher
         or compilation.get("controller_python") != controller_python.as_posix()
@@ -2911,8 +2922,10 @@ def _validate_compilation_plan(
         ):
             raise ValueError("compilation environment carries foreign custody")
         classified, _ = _deterministic_execution_environment(env, override_names=())
-        if dict(classified) != env or any(
-            env.get(name) != value for name, value in lane.environment().items()
+        if (
+            dict(classified) != env
+            or env.get("MOLT_INSTALLED_RUNTIME_STORE") != _COMPILATION_RUNTIME_STORE
+            or any(env.get(name) != value for name, value in lane.environment().items())
         ):
             raise ValueError("compilation environment differs from its declared policy")
         if config != {
