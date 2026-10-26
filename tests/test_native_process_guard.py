@@ -190,7 +190,7 @@ def test_prepared_native_environment_matches_actual_run_policy(
     source.write_text(
         "# MOLT_ENV: MOLT_BACKEND_PROFILE=dev\n" + witness.source, encoding="utf-8"
     )
-    root = preparation.ROOT
+    root = preparation._REPO_ROOT
     monkeypatch.setattr(script_commands, "compiler_source_root", lambda: root)
     monkeypatch.setattr(
         script_commands._build_inputs,
@@ -391,7 +391,7 @@ def test_compiled_preparation_rejects_invalid_runtime_policy(
     source.write_text(witness.source, encoding="utf-8")
     with pytest.raises(ValueError, match="Invalid capability policy"):
         preparation.native_build_environment(
-            source, witness, compiler_root=preparation.ROOT
+            source, witness, compiler_root=preparation._REPO_ROOT
         )
 
 
