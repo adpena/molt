@@ -1,10 +1,10 @@
 use super::super::lir_context::LirLowerCtx;
-use crate::wasm::const_materialization::{WasmConstMaterializationScratch, WasmConstOpPolicy};
+use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm_abi_generated::{WasmConstLirFastPolicy, WasmConstScalarValue};
 use molt_codegen_abi::box_none_bits;
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::OpCode;
-use wasm_encoder::{Ieee64, Instruction, ValType};
+use wasm_encoder::{Ieee64, Instruction};
 
 pub(super) fn emit_lir_const(ctx: &mut LirLowerCtx, op: &LirOp) {
     let tir_op = &op.tir_op;
@@ -122,12 +122,6 @@ fn emit_const_materialization(ctx: &mut LirLowerCtx, op: &LirOp) {
             op.tir_op.opcode
         )
     });
-    let scratch = policy.needs_literal_scratch().then(|| {
-        WasmConstMaterializationScratch::new(
-            ctx.alloc_scratch_local(ValType::I64),
-            ctx.alloc_scratch_local(ValType::I64),
-        )
-    });
     let out_local = ctx.get_local(result.id);
-    ctx.emit_const_materialization(policy.tir_materialization(&op.tir_op, out_local, scratch));
+    ctx.emit_const_materialization(policy.tir_materialization(&op.tir_op, out_local));
 }

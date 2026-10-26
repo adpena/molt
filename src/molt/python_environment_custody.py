@@ -887,22 +887,39 @@ def _ordinary_bytecode_projection(
             raise PythonEnvironmentIdentityError(
                 "ordinary bytecode publication requires an empty owned prefix"
             )
-        for cache, (source, node, owner, optimization) in expected.items():
+        producer_groups: dict[
+            tuple[str, _FileNodePool, str], list[tuple[Path, int]]
+        ] = {}
+        for source, node, owner, optimization in expected.values():
+            producer_groups.setdefault((str(source), owner, node), []).append(
+                (source, optimization)
+            )
+        for (filename, owner, node), variants in producer_groups.items():
             source_data = owner.read_bound(
                 node, label="ordinary bytecode producer source"
             )
             try:
-                bytecode = _ordinary_cache_bytes(source_data, str(source), optimization)
-            except SyntaxError:
-                # Stdlib/package trees can contain intentionally invalid source
-                # fixtures or source for other Python versions. No cache is
-                # produced; importing that source retains CPython's SyntaxError.
-                continue
-            target = _image_cache_from_source(source, prefix, optimization)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("xb") as output:
-                output.write(bytecode)
+                for source, optimization in variants:
+                    try:
+                        bytecode = _ordinary_cache_bytes(
+                            source_data, filename, optimization
+                        )
+                    except SyntaxError:
+                        # Keep each optimization's independent attempt for
+                        # invalid fixtures or source for another Python version.
+                        continue
+                    target = _image_cache_from_source(source, prefix, optimization)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open("xb") as output:
+                        output.write(bytecode)
+                    del bytecode
+            finally:
+                # Release this module before reading the next one's bytes.
+                del source_data
     else:
+        receiver_groups: dict[
+            tuple[str, _FileNodePool, str], list[tuple[str, str, int]]
+        ] = {}
         for relative, row in tree_by_path.items():
             if (
                 not relative.startswith(ENVIRONMENT_BYTECODE_DIRECTORY + "/")
@@ -916,14 +933,26 @@ def _ordinary_bytecode_projection(
                     f"image bytecode has no ordinary source producer: {relative}"
                 )
             source, node, owner, optimization = binding
-            source_data = owner.read_bound(node, label="ordinary bytecode source")
-            actual = pool.read_bound(
-                str(row["node"]), label="ordinary bytecode projection"
+            receiver_groups.setdefault((str(source), owner, node), []).append(
+                (relative, str(row["node"]), optimization)
             )
-            if actual != _ordinary_cache_bytes(source_data, str(source), optimization):
-                raise PythonEnvironmentIdentityError(
-                    f"image bytecode differs from its source/runtime derivation: {relative}"
-                )
+        for (filename, owner, node), variants in receiver_groups.items():
+            source_data = owner.read_bound(node, label="ordinary bytecode source")
+            try:
+                for relative, cache_node, optimization in variants:
+                    actual = pool.read_bound(
+                        cache_node, label="ordinary bytecode projection"
+                    )
+                    if actual != _ordinary_cache_bytes(
+                        source_data, filename, optimization
+                    ):
+                        raise PythonEnvironmentIdentityError(
+                            "image bytecode differs from its source/runtime "
+                            f"derivation: {relative}"
+                        )
+                    del actual
+            finally:
+                del source_data
 
 
 def immutable_environment_image(payload: Mapping[str, object]) -> dict[str, object]:

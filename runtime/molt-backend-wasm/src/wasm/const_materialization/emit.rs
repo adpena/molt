@@ -1,5 +1,4 @@
 use crate::wasm::WasmBackend;
-use crate::wasm::frame_locals::WasmLiteralScratchLocals;
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
@@ -7,6 +6,9 @@ use crate::wasm_import_tracking::TrackedImportIds;
 use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::sync::Arc;
 use wasm_encoder::{Function, Instruction};
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WasmConstMaterialization {
@@ -44,16 +46,11 @@ impl WasmConstMaterialization {
         out_local: u32,
         payload: OwnedLiteralPayloadKind,
         bytes: Arc<[u8]>,
-        scratch: WasmConstMaterializationScratch,
     ) -> Self {
         Self {
             import,
             out_local,
-            payload: WasmConstMaterializationPayload::Literal {
-                payload,
-                bytes,
-                scratch,
-            },
+            payload: WasmConstMaterializationPayload::Literal { payload, bytes },
         }
     }
 
@@ -80,22 +77,19 @@ impl WasmConstMaterialization {
                 emit_call(func, reloc_enabled, import_id);
                 func.instruction(&Instruction::LocalSet(self.out_local));
             }
-            WasmConstMaterializationPayload::Literal {
-                payload,
-                bytes,
-                scratch,
-            } => emit_literal_materialization(
-                backend,
-                func,
-                func_index,
-                reloc_enabled,
-                import_id,
-                const_str_scratch_segment,
-                self.out_local,
-                *payload,
-                bytes,
-                *scratch,
-            ),
+            WasmConstMaterializationPayload::Literal { payload, bytes } => {
+                emit_literal_materialization(
+                    backend,
+                    func,
+                    func_index,
+                    reloc_enabled,
+                    import_id,
+                    const_str_scratch_segment,
+                    self.out_local,
+                    *payload,
+                    bytes,
+                )
+            }
         }
     }
 
@@ -127,29 +121,7 @@ enum WasmConstMaterializationPayload {
     Literal {
         payload: OwnedLiteralPayloadKind,
         bytes: Arc<[u8]>,
-        scratch: WasmConstMaterializationScratch,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WasmConstMaterializationScratch {
-    ptr_local: u32,
-    len_local: u32,
-}
-
-impl WasmConstMaterializationScratch {
-    pub(crate) fn new(ptr_local: u32, len_local: u32) -> Self {
-        Self {
-            ptr_local,
-            len_local,
-        }
-    }
-}
-
-impl From<WasmLiteralScratchLocals> for WasmConstMaterializationScratch {
-    fn from(scratch: WasmLiteralScratchLocals) -> Self {
-        Self::new(scratch.ptr_local(), scratch.len_local())
-    }
 }
 
 fn emit_literal_materialization(
@@ -162,14 +134,15 @@ fn emit_literal_materialization(
     out_local: u32,
     payload: OwnedLiteralPayloadKind,
     bytes: &[u8],
-    scratch: WasmConstMaterializationScratch,
 ) {
-    emit_literal_ptr_len(backend, func, func_index, reloc_enabled, bytes, scratch);
+    // Payload addresses and lengths exist only as constructor operands. Keep
+    // relocation recording in the data authority and consume both immediately;
+    // neither needs an invocation-long frame local or an anchor alias.
+    let data = backend.add_data_segment(reloc_enabled, bytes);
+    backend.emit_data_ptr_i32(reloc_enabled, func_index, func, data);
+    func.instruction(&Instruction::I64Const(bytes.len() as i64));
     match payload {
         OwnedLiteralPayloadKind::String | OwnedLiteralPayloadKind::Bytes => {
-            func.instruction(&Instruction::LocalGet(scratch.ptr_local));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::LocalGet(scratch.len_local));
             backend.emit_data_ptr_i32(reloc_enabled, func_index, func, scratch_segment);
             emit_call(func, reloc_enabled, import_id);
             func.instruction(&Instruction::Drop);
@@ -183,26 +156,8 @@ fn emit_literal_materialization(
             func.instruction(&Instruction::LocalSet(out_local));
         }
         OwnedLiteralPayloadKind::BigintBytes => {
-            func.instruction(&Instruction::LocalGet(scratch.ptr_local));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::LocalGet(scratch.len_local));
             emit_call(func, reloc_enabled, import_id);
             func.instruction(&Instruction::LocalSet(out_local));
         }
     }
-}
-
-fn emit_literal_ptr_len(
-    backend: &mut WasmBackend,
-    func: &mut Function,
-    func_index: u32,
-    reloc_enabled: bool,
-    bytes: &[u8],
-    scratch: WasmConstMaterializationScratch,
-) {
-    let data = backend.add_data_segment(reloc_enabled, bytes);
-    backend.emit_data_ptr(reloc_enabled, func_index, func, data);
-    func.instruction(&Instruction::LocalSet(scratch.ptr_local));
-    func.instruction(&Instruction::I64Const(bytes.len() as i64));
-    func.instruction(&Instruction::LocalSet(scratch.len_local));
 }
