@@ -136,6 +136,12 @@ fn lir_literal_consts_materialize_without_generic_bail() {
             "{name} must materialize in the LIR fast body instead of bailing"
         );
         assert_eq!(output.bail_to_generic_reason, None);
+        for storage_call in ["scratch_alloc", "scratch_free"] {
+            assert!(
+                !output.runtime_calls.contains(&storage_call),
+                "LIR literal results have per-operation ownership, not invocation anchors"
+            );
+        }
         assert!(
             output.runtime_calls.contains(&import_name),
             "{name} must call {import_name}; got {:?}",

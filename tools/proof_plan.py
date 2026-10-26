@@ -4508,7 +4508,9 @@ def _command_environment(
     )
 
 
-def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:
+def _admitted_linker_helpers(
+    policies: Iterable[ToolchainPolicy],
+) -> dict[str, frozenset[str]]:
     """Declared linker helper basename -> the linker basenames it may outlive.
 
     Toolchain capture already binds these helpers (MSVC's link.exe leaves
@@ -4516,7 +4518,7 @@ def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:
     disposition; Job closure honors the same declaration and nothing else.
     """
     helpers: dict[str, set[str]] = {}
-    for policy in plan.toolchain_policies:
+    for policy in policies:
         for linker, names in (policy.data.get("linker_process_helpers") or {}).items():
             for name in names:
                 helpers.setdefault(str(name).casefold(), set()).add(str(linker))
@@ -4742,7 +4744,7 @@ def _run_command(
         metrics_valid=metrics_valid,
         returncode=returncode,
         cancelled=cancelled,
-        admitted_linker_helpers=_admitted_linker_helpers(plan),
+        admitted_linker_helpers=_admitted_linker_helpers(plan.toolchain_policies),
     )
     if failure_reason == "executor cancellation":
         # Raw guard cancellation remains 137. Only its admitted terminal

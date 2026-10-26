@@ -45,9 +45,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 from molt.dx import (  # noqa: E402
     CANONICAL_ROOT_ENV_KEYS as _CANONICAL_ROOT_ENV_KEYS,
     CANONICAL_RUN_ENV_KEYS as _CANONICAL_RUN_ENV_KEYS,
-    DxProject,
     RunContext,
-    development_artifacts_requested,
+    prefers_external_artifacts,
 )
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
@@ -354,15 +353,6 @@ def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return ProcessEnvironment(merged)
 
 
-def _harness_prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
-    if development_artifacts_requested(env):
-        return True
-    try:
-        return bool(DxProject(root).load_config().get("prefer_external_artifacts"))
-    except (OSError, ValueError):
-        return False
-
-
 def canonical_harness_env(
     env: Mapping[str, str] | None = None,
     *,
@@ -377,7 +367,7 @@ def canonical_harness_env(
         RunContext(
             root,
             session_prefix="guard",
-            prefer_external_artifacts=_harness_prefers_external_artifacts(root, merged),
+            prefer_external_artifacts=prefers_external_artifacts(root, merged),
         ).canonical_env(
             merged,
             create_dirs=False,

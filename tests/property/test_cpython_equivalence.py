@@ -134,7 +134,9 @@ class TestArithmeticExpressionGeneration:
         code = f"print({expr})"
         result = run_via_cpython(code)
         # Should produce some output (a number)
-        assert result != ""
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert result.stdout not in (None, "")
 
     @given(expr=safe_divmod_expressions())
     @settings(
@@ -149,7 +151,9 @@ class TestArithmeticExpressionGeneration:
 
         code = f"print({expr})"
         result = run_via_cpython(code)
-        assert result != ""
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert result.stdout not in (None, "")
 
     @given(expr=string_expressions())
     @settings(
@@ -164,7 +168,9 @@ class TestArithmeticExpressionGeneration:
 
         code = f"print(repr({expr}))"
         result = run_via_cpython(code)
-        assert result != ""
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert result.stdout not in (None, "")
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +276,273 @@ class TestMoltCPythonBuiltinEquivalence:
         from tests.property.conftest import assert_molt_matches_cpython
 
         assert_molt_matches_cpython(f"print(int(str({n})))")
+
+
+class TestPropertyProcessContract:
+    """Independent controls for the property runner's observable boundary."""
+
+    def test_cpython_preserves_bytes_and_guest_failure(self) -> None:
+        from tests.property.conftest import run_via_cpython
+        from tools.compat.comparison import Outputs
+
+        result = run_via_cpython(
+            "import os; os.write(1, b' \\r\\n\\n\\x00\\xff '); "
+            "os.write(2, b'\\xfe\\n\\n'); raise SystemExit(7)"
+        )
+        assert result == Outputs(" \r\n\n\x00\udcff ", "\udcfe\n\n", 7)
+
+    @pytest.mark.parametrize(
+        "candidate",
+        [
+            "import os; os.write(1, b'value'); os.write(2, b'diagnostic\\n')",
+            "import os; os.write(1, b'value\\n\\n'); os.write(2, b'diagnostic\\n')",
+            "import os; os.write(1, b'value\\n')",
+            "import os; os.write(1, b'value\\n'); os.write(2, b'diagnostic\\n'); raise SystemExit(7)",
+        ],
+        ids=["missing-newline", "extra-blank-line", "missing-stderr", "exit-status"],
+    )
+    def test_comparison_rejects_changed_observables(
+        self, monkeypatch, candidate
+    ) -> None:
+        from tests.property import conftest as helper
+
+        reference = "import os; os.write(1, b'value\\n'); os.write(2, b'diagnostic\\n')"
+        monkeypatch.setattr(
+            helper, "run_via_molt", lambda code: helper.run_via_cpython(candidate)
+        )
+        with pytest.raises(AssertionError, match="Molt/CPython mismatch"):
+            helper.assert_molt_matches_cpython(reference)
+
+    def test_comparison_accepts_matching_nonzero_guest_exit(self, monkeypatch) -> None:
+        from tests.property import conftest as helper
+
+        monkeypatch.setattr(helper, "run_via_molt", helper.run_via_cpython)
+        helper.assert_molt_matches_cpython(
+            "import os; os.write(2, b'expected failure\\n'); raise SystemExit(7)"
+        )
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            "cancelled",
+            "descendants_closed",
+            "timed_out",
+            "infrastructure_failure",
+            "violation",
+        ],
+    )
+    def test_harness_failure_cannot_be_guest_output(self, monkeypatch, failure) -> None:
+        from tests.property import conftest as helper
+        from tools.harness_memory_guard import GuardedCompletedProcess
+        from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+        process = GuardedCompletedProcess(
+            ["guest"],
+            0,
+            b"value\n",
+            b"guard failure\n",
+            elapsed_s=0.0,
+            child_stderr=b"",
+            descendants_closed=True,
+        )
+        value = (
+            GuardInfrastructureFailure(
+                phase="temporary_artifact_custody", details=("lost custody",)
+            )
+            if failure == "infrastructure_failure"
+            else failure != "descendants_closed"
+        )
+        setattr(process, failure, value)
+        monkeypatch.setattr(
+            helper, "run_guarded_test_process", lambda *a, **kw: process
+        )
+        with pytest.raises(RuntimeError, match="did not complete") as raised:
+            helper.run_via_cpython("pass")
+        assert raised.value.guarded_result is process
+
+    def test_guard_diagnostics_do_not_replace_guest_stderr(self, monkeypatch) -> None:
+        from tests.property import conftest as helper
+        from tools.harness_memory_guard import GuardedCompletedProcess
+        from tools.compat.comparison import Outputs
+
+        process = GuardedCompletedProcess(
+            ["guest"],
+            7,
+            b"",
+            b"expected\nreproduction command\n",
+            elapsed_s=0.0,
+            child_stderr=b"expected\n",
+            child_returncode=7,
+            descendants_closed=True,
+        )
+        monkeypatch.setattr(
+            helper, "run_guarded_test_process", lambda *a, **kw: process
+        )
+        assert helper.run_via_cpython("pass") == Outputs("", "expected\n", 7)
+
+    def test_molt_runs_only_selected_build_output(self, tmp_path, monkeypatch) -> None:
+        import json
+        from tests.property import conftest as helper
+        from tools.harness_memory_guard import GuardedCompletedProcess
+        from tools.compat.comparison import Outputs
+
+        selected = tmp_path / "selected artifact.exe"
+        selected.write_bytes(b"selected artifact")
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            assert kwargs["text"] is False
+            if len(commands) == 1:
+                assert "--json" in command
+                source = Path(command[-1])
+                assert source.read_text(encoding="utf-8") == "print('value')"
+                (source.parent / "prop_test").write_bytes(b"decoy")
+                payload = {
+                    "status": "ok",
+                    "data": {
+                        "output": str(source.parent / "not-the-consumer"),
+                        "consumer_output": str(selected),
+                    },
+                }
+                return GuardedCompletedProcess(
+                    command,
+                    0,
+                    json.dumps(payload).encode(),
+                    b"compiler warning\n",
+                    elapsed_s=0.0,
+                    child_stderr=b"compiler warning\n",
+                    descendants_closed=True,
+                )
+            assert command == [str(selected)]
+            return GuardedCompletedProcess(
+                command,
+                7,
+                b"value\n",
+                b"guest warning\n",
+                elapsed_s=0.0,
+                child_stderr=b"guest warning\n",
+                descendants_closed=True,
+            )
+
+        from pathlib import Path
+
+        monkeypatch.setattr(helper, "run_guarded_test_process", run)
+        result = helper.run_via_molt("print('value')")
+        assert result == Outputs("value\n", "guest warning\n", 7)
+        assert len(commands) == 2
+        assert not Path(commands[0][-1]).parent.exists()
+
+    @pytest.mark.parametrize("closed", [False, True])
+    @pytest.mark.parametrize("phase", ["build", "guest"])
+    def test_scratch_lifetime_requires_process_closure(
+        self, tmp_path, monkeypatch, closed, phase
+    ) -> None:
+        import json
+        from pathlib import Path
+        from tests.property import conftest as helper
+        from molt.temporary_artifacts import OwnedTemporaryDirectory
+        from tools.harness_memory_guard import GuardedCompletedProcess
+        from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+        owners = []
+        calls = []
+
+        def allocate(**kwargs):
+            owner = OwnedTemporaryDirectory(dir=tmp_path, **kwargs)
+            owners.append(owner)
+            return owner
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1 and phase == "guest":
+                binary = Path(owners[0].name) / "selected"
+                binary.write_bytes(b"fixture")
+                return GuardedCompletedProcess(
+                    command,
+                    0,
+                    json.dumps(
+                        {"status": "ok", "data": {"output": str(binary)}}
+                    ).encode(),
+                    b"",
+                    elapsed_s=0.0,
+                    child_stderr=b"",
+                    descendants_closed=True,
+                )
+            return GuardedCompletedProcess(
+                command,
+                125,
+                b"",
+                b"lost custody",
+                elapsed_s=0.0,
+                child_stderr=b"",
+                descendants_closed=closed,
+                infrastructure_failure=GuardInfrastructureFailure(
+                    phase="temporary_artifact_custody", details=("lost custody",)
+                ),
+            )
+
+        monkeypatch.setattr(helper, "OwnedTemporaryDirectory", allocate)
+        monkeypatch.setattr(helper, "run_guarded_test_process", run)
+        try:
+            with pytest.raises(RuntimeError, match="did not complete") as raised:
+                helper.run_via_molt("print('value')")
+            assert Path(owners[0].name).exists() is not closed
+            if not closed:
+                assert any(owners[0].name in note for note in raised.value.__notes__)
+        finally:
+            # This fixture launches no child; retire its deliberately retained owner.
+            for owner in owners:
+                owner.cleanup()
+
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            "build-error",
+            "malformed-json",
+            "error-status",
+            "missing-output",
+            "directory",
+        ],
+    )
+    def test_invalid_build_never_executes_a_guest(
+        self, tmp_path, monkeypatch, fault
+    ) -> None:
+        import json
+        import subprocess
+        from pathlib import Path
+        from tests.property import conftest as helper
+        from tools.harness_memory_guard import GuardedCompletedProcess
+
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            assert len(calls) == 1
+            payload = {"status": "ok", "data": {"output": str(tmp_path)}}
+            if fault == "missing-output":
+                payload["data"] = {}
+            elif fault == "error-status":
+                payload["status"] = "error"
+            output = (
+                b"not JSON"
+                if fault == "malformed-json"
+                else json.dumps(payload).encode()
+            )
+            return GuardedCompletedProcess(
+                command,
+                1 if fault == "build-error" else 0,
+                output,
+                b"compiler diagnostic",
+                elapsed_s=0.0,
+                child_stderr=b"compiler diagnostic",
+                descendants_closed=True,
+            )
+
+        monkeypatch.setattr(helper, "run_guarded_test_process", run)
+        with pytest.raises(
+            (subprocess.CalledProcessError, ValueError, RuntimeError, FileNotFoundError)
+        ):
+            helper.run_via_molt("print('value')")
+        assert len(calls) == 1
+        assert not Path(calls[0][-1]).parent.exists()

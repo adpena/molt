@@ -48,9 +48,18 @@ def _warn(msg: str) -> None:
 class DriverError(Exception):
     """A loud, fatal driver condition. Carries an exit code (default FAIL)."""
 
-    def __init__(self, message: str, code: int = EXIT_FAIL):
+    def __init__(
+        self,
+        message: str,
+        code: int = EXIT_FAIL,
+        *,
+        maintenance_selection: tuple[Path, ProcessEnvironment] | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        # Only a completed command attaches its captured selection. The CLI
+        # publishes this failure before scheduling its independent maintenance.
+        self.maintenance_selection = maintenance_selection
 
 
 # The landing queue attributes a failure to a candidate only when the
@@ -208,7 +217,7 @@ def _run_captured_gate(
     cancelled: Callable[[], bool],
     streams: tuple[Path, Path] | None = None,
     label: str | None = None,
-) -> tuple[int, str, str, int | None]:
+) -> harness_memory_guard.GuardedCompletedProcess[str]:
     """Run one gate: capture its streams, honor cancellation.
 
     The guard owns the child tree; ``cancelled`` lets the scheduler stop a gate
@@ -237,6 +246,8 @@ def _run_captured_gate(
         progress_label=label,
         **files,
     )
-    peak = proc.peak_total or proc.peak
-    peak_bytes = None if peak is None else peak.rss_kb * 1024
-    return proc.returncode, proc.stdout or "", proc.stderr or "", peak_bytes
+    if not isinstance(proc, harness_memory_guard.GuardedCompletedProcess) or tuple(
+        proc.args
+    ) != tuple(argv):
+        raise DriverError("gate guard returned an unavailable or mismatched outcome")
+    return proc

@@ -55,6 +55,20 @@ and [rustc's separate compiler and execution streams](https://rustc-dev-guide.ru
 These diagnostic bundles support crash investigation; they do not establish
 compilation correctness, performance improvement or release acceptance.
 
+Property execution uses the shared compatibility comparison with exact stdout,
+guest stderr and exit status. Capture stays binary until lossless decoding;
+whitespace, final newlines and non-UTF-8 bytes remain observable. Compiler and
+guard failures cannot become matching guest results. The native helper executes
+the consumer selected by the shared build-JSON contract, without directory scans
+or executable-name guesses. Scratch is retired only after process-tree closure;
+unknown closure retains its owned directory and adds its path to the failure.
+CPython-only generator checks remain distinct from `--run-molt` execution.
+
+This reuses the guard, output model, comparison and owned-directory authorities.
+It adds no guest work or process launches. Comparison reads the captured streams
+linearly; build selection parses one JSON response and checks its selected path.
+The removed whitespace copy and directory search have no claimed timing result.
+
 Place Rust unit-test bodies in separate files behind `#[cfg(test)] mod tests;`,
 with an explicit `#[path]` where needed. This keeps test-only edits outside the
 production crate's inputs and avoids rebuilding its dependents. Preserve module

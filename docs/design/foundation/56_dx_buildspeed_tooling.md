@@ -278,12 +278,26 @@ names; `tools/molt_dev_gates.py` owns gate execution. The executor's admission
 bounds the block: the plan's `executor_max_workers` and the `repository-policy`
 resource class, each capped by `molt.host_capacity` at one GiB per gate (the
 largest gate tree peaks at 0.69 GB). Each gate's streams print in declared
-order. A gate failure and a moot gate are partition-scoped, so the executor never
-cancels a gate declared before the failure, and the first failure in declared
-order is the one reported. Later gates are skipped or cancelled through the
-guard. Each landing leaves an executor receipt with every gate's duration, peak
+order. Integration explicitly selects the executor's `CANCEL_REMAINING` failure
+policy: the first observed failure stops scheduling and cancels active siblings
+through their existing guards, regardless of declared order. The receipt keeps
+that immutable trigger and every actual outcome; cancellation cannot erase a
+racing failure or uncertain guard closure. Generic proofs retain the default
+`COLLECT_INDEPENDENT` policy, including dependency blocking and global safety stops.
+This follows the explicit collection choice in
+[Cargo's `--keep-going`](https://doc.rust-lang.org/cargo/commands/cargo-build.html#miscellaneous-options)
+and the in-flight test cancellation of
+[Bazel's `--notest_keep_going`](https://github.com/bazelbuild/bazel/blob/7.0.0/site/en/docs/user-manual.md#L1341-L1346).
+The scheduler policy adds one failed-outcome enum comparison and receipt fields.
+Gate admission also retains the selected toolchain policies and projects each
+actual terminal guard result through the existing safety classifier; declared
+Windows linker helpers keep the same admission rule. This adds one selected-policy
+decode per runtime and a bounded outcome projection per gate, with no new poller,
+process scan or cancellation implementation. Each landing leaves an executor
+receipt with every gate's duration, peak
 RSS and outcome beside the integration lock in the Git common directory. Rule
-gates, pytest batches and Cargo gates still run alone; every gate writes its
+gates and pytest batches can overlap; Cargo gates share one target and serialize.
+Every gate writes its
 streams to files while it runs (section 2.9, item 6).
 
 `CANONICAL_EXECUTION_ENV` forbids bytecode writes so a gate cannot change the
@@ -539,9 +553,69 @@ applies it through `assert_safe_to_delete` and `molt.file_deletion`:
   the removed checkout's target and sessions with them. A checkout target's
   retirement takes its session targets along.
 
-The disk guard applies the policy at most once a day from
-`RunContext.canonical_env` (a stamp at `target/.molt-checkout-state-gc`, so the
-common case costs one `stat`), and on demand with `tools/disk_guard.py --gc`.
+The disk guard applies the policy at most once a day after a command publishes
+its result, and on demand with `tools/disk_guard.py --gc`.
+`RunContext.canonical_env` only materializes and stamps its finite selected
+roots; resolving an environment or preparing a capsule never starts global
+collection. `molt.dx.collect_checkout_state_after_result` is the shared
+source-only invocation boundary. It uses the command's captured environment,
+preserves its result, reports ordinary collection failures (including returned
+reclaim errors), and defers to an enclosing memory guard's completion.
+
+The automatic owners are the CLI build scope after its artifact claims release
+(including a cached build), outer CLI source work after dispatch publication
+(`run`, `compare`, `test`, `diff`, `bench`, `profile`, `lint`, `harness`, `deploy`),
+DX run after its returned result, standalone
+`memory_guard` and `guarded_exec` after terminal publication, synchronous `molt_dev`
+integration/difftest/fix completion, and the proof-queue runner after source
+verification and persisted terminal custody. The build scope captures an
+immutable initial maintenance-policy environment and cwd before work. The
+outer CLI source-work owner does the same; its guarded wrapper builds
+defer to that outer result. Initial maintenance selection uses
+the guarded child's canonical artifact-root policy, including for no-child
+cache hits, and does not pin later payload selection. If external-root
+availability changes during a build, a child can choose a different default;
+that root waits for its next eligible maintenance owner. Other command owners
+retain their actual selected environments. Maintenance does not reconstruct
+either selection from the ambient environment after work.
+Terminal JSON and human output, including the proof queue's final status,
+flush to their output streams before synchronous maintenance can block.
+Published failures are eligible too. Startup-report workers and proof
+payload workers defer to their verifying caller; the timed guarded-execution
+phase never runs this global sweep. Result publication grants scheduling only:
+it neither asserts descendant closure nor grants deletion permission. Live
+operations retain their existing shared checkout-state use; every candidate
+still requires a fresh policy check under its nonblocking exclusive retirement
+lock. No collector runs in low-level process/probe helpers, directory
+materialization, checkout provisioning or environment-only library APIs.
+The outer CLI hook excludes metadata/configuration, provisioning, persistent
+services, CPython-only parity execution and commands without an old automatic
+GC producer. Build/factgraph library builds retain their build-scope owner;
+the outer hook adds no duplicate build scheduling.
+Exec-forwarding wrappers have no post-exec result; raw detached launch and its
+direct `wait()` have no terminal publication owner. Those facades do not
+collect: their guarded command's eligible outer owner does. Long-lived
+batch/daemon users retain their existing shared state custody and do not
+acquire a second maintenance lifetime.
+
+The existing stamp at `target/.molt-checkout-state-gc` remains the cadence
+authority: after resolving the selected root, a warm completion reads its stamp
+once. A due attempt takes a stable
+external nonblocking file lock under `target/.disk_guard`, rechecks the stamp,
+records its start, and holds the lock through collection. Competing automatic
+callers skip without inventory or waiting. A failed or interrupted attempt
+keeps the original daily throttle; root-specific retirement locks and policy
+rechecks still authorize every deletion, including explicit/manual collection.
+This follows [Cargo's opportunistic automatic-GC admission](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/gc.rs.html#40-89)
+and [uv's owned pruning after a CI job](https://docs.astral.sh/uv/concepts/cache/#caching-in-continuous-integration).
+
+This scheduling removes global scan/deletion work from environment and payload
+startup, not from total command wall time. A due completion still pays O(managed
+roots + reclaimed directory entries), without a new process or daemon.
+The pressure pass's between-candidate budget cannot bound one recursive tree
+deletion. No bounded whole-command latency or reduction in deletion operations
+follows from moving maintenance to completion.
+
 Worktree retirement (`integrate --cleanup-worktree` and `lane retire`)
 retires the worktree's daemons, removes it, and then reclaims its roots at
 once, without the idle window: it is the explicit owner action, as `bazel

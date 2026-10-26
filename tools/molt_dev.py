@@ -191,7 +191,7 @@ from molt.file_locks import (  # noqa: E402
     _release_file_lock,
     _try_acquire_file_lock,
 )
-from molt.dx import project_cargo_target_dir  # noqa: E402
+from molt.dx import configured_artifact_root, project_cargo_target_dir  # noqa: E402
 
 from tools.molt_dev_detached import (  # noqa: E402
     cmd_detached_run,
@@ -551,6 +551,11 @@ def prepare_gate_environment(
     repo: Path, env: ProcessEnvironment, *, requires_python: bool
 ) -> GateEnvironment:
     """Select once by declared demand; explicit selectors always validate."""
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(repo, env)
+    if selected is not None:
+        env = selected
     explicit = bool(
         env.get("MOLT_VENV") or env.get("UV_PROJECT_ENVIRONMENT", "").strip()
     )
@@ -643,7 +648,7 @@ def run_captured_gate(
                     )
         raise
     return GateOutcome(
-        *_run_captured_gate(
+        _run_captured_gate(
             cmd,
             repo=repo,
             env=env,
@@ -870,6 +875,8 @@ def _gate_runtime(
     toolchains: dict[str, dict],
     receipt_kind: str = "gates",
 ) -> GateRuntime:
+    from tools.proof_plan import load_toolchain_policies
+
     def source_changes() -> tuple[str, ...]:
         status = git._run(list(clean_checkout_status_arguments(null_terminated=True)))
         return tuple(entry for entry in status.stdout.split("\0") if entry)
@@ -908,6 +915,9 @@ def _gate_runtime(
         observe_capacity=observe_gate_capacity,
         say=_say,
         ok=_ok,
+        toolchain_policies=load_toolchain_policies(
+            config.prerequisite_policy, root=config.root, names=tuple(toolchains)
+        ),
     )
 
 
@@ -923,6 +933,7 @@ class _IntegrationProgress:
     # (amended, original) while resolved change citations are unpublished:
     # a failed landing restores the original, so its citations stay stable.
     unpublished_citation_amend: tuple[str, str] | None = None
+    environments: dict[tuple[str, ...], GateEnvironment] = field(default_factory=dict)
     # Concurrent gates emit from their own threads; one line at a time.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -976,6 +987,11 @@ def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilde
     from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
 
     env = immutable_git_environment(os.environ)
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(repo, env)
+    if selected is not None:
+        env.update(selected)
     # Gates are proof executions: bytecode a gate writes under src/ changes the
     # checkout's import topology while later gates read it (a fresh worktree's
     # first landing failed that way). The canonical environment forbids writes;
@@ -994,6 +1010,7 @@ def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilde
 
 
 def cmd_integrate(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
     progress = _IntegrationProgress()
     returncode = None
     error: BaseException | None = None
@@ -1002,7 +1019,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         if args.dry_run:
             returncode = _integrate_exclusive(args, progress=progress)
             return returncode
-        lock_path = _integration_lock_path(Path(args.repo).resolve())
+        lock_path = _integration_lock_path(repo)
         if args.wait_for_lock:
             # The landing queue's runner waits out another integrator's
             # landing; an interactive integrate still refuses at once.
@@ -1024,7 +1041,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             _release_file_lock(handle)
     except BaseException as exc:
         error = exc
-        _restore_unpublished_citations(Path(args.repo).resolve(), progress)
+        _restore_unpublished_citations(repo, progress)
         raise
     finally:
         if error is not None:
@@ -1049,6 +1066,13 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             returncode=returncode,
             dry_run=args.dry_run,
         )
+        if not args.dry_run:
+            seen: set[Path | None] = set()
+            for context in progress.environments.values():
+                root = configured_artifact_root(context.environment, relative_to=repo)
+                if root not in seen:
+                    seen.add(root)
+                    _collect_driver_maintenance(repo, context.environment)
 
 
 def _integrate_exclusive(
@@ -1227,6 +1251,7 @@ def _integrate_exclusive(
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
     env = gate_environment(repo, session_id=args.session_id)
+    progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry:
@@ -1240,6 +1265,7 @@ def _integrate_exclusive(
         )
         toolchains = prepared.fingerprints
         environments = prepared.environments
+        progress.environments = environments
         try:
             cargo_outputs = config.cargo_outputs(environments)
             capacity_requirements = admit_selected_output_capacity(
@@ -1595,7 +1621,10 @@ def _difftest_toolchain_env(
             )
         key, value = kv.split("=", 1)
         env[key] = value
-    return ProcessEnvironment(env)
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(root, env)
+    return ProcessEnvironment(env) if selected is None else selected
 
 
 def _difftest_capture(
@@ -1821,11 +1850,16 @@ def cmd_difftest(args: argparse.Namespace) -> int:
                     "failures": failures,
                     "passed": not failures,
                 }
-            )
+            ),
+            flush=True,
         )
     if failures:
-        raise DriverError(f"difftest: {len(failures)} target(s) failed: {failures}")
+        raise DriverError(
+            f"difftest: {len(failures)} target(s) failed: {failures}",
+            maintenance_selection=(root, base_env),
+        )
     _ok(f"difftest PASS on all targets: {args.target}")
+    _collect_driver_maintenance(root, base_env)
     return EXIT_OK
 
 
@@ -1856,9 +1890,19 @@ def cmd_fix(args: argparse.Namespace) -> int:
     for name, command in steps:
         _step(name)
         if run_gate(command, repo, context) != 0:
+            _fail(f"fix: {name} failed")
+            _collect_driver_maintenance(repo, context.environment)
             return 1
     _say("fix: encodings pinned, formatted, every generated output current")
+    _collect_driver_maintenance(repo, context.environment)
     return 0
+
+
+def _collect_driver_maintenance(repo: Path, env: ProcessEnvironment) -> None:
+    if not env.get("MOLT_PROOF_QUEUE"):
+        from molt.dx import collect_checkout_state_after_result
+
+        collect_checkout_state_after_result(env, cwd=repo)
 
 
 # --------------------------------------------------------------------------
@@ -2190,6 +2234,9 @@ def main(argv: list[str]) -> int:
         _say("")
         _fail(str(exc))
         _say("")
+        if isinstance(exc, DriverError) and exc.maintenance_selection is not None:
+            repo, environment = exc.maintenance_selection
+            _collect_driver_maintenance(repo, environment)
         return exc.code if isinstance(exc, DriverError) else EXIT_USAGE
 
 

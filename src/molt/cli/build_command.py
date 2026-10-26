@@ -285,8 +285,17 @@ def _in_build_scope(
             )
         except ValueError as exc:
             return _fail(str(exc), request.json_output, command="build")
-        with build_scope():
-            return build_function(request)
+        with build_scope() as scope:
+            result = build_function(request)
+        if scope.maintenance_environment is not None and not (
+            scope.maintenance_environment.get("MOLT_PROOF_QUEUE")
+        ):
+            from molt.dx import collect_checkout_state_after_result
+
+            collect_checkout_state_after_result(
+                scope.maintenance_environment, cwd=scope.cwd
+            )
+        return result
 
     return build
 
