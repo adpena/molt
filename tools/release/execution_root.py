@@ -8,7 +8,7 @@ the explicit compilation projection stages its captured frontend inputs.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
@@ -39,6 +39,7 @@ from molt.toolchain_identity import (
 from .release_model import ROOT
 
 if TYPE_CHECKING:
+    from molt.compiler_distribution import InstalledCompiler
     from tools.proof_queue_pkg.custody_cas import FileRef
 
 ROOT_SCHEMA = "molt.release-execution-root.v2"
@@ -698,10 +699,33 @@ def _validate_sealed_tar_handle(
         raise ValueError("sealed root archive has noncanonical trailing data")
 
 
+def compilation_runtime_inventory(
+    compiler: InstalledCompiler,
+    cells: tuple[Mapping[str, Any], ...],
+) -> dict[str, Any]:
+    """Project exact selected records without changing the installed catalog."""
+    if not isinstance(cells, tuple) or not cells:
+        raise ValueError("compilation requires explicit selected runtime cells")
+    catalog = {cell["id"]: cell for cell in compiler.runtime["cells"]}
+    selected: dict[str, dict[str, Any]] = {}
+    for cell in cells:
+        if (
+            not isinstance(cell, Mapping)
+            or not isinstance(cell.get("id"), str)
+            or cell["id"] not in catalog
+            or cell != catalog[cell["id"]]
+        ):
+            raise ValueError("selected runtime cell differs from the installed catalog")
+        # Multiple logical lanes can consume the same physical runtime cell.
+        selected[cell["id"]] = catalog[cell["id"]]
+    return {**compiler.runtime, "cells": [selected[key] for key in sorted(selected)]}
+
+
 def stage_compilation_inputs(
     root: Path,
     *,
     compiler: Any,
+    runtime_cells: tuple[Mapping[str, Any], ...],
     python_captures: list[dict[str, Any]],
     toolchain_capture: dict[str, Any],
     cas_root: Path,
@@ -715,7 +739,11 @@ def stage_compilation_inputs(
     fails inside the sealed namespace and remains a failed compile coordinate.
     """
     from dataclasses import replace
-    from molt.compiler_distribution import InstalledCompiler, installed_compiler
+    from molt.compiler_distribution import (
+        InstalledCompiler,
+        installed_compiler,
+        verify_runtime_tree,
+    )
     from molt.python_capture import validate_python_capture
     from molt.source_root import MANIFEST_NAME
     from tools.proof_queue_pkg import toolchain_capture as captures
@@ -729,8 +757,8 @@ def stage_compilation_inputs(
         )
     if installed_compiler(compiler.source_root) != compiler:
         raise ValueError("installed compiler manifest changed before root projection")
+    runtime = compilation_runtime_inventory(compiler, runtime_cells)
     compiler.verify_sources()
-    compiler.verify_runtime()
     compiler.verify_binary(
         tuple(compiler.record["features"]), compiler.record["profile"]
     )
@@ -789,7 +817,7 @@ def stage_compilation_inputs(
     stage(manifest, file_identity(manifest))
     for entry in (compiler.record, compiler.launcher, compiler.wasm_facts):
         stage(compiler.source_root.parent / entry["path"], entry)
-    for cell in compiler.runtime["cells"]:
+    for cell in runtime["cells"]:
         for entry in cell["files"]:
             stage(compiler.verify_runtime_file(cell, entry["role"]), entry)
     for python in pythons:
@@ -816,7 +844,7 @@ def stage_compilation_inputs(
     ):
         raise ValueError("installed compiler manifest changed during root projection")
     compiler.verify_sources()
-    compiler.verify_runtime()
+    verify_runtime_tree(staged_compiler.runtime_root, runtime)
     return [rows[name] for name in sorted(rows)]
 
 
@@ -911,63 +939,6 @@ def compilation_python_files(capture: object) -> list[tuple[Path, dict[str, Any]
             )
         project(candidates.pop(), tree, runtime_files)
     return sorted(result.items(), key=lambda item: item[0].as_posix())
-
-
-def stage_compilation_runtime(
-    root: Path,
-    *,
-    compiler: Any,
-    environment: dict[str, str],
-    kind: str,
-    key: dict[str, Any],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Hydrate the selected signed cell using its existing retention authority.
-
-    The only override is the physical destination of the new namespace. Inside
-    that namespace the normal public launcher observes its canonical MOLT_HOME
-    generation, already present and read-only. No compiler/Cargo execution and
-    no independently manufactured runtime manifest are involved.
-    """
-    from molt.compiler_distribution import (
-        InstalledCompiler,
-        NATIVE_RUNTIME_CELL,
-        WASM_RUNTIME_CELL,
-    )
-    from molt.default_paths import _default_molt_home
-    from molt.cli.installed_runtime import (
-        INSTALLED_RUNTIME_STORE,
-        select_installed_runtime_cell,
-        admit_installed_native_runtime,
-        admit_installed_wasm_runtime,
-    )
-
-    if not isinstance(compiler, InstalledCompiler):
-        raise TypeError("compilation retention requires an installed compiler")
-    home = _default_molt_home(environ=environment, cwd=Path("/work"))
-    relative = linux_root_relative_path(str(home / INSTALLED_RUNTIME_STORE))
-    if relative.parts[0] in {"work", "evidence", "proc", "sys", "dev"}:
-        raise ValueError(
-            "retained runtime must remain outside the writable compile root"
-        )
-    store = root.joinpath(*relative.parts)
-    cell = select_installed_runtime_cell(
-        compiler, kind=kind, key=key, retention_store=store
-    )
-    if kind == NATIVE_RUNTIME_CELL:
-        admission = admit_installed_native_runtime(cell)
-        admission.verify()
-    elif kind == WASM_RUNTIME_CELL:
-        from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
-
-        admission = RuntimeWasmCodegenBinding(admit_installed_wasm_runtime(cell), None)
-        admission.verify()
-    else:
-        raise ValueError("compilation runtime has no installed cell authority")
-    rows = root_inventory(cell.retained_root)
-    for row in rows:
-        row["path"] = (relative / cell.id / row["path"]).as_posix()
-    admission.verify()
-    return rows, dict(cell.record)
 
 
 def stage_compilation_link_inputs(

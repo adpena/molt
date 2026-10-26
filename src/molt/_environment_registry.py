@@ -4245,6 +4245,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_INSTALLED_RUNTIME_STORE",
+      "output_neutral": false,
+      "owner": "src/molt/default_paths.py",
+      "summary": "Mutable payload store for admitted installed native and WASM runtime cells; a relative path resolves against the current directory, unset uses <MOLT_HOME>/installed-runtime, and the store must remain outside the immutable installation without changing the prepared frontend home.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "real",
       "kind": "enum",
       "name": "MOLT_IO_MODE",

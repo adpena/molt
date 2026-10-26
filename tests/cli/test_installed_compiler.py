@@ -395,6 +395,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         "'no_user_site':sys.flags.no_user_site, 'safe_path':sys.flags.safe_path, "
         "'hash_randomization':sys.flags.hash_randomization, 'cli':__file__, 'child_source':child, "
         "'home':os.environ.get('MOLT_HOME'), "
+        "'runtime_store':os.environ.get('MOLT_INSTALLED_RUNTIME_STORE'), "
         "'project':os.environ.get('MOLT_PROJECT_ROOT')}))\n"
         "sys.exit(23)\n",
         encoding="utf-8",
@@ -441,6 +442,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         UV_OFFLINE="1",
         UV_NO_VERIFY_HASHES="1",
         UV_PROJECT_ENVIRONMENT=str(tmp_path / "poison"),
+        MOLT_INSTALLED_RUNTIME_STORE=str(tmp_path / "work/state/installed-runtime"),
     )
     env.pop("MOLT_HOME", None)
     if explicit_home:
@@ -510,6 +512,8 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
     assert Path(first["cli"]).samefile(package / "cli/__main__.py")
     assert Path(first["child_source"]).samefile(package / "__init__.py")
     assert Path(first["home"]).samefile(expected_home)
+    assert first["runtime_store"] == str(tmp_path / "work/state/installed-runtime")
+    assert not (tmp_path / "work").exists()  # Bootstrap owns only its frontend.
     environment = Path(first["prefix"])
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     installed_identity = python.stat()

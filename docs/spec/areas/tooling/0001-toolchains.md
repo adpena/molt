@@ -860,7 +860,8 @@ profile, stdlib tier, features and SIMD/freestanding. `molt.cli.installed_runtim
 selects exactly one cell, admits bundle bytes through the canonical native-link
 and WASM-generation receipts, requires their `RuntimeBuildIdentity` to agree
 with the key, and retains one content-addressed generation under
-`MOLT_HOME/installed-runtime`. Each build operation admits that generation once;
+the configured installed runtime store (default `MOLT_HOME/installed-runtime`).
+Each build operation admits that generation once;
 code generation and final link compare stable-file metadata observations and
 re-derive the cell selection, failing on an observed generation or selection
 change. These detached comparisons have the limits described under direct file
@@ -1356,8 +1357,8 @@ Python coordinate. Platform-wheel verification uses the same product producer an
 receiver for the first declared reference Python, rather than a separate native
 smoke artifact. Sealed post-uninstall replay retains backend/profile-distinct
 product IDs. Missing lanes, wrong profiles, compiler substitution and duplicate
-products are refused. Consumer proof v8, replay v2 and performance shard v2 replace
-their older internal shapes together; selected profile observations alone still
+products are refused. Consumer proof v12, replay v4 and performance shard v2 use
+their current closed contracts; selected profile observations alone still
 do not establish authenticated compiler/cache origin or used-byte performance
 evidence. Those stronger release requirements remain separately enforced.
 
@@ -1687,7 +1688,7 @@ artifact and command streams to standalone replay. A missing cell or compilation
 record cannot fall back to the prior selection-only receipt.
 
 The execution-root v2 file list is the sole resource mapping: lexical destination,
-read-only mode, size and content digest. Closed compilation v3 and standalone
+read-only mode, size and content digest. Closed compilation v4 and standalone
 replay v4 records retain those bytes once in `execution-inputs`, using the existing
 proof custody CAS's data/payload layout. Content can serve several paths and modes;
 process, image, origin, cache and journal identities remain separate. The owning
@@ -1699,12 +1700,45 @@ Obsolete wire versions reject; no absolute CAS reference is rebased.
 
 Receivers materialize regular read-only files using the shared snapshot authority,
 recreate the exact original PAX tar, and compare its original size and digest.
-They then perform the unchanged full installed-source/runtime admission and replay
+They then perform full installed-source and selected-runtime admission and replay
 raw original native receipts, exports and cold/warm cache evidence. A content
 address supplies bytes, not a substitute admission claim. The resource store must
 contain exactly the buffers referenced by these admitted roots. This follows
 [LLVM's immutable, content-addressed object model](https://llvm.org/docs/ContentAddressableStorage.html)
 while retaining Molt's existing CAS and native receipt authorities.
+
+Compilation v4 retains the complete installed runtime metadata, equal to the
+candidate catalog, while its shipped runtime tree contains exactly the cells
+selected by the existing lane preflight and `InstalledRuntimeCell` authority.
+Multiple lanes selecting the same cell share its shipped file projection.
+Producers validate exact catalog membership before copying; execution
+and replay receivers independently reject missing, corrupt or extra runtime files
+and directories. Unselected runtime members are neither read nor copied. There is
+no implicit full-catalog selection, and obsolete compilation v3 records reject.
+Full source closure remains mandatory. Bundle and wheel admission still require
+the complete runtime catalog. Full release qualification still requires two
+independent 70-cell generations and the complete 44-product consumer matrix.
+
+This follows the declared action-input boundary described by
+[Bazel sandboxing](https://bazel.build/docs/sandboxing) and
+[remote caching](https://bazel.build/remote/caching): a hermetic action projects its
+declared inputs, while the product catalog describes the complete distribution.
+Runtime staging cost scales with unique selected members, not the full catalog;
+metadata membership remains linear in catalog plus selection size. Existing
+selected-member snapshot and receiver byte checks remain.
+
+`MOLT_INSTALLED_RUNTIME_STORE` owns mutable installed runtime payloads separately
+from the prepared frontend under `MOLT_HOME`. Its default remains
+`<MOLT_HOME>/installed-runtime`; relative overrides resolve against the current
+directory, and the store must stay outside the immutable installation. The
+compilation producer and independent plan validator require
+`/work/state/installed-runtime`. Each fresh cell workspace therefore hydrates its
+selected native or WASM generation through ordinary installed admission and
+receipt binding. The immutable input root carries only shipped runtime members,
+without a second prehydrated archive or generation. Runtime copies inside the
+workspace are charged to its existing byte budget; full consumed-buffer and
+process evidence still determine acceptance. The portable bootstrap retains its
+prepared frontend coordinate and passes the separate runtime store to the CLI.
 
 The consumer ZIP streams selected retained paths directly, without a second full
 staging copy. Source and tar ordering use canonical POSIX wire paths, including
