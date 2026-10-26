@@ -4329,7 +4329,7 @@ pytest = [
 # Backend environment identity is one Python/Rust contract. These bounded
 # consumers catch selected-input and fixture migrations before expensive Cargo.
 pytest_select = [
-  { k = "not compiled_gpu_kernel_vector_add", targets = ["tests/test_gpu_kernel_compiled.py"] },
+  { k = "not compiled_gpu_kernel_vector_add", targets = ["tests/test_gpu_kernel_compiled.py"], toolchains = ["python"] },
 ]
 
 [[rule]]

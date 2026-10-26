@@ -24,7 +24,7 @@ from tools.molt_dev_common import EXIT_USAGE, CandidateFailure, DriverError
 
 if TYPE_CHECKING:
     from tools.molt_dev import Git
-    from tools.proof_plan import PlanEntity, PytestMemoryUnits
+    from tools.proof_plan import LocalPytestSelection, PlanEntity, PytestMemoryUnits
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 GATES_CONFIG_NAME = "proof_plan.toml"
@@ -44,10 +44,8 @@ class GateRule:
     gates: list[str]
     description: str = ""
     pytest: list[str] = field(default_factory=list)
-    # (selection argv, targets): each runs as its own pytest invocation.
-    pytest_select: list[tuple[tuple[str, ...], tuple[str, ...]]] = field(
-        default_factory=list
-    )
+    # Each selection runs as its own invocation with resolved prerequisites.
+    pytest_select: list[LocalPytestSelection] = field(default_factory=list)
     # The plan entries this rule reads (proof_plan.local_rule_plan_claims).
     plan_entities: frozenset[PlanEntity] = frozenset()
 
@@ -144,6 +142,11 @@ class GateConfig:
         except tomllib.TOMLDecodeError as exc:
             raise DriverError(f"gate manifest is not valid TOML ({label}): {exc}")
         plan_claims = PlanClaims(data, root=root)
+        toolchain_names = {
+            row["name"]
+            for row in data.get("toolchain_policy", [])
+            if isinstance(row, dict) and isinstance(row.get("name"), str)
+        }
         rules: list[GateRule] = []
         for entry in data.get("rule", []):
             if field_error := local_rule_field_error(entry):
@@ -164,7 +167,10 @@ class GateConfig:
             pytest_targets = entry.get("pytest", [])
             errors = local_pytest_target_errors(name, pytest_targets, root=root)
             errors += local_pytest_select_errors(
-                name, entry.get("pytest_select", []), root=root
+                name,
+                entry.get("pytest_select", []),
+                toolchain_names=toolchain_names,
+                root=root,
             )
             try:
                 claim_errors, claims = plan_claims.claims(entry)
@@ -398,9 +404,11 @@ class GateConfig:
                     pytest_tools.setdefault(target, {}).update(
                         dict.fromkeys(tools(f"{owner}.pytest"))
                     )
-            for index, (select, targets) in enumerate(rule.pytest_select):
+            for index, selection in enumerate(rule.pytest_select):
                 command = local_pytest_argv(
-                    targets, select, memory_units=self.pytest_memory_units
+                    selection.targets,
+                    selection.select,
+                    memory_units=self.pytest_memory_units,
                 )
                 pytest_commands.add(command_key(command))
                 add(
@@ -409,7 +417,7 @@ class GateConfig:
                     pytest=True,
                     collection_command=(
                         local_pytest_collection_argv(command)
-                        if any("::" in target for target in targets)
+                        if any("::" in target for target in selection.targets)
                         else None
                     ),
                 )
