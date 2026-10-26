@@ -695,6 +695,115 @@ def test_development_contract_upgrade_selects_new_intent_without_repairing_old_i
     assert old.manifest_path.read_bytes() == old_manifest_bytes
 
 
+def test_implicit_evicted_generation_republishes_through_existing_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import source_build_environment as publisher
+
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    _init_repo(root)
+    image = materialize_development_environment(root, artifacts, select=True)
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifacts)})
+    spec = cp.checkout_input("uv-environment", root, environment)
+    assert isinstance(spec, cp.DevelopmentEnvironment)
+    selection = cp._development_selection_path(spec, cp._development_intent(spec))
+    selection_bytes = selection.read_bytes()
+    shutil.rmtree(image.root)
+    assert selection.read_bytes() == selection_bytes
+    assert cp.selected_development_environment(root, environment) == image.root
+    assert cp.input_state(spec) == "absent"
+    calls = []
+
+    def publish(checkout, *, provision, **options):
+        assert checkout == root.resolve() and provision is True
+        assert not options["environ"].get("UV_PROJECT_ENVIRONMENT")
+        calls.append(checkout)
+        return materialize_development_environment(root, artifacts)
+
+    monkeypatch.setattr(publisher, "development_environment", publish)
+    assert cp.ensure_input(spec).environment_root == image.root
+    assert image.manifest_path.is_file()
+    assert cp.input_state(spec) == "current"
+    assert not cp.ensure_input(spec).provisioned
+    assert calls == [root.resolve()]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "explicit-absent",
+        "missing-manifest",
+        "malformed-manifest",
+        "dangling-root",
+        "dangling-ancestor",
+        "foreign-namespace",
+        "foreign-owner",
+        "invalid-address",
+        "permission",
+    ],
+)
+def test_generation_recovery_keeps_exact_and_invalid_selections_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    from molt import source_build_environment as publisher
+
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    _init_repo(root)
+    image = materialize_development_environment(root, artifacts, select=True)
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifacts)})
+    spec = cp.checkout_input("uv-environment", root, environment)
+    assert isinstance(spec, cp.DevelopmentEnvironment)
+    selection = cp._development_selection_path(spec, cp._development_intent(spec))
+    if fault == "explicit-absent":
+        shutil.rmtree(image.root)
+        spec = dataclasses.replace(
+            spec,
+            environment=environment.updated(
+                {"UV_PROJECT_ENVIRONMENT": str(image.root)}
+            ),
+        )
+    elif fault == "missing-manifest":
+        image.manifest_path.unlink()
+    elif fault == "malformed-manifest":
+        image.manifest_path.write_text("{not JSON}", encoding="utf-8")
+    elif fault in {"foreign-namespace", "foreign-owner", "invalid-address"}:
+        record = json.loads(selection.read_bytes())
+        missing = {
+            "foreign-namespace": tmp_path / "foreign" / image.root.name,
+            "foreign-owner": (
+                image.root.parent.parent / "other-0123456789ab" / image.root.name
+            ),
+            "invalid-address": image.root.parent / "not-a-recipe",
+        }[fault]
+        record["generation"] = str(missing)
+        selection.write_text(json.dumps(record), encoding="utf-8")
+    elif fault in {"dangling-root", "dangling-ancestor"}:
+        target = image.root if fault == "dangling-root" else image.root.parent
+        target.rename(tmp_path / "preserved-generation")
+        try:
+            target.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable")
+    else:
+        lstat = Path.lstat
+
+        def denied(path, *args, **kwargs):
+            if path == image.root:
+                raise PermissionError("fixture denied generation observation")
+            return lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", denied)
+    selection_bytes = selection.read_bytes()
+
+    def no_publish(*args, **kwargs):
+        pytest.fail("an exact or invalid generation must never enter publication")
+
+    monkeypatch.setattr(publisher, "development_environment", no_publish)
+    with pytest.raises(cp.ProvisioningError):
+        cp.ensure_input(spec)
+    assert selection.read_bytes() == selection_bytes
+
+
 def test_integrate_child_refuses_a_missing_inherited_uv_environment(
     tmp_path: Path,
 ) -> None:
