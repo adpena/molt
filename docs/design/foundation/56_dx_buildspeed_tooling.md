@@ -1312,6 +1312,36 @@ unique record is kept); a test that a failed gate's receipt names a file that
 holds its stderr; mutation checks for each rule; and the daily pass's wall
 time measured on the real artifact root.
 
+### 2.10 Shared allocator move planning
+
+Native Cranelift code generation and the Wasmtime host select one maintained,
+provenance-pinned `regalloc2` source through the workspace Cargo patch table.
+[`MOLT_PATCHES.md`](../../../vendor/rust/regalloc2/MOLT_PATCHES.md) owns the pin,
+upstream references, scope, invariants and retirement condition.
+
+Move insertion advances its incoming-parameter cursor across increasing blocks
+within each live range. Each new range still resets from the existing
+`PrevBuffer`, preserving overlapping and same-start range behavior. Work within
+a range is linear in visited blocks and consumed records, rather than repeatedly
+scanning consumed prefixes. A typed vreg generation owns each dense block-source
+slot; there is no per-vreg table clear or generation counter that can wrap.
+Register/stack preference and missing-source failures remain unchanged.
+
+The cache allocates on its first source insertion, then uses bounded
+`O(blocks)` storage and constant-time indexed access. Functions without sources
+allocate no cache backing storage. Sparse large graphs can use more storage than
+the original sparse map; this is an explicit trade, not a universal memory win.
+There are no added process launches, syscalls, locks or serialization passes.
+The pin introduces one dependency rebuild when first selected; stable slot paths
+retain that build for subsequent edits. Cargo's existing source/read-set
+identities include the selected local crate for cache and installation custody.
+
+Owning unit tests exercise all three register classes, generation transitions,
+missing sources and preference. The proof plan runs them in its Rust compiler
+cell and its local allocator rule; changes to the maintained crate select native
+integration, Rust and WASM CI families. Shared compile-path measurements and
+qualification limits live in [`tools/PERF_AUTHORITY.md`](../../../tools/PERF_AUTHORITY.md).
+
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 
 ### FACT-A: The recompile-blast-radius ratchet (retires DX-1)

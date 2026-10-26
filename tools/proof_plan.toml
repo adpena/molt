@@ -1208,7 +1208,7 @@ dependencies = []
 [[ci_family]]
 name = "wasm"
 description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
-inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tools/compat/**", "tools/build_control_path.py", "tools/gen_reconstructed_function_fixtures.py", "tests/fixtures/reconstructed_functions/**", "tests/reconstructed_function_test_support.py", "drivers/falcon/browser_webgpu/*.py", "drivers/falcon/browser_webgpu/*.js", "drivers/cloudflare/thin_adapter/verify.py", "tests/test_falcon_driver_scaffold.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/fixtures/falcon_ocr/**", "tools/gen_browser_asset_graph.py", "tests/test_browser_asset_closure.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "drivers/_shared/artifacts.py"]
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tools/compat/**", "tools/build_control_path.py", "tools/gen_reconstructed_function_fixtures.py", "tests/fixtures/reconstructed_functions/**", "tests/reconstructed_function_test_support.py", "drivers/falcon/browser_webgpu/*.py", "drivers/falcon/browser_webgpu/*.js", "drivers/cloudflare/thin_adapter/verify.py", "tests/test_falcon_driver_scaffold.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/fixtures/falcon_ocr/**", "tools/gen_browser_asset_graph.py", "tests/test_browser_asset_closure.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "drivers/_shared/artifacts.py", "vendor/rust/regalloc2/**"]
 executor = "github-job"
 workflow = ".github/workflows/molt-wasm-ci.yml"
 job = "wasm-build"
@@ -1279,7 +1279,7 @@ dependencies = []
 [[ci_family]]
 name = "native_integration"
 description = "Native compiler/linker and supervisor receipt integration isolated from pure Python proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_harness.py", "tests/cli/test_native_link_*.py", "tests/llvm_sdk_test_support.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**", "tools/metamorphic_runner.py"]
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_harness.py", "tests/cli/test_native_link_*.py", "tests/llvm_sdk_test_support.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**", "tools/metamorphic_runner.py", "vendor/rust/regalloc2/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "native-integration"
@@ -1317,7 +1317,7 @@ dependencies = []
 [[ci_family]]
 name = "rust"
 description = "Rust workspace build, target checks, test truth, and non-overlapping lint proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "fuzz/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tools/runtime_test_gate_plan.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py", "tools/runtime_descendant_receipts.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/runtime_descendant_test_support.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**", "vendor/rust/zlib-rs/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "fuzz/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tools/runtime_test_gate_plan.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py", "tools/runtime_descendant_receipts.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/runtime_descendant_test_support.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**", "vendor/rust/zlib-rs/**", "vendor/rust/regalloc2/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "rust-build-unit-smoke"
@@ -3630,7 +3630,7 @@ dependencies = []
 # Its Criterion dev dependency builds alloca target C even for libtests.
 # The Rust emitter preview is an explicit integration target, gated by the
 # existing rust-backend feature; --lib alone does not execute its source oracles.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "--test", "native_batch_worker_spawn", "--test", "daemon_server", "--test", "integration", "--test", "basic", "--test", "native_extern_linkage", "--test", "rust_transpiler_preview", "--test", "wasm_link_facts_cli", "-p", "object@0.40.0", "-p", "cranelift-object@0.137.0", "-p", "molt-artifact-publish", "-p", "molt-host-process", "-p", "molt-wasm-facts", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-lang-cpython-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1", "--skip", "read::coff::coff_extended_relocations", "--skip", "read::elf::get_buildid_bad_elf", "--skip", "read::elf::get_buildid_less_bad_elf", "--skip", "read::elf::zero_sized_section_works", "--skip", "read::macho::test_macho_entry_point", "--skip", "read::macho::test_go_macho", "--skip", "read::macho::test_macho_load_command_offset"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "--test", "native_batch_worker_spawn", "--test", "daemon_server", "--test", "integration", "--test", "basic", "--test", "native_extern_linkage", "--test", "rust_transpiler_preview", "--test", "wasm_link_facts_cli", "-p", "regalloc2@0.15.2", "-p", "object@0.40.0", "-p", "cranelift-object@0.137.0", "-p", "molt-artifact-publish", "-p", "molt-host-process", "-p", "molt-wasm-facts", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-lang-cpython-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1", "--skip", "read::coff::coff_extended_relocations", "--skip", "read::elf::get_buildid_bad_elf", "--skip", "read::elf::get_buildid_less_bad_elf", "--skip", "read::elf::zero_sized_section_works", "--skip", "read::macho::test_macho_entry_point", "--skip", "read::macho::test_go_macho", "--skip", "read::macho::test_macho_load_command_offset"]
 toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
@@ -6016,6 +6016,14 @@ gates = [
   # package/feature/profile image, with libtest OR-ing the owning filters.
   "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
 ]
+
+# --- Shared native/Wasmtime allocator move authority ---------------------
+[[rule]]
+name = "maintained-regalloc-moves"
+toolchains = ["rustc", "cargo"]
+description = "Pinned shared allocator: upstream unit tests and generation source-cache regressions."
+globs = ["vendor/rust/regalloc2/**"]
+gates = ["cargo test --locked --profile dev-fast -p regalloc2@0.15.2 --lib"]
 
 # --- Maintained native object emitter and actual target consumers --------
 # The published object crate excludes external reader-fixture data. These

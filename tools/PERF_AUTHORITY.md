@@ -161,6 +161,31 @@ or edited workload before and after each load-bearing change. Use
 `MOLT_CLI_PROFILE` for attribution; keep instrumented timings separate from
 uninstrumented latency. Classify a new failure before repeating an expensive proof.
 
+The shared `regalloc2` move planner uses one maintained source for native
+Cranelift and the Wasmtime host (pin and invariants:
+[`MOLT_PATCHES.md`](../vendor/rust/regalloc2/MOLT_PATCHES.md)). A captured
+212,627-byte WASM workload exposed 1,664,708,150 incoming-parameter comparisons
+and 40,826,978,304 usable-capacity units at nonempty source-map clears. A
+range-local monotone cursor reduced the comparisons to 18,967,661; typed vreg
+stamps remove per-vreg clears. An instrumented allocator replay changed from
+17.67 to 15.04 seconds with identical ordered allocations, offsets, edits,
+spill-slot counts and debug locations.
+
+One subsequent uninstrumented macOS arm64 `dev-fast` host precompile/serialize
+pair took 28.24 seconds before and 26.67 seconds after. Both produced the same
+36,371,064-byte serialized module (SHA-256
+`b325859c3d4e1f987ec91df04a51f7942b7986300cefdf9272ce26c71a52f345`).
+Direct-child rusage peaks were 3.374 and 3.372 GiB respectively; this does not
+establish a material memory reduction.
+This is one captured-workload component pair, not a repeated-sample, public CLI,
+installed compiler or cross-platform latency qualification. The complete symbolic
+checker on the large input exceeded its 90-second diagnostic budget; exact
+output differential and focused independent unit oracles are the executed claims.
+The source cache initializes lazily and uses bounded `O(blocks)` storage; sparse
+large graphs can use more storage than the old sparse map. Stable managed slots
+retain the dependency build across lanes. Keep cold dependency rebuild cost,
+compiler execution latency and ordinary edit-to-test latency separate.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 
