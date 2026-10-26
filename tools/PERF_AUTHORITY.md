@@ -199,6 +199,16 @@ closures participate; unknown identities retain full coverage. This follows
 and the [rustc incremental model](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html):
 make dependencies explicit and avoid work whose inputs cannot have changed.
 
+That selector landing also exposed a 759-test development-driver cohort taking
+149.39 seconds: changing the leaf selector selected lane-claim, checkout and
+landing simulations. The proof plan now assigns selector and source-closure
+leaves their own test owners. The selector cohort contains its 49 owning tests;
+shared authorities still select the union of consumer tests. The source-closure
+producer now explicitly selects its own oracles, named backend-cache and compiler
+identity consumers, and the selector consumer, closing missing producer triggers. Test-only source-closure edits no longer
+compile zlib, while provider edits keep both compiled gates and source oracles.
+These are verified obligation changes, not an end-to-end latency comparison.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 

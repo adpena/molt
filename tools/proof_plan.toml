@@ -4883,14 +4883,12 @@ globs = [
   "tools/dev.py",
   "tools/check_rust_toolchain.py",
   "tools/check_rustfmt.py",
-  "tools/check_changed_clippy.py",
   "src/molt/cargo_workspace.py",
   "tools/molt_dev.py",
   "tools/molt_dev_*.py",
   "src/molt/checkout_provisioning.py",
   "tests/tools/test_rust_toolchain_contract.py",
   "tests/tools/test_check_rustfmt.py",
-  "tests/tools/test_check_changed_clippy.py",
   "tests/test_cargo_workspace.py",
   "tests/test_molt_dev.py",
   "tests/integration_driver_fixture.py",
@@ -4909,8 +4907,56 @@ pytest = [
   "tests/test_checkout_provisioning.py",
   "tests/tools/test_rust_toolchain_contract.py",
   "tests/tools/test_check_rustfmt.py",
-  "tests/tools/test_check_changed_clippy.py",
   "tests/test_cargo_workspace.py",
+]
+
+# --- Cargo dependency selection and source-identity owners --------------
+# Leaf edits run their owners. Shared authorities select these consumers as
+# well as their existing owners; they do not join unrelated driver simulations.
+[[rule]]
+name = "changed-clippy-selection"
+toolchains = ["python", "uv"]
+description = "Changed-package Clippy selection and its shared authority consumers."
+globs = [
+  "tools/check_changed_clippy.py",
+  "tests/tools/test_check_changed_clippy.py",
+  "src/molt/cargo_workspace.py",
+  "src/molt/cargo_execution_policy.py",
+  "src/molt/cli/cargo_source_closure.py",
+  "config/ci_resource_policy.toml",
+  "tools/git_identity.py",
+  "tools/command_execution.py",
+  "tools/proof_plan.py",
+  "tools/toolchain_env.py",
+  "tools/import_file.py",
+]
+gates = []
+pytest = ["tests/tools/test_check_changed_clippy.py"]
+
+[[rule]]
+name = "cargo-source-closure"
+toolchains = ["python", "uv"]
+description = "Canonical Cargo source-identity projection and its independent closure oracles."
+globs = [
+  "src/molt/cli/cargo_source_closure.py",
+  "tests/cli/test_runtime_source_closure.py",
+]
+gates = []
+pytest = [
+  "tests/cli/test_runtime_source_closure.py",
+  "tests/cli/test_cli_cache_fingerprint.py::test_backend_source_fingerprint_tracks_selected_leaf_sources",
+  "tests/cli/test_cli_cache_fingerprint.py::test_jit_runner_fingerprint_tracks_the_runner_crate_and_its_codegen",
+  "tests/cli/test_cli_cache_fingerprint.py::test_compiler_fingerprints_track_the_build_inputs_their_crates_declare",
+  "tests/cli/test_cli_cache_fingerprint.py::test_a_cached_launch_misses_when_an_input_of_its_tier_changes",
+  "tests/cli/test_cli_cache_fingerprint.py::test_the_real_closures_key_what_their_crates_read_outside_themselves",
+  "tests/cli/test_cli_cache_fingerprint.py::test_source_graphs_follow_preserved_stat_transitive_manifest_replacements",
+  "tests/cli/test_cli_cache_fingerprint.py::test_backend_lock_identity_tracks_only_reachable_dependency_content",
+  "tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_fails_closed",
+  "tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_resolves_same_name_version_by_source",
+  "tests/cli/test_cli_cache_fingerprint.py::test_cargo_document_capture_bounds_actual_growth_before_parse",
+  "tests/cli/test_compiler_identity.py::test_lock_projection_is_mandatory_without_raw_lock_in_source_paths",
+  "tests/cli/test_compiler_identity.py::test_unreachable_bad_rows_do_not_become_a_second_lock_validator",
+  "tests/cli/test_compiler_identity.py::test_cargo_git_reference_and_path_precedence",
 ]
 
 # --- The committed gate policy (its selection, not the driver) -----------
@@ -6068,7 +6114,6 @@ globs = [
   "runtime/molt-runtime/fuzz/Cargo.lock",
   "runtime/molt-runtime-compression/Cargo.toml",
   "runtime/molt-runtime-compression/src/zlib.rs",
-  "tests/cli/test_runtime_source_closure.py",
 ]
 gates = [
   "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
