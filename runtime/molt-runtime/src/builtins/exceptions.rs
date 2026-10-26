@@ -106,10 +106,11 @@ pub(crate) use exception_group::{
     molt_exceptiongroup_derive, molt_exceptiongroup_init, molt_exceptiongroup_split,
     molt_exceptiongroup_subgroup,
 };
+#[cfg(molt_net)]
+pub(crate) use exception_payload::raise_os_error_errno_with_class;
 pub(crate) use exception_payload::{
     alloc_exception_from_class_bits, format_exception_message, format_exception_message_bytes,
     format_exception_with_traceback, raise_os_error, raise_os_error_errno,
-    raise_os_error_errno_with_class,
 };
 use exception_payload::{oserror_fields_from_args, unicode_error_fields_from_args};
 pub(crate) use raised_state::{
