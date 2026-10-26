@@ -284,29 +284,21 @@ fn parse_host_args(args: impl IntoIterator<Item = String>) -> Result<ParsedHostA
     }))
 }
 
-fn validate_execution_imports(kind: LoadedGuestKind, module: &Module) -> Result<()> {
-    match kind {
-        LoadedGuestKind::WasiCommand => {
-            if module.imports().any(|import| {
-                matches!(import.module(), "molt_runtime" | "molt_native")
-                    || (import.module() == "env" && import.name().starts_with("molt_"))
-            }) {
-                bail!(
-                    "Molt host imports require a current deployment manifest; use manifest.json instead of --wasi-command"
-                );
-            }
+fn validate_execution_imports(
+    kind: LoadedGuestKind,
+    module: &Module,
+    runtime: Option<&Module>,
+) -> Result<Vec<(String, FuncType)>> {
+    if let LoadedGuestKind::MoltApplication { linked } = kind {
+        let needs_runtime = has_runtime_imports(module);
+        if linked && needs_runtime {
+            bail!("linked wasm still imports molt_runtime; link step incomplete");
         }
-        LoadedGuestKind::MoltApplication { linked } => {
-            let needs_runtime = has_runtime_imports(module);
-            if linked && needs_runtime {
-                bail!("linked wasm still imports molt_runtime; link step incomplete");
-            }
-            if !linked && !needs_runtime {
-                bail!("split-runtime app does not import molt_runtime");
-            }
+        if !linked && !needs_runtime {
+            bail!("split-runtime app does not import molt_runtime");
         }
     }
-    Ok(())
+    plan_call_indirect_imports(module, runtime, kind)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -334,7 +326,7 @@ fn execute_loaded_guest(
         guest_args,
         wasm_table_base,
     } = options;
-    validate_execution_imports(kind, output_module)?;
+    let indirect_calls = validate_execution_imports(kind, output_module, runtime_module)?;
     let is_wasi_command = matches!(kind, LoadedGuestKind::WasiCommand);
 
     match kind {
@@ -365,10 +357,6 @@ fn execute_loaded_guest(
         }
     }
     let runtime_imports = RuntimeImportPlan::new(output_module, runtime_module)?;
-    // Admit the complete Molt indirect-call family before either core start.
-    // Other imports are checked against the real host linker below.
-    let indirect_calls =
-        plan_call_indirect_imports(output_module, runtime_module, is_wasi_command)?;
     let output_mem = memory_limits(output_module);
     let output_table = table_limits(output_module);
     let runtime_mem = runtime_module.and_then(memory_limits);
@@ -482,7 +470,7 @@ fn execute_loaded_guest(
     )?;
 
     let registry = store.data().call_indirect.clone();
-    define_call_indirect_imports(&mut linker, &mut store, &indirect_calls, is_wasi_command)?;
+    define_call_indirect_imports(&mut linker, &mut store, &indirect_calls, kind)?;
 
     let mut lifetime = None;
     let result = (|| {

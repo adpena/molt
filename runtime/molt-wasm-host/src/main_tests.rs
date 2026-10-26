@@ -327,6 +327,56 @@ fn explicit_wasi_command_cannot_import_molt_without_current_manifest() {
 }
 
 #[test]
+fn command_indirect_dispatch_cannot_admit_manifest_bound_services() {
+    let engine = build_engine().expect("production host engine");
+    for (namespace, name) in [
+        ("env", "molt_socket_getaddrinfo_host"),
+        ("molt_runtime", "molt_int_from_i64"),
+        ("molt_native", "native_entry"),
+    ] {
+        let module = Module::new(
+            &engine,
+            format!(
+                r#"(module
+                (import "env" "molt_call_indirect0"
+                  (func $dispatch (param i64) (result i64)))
+                (import "{namespace}" "{name}" (func))
+                (table (export "__indirect_function_table") 2 funcref)
+                (func $target (result i64) i64.const 42)
+                (elem (i32.const 1) $target)
+                (func $unreachable_start unreachable) (start $unreachable_start)
+                (func (export "_start") i64.const 1 call $dispatch drop))"#
+            ),
+        )
+        .expect("valid indirect dispatch and service import fixture");
+        let error = execute_test_guest(
+            &engine,
+            &module,
+            None,
+            LoadedGuestKind::WasiCommand,
+            &[],
+            None,
+        )
+        .unwrap_err();
+        let diagnostic = format!("{error:#}");
+        assert!(
+            diagnostic.contains("Molt host imports require a current deployment manifest"),
+            "{diagnostic}",
+        );
+        assert!(
+            diagnostic.contains(&format!("{namespace}.{name}")),
+            "{diagnostic}",
+        );
+        assert!(
+            !error
+                .chain()
+                .any(|cause| cause.to_string().contains("unreachable")),
+            "command started before service import admission: {error:#}",
+        );
+    }
+}
+
+#[test]
 fn command_selector_separates_host_options_from_guest_argv() {
     let parsed = parse_host_args(
         [
@@ -444,35 +494,45 @@ fn execution_kind_rejects_runtime_import_drift() {
     )
     .expect("valid runtime import fixture");
     assert!(
-        validate_execution_imports(LoadedGuestKind::WasiCommand, &split)
+        validate_execution_imports(LoadedGuestKind::WasiCommand, &split, None)
             .unwrap_err()
             .to_string()
             .contains("Molt host imports require a current deployment manifest")
     );
     assert!(
-        validate_execution_imports(LoadedGuestKind::MoltApplication { linked: true }, &split)
-            .unwrap_err()
-            .to_string()
-            .contains("linked wasm still imports molt_runtime")
+        validate_execution_imports(
+            LoadedGuestKind::MoltApplication { linked: true },
+            &split,
+            None
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("linked wasm still imports molt_runtime")
     );
     assert!(
         validate_execution_imports(
             LoadedGuestKind::MoltApplication { linked: false },
             &standalone,
+            None,
         )
         .unwrap_err()
         .to_string()
         .contains("split-runtime app does not import molt_runtime")
     );
-    validate_execution_imports(LoadedGuestKind::WasiCommand, &standalone)
+    validate_execution_imports(LoadedGuestKind::WasiCommand, &standalone, None)
         .expect("standalone command imports");
     validate_execution_imports(
         LoadedGuestKind::MoltApplication { linked: true },
         &standalone,
+        None,
     )
     .expect("linked application imports");
-    validate_execution_imports(LoadedGuestKind::MoltApplication { linked: false }, &split)
-        .expect("split application imports");
+    validate_execution_imports(
+        LoadedGuestKind::MoltApplication { linked: false },
+        &split,
+        None,
+    )
+    .expect("split application imports");
 }
 
 #[test]
@@ -1117,6 +1177,7 @@ fn execute_split_import_fixture(
     validate_execution_imports(
         LoadedGuestKind::MoltApplication { linked: false },
         &application,
+        Some(&runtime),
     )
     .expect("split fixture must pass protocol admission before its injected import failure");
     execute_test_guest(
