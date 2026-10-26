@@ -623,6 +623,40 @@ def _extract_table_base(wasm_path: Path) -> int | None:
     return json.loads(result.stdout)
 
 
+def test_host_socket_errors_reach_the_guest_as_wasi_errno() -> None:
+    """The guest reads WASI errno codes, its libc numbering on wasm32-wasip1.
+
+    A host error crosses by name: by its `code`, or by its host errno read back
+    to a name. The expected numbers are WASI preview1's `errno` enum.
+    """
+    script = (
+        "const os = require('os');"
+        "const runner = require('./wasm/run_wasm.js');"
+        "const host = os.constants.errno;"
+        "process.stdout.write(JSON.stringify({"
+        "  inProgress: runner.mapSocketError({ code: 'EINPROGRESS' }),"
+        "  refusedByHostNumber: runner.mapSocketError({ errno: -host.ECONNREFUSED }),"
+        "  wouldBlock: runner.mapSocketError({ code: 'EWOULDBLOCK' }),"
+        "  notFamily: runner.mapSocketError({ code: 'EAFNOSUPPORT' }),"
+        "  unknown: runner.mapSocketError({ code: 'ENOTFOUND' }),"
+        "  hostNumbers: [host.EINPROGRESS, host.ECONNREFUSED],"
+        "}));"
+    )
+    result = _run_wasm_test_process(
+        ["node", "-e", script], cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    mapped = json.loads(result.stdout)
+    assert mapped.pop("hostNumbers") != [26, 14]  # the host's own numbering differs
+    assert mapped == {
+        "inProgress": 26,
+        "refusedByHostNumber": 14,
+        "wouldBlock": 6,
+        "notFamily": 5,
+        "unknown": 28,
+    }
+
+
 def test_parse_wasm_imports_handles_tag_imports_before_memory(tmp_path: Path) -> None:
     wasm_path = tmp_path / "tag_import_before_memory.wasm"
     wasm_path.write_bytes(build_wasm_tag_import_before_memory())

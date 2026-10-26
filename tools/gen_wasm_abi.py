@@ -58,6 +58,7 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
     runtime_boxed_op_specs,
     runtime_import_return_specs,
     runtime_export_name,
+    wasi_errno_table,
 )
 from tools.wasm_abi_gen.paths import (  # noqa: E402
     BUILTIN_CALLABLES,
@@ -65,6 +66,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_ALLOWED_IMPORTS,
     OUT_JS_ABI,
     OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_JS_WASI_ERRNO,
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_PY,
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
@@ -74,6 +76,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_BOXED_ABI_RS,
     OUT_RUNTIME_RAW_ABI_RS,
+    OUT_RUNTIME_WASI_ERRNO_RS,
     OUT_TABLE_LAYOUT_INC,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     REMOVED_GENERATED_FILES,
@@ -87,7 +90,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
 NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
 NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v6"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v7"
 # Every path this generator renders; the render cache holds exactly these.
 OUTPUT_PATHS: tuple[Path, ...] = (
     *OUT_RS_FILES.values(),
@@ -101,6 +104,8 @@ OUTPUT_PATHS: tuple[Path, ...] = (
     OUT_PY,
     OUT_JS_ABI,
     OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_JS_WASI_ERRNO,
+    OUT_RUNTIME_WASI_ERRNO_RS,
     OUT_TABLE_LAYOUT_INC,
     OUT_ALLOWED_IMPORTS,
 )
@@ -2314,6 +2319,39 @@ def render_js_callable_table_abi(data: dict) -> str:
     )
 
 
+def render_js_wasi_errno(data: dict) -> str:
+    """The WASI errno codes every host returns to the guest, for Node and browsers."""
+    payload = json.dumps(wasi_errno_table(data), sort_keys=True)
+    return "".join(
+        [
+            _header("//"),
+            "(function publishMoltWasiErrno(root, factory) {\n",
+            "  const authority = Object.freeze(factory());\n",
+            "  if (typeof module === 'object' && module && module.exports) {\n",
+            "    module.exports = authority;\n",
+            "  }\n",
+            "  root.MoltWasiErrno = authority;\n",
+            "})(typeof globalThis !== 'undefined' ? globalThis : this, () => (",
+            payload,
+            "));\n",
+        ]
+    )
+
+
+def render_runtime_wasi_errno_rs(data: dict) -> str:
+    """Compile-time proof that the hosts' table is the guest libc's numbering."""
+    lines = [
+        _header("//"),
+        "// The WASI errno codes the WASM hosts return (wasm/wasi_errno_generated.js)\n",
+        "// must be the guest libc's own numbering.\n",
+        "const _: () = {\n",
+    ]
+    for name, value in sorted(wasi_errno_table(data).items(), key=lambda item: item[1]):
+        lines.append(f"    assert!(libc::{name} == {value});\n")
+    lines.append("};\n")
+    return "".join(lines)
+
+
 def render_outputs(data: dict) -> dict[Path, str]:
     """Render every output from a loaded manifest, bypassing the render cache."""
     rendered_rs_modules = render_rs_modules(data)
@@ -2349,6 +2387,10 @@ def render_outputs(data: dict) -> dict[Path, str]:
     outputs[OUT_PY] = render_py(data)
     outputs[OUT_JS_ABI] = render_js_abi(data)
     outputs[OUT_JS_CALLABLE_TABLE_ABI] = render_js_callable_table_abi(data)
+    outputs[OUT_JS_WASI_ERRNO] = render_js_wasi_errno(data)
+    outputs[OUT_RUNTIME_WASI_ERRNO_RS] = rustfmt_source(
+        render_runtime_wasi_errno_rs(data), label="wasi_errno_generated.rs"
+    )
     outputs[OUT_TABLE_LAYOUT_INC] = render_table_layout_inc(data)
     outputs[OUT_ALLOWED_IMPORTS] = render_allowed_imports(data)
     return outputs

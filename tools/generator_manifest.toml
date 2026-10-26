@@ -346,6 +346,8 @@ outputs = [
   "src/molt/_wasm_abi_generated.py",
   "wasm/wasm_abi_generated.json",
   "wasm/callable_table_abi_generated.js",
+  "wasm/wasi_errno_generated.js",
+  "runtime/molt-runtime/src/wasi_errno_generated.rs",
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]

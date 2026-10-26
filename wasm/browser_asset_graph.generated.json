@@ -45,6 +45,13 @@
           "line": 3,
           "request": "./runtime_lifecycle.js",
           "target": "runtime_lifecycle.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 17,
+          "request": "./wasi_errno_generated.js",
+          "target": "wasi_errno_generated.js"
         }
       ],
       "references": [
@@ -53,10 +60,11 @@
         "callable_table_abi_generated.js",
         "loader_bridge.js",
         "native_callable_abi_generated.js",
-        "runtime_lifecycle.js"
+        "runtime_lifecycle.js",
+        "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "090019bd7498de8902106fbb38fe18378ce5ece428591bccd57d0292e78e72d8",
+      "sha256": "0dcb37f4fae286db8d51e9ee97a2b5ada8144c16c9a13964d59b824ee9461e5a",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -66,16 +74,24 @@
         {
           "column": 26,
           "kind": "worker",
-          "line": 88,
+          "line": 90,
           "request": "./browser_gpu_worker.js",
           "target": "browser_gpu_worker.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 1,
+          "request": "./wasi_errno_generated.js",
+          "target": "wasi_errno_generated.js"
         }
       ],
       "references": [
-        "browser_gpu_worker.js"
+        "browser_gpu_worker.js",
+        "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "f0d3f37ac0f6149d01ddc545e803b7562a6d844faf8067f13d0b69991371f928",
+      "sha256": "9c555c77ff21ee8e79ae4f2492104c0fe8c45f7c3b190519c8c540d59a21ce28",
       "source_type": "module"
     },
     "browser_gpu_worker.js": {
@@ -129,7 +145,7 @@
         {
           "column": 31,
           "kind": "dynamic-import",
-          "line": 127,
+          "line": 132,
           "request": "./molt_vfs_browser.js",
           "target": "molt_vfs_browser.js"
         },
@@ -139,6 +155,13 @@
           "line": 3,
           "request": "./runtime_lifecycle.js",
           "target": "runtime_lifecycle.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 11,
+          "request": "./wasi_errno_generated.js",
+          "target": "wasi_errno_generated.js"
         }
       ],
       "references": [
@@ -148,10 +171,11 @@
         "host_capabilities_generated.js",
         "loader_bridge.js",
         "molt_vfs_browser.js",
-        "runtime_lifecycle.js"
+        "runtime_lifecycle.js",
+        "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "e4958e763ae28c9bc27147882ef469e38cc83adc9a06725e212a8aff8c87bfb0",
+      "sha256": "57098ea05c75ed5f97261127c301797fa20abdb361062eb201c36d69484a4e8e",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -267,6 +291,13 @@
           "target": "target_feature_manifest.json"
         },
         {
+          "column": 20,
+          "kind": "require",
+          "line": 487,
+          "request": "./wasi_errno_generated.js",
+          "target": "wasi_errno_generated.js"
+        },
+        {
           "column": 26,
           "kind": "require",
           "line": 9,
@@ -362,10 +393,11 @@
         "loader_bridge.js",
         "runtime_lifecycle.js",
         "target_feature_manifest.json",
+        "wasi_errno_generated.js",
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "600763b5e97f792a7b2fb4355427c4ca51bbceab2572a02cb3cfe04b95902d58",
+      "sha256": "f0b4fc7ed0f65774beb6bba579d1557d0541a58c2f820d110e46e36015e30e70",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -394,6 +426,15 @@
       "role": "node",
       "sha256": "78b2846c6342ddb172b7bdf164015784f3794f9b9968c1d40ed3199e17283b14",
       "source_type": "data"
+    },
+    "wasi_errno_generated.js": {
+      "authority": "wasm-abi",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "shared",
+      "sha256": "aa38f25ee374c14dc0d175e3711e7f642664509239627d7bac59afc99126a1e4",
+      "source_type": "script"
     },
     "wasm_abi_generated.json": {
       "authority": "wasm-abi",

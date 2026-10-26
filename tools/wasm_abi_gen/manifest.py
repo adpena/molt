@@ -2014,6 +2014,8 @@ MANIFEST_FIELDS = frozenset(
         "strip_import_prefix_rule",
         "strip_import_rule",
         "table_layout",
+        "wasi_errno",
+        "wasi_errno_alias",
         "wasm_bulk_memory_op",
         "witness_frontier",
     }
@@ -2028,6 +2030,49 @@ DERIVED_MANIFEST_FIELDS = frozenset(
 )
 
 
+_WASI_ERRNO_NAME = re.compile(r"E[A-Z0-9]+")
+
+
+def _validate_wasi_errno(data: dict) -> None:
+    """The WASI errno table every host returns to the guest: one code per name,
+    each code named once, and aliases that name a declared code."""
+    codes = data.get("wasi_errno")
+    if not isinstance(codes, dict) or not codes:
+        raise WasmAbiManifestError("manifest must define [wasi_errno]")
+    seen: dict[int, str] = {}
+    for name, value in codes.items():
+        if not _WASI_ERRNO_NAME.fullmatch(name):
+            raise WasmAbiManifestError(f"wasi_errno name {name!r} is not an E* name")
+        if type(value) is not int or not 0 < value < 256:
+            raise WasmAbiManifestError(f"wasi_errno {name} must be a code in 1..255")
+        if value in seen:
+            raise WasmAbiManifestError(
+                f"wasi_errno {name} repeats code {value} of {seen[value]}; "
+                "declare it in [wasi_errno_alias]"
+            )
+        seen[value] = name
+    aliases = data.get("wasi_errno_alias", {})
+    if not isinstance(aliases, dict):
+        raise WasmAbiManifestError("[wasi_errno_alias] must map names to names")
+    for alias, target in aliases.items():
+        if not _WASI_ERRNO_NAME.fullmatch(alias) or alias in codes:
+            raise WasmAbiManifestError(
+                f"wasi_errno_alias {alias!r} must be a new E* name"
+            )
+        if target not in codes:
+            raise WasmAbiManifestError(
+                f"wasi_errno_alias {alias} names undeclared code {target!r}"
+            )
+
+
+def wasi_errno_table(data: dict) -> dict[str, int]:
+    """Every WASI errno name, aliases included, with its code."""
+    table = dict(data["wasi_errno"])
+    for alias, target in data.get("wasi_errno_alias", {}).items():
+        table[alias] = data["wasi_errno"][target]
+    return table
+
+
 def validate_loaded_manifest(
     data: dict,
     *,
@@ -2038,6 +2083,7 @@ def validate_loaded_manifest(
         raise WasmAbiManifestError(f"unknown manifest fields: {sorted(unknown_fields)}")
     for field in DERIVED_MANIFEST_FIELDS:
         data.pop(field, None)
+    _validate_wasi_errno(data)
     table_layout = data.get("table_layout")
     if not isinstance(table_layout, dict):
         raise WasmAbiManifestError("manifest must define [table_layout]")

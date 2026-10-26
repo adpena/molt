@@ -102,6 +102,9 @@ pub use molt_runtime_core::declare_app_bootstrap;
 declare_app_bootstrap!(AppBootstrapProvider::Unavailable("molt-runtime libtest"));
 
 mod async_rt;
+// The WASI errno table the WASM hosts return, asserted against libc.
+#[cfg(target_os = "wasi")]
+mod wasi_errno_generated;
 #[cfg(feature = "stdlib_asyncio")]
 mod asyncio_bridge;
 #[cfg(any(
