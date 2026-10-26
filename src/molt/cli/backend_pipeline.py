@@ -345,6 +345,7 @@ def _run_backend_pipeline(
         prepared_backend_runtime_context, prepared_backend_runtime_error = (
             _backend_compile._prepare_backend_runtime_context(
                 prepared_backend_setup=prepared_backend_setup,
+                profile=profile,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
                 json_output=json_output,
                 runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,

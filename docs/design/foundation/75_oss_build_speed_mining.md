@@ -16,6 +16,21 @@ against the tree (§7). Windows-primary dev box (14 cores); wasm32-wasip1 target
 > immutable atomic runtime generations and exact pair identities now supersede
 > that runtime-WASM cache authority. Current shipping policy lives in
 > `Cargo.toml` and `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md`.
+> Native and WASM dev requests already select `dev-fast`; the historical L1
+> recommendation and July timings below are not current profile or latency facts.
+> Current WASM iteration intent, effective incrementality and target/publication
+> custody are separate typed decisions in `runtime_wasm_build_policy.py` and
+> `RuntimeCargoPlan`; [operations](../../OPERATIONS.md#build-time) owns their controls.
+> Default-on incrementality was not adopted: ordinary dev and release runtime
+> builds retain the nonincremental default. Explicit iteration controls remain
+> available; this document makes no current default speedup claim.
+
+The workflow comparison also covers [tstack](https://github.com/t3dotgg/tstack)
+and [pstack](https://github.com/cursor/plugins/tree/main/pstack): their useful
+patterns are review through finding closure, bounded parallel ownership, measured
+performance experiments and follow-through to integration. Molt keeps those
+responsibilities in its existing review and managed-landing authorities rather
+than introducing another gate runner or proof registry.
 
 **Status:** research directive + ranked plan, 2026-07-10. Owner: DX arc.
 Doc-only landing. Implements the operator mandate: *a world-class compiler mines
@@ -39,12 +54,11 @@ content-addressed `runtime.wasm` cache (73 R73.1), and the per-module frontend
 lowering cache. The remaining wall-clock is therefore NOT "we lack fast profiles
 or a daemon." It is two precise gaps:
 
-1. **Configured ≠ effective (74 law 4 / M34 / M55).** The fast profile + lattice
-   reuse EXIST but are OPT-IN. The historical ~150–230s fat-LTO/one-CGU runtime
-   compile (§1) was `wasm-release` — the SHIP profile — landing on the
-   iteration path by default, because `dev-fast` reuse is gated behind
-   `MOLT_RUNTIME_BUILD_PROFILE`/`MOLT_BUILD_REUSE_COMPATIBLE=1`. The lever is
-   **prove-safe-per-edge → default-on + attest**, not a new profile.
+1. **Configured ≠ effective (historical; superseded by DO-1 below).** The July
+   snapshot charged a ~150–230s `wasm-release` compile to iteration. Dev requests
+   now select `dev-fast`; exact runtime generations replaced config-lattice
+   reuse. Those historical costs do not justify enabling Cargo incrementality
+   by default.
 2. **The daemon is warm on the BACKEND, cold on the FRONTEND.** `module_graph`
    (~99s) and much of `backend_prepare` (~125s) are Python-side phases that still
    cold-start every invocation (Molt spawns a fresh Python per build). The peers
@@ -79,7 +93,7 @@ Effort S/M/L. Risk = correctness/regression risk. "Status" flags whether the
 
 | # | Lever | Expected win on OUR numbers | Effort | Risk | Status vs tree (§7) | Evidence (primary) | Windows caveat |
 |---|---|---|---|---|---|---|---|
-| **L1** | **Default-on the already-built `dev-fast` runtime profile + config-lattice reuse for the ITERATION runtime.wasm; keep the measured ThinLTO/cgu=16/debug=0 `wasm-release`/`release-output` policy on ship/acceptance** | avoids shipping-profile work in the edit loop while final artifacts retain cross-crate optimization. Pure 74-law-3 reuse: dev wasm is semantically identical, only fatter/slower | **S** | **Low** — ship/acceptance still pins exact identity (74 non-negotiable) | **Mechanism LANDED** (`dev-fast`, V2/V3); gap = it's OPT-IN. Default resolves to `wasm-release` | Cargo profiles + `runtime_build.py` precedence; 74 law 3 | None. cgu parallelism helps on multi-core hosts |
+| **L1 — superseded (see DO-1)** | Dev requests already select `dev-fast`; exact runtime generations replace config-lattice reuse | No current default-on incrementality speed gain established | — | Preserve exact artifact admission and proof custody | Ordinary WASM runtime builds retain their nonincremental default; explicit iteration controls remain available | `runtime_wasm_build_policy.py`, `RuntimeCargoPlan`, [operations](../../OPERATIONS.md#build-time) | Performance remains workload- and host-specific |
 | **L2** | **Extend resident-daemon warm state to the FRONTEND module-graph + analysis** (backend daemon already warm); fine-grained per-top-level-def invalidation, NOT whole-module | `module_graph` **~99s → sub-5s** warm; large slice of `backend_prepare` warmed. Biggest structural win across ALL iterations | **L** | **Med** — stale warm cache = silent-wrong-answer class (M34) | **Partial:** backend daemon exists; FRONTEND phases still cold per-process | mypy `dmypy` fine-grained deps + `astdiff`/`aststrip` [3]; salsa red/green early-cutoff (rust-analyzer, Ruff Red-Knot) [4][5]; esbuild immutable-shared warm AST cache [6]; Zig in-process incremental ~125× / <300ms [7] | file-watch = `ReadDirectoryChangesW`, mtime/size is NTFS-lossy (M35); bind to `MOLT_SESSION_ID` + collision oracle (56 DX-2/3) |
 | **L3** | **Tighten + ATTEST the existing `function_cache_key`** to mypy per-def grain + full-input key + hit-rate gate | `backend_subprocess_compile` **~95s → proportional-to-changed-fns** | **M** | **Med** — key must include ALL true inputs or silent stale codegen (M34/M36) | **Mechanism LANDED** (`function_cache_key` in `backend_process`); gap = grain + attestation | mypy grain = "module top level or top-level fn/method" [3]; salsa early-cutoff [4]; Turborepo/Buck2 action key = hash(cmd+inputs+upstream) [8][9] | None specific |
 | **L4 — LANDED, superseded 2026-10-23 (dev runs no optimizer; see DO-4)** | **Default DEV/iteration wasm-opt to `-O1`; keep explicit bounded ship policies** | removes fixed-point `Oz` from the dev critical path and content-addresses the exact pipeline | **S** | **Low** — config-lattice plus fail-closed publication | `molt.wasm_optimization` is the single level/feature/pass authority | Binaryen: `-O1` = "quick & useful opts, useful for iteration builds"; `-O3/-O4` "spends potentially a lot of time" [10] | None |
@@ -94,26 +108,22 @@ Effort S/M/L. Risk = correctness/regression risk. "Status" flags whether the
 
 Ordered by leverage. Each is a hypothesis with an attestation gate (74 law 4).
 
-### DO-1 (highest leverage) — cash the already-built `dev-fast` runtime profile into the DEFAULT iteration path
-The fast profile is DONE (`[profile.dev-fast] lto="off" codegen-units=256`, plus
-per-package opt layering); the config-lattice reuse (V3) and stable dep-cache
-(V2) are DONE but OPT-IN. The historical ~150–230s fat-LTO/one-CGU result proved the
-SHIP profile `wasm-release` is still what lands on the runtime-touch iteration
-path by default — a textbook "configured ≠ effective" miss (74 law 4). This is
-**not** new mechanism; it is flipping proven capability to default-on:
-- In `runtime_build.py`'s profile resolver, make an **iteration** build (dev
-  cargo profile, no acceptance/ship flag) resolve the wasm runtime to `dev-fast`
-  by default, not `wasm-release`. Ship/acceptance/CDN paths continue to pin
-  `wasm-release`/`release-output` exactly (74 non-negotiable; M05).
-- Escalate the V3 lattice reuse from `MOLT_BUILD_REUSE_COMPATIBLE=1` opt-in to
-  **default-on for the iteration consumer** — 74 law 3 explicitly authorizes this
-  "once proven safe per edge." The edge (release-output→dev-fast served) already
-  has 8 edge tests (V3 CLAIMS row); add the one that the *default* iteration
-  request now hits it.
-- **Attest** `{profile=dev-fast, target_dir=stable, wall}` and gate the
-  runtime-touch wall before/after on the 14-core box; gate that the shipped
-  artifact byte-identity is unchanged (proof lane unaffected). Kill-switch:
-  the existing `MOLT_RUNTIME_BUILD_PROFILE`/`MOLT_WASM_CARGO_PROFILE` still win.
+### DO-1 — superseded profile and reuse recommendation
+
+Native and WASM dev requests already select `dev-fast`. The old config-lattice
+knob is retired; exact runtime generations own reuse. Ordinary source-checkout
+WASM dev and release requests retain the nonincremental default unless explicit
+iteration or Cargo controls select otherwise. A valid `MOLT_RUNTIME_BUILD_PROFILE`
+or enabled `MOLT_RUNTIME_WASM_INCREMENTAL` opts into stable family placement,
+subject to exact Cargo target, pinned-session and proof/reproducibility custody.
+Generated session labels do not request isolation.
+
+The captured Cargo plan determines effective incrementality after sccache
+normalization. Incremental emissions are excluded from shared publication;
+bound nonincremental emissions remain eligible regardless of target placement.
+Keep these decisions separate, preserve exact artifact admission, and measure
+the intended workload before proposing another default change. The July cost
+figures above do not establish current latency or a default-on speed gain.
 
 ### DO-2 — extend the resident daemon to the FRONTEND (module_graph + analysis)
 The backend compiler daemon (`backend_process`, `function_cache_key`,
@@ -173,8 +183,8 @@ layering that usually pairs with this is **already landed** (dev + dev-fast
   fast-iteration profiles, the per-package opt-level layering, the config-lattice
   reuse + stable dep-cache (V1/V2/V3), the backend compiler daemon, the
   content-addressed `runtime.wasm` cache, and the frontend per-module lowering
-  cache ALL EXIST. The gap is **default-on + attestation + FRONTEND residency**,
-  not new mechanisms. Recommending "create a dev-fast profile" or "add opt
+  cache existed in the July snapshot; exact runtime generations now replace
+  config-lattice reuse. Recommending "create a dev-fast profile" or "add opt
   layering" would be exactly the duplicated work the operator forbids.
 - **DON'T use sccache on Windows.** Measured HARMFUL here (M09). That is why L7
   specifies `ccache` (which supports Clang on Windows [14]) for the C-ext path.
@@ -193,37 +203,29 @@ layering that usually pairs with this is **already landed** (dev + dev-fast
   daemon.** It has a long-standing stale-cache-invalidation class (dependency/type
   changes not invalidating; manual delete required) [19]. Match mypy's fine-grained
   per-definition bar (DO-2), not whole-file.
-- **DON'T run the shipping `wasm-release` profile on the iteration path.** That is a
-  ship-size setting; on iteration it serializes 13 of 14 cores for zero iteration
-  value (this is exactly what DO-1 removes).
+- **DON'T confuse the dev profile with Cargo incrementality.** Dev requests
+  already select `dev-fast`; ordinary WASM runtime builds remain nonincremental.
+  Measure any proposed profile or incrementality change on its intended workload.
 - **DON'T ship dynamic-linked / side-module runtime to "avoid relink" without
   proving it beats DO-1 + a warm daemon.** Emscripten/WASI dynamic linking adds
   runtime overhead and is discouraged for best performance/size [24], and it
   touches the size-constrained SHIP path (3MB ceiling). Investigate only if a
   measured relink bottleneck survives DO-1 + DO-2.
 
-## 5. The single highest-leverage lever
+## 5. Historical ranking is superseded
 
-**DO-1 — default-on the already-built `dev-fast` iteration runtime profile + V3
-lattice reuse.** It attacks the biggest single number (150–230s), reclaims 13
-idle cores, is pure config-lattice reuse (74 law 3, already blessed and already
-BUILT as V2/V3), its risk is Low (LTO/cgu never change semantics; ship/acceptance
-still pin exact identity), and it is **S** effort with **no Windows caveat** — a
-resolver default flip + an attestation gate, not new machinery. It is the literal
-form of M07 ("cash instrumental tooling into outcomes") and 74 law 4 ("configured
-≠ effective"). L2 (frontend daemon residency) is the larger *absolute* structural
-ceiling, but L-effort/Med-risk; DO-1 is the best win-per-effort-per-risk and it
-converts sunk, already-landed capability into a default-path win.
+The July ranking placed a default `dev-fast` profile and config-lattice reuse
+first. Dev requests already select `dev-fast`, and exact runtime generations own
+reuse. This is no longer an actionable default flip. Cargo incrementality is a
+separate decision: ordinary WASM dev and release runtime builds retain the
+nonincremental default. Rank further work from current phase measurements;
+neither the July figures nor this ranking establish a current default speed gain.
 
 ## 6. Surprising / liftable-wholesale findings
 
-- **We are paying a SHIP setting on the DEV path — and the fix is already built.**
-  The historical 150–230s runtime compile was `wasm-release` (then fat LTO + cgu=1, opt-z, a 3MB-
-  ceiling concern) charged to iteration, which neither ships nor cares about size.
-  The `dev-fast` profile that fixes it (lto=off, cgu=256) is ALREADY in Cargo.toml
-  and the reuse plumbing already landed (V2/V3) — it is merely opt-in. The single
-  cheapest big win on the board is flipping it default-on (DO-1), not building
-  anything.
+- **The historical ship-profile finding is resolved for dev requests.** They
+  already select `dev-fast`. The July 150–230s compile does not measure current
+  behavior or justify enabling incrementality by default; see DO-1.
 - **The daemon warmth is asymmetric.** Molt already runs a resident BACKEND
   compiler daemon (`backend_process`, `function_cache_key`, `daemon_cache`) — but
   the FRONTEND `module_graph`/analysis (the 99s phase) is still cold per Python
@@ -237,8 +239,7 @@ converts sunk, already-landed capability into a default-path win.
   format — Molt's numpy seal should become a fetched, ABI-tagged artifact (L8).
 - **`-Zshare-generics` is default-on for our dev builds but OFF under the runtime's
   release-LTO (`wasm-release`).** It de-dupes cross-crate monomorphizations [25] —
-  another reason the iteration runtime should NOT run under the ship profile
-  (DO-1 gets share-generics back for free).
+  a historical profile distinction, not evidence for a current default change.
 - **Zig is the existence proof for the daemon ceiling.** In-process incremental
   compilation took Zig ~36s cold → 228–288ms warm (~125×) [7]. That is the target
   class for DO-2 — a two-orders-of-magnitude structural change to
@@ -267,8 +268,8 @@ Verified against the worktree tree at `origin/main` HEAD `d4888f7103`:
 - **Runtime wasm profile resolver — LANDED.** `src/molt/cli/runtime_build.py`
   `_resolve_wasm_cargo_profile`: precedence = explicit `MOLT_WASM_CARGO_PROFILE`
   → `MOLT_RUNTIME_BUILD_PROFILE` (iteration knob, e.g. `dev-fast`) → default
-  (`release`→`wasm-release`). The default resolves to the SHIP profile = the L1
-  configured≠effective gap.
+  (`release`→`wasm-release`, `dev`→`dev-fast`). L1's historical dev-profile gap
+  is superseded; profile selection does not establish effective incrementality.
 - **Backend compiler daemon + function cache — LANDED.** `runtime/molt-backend/
   src/backend_process/{job.rs,protocol.rs}` carry `function_cache_key`;
   `src/main_tests/{daemon_cache.rs,daemon_env.rs}` exercise the daemon.

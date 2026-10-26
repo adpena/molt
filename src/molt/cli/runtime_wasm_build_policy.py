@@ -3,10 +3,21 @@ from __future__ import annotations
 import functools
 import hashlib
 import os
+from dataclasses import dataclass, replace
+from enum import Enum
+from typing import Mapping, TYPE_CHECKING
 from pathlib import Path
 
 from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE
-from molt.dx import project_cargo_target_dir
+from molt.dx import (
+    PROOF_SCRATCH_ROOT_ENV,
+    generated_session_id,
+    project_cargo_target_dir,
+)
+from molt.cli.build_request import BuildProfile
+
+if TYPE_CHECKING:
+    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 
 
 def _runtime_build_profile_override() -> str:
@@ -65,36 +76,129 @@ def _resolve_wasm_cargo_profile(cargo_profile: str) -> str:
     )
 
 
-def _runtime_wasm_incremental_enabled() -> bool:
-    """Whether to build the runtime wasm into a stable, incremental target dir.
+class RuntimeWasmTargetLayout(Enum):
+    FAMILY = "stable-family"
+    CHECKOUT = "checkout"
+    SESSION = "session"
+    EXPLICIT = "explicit"
 
-    The stable per-family target dir (``_runtime_wasm_incremental_target_root``)
-    is session-independent, so a fresh session/worktree reuses already-compiled
-    dependency crates instead of a cold recompile of the whole graph (V2 cold-dep
-    burn-down).  ``CARGO_INCREMENTAL=1`` is turned on with it so consecutive
-    same-family iterations recompile incrementally.
 
-    Resolution (V2 doctrine "stable dep-cache default-ON for iteration contexts"):
+class RuntimeWasmIncrementality(Enum):
+    PROFILE = "profile-pending"
+    REQUESTED_ON = "enabled-requested"
+    FORCED_OFF = "disabled-pending"
+    ENABLED = "enabled"
+    DISABLED = "disabled"
 
-    * ``MOLT_RUNTIME_WASM_INCREMENTAL`` explicitly set wins, both ways.
-    * Otherwise DEFAULT ON in an explicit iteration context -- i.e. when
-      ``MOLT_RUNTIME_BUILD_PROFILE`` pins a non-shipping profile (dev-fast) for
-      the correctness loop -- so the iteration knob alone enables cross-session
-      dep reuse (one knob, progressive disclosure).
-    * Otherwise DEFAULT OFF: the shipped acceptance / final-green path
-      (which never sets ``MOLT_RUNTIME_BUILD_PROFILE``) keeps the deterministic
-      session-scoped target dir and publishes exact-identity artifacts to the
-      shared cache (M05); incremental builds deliberately never publish.
+
+@dataclass(frozen=True, slots=True)
+class RuntimeWasmBuildPolicy:
+    """Request custody and actual Cargo execution are separate facts.
+
+    Layout is fixed before Cargo capture. Incrementality binds from that exact
+    plan before diagnostics or publication; neither can infer it from layout.
     """
-    raw = os.environ.get("MOLT_RUNTIME_WASM_INCREMENTAL", "").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
-    if raw in {"0", "false", "no", "off"}:
-        return False
-    return bool(_runtime_build_profile_override())
+
+    build_profile: BuildProfile
+    layout: RuntimeWasmTargetLayout
+    incrementality: RuntimeWasmIncrementality
+
+    def bind(self, plan: RuntimeCargoPlan) -> RuntimeWasmBuildPolicy:
+        enabled = plan.incremental_for_profile(
+            plan.cargo_profile, package_name="molt-runtime", workspace_package=True
+        )
+        if self.incrementality is RuntimeWasmIncrementality.FORCED_OFF and enabled:
+            raise ValueError(
+                "runtime WASM nonincremental constraint changed in Cargo capture"
+            )
+        return replace(
+            self,
+            incrementality=(
+                RuntimeWasmIncrementality.ENABLED
+                if enabled
+                else RuntimeWasmIncrementality.DISABLED
+            ),
+        )
+
+    @property
+    def publish_shared_cache(self) -> bool:
+        if self.incrementality in {
+            RuntimeWasmIncrementality.PROFILE,
+            RuntimeWasmIncrementality.REQUESTED_ON,
+            RuntimeWasmIncrementality.FORCED_OFF,
+        }:
+            raise ValueError(
+                "runtime WASM publication requires resolved incrementality"
+            )
+        return self.incrementality is RuntimeWasmIncrementality.DISABLED
+
+    @property
+    def diagnostic_detail(self) -> str:
+        if self.incrementality in {
+            RuntimeWasmIncrementality.PROFILE,
+            RuntimeWasmIncrementality.REQUESTED_ON,
+            RuntimeWasmIncrementality.FORCED_OFF,
+        }:
+            raise ValueError("runtime WASM diagnostics require resolved incrementality")
+        return (
+            f"build_profile={self.build_profile} target_dir={self.layout.value} "
+            f"incremental={self.incrementality.value} "
+            f"shared_cache_publication={int(self.publish_shared_cache)}"
+        )
 
 
-def _runtime_wasm_incremental_family_key(
+def resolve_runtime_wasm_build_policy(
+    build_profile: BuildProfile, environ: Mapping[str, str]
+) -> RuntimeWasmBuildPolicy:
+    """Preserve explicit opt-outs and proof custody without guessing profile names.
+
+    Cargo owns effective profile incrementality after sccache normalization:
+    https://doc.rust-lang.org/cargo/reference/profiles.html#incremental
+    https://github.com/mozilla/sccache/blob/main/docs/Rust.md
+    """
+    raw = environ.get("MOLT_RUNTIME_WASM_INCREMENTAL", "").strip().lower()
+    explicit_on = raw in {"1", "true", "yes", "on"}
+    explicit_off = raw in {"0", "false", "no", "off"}
+    override = environ.get("MOLT_RUNTIME_BUILD_PROFILE", "").strip()
+    explicit_iteration = (
+        bool(override and _CARGO_PROFILE_NAME_RE.fullmatch(override)) or explicit_on
+    )
+    isolated = bool(environ.get(PROOF_SCRATCH_ROOT_ENV))
+    reproducible = "SOURCE_DATE_EPOCH" in environ
+    stable = explicit_iteration and not (explicit_off or isolated or reproducible)
+    # Exact caller targets and deliberately pinned sessions keep their custody.
+    # A generated run label is telemetry, not a request for cold build state.
+    pinned_session = bool(environ.get("MOLT_SESSION_ID")) and not generated_session_id(
+        environ
+    )
+    layout = (
+        RuntimeWasmTargetLayout.EXPLICIT
+        if environ.get("CARGO_TARGET_DIR")
+        else RuntimeWasmTargetLayout.SESSION
+        if pinned_session
+        else RuntimeWasmTargetLayout.FAMILY
+        if stable
+        else RuntimeWasmTargetLayout.CHECKOUT
+    )
+    disabled = (
+        explicit_off
+        or isolated
+        or reproducible
+        or environ.get("CARGO_INCREMENTAL") == "0"
+        or (not explicit_iteration and "CARGO_INCREMENTAL" not in environ)
+    )
+    return RuntimeWasmBuildPolicy(
+        build_profile,
+        layout,
+        RuntimeWasmIncrementality.FORCED_OFF
+        if disabled
+        else RuntimeWasmIncrementality.REQUESTED_ON
+        if explicit_iteration
+        else RuntimeWasmIncrementality.PROFILE,
+    )
+
+
+def _runtime_wasm_family_key(
     *,
     cargo_profile: str,
     target_triple: str,
@@ -102,7 +206,7 @@ def _runtime_wasm_incremental_family_key(
     simd_enabled: bool,
     freestanding: bool,
 ) -> str:
-    """Codegen-identity key for the incremental runtime-wasm target dir.
+    """Codegen-family key for the stable runtime-wasm target dir.
 
     Deliberately EXCLUDES link-args (export allowlist, ``--import-memory`` /
     ``--import-table`` / ``--growable-table``) which are the *only* thing that
@@ -127,13 +231,15 @@ def _runtime_wasm_incremental_family_key(
     return f"{cargo_profile}-{digest}"
 
 
-def _runtime_wasm_incremental_target_root(project_root: Path, family_key: str) -> Path:
-    """Stable, session-independent cargo target dir for the runtime-wasm build.
+def _runtime_wasm_family_target_root(project_root: Path, family_key: str) -> Path:
+    """Stable, session-independent Cargo target, including nonincremental reuse.
 
-    Session-independent by design: cross-iteration incremental reuse is the whole
-    point (the per-session dir exists for agent isolation, but a fresh session id
-    per proof-queue run means cargo incremental never engages: the M09 "stable
-    target dir" lever).  Concurrency across sessions building the same family is
+    The existing runtime-wasm-incr directory spelling is retained to reuse warm
+    Cargo state. It does not claim that rustc incrementality is enabled.
+
+    Session-independent by design: ordinary iteration reuses dependencies and,
+    when Cargo enables it, incremental state. Proof requests retain their own
+    target custody instead. Concurrency across sessions building the same family is
     made safe by cargo's own per-target build lock plus the ``_build_slot()``
     cross-process gate. The canonical target selector separates source checkouts:
     serializing divergent sources in one Cargo target does not establish correct

@@ -476,8 +476,6 @@ def _probe_source_build_python(
         raise _schema.SourceBuildEnvironmentError(
             f"source-build {kind} probe returned invalid JSON"
         ) from exc
-    if publish_bytecode:
-        return payload
     try:
         if capture_wheel_target:
             if not isinstance(payload, dict) or set(payload) != {
@@ -727,9 +725,9 @@ def _publish_environment_bytecode(
     *,
     external_root: Path | None = None,
     source_root: Path | None = None,
-) -> None:
+) -> dict[str, object]:
     with PythonIdentityVerifier() as verifier:
-        _probe_source_build_python(
+        return _probe_source_build_python(
             python_executable,
             verifier=verifier,
             root=root,
@@ -945,13 +943,13 @@ def _provision_source_build_environment(
                 f"uv sync did not create source-build Python: {python_executable}"
             )
         verify_inputs()
-        _publish_environment_bytecode(
+        realized = _publish_environment_bytecode(
             python_executable,
             root,
             external_root=external_root,
             source_root=source_root,
         )
-        realized = capture()
+        verify_inputs()
         manifest = _attested_environment(custody, realized)
         _validate_recipe_inputs(repo_root, custody)
         verify_inputs()
