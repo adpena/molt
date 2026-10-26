@@ -186,6 +186,19 @@ large graphs can use more storage than the old sparse map. Stable managed slots
 retain the dependency build across lanes. Keep cold dependency rebuild cost,
 compiler execution latency and ordinary edit-to-test latency separate.
 
+A measured allocator landing spent 277.31 seconds in changed-package Clippy
+selection and execution; the Python cohorts already overlapped that work. The
+old root-manifest/local-patch rule selected all ten declared Clippy cells. The
+shared locked dependency projection now selects five unchanged cells for that
+same change, omitting unrelated runtime and WASI checks that consumed over 100
+seconds in the recorded run. This is verified selection reduction, not a measured
+new end-to-end gate speedup. No Cargo feature sets are merged and no additional
+Cargo writers contend for the shared target. Both base and current dependency
+closures participate; unknown identities retain full coverage. This follows
+[Cargo's locked package graph](https://doc.rust-lang.org/cargo/reference/resolver.html)
+and the [rustc incremental model](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html):
+make dependencies explicit and avoid work whose inputs cannot have changed.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 

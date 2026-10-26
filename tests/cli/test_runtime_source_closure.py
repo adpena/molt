@@ -502,3 +502,32 @@ def test_runtime_zlib_provider_guard_observes_consumer_edges(
     else:
         with pytest.raises(AssertionError):
             _assert_runtime_zlib_provider(tmp_path, tmp_path, consumer)
+
+
+def test_document_projection_preserves_canonical_serialized_contract() -> None:
+    from molt.cli.cargo_source_closure import cargo_locked_dependency_projection
+
+    projection = cargo_locked_dependency_projection(
+        {"package": {"name": "consumer", "version": "1.0.0"}},
+        {
+            "version": 4,
+            "package": [
+                {"name": "consumer", "version": "1.0.0", "dependencies": ["leaf"]},
+                {"name": "leaf", "version": "2.0.0"},
+                {"name": "unrelated", "version": "3.0.0", "dependencies": "invalid"},
+            ],
+        },
+    )
+    assert projection == {
+        "schema": "molt.cargo-locked-dependency-closure.v2",
+        "root": ("consumer", "1.0.0", ""),
+        "lock_version": 4,
+        "packages": [
+            {
+                "name": "consumer",
+                "version": "1.0.0",
+                "dependencies": [("leaf", "2.0.0", "")],
+            },
+            {"name": "leaf", "version": "2.0.0", "dependencies": []},
+        ],
+    }
