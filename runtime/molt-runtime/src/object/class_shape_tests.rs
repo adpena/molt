@@ -22,7 +22,7 @@ fn class_with_field(py: &PyToken<'_>) -> u64 {
 }
 
 #[test]
-fn every_task_shape_keeps_capture_and_dictionary_ownership_disjoint() {
+fn every_available_task_shape_keeps_capture_and_dictionary_ownership_disjoint() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
@@ -35,6 +35,12 @@ fn every_task_shape_keeps_capture_and_dictionary_ownership_disjoint() {
             for shape in (0..=ObjectShapeId::MAX_ID)
                 .filter_map(ObjectShapeId::from_u16)
                 .filter(|&shape| object_shape_is_task(shape))
+                // Resource-bearing I/O tasks have producers only when the
+                // canonical networking provider is present in this build.
+                .filter(|&shape| {
+                    cfg!(molt_net)
+                        || object_shape_resource_slot(shape) == ObjectShapeResourceSlot::None
+                })
             {
                 // Slot zero is empty, including for resource-bearing tasks.
                 // Slot one is an ordinary owned capture, not a dictionary.

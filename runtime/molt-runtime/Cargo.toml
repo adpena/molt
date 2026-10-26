@@ -141,7 +141,9 @@ stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
 # linker can strip the implementation code for unused domains.
 stdlib_tk = ["dep:molt-runtime-tk", "molt-runtime-tk/tk"]
-stdlib_net = ["dep:molt-runtime-net", "dep:mio", "dep:socket2", "dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:tungstenite"]
+# Networking fd watchers use the select readiness primitive when a descriptor
+# cannot enter the I/O driver; every networking provider must include it.
+stdlib_net = ["stdlib_select", "dep:molt-runtime-net", "dep:mio", "dep:socket2", "dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:tungstenite"]
 stdlib_asyncio = ["dep:molt-runtime-asyncio"]
 stdlib_email = ["stdlib_serial"]
 stdlib_math = ["dep:molt-runtime-math"]
