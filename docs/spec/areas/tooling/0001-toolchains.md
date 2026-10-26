@@ -1660,7 +1660,7 @@ bundle/Python coordinate and the platform wheel first prepare inputs with the
 public CLI, then compile the complete declared lane set in the compilation
 projection before uninstall. Preparation results never become replay products
 or measurement samples. The fresh compilation exports its final-link family,
-command streams and native process journal. Consumer proof v11 binds each
+command streams and native process journal. Consumer proof v12 binds each
 coordinate to `compilation-evidence/<owner>-<python>/compilation.json`; the
 existing reproducible consumer archive retains that tree alongside
 `consumer-evidence`. Admission replays each raw compilation export and journal,
@@ -1668,6 +1668,44 @@ checks the installed manifest against the candidate's source inventory,
 compiler, launcher, facts tool and runtime cells, and joins the exact exported
 artifact and command streams to standalone replay. A missing cell or compilation
 record cannot fall back to the prior selection-only receipt.
+
+The execution-root v2 file list is the sole resource mapping: lexical destination,
+read-only mode, size and content digest. Closed compilation v3 and standalone
+replay v4 records retain those bytes once in `execution-inputs`, using the existing
+proof custody CAS's data/payload layout. Content can serve several paths and modes;
+process, image, origin, cache and journal identities remain separate. The owning
+record is durably published before its expanded root and canonical tar are retired.
+Failures before record publication preserve both originals. Failed replay preserves
+its reconstruction; it never turns a failed receipt into a completed execution.
+Component consumer proof v2 uses the same representation and remains component-only.
+Obsolete wire versions reject; no absolute CAS reference is rebased.
+
+Receivers materialize regular read-only files using the shared snapshot authority,
+recreate the exact original PAX tar, and compare its original size and digest.
+They then perform the unchanged full installed-source/runtime admission and replay
+raw original native receipts, exports and cold/warm cache evidence. A content
+address supplies bytes, not a substitute admission claim. The resource store must
+contain exactly the buffers referenced by these admitted roots. This follows
+[LLVM's immutable, content-addressed object model](https://llvm.org/docs/ContentAddressableStorage.html)
+while retaining Molt's existing CAS and native receipt authorities.
+
+The consumer ZIP streams selected retained paths directly, without a second full
+staging copy. Source and tar ordering use canonical POSIX wire paths, including
+sibling files and directories such as `a.py` and `a/b`. The generic 4,096-member
+policy cannot represent a full source closure even once. The consumer-specific
+envelope is capped by ZIP32's 65,535 nodes (including implicit directories): the
+existing sealed-root bound permits 65,536 regular files, and the existing CAS
+requires a content directory and payload leaf per unique buffer. Actual inventory
+must fit the smaller transport envelope before publication. The 1 GiB file/import
+and 2 GiB archive/uncompressed-byte limits, no-ZIP64 rule and compression ratio
+limit remain unchanged. Nesting is not used to evade member or byte limits.
+
+Permanent input storage scales with unique bytes and required output/session
+records. Preparing/importing a root still writes and hashes its selected namespace;
+receipt replay reconstructs the necessary roots, including a paired cold/warm join.
+Initial CAS retention incurs durable file/directory publication per unique buffer;
+reuse verifies existing objects without rewriting them. Complete runtime/capture
+sizes and executor resource peaks remain release qualification obligations.
 
 The verifier requires explicit `--compile-memory-max-bytes`,
 `--compile-workspace-max-bytes` and `--compile-runtime-max-seconds` budgets. Its

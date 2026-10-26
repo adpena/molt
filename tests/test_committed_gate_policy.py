@@ -56,6 +56,104 @@ def _selected_pytest_targets(cfg, paths, changes=CI_COMMAND_EDIT):
     }
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["tools/check_changed_clippy.py", "tests/tools/test_check_changed_clippy.py"],
+)
+def test_clippy_selector_edits_do_not_run_landing_simulations(path):
+    cfg = GateConfig.load(COMMITTED_GATES)
+    assert _selected_pytest_targets(cfg, [path]) == {
+        "tests/tools/test_import_file.py",
+        "tests/tools/test_check_changed_clippy.py",
+    }
+    gates, _ = cfg.select([path])
+    assert {gate.command for gate in gates} >= set(cfg.always)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/molt/cargo_workspace.py",
+        "src/molt/cargo_execution_policy.py",
+        "src/molt/cli/cargo_source_closure.py",
+        "config/ci_resource_policy.toml",
+        "tools/git_identity.py",
+        "tools/command_execution.py",
+        "tools/proof_plan.py",
+        "tools/toolchain_env.py",
+        "tools/import_file.py",
+    ],
+)
+def test_clippy_shared_authorities_retain_selector_consumer(path):
+    cfg = GateConfig.load(COMMITTED_GATES)
+    assert "tests/tools/test_check_changed_clippy.py" in _selected_pytest_targets(
+        cfg, [path]
+    )
+
+
+def test_cargo_workspace_edits_keep_driver_and_selector_consumers():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    assert _selected_pytest_targets(cfg, ["src/molt/cargo_workspace.py"]) >= {
+        "tests/test_cargo_workspace.py",
+        "tests/test_molt_dev.py",
+        "tests/tools/test_check_changed_clippy.py",
+    }
+
+
+def test_cargo_source_projection_selects_both_consumer_oracles():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    selected = _selected_pytest_targets(cfg, ["src/molt/cli/cargo_source_closure.py"])
+    assert selected >= {
+        "tests/tools/test_import_file.py",
+        "tests/tools/test_check_changed_clippy.py",
+        "tests/cli/test_runtime_source_closure.py",
+        "tests/cli/test_cli_cache_fingerprint.py::test_backend_lock_identity_tracks_only_reachable_dependency_content",
+        "tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_fails_closed",
+        "tests/cli/test_compiler_identity.py::test_lock_projection_is_mandatory_without_raw_lock_in_source_paths",
+    }
+    assert "tests/test_molt_dev.py" not in selected
+
+
+def test_source_closure_test_edits_do_not_compile_compression_providers():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    path = "tests/cli/test_runtime_source_closure.py"
+    selected = _selected_pytest_targets(cfg, [path])
+    assert "tests/tools/test_import_file.py" in selected
+    assert "tests/cli/test_runtime_source_closure.py" in selected
+    assert "tests/test_molt_dev.py" not in selected
+    gates, matched = cfg.select([path])
+    assert "maintained-zlib-counters" not in {rule.name for rule in matched}
+    assert {gate.command for gate in gates} >= set(cfg.always)
+
+
+def test_compression_provider_edits_keep_compiled_and_source_oracles():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    gates, _ = cfg.select(["vendor/rust/zlib-rs/src/inflate.rs"])
+    commands = {gate.command for gate in gates}
+    assert (
+        "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib "
+        "--no-default-features --features rust-allocator,std,ZLIB_DEBUG -- "
+        "counter_wrap --nocapture --test-threads=1"
+    ) in commands
+    assert any(
+        "--policy zlib-wasi" in command
+        for command in commands
+        if isinstance(command, str)
+    )
+    assert "tests/cli/test_runtime_source_closure.py" in _selected_pytest_targets(
+        cfg, ["vendor/rust/zlib-rs/src/inflate.rs"]
+    )
+
+
+def test_clippy_command_policy_edits_retain_selector_tests():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    assert "tests/tools/test_check_changed_clippy.py" in _selected_pytest_targets(
+        cfg,
+        ["tools/proof_plan.toml"],
+        frozenset({("command", "rust.clippy.workspace-default")}),
+    )
+
+
 def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
     cfg = GateConfig.load(COMMITTED_GATES)
     paths = [

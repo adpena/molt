@@ -1079,7 +1079,8 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
     """Release join uses real retained bytes; native replay is a named seam."""
     from types import SimpleNamespace
     from molt import compiler_distribution
-    from molt.exact_json import canonical_json_sha256
+    from molt.exact_json import canonical_json_sha256, write_exact
+    from tools.cross_run import SealedExecutionProjection
     from tools.release import consumer_replay
     from tests.tools.test_release_sealed_replay import _compilation_export_fixture
 
@@ -1192,7 +1193,6 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         command=cold_command, files=[exported], observation=observation
     )
     cold = {"cells": [cold_cell], "cache_seed": [], "origins": []}
-    cold_path = cold_root / "compilation.json"
     compilation.update(
         cache_seed=[seed],
         origins=[{"scope": "a" * 64, "cell": lane.id, "identity_sha256": "d" * 64}],
@@ -1211,15 +1211,46 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         cold_cell["runtime_cell"]["key"]["stdlib_profile"] = "full"
     elif defect == "wrong-warm-tier":
         compilation["cells"][0]["runtime_cell"]["key"]["stdlib_profile"] = "full"
-    cold_path.write_text(json.dumps(cold), encoding="utf-8")
+    # Persist the original sealed inputs through the same resource boundary as
+    # completed consumers. The native replay seam below must see reconstructed
+    # bytes, not a pre-existing expanded root or a mocked materializer.
+    (root / "rootfs").mkdir()
+    (root / "rootfs/python").write_bytes(
+        b"replaced Python" if defect == "python-image" else b"selected Python"
+    )
+    projection = SealedExecutionProjection.compilation(
+        memory_max_bytes=512 * 1024 * 1024,
+        workspace_max_bytes=128 * 1024 * 1024,
+        runtime_max_seconds=90,
+    )
+    originals = {}
+    for evidence, payload in ((root, compilation), (cold_root, cold)):
+        sealed_root, archive = evidence / "rootfs", evidence / "rootfs.tar"
+        payload["root"] = consumer_replay.execution_root.seal_root(
+            sealed_root,
+            archive,
+            expected_files=consumer_replay.execution_root.root_inventory(sealed_root),
+            projection=projection,
+        )
+        payload["execution"] = projection.to_dict()
+        originals[evidence] = archive.read_bytes()
+        consumer_replay.execution_root.retain_root(
+            sealed_root,
+            archive,
+            sealed=payload["root"],
+            resources=tmp_path / "execution-inputs",
+            projection=projection,
+        )
+        write_exact(evidence / "compilation.json", payload, exclusive=True)
+        consumer_replay.execution_root.retire_root(
+            sealed_root, archive, sealed=payload["root"], projection=projection
+        )
+        assert not sealed_root.exists() and not archive.exists()
     path = root / "compilation.json"
-    path.write_text(json.dumps(compilation), encoding="utf-8")
     reference = {
         "path": path.relative_to(tmp_path).as_posix(),
         **consumer_replay.execution_root.file_identity(path),
     }
-    (root / "rootfs").mkdir()
-    (root / "rootfs/python").write_bytes(b"selected Python")
     proof = {
         "python": "3.12",
         "execution": {
@@ -1273,12 +1304,20 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         assert kwargs["launcher"] == ["/installed/bin/molt"] and kwargs[
             "controller_python"
         ] == Path("/python")
+        evidence = kwargs["evidence"]
+        assert (evidence / "rootfs.tar").read_bytes() == originals[evidence]
+        if evidence == root:
+            assert (evidence / "rootfs/python").read_bytes() == b"selected Python"
+            assert stat.S_IMODE((evidence / "rootfs/python").stat().st_mode) == 0o444
+        else:
+            assert evidence == cold_root
+            assert cold_policy.read_bytes() == json.dumps({"nonce": "a" * 64}).encode(
+                "utf-8"
+            )
         replays.append(kwargs)
 
     monkeypatch.setattr(consumer_replay, "validate_compilation", replay)
-    if defect == "python-image":
-        (root / "rootfs/python").write_bytes(b"replaced Python")
-    elif defect == "candidate-runtime":
+    if defect == "candidate-runtime":
         candidate["runtime"] = {"cells": ["other"]}
     elif defect == "candidate-source":
         candidate["native_build"]["source"]["files_sha256"] = "e" * 64
@@ -1350,6 +1389,9 @@ def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
         ]
         assert replays[1]["compilation"]["origins"] == []
         assert cache.read_bytes() == b"original cached object"
+        for evidence in (root, cold_root):
+            assert not (evidence / "rootfs").exists()
+            assert not (evidence / "rootfs.tar").exists()
 
 
 @pytest.mark.parametrize(

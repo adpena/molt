@@ -53,6 +53,41 @@ def _wasm_stage_inputs(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "version", ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0, 3.5]
+)
+def test_wasm_stage_rejects_incompatible_manifest_before_module_stage(
+    tmp_path, monkeypatch, version
+):
+    module, manifest, artifact, _, _, raw = _wasm_stage_inputs(tmp_path)
+    payload = json.loads(raw)
+    if version == "missing":
+        del payload["version"]
+    else:
+        payload["version"] = version
+    raw = _json(payload)
+    manifest.write_bytes(raw)
+    # Admit these exact bytes to the existing immutable snapshot boundary.
+    # A stale hash must not be the reason that a legacy receiver is refused.
+    descriptor = {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+    real_stage = execution_root.stage_file
+    reached = []
+
+    def observe_stage(root, name, source, **kwargs):
+        reached.append(name)
+        assert source != module, "incompatible receiver reached guest module staging"
+        return real_stage(root, name, source, **kwargs)
+
+    monkeypatch.setattr(execution_root, "stage_file", observe_stage)
+    root = tmp_path / "root"
+    with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
+        consumer_replay._stage_wasm(root, "app/cell/", artifact, descriptor)
+    assert reached == ["app/cell/manifest.json"]
+    assert (root / "app/cell/manifest.json").read_bytes() == raw
+    assert not (root / "app/cell/program.wasm").exists()
+    assert not (tmp_path / "root.tar").exists()
+
+
 @pytest.mark.parametrize("selected", ["manifest", "module"])
 @pytest.mark.parametrize("mutation", ["replace", "overwrite", "grow"])
 def test_wasm_stage_rejects_changed_source_before_it_can_be_sealed(
@@ -144,6 +179,255 @@ def test_seal_cannot_readmit_changed_previously_staged_payload(tmp_path):
     with pytest.raises(ValueError, match="admitted payloads"):
         execution_root.seal_root(root, tmp_path / "root.tar", expected_files=[admitted])
     assert not (tmp_path / "root.tar").exists()
+
+
+def test_root_inventory_and_tar_share_posix_wire_order(tmp_path):
+    root = tmp_path / "root"
+    rows = [
+        execution_root.write_payload(root, name, name.encode(), executable=False)
+        for name in ("source/a/b", "source/a.py", "source/a-b")
+    ]
+    expected = ["source/a-b", "source/a.py", "source/a/b"]
+    assert [row["path"] for row in execution_root.root_inventory(root)] == expected
+    seal = execution_root.seal_root(root, tmp_path / "root.tar", expected_files=rows)
+    execution_root.validate_sealed_tar(
+        tmp_path / "root.tar", root, expected_archive=seal["archive"]
+    )
+
+
+def test_evidence_inventory_does_not_read_discarded_materializations(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "rootfs").mkdir()
+    (tmp_path / "rootfs/large-input").write_bytes(b"materialized input")
+    (tmp_path / "rootfs.tar").write_bytes(b"materialized tar")
+    (tmp_path / "receipt.json").write_bytes(b"original receipt")
+    original = execution_root.file_identity
+    observed = []
+
+    def read(path):
+        assert path == tmp_path / "receipt.json"
+        observed.append(path)
+        return original(path)
+
+    monkeypatch.setattr(execution_root, "file_identity", read)
+    rows = consumer_replay._evidence_inventory(tmp_path)
+    assert [row["path"] for row in rows] == ["receipt.json"]
+    assert observed == [tmp_path / "receipt.json"]
+
+
+def test_closed_roots_share_payloads_and_reconstruct_original_tar_after_move(tmp_path):
+    candidate = tmp_path / "candidate"
+    resources = candidate / "execution-inputs"
+    originals = []
+    seals = []
+    observations = []
+    # Independent literal bytes are used at different paths and modes. One
+    # stored payload must serve all eight compilation coordinates.
+    payload = b"original admitted source\x00\xff"
+    for index in range(8):
+        evidence = candidate / "compilation-evidence" / str(index)
+        row = execution_root.write_payload(
+            evidence / "rootfs",
+            f"source-{index}/input",
+            payload,
+            executable=bool(index % 2),
+        )
+        seal = execution_root.seal_root(
+            evidence / "rootfs",
+            evidence / "rootfs.tar",
+            expected_files=[row],
+        )
+        originals.append((evidence / "rootfs.tar").read_bytes())
+        seals.append(seal)
+        observations.append(
+            execution_root.retain_root(
+                evidence / "rootfs",
+                evidence / "rootfs.tar",
+                sealed=seal,
+                resources=resources,
+            )
+        )
+        # A failed/interrupting record publication still has both originals.
+        assert (evidence / "rootfs.tar").read_bytes() == originals[index]
+        assert (evidence / "rootfs" / f"source-{index}/input").read_bytes() == payload
+        execution_root.retire_root(
+            evidence / "rootfs", evidence / "rootfs.tar", sealed=seal
+        )
+        assert not (evidence / "rootfs").exists()
+        assert not (evidence / "rootfs.tar").exists()
+    assert observations[0] == {
+        "new_files": 1,
+        "new_bytes": len(payload),
+        "reused_files": 0,
+        "reused_bytes": 0,
+    }
+    assert all(
+        row
+        == {
+            "new_files": 0,
+            "new_bytes": 0,
+            "reused_files": 1,
+            "reused_bytes": len(payload),
+        }
+        for row in observations[1:]
+    )
+    assert [path.read_bytes() for path in resources.rglob("payload")] == [payload]
+    moved = tmp_path / "moved"
+    candidate.rename(moved)
+    for index, seal in enumerate(seals):
+        evidence = moved / "compilation-evidence" / str(index)
+        with execution_root.materialized_root(
+            evidence / "rootfs",
+            evidence / "rootfs.tar",
+            sealed=seal,
+            resources=moved / "execution-inputs",
+        ):
+            assert (evidence / "rootfs.tar").read_bytes() == originals[index]
+            assert (
+                evidence / "rootfs" / f"source-{index}/input"
+            ).read_bytes() == payload
+        assert not (evidence / "rootfs").exists()
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing",
+        "bytes",
+        "mode",
+        "tar",
+        "omitted",
+        "schema",
+        "destination-mode",
+        "size",
+    ],
+)
+def test_retained_root_resources_refuse_substitution(tmp_path, defect):
+    root, archive, resources = (
+        tmp_path / "root",
+        tmp_path / "root.tar",
+        tmp_path / "cas",
+    )
+    row = execution_root.write_payload(
+        root, "source/input", b"admitted", executable=False
+    )
+    seal = execution_root.seal_root(root, archive, expected_files=[row])
+    execution_root.retain_root(root, archive, sealed=seal, resources=resources)
+    execution_root.retire_root(root, archive, sealed=seal)
+    payload = next(resources.rglob("payload"))
+    if defect == "missing":
+        payload.rename(payload.with_name("lost"))
+    elif defect == "bytes":
+        payload.chmod(0o644)
+        payload.write_bytes(b"replaced")
+        payload.chmod(0o444)
+    elif defect == "mode":
+        payload.chmod(0o644)
+    elif defect == "tar":
+        seal["archive"]["sha256"] = "0" * 64
+    elif defect == "omitted":
+        seal["files"] = []
+        seal["files_sha256"] = consumer_replay.canonical_json_sha256([])
+    elif defect in {"destination-mode", "size"}:
+        seal["files"][0]["mode" if defect == "destination-mode" else "size"] = (
+            0o555 if defect == "destination-mode" else 1
+        )
+        seal["files_sha256"] = consumer_replay.canonical_json_sha256(seal["files"])
+    else:
+        seal["schema"] = "molt.release-execution-root.v1"
+    with pytest.raises((ValueError, FileNotFoundError)):
+        with execution_root.materialized_root(
+            root, archive, sealed=seal, resources=resources
+        ):
+            pytest.fail("substituted retained root was admitted")
+
+
+def test_failed_replay_preserves_materialized_root_and_original_tar(tmp_path):
+    root, archive, resources = (
+        tmp_path / "root",
+        tmp_path / "root.tar",
+        tmp_path / "cas",
+    )
+    row = execution_root.write_payload(
+        root, "source/input", b"admitted", executable=False
+    )
+    seal = execution_root.seal_root(root, archive, expected_files=[row])
+    execution_root.retain_root(root, archive, sealed=seal, resources=resources)
+    execution_root.retire_root(root, archive, sealed=seal)
+    with pytest.raises(RuntimeError, match="original receipt failed"):
+        with execution_root.materialized_root(
+            root, archive, sealed=seal, resources=resources
+        ):
+            raise RuntimeError("original receipt failed")
+    assert (root / "source/input").read_bytes() == b"admitted"
+    execution_root.validate_sealed_tar(archive, root, expected_archive=seal["archive"])
+
+
+def test_consumer_resource_archive_exceeds_generic_envelope_without_nesting(tmp_path):
+    """Actual flat resources cross 4096 nodes; no native/product claim is made."""
+    from tools.release import archive as archive_owner
+    import zipfile
+
+    candidate_dir = tmp_path / "candidate"
+    root, tar = tmp_path / "root", tmp_path / "rootfs.tar"
+    rows = [
+        execution_root.write_payload(
+            root, f"source/{i}", i.to_bytes(2, "big"), executable=False
+        )
+        for i in range(2050)
+    ]
+    seal = execution_root.seal_root(root, tar, expected_files=rows)
+    execution_root.retain_root(
+        root, tar, sealed=seal, resources=candidate_dir / "execution-inputs"
+    )
+    candidate = {
+        "version": "0.0.1",
+        "target": {"platform": "linux", "arch": "x86_64"},
+        "source_date_epoch": 1_700_000_000,
+    }
+    consumer = {
+        "standalone": {"path": "consumer-evidence/replay.json"},
+        "python_proofs": [],
+        "pip_proof": {
+            "compilation": {"path": "compilation-evidence/pip-3.12/compilation.json"}
+        },
+    }
+    for name in (
+        "consumer-evidence/replay.json",
+        "compilation-evidence/pip-3.12/compilation.json",
+        "compilation-evidence/pip-3.12-cold/compilation.json",
+    ):
+        path = candidate_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"root": seal}), encoding="utf-8")
+    (candidate_dir / "candidate.json").write_text(
+        json.dumps(candidate), encoding="utf-8"
+    )
+    receipt = candidate_dir / "consumer-verification.json"
+    receipt.write_text(json.dumps(consumer), encoding="utf-8")
+    retained = consumer_replay.publish_archive(
+        candidate_dir=candidate_dir, receipt=receipt, candidate=candidate
+    )
+    with zipfile.ZipFile(retained) as handle:
+        names = handle.namelist()
+        assert len([name for name in names if name.endswith("/payload")]) == 2050
+        assert not any(name.endswith((".tar", ".zip")) for name in names)
+        assert (
+            sum(
+                row.file_size
+                for row in handle.infolist()
+                if row.filename.endswith("/payload")
+            )
+            == 4100
+        )
+    with pytest.raises(ValueError, match="member-count"):
+        archive_owner.extract_zip_strict(retained, tmp_path / "generic")
+    moved = tmp_path / "moved"
+    archive_owner.extract_zip_strict(
+        retained, moved, policy=consumer_replay.CONSUMER_ARCHIVE_POLICY
+    )
+    consumer_replay.validate_resources(evidence_root=moved, consumer=consumer)
 
 
 @pytest.mark.parametrize("boundary", ["member", "archive"])
@@ -2705,7 +2989,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
     )
     prepared = consumer_replay.prepare_compilation(**args)
     assert staged == ["inputs", native.id, wasm.id]
-    assert prepared["schema"] == "molt.installed-compilation.v2"
+    assert prepared["schema"] == "molt.installed-compilation.v3"
     assert prepared["origins"] == []
     assert prepared["cache_seed"] == []
     assert [row["id"] for row in prepared["cells"]] == [native.id, wasm.id]
@@ -2924,7 +3208,7 @@ def test_retained_compilation_replays_export_before_accepting_summary(
         )
     }
     compilation.update(
-        schema="molt.installed-compilation.v2",
+        schema="molt.installed-compilation.v3",
         origins=[],
         cache_seed=[],
         execution=args["projection"].to_dict(),
@@ -2952,7 +3236,7 @@ def test_retained_compilation_replays_export_before_accepting_summary(
         (evidence / "outputs" / lane.id / "program").write_bytes(b"substitute")
     # A forged summary may recompute this outer inventory. Raw export readback
     # must still reject altered retained bytes and derived claims.
-    compilation["files"] = execution_root.root_inventory(evidence)
+    compilation["files"] = consumer_replay._evidence_inventory(evidence)
     (evidence / "compilation.json").write_text(
         json.dumps(compilation), encoding="utf-8"
     )

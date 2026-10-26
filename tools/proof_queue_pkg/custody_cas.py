@@ -194,6 +194,31 @@ class FileRef:
         }
 
 
+def file_reference(
+    root: Path,
+    *,
+    sha256: str,
+    size_bytes: int,
+    logical_name: str,
+    executable: bool = False,
+) -> FileRef:
+    """Address local content in this store without rebasing an absolute ref.
+
+    Portable owners must define their own store coordinate and content identity.
+    Existing FileRef records remain absolute and verify against their original
+    expected store. This factory does not admit bytes; verify_file_ref does.
+    """
+    if not logical_name or Path(logical_name).name != logical_name:
+        raise ValueError("proof custody file logical name must be one path component")
+    reference = FileRef(
+        str(_file_path(root.absolute(), sha256, logical_name, executable)),
+        sha256,
+        size_bytes,
+        executable,
+    )
+    return parse_file_ref(reference.as_dict())
+
+
 def _canonical_bytes(payload: Mapping[str, object]) -> bytes:
     return json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
