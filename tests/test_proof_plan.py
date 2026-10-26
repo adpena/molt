@@ -1053,13 +1053,16 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "host_diagnostics",
     }
     for command in (core, complement):
+        assert command.argv[:2] == ("cargo", "test")
+        assert "--no-run" not in command.argv[: command.argv.index("--")]
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
     features = set(core.argv[core.argv.index("--features") + 1].split(","))
     assert "--no-default-features" in core.argv
-    # These source families are cfg-out without their actual network producer.
-    # A matching libtest filter alone cannot demonstrate test execution.
-    assert "molt-runtime/stdlib_net" in features
+    # The Linux cell and micro/net providers enable physical-file, resolver,
+    # wait and TLS resolver tests; matching filters alone can select zero tests.
+    assert core.data["cell"] == "linux-x86_64-rust-native-dev"
+    assert {"molt-runtime/stdlib_micro", "molt-runtime/stdlib_net"} <= features
     filters = core.argv[core.argv.index("--") + 1 :]
     # HF-487 removes the disabled-feature stub producer, including its tests.
     # A stale filter silently selects no test and cannot qualify that boundary.
@@ -1126,6 +1129,7 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
         "molt-passes/test-util",
         "molt-backend-wasm/test-util",
         "molt-runtime/stdlib_micro",
+        "molt-runtime/stdlib_net",
         "molt-runtime/stdlib_math",
         "molt-runtime/builtin_complex",
         "molt-runtime/builtin_set",
