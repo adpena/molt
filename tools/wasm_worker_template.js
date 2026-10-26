@@ -8,10 +8,10 @@ class ProcExit { constructor(code) { this.code = code; } }
 const CAPABILITIES = {{CAPABILITIES}};
 const TMP_QUOTA_MB = {{TMP_QUOTA_MB}};
 
-// Error codes matching WASI conventions
-const ENOSYS = 38;
-const ENOENT = 2;
-const EINVAL = 22;
+// Molt env and raw preview1 are separate generated protocols.
+const GUEST_ERRNO = Object.freeze({{SYNTHETIC_ERRNO}});
+const WASI_ERRNO = Object.freeze({{WASI_PREVIEW1_ERRNO}});
+const { ENOSYS, ENOENT, EINVAL } = GUEST_ERRNO;
 
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
@@ -203,27 +203,27 @@ function buildWasiShim(state, stdio) {
         new DataView(memory.buffer).setUint32(Number(ptr), Number(value) >>> 0, true);
         return true;
     };
-    const unsupported = () => ENOSYS;
+    const unsupported = () => WASI_ERRNO.ENOSYS;
 
     return {
         proc_exit: (code) => {
             throw new ProcExit(code);
         },
         args_sizes_get: (argcPtr, argvBufSizePtr) => {
-            if (!writeU32(argcPtr, 0)) return ENOSYS;
-            if (!writeU32(argvBufSizePtr, 0)) return ENOSYS;
+            if (!writeU32(argcPtr, 0)) return WASI_ERRNO.ENOSYS;
+            if (!writeU32(argvBufSizePtr, 0)) return WASI_ERRNO.ENOSYS;
             return 0;
         },
         args_get: () => 0,
         environ_sizes_get: (countPtr, bufSizePtr) => {
-            if (!writeU32(countPtr, 0)) return ENOSYS;
-            if (!writeU32(bufSizePtr, 0)) return ENOSYS;
+            if (!writeU32(countPtr, 0)) return WASI_ERRNO.ENOSYS;
+            if (!writeU32(bufSizePtr, 0)) return WASI_ERRNO.ENOSYS;
             return 0;
         },
         environ_get: () => 0,
         fd_write: (fd, iovsPtr, iovsLen, outWrittenPtr) => {
             const memory = state.memory;
-            if (!memory) return ENOSYS;
+            if (!memory) return WASI_ERRNO.ENOSYS;
             const view = new DataView(memory.buffer);
             const basePtr = typeof iovsPtr === 'bigint' ? Number(iovsPtr) : Number(iovsPtr >>> 0);
             const count = typeof iovsLen === 'bigint' ? Number(iovsLen) : Number(iovsLen >>> 0);
@@ -250,9 +250,9 @@ function buildWasiShim(state, stdio) {
         },
         fd_read: (fd, iovsPtr, iovsLen, outReadPtr) => {
             const memory = state.memory;
-            if (!memory) return ENOSYS;
+            if (!memory) return WASI_ERRNO.ENOSYS;
             const fdNum = typeof fd === 'bigint' ? Number(fd) : Number(fd);
-            if (fdNum !== 0) return ENOSYS;
+            if (fdNum !== 0) return WASI_ERRNO.ENOSYS;
             const view = new DataView(memory.buffer);
             const basePtr = typeof iovsPtr === 'bigint' ? Number(iovsPtr) : Number(iovsPtr >>> 0);
             const count = typeof iovsLen === 'bigint' ? Number(iovsLen) : Number(iovsLen >>> 0);
@@ -280,7 +280,7 @@ function buildWasiShim(state, stdio) {
         fd_filestat_get: unsupported,
         fd_filestat_set_size: unsupported,
         fd_readdir: unsupported,
-        fd_prestat_get: unsupported,
+        fd_prestat_get: () => WASI_ERRNO.EBADF,
         fd_prestat_dir_name: unsupported,
         path_open: unsupported,
         path_filestat_get: unsupported,
@@ -291,7 +291,7 @@ function buildWasiShim(state, stdio) {
         path_readlink: unsupported,
         random_get: (bufPtr, bufLen) => {
             const memory = state.memory;
-            if (!memory) return ENOSYS;
+            if (!memory) return WASI_ERRNO.ENOSYS;
             const ptr = typeof bufPtr === 'bigint' ? Number(bufPtr) : Number(bufPtr >>> 0);
             const len = typeof bufLen === 'bigint' ? Number(bufLen) : Number(bufLen >>> 0);
             const bytes = new Uint8Array(memory.buffer, ptr, len);
@@ -299,13 +299,13 @@ function buildWasiShim(state, stdio) {
             return 0;
         },
         poll_oneoff: (_inPtr, _outPtr, _nsubscriptions, outEventsPtr) => {
-            if (outEventsPtr && !writeU32(outEventsPtr, 0)) return ENOSYS;
+            if (outEventsPtr && !writeU32(outEventsPtr, 0)) return WASI_ERRNO.ENOSYS;
             return 0;
         },
         sched_yield: () => 0,
         clock_time_get: (clockIdRaw, _precisionRaw, outPtr) => {
             const memory = state.memory;
-            if (!memory) return ENOSYS;
+            if (!memory) return WASI_ERRNO.ENOSYS;
             const clockId = typeof clockIdRaw === 'bigint' ? Number(clockIdRaw) : Number(clockIdRaw >>> 0);
             let nanos;
             if (clockId === 0) {
@@ -313,7 +313,7 @@ function buildWasiShim(state, stdio) {
             } else if (clockId === 1) {
                 nanos = BigInt(Math.trunc(performance.now() * 1000000));
             } else {
-                return ENOSYS;
+                return WASI_ERRNO.ENOSYS;
             }
             new DataView(memory.buffer).setBigUint64(Number(outPtr), nanos, true);
             return 0;

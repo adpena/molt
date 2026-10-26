@@ -786,6 +786,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         Some(ExceptionLayoutRoot::OSError),
     )
     .with_str_slot(ExceptionStrSlot::OSError),
+    exception_spec("gaierror", ExceptionBaseSpec::One("OSError"), None).with_heap_class("socket"),
+    exception_spec("herror", ExceptionBaseSpec::One("OSError"), None).with_heap_class("socket"),
     exception_spec("ReferenceError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("RuntimeError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
@@ -1368,6 +1370,8 @@ mod tests {
                 ("PicklingError", "_pickle"),
                 ("UnpicklingError", "_pickle"),
                 ("UnsupportedOperation", "_io"),
+                ("gaierror", "socket"),
+                ("herror", "socket"),
             ])
         );
         assert_eq!(

@@ -1,5 +1,7 @@
 use base64::Engine as Base64Engine;
 use base64::engine::general_purpose::STANDARD;
+use guest_errno::{GuestErrno, GuestResolverError};
+use molt_runtime_platform::{synthetic_errno as guest_errno, wasm_socket_abi as guest_socket_abi};
 #[cfg(test)]
 use molt_wasm_host::sha256_hex;
 use rmpv::Value as MsgpackValue;
@@ -94,27 +96,6 @@ const CANCEL_POLL_BATCH: usize = 256;
 const IO_EVENT_READ: u32 = 1;
 const IO_EVENT_WRITE: u32 = 1 << 1;
 const IO_EVENT_ERROR: u32 = 1 << 2;
-#[cfg(unix)]
-const HOST_AF_INET: i32 = libc::AF_INET;
-#[cfg(windows)]
-const HOST_AF_INET: i32 = winsock::AF_INET as i32;
-#[cfg(unix)]
-const HOST_AF_INET6: i32 = libc::AF_INET6;
-#[cfg(windows)]
-const HOST_AF_INET6: i32 = winsock::AF_INET6 as i32;
-#[cfg(unix)]
-const HOST_AF_UNIX: i32 = libc::AF_UNIX;
-#[cfg(windows)]
-const HOST_AF_UNIX: i32 = winsock::AF_UNIX as i32;
-
-#[cfg(unix)]
-const HOST_SHUT_RD: i32 = libc::SHUT_RD;
-#[cfg(windows)]
-const HOST_SHUT_RD: i32 = winsock::SD_RECEIVE;
-#[cfg(unix)]
-const HOST_SHUT_WR: i32 = libc::SHUT_WR;
-#[cfg(windows)]
-const HOST_SHUT_WR: i32 = winsock::SD_SEND;
 
 #[cfg(unix)]
 const HOST_POLLIN: i16 = libc::POLLIN;

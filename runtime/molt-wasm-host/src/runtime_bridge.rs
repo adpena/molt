@@ -481,14 +481,19 @@ pub(super) fn write_u64(
     write_bytes(caller, memory, ptr, &val.to_le_bytes())
 }
 
-pub(super) fn map_io_error(err: &std::io::Error) -> i32 {
-    if let Some(code) = err.raw_os_error() {
-        return code;
+pub(super) fn map_io_error(err: &std::io::Error) -> GuestErrno {
+    guest_errno::from_io_error(err)
+}
+
+pub(super) fn last_socket_error() -> GuestErrno {
+    #[cfg(unix)]
+    {
+        map_io_error(&std::io::Error::last_os_error())
     }
-    if err.kind() == std::io::ErrorKind::WouldBlock {
-        return libc::EWOULDBLOCK;
+    #[cfg(windows)]
+    {
+        guest_errno::from_native_errno(unsafe { winsock::WSAGetLastError() })
     }
-    libc::EIO
 }
 
 pub(super) fn define_resource_host(

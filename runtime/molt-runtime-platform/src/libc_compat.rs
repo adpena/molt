@@ -18,18 +18,7 @@ pub type socklen_t = u32;
 #[allow(clippy::upper_case_acronyms)]
 pub type SOCKET = i32;
 
-pub const AF_UNIX: i32 = 1;
-pub const AF_INET: i32 = 2;
-pub const AF_INET6: i32 = 10;
-
-pub const SOCK_STREAM: i32 = 1;
-pub const SOCK_DGRAM: i32 = 2;
-pub const SOCK_RAW: i32 = 3;
-
-pub const SOL_SOCKET: i32 = 1;
 pub const SO_ACCEPTCONN: i32 = 30;
-
-pub const MSG_DONTWAIT: i32 = 0x40;
 
 pub const NI_MAXHOST: i32 = 1025;
 pub const NI_MAXSERV: i32 = 32;
@@ -83,54 +72,12 @@ pub const SIG_BLOCK: i32 = 0;
 pub const SIG_UNBLOCK: i32 = 1;
 pub const SIG_SETMASK: i32 = 2;
 
-// Synthetic POSIX errno domain exported by Molt, not raw WASI preview1 errno.
-// Each declaration owns both the runtime constant and its Python export.
-// Publication order is significant: errno.errorcode keeps the last alias.
-macro_rules! synthetic_errno {
-    ($($name:ident = $value:expr;)+) => {
-        $(pub const $name: i32 = $value;)+
-        pub const ERRNO_CONSTANTS: &[(&str, i64)] = &[
-            $((stringify!($name), $name as i64),)+
-        ];
-    };
-}
+pub use crate::wasm_socket_abi::{
+    AF_INET, AF_INET6, AF_UNIX, MSG_DONTWAIT, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM, SOL_SOCKET,
+};
 
-synthetic_errno! {
-    EACCES = 13;
-    EALREADY = 114;
-    EAFNOSUPPORT = 97;
-    EBADF = 9;
-    ECHILD = 10;
-    ECONNABORTED = 103;
-    ECONNREFUSED = 111;
-    ECONNRESET = 104;
-    EEXIST = 17;
-    EHOSTUNREACH = 113;
-    EINPROGRESS = 115;
-    EINTR = 4;
-    EIO = 5;
-    ELOOP = 40;
-    EROFS = 30;
-    EISCONN = 106;
-    EISDIR = 21;
-    EINVAL = 22;
-    ENOENT = 2;
-    ENOMEM = 12;
-    ENOSYS = 38;
-    ENOTDIR = 20;
-    EPERM = 1;
-    EPIPE = 32;
-    EPROTOTYPE = 91;
-    ESRCH = 3;
-    ETIMEDOUT = 110;
-    EWOULDBLOCK = EAGAIN;
-    ESHUTDOWN = 108;
-    // CPython publishes EAGAIN after EWOULDBLOCK, so it owns the reverse name.
-    EAGAIN = 11;
-}
-
-// getaddrinfo has a separate error namespace, exported by socket only.
-pub const EAI_NONAME: i32 = 8;
+// The actual Molt host/Python domain, generated from the ABI declaration.
+pub use crate::synthetic_errno::*;
 
 // Deterministic sysconf identifiers used by the wasm-side `os.sysconf` subset.
 // Match the canonical values exposed through `os.sysconf_names` in the current
@@ -186,29 +133,6 @@ unsafe extern "C" {
     pub fn unsetenv(name: *const c_char) -> c_int;
 }
 
-/// Convert native WASI metadata errors to the existing exported POSIX domain.
-/// Preserve a typed known error; unmodeled native kinds are explicitly EIO.
-pub fn metadata_error_errno(error: &std::io::Error) -> i32 {
-    use std::io::ErrorKind;
-    #[cfg(target_os = "wasi")]
-    match error.raw_os_error() {
-        Some(::libc::ELOOP) => return ELOOP,
-        Some(::libc::EROFS) => return EROFS,
-        _ => (),
-    }
-    match error.kind() {
-        ErrorKind::NotFound => ENOENT,
-        ErrorKind::PermissionDenied => EACCES,
-        ErrorKind::AlreadyExists => EEXIST,
-        ErrorKind::InvalidInput => EINVAL,
-        ErrorKind::NotADirectory => ENOTDIR,
-        ErrorKind::IsADirectory => EISDIR,
-        ErrorKind::ReadOnlyFilesystem => EROFS,
-        ErrorKind::Unsupported => ENOSYS,
-        _ => EIO,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,7 +161,7 @@ mod tests {
             ErrorKind::Unsupported,
             ErrorKind::NotFound,
         ] {
-            let code = i64::from(metadata_error_errno(&Error::from(kind)));
+            let code = i64::from(crate::synthetic_errno::from_io_error(&Error::from(kind)).code());
             assert!(names.values().any(|value| *value == code));
         }
         assert!(names.keys().all(|name| !name.starts_with("EAI_")));

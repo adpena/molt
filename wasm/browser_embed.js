@@ -14,12 +14,12 @@ import {
   NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
   nativeCallableBrowserSignature,
 } from './native_callable_abi_generated.js';
+import './synthetic_errno_generated.js';
 import './wasi_errno_generated.js';
 
 const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
-// The guest reads WASI errno codes, its libc's numbering on wasm32-wasip1
-// (runtime/molt-backend-wasm/src/wasm_abi_manifest.toml [wasi_errno]).
-const { ENOSYS, EINVAL, ENOMEM, EBADF } = globalThis.MoltWasiErrno;
+// Molt env imports consume the generated synthetic POSIX domain.
+const { ENOSYS, EINVAL, ENOMEM, EBADF } = globalThis.MoltSyntheticErrno.errno;
 const TYPE_TAG_BYTES = 6;
 const NATIVE_CALLABLE_IMPORT_MODULE = 'molt_native';
 const UTF8_DECODER = new TextDecoder('utf-8');
@@ -708,7 +708,7 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, options = {})
 };
 
 const buildMinimalWasi = (state, logFn) => {
-  const unsupported = () => ENOSYS;
+  const unsupported = () => globalThis.MoltWasiErrno.ENOSYS;
   const wasi = {
     args_get: () => 0,
     args_sizes_get: (argcPtr, argvBufSizePtr) => {
@@ -724,7 +724,7 @@ const buildMinimalWasi = (state, logFn) => {
     },
     fd_write: (fd, iovs, iovsLen, nwritten) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const view = new DataView(memory.buffer);
       let total = 0;
       let text = '';
@@ -744,7 +744,7 @@ const buildMinimalWasi = (state, logFn) => {
     },
     random_get: (bufPtr, bufLen) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const bytes = new Uint8Array(memory.buffer, Number(bufPtr), Number(bufLen));
       if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
         crypto.getRandomValues(bytes);
@@ -757,7 +757,7 @@ const buildMinimalWasi = (state, logFn) => {
     },
     clock_time_get: (_clockId, _precision, outPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       new DataView(memory.buffer).setBigUint64(
         Number(outPtr),
         BigInt(Date.now()) * 1000000n,
@@ -776,7 +776,7 @@ const buildMinimalWasi = (state, logFn) => {
     // The embed exposes no preopened directories. EBADF ends wasi-libc's
     // preopen scan; any other errno (ENOSYS) makes it _Exit(71) on the first
     // descriptor operation, such as closing a file handle at shutdown.
-    fd_prestat_get: () => EBADF,
+    fd_prestat_get: () => globalThis.MoltWasiErrno.EBADF,
   };
   return new Proxy(wasi, {
     get(target, name) {

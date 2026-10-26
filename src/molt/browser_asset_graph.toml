@@ -55,6 +55,18 @@ source_type = "script"
 authority = "wasm-abi"
 
 [[asset]]
+path = "socket_abi_generated.js"
+role = "shared"
+source_type = "script"
+authority = "wasm-abi"
+
+[[asset]]
+path = "synthetic_errno_generated.js"
+role = "shared"
+source_type = "script"
+authority = "wasm-abi"
+
+[[asset]]
 path = "wasi_errno_generated.js"
 role = "shared"
 source_type = "script"

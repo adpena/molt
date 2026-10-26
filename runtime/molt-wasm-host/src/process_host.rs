@@ -585,32 +585,32 @@ pub(super) fn define_process_host(
          -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let args_buf = match read_bytes(&mut caller, &memory, args_ptr, args_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let args = match decode_string_list(&args_buf) {
                 Ok(val) => val,
-                Err(_) => return -libc::EINVAL,
+                Err(_) => return -GuestErrno::EINVAL,
             };
             if args.is_empty() {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             let env_mode;
             let env_entries;
             if env_ptr != 0 && env_len > 0 {
                 let env_buf = match read_bytes(&mut caller, &memory, env_ptr, env_len) {
                     Ok(buf) => buf,
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 };
                 match decode_env(&env_buf) {
                     Ok((mode, entries)) => {
                         env_mode = mode;
                         env_entries = entries;
                     }
-                    Err(_) => return -libc::EINVAL,
+                    Err(_) => return -GuestErrno::EINVAL,
                 }
             } else {
                 env_mode = 0;
@@ -619,11 +619,11 @@ pub(super) fn define_process_host(
             let cwd = if cwd_ptr != 0 && cwd_len > 0 {
                 let cwd_buf = match read_bytes(&mut caller, &memory, cwd_ptr, cwd_len) {
                     Ok(buf) => buf,
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 };
                 match String::from_utf8(cwd_buf) {
                     Ok(val) => Some(val),
-                    Err(_) => return -libc::EINVAL,
+                    Err(_) => return -GuestErrno::EINVAL,
                 }
             } else {
                 None
@@ -660,7 +660,7 @@ pub(super) fn define_process_host(
                 val if val >= PROCESS_STDIO_FD_BASE => {
                     let fd = val - PROCESS_STDIO_FD_BASE;
                     let Some(stdio) = stdio_from_fd(fd) else {
-                        return -libc::EBADF;
+                        return -GuestErrno::EBADF;
                     };
                     cmd.stdin(stdio);
                 }
@@ -689,10 +689,10 @@ pub(super) fn define_process_host(
                 } else if stdout_mode >= PROCESS_STDIO_FD_BASE {
                     let fd = stdout_mode - PROCESS_STDIO_FD_BASE;
                     let Some(stdout_stdio) = stdio_from_fd(fd) else {
-                        return -libc::EBADF;
+                        return -GuestErrno::EBADF;
                     };
                     let Some(stderr_stdio) = stdio_from_fd(fd) else {
-                        return -libc::EBADF;
+                        return -GuestErrno::EBADF;
                     };
                     cmd.stdout(stdout_stdio);
                     cmd.stderr(stderr_stdio);
@@ -711,7 +711,7 @@ pub(super) fn define_process_host(
                     val if val >= PROCESS_STDIO_FD_BASE => {
                         let fd = val - PROCESS_STDIO_FD_BASE;
                         let Some(stdio) = stdio_from_fd(fd) else {
-                            return -libc::EBADF;
+                            return -GuestErrno::EBADF;
                         };
                         cmd.stdout(stdio);
                     }
@@ -729,7 +729,7 @@ pub(super) fn define_process_host(
                     val if val >= PROCESS_STDIO_FD_BASE => {
                         let fd = val - PROCESS_STDIO_FD_BASE;
                         let Some(stdio) = stdio_from_fd(fd) else {
-                            return -libc::EBADF;
+                            return -GuestErrno::EBADF;
                         };
                         cmd.stderr(stdio);
                     }
@@ -741,13 +741,13 @@ pub(super) fn define_process_host(
 
             let exports = match runtime_exports(&mut caller) {
                 Ok(exports) => exports,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
 
             let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
                 match new_stream(&mut caller, &exports, 0) {
                     Ok(bits) => Some(bits),
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 }
             } else {
                 None
@@ -755,7 +755,7 @@ pub(super) fn define_process_host(
             let stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
                 match new_stream(&mut caller, &exports, 0) {
                     Ok(bits) => Some(bits),
-                    Err(_) => return -libc::EFAULT,
+                    Err(_) => return -GuestErrno::EFAULT,
                 }
             } else {
                 None
@@ -821,7 +821,7 @@ pub(super) fn define_process_host(
             if out_handle_ptr != 0
                 && write_u64(&mut caller, &memory, out_handle_ptr, handle).is_err()
             {
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             0
         },
@@ -832,7 +832,7 @@ pub(super) fn define_process_host(
         |mut caller: Caller<'_, HostState>, handle: i64, _timeout_ms: i64, out_code: i32| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let mut stop_polling = false;
             let code = {
@@ -843,7 +843,7 @@ pub(super) fn define_process_host(
                     .get_mut(&(handle as u64))
                 {
                     Some(entry) => entry,
-                    None => return -libc::EBADF,
+                    None => return -GuestErrno::EBADF,
                 };
                 if entry.exit_code.is_none() {
                     match entry.child.try_wait() {
@@ -867,7 +867,7 @@ pub(super) fn define_process_host(
                     .poll_untrack(handle as u64);
             }
             let Some(code) = code else {
-                return -libc::EWOULDBLOCK;
+                return -GuestErrno::EWOULDBLOCK;
             };
             if out_code != 0 {
                 let _ = write_bytes(&mut caller, &memory, out_code, &code.to_le_bytes());
@@ -892,7 +892,7 @@ pub(super) fn define_process_host(
                 .get_mut(&(handle as u64))
             {
                 Some(entry) => entry,
-                None => return -libc::EBADF,
+                None => return -GuestErrno::EBADF,
             };
             match entry.child.kill() {
                 Ok(_) => 0,
@@ -911,7 +911,7 @@ pub(super) fn define_process_host(
                 .get_mut(&(handle as u64))
             {
                 Some(entry) => entry,
-                None => return -libc::EBADF,
+                None => return -GuestErrno::EBADF,
             };
             #[cfg(unix)]
             {
@@ -937,7 +937,7 @@ pub(super) fn define_process_host(
         |mut caller: Caller<'_, HostState>, handle: i64, data_ptr: i32, len: i64| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let len_i32 = i32::try_from(len).unwrap_or(0);
             if len_i32 <= 0 {
@@ -945,7 +945,7 @@ pub(super) fn define_process_host(
             }
             let buf = match read_bytes(&mut caller, &memory, data_ptr, len_i32) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let entry = match caller
                 .data_mut()
@@ -954,10 +954,10 @@ pub(super) fn define_process_host(
                 .get_mut(&(handle as u64))
             {
                 Some(entry) => entry,
-                None => return -libc::EBADF,
+                None => return -GuestErrno::EBADF,
             };
             let Some(stdin) = entry.stdin.as_mut() else {
-                return -libc::EPIPE;
+                return -GuestErrno::EPIPE;
             };
             if let Err(err) = stdin.write_all(&buf) {
                 return -map_io_error(&err);
@@ -979,7 +979,7 @@ pub(super) fn define_process_host(
                 .get_mut(&(handle as u64))
             {
                 Some(entry) => entry,
-                None => return -libc::EBADF,
+                None => return -GuestErrno::EBADF,
             };
             entry.stdin = None;
             0
@@ -991,7 +991,7 @@ pub(super) fn define_process_host(
         |mut caller: Caller<'_, HostState>, handle: i64, which: i32, out_stream: i32| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let stream_bits = match caller
                 .data()
@@ -1004,10 +1004,10 @@ pub(super) fn define_process_host(
                     PROCESS_STDIO_STDERR => entry.stderr_stream,
                     _ => None,
                 },
-                None => return -libc::EBADF,
+                None => return -GuestErrno::EBADF,
             };
             let Some(bits) = stream_bits else {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             };
             if out_stream != 0 {
                 let _ = write_u64(&mut caller, &memory, out_stream, bits);
@@ -1019,11 +1019,11 @@ pub(super) fn define_process_host(
     let process_poll = Func::wrap(&mut *store, |mut caller: Caller<'_, HostState>| -> i32 {
         let memory = match ensure_memory(&mut caller) {
             Ok(mem) => mem,
-            Err(_) => return -libc::EFAULT,
+            Err(_) => return -GuestErrno::EFAULT,
         };
         let exports = match runtime_exports(&mut caller) {
             Ok(exports) => exports,
-            Err(_) => return -libc::EFAULT,
+            Err(_) => return -GuestErrno::EFAULT,
         };
         let events = caller.data_mut().process_manager.read_events();
         let mut read_error = None;

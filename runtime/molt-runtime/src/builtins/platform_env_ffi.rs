@@ -366,9 +366,10 @@ pub extern "C" fn molt_socket_constants() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         init_platform_cached_owned_bits(_py, &platform_state(_py).socket_constants_cache, || {
             let constants = socket_constants();
-            let mut pairs = Vec::with_capacity(constants.len() * 2);
-            let mut owned_bits = Vec::with_capacity(constants.len() * 2);
-            for &(name, value) in constants {
+            let capacity = constants.size_hint().0 * 2;
+            let mut pairs = Vec::with_capacity(capacity);
+            let mut owned_bits = Vec::with_capacity(capacity);
+            for (name, value) in constants {
                 let name_ptr = alloc_string(_py, name.as_bytes());
                 if name_ptr.is_null() {
                     for bits in owned_bits {

@@ -282,27 +282,84 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
         manifest.runtime_raw_abi_specs(drifted)
 
 
-def test_wasi_errno_table_is_one_code_per_name_and_projects_to_every_host() -> None:
+def test_errno_protocols_are_separate_and_preserve_alias_order() -> None:
     data = copy.deepcopy(gen_wasm_abi.load_manifest())
-    table = manifest.wasi_errno_table(data)
-    # WASI preview1's errno enum: 76 codes plus libc's two alias names.
-    assert sorted(set(table.values())) == list(range(1, 77))
-    assert table["EWOULDBLOCK"] == table["EAGAIN"] == 6
-    assert table["EOPNOTSUPP"] == table["ENOTSUP"] == 58
-    js = gen_wasm_abi.render_js_wasi_errno(data)
-    assert json.loads(js[js.index("() => (") + 7 : js.rindex("));")]) == table
-    rust = gen_wasm_abi.render_runtime_wasi_errno_rs(data)
-    assert "assert!(libc::EINPROGRESS == 26);" in rust
-    assert rust.count("assert!(libc::") == len(table)
-
+    raw = manifest.wasi_errno_table(data)
+    guest = manifest.synthetic_errno_table(data)
+    resolver = manifest.resolver_error_table(data)
+    assert raw["EAGAIN"] == 6 and raw["EINPROGRESS"] == 26
+    assert guest["EAGAIN"] == guest["EWOULDBLOCK"] == 11
+    assert guest["EINPROGRESS"] == 115
+    assert guest["ECONNREFUSED"] == 111
+    assert resolver["EAI_NONAME"] == 8
+    assert not any(name.startswith("EAI_") for name in guest)
+    assert list(guest).index("EWOULDBLOCK") < list(guest).index("EAGAIN")
+    rust = gen_wasm_abi.render_synthetic_errno_rs(data)
+    assert "pub enum GuestErrno" in rust and "pub enum GuestResolverError" in rust
     duplicate = copy.deepcopy(data)
-    duplicate["wasi_errno"]["EFAKE"] = 26
-    with pytest.raises(manifest.WasmAbiManifestError, match="repeats code 26"):
-        manifest._validate_wasi_errno(duplicate)
+    duplicate["synthetic_errno"].append({"name": "EFAKE", "value": 115})
+    with pytest.raises(manifest.WasmAbiManifestError, match="explicit alias"):
+        manifest.synthetic_errno_table(duplicate)
     dangling = copy.deepcopy(data)
-    dangling["wasi_errno_alias"]["EFAKE"] = "EMISSING"
-    with pytest.raises(manifest.WasmAbiManifestError, match="undeclared code"):
-        manifest._validate_wasi_errno(dangling)
+    dangling["synthetic_errno"].append({"name": "EFAKE", "alias": "EMISSING"})
+    with pytest.raises(manifest.WasmAbiManifestError, match="cyclic or undeclared"):
+        manifest.synthetic_errno_table(dangling)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda data: data["resolver_error"].append(
+            {"name": "EAI_BAD-NAME", "value": 99, "role": "resolver"}
+        ),
+        lambda data: data["resolver_error"].append(
+            {"name": "EAI_FAKE", "value": 2**31, "role": "resolver"}
+        ),
+        lambda data: data["synthetic_errno"][0].update(
+            windows_socket_name="WSA_BAD-NAME"
+        ),
+        lambda data: data["resolver_error"][0].update(windows_code=2**31),
+        lambda data: data["errno_adoption"].update(unknown="EAI_NONAME"),
+        lambda data: data["wasi_errno_disposition"].clear(),
+        lambda data: data["wasi_errno_disposition"].update(ENOTCAPABLE="ENOTCAPABLE"),
+        lambda data: next(
+            row for row in data["synthetic_errno"] if row["name"] == "ESHUTDOWN"
+        ).pop("wasi_sdk"),
+        lambda data: next(
+            row for row in data["synthetic_errno"] if row["name"] == "E2BIG"
+        ).update(wasi_sdk=False),
+        lambda data: data["wasm_socket_constant"].append(
+            {"name": "AF_FAKE", "kind": "address_family", "value": 2}
+        ),
+        lambda data: data["wasm_socket_constant"].append(
+            {
+                "name": "SO_FAKE",
+                "kind": "option",
+                "option_level": "MSG_PEEK",
+                "value": 33,
+            }
+        ),
+        lambda data: data["wasm_socket_constant"].append(
+            {
+                "name": "SO_FAKE",
+                "kind": "option",
+                "option_level": "SOL_SOCKET",
+                "value": 4,
+            }
+        ),
+        lambda data: data["wasm_socket_constant"].append(
+            {"name": "MSG_FAKE", "kind": "message_flag", "value": 3}
+        ),
+        lambda data: data["wasm_socket_constant"].append(
+            {"kind": "option", "value": 99}
+        ),
+    ],
+)
+def test_error_domain_declarations_reject_invalid_wire_identity(mutate) -> None:
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    mutate(data)
+    with pytest.raises(manifest.WasmAbiManifestError):
+        manifest.validate_loaded_manifest(data)
 
 
 def test_runtime_callable_abi_rejects_transport_arity_drift() -> None:
@@ -3845,3 +3902,51 @@ def test_builtin_binding_policy_projects_typed_identity_and_hot_path() -> None:
         "isinstance",
         "issubclass",
     }
+
+
+def test_native_resolver_alias_preference_is_explicit_and_order_independent() -> None:
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    nodata = next(row for row in data["resolver_error"] if row["name"] == "EAI_NODATA")
+    assert nodata["native_alias_prefer"] == "EAI_NONAME"
+    # Both declaration orders must emit the same guarded native branch. A
+    # first-match alias implementation fails this independent SDK policy oracle.
+    branch = (
+        "if crate::native_error_codes::EAI_NODATA == Some(code.code())"
+        " && crate::native_error_codes::EAI_NONAME != Some(code.code())"
+    )
+    for rows in (data["resolver_error"], list(reversed(data["resolver_error"]))):
+        variant = copy.deepcopy(data)
+        variant["resolver_error"] = rows
+        manifest.resolver_error_table(variant)
+        rendered = gen_wasm_abi.render_synthetic_errno_rs(variant)
+        assert branch in rendered
+        assert "if code == ::libc::EAI_" not in rendered
+    nodata["native_alias_prefer"] = "EAI_SYSTEM"
+    with pytest.raises(manifest.WasmAbiManifestError, match="alias preference"):
+        manifest.resolver_error_table(data)
+
+
+def test_raw_wasi_ingress_has_complete_typed_coverage_and_explicit_dispositions() -> (
+    None
+):
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    guest = manifest.synthetic_errno_table(data)
+    assert guest["EMFILE"] == 24 and guest["ENOTTY"] == 25
+    assert guest["ERANGE"] == 34 and guest["ECANCELED"] == 125
+    assert guest["EOWNERDEAD"] == 130
+    assert "ENOTCAPABLE" not in guest
+    assert data["wasi_errno_disposition"] == {"ENOTCAPABLE": "EACCES"}
+    assert data["errno_adoption"] == {"unknown": "EIO"}
+    assert set(data["wasi_errno"]) - set(guest) == {"ENOTCAPABLE"}
+    assert set(guest) - set(manifest.wasi_errno_table(data)) == {"ESHUTDOWN"}
+    rendered = gen_wasm_abi.render_synthetic_errno_rs(data)
+    raw_enum = rendered.split("pub enum RawWasiErrno {", 1)[1].split("}\n", 1)[0]
+    assert len([line for line in raw_enum.splitlines() if "=" in line]) == 76
+    assert "Self::ENOTCAPABLE => GuestErrno::EACCES" in rendered
+    assert "pub fn from_sdk(code: i32) -> Option<Self>" in rendered
+    assert "if code == ::libc::ENOENT { return Some(Self::ENOENT); }" in rendered
+    assert "if code == 10035" not in rendered
+    assert all(
+        "windows_socket_code" not in row and "windows_crt" not in row
+        for row in data["synthetic_errno"]
+    )

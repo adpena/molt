@@ -882,44 +882,9 @@ fn open_impl(
             // End VFS dispatch
             file = match mode_info.options.open(&path) {
                 Ok(file) => Some(file),
-                Err(err) => {
-                    let short = match err.kind() {
-                        ErrorKind::NotFound => "No such file or directory".to_string(),
-                        ErrorKind::PermissionDenied => "Permission denied".to_string(),
-                        ErrorKind::AlreadyExists => "File exists".to_string(),
-                        ErrorKind::InvalidInput => "Invalid argument".to_string(),
-                        ErrorKind::IsADirectory => "Is a directory".to_string(),
-                        ErrorKind::NotADirectory => "Not a directory".to_string(),
-                        _ => err.to_string(),
-                    };
-                    let path_display = path.to_string_lossy();
-                    let raw_code = err.raw_os_error();
-                    let msg = if let Some(code) = raw_code {
-                        format!("[Errno {code}] {short}: '{path_display}'")
-                    } else {
-                        format!("{short}: '{path_display}'")
-                    };
-                    if let Some(code) = raw_code {
-                        return raise_os_error_errno::<_>(_py, code as i64, &msg);
-                    }
-                    match err.kind() {
-                        ErrorKind::AlreadyExists => {
-                            return raise_exception::<_>(_py, "FileExistsError", &msg);
-                        }
-                        ErrorKind::NotFound => {
-                            return raise_exception::<_>(_py, "FileNotFoundError", &msg);
-                        }
-                        ErrorKind::PermissionDenied => {
-                            return raise_exception::<_>(_py, "PermissionError", &msg);
-                        }
-                        ErrorKind::IsADirectory => {
-                            return raise_exception::<_>(_py, "IsADirectoryError", &msg);
-                        }
-                        ErrorKind::NotADirectory => {
-                            return raise_exception::<_>(_py, "NotADirectoryError", &msg);
-                        }
-                        _ => return raise_exception::<_>(_py, "OSError", &msg),
-                    }
+                Err(error) => {
+                    let context = format!("open '{}'", path.to_string_lossy());
+                    return raise_os_error::<u64>(_py, error, &context);
                 }
             };
         }

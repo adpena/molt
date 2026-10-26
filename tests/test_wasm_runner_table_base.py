@@ -623,37 +623,46 @@ def _extract_table_base(wasm_path: Path) -> int | None:
     return json.loads(result.stdout)
 
 
-def test_host_socket_errors_reach_the_guest_as_wasi_errno() -> None:
-    """The guest reads WASI errno codes, its libc numbering on wasm32-wasip1.
-
-    A host error crosses by name: by its `code`, or by its host errno read back
-    to a name. The expected numbers are WASI preview1's `errno` enum.
-    """
-    script = (
-        "const os = require('os');"
-        "const runner = require('./wasm/run_wasm.js');"
-        "const host = os.constants.errno;"
-        "process.stdout.write(JSON.stringify({"
-        "  inProgress: runner.mapSocketError({ code: 'EINPROGRESS' }),"
-        "  refusedByHostNumber: runner.mapSocketError({ errno: -host.ECONNREFUSED }),"
-        "  wouldBlock: runner.mapSocketError({ code: 'EWOULDBLOCK' }),"
-        "  notFamily: runner.mapSocketError({ code: 'EAFNOSUPPORT' }),"
-        "  unknown: runner.mapSocketError({ code: 'ENOTFOUND' }),"
-        "  hostNumbers: [host.EINPROGRESS, host.ECONNREFUSED],"
-        "}));"
-    )
+def test_host_socket_errors_reach_the_guest_in_the_declared_domain() -> None:
+    script = """
+const runner = require('./wasm/run_wasm.js');
+const util = require('node:util');
+const errno = require('./wasm/synthetic_errno_generated.js').errno;
+const nativeWouldBlock = [...util.getSystemErrorMap()].find(([, detail]) => detail[0] === 'EAGAIN')[0];
+process.stdout.write(JSON.stringify({
+  pending: runner.mapSocketError({code:'EINPROGRESS',errno:-1}),
+  refused: runner.mapSocketError({code:'ECONNREFUSED'}),
+  wouldBlock: runner.mapSocketError({errno:nativeWouldBlock}),
+  unknown: runner.mapSocketError({errno:-2147483648}),
+  resolver: runner.mapResolverFailure({code:'ENOTFOUND'}),
+  foreignResolver: runner.mapSocketError({code:'EAI_NONAME',errno:-9}),
+  resolverCollision: runner.mapResolverFailure({code:'EAI_SERVICE'}),
+  systemCollision: runner.mapResolverFailure({code:'EBADF'}),
+  numericSystem: runner.mapResolverFailure({errno: [...util.getSystemErrorMap()].find(([, detail]) => detail[0] === 'EBADF')[0]}),
+  alias: errno.EWOULDBLOCK,
+  explicitUnknown: runner.mapSocketError({code:'EFAKE',errno:nativeWouldBlock}),
+  unknownResolverBounded: (() => { try { runner.mapResolverFailure({code: 'X'.repeat(10000)}); return false; } catch (error) { return error.constructor.name === 'ResolverBoundaryError' && error.message.length < 200; } })(),
+  ordinaryNoDataRefused: (() => { try { runner.mapResolverFailure({code:'ENODATA'}); return false; } catch (error) { return error.constructor.name === 'ResolverBoundaryError'; } })(),
+}));
+"""
     result = _run_wasm_test_process(
         ["node", "-e", script], cwd=ROOT, env=os.environ, timeout=30
     )
     assert result.returncode == 0, result.stderr
-    mapped = json.loads(result.stdout)
-    assert mapped.pop("hostNumbers") != [26, 14]  # the host's own numbering differs
-    assert mapped == {
-        "inProgress": 26,
-        "refusedByHostNumber": 14,
-        "wouldBlock": 6,
-        "notFamily": 5,
-        "unknown": 28,
+    assert json.loads(result.stdout) == {
+        "pending": 115,
+        "refused": 111,
+        "wouldBlock": 11,
+        "unknown": 5,
+        "resolver": 8,
+        "foreignResolver": 5,
+        "resolverCollision": 9,
+        "systemCollision": -9,
+        "numericSystem": -9,
+        "alias": 11,
+        "explicitUnknown": 5,
+        "unknownResolverBounded": True,
+        "ordinaryNoDataRefused": True,
     }
 
 
@@ -1773,3 +1782,83 @@ def test_cli_json_wasm_keeps_guest_bytes_and_host_diagnostics(
     assert "ExperimentalWarning: guest" not in data["host_stderr"]
     assert ("unreachable" in data["host_stderr"]) is trap
     assert all(not Path(owner.name).exists() for owner in owners)
+
+
+def test_resolver_worker_transport_preserves_domains_and_terminal_refusal(
+    tmp_path: Path,
+) -> None:
+    # The real worker inherits this external DNS producer. No production test op,
+    # special error status, or duplicate worker implementation is substituted.
+    preload = tmp_path / "dns_producer.cjs"
+    preload.write_text(
+        """
+const dns = require('node:dns');
+dns.promises.lookup = async host => {
+  const identities = { 'resolver.test': 'EAI_SERVICE', 'system.test': 'EBADF',
+    'opaque.test': 'EAI_SYSTEM', 'unknown.test': 'EAI_VENDOR' };
+  if (identities[host]) { const error = new Error('external DNS failure'); error.code = identities[host]; throw error; }
+  return [{ address: '127.0.0.1', family: 4 }];
+};
+""",
+        encoding="utf-8",
+    )
+    script = r"""
+const fs = require('node:fs');
+const Module = require('node:module');
+const path = require('node:path');
+const filename = path.resolve('wasm/run_wasm.js');
+const loaded = new Module(filename, module);
+loaded.filename = filename;
+loaded.paths = Module._nodeModulePaths(path.dirname(filename));
+loaded._compile(fs.readFileSync(filename, 'utf8') +
+  '\nmodule.exports.transport = { socketHostGetaddrinfo, setWasmMemory, close: () => socketWorkerClient.close() };', filename);
+const transport = loaded.exports.transport;
+(async () => {
+  // Import and re-export the real i32 host boundary; no compiler fixture or
+  // alternate resolver implementation supplies a result.
+  const text = value => [...Buffer.from(value)];
+  const name = value => [text(value).length, ...text(value)];
+  const section = (id, body) => [id, body.length, ...body];
+  const bytes = [0,97,115,109,1,0,0,0,
+    ...section(1, [1, 0x60, 11, ...Array(11).fill(0x7f), 1, 0x7f]),
+    ...section(2, [2, ...name('env'), ...name('molt_socket_getaddrinfo_host'), 0, 0,
+      ...name('env'), ...name('memory'), 2, 0, 1]),
+    ...section(7, [2, ...name('lookup'), 0, 0, ...name('memory'), 2, 0])];
+  const memory = new WebAssembly.Memory({initial: 1});
+  transport.setWasmMemory(memory);
+  const {instance} = await WebAssembly.instantiate(new Uint8Array(bytes), {
+    env: {memory, molt_socket_getaddrinfo_host: transport.socketHostGetaddrinfo},
+  });
+  const statuses = [];
+  try {
+    for (const host of ['ok.test', 'resolver.test', 'system.test', 'opaque.test', 'unknown.test', 'ok.test']) {
+      try {
+        new Uint8Array(memory.buffer).set(Buffer.from(host), 64);
+        new Uint8Array(memory.buffer).set(Buffer.from('80'), 512);
+        statuses.push(instance.exports.lookup(64, Buffer.byteLength(host), 512, 2,
+          2, 1, 6, 0, 1024, host === 'opaque.test' ? 0 : 1024, 2048));
+      } catch (error) {
+        statuses.push({type: error.constructor.name, diagnostic: error.message});
+      }
+    }
+  } finally { await transport.close(); }
+  console.log(JSON.stringify(statuses));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = _run_wasm_test_process(
+        ["node", "--require", str(preload), "-e", script],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    statuses = json.loads(result.stdout)
+    assert statuses[:3] == [0, 9, -9]
+    assert (
+        statuses[-1] == 0
+    )  # A refusal wakes its waiter and does not strand the worker.
+    for status in statuses[3:5]:
+        assert status["type"] == "ResolverBoundaryError"
+        assert "getaddrinfo refused" in status["diagnostic"]
+    assert "unsupported resolver error identity EAI_SYSTEM" in statuses[3]["diagnostic"]
+    assert "unsupported resolver error identity EAI_VENDOR" in statuses[4]["diagnostic"]

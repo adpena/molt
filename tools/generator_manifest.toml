@@ -351,7 +351,11 @@ outputs = [
   "wasm/wasm_abi_generated.json",
   "wasm/callable_table_abi_generated.js",
   "wasm/wasi_errno_generated.js",
-  "runtime/molt-runtime/src/wasi_errno_generated.rs",
+  "runtime/molt-runtime-platform/src/synthetic_errno_generated.rs",
+  "runtime/molt-runtime-platform/native_error_names_generated.rs",
+  "wasm/synthetic_errno_generated.js",
+  "wasm/socket_abi_generated.js",
+  "runtime/molt-runtime-platform/src/wasm_socket_abi_generated.rs",
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]

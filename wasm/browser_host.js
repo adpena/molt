@@ -8,10 +8,12 @@ import {
 } from './browser_target_features.js';
 import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
 import { EXPLICIT_CAPABILITY_TIER } from './host_capabilities_generated.js';
+import './synthetic_errno_generated.js';
+import './socket_abi_generated.js';
 import './wasi_errno_generated.js';
+const SOCKET_ABI = globalThis.MoltSocketAbi;
 
-// The guest reads WASI errno codes, its libc's numbering on wasm32-wasip1
-// (runtime/molt-backend-wasm/src/wasm_abi_manifest.toml [wasi_errno]).
+// Molt env imports consume the generated synthetic POSIX domain.
 const {
   ENOSYS,
   EINVAL,
@@ -34,29 +36,29 @@ const {
   EISDIR,
   ENOTDIR,
   ESPIPE,
-} = globalThis.MoltWasiErrno;
+} = globalThis.MoltSyntheticErrno.errno;
 const IO_EVENT_READ = 1;
 const IO_EVENT_WRITE = 1 << 1;
 const IO_EVENT_ERROR = 1 << 2;
 const WS_BUFFER_MAX = 1024 * 1024;
-const AF_INET = 2;
-const AF_INET6 = 10;
-const AF_UNIX = 1;
-const SOCK_STREAM = 1;
-const SOCK_DGRAM = 2;
-const SOL_SOCKET = 1;
-const SO_REUSEADDR = 2;
-const SO_ERROR = 4;
-const SO_BROADCAST = 6;
-const SO_SNDBUF = 7;
-const SO_RCVBUF = 8;
-const SO_KEEPALIVE = 9;
-const SO_LINGER = 13;
-const SO_REUSEPORT = 15;
-const IPPROTO_TCP = 6;
-const IPPROTO_UDP = 17;
-const TCP_NODELAY = 1;
-const MSG_PEEK = 2;
+const AF_INET = SOCKET_ABI.AF_INET;
+const AF_INET6 = SOCKET_ABI.AF_INET6;
+const AF_UNIX = SOCKET_ABI.AF_UNIX;
+const SOCK_STREAM = SOCKET_ABI.SOCK_STREAM;
+const SOCK_DGRAM = SOCKET_ABI.SOCK_DGRAM;
+const SOL_SOCKET = SOCKET_ABI.SOL_SOCKET;
+const SO_REUSEADDR = SOCKET_ABI.SO_REUSEADDR;
+const SO_ERROR = SOCKET_ABI.SO_ERROR;
+const SO_BROADCAST = SOCKET_ABI.SO_BROADCAST;
+const SO_SNDBUF = SOCKET_ABI.SO_SNDBUF;
+const SO_RCVBUF = SOCKET_ABI.SO_RCVBUF;
+const SO_KEEPALIVE = SOCKET_ABI.SO_KEEPALIVE;
+const SO_LINGER = SOCKET_ABI.SO_LINGER;
+const SO_REUSEPORT = SOCKET_ABI.SO_REUSEPORT;
+const IPPROTO_TCP = SOCKET_ABI.IPPROTO_TCP;
+const IPPROTO_UDP = SOCKET_ABI.IPPROTO_UDP;
+const TCP_NODELAY = SOCKET_ABI.TCP_NODELAY;
+const MSG_PEEK = SOCKET_ABI.MSG_PEEK;
 const WASI_FILETYPE_CHARACTER_DEVICE = 2;
 const WASI_FILETYPE_DIRECTORY = 3;
 const WASI_FILETYPE_REGULAR_FILE = 4;
@@ -1937,6 +1939,7 @@ export const createBrowserSocketHost = (state, options) => {
     if (sockType !== SOCK_STREAM && sockType !== SOCK_DGRAM) {
       return BigInt(-EPROTONOSUPPORT);
     }
+    if (proto !== SOCKET_ABI.IPPROTO_IP && proto !== (sockType === SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP)) return BigInt(-EPROTONOSUPPORT);
     const handle = allocHandle();
     const core = makeCore({ handle, family, sockType, proto });
     sockets.set(handle, core);
@@ -2057,6 +2060,7 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const socketHostRecv = (handle, bufPtr, bufLen, flags) => {
+    if ((flags & ~(SOCKET_ABI.MSG_PEEK | SOCKET_ABI.MSG_DONTWAIT)) !== 0) return -EOPNOTSUPP;
     const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     const memory = state.memory;
@@ -2085,8 +2089,9 @@ export const createBrowserSocketHost = (state, options) => {
     return count;
   };
 
-  const socketHostSend = (handle, bufPtr, bufLen, _flags) => {
-    const core = sockets.get(Number(handle));
+  const socketHostSend = (handle, bufPtr, bufLen, flags) => {
+
+    if ((flags & ~SOCKET_ABI.MSG_DONTWAIT) !== 0) return -EOPNOTSUPP;    const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     if (core.state !== 'open' || !core.ws) return -ENOTCONN;
     const memory = state.memory;
@@ -2101,6 +2106,7 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const socketHostSendTo = (handle, bufPtr, bufLen, flags, addrPtr, addrLen) => {
+    if ((flags & ~SOCKET_ABI.MSG_DONTWAIT) !== 0) return -EOPNOTSUPP;
     const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     const memory = state.memory;
@@ -2169,6 +2175,7 @@ export const createBrowserSocketHost = (state, options) => {
     socketHostSend(handle, bufPtr, bufLen, flags);
 
   const socketHostRecvFrom = (handle, bufPtr, bufLen, flags, addrPtr, addrCap, outLenPtr) => {
+    if ((flags & ~(SOCKET_ABI.MSG_PEEK | SOCKET_ABI.MSG_DONTWAIT)) !== 0) return -EOPNOTSUPP;
     const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     const memory = state.memory;
@@ -2247,8 +2254,9 @@ export const createBrowserSocketHost = (state, options) => {
     return rc;
   };
 
-  const socketHostShutdown = (handle, _how) => {
-    const core = sockets.get(Number(handle));
+  const socketHostShutdown = (handle, how) => {
+
+    if (how !== SOCKET_ABI.SHUT_RD && how !== SOCKET_ABI.SHUT_WR && how !== SOCKET_ABI.SHUT_RDWR) return -EINVAL;    const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     if (core.ws) {
       try {
@@ -2304,6 +2312,8 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const socketHostSetsockopt = (handle, level, optname, valPtr, valLen) => {
+    if (!SOCKET_ABI.isKnownOption(level, optname)) return -ENOPROTOOPT;
+    if (level === SOL_SOCKET && optname === SO_ERROR) return -ENOPROTOOPT;
     const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     const memory = state.memory;
@@ -2315,6 +2325,7 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const socketHostGetsockopt = (handle, level, optname, valPtr, valLen, outLenPtr) => {
+    if (!SOCKET_ABI.isKnownOption(level, optname)) return -ENOPROTOOPT;
     const core = sockets.get(Number(handle));
     if (!core) return -EBADF;
     const memory = state.memory;
@@ -2364,15 +2375,24 @@ export const createBrowserSocketHost = (state, options) => {
     family,
     sockType,
     proto,
-    _flags,
+    flags,
     outPtr,
     outCap,
     outLenPtr,
   ) => {
+
+    const knownFlags = SOCKET_ABI.AI_PASSIVE | SOCKET_ABI.AI_CANONNAME | SOCKET_ABI.AI_NUMERICHOST | SOCKET_ABI.AI_NUMERICSERV;
+    if ((flags & ~knownFlags) !== 0) return globalThis.MoltSyntheticErrno.encodeResolverError(globalThis.MoltSyntheticErrno.resolver.EAI_BADFLAGS);
+    const resolver = globalThis.MoltSyntheticErrno.resolver;
+    if (family !== SOCKET_ABI.AF_UNSPEC && family !== AF_INET && family !== AF_INET6) return globalThis.MoltSyntheticErrno.encodeResolverError(resolver.EAI_FAMILY);
+    if (sockType !== 0 && sockType !== SOCK_STREAM && sockType !== SOCK_DGRAM) return globalThis.MoltSyntheticErrno.encodeResolverError(resolver.EAI_SOCKTYPE);
+    if (proto !== SOCKET_ABI.IPPROTO_IP && proto !== IPPROTO_TCP && proto !== IPPROTO_UDP) return globalThis.MoltSyntheticErrno.encodeResolverError(resolver.EAI_SERVICE);
+    if ((sockType === SOCK_STREAM && proto === IPPROTO_UDP) || (sockType === SOCK_DGRAM && proto === IPPROTO_TCP)) return globalThis.MoltSyntheticErrno.encodeResolverError(resolver.EAI_SOCKTYPE);
     const memory = state.memory;
     if (!memory) return -ENOSYS;
     const host = hostLen ? readStringFromMemory(memory, hostPtr, hostLen) : '';
     const service = servLen ? readStringFromMemory(memory, servPtr, servLen) : '';
+    if ((flags & SOCKET_ABI.AI_NUMERICSERV) !== 0 && service && !/^\d+$/.test(service)) return globalThis.MoltSyntheticErrno.encodeResolverError(globalThis.MoltSyntheticErrno.resolver.EAI_NONAME);
     let port = 0;
     if (service) {
       const parsed = Number.parseInt(service, 10);
@@ -2383,7 +2403,7 @@ export const createBrowserSocketHost = (state, options) => {
       } else if (service === 'https' || service === 'wss') {
         port = 443;
       } else {
-        return -ENOENT;
+        return globalThis.MoltSyntheticErrno.encodeResolverError(globalThis.MoltSyntheticErrno.resolver.EAI_SERVICE);
       }
     }
     let addrFamily = family;
@@ -2395,13 +2415,13 @@ export const createBrowserSocketHost = (state, options) => {
     let v4 = parseIPv4(addrHost);
     if (v4) {
       addrFamily = addrFamily === 0 ? AF_INET : addrFamily;
-      if (addrFamily !== AF_INET) return -EAFNOSUPPORT;
+      if (addrFamily !== AF_INET) return globalThis.MoltSyntheticErrno.encodeResolverError(globalThis.MoltSyntheticErrno.resolver.EAI_FAMILY);
       encodedAddr = encodeSockaddr({ family: AF_INET, host: addrHost, port });
     } else {
       const v6 = parseIPv6(addrHost);
       if (v6) {
         addrFamily = addrFamily === 0 ? AF_INET6 : addrFamily;
-        if (addrFamily !== AF_INET6) return -EAFNOSUPPORT;
+        if (addrFamily !== AF_INET6) return globalThis.MoltSyntheticErrno.encodeResolverError(globalThis.MoltSyntheticErrno.resolver.EAI_FAMILY);
         encodedAddr = encodeSockaddr({
           family: AF_INET6,
           host: addrHost,
@@ -2410,9 +2430,10 @@ export const createBrowserSocketHost = (state, options) => {
           scopeId: v6.scopeId || 0,
         });
       } else {
+        if ((flags & SOCKET_ABI.AI_NUMERICHOST) !== 0) return globalThis.MoltSyntheticErrno.encodeResolverError(globalThis.MoltSyntheticErrno.resolver.EAI_NONAME);
         const synthetic = ensureSynthetic(addrHost);
         addrFamily = addrFamily === 0 ? AF_INET : addrFamily;
-        if (addrFamily !== AF_INET) return -EAFNOSUPPORT;
+        if (addrFamily !== AF_INET) return globalThis.MoltSyntheticErrno.encodeResolverError(globalThis.MoltSyntheticErrno.resolver.EAI_FAMILY);
         encodedAddr = encodeSockaddr({ family: AF_INET, host: synthetic, port });
       }
     }
@@ -2821,7 +2842,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     view.setBigUint64(base + 56, 0n, true);
     return true;
   };
-  const wasiUnsupported = () => ENOSYS;
+  const wasiUnsupported = () => globalThis.MoltWasiErrno.ENOSYS;
   const preopenByFd = (fdNum) =>
     state.wasiPreopens.find((entry) => entry.fd === fdNum) || null;
   const readGuestPath = (ptr, len) => {
@@ -2868,22 +2889,22 @@ const buildWasiStub = (state, logFn, options = {}) => {
     let info = statResolvedPath(absolutePath);
     if (!info) {
       if ((oflags & WASI_OFLAGS_CREAT) === 0) {
-        return { errno: ENOENT };
+        return { errno: globalThis.MoltWasiErrno.ENOENT };
       }
       if (preopen.path !== '/tmp' || !state.vfs || !state.vfs.tmp) {
-        return { errno: EROFS };
+        return { errno: globalThis.MoltWasiErrno.EROFS };
       }
       state.vfs.tmp.write(relativePath, new Uint8Array(0));
       info = statResolvedPath(absolutePath);
       if (!info) {
-        return { errno: ENOENT };
+        return { errno: globalThis.MoltWasiErrno.ENOENT };
       }
     } else if ((oflags & WASI_OFLAGS_EXCL) !== 0 && (oflags & WASI_OFLAGS_CREAT) !== 0) {
-      return { errno: EINVAL };
+      return { errno: globalThis.MoltWasiErrno.EINVAL };
     }
     if (info.stat.isDir) {
       if (!wantDirectory) {
-        return { errno: EISDIR };
+        return { errno: globalThis.MoltWasiErrno.EISDIR };
       }
       const fd = state.wasiNextFd++;
       state.wasiFiles.set(fd, {
@@ -2897,23 +2918,23 @@ const buildWasiStub = (state, logFn, options = {}) => {
       return { errno: 0, fd };
     }
     if (wantDirectory) {
-      return { errno: ENOTDIR };
+      return { errno: globalThis.MoltWasiErrno.ENOTDIR };
     }
     if ((oflags & WASI_OFLAGS_TRUNC) !== 0) {
       if (info.resolved.prefix !== '/tmp') {
-        return { errno: EROFS };
+        return { errno: globalThis.MoltWasiErrno.EROFS };
       }
       info.resolved.mount.write(info.resolved.rel, new Uint8Array(0));
       info = statResolvedPath(absolutePath);
       if (!info) {
-        return { errno: ENOENT };
+        return { errno: globalThis.MoltWasiErrno.ENOENT };
       }
     }
     let buffer;
     try {
       buffer = info.resolved.mount.read(info.resolved.rel);
     } catch {
-      return { errno: ENOENT };
+      return { errno: globalThis.MoltWasiErrno.ENOENT };
     }
     const fd = state.wasiNextFd++;
     state.wasiFiles.set(fd, {
@@ -2935,7 +2956,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       entry.resolved.mount.write(entry.resolved.rel, entry.buffer);
       return 0;
     } catch (err) {
-      return EINVAL;
+      return globalThis.MoltWasiErrno.EINVAL;
     }
   };
   const writeBytesToFileEntry = (entry, bytes) => {
@@ -2951,7 +2972,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
   };
   const writeFdstat = (statPtr, filetype) => {
     const memory = state.memory;
-    if (!memory) return ENOSYS;
+    if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
     const view = new DataView(memory.buffer);
     const base = Number(statPtr);
     view.setUint8(base, filetype);
@@ -2976,20 +2997,20 @@ const buildWasiStub = (state, logFn, options = {}) => {
       throw new Error(`WASM proc_raise ${sig}`);
     },
     args_sizes_get: (argcPtr, argvBufSizePtr) => {
-      if (!writeWasiU32(argcPtr, 0)) return ENOSYS;
-      if (!writeWasiU32(argvBufSizePtr, 0)) return ENOSYS;
+      if (!writeWasiU32(argcPtr, 0)) return globalThis.MoltWasiErrno.ENOSYS;
+      if (!writeWasiU32(argvBufSizePtr, 0)) return globalThis.MoltWasiErrno.ENOSYS;
       return 0;
     },
     args_get: () => 0,
     environ_sizes_get: (countPtr, bufSizePtr) => {
-      if (!writeWasiU32(countPtr, wasiEnvEntries.length)) return ENOSYS;
+      if (!writeWasiU32(countPtr, wasiEnvEntries.length)) return globalThis.MoltWasiErrno.ENOSYS;
       const totalSize = wasiEnvBytes.reduce((sum, bytes) => sum + bytes.length, 0);
-      if (!writeWasiU32(bufSizePtr, totalSize)) return ENOSYS;
+      if (!writeWasiU32(bufSizePtr, totalSize)) return globalThis.MoltWasiErrno.ENOSYS;
       return 0;
     },
     environ_get: (environPtr, bufPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const view = new DataView(memory.buffer);
       let entryPtr = Number(environPtr);
       let dataPtr = Number(bufPtr);
@@ -3003,7 +3024,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     },
     fd_write: (fd, iovsPtr, iovsLen, outWrittenPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const view = new DataView(memory.buffer);
       const fdNum = toNumber(fd);
       const basePtr = typeof iovsPtr === 'bigint' ? Number(iovsPtr) : Number(iovsPtr >>> 0);
@@ -3012,7 +3033,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       if (fdNum !== 1 && fdNum !== 2) {
         const entry = state.wasiFiles.get(fdNum);
         if (!entry || entry.kind !== 'file' || !entry.writable) {
-          return EBADF;
+          return globalThis.MoltWasiErrno.EBADF;
         }
         for (let index = 0; index < count; index += 1) {
           const ptr = view.getUint32(basePtr + index * 8, true);
@@ -3046,7 +3067,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     },
     fd_read: (fd, iovsPtr, iovsLen, outReadPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const fdNum = toNumber(fd);
       const view = new DataView(memory.buffer);
       if (fdNum === 0 && state.vfs && state.vfs.dev) {
@@ -3073,7 +3094,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       }
       const entry = state.wasiFiles.get(fdNum);
       if (!entry || entry.kind !== 'file' || !entry.readable) {
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       const basePtr = toNumber(iovsPtr);
       const count = toNumber(iovsLen);
@@ -3114,7 +3135,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       const fdNum = toNumber(fd);
       const entry = state.wasiFiles.get(fdNum);
       if (!entry || entry.kind !== 'file') {
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       const delta = typeof offset === 'bigint' ? Number(offset) : Number(offset);
       let next = 0;
@@ -3125,10 +3146,10 @@ const buildWasiStub = (state, logFn, options = {}) => {
       } else if (whence === WASI_WHENCE_END) {
         next = entry.buffer.length + delta;
       } else {
-        return EINVAL;
+        return globalThis.MoltWasiErrno.EINVAL;
       }
       if (next < 0) {
-        return EINVAL;
+        return globalThis.MoltWasiErrno.EINVAL;
       }
       entry.pos = next;
       if (outOffsetPtr) {
@@ -3140,9 +3161,9 @@ const buildWasiStub = (state, logFn, options = {}) => {
       const fdNum = toNumber(fd);
       const entry = state.wasiFiles.get(fdNum);
       if (!entry || entry.kind !== 'file') {
-        return ESPIPE;
+        return globalThis.MoltWasiErrno.ESPIPE;
       }
-      return writeWasiU64(outOffsetPtr, BigInt(entry.pos)) ? 0 : ENOSYS;
+      return writeWasiU64(outOffsetPtr, BigInt(entry.pos)) ? 0 : globalThis.MoltWasiErrno.ENOSYS;
     },
     fd_fdstat_get: (fd, statPtr) => {
       const fdNum = toNumber(fd);
@@ -3154,7 +3175,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
       }
       const entry = state.wasiFiles.get(fdNum);
       if (!entry) {
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       return writeFdstat(
         statPtr,
@@ -3167,30 +3188,30 @@ const buildWasiStub = (state, logFn, options = {}) => {
       if (preopenByFd(fdNum)) {
         return writeFilestat(bufPtr, { isDir: true, isFile: false, size: 0 })
           ? 0
-          : ENOSYS;
+          : globalThis.MoltWasiErrno.ENOSYS;
       }
       const entry = state.wasiFiles.get(fdNum);
       if (!entry) {
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       const stat =
         entry.kind === 'dir'
           ? { isDir: true, isFile: false, size: 0 }
           : { isDir: false, isFile: true, size: entry.buffer.length };
-      return writeFilestat(bufPtr, stat) ? 0 : ENOSYS;
+      return writeFilestat(bufPtr, stat) ? 0 : globalThis.MoltWasiErrno.ENOSYS;
     },
     fd_filestat_set_size: wasiUnsupported,
     fd_readdir: wasiUnsupported,
     fd_prestat_get: (fd, prestatPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const fdNum = toNumber(fd);
       const preopen = preopenByFd(fdNum);
       if (!preopen) {
         if (traceBrowserWasi) {
           console.error(`[molt browser wasi] fd_prestat_get fd=${fdNum} -> EBADF`);
         }
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       const view = new DataView(memory.buffer);
       view.setUint8(Number(prestatPtr), WASI_PREOPENTYPE_DIR);
@@ -3207,25 +3228,25 @@ const buildWasiStub = (state, logFn, options = {}) => {
     },
     fd_prestat_dir_name: (fd, pathPtr, pathLen) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const fdNum = toNumber(fd);
       const preopen = preopenByFd(fdNum);
       if (!preopen) {
         if (traceBrowserWasi) {
           console.error(`[molt browser wasi] fd_prestat_dir_name fd=${fdNum} -> EBADF`);
         }
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       const bytes = UTF8_ENCODER.encode(preopen.path);
       if (toNumber(pathLen) < bytes.length) {
-        return EINVAL;
+        return globalThis.MoltWasiErrno.EINVAL;
       }
       if (traceBrowserWasi) {
         console.error(
           `[molt browser wasi] fd_prestat_dir_name fd=${fdNum} path=${preopen.path}`
         );
       }
-      return writeBytesToMemory(memory, pathPtr, bytes) ? 0 : EINVAL;
+      return writeBytesToMemory(memory, pathPtr, bytes) ? 0 : globalThis.MoltWasiErrno.EINVAL;
     },
     path_open: (fd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, _fdflags, openedFdPtr) => {
       const fdNum = toNumber(fd);
@@ -3234,15 +3255,15 @@ const buildWasiStub = (state, logFn, options = {}) => {
         if (traceBrowserWasi) {
           console.error(`[molt browser wasi] path_open fd=${fdNum} -> EBADF`);
         }
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       const rawPath = readGuestPath(pathPtr, pathLen);
       if (rawPath === null) {
-        return ENOSYS;
+        return globalThis.MoltWasiErrno.ENOSYS;
       }
       const relativePath = normalizeRelativePath(rawPath);
       if (relativePath === null) {
-        return EINVAL;
+        return globalThis.MoltWasiErrno.EINVAL;
       }
       const opened = openResolvedPath(preopen, relativePath, toNumber(oflags));
       if (traceBrowserWasi) {
@@ -3253,27 +3274,27 @@ const buildWasiStub = (state, logFn, options = {}) => {
       if (opened.errno !== 0) {
         return opened.errno;
       }
-      return writeWasiU32(openedFdPtr, opened.fd) ? 0 : ENOSYS;
+      return writeWasiU32(openedFdPtr, opened.fd) ? 0 : globalThis.MoltWasiErrno.ENOSYS;
     },
     path_filestat_get: (fd, _flags, pathPtr, pathLen, bufPtr) => {
       const fdNum = toNumber(fd);
       const preopen = preopenByFd(fdNum);
       if (!preopen) {
-        return EBADF;
+        return globalThis.MoltWasiErrno.EBADF;
       }
       const rawPath = readGuestPath(pathPtr, pathLen);
       if (rawPath === null) {
-        return ENOSYS;
+        return globalThis.MoltWasiErrno.ENOSYS;
       }
       const relativePath = normalizeRelativePath(rawPath);
       if (relativePath === null) {
-        return EINVAL;
+        return globalThis.MoltWasiErrno.EINVAL;
       }
       const info = statResolvedPath(absoluteVfsPath(preopen, relativePath));
       if (!info) {
-        return ENOENT;
+        return globalThis.MoltWasiErrno.ENOENT;
       }
-      return writeFilestat(bufPtr, info.stat) ? 0 : ENOSYS;
+      return writeFilestat(bufPtr, info.stat) ? 0 : globalThis.MoltWasiErrno.ENOSYS;
     },
     path_create_directory: wasiUnsupported,
     path_remove_directory: wasiUnsupported,
@@ -3282,7 +3303,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
     path_readlink: wasiUnsupported,
     random_get: (bufPtr, bufLen) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const ptr = typeof bufPtr === 'bigint' ? Number(bufPtr) : Number(bufPtr >>> 0);
       const len = typeof bufLen === 'bigint' ? Number(bufLen) : Number(bufLen >>> 0);
       const bytes = new Uint8Array(memory.buffer, ptr, len);
@@ -3296,13 +3317,13 @@ const buildWasiStub = (state, logFn, options = {}) => {
       return 0;
     },
     poll_oneoff: (_inPtr, _outPtr, _nsubscriptions, outEventsPtr) => {
-      if (outEventsPtr && !writeWasiU32(outEventsPtr, 0)) return ENOSYS;
+      if (outEventsPtr && !writeWasiU32(outEventsPtr, 0)) return globalThis.MoltWasiErrno.ENOSYS;
       return 0;
     },
     sched_yield: () => 0,
     clock_time_get: (clockIdRaw, _precisionRaw, outPtr) => {
       const memory = state.memory;
-      if (!memory) return ENOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const clockId =
         typeof clockIdRaw === 'bigint' ? Number(clockIdRaw) : Number(clockIdRaw >>> 0);
       let nanos;
@@ -3315,7 +3336,7 @@ const buildWasiStub = (state, logFn, options = {}) => {
             : Date.now();
         nanos = BigInt(Math.trunc(now * 1000000));
       } else {
-        return ENOSYS;
+        return globalThis.MoltWasiErrno.ENOSYS;
       }
       new DataView(memory.buffer).setBigUint64(Number(outPtr), nanos, true);
       return 0;

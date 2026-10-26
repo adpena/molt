@@ -3630,7 +3630,9 @@ dependencies = []
 # Its Criterion dev dependency builds alloca target C even for libtests.
 # The Rust emitter preview is an explicit integration target, gated by the
 # existing rust-backend feature; --lib alone does not execute its source oracles.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "--test", "native_batch_worker_spawn", "--test", "daemon_server", "--test", "integration", "--test", "basic", "--test", "native_extern_linkage", "--test", "rust_transpiler_preview", "--test", "wasm_link_facts_cli", "-p", "object@0.40.0", "-p", "cranelift-object@0.137.0", "-p", "molt-artifact-publish", "-p", "molt-host-process", "-p", "molt-wasm-facts", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-lang-cpython-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1", "--skip", "read::coff::coff_extended_relocations", "--skip", "read::elf::get_buildid_bad_elf", "--skip", "read::elf::get_buildid_less_bad_elf", "--skip", "read::elf::zero_sized_section_works", "--skip", "read::macho::test_macho_entry_point", "--skip", "read::macho::test_go_macho", "--skip", "read::macho::test_macho_load_command_offset"]
+# The host binary's socket/error ABI laws execute in this same --bins graph;
+# a standalone build or platform --lib producer does not execute that consumer.
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "--test", "native_artifact_facts", "--test", "native_batch_worker_spawn", "--test", "daemon_server", "--test", "integration", "--test", "basic", "--test", "native_extern_linkage", "--test", "rust_transpiler_preview", "--test", "wasm_link_facts_cli", "-p", "object@0.40.0", "-p", "cranelift-object@0.137.0", "-p", "molt-artifact-publish", "-p", "molt-host-process", "-p", "molt-wasm-facts", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-lang-cpython-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "-p", "molt-wasm-host", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1", "--skip", "read::coff::coff_extended_relocations", "--skip", "read::elf::get_buildid_bad_elf", "--skip", "read::elf::get_buildid_less_bad_elf", "--skip", "read::elf::zero_sized_section_works", "--skip", "read::macho::test_macho_entry_point", "--skip", "read::macho::test_go_macho", "--skip", "read::macho::test_macho_load_command_offset"]
 toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
@@ -3664,7 +3666,7 @@ dependencies = []
 # exercises the borrowed view as well. All children use Cargo custody.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-regex", "-p", "molt-runtime-core", "-p", "molt-runtime-math", "-p", "molt-stdlib-text", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "counter_wrap", "memory_budget::", "tir::", "wasm::", "wasm_abi::", "wasm_binary::reloc::tests::", "async_rt::channels::", "concurrency::gil::tests::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "gpu_runtime_tests::", "kernel_storage::", "regex::", "unicode_target::", "numeric_ratio::", "math::statistics_reduction_tests::", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-regex", "-p", "molt-runtime-core", "-p", "molt-runtime-math", "-p", "molt-stdlib-text", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "synthetic_errno::", "async_rt::sockets::wait::tests::", "async_rt::sockets_net::tests::", "counter_wrap", "memory_budget::", "tir::", "wasm::", "wasm_abi::", "wasm_binary::reloc::tests::", "async_rt::channels::", "concurrency::gil::tests::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "gpu_runtime_tests::", "kernel_storage::", "regex::", "unicode_target::", "numeric_ratio::", "math::statistics_reduction_tests::", "--nocapture", "--test-threads=1"]
 toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 
 [[command]]
@@ -6141,9 +6143,13 @@ gates = [
 [[rule]]
 name = "wasm-host"
 toolchains = ["python", "rustc", "cargo"]
-description = "Wasmtime host Rust: release-fast link build."
+description = "Wasmtime host Rust: release-fast link build and actual host-error ABI binary tests."
 globs = [
   "runtime/molt-wasm-host/**/*.rs",
+  "runtime/molt-runtime-platform/src/synthetic_errno*.rs",
+  "runtime/molt-runtime-platform/src/synthetic_errno/**/*.rs",
+  "runtime/molt-runtime-platform/src/wasm_socket_abi*.rs",
+  "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
   "runtime/molt-wasm-host/**/*.toml",
   "runtime/molt-wasm-host/Cargo.toml",
   "runtime/molt-artifact-publish/**/*.rs",
@@ -6151,6 +6157,7 @@ globs = [
 ]
 gates = [
   "cargo build --locked --profile release-fast -p molt-wasm-host",
+  "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: --nocapture --test-threads=1",
 ]
 
 # --- GPU object-runtime integration --------------------------------------

@@ -94,11 +94,14 @@ impl WebSocketEntry {
     }
 }
 
-fn ws_get_mut(state: &mut HostState, handle: i64) -> Result<&mut WebSocketEntry, i32> {
+fn ws_get_mut(state: &mut HostState, handle: i64) -> Result<&mut WebSocketEntry, GuestErrno> {
     if handle <= 0 {
-        return Err(libc::EBADF);
+        return Err(GuestErrno::EBADF);
     }
-    state.ws_manager.get_mut(handle as u64).ok_or(libc::EBADF)
+    state
+        .ws_manager
+        .get_mut(handle as u64)
+        .ok_or(GuestErrno::EBADF)
 }
 
 fn ws_set_nonblocking(
@@ -121,18 +124,20 @@ fn ws_set_nonblocking(
     Ok(())
 }
 
-fn map_ws_error(err: &tungstenite::Error) -> i32 {
+fn map_ws_error(err: &tungstenite::Error) -> GuestErrno {
     match err {
         tungstenite::Error::Io(io_err) => map_io_error(io_err),
-        tungstenite::Error::Url(_) => libc::EINVAL,
-        tungstenite::Error::Http(_) => libc::ECONNREFUSED,
-        tungstenite::Error::Tls(_) => libc::EIO,
-        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => libc::EPIPE,
-        _ => libc::EIO,
+        tungstenite::Error::Url(_) => GuestErrno::EINVAL,
+        tungstenite::Error::Http(_) => GuestErrno::ECONNREFUSED,
+        tungstenite::Error::Tls(_) => GuestErrno::EIO,
+        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
+            GuestErrno::EPIPE
+        }
+        _ => GuestErrno::EIO,
     }
 }
 
-fn ws_drain_incoming(entry: &mut WebSocketEntry) -> Result<(), i32> {
+fn ws_drain_incoming(entry: &mut WebSocketEntry) -> Result<(), GuestErrno> {
     if entry.closed {
         return Ok(());
     }
@@ -172,7 +177,7 @@ fn ws_drain_incoming(entry: &mut WebSocketEntry) -> Result<(), i32> {
     Ok(())
 }
 
-fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
+fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, GuestErrno> {
     let mut poll_events: i16 = 0;
     if (events & IO_EVENT_READ) != 0 {
         poll_events |= HOST_POLLIN;
@@ -193,7 +198,7 @@ fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
         };
         let rc = unsafe { libc::poll(&mut pfd, 1, 0) };
         if rc < 0 {
-            return Err(map_io_error(&std::io::Error::last_os_error()));
+            return Err(last_socket_error());
         }
         if rc == 0 {
             return Ok(0);
@@ -225,7 +230,7 @@ fn poll_ws_stream(stream: &TcpStream, events: u32) -> Result<u32, i32> {
         };
         let rc = unsafe { winsock::WSAPoll(&mut pfd, 1, 0) };
         if rc < 0 {
-            return Err(map_io_error(&std::io::Error::last_os_error()));
+            return Err(last_socket_error());
         }
         if rc == 0 {
             return Ok(0);
@@ -258,29 +263,29 @@ pub(super) fn define_ws_host(
         |mut caller: Caller<'_, HostState>, url_ptr: i32, url_len: i64, out_handle: i32| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             if out_handle == 0 {
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             if url_len < 0 || url_len > i64::from(i32::MAX) {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             let url_len = url_len as i32;
             let url_bytes = match read_bytes(&mut caller, &memory, url_ptr, url_len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let url_str = match String::from_utf8(url_bytes) {
                 Ok(val) => val,
-                Err(_) => return -libc::EINVAL,
+                Err(_) => return -GuestErrno::EINVAL,
             };
             let url = match Url::parse(&url_str) {
                 Ok(val) => val,
-                Err(_) => return -libc::EINVAL,
+                Err(_) => return -GuestErrno::EINVAL,
             };
             if url.scheme() != "ws" && url.scheme() != "wss" {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             let (mut socket, _) = match connect(url.as_str()) {
                 Ok(val) => val,
@@ -295,7 +300,7 @@ pub(super) fn define_ws_host(
             };
             if write_u64(&mut caller, &memory, out_handle, handle).is_err() {
                 caller.data_mut().ws_manager.remove(handle);
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             0
         },
@@ -305,29 +310,29 @@ pub(super) fn define_ws_host(
         |mut caller: Caller<'_, HostState>, handle: i64, data_ptr: i32, len: i64| -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             if len < 0 || len > i64::from(i32::MAX) {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             let len = len as i32;
             let payload = match read_bytes(&mut caller, &memory, data_ptr, len) {
                 Ok(buf) => buf,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             let entry = match ws_get_mut(caller.data_mut(), handle) {
                 Ok(entry) => entry,
                 Err(errno) => return -errno,
             };
             if entry.closed {
-                return -libc::EPIPE;
+                return -GuestErrno::EPIPE;
             }
             match entry.socket.send(Message::Binary(payload.into())) {
                 Ok(_) => 0,
                 Err(tungstenite::Error::Io(err))
                     if err.kind() == std::io::ErrorKind::WouldBlock =>
                 {
-                    -libc::EWOULDBLOCK
+                    -GuestErrno::EWOULDBLOCK
                 }
                 Err(err) => {
                     entry.closed = true;
@@ -346,13 +351,13 @@ pub(super) fn define_ws_host(
          -> i32 {
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::EFAULT,
+                Err(_) => return -GuestErrno::EFAULT,
             };
             if out_len == 0 {
-                return -libc::EFAULT;
+                return -GuestErrno::EFAULT;
             }
             let cap = if buf_cap < 0 {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             } else {
                 buf_cap as usize
             };
@@ -382,17 +387,17 @@ pub(super) fn define_ws_host(
 
             if let Some(len) = needed_len {
                 let _ = write_u32(&mut caller, &memory, out_len, len as u32);
-                return -libc::ENOMEM;
+                return -GuestErrno::ENOMEM;
             }
             if let Some(bytes) = pending_bytes {
                 if write_bytes(&mut caller, &memory, buf_ptr, &bytes).is_err() {
-                    return -libc::EFAULT;
+                    return -GuestErrno::EFAULT;
                 }
                 let _ = write_u32(&mut caller, &memory, out_len, bytes.len() as u32);
                 return 0;
             }
             let _ = write_u32(&mut caller, &memory, out_len, 0);
-            if closed { 0 } else { -libc::EWOULDBLOCK }
+            if closed { 0 } else { -GuestErrno::EWOULDBLOCK }
         },
     );
     let ws_poll = Func::wrap(
@@ -421,7 +426,7 @@ pub(super) fn define_ws_host(
                 let stream_ref = match entry.socket.get_ref() {
                     MaybeTlsStream::Plain(stream) => stream,
                     MaybeTlsStream::Rustls(stream) => stream.get_ref(),
-                    _ => return -libc::EIO,
+                    _ => return -GuestErrno::EIO,
                 };
                 let poll_ready = match poll_ws_stream(stream_ref, IO_EVENT_WRITE) {
                     Ok(mask) => mask,
@@ -442,13 +447,13 @@ pub(super) fn define_ws_host(
         |mut caller: Caller<'_, HostState>, handle: i64| -> i32 {
             let entry = match caller.data_mut().ws_manager.remove(handle as u64) {
                 Some(entry) => entry,
-                None => return -libc::EBADF,
+                None => return -GuestErrno::EBADF,
             };
             match entry.close() {
                 Ok(()) => 0,
                 Err(err) => {
                     eprintln!("websocket close failed: {err:#}");
-                    -libc::EIO
+                    -GuestErrno::EIO
                 }
             }
         },

@@ -22,6 +22,9 @@ use std::os::raw::c_int;
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::time::Duration;
 
+#[cfg(any(target_arch = "wasm32", test))]
+use molt_runtime_platform::synthetic_errno::{GuestErrno, ResolverStatus, decode_resolver_status};
+
 #[cfg(target_arch = "wasm32")]
 use super::sockets::port_from_bits;
 #[cfg(all(molt_has_net_io, not(unix)))]
@@ -46,6 +49,88 @@ const GETNAMEINFO_SERVICE_BUFFER_LEN: usize = 33;
 fn getnameinfo_service_buffer_len() -> usize {
     // POSIX NI_MAXSERV is 32 bytes; libc does not expose it on every target.
     GETNAMEINFO_SERVICE_BUFFER_LEN
+}
+
+fn raise_gaierror(_py: &PyToken<'_>, code: i64, message: &str) -> u64 {
+    let class = exception_type_bits_from_name(_py, "gaierror");
+    crate::builtins::exceptions::raise_os_error_errno_with_class(_py, class, code, message)
+}
+
+#[cfg(molt_has_net_io)]
+fn raise_native_resolver_error(
+    _py: &PyToken<'_>,
+    code: c_int,
+    system_error: std::io::Error,
+    context: &str,
+) -> u64 {
+    use molt_runtime_platform::synthetic_errno::{NativeResolverError, from_native_resolver_error};
+    match from_native_resolver_error(code) {
+        Ok(NativeResolverError::System) => raise_os_error(_py, system_error, context),
+        Ok(NativeResolverError::Resolver(code)) => {
+            let code = code.code();
+            let message = unsafe { CStr::from_ptr(libc::gai_strerror(code)) }.to_string_lossy();
+            raise_gaierror(_py, code as i64, &message)
+        }
+        Err(_) => raise_exception(
+            _py,
+            "RuntimeError",
+            "invalid native resolver success status",
+        ),
+    }
+}
+
+#[cfg(molt_has_net_io)]
+fn reverse_lookup_error(_py: &PyToken<'_>) -> u64 {
+    let resolver_class = exception_type_bits_from_name(_py, "gaierror");
+    let is_resolver = exception_last_bits_noinc(_py)
+        .is_some_and(|error| exception_matches_type(_py, error, resolver_class));
+    if is_resolver {
+        clear_exception(_py);
+        return raise_exception(_py, "herror", "host name lookup failure");
+    }
+    MoltObject::none().bits()
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum AddrInfoHostStatus {
+    Complete,
+    NumericOnly,
+    Grow(usize),
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn getaddrinfo_host_status(
+    _py: &PyToken<'_>,
+    status: i32,
+    out_len: usize,
+    capacity: usize,
+) -> Result<AddrInfoHostStatus, u64> {
+    match decode_resolver_status(status) {
+        Ok(ResolverStatus::Success) if out_len <= capacity => Ok(AddrInfoHostStatus::Complete),
+        Ok(ResolverStatus::Success) => Err(raise_exception(
+            _py,
+            "RuntimeError",
+            "getaddrinfo payload exceeds host buffer",
+        )),
+        Ok(ResolverStatus::System(GuestErrno::ENOSYS)) => Ok(AddrInfoHostStatus::NumericOnly),
+        Ok(ResolverStatus::System(GuestErrno::ENOMEM)) if out_len > capacity => {
+            Ok(AddrInfoHostStatus::Grow(out_len))
+        }
+        Ok(ResolverStatus::System(error)) => Err(raise_os_error_errno(
+            _py,
+            error.code() as i64,
+            "getaddrinfo",
+        )),
+        Ok(ResolverStatus::Resolver(error)) => {
+            Err(raise_gaierror(_py, error.code() as i64, "getaddrinfo"))
+        }
+        Err(_) => Err(raise_exception(
+            _py,
+            "RuntimeError",
+            "invalid getaddrinfo host status",
+        )),
+    }
 }
 
 #[cfg(all(
@@ -368,11 +453,8 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                 &mut res as *mut *mut libc::addrinfo,
             );
             if err != 0 {
-                let msg = CStr::from_ptr(libc::gai_strerror(err))
-                    .to_string_lossy()
-                    .to_string();
-                let msg = format!("[Errno {err}] {msg}");
-                return raise_os_error_errno::<u64>(_py, err as i64, &msg);
+                let system_error = std::io::Error::last_os_error();
+                return raise_native_resolver_error(_py, err, system_error, "getaddrinfo");
             }
 
             let builder_bits = molt_list_builder_new(MoltObject::from_int(0).bits());
@@ -505,27 +587,25 @@ pub extern "C" fn molt_socket_getaddrinfo(
                     (&mut out_len) as *mut u32 as u32,
                 )
             };
-            if rc == 0 {
-                break;
+            match getaddrinfo_host_status(_py, rc, out_len as usize, cap) {
+                Ok(AddrInfoHostStatus::Complete) => break,
+                Ok(AddrInfoHostStatus::NumericOnly) => {
+                    fallback_numeric = true;
+                    break;
+                }
+                Ok(AddrInfoHostStatus::Grow(needed)) => {
+                    cap = needed;
+                    buf.resize(cap, 0);
+                }
+                Err(error) => return error,
             }
-            let errno = errno_from_rc(rc);
-            if errno == libc::ENOSYS {
-                fallback_numeric = true;
-                break;
-            }
-            if errno == libc::ENOMEM && out_len as usize > cap {
-                cap = out_len as usize;
-                buf.resize(cap, 0);
-                continue;
-            }
-            return raise_os_error_errno::<u64>(_py, errno as i64, "getaddrinfo");
         }
         if fallback_numeric {
             let ip = if let Some(host) = host.as_ref() {
                 match host.parse::<IpAddr>() {
                     Ok(ip) => ip,
                     Err(_) => {
-                        return raise_os_error_errno::<u64>(
+                        return raise_gaierror(
                             _py,
                             libc::EAI_NONAME as i64,
                             "name or service not known",
@@ -750,11 +830,8 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
                 flags,
             );
             if ret != 0 {
-                let msg = CStr::from_ptr(libc::gai_strerror(ret))
-                    .to_string_lossy()
-                    .to_string();
-                let msg = format!("[Errno {ret}] {msg}");
-                return raise_os_error_errno::<u64>(_py, ret as i64, &msg);
+                let system_error = std::io::Error::last_os_error();
+                return raise_native_resolver_error(_py, ret, system_error, "getnameinfo");
             }
             let host = CStr::from_ptr(host_buf.as_ptr() as *const libc::c_char).to_string_lossy();
             let serv = CStr::from_ptr(serv_buf.as_ptr() as *const libc::c_char).to_string_lossy();
@@ -1023,7 +1100,7 @@ fn socket_addrinfo_first_host_bits(_py: &PyToken<'_>, info_bits: u64) -> Result<
             return Ok(host_bits);
         }
     }
-    Err(raise_os_error_errno::<u64>(
+    Err(raise_gaierror(
         _py,
         libc::EAI_NONAME as i64,
         "gethostbyname failed",
@@ -1344,8 +1421,7 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
                 let nameinfo_bits = unsafe { molt_socket_getnameinfo(addr_bits, flags_bits) };
                 dec_ref_bits(_py, addr_bits);
                 if exception_pending(_py) {
-                    clear_exception(_py);
-                    return raise_exception::<_>(_py, "OSError", "host name lookup failure");
+                    return reverse_lookup_error(_py);
                 }
                 if let Some(hostname) = socket_tuple_first_string(_py, nameinfo_bits) {
                     resolved = hostname;
@@ -1356,7 +1432,7 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
             }
         } else {
             // Match CPython behavior: unresolved/invalid non-IP inputs should surface getaddrinfo
-            // errors (mapped to socket.gaierror in the Python wrapper).
+            // errors with their canonical resolver class.
             let query_ptr = alloc_string(_py, host.as_bytes());
             if query_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -2715,3 +2791,6 @@ pub extern "C" fn molt_socket_sendmsg_afalg(
         raise_exception::<u64>(_py, "OSError", "sendmsg_afalg is only supported on Linux")
     })
 }
+
+#[cfg(test)]
+mod tests;

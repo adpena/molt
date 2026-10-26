@@ -50,6 +50,13 @@
           "column": 1,
           "kind": "module",
           "line": 17,
+          "request": "./synthetic_errno_generated.js",
+          "target": "synthetic_errno_generated.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 18,
           "request": "./wasi_errno_generated.js",
           "target": "wasi_errno_generated.js"
         }
@@ -61,10 +68,11 @@
         "loader_bridge.js",
         "native_callable_abi_generated.js",
         "runtime_lifecycle.js",
+        "synthetic_errno_generated.js",
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "0dcb37f4fae286db8d51e9ee97a2b5ada8144c16c9a13964d59b824ee9461e5a",
+      "sha256": "ed74f51c45e8d416b3f79da05b1aa9bae447be41e5209b5dfb732f3cf21fc5a0",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -74,7 +82,7 @@
         {
           "column": 26,
           "kind": "worker",
-          "line": 90,
+          "line": 89,
           "request": "./browser_gpu_worker.js",
           "target": "browser_gpu_worker.js"
         },
@@ -82,16 +90,16 @@
           "column": 1,
           "kind": "module",
           "line": 1,
-          "request": "./wasi_errno_generated.js",
-          "target": "wasi_errno_generated.js"
+          "request": "./synthetic_errno_generated.js",
+          "target": "synthetic_errno_generated.js"
         }
       ],
       "references": [
         "browser_gpu_worker.js",
-        "wasi_errno_generated.js"
+        "synthetic_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "9c555c77ff21ee8e79ae4f2492104c0fe8c45f7c3b190519c8c540d59a21ce28",
+      "sha256": "6bf65069f15a5d2f8402a838c844a9c3ca42f2342e44e2df1590c5c07de8b980",
       "source_type": "module"
     },
     "browser_gpu_worker.js": {
@@ -145,7 +153,7 @@
         {
           "column": 31,
           "kind": "dynamic-import",
-          "line": 132,
+          "line": 134,
           "request": "./molt_vfs_browser.js",
           "target": "molt_vfs_browser.js"
         },
@@ -159,7 +167,21 @@
         {
           "column": 1,
           "kind": "module",
+          "line": 12,
+          "request": "./socket_abi_generated.js",
+          "target": "socket_abi_generated.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
           "line": 11,
+          "request": "./synthetic_errno_generated.js",
+          "target": "synthetic_errno_generated.js"
+        },
+        {
+          "column": 1,
+          "kind": "module",
+          "line": 13,
           "request": "./wasi_errno_generated.js",
           "target": "wasi_errno_generated.js"
         }
@@ -172,10 +194,12 @@
         "loader_bridge.js",
         "molt_vfs_browser.js",
         "runtime_lifecycle.js",
+        "socket_abi_generated.js",
+        "synthetic_errno_generated.js",
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "57098ea05c75ed5f97261127c301797fa20abdb361062eb201c36d69484a4e8e",
+      "sha256": "897d0d9e382a7564ffe91ea6c5d03776cfe5d612ef47a960db23f8a4b342a512",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -261,6 +285,7 @@
         "dns",
         "fs",
         "net",
+        "node:util",
         "node:wasi",
         "os",
         "path",
@@ -284,18 +309,25 @@
           "target": "runtime_lifecycle.js"
         },
         {
+          "column": 20,
+          "kind": "require",
+          "line": 487,
+          "request": "./socket_abi_generated.js",
+          "target": "socket_abi_generated.js"
+        },
+        {
+          "column": 98,
+          "kind": "require",
+          "line": 485,
+          "request": "./synthetic_errno_generated.js",
+          "target": "synthetic_errno_generated.js"
+        },
+        {
           "column": 5,
           "kind": "require",
           "line": 13,
           "request": "./target_feature_manifest.json",
           "target": "target_feature_manifest.json"
-        },
-        {
-          "column": 20,
-          "kind": "require",
-          "line": 487,
-          "request": "./wasi_errno_generated.js",
-          "target": "wasi_errno_generated.js"
         },
         {
           "column": 26,
@@ -347,6 +379,13 @@
           "target": "net"
         },
         {
+          "column": 32,
+          "kind": "require",
+          "line": 486,
+          "request": "node:util",
+          "target": "node:util"
+        },
+        {
           "column": 15,
           "kind": "require",
           "line": 50,
@@ -392,12 +431,13 @@
       "references": [
         "loader_bridge.js",
         "runtime_lifecycle.js",
+        "socket_abi_generated.js",
+        "synthetic_errno_generated.js",
         "target_feature_manifest.json",
-        "wasi_errno_generated.js",
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "f0b4fc7ed0f65774beb6bba579d1557d0541a58c2f820d110e46e36015e30e70",
+      "sha256": "f5c5bf177567ba60a6be3db60ab55ec427f88859d14f8bf55b295ad12e0387d9",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -407,6 +447,24 @@
       "references": [],
       "role": "shared",
       "sha256": "3600a3f5e81153a70b029ae8f4a08c619ed6b44fb40030374d62f4047be5861c",
+      "source_type": "script"
+    },
+    "socket_abi_generated.js": {
+      "authority": "wasm-abi",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "shared",
+      "sha256": "0ace6b9608c67320cf8d412d272b307f5e815ef681f5dabbc6752e05f599de23",
+      "source_type": "script"
+    },
+    "synthetic_errno_generated.js": {
+      "authority": "wasm-abi",
+      "external_references": [],
+      "reference_facts": [],
+      "references": [],
+      "role": "shared",
+      "sha256": "3d8f02c29701e995c964ce65350eebe84fbc69402877962abc5d66b4c37c09fe",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {
@@ -442,7 +500,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "466bbe232e3babf4bd97924f8c0962a1dcf20d74289cd05edcf9d5b76c9cfd20",
+      "sha256": "40b08119973cd6386219d44dd92134b0b820da9c78c393e94b0cbdabb3934ac1",
       "source_type": "data"
     }
   },

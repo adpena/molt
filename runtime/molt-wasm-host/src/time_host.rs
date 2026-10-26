@@ -147,28 +147,28 @@ pub(super) fn define_time_host(
          out_len_ptr: i32|
          -> i32 {
             if out_len_ptr == 0 {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             if buf_cap < 0 {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             let Some(label) = host_time_tzname(which) else {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             };
             let bytes = label.as_bytes();
             let memory = match ensure_memory(&mut caller) {
                 Ok(mem) => mem,
-                Err(_) => return -libc::ENOSYS,
+                Err(_) => return -GuestErrno::ENOSYS,
             };
             if write_u32(&mut caller, &memory, out_len_ptr, bytes.len() as u32).is_err() {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             let cap = buf_cap as usize;
             if bytes.len() > cap {
-                return -libc::ENOMEM;
+                return -GuestErrno::ENOMEM;
             }
             if !bytes.is_empty() && write_bytes(&mut caller, &memory, buf_ptr, bytes).is_err() {
-                return -libc::EINVAL;
+                return -GuestErrno::EINVAL;
             }
             0
         },

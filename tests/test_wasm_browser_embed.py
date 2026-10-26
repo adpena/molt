@@ -1460,3 +1460,85 @@ try {{
         }
     finally:
         server.shutdown()
+
+
+def test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate(
+    tmp_path: Path,
+) -> None:
+    """Actual Wasm imports distinguish preview1 EBADF8 from Molt ENOSYS38."""
+    root = Path(__file__).resolve().parents[1]
+    types = [
+        _wasm_func_type([0x7F, 0x7F], [0x7F]),
+        _wasm_func_type([0x7E], [0x7F]),
+        _wasm_func_type([], [0x7F]),
+    ]
+    raw = b"\x00" + _wasm_i32_const(99) + _wasm_i32_const(64) + b"\x10\x00\x0b"
+    molt = b"\x00" + _wasm_i64_const(-1) + b"\x10\x01\x0b"
+    app = attested_empty_callable_table(
+        b"\x00asm\x01\x00\x00\x00"
+        + _wasm_section(1, _wasm_vec(types))
+        + _wasm_section(
+            2,
+            _wasm_vec(
+                [
+                    _wasm_import_func("wasi_snapshot_preview1", "fd_prestat_get", 0),
+                    _wasm_import_func("env", "molt_socket_close_host", 1),
+                    _wasm_import_memory("env", "memory", 1),
+                ]
+            ),
+        )
+        + _wasm_section(3, _wasm_vec([_wasm_u32(2), _wasm_u32(2)]))
+        + _wasm_section(
+            7,
+            _wasm_vec(
+                [
+                    _wasm_export("raw_errno", 0, 2),
+                    _wasm_export("molt_errno", 0, 3),
+                    _wasm_export("memory", 2, 0),
+                ]
+            ),
+        )
+        + _wasm_section(
+            10,
+            _wasm_vec(
+                [
+                    _wasm_u32(len(raw)) + raw,
+                    _wasm_u32(len(molt)) + molt,
+                ]
+            ),
+        )
+    )
+    runtime = _runtime_lifetime_wasm()
+    manifest = _webgpu_embed_manifest(app, runtime)
+    manifest["target_features"] = {
+        "authority": "target_feature_manifest",
+        "profile": "wasm-browser",
+        "required_host_imports": {"webgpu": []},
+        "browser_probes": {"webgpu": {"required": False}},
+    }
+    (tmp_path / "app.wasm").write_bytes(app)
+    (tmp_path / "molt_runtime.wasm").write_bytes(runtime)
+    handler = type("_ErrnoEmbedHandler", (_StaticDirHandler,), {"root": tmp_path})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        script = tmp_path / "errno_domains.mjs"
+        uri = (root / "wasm/browser_embed.js").as_uri()
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
+        script.write_text(
+            f"import {{loadMoltBrowserEmbed}} from {json.dumps(uri)};\n"
+            f"const embed = await loadMoltBrowserEmbed({{baseUrl:{json.dumps(base)},manifest:{json.dumps(manifest)}}});\n"
+            "try { console.log(JSON.stringify([embed.execute(() => embed.appInstance.exports.raw_errno()),"
+            "embed.execute(() => embed.appInstance.exports.molt_errno())])); } finally { embed.dispose(); }\n",
+            encoding="utf-8",
+        )
+        result = _run_wasm_test_process(
+            ["node", str(script)], cwd=root, env=os.environ, timeout=30
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [8, -38]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
