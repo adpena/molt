@@ -12346,7 +12346,11 @@ def test_detached_owner_registration_failure_releases_prebirth_use(
     )
     with pytest.raises(RuntimeError, match="controlled registration failure"):
         with command_execution.DetachedStateHandoff(
-            state.ROOT, environment, checkout, tmp_path / "ready.json"
+            state.ROOT,
+            environment,
+            checkout,
+            (sys.executable,),
+            tmp_path / "ready.json",
         ):
             pytest.fail("child launch must remain unreachable")
     assert len(entered) == 1

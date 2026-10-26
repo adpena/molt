@@ -10,6 +10,7 @@ import shlex
 import subprocess
 from subprocess import Popen, TimeoutExpired
 import sys
+import uuid
 from pathlib import Path
 from collections.abc import Callable
 from typing import TextIO
@@ -175,75 +176,89 @@ def _launch_detached_runner(
     cwd = state._repo_root(args)
     environment = dict(os.environ)
     ready_path = runner_log.with_suffix(".state-use-ready.json").resolve()
-    handoff = DetachedStateHandoff(state.ROOT, environment, cwd, ready_path)
-    try:
-        with handoff:
-            # Readiness transfers state custody but does not close the detached
-            # worker. Keep startup scratch with its durable control evidence.
-            startup_root = memory_guard_state_root(state.ROOT, environment)
-            startup_root.mkdir(parents=True, exist_ok=True)
-            verifier_bytecode_prefix = new_temporary_directory(
-                startup_root, prefix="queue-runner-bytecode-"
-            )
-            command = guardian_argv(
-                sys.executable,
-                state.ROOT / "tools" / "proof_queue.py",
-                verifier_bytecode_prefix=verifier_bytecode_prefix,
-            ) + [
-                "--detached-state-use",
-                str(ready_path),
-                handoff.use_token,
-                *_global_arg_pairs(args),
-                "run",
-                "--run-id",
-                run_id,
-                "--limit",
-                "1",
-                "--timeout",
-                str(timeout),
-            ]
-            popen_kwargs = detached_process_group_kwargs(
-                windows=_queue_process_spawn_is_windows(),
-                subprocess_module=subprocess,
-            )
-            with runner_log.open("w", encoding="utf-8") as log:
-                print(f"proof_queue detached runner for {run_id}", file=log, flush=True)
-                print(f"command={shlex.join(command)}", file=log, flush=True)
-                handoff.process = Popen(
-                    command,
-                    cwd=cwd,
-                    env=environment,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    **popen_kwargs,
+    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
+
+    # Preparation writes selected startup state before the actual argv exists.
+    # Overlap that explicit environment hold with the command-aware handoff.
+    with checkout_state_use(
+        checkout_state_environment_roots(state.ROOT, environment, cwd=cwd)
+    ):
+        use_token = uuid.uuid4().hex
+        # Readiness transfers state custody but does not close the detached
+        # worker. Keep startup scratch with its durable control evidence.
+        startup_root = memory_guard_state_root(state.ROOT, environment)
+        startup_root.mkdir(parents=True, exist_ok=True)
+        verifier_bytecode_prefix = new_temporary_directory(
+            startup_root, prefix="queue-runner-bytecode-"
+        )
+        command = guardian_argv(
+            sys.executable,
+            state.ROOT / "tools" / "proof_queue.py",
+            verifier_bytecode_prefix=verifier_bytecode_prefix,
+        ) + [
+            "--detached-state-use",
+            str(ready_path),
+            use_token,
+            *_global_arg_pairs(args),
+            "run",
+            "--run-id",
+            run_id,
+            "--limit",
+            "1",
+            "--timeout",
+            str(timeout),
+        ]
+        handoff = DetachedStateHandoff(
+            state.ROOT, environment, cwd, command, ready_path, use_token
+        )
+        try:
+            with handoff:
+                popen_kwargs = detached_process_group_kwargs(
+                    windows=_queue_process_spawn_is_windows(),
+                    subprocess_module=subprocess,
                 )
-                print(f"launcher_pid={handoff.process.pid}", file=log, flush=True)
-                if on_birth is not None:
-                    on_birth(handoff.process)
-            handoff.wait_ready()
-            return handoff.process.pid, runner_log
-    except BaseException as error:
-        if handoff.process is not None:
-            # Birth is a separate fact from readiness or observed death. The
-            # scheduler must leave post-birth disposition to its existing
-            # runner/pruning authority, even if this observation failed.
-            setattr(error, "owned_process", handoff.process)
-            if (
-                not _queue_process_spawn_is_windows()
-                and handoff.worker_pid is None
-                and handoff.process.returncode is not None
-            ):
-                # POSIX launches the interpreter directly: observed launcher
-                # exit is this unacknowledged worker's actual startup failure.
-                setattr(
-                    error, "detached_startup_returncode", handoff.process.returncode
+                with runner_log.open("w", encoding="utf-8") as log:
+                    print(
+                        f"proof_queue detached runner for {run_id}",
+                        file=log,
+                        flush=True,
+                    )
+                    print(f"command={shlex.join(command)}", file=log, flush=True)
+                    handoff.process = Popen(
+                        command,
+                        cwd=cwd,
+                        env=environment,
+                        stdin=subprocess.DEVNULL,
+                        text=True,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        **popen_kwargs,
+                    )
+                    print(f"launcher_pid={handoff.process.pid}", file=log, flush=True)
+                    if on_birth is not None:
+                        on_birth(handoff.process)
+                handoff.wait_ready()
+                return handoff.process.pid, runner_log
+        except BaseException as error:
+            if handoff.process is not None:
+                # Birth is a separate fact from readiness or observed death. The
+                # scheduler must leave post-birth disposition to its existing
+                # runner/pruning authority, even if this observation failed.
+                setattr(error, "owned_process", handoff.process)
+                if (
+                    not _queue_process_spawn_is_windows()
+                    and handoff.worker_pid is None
+                    and handoff.process.returncode is not None
+                ):
+                    # POSIX launches the interpreter directly: observed launcher
+                    # exit is this unacknowledged worker's actual startup failure.
+                    setattr(
+                        error, "detached_startup_returncode", handoff.process.returncode
+                    )
+                error.add_note(
+                    f"detached runner launcher={handoff.process.pid}; handoff={ready_path}"
                 )
-            error.add_note(
-                f"detached runner launcher={handoff.process.pid}; handoff={ready_path}"
-            )
-        raise
+            raise
 
 
 def _queue_process_spawn_is_windows() -> bool:

@@ -413,6 +413,13 @@ The `tools/dev.py` maintenance commands (`doctor`, `setup`, `update`, and
 a managed image. Installation, the Python version matrix, and managed repository
 gates continue to require managed ownership.
 
+Borrowing a published image preserves its physical lifetime custody without
+admitting it as the caller checkout's image. Launch owners retain declared
+`VIRTUAL_ENV` state and existing bound images containing lexical executable or
+native search coordinates through observed child closure. Search membership is
+conservative and does not establish interpreter identity; absent, unowned or
+unavailable optional coordinates do not change native executable search errors.
+
 Publication derives ordinary checked-hash caches at optimization levels 0, 1 and
 2 into the image's `bytecode` directory. Admission verifies those bytes against
 captured source and runtime inputs; pytest rewriting remains in memory. The
