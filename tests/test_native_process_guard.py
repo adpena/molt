@@ -323,7 +323,7 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     assert 'os.environ["MOLT_RUNTIME_FEEDBACK_FILE"]' in feedback
     assert all(not source.exists() for source in source_paths)
     records = [
-        json.loads(path.read_text()) for path in output.glob("wasm-*/command.json")
+        json.loads(path.read_text(encoding="utf-8")) for path in output.glob("wasm-*/command.json")
     ]
     assert {Path(record["source"]).parent.name for record in records} == {
         "wasm-syntax-run",
@@ -338,7 +338,7 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     for record in records:
         retained = Path(record["retained_sources"])
         assert (retained / Path(record["source"]).name).is_file()
-        payload = json.loads((retained.parent / "build.json").read_text())
+        payload = json.loads((retained.parent / "build.json").read_text(encoding="utf-8"))
         assert Path(payload["data"]["output"]).is_file()
         assert not Path(record["products"]).is_relative_to(
             Path(record["source"]).parent
