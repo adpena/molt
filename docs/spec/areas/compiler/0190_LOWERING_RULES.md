@@ -150,14 +150,58 @@ exception push/pop state or pending-error checks. Foreign exceptions retain thei
 identity when propagated through activation cleanup. Ordinary return, suspension
 and failed construction share one boxed-result epilogue, so anchor cleanup grows
 with the number of anchors rather than anchors times exits. Statically known
-forward WASM dispatch edges use their enclosing block labels directly, including
-pending-error checks and ready await continuations. The operation-to-block map
-also owns saved-state lookup; only backward or dynamic resume edges reenter the
-dispatcher. An ordinary implicit function exit uses the shared activation
-epilogue; stateful fallthrough is rejected because suspension protocols require
-an explicit terminal return. Unknown saved states, out-of-range operation
-indices and invalid dispatch-table entries trap instead of entering unrelated
-code or redispatching indefinitely.
+forward WASM edges use their enclosing block labels directly, including
+pending-error checks and ready await continuations. One pure control plan projects
+`molt-ir`'s executable operation edges and implicit exits onto the generated WASM
+physical block boundaries before frame locals or data segments are allocated.
+This topology view performs no name liveness fixed point. The existing Rust/Luau
+logical-flow projection consumes the same edge producer before its liveness work;
+WASM does not reconstruct label, lexical-loop or exceptional successors.
+
+An ordinary normalized Jumpful function admits entry at operation zero. Only reachable
+self/backward transfers require dynamic targets; a retained dispatcher adds its
+real invocation entry and maps operations to those compact target ordinals.
+Forward-only Jumpful bodies have no dispatcher loop, selector locals, operation
+lookup data or `br_table`. They keep Jumpful pending-error observation, frame
+ownership, anchors and the shared activation epilogue. Plain bodies retain their
+structured representation. Stateful admits a broader domain: its existing raw
+negative saved state decodes any in-range operation, so every physical block
+remains addressable. Positive states still use the shared terminal StateDispatch
+map, and the invocation prefix runs before initial and resumed entry. Compact
+internal ordinals never replace persisted saved-state identity. Unknown states,
+out-of-range operations and invalid dynamic ordinals trap before unrelated code.
+One scope-depth value counts forward labels and an optional dispatcher loop for
+all return, selection and redispatch consumers. Stateful fallthrough remains an
+error because suspension requires an explicit terminal return. A reachable
+`loop_end` takes the canonical latch in structured and non-linear WASM alike;
+source-unreachable lexical closers do not add Jumpful reentry alternatives.
+Final ownership cleanup can introduce backward transfers into an authored acyclic
+function. The final executable graph determines its dynamic domain; removing false
+alternatives does not necessarily eliminate that function's dispatcher or scopes.
+
+Planning retains O(operations + edges + blocks) storage in addition to the
+canonical ordered structural-index work. It does not spawn processes or perform
+syscalls. Dynamic lookup remains one checked O(1) load/branch per actual dispatch;
+forward-only entry performs none. The shared topology does not duplicate
+cross-block value analysis. Retaining forward scopes avoids a second stackifier:
+[LLVM's WebAssembly CFG stackifier](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/WebAssembly/WebAssemblyCFGStackify.cpp)
+likewise derives structured scopes from CFG transfers, while
+[MLIR control-flow edges](https://mlir.llvm.org/docs/Dialects/ControlFlowDialect/)
+keep destination and operand identity explicit. Generalizing Molt's existing LIR
+stackifier to task/exception ABI cells requires separate admission and evidence.
+Fewer entry alternatives are not a blanket total compile-time claim; frontend
+translation, backend allocation/codegen, peak memory and final execution are
+measured separately on the actual workload.
+
+Counted-loop transport operations are normalized once by the shared pre-SSA
+producer: initialize the carrier before the loop, load it at the header, and
+publish updates at the latch. Normalized/final consumers reject residual
+pre-SSA operations with function, operation and source-origin diagnostics;
+initial frontend transport admission still permits that input grammar. Final
+owned/dropped IR is never relifted to repair a missing normalization. This
+postcondition is shared by final typed projection, source backends and authored
+final codegen fixtures.
+
 Luau
 labelled transfers project the shared executable SimpleIR graph (excluding
 verifier-only reachability edges), with explicit pending/handled exception state

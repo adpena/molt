@@ -240,6 +240,23 @@ These remain development component results, with CLIF output disabled for
 comparison timings. Public-build cold/warm/edit measurements must include actual
 module discovery, lowering, linking, delivered bytes and memory.
 
+WASM dispatch planning projects the final executable graph rather than admitting
+every physical block as an ordinary dynamic target. A paired macOS arm64 component
+diagnostic compiled the same retained 2,365-operation locale dictionary function
+through the production mandatory TIR/WASM pipeline. Its emitted table narrowed
+from 5,898 to 1,179 targets; the other 72,724 decoded instructions and all 8,499
+ordered runtime calls were identical. The dispatcher loop and forward scopes
+remained because final ownership cleanup introduced backward transfers.
+
+Single compile-only observations with the same retained Wasmtime host and default
+engine policy measured translation at 93.293 s before and 8.292 s after. The
+baseline exceeded the unchanged 180 s bound before codegen completed; the changed
+module completed in 113.276 s, including 103.693 s for the function's compilation,
+with 4.965 GiB peak sampled/direct-child RSS. The timeout is censored, not a finite
+whole-compile speedup. These are unlinked component observations with diagnostic
+logging, not linked-module execution, installed-user latency, quiescent medians
+or full-module/release acceptance. Remaining codegen cost needs separate profiling.
+
 Build-Python capture now binds inventory rows within the shared stable-file
 transaction and batches capture and final verification. An isolated Windows
 CPython 3.12 capture diagnostic reduced scheduled futures from 5,382 to 169 and

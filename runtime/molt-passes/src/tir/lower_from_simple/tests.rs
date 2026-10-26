@@ -178,7 +178,7 @@ fn loop_index_rewrite_preserves_source_identity_on_derived_ops() {
         op("loop_end"),
     ];
 
-    let rewritten = rewrite_loop_index_to_store_load(&ops);
+    let rewritten = normalize_loop_indices("source_identity", ops);
 
     assert_eq!(rewritten[1].kind, "store_var");
     assert_eq!(rewritten[1].source_op_idx, Some(73));
@@ -189,6 +189,259 @@ fn loop_index_rewrite_preserves_source_identity_on_derived_ops() {
     assert_eq!(rewritten[4].kind, "store_var");
     assert_eq!(rewritten[4].source_op_idx, Some(74));
     assert_eq!(rewritten[4].source_line, Some(22));
+}
+
+#[test]
+fn loop_normalization_reuses_unchanged_owned_allocation() {
+    let mut ops = Vec::with_capacity(19);
+    ops.extend([
+        op_val_out("const", 42, "answer"),
+        op_args("ret", &["answer"]),
+    ]);
+    let allocation = ops.as_ptr();
+    let capacity = ops.capacity();
+    let normalized = normalize_loop_indices("unchanged", ops);
+    assert_eq!(
+        normalized.as_ptr(),
+        allocation,
+        "no-op normalization must not clone the stream"
+    );
+    assert_eq!(normalized.capacity(), capacity);
+    assert_eq!(normalized.len(), 2);
+    let empty = Vec::with_capacity(7);
+    let allocation = empty.as_ptr();
+    let normalized = normalize_loop_indices("empty", empty);
+    assert!(normalized.is_empty());
+    assert_eq!(normalized.as_ptr(), allocation);
+    assert_eq!(normalized.capacity(), 7);
+}
+
+#[test]
+fn loop_normalization_keeps_nested_initializers_outside_their_own_latches() {
+    let marked = |kind: &str, args: &[&str], out: Option<&str>, origin| OpIR {
+        kind: kind.into(),
+        args: Some(args.iter().map(|arg| (*arg).into()).collect()),
+        out: out.map(str::to_string),
+        source_op_idx: Some(origin),
+        ..OpIR::default()
+    };
+    let ops = normalize_loop_indices(
+        "nested",
+        vec![
+            marked("loop_start", &[], None, 11),
+            marked("loop_index_start", &["outer_seed"], Some("outer"), 12),
+            marked("loop_break_if_false", &["outer_ok"], None, 13),
+            marked("loop_start", &[], None, 21),
+            marked("loop_index_start", &["inner_seed"], Some("inner"), 22),
+            marked("loop_break_if_false", &["inner_ok"], None, 23),
+            marked("loop_index_next", &["inner_updated"], Some("inner"), 24),
+            marked("loop_continue", &[], None, 25),
+            marked("loop_end", &[], None, 26),
+            marked("loop_index_next", &["outer_updated"], Some("outer"), 31),
+            marked("loop_continue", &[], None, 32),
+            marked("loop_end", &[], None, 33),
+            marked("ret_void", &[], None, 40),
+        ],
+    );
+    // Independent graph authority establishes where recurrence executes. Do not
+    // compare the normalizer's complete output with a second rewritten-op list.
+    let flow = molt_ir::simple_verify::simple_ir_logical_flow(&ops);
+    for (carrier, seed, updated, header_origin, init_origin, update_origin, latch_origin) in [
+        ("outer", "outer_seed", "outer_updated", 11, 12, 31, 32),
+        ("inner", "inner_seed", "inner_updated", 21, 22, 24, 25),
+    ] {
+        let find = |kind: &str, origin| {
+            ops.iter()
+                .position(|op| op.kind == kind && op.source_op_idx == Some(origin))
+                .unwrap()
+        };
+        let initialization = find("store_var", init_origin);
+        let header = find("loop_start", header_origin);
+        let read = find("load_var", init_origin);
+        let update = find("store_var", update_origin);
+        let latch = find("loop_continue", latch_origin);
+        assert!(initialization < header && header < read && read < update && update < latch);
+        assert_eq!(ops[initialization].var.as_deref(), Some(carrier));
+        assert_eq!(
+            ops[initialization].args.as_deref(),
+            Some(&[seed.to_string()][..])
+        );
+        assert_eq!(ops[read].var.as_deref(), Some(carrier));
+        assert_eq!(ops[update].var.as_deref(), Some(carrier));
+        assert_eq!(
+            ops[update].args.as_deref(),
+            Some(&[updated.to_string()][..])
+        );
+        assert_eq!(flow.edges[latch].len(), 1);
+        assert_eq!(
+            flow.edges[latch][0].target, header,
+            "latch must reload, never reinitialize"
+        );
+        assert_eq!(flow.edges[header][0].target, read);
+    }
+}
+
+#[test]
+fn loop_normalization_preserves_outer_update_and_explicit_outer_continue() {
+    for inner_counted in [false, true] {
+        let mut ops = vec![
+            op_val_out("const", 7, "seed"),
+            op_val_out("const", 1, "one"),
+            op_val_out("const", 10, "limit"),
+            op("loop_start"),
+            op_args_out("loop_index_start", &["seed"], "outer"),
+            op_args_out("lt", &["outer", "limit"], "condition"),
+            op_args("loop_break_if_false", &["condition"]),
+            op("loop_start"),
+        ];
+        if inner_counted {
+            ops.push(op_args_out("loop_index_start", &["seed"], "inner"));
+        }
+        ops.extend([
+            op_args_out("add", &["outer", "one"], "advanced"),
+            OpIR {
+                source_op_idx: Some(73),
+                ..op_args_out("loop_index_next", &["advanced"], "outer")
+            },
+            OpIR {
+                value: Some(99),
+                ..op("jump")
+            },
+            op("loop_end"),
+            OpIR {
+                value: Some(99),
+                ..op("label")
+            },
+            op("loop_continue"),
+            op("loop_end"),
+            op_args("ret", &["outer"]),
+        ]);
+        let normalized = normalize_loop_indices("outer_transfer", ops);
+        let flow = molt_ir::simple_verify::simple_ir_logical_flow(&normalized);
+        // The authored recurrence is 7,8,9 then return 10. Its update is
+        // physically inside a younger loop, but both the carried value and
+        // explicit transfer belong to the outer loop. Inspect these independent
+        // data/control relations rather than copying a rewritten operation list.
+        let update = normalized
+            .iter()
+            .position(|op| op.source_op_idx == Some(73))
+            .unwrap();
+        assert_eq!(normalized[update].kind, "store_var");
+        assert_eq!(normalized[update].var.as_deref(), Some("outer"));
+        assert_eq!(
+            normalized[update].args.as_deref(),
+            Some(&["advanced".to_string()][..])
+        );
+        let increment = normalized
+            .iter()
+            .find(|op| op.out.as_deref() == Some("advanced"))
+            .unwrap();
+        assert_eq!(increment.kind, "add");
+        assert_eq!(
+            increment.args.as_deref(),
+            Some(&["outer".to_string(), "one".to_string()][..])
+        );
+        let jump = flow.edges[update][0].target;
+        assert_eq!(normalized[jump].kind, "jump");
+        let target = flow.edges[jump][0].target;
+        assert_eq!(normalized[target].kind, "label");
+        assert_eq!(normalized[target].value, Some(99));
+        let outer_latch = flow.edges[target][0].target;
+        assert_eq!(normalized[outer_latch].kind, "loop_continue");
+        let outer_header = flow.edges[outer_latch][0].target;
+        assert_eq!(normalized[outer_header].kind, "loop_start");
+        let reload = flow.edges[outer_header][0].target;
+        assert_eq!(normalized[reload].kind, "load_var");
+        assert_eq!(normalized[reload].var.as_deref(), Some("outer"));
+        assert!(outer_header < update);
+        assert_eq!(flow.edges[update].len(), 1);
+        assert_eq!(
+            flow.edges[jump].len(),
+            1,
+            "outer continue cannot fall through the inner closer"
+        );
+        if inner_counted {
+            assert_eq!(
+                normalized
+                    .iter()
+                    .filter(|op| { op.kind == "store_var" && op.var.as_deref() == Some("inner") })
+                    .count(),
+                1,
+                "the outer update must not mutate the inner seed"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_normalization_rejects_orphan_and_malformed_carriers() {
+    let carrier = |kind: &str, args: Option<Vec<&str>>, out: Option<&str>| OpIR {
+        kind: kind.into(),
+        args: args.map(|args| args.into_iter().map(str::to_string).collect()),
+        out: out.map(str::to_string),
+        source_op_idx: Some(73),
+        ..OpIR::default()
+    };
+    let start = || carrier("loop_index_start", Some(vec!["seed"]), Some("index"));
+    let next = || carrier("loop_index_next", Some(vec!["updated"]), Some("index"));
+    let mut cases = vec![
+        vec![start()],
+        vec![next()],
+        vec![op("loop_start"), next(), op("loop_end")],
+        // A closed loop no longer owns a carrier, even if its spelling matches.
+        vec![op("loop_start"), start(), op("loop_end"), next()],
+        // An orphan with a previously valid spelling has no lexical owner.
+        vec![op("loop_start"), start(), op("loop_end"), start()],
+        vec![op("loop_start"), start(), start(), op("loop_end")],
+        vec![
+            op("loop_start"),
+            start(),
+            carrier("loop_index_next", Some(vec!["updated"]), Some("other")),
+            op("loop_end"),
+        ],
+    ];
+    for malformed in [
+        carrier("loop_index_start", None, Some("index")),
+        carrier("loop_index_start", Some(vec![]), Some("index")),
+        carrier(
+            "loop_index_start",
+            Some(vec!["seed", "extra"]),
+            Some("index"),
+        ),
+        carrier("loop_index_start", Some(vec![""]), Some("index")),
+        carrier("loop_index_start", Some(vec!["seed"]), None),
+        carrier("loop_index_start", Some(vec!["seed"]), Some("none")),
+    ] {
+        cases.push(vec![op("loop_start"), malformed, op("loop_end")]);
+    }
+    for malformed in [
+        carrier("loop_index_next", None, Some("index")),
+        carrier("loop_index_next", Some(vec![]), Some("index")),
+        carrier(
+            "loop_index_next",
+            Some(vec!["updated", "extra"]),
+            Some("index"),
+        ),
+        carrier("loop_index_next", Some(vec![""]), Some("index")),
+        carrier("loop_index_next", Some(vec!["updated"]), None),
+    ] {
+        cases.push(vec![op("loop_start"), start(), malformed, op("loop_end")]);
+    }
+    for ops in cases {
+        let error = std::panic::catch_unwind(|| normalize_loop_indices("malformed", ops))
+            .expect_err("malformed carriers cannot reach SSA passthrough");
+        let message = error
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied())
+            .expect("text diagnostic");
+        assert!(message.contains("function `malformed`"), "{message}");
+        assert!(
+            message.contains("loop_index_") && message.contains("source op#73"),
+            "{message}"
+        );
+        assert!(message.contains("pre-SSA operation remains"), "{message}");
+    }
 }
 
 // =======================================================================

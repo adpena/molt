@@ -852,18 +852,31 @@ fn effect_refcount_metadata_never_overwrites_an_existing_local() {
 }
 
 #[test]
-fn loop_index_copies_accept_all_result_shapes() {
+fn final_fixture_rejects_counted_pseudo_ops_before_emission() {
     for kind in ["loop_index_start", "loop_index_next"] {
         for output in [None, Some("none"), Some("unused"), Some("result")] {
-            let bound = output == Some("result");
-            let (operators, _) = compile_literal_body(
-                vec!["value"],
-                vec![
-                    wasm_test_op(kind, output, vec!["value"]),
-                    wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
-                ],
+            let outcome = std::panic::catch_unwind(|| {
+                let mut carrier = wasm_test_op(kind, output, vec!["value"]);
+                carrier.source_op_idx = Some(73);
+                compile_literal_body(
+                    vec!["value"],
+                    vec![carrier, wasm_test_op("ret", None, vec!["none"])],
+                );
+            });
+            let error = outcome.expect_err("raw counted transport is not final executable IR");
+            let message = error
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| error.downcast_ref::<&str>().copied())
+                .expect("text diagnostic");
+            assert!(
+                message.contains("WASM final fixture admission failed"),
+                "{message}"
             );
-            assert!(!operators.is_empty());
+            assert!(
+                message.contains(kind) && message.contains("source op#73"),
+                "{message}"
+            );
         }
     }
 }

@@ -3,7 +3,7 @@ mod planning;
 
 use super::frame_locals::{WasmDispatchFrameLocals, WasmFrameLocals};
 use super::local_analysis::ValueOccupancy;
-use super::state_dispatch::NonLinearDispatchLocals;
+use super::state_dispatch::NonLinearControlPlan;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_values::ConstantCache;
 use planning::FrameConstAnchor;
@@ -24,10 +24,6 @@ impl WasmFrameControlMode {
 
     pub(in crate::wasm) fn is_stateful(self) -> bool {
         matches!(self, Self::Stateful)
-    }
-
-    fn needs_dispatch(self) -> bool {
-        !matches!(self, Self::Plain)
     }
 }
 
@@ -61,6 +57,7 @@ pub(super) struct WasmFunctionFrame {
     guard_facts: molt_tir::passes::RuntimeGuardFacts,
     guard_profile_local: Option<u32>,
     control_mode: WasmFrameControlMode,
+    control_plan: Option<NonLinearControlPlan>,
     tail_call_eligible: bool,
     // Per-invocation custody, never a persistent generator/task field. A failed
     // entry also creates a runtime attempt marker that this invocation owns.
@@ -89,15 +86,12 @@ impl WasmFunctionFrame {
         self.control_mode
     }
 
-    pub(super) fn dispatch_locals(&self) -> Option<NonLinearDispatchLocals> {
-        self.dispatch_locals.map(|locals| NonLinearDispatchLocals {
-            state_local: locals.state_local,
-            resume_state_local: locals.resume_state_local,
-            block_map_base_local: locals.block_map_base_local,
-            self_ptr_local: locals.self_ptr_local,
-            state_remap_base_local: locals.state_remap_base_local,
-            state_remap_value_local: locals.state_remap_value_local,
-        })
+    pub(super) fn dispatch_locals(&self) -> Option<WasmDispatchFrameLocals> {
+        self.dispatch_locals
+    }
+
+    pub(super) fn control_plan(&self) -> Option<&NonLinearControlPlan> {
+        self.control_plan.as_ref()
     }
 
     pub(super) fn locals(&self) -> &WasmFrameLocals {
