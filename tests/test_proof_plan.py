@@ -2,6 +2,7 @@ from __future__ import annotations
 import shutil
 
 import ast
+import fnmatch
 import hashlib
 import json
 import os
@@ -31,7 +32,9 @@ from tools import (
     check_subprocess_guard_coverage,
     gen_proof_plan,
     proof_command_argv,
+    proof_executor,
     proof_plan,
+    proof_plan_cli,
     proof_receipts,
     toolchain_probe,
 )
@@ -418,7 +421,9 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
         command
         for command, _tools in proof_plan.local_gate_commands(
             {"always": PLAN.always, "rule": PLAN.local_rules},
-            memory_units=proof_plan.PytestMemoryUnits(c.data for c in PLAN.commands),
+            memory_units=proof_plan.PytestMemoryUnits(
+                (c.data for c in PLAN.commands), root=proof_plan.ROOT
+            ),
         ).values()
     }
     assert expected <= commands
@@ -428,7 +433,7 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
 
 
 def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> None:
-    from tools import molt_dev_common, molt_dev_policy
+    from tools import molt_dev, molt_dev_common, molt_dev_policy
 
     upstream = "a" * 40
     raw = "echo {integration_upstream_commit}..HEAD"
@@ -442,11 +447,19 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     assert bound == f"echo {upstream}..HEAD"
     assert [gate.command for gate in commands] == [raw]
     assert cfg.prerequisites == {"local.always.0": (raw, ())}
-    assert cfg.admit(["feature.rs"], matched, [raw], environ=os.environ) == {}
+    selected, _ = cfg.select(["feature.rs"], extra=[raw])
+    prepared = cfg.prepare(
+        selected,
+        baseline={},
+        prepare_python=lambda env, needed: molt_dev.prepare_gate_environment(
+            cfg.root, env, requires_python=needed
+        ),
+    )
+    assert prepared.fingerprints == {}
     with pytest.raises(
         molt_dev_common.DriverError, match="lack declared prerequisite custody"
     ):
-        cfg.admit(["feature.rs"], matched, [bound], environ=os.environ)
+        cfg.select(["feature.rs"], extra=[bound])
     literal = ("python", "-m", "pytest", "tests/test_proof_plan.py")
     assert (
         proof_plan.bind_local_gate_command(literal, upstream_commit=upstream) is literal
@@ -476,7 +489,7 @@ def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
     with pytest.raises(ValueError, match="placeholder"):
         proof_plan.local_gate_commands(
             {"always": [command]},
-            memory_units=proof_plan.PytestMemoryUnits(()),
+            memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
         )
     with pytest.raises(molt_dev_common.DriverError, match="placeholder"):
         molt_dev_policy.GateConfig.parse(
@@ -529,7 +542,7 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
     commands = proof_plan.local_gate_commands(
         {"rule": [rule]},
-        memory_units=proof_plan.PytestMemoryUnits(()),
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     command, tools = commands[f"local.{rule['name']}.pytest"]
     assert shlex.split(command) == [
@@ -569,7 +582,7 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
     commands = proof_plan.local_gate_commands(
         {"rule": [rule]},
-        memory_units=proof_plan.PytestMemoryUnits(()),
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets"}
@@ -589,9 +602,14 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
         assert tools == tuple(rule["toolchains"])
 
 
-def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> None:
+def test_local_pytest_units_preserve_path_and_node_ownership_boundaries(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "tests/light").mkdir(parents=True)
+    for name in ("nodes.py", "sibling.py", "partial.py", "light/child.py"):
+        (tmp_path / "tests" / name).touch()
     commands = [
-        {"pytest": ["tests/light/"], "pytest_worker_memory_gb": 0.5},
+        {"pytest": ["tests/light"], "pytest_worker_memory_gb": 0.5},
         {"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 0.75},
         {
             "pytest": ["tests/nodes.py::Case::test_heavy"],
@@ -607,7 +625,7 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
         {"pytest": ["tests/sibling.py"], "pytest_worker_memory_gb": 0.5},
         {"pytest": ["tests/partial.py::test_one"], "pytest_worker_memory_gb": 0.5},
     ]
-    units = proof_plan.PytestMemoryUnits(iter(commands))
+    units = proof_plan.PytestMemoryUnits(iter(commands), root=tmp_path)
     cases = [
         (["tests/light/child.py::test_one"], 0.5),
         (["tests/lightly/child.py"], 2.5),
@@ -617,20 +635,48 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
         (["tests/nodes.py::test_special[another]"], 0.75),
         (["tests/nodes.py"], 6.25),
         (["tests/nodes.py::Case"], 6.25),
+        (["tests/nodes.py::case::test_heavy"], 0.75),
+        (["tests/NODES.py::Case::test_heavy"], 2.5),
         (["tests/sibling.py"], 1),
         (["tests/sibling.py.extra"], 2.5),
         (["tests/partial.py::test_one"], 0.5),
         (["tests/partial.py"], 2.5),
-        (["tests/light/", "tests/unowned.py"], 2.5),
+        (["tests/light", "tests/unowned.py"], 2.5),
         (["tests"], 6.25),
     ]
     # The index owns its derived observation; queries never rescan the rows.
     commands.clear()
-    for targets, expected in cases:
-        assert units.memory_gb(iter(targets)) == expected
+
+    def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("an indexed memory/overlap query probed the filesystem")
+
+    light = "tests/light/child.py::test_one"
+    child = "tests/nodes.py::Case::test_light"
+    parameter = "tests/nodes.py::test_special[x::y / & 'quotes' {value} [nested]]"
+    with monkeypatch.context() as patch:
+        patch.setattr(proof_plan.os, "listdir", unexpected_probe)
+        patch.setattr(Path, "stat", unexpected_probe)
+        patch.setattr(Path, "lstat", unexpected_probe)
+        for targets, expected in cases:
+            assert units.memory_gb(iter(targets)) == expected
+        # Ancestor requests keep all overlapping literal children in the same
+        # collection, even when the ancestor appears after a requested child.
+        for requests, expected in (
+            ((light, child), ((light,), (child,))),
+            (
+                (child, "tests/nodes.py", light, parameter),
+                ((child, "tests/nodes.py", parameter), (light,)),
+            ),
+            (("tests", child, light, parameter), (("tests", child, light, parameter),)),
+            ((child, parameter), ((child,), (parameter,))),
+            ((), ()),
+        ):
+            assert units.overlapping_requests(iter(requests)) == expected
 
 
-def test_pytest_memory_units_read_the_declared_unit_and_targets() -> None:
+def test_pytest_memory_units_read_the_declared_unit_and_targets(tmp_path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/heavy.py").touch()
     # A row declares its worker unit and targets as data (HF-179), so neither a
     # spelled option nor a separate option value can become a target: the
     # review's `--molt-worker-memory-gb 3 tests/x.py` grew a `3` node.
@@ -641,8 +687,8 @@ def test_pytest_memory_units_read_the_declared_unit_and_targets() -> None:
                 "pytest": ["tests/heavy.py"],
                 "pytest_worker_memory_gb": 6.0,
             },
-            {"argv": ["python", "-m", "pytest", "--molt-worker-memory-gb", "3"]},
-        ]
+        ],
+        root=tmp_path,
     )
     default = proof_plan.host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB
     assert default not in {3, 6}
@@ -698,6 +744,8 @@ def test_pytest_memory_units_read_the_declared_unit_and_targets() -> None:
 def test_pytest_declarations_are_checked_without_pytest(data, message) -> None:
     errors = proof_plan.pytest_declaration_errors("row", data, root=proof_plan.ROOT)
     assert any(message in error for error in errors), errors
+    with pytest.raises(ValueError, match=re.escape(message)):
+        proof_plan.PytestMemoryUnits([data], root=proof_plan.ROOT)
 
 
 @pytest.mark.parametrize(
@@ -762,10 +810,56 @@ def test_pytest_targets_have_one_canonical_spelling(
         "row", {"pytest": [spelling]}, root=tmp_path
     )
     assert errors, spelling
+    with pytest.raises(ValueError, match="pytest target"):
+        proof_plan.PytestMemoryUnits(
+            [{"pytest": [spelling], "pytest_worker_memory_gb": 0.5}], root=tmp_path
+        )
     if not spelling.endswith("/") and spelling.startswith("tests/"):
         assert proof_plan.local_pytest_target_errors(
             "rule", [spelling], root=tmp_path
         ), spelling
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_pytest_admission_rejects_linked_source_entries(tmp_path, directory) -> None:
+    root = tmp_path / "source"
+    (root / "tests").mkdir(parents=True)
+    source = root / "tests" / ("real" if directory else "real.py")
+    if directory:
+        source.mkdir()
+        (source / "test_one.py").touch()
+    else:
+        source.touch()
+    link = root / "tests" / ("alias" if directory else "alias.py")
+    checkout = tmp_path / "checkout"
+    try:
+        link.symlink_to(source, target_is_directory=directory)
+        checkout.symlink_to(root, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"host cannot create the required symlink witness: {error}")
+    target = "tests/alias/test_one.py::test_one" if directory else "tests/alias.py"
+    data = {"pytest": [target], "pytest_worker_memory_gb": 0.5}
+    real = "tests/real/test_one.py::test_one" if directory else "tests/real.py"
+    valid = {"pytest": [real], "pytest_worker_memory_gb": 0.5}
+    for selected_root in (root, checkout):
+        # A symlink above the repository boundary is a valid way to reach it;
+        # aliases inside that boundary must still be refused.
+        assert not proof_plan.pytest_declaration_errors(
+            "row", valid, root=selected_root
+        )
+        assert not proof_plan.local_pytest_target_errors(
+            "rule", [real], root=selected_root
+        )
+        assert (
+            proof_plan.PytestMemoryUnits([valid], root=selected_root).memory_gb([real])
+            == 0.5
+        )
+        assert proof_plan.pytest_declaration_errors("row", data, root=selected_root)
+        assert proof_plan.local_pytest_target_errors(
+            "rule", [target], root=selected_root
+        )
+        with pytest.raises(ValueError, match="pytest target"):
+            proof_plan.PytestMemoryUnits([data], root=selected_root)
 
 
 def test_a_plan_pytest_row_executes_its_declared_targets() -> None:
@@ -789,10 +883,15 @@ def test_a_plan_pytest_row_executes_its_declared_targets() -> None:
     assert row.pytest_targets == ("tests/a.py", "tests/b.py::test_x")
 
 
-def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
+def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv(
+    tmp_path,
+) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/nodes.py").touch()
     target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
     units = proof_plan.PytestMemoryUnits(
-        [{"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 4.0}]
+        [{"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 4.0}],
+        root=tmp_path,
     )
     argv = proof_plan.local_pytest_argv(
         iter([target]), ("-k", "literal or 'other'"), memory_units=units
@@ -817,9 +916,14 @@ def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> Non
     assert proof_plan.bind_local_gate_command(argv, upstream_commit="a" * 40) is argv
 
 
-def test_local_pytest_unit_projection_does_not_round_down_its_envelope() -> None:
+def test_local_pytest_unit_projection_does_not_round_down_its_envelope(
+    tmp_path,
+) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/precise.py").touch()
     units = proof_plan.PytestMemoryUnits(
-        [{"pytest": ["tests/precise.py"], "pytest_worker_memory_gb": 1.0000004}]
+        [{"pytest": ["tests/precise.py"], "pytest_worker_memory_gb": 1.0000004}],
+        root=tmp_path,
     )
     argv = proof_plan.local_pytest_argv(["tests/precise.py"], memory_units=units)
     assert "--molt-worker-memory-gb=1.0000004" in argv
@@ -900,6 +1004,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "molt-runtime",
         "molt-runtime-regex",
         "molt-runtime-core",
+        "molt-runtime-math",
         "molt-stdlib-text",
         "molt-runtime-platform",
         "molt-gpu-runtime",
@@ -912,7 +1017,12 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         complement.argv.index("--features") + 1
     ].split(",")
     assert core.dependencies == complement.dependencies == ()
-    assert {"regex::", "text_storage::"} <= set(core.argv[core.argv.index("--") + 1 :])
+    # Text storage moved to the object-model crate. Its whole library is owned
+    # by the compiler cohort; a runtime-cohort filter would select no test.
+    assert "molt-lang-obj-model" in test_packages(complement)
+    assert "--lib" in complement.argv
+    assert "regex::" in core.argv[core.argv.index("--") + 1 :]
+    assert "text_storage::" not in core.argv[core.argv.index("--") + 1 :]
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
     assert proof_plan.cargo_native_units(core.data) == {"target": ["c"]}
     assert "seq_snapshot_bridge::" in core.argv[core.argv.index("--") + 1 :]
@@ -945,6 +1055,9 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
     filters = core.argv[core.argv.index("--") + 1 :]
+    # HF-487 removes the disabled-feature stub producer, including its tests.
+    # A stale filter silently selects no test and cannot qualify that boundary.
+    assert "async_rt::net_stubs::" not in filters
     assert {
         "errno_build_tests::",
         "socket_constants::tests::",
@@ -952,6 +1065,8 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "wasm_abi::",
         "async_rt::channels::",
         "concurrency::gil::tests::",
+        "numeric_ratio::",
+        "math::statistics_reduction_tests::",
         "intrinsics::registry::",
     } <= set(filters)
     assert {
@@ -999,6 +1114,7 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
         "molt-passes/test-util",
         "molt-backend-wasm/test-util",
         "molt-runtime/stdlib_micro",
+        "molt-runtime/stdlib_math",
         "molt-runtime/builtin_complex",
         "molt-runtime/builtin_set",
         "molt-runtime/molt_gpu_primitives",
@@ -1117,6 +1233,14 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
     # adding a semantic obligation, and would evade registered queue custody.
     local = next(rule for rule in PLAN.local_rules if rule["name"] == "runtime-lib")
     assert shlex.split(local["gates"][0]) == list(shipping.argv[9:])
+    # Satellite-only edits must reach the same local owning gate. Their libtest
+    # bodies are not compiled by depending on the ordinary satellite rlibs.
+    for path in (
+        "runtime/molt-runtime-core/src/numeric_ratio.rs",
+        "runtime/molt-runtime-math/src/math.rs",
+    ):
+        assert any(proof_plan._matches(path, pattern) for pattern in local["globs"])
+        assert _classes(path)["rust"] is True
     for path in (
         "tools/run_runtime_test_gate.py",
         "tests/tools/test_runtime_test_gate.py",
@@ -1146,39 +1270,50 @@ def test_runtime_proof_transport_preserves_registered_native_build_closure(comma
 
 
 @pytest.mark.parametrize("kind", ["command", "named_lane"])
-@pytest.mark.parametrize("value", ["false", 0, None])
-def test_cargo_generator_declaration_rejects_untyped_policy(kind, value):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cargo_build_python", True),
+        ("cargo_build_python", 0),
+        ("unregistered_input", None),
+    ],
+)
+def test_proof_rows_reject_unknown_or_retired_command_fields(kind, field, value):
     rows = PLAN.commands if kind == "command" else PLAN.named_lanes
     selected = next(row for row in rows if "cargo" in row.toolchains)
     changed = tuple(
-        replace(row, data={**row.data, "cargo_build_python": value})
-        if row.id == selected.id
-        else row
+        replace(row, data={**row.data, field: value}) if row.id == selected.id else row
         for row in rows
     )
     plan = replace(
         PLAN, **{"commands" if kind == "command" else "named_lanes": changed}
     )
-    assert any("cargo_build_python requires" in error for error in plan.validate())
+    expected = (
+        "unknown command fields" if kind == "command" else "unknown named lane fields"
+    )
+    assert any(
+        selected.id in error and expected in error and field in error
+        for error in plan.validate()
+    )
 
 
-def test_cargo_generator_declaration_rejects_noncargo_and_static_roles():
-    with pytest.raises(ValueError, match="Cargo toolchain"):
-        proof_plan.cargo_build_python(
-            {"toolchains": ["python"], "cargo_build_python": False}
-        )
-    with pytest.raises(ValueError, match="contextual"):
-        proof_plan.cargo_build_python(
-            {"toolchains": ["cargo", "build-python"], "cargo_build_python": True}
-        )
-
-
-def test_registered_cargo_generator_policy_is_explicit_for_every_owner():
-    for row in (*PLAN.commands, *PLAN.named_lanes):
-        if "cargo" in row.toolchains:
-            assert type(row.data.get("cargo_build_python")) is bool, row.id
-        else:
-            assert "cargo_build_python" not in row.data, row.id
+def test_actual_python_custody_and_source_unicode_controls_keep_real_owners():
+    assert PLAN.validate() == []
+    probe = "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe"
+    native = next(
+        row for row in PLAN.commands if row.id == "native.integration.python-custody"
+    )
+    assert (
+        probe in native.argv
+        and "-m" not in native.argv[native.argv.index("pytest") + 1 :]
+    )
+    assert "tests/test_runtime_build_python.py" not in native.argv
+    generator = next(
+        row for row in PLAN.commands if row.id == "repository.tooling-tests"
+    )
+    assert "tests/tools/test_gen_token_metadata.py" in generator.argv
+    assert "tests/test_runtime_build_python.py" in generator.argv
+    assert generator.family == "repository_policy"
 
 
 def test_runtime_descendant_authority_is_hashed_and_its_tests_execute() -> None:
@@ -1299,6 +1434,8 @@ def test_ir_input_receivers_run_with_enabled_and_disabled_cbor() -> None:
 
 
 def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
+    from tools import molt_dev_policy
+
     local = next(
         rule for rule in PLAN.local_rules if rule["name"] == "backend-daemon-cache"
     )
@@ -1330,6 +1467,7 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     server = shlex.split(local["gates"][1])
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "--test"} == {
         "daemon_server",
+        "native_batch_worker_spawn",
         "rust_transpiler_preview",
     }
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "-p"} == {
@@ -1339,6 +1477,18 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert "--no-fail-fast" in server
     assert server[server.index("--features") + 1] == argv[argv.index("--features") + 1]
     assert server[server.index("--profile") + 1] == "dev-fast"
+
+    policy = molt_dev_policy.GateConfig.load(proof_plan.DEFAULT_MANIFEST)
+    for path in (
+        "runtime/molt-backend/src/backend_process/input/msgpack.rs",
+        "runtime/molt-backend/src/backend_process/native_batch.rs",
+        "runtime/molt-backend/src/backend_process/native_batch/worker/spawn.rs",
+        "runtime/molt-backend/src/backend_process/shared_stdlib_cache.rs",
+        "runtime/molt-backend/src/backend_process/shared_stdlib_cache/compile/batched.rs",
+        "runtime/molt-backend/tests/native_batch_worker_spawn.rs",
+    ):
+        selected, _ = policy.select([path])
+        assert [gate.command for gate in selected].count(local["gates"][1]) == 1, path
 
 
 def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane() -> (
@@ -1407,7 +1557,7 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
 @pytest.mark.parametrize(
     "changed",
     [
-        "runtime/molt-runtime-core/src/text_storage.rs",
+        "runtime/molt-obj-model/src/text_storage.rs",
         "tests/differential/basic/unicode_surrogate_handling.py",
     ],
 )
@@ -1504,10 +1654,12 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
     rule = next(r for r in config.rules if r.name == "installed-compiler-distribution")
     gates, matched = replace(config, rules=[rule], always=[]).select([changed])
     assert [r.name for r in matched] == [rule.name]
-    assert len(gates) == 1
-    command = gates[0].command
-    argv = shlex.split(command) if isinstance(command, str) else command
-    assert {arg for arg in argv if arg.startswith("tests/")} == {
+    assert gates and all(gate.pytest for gate in gates)
+    targets = [
+        arg for gate in gates for arg in gate.command if arg.startswith("tests/")
+    ]
+    assert len(targets) == len(set(targets))
+    assert set(targets) == {
         "tests/cli/test_installed_compiler.py",
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
@@ -1515,7 +1667,7 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
         "tests/tools/test_release_native_build.py",
         "tests/tools/test_release_supply_chain.py",
     }
-    assert gates[0].toolchains == ("python",)
+    assert all(gate.toolchains == ("python",) for gate in gates)
     assert replace(config, rules=[rule], always=[]).select(
         ["runtime/molt-wasm-facts/src/main.rs"]
     ) == ([], [])
@@ -1634,8 +1786,13 @@ def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     assert _classes(path)["rust"] is True
     assert set(rule.gates) <= {gate.command for gate in gates}
     assert "tests/cli/test_runtime_source_closure.py" in rule.pytest
-    merged = next(gate.command for gate in gates if isinstance(gate.command, tuple))
-    assert "tests/cli/test_runtime_source_closure.py" in merged
+    assert (
+        sum(
+            gate.pytest and "tests/cli/test_runtime_source_closure.py" in gate.command
+            for gate in gates
+        )
+        == 1
+    )
     local = tuple(next(g for g in rule.gates if g.startswith("cargo test")).split())
     ci = next(
         command.argv
@@ -1715,6 +1872,9 @@ def test_luau_change_selects_formal_without_stale_backend_path() -> None:
 def test_llvm_control_plane_changes_run_llvm_stack() -> None:
     for path in (
         "src/molt/llvm_toolchain.py",
+        "src/molt/llvm_link_plan.py",
+        "runtime/molt-llvm-link/build.rs",
+        "runtime/molt-llvm-link/src/lib.rs",
         "config/llvm_toolchain_arches.toml",
         ".github/actions/setup-llvm/action.yml",
         "tools/bootstrap_llvm.py",
@@ -1726,6 +1886,12 @@ def test_llvm_control_plane_changes_run_llvm_stack() -> None:
         "vendor/llvm/LICENSE.TXT",
     ):
         assert _classes(path)["llvm"] is True, path
+    rule = next(row for row in PLAN.local_rules if row["name"] == "backend-llvm")
+    for path in (
+        "runtime/molt-llvm-link/build.rs",
+        "runtime/molt-llvm-link/src/lib.rs",
+    ):
+        assert any(fnmatch.fnmatchcase(path, glob) for glob in rule["globs"]), path
 
 
 def test_release_lane_changes_exercise_installed_and_source_consumers() -> None:
@@ -2417,6 +2583,7 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload",
     )
     assert boundaries.data["timeout_budget"] == "cold"
     assert set(boundaries.dependencies) == {
@@ -2898,10 +3065,15 @@ def test_source_extension_toolchain_requires_target_context_capture() -> None:
     assert "executable" not in policy.data
     assert "version_args" not in policy.data
     with pytest.raises(ValueError, match="requires target-context capture"):
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     with pytest.raises(ValueError, match="requires target-context capture"):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("source-extension",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("source-extension",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -3298,7 +3470,9 @@ def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
         return subprocess.CompletedProcess(command, 0, banner, "")
 
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
-    actual = proof_plan._version_fingerprint(policy, environment=os.environ)
+    actual = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert actual is not None
     assert actual["path"] == str(selected)
     assert (
@@ -3325,7 +3499,10 @@ def test_missing_sdk_role_is_a_toolchain_preflight_error(
         ValueError, match="wasm-ld toolchain selection failed.*provision SDK explicitly"
     ):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("wasm-ld",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("wasm-ld",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -3362,7 +3539,9 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
     )
 
-    fingerprint = proof_plan._version_fingerprint(policy, environment=os.environ)
+    fingerprint = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     expected_cwd = (proof_plan.ROOT / "formal/lean").resolve()
     assert fingerprint is not None
     assert calls == [
@@ -3410,7 +3589,9 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
         monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
     )
 
-    fingerprint = proof_plan._version_fingerprint(policy, environment=os.environ)
+    fingerprint = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert fingerprint is not None
     assert fingerprint["content_path"] == str(content.resolve())
     assert (
@@ -3478,7 +3659,9 @@ def test_toolchain_content_probe_failure_preserves_selection_cause(
         lambda *_args, **_kwargs: pytest.fail("a failed resolver has no runtime image"),
     )
     with pytest.raises(ValueError) as caught:
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     message = str(caught.value)
     assert "selected-runtime: content resolver failed" in message
     assert expected_cause in message
@@ -3520,7 +3703,9 @@ def test_toolchain_content_probe_failure_bounds_both_output_excerpts(
 
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     with pytest.raises(ValueError) as caught:
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     message = str(caught.value)
     assert "exit status 17" in message
     for boundary in ("stdout-head:", ":stdout-tail", "stderr-head:", ":stderr-tail"):
@@ -3575,7 +3760,10 @@ def test_toolchain_version_probe_failure_preserves_selection_cause(
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     with pytest.raises(ValueError) as caught:
         proof_plan.toolchain_fingerprints(
-            (policy,), (policy.name,), environment=os.environ
+            (policy,),
+            (policy.name,),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     message = str(caught.value)
     assert "selected-image: version query failed" in message
@@ -3600,8 +3788,8 @@ def test_toolchain_probe_environment_rejection_retains_selected_context(
     command = ["selected-tool", "--version"]
     environment = {"SELECTED_POLICY": "refused"}
 
-    def reject(argv, env):
-        assert argv == command and env is environment
+    def reject(argv, env, *, cwd):
+        assert argv == command and env is environment and cwd == tmp_path
         raise ValueError("selected environment refused")
 
     monkeypatch.setattr(toolchain_probe, "cargo_subprocess_environment", reject)
@@ -3673,7 +3861,10 @@ def test_toolchain_probe_sibling_stage_failures_are_aggregated(
     )
     with pytest.raises(ValueError) as caught:
         proof_plan.toolchain_fingerprints(
-            policies, (*failures, "version-c"), environment=os.environ
+            policies,
+            (*failures, "version-c"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     message = str(caught.value)
     for name, (code, detail) in failures.items():
@@ -3723,7 +3914,7 @@ def test_toolchain_path_probe_has_one_shared_exact_decoder(tmp_path: Path) -> No
         ("wasm", "tests/test_finally_pending_observer_parity.py"),
         ("wasm", "tests/molt_diff.py"),
         ("native_integration", "tests/cli/test_runtime_build_identity.py"),
-        ("native_integration", "tests/test_runtime_build_python.py"),
+        ("repository_policy", "tests/test_runtime_build_python.py"),
         ("native_integration", "tests/cli/test_cli_python_source_closure.py"),
         ("native_integration", "tests/cli/test_c_api_headers.py"),
         ("native_integration", "tests/cli/test_cli_native_main_stub_authority.py"),
@@ -4991,7 +5182,10 @@ def test_executor_rejects_toolchain_version_outside_contract(monkeypatch) -> Non
     )
     with pytest.raises(ValueError, match="toolchain contract violation"):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("python", "uv"), environment=os.environ
+            PLAN.toolchain_policies,
+            ("python", "uv"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -5004,7 +5198,10 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
     calls: list[str] = []
 
     def fake_fingerprint(
-        policy: proof_plan.ToolchainPolicy, *, environment: object
+        policy: proof_plan.ToolchainPolicy,
+        *,
+        environment: object,
+        python_executable,
     ) -> dict[str, str]:
         nonlocal active_rustup, overlap_detected
         if policy.data.get("fingerprint_domain") == "rustup":
@@ -5034,7 +5231,10 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
 
     monkeypatch.setattr(proof_plan, "_version_fingerprint", fake_fingerprint)
     fingerprints = proof_plan.toolchain_fingerprints(
-        PLAN.toolchain_policies, ("rustc", "cargo", "rustfmt"), environment=os.environ
+        PLAN.toolchain_policies,
+        ("rustc", "cargo", "rustfmt"),
+        environment=os.environ,
+        python_executable=Path(sys.executable),
     )
     assert set(fingerprints) == {"rustc", "cargo", "git", "rustfmt"}
     assert set(calls[:3]) == {"rustc", "git", "rustfmt"}
@@ -5261,10 +5461,18 @@ def test_admission_leaves_the_process_environment_for_the_next_admission(
     )
     before = dict(os.environ)
     first = proof_plan.admit_toolchains(
-        policies, ("sdk",), environ=os.environ, root=tmp_path
+        policies,
+        ("sdk",),
+        environ=os.environ,
+        root=tmp_path,
+        python_executable=Path(sys.executable),
     )
     second = proof_plan.admit_toolchains(
-        policies, ("python",), environ=os.environ, root=tmp_path
+        policies,
+        ("python",),
+        environ=os.environ,
+        root=tmp_path,
+        python_executable=Path(sys.executable),
     )
     assert dict(os.environ) == before
     assert first.environment == sdk_projection
@@ -5311,13 +5519,17 @@ def test_version_probe_searches_the_probed_environment_not_the_process(
         monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
     )
     found = proof_plan._version_fingerprint(
-        policy, environment={**os.environ, "PATH": str(selected)}
+        policy,
+        environment={**os.environ, "PATH": str(selected)},
+        python_executable=Path(sys.executable),
     )
     assert found is not None
     assert Path(found["path"]) == (selected / image).absolute()
     assert (
         proof_plan._version_fingerprint(
-            policy, environment={**os.environ, "PATH": str(empty)}
+            policy,
+            environment={**os.environ, "PATH": str(empty)},
+            python_executable=Path(sys.executable),
         )
         is None
     )
@@ -5720,6 +5932,64 @@ def test_source_bound_commands_bind_one_whole_placeholder_in_ci_tiers() -> None:
     ]
 
 
+def test_docs_profile_is_command_owned_and_transported_with_proof_receipt() -> None:
+    profiled = [
+        command
+        for command in PLAN.commands
+        if any(argument.startswith("--molt-profile") for argument in command.argv)
+    ]
+    assert [command.id for command in profiled] == ["repository.docs-tests"]
+    command = profiled[0]
+    assert command.data["argv"] == [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "-p",
+        "tools.pytest_profile",
+        "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json",
+    ]
+    # The directory owns controller and worker siblings for cleanup and hashing.
+    assert command.evidence_outputs == (
+        "proof-receipts/evidence/repository-docs-tests",
+    )
+    assert command.data["timeout_seconds"] == 900
+    assert command.data["pytest_worker_memory_gb"] == 1.75
+    root = Path(__file__).resolve().parents[1]
+    job = proof_plan._workflow_job_block(
+        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        "docs-gates",
+    )
+    assert job is not None
+    assert (
+        "python3 tools/proof_plan.py --run-family repository_policy "
+        "--receipt proof-receipts/repository_policy.json"
+    ) in job
+    # A diagnostics-only upload passes the broad path-presence validator but
+    # neither real receipt receiver downloads it. Bind the actual upload step.
+    uploads = [
+        step
+        for step in re.split(r"(?m)^      - name: ", job)
+        if "          name: proof-receipt-repository-policy\n" in step
+    ]
+    assert len(uploads) == 1
+    upload = uploads[0]
+    assert "uses: actions/upload-artifact@" in upload
+    assert (
+        "          path: |\n"
+        "            proof-receipts/repository_policy.json\n"
+        "            proof-receipts/evidence/repository-docs-tests\n"
+    ) in upload
+    assert (
+        "if: always() && (hashFiles('proof-receipts/repository_policy.json') != '' "
+        "|| hashFiles('proof-receipts/evidence/repository-docs-tests/*.json') != '')"
+    ) in upload
+
+
 def test_every_family_transports_its_declared_evidence() -> None:
     row = next(
         command
@@ -5889,6 +6159,276 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     assert receipt["execution"]["global_stop_triggered"] is False
     assert receipt["execution"]["cancelled_commands"] == 0
     assert receipt["execution"]["skipped_commands"] == 2
+
+
+def _execute_synthetic_policy_commands(
+    plan,
+    commands,
+    receipt_path,
+    run_command,
+    **execution_options,
+):
+    """Exercise the scheduler's caller policy without tool/process admission."""
+    return proof_executor.execute_commands(
+        plan,
+        commands,
+        receipt_path,
+        _source_tree_changes=lambda: (),
+        toolchain_fingerprints=_admit_synthetic_python,
+        _authority_sha256=lambda _plan: "0" * 64,
+        _source_identity=lambda: {"commit": "a" * 40, "tree": "b" * 40},
+        _normalized_os=lambda: "linux",
+        _normalized_arch=lambda: "x86_64",
+        _required_toolchains=lambda command: command.toolchains,
+        _run_command=run_command,
+        _cache_disposition=lambda _command: "none",
+        **execution_options,
+    )
+
+
+@pytest.mark.parametrize("failure_first", [False, True])
+@pytest.mark.parametrize("status, returncode", [("failure", 7), ("timeout", 124)])
+@pytest.mark.parametrize(
+    ("failure_policy", "failure_scope"),
+    [
+        (proof_executor.FailurePolicy.CANCEL_REMAINING, "partition"),
+        (proof_executor.FailurePolicy.COLLECT_INDEPENDENT, "global"),
+    ],
+)
+def test_executor_cancellation_policy_stops_active_and_queued_work_in_either_order(
+    tmp_path, failure_first, status, returncode, failure_policy, failure_scope
+):
+    live = _synthetic_executor_command("synthetic.live")
+    failure = _synthetic_executor_command("synthetic.fail", resource_class="resource-b")
+    commands = (
+        *((failure, live) if failure_first else (live, failure)),
+        _synthetic_executor_command("synthetic.queued-a"),
+        _synthetic_executor_command("synthetic.queued-b", resource_class="resource-b"),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
+    live_started = threading.Event()
+    live_closed = threading.Event()
+    started = []
+    lock = threading.Lock()
+
+    def run(_plan, command, cancel):
+        with lock:
+            started.append(command.id)
+        if command.id == failure.id:
+            assert live_started.wait(5), "live sibling did not reach its ready boundary"
+            return {
+                **_successful_synthetic_record(command),
+                "status": status,
+                "returncode": returncode,
+                "failure_scope": failure_scope,
+                "failure_reason": "independent assertion failed",
+            }
+        assert command.id == live.id, "queued work started after the stop trigger"
+        live_started.set()
+        assert cancel.wait(5), "executor joined a live sibling without cancelling it"
+        live_closed.set()
+        return {
+            **_successful_synthetic_record(command),
+            "status": "cancelled",
+            "returncode": 130,
+            "failure_scope": "global",
+            "failure_reason": "executor cancellation",
+        }
+
+    receipt_path = tmp_path / "receipt.json"
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            commands,
+            receipt_path,
+            run,
+            failure_policy=failure_policy,
+        )
+        == returncode
+    )
+    assert live_closed.is_set()
+    assert set(started) == {live.id, failure.id}
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    records = {row["id"]: row for row in receipt["commands"]}
+    assert [row["id"] for row in receipt["commands"]] == [
+        command.id for command in commands
+    ]
+    assert {name: row["status"] for name, row in records.items()} == {
+        live.id: "cancelled",
+        failure.id: status,
+        "synthetic.queued-a": "skipped",
+        "synthetic.queued-b": "skipped",
+    }
+    assert records[failure.id]["failure_scope"] == failure_scope
+    assert receipt["execution"]["failure_policy"] == failure_policy.value
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": failure.id,
+        "failure_scope": failure_scope,
+        "reason": "independent assertion failed",
+    }
+    assert receipt["execution"]["global_stop_triggered"] is True
+    assert receipt["execution"]["scheduled_commands"] == 2
+
+
+def test_executor_cancellation_policy_preserves_racing_failures_and_trigger_returncode(
+    tmp_path,
+):
+    commands = (
+        _synthetic_executor_command("synthetic.earlier"),
+        _synthetic_executor_command("synthetic.trigger", resource_class="resource-b"),
+        _synthetic_executor_command("synthetic.live", resource_class="resource-c"),
+        _synthetic_executor_command("synthetic.success", resource_class="resource-d"),
+        _synthetic_executor_command(
+            "synthetic.blocked", dependencies=["synthetic.trigger"]
+        ),
+    )
+    plan = _synthetic_executor_plan(
+        commands,
+        limits={f"resource-{name}": 1 for name in "abcd"},
+        max_workers=4,
+    )
+    ready = {
+        name: threading.Event()
+        for name in ("synthetic.earlier", "synthetic.live", "synthetic.success")
+    }
+
+    def run(_plan, command, cancel):
+        if command.id == "synthetic.trigger":
+            assert all(event.wait(5) for event in ready.values())
+            return {
+                **_successful_synthetic_record(command),
+                "status": "failure",
+                "returncode": 7,
+                "failure_scope": "partition",
+                "failure_reason": "trigger assertion failed",
+            }
+        assert command.id in ready, "blocked dependency entered execution"
+        ready[command.id].set()
+        assert cancel.wait(5), "failed partition did not cancel independent work"
+        if command.id == "synthetic.earlier":
+            # The runner supplies a classified actual failure after another
+            # outcome requested cancellation; the scheduler must preserve it.
+            return {
+                **_successful_synthetic_record(command),
+                "status": "failure",
+                "returncode": 9,
+                "failure_scope": "partition",
+                "failure_reason": "racing assertion failed",
+            }
+        if command.id == "synthetic.success":
+            return _successful_synthetic_record(command)
+        return {
+            **_successful_synthetic_record(command),
+            "status": "cancelled",
+            "returncode": 130,
+            "failure_scope": "global",
+            "failure_reason": "executor cancellation",
+        }
+
+    receipt_path = tmp_path / "receipt.json"
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            commands,
+            receipt_path,
+            run,
+            failure_policy=proof_executor.FailurePolicy.CANCEL_REMAINING,
+        )
+        == 7
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert [row["status"] for row in receipt["commands"]] == [
+        "failure",
+        "failure",
+        "cancelled",
+        "success",
+        "skipped",
+    ]
+    assert [row["returncode"] for row in receipt["commands"][:4]] == [9, 7, 130, 0]
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "synthetic.trigger",
+        "failure_scope": "partition",
+        "reason": "trigger assertion failed",
+    }
+    assert receipt["commands"][-1]["blocked_by"] == ["synthetic.trigger"]
+    assert receipt["executed_partitions"] == ["synthetic.success"]
+
+
+@pytest.mark.parametrize("status", ["cancelled", "skipped"])
+def test_executor_cancellation_policy_does_not_invent_a_failure_from_a_stopped_record(
+    tmp_path, status
+):
+    commands = (
+        _synthetic_executor_command("synthetic.stopped"),
+        _synthetic_executor_command("synthetic.independent"),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
+    started = []
+
+    def run(_plan, command, cancel):
+        assert not cancel.is_set()
+        started.append(command.id)
+        if command.id == "synthetic.stopped":
+            return {
+                **_successful_synthetic_record(command),
+                "status": status,
+                "returncode": None,
+                "failure_scope": "partition",
+                "failure_reason": "no actual failed command",
+            }
+        return _successful_synthetic_record(command)
+
+    receipt_path = tmp_path / "receipt.json"
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            commands,
+            receipt_path,
+            run,
+            failure_policy=proof_executor.FailurePolicy.CANCEL_REMAINING,
+        )
+        == 2
+    )
+    assert started == [command.id for command in commands]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["execution"]["failure_trigger"] is None
+    assert receipt["execution"]["global_stop_triggered"] is False
+    assert receipt["commands"][-1]["status"] == "success"
+
+
+def test_executor_default_policy_keeps_independent_partitions_collecting(tmp_path):
+    commands = (
+        _synthetic_executor_command("synthetic.fail"),
+        _synthetic_executor_command("synthetic.independent"),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
+    started = []
+
+    def run(_plan, command, cancel):
+        assert not cancel.is_set()
+        started.append(command.id)
+        if command.id == "synthetic.fail":
+            return {
+                **_successful_synthetic_record(command),
+                "status": "failure",
+                "returncode": 7,
+                "failure_scope": "partition",
+                "failure_reason": "ordinary command failure",
+            }
+        return _successful_synthetic_record(command)
+
+    receipt_path = tmp_path / "receipt.json"
+    assert _execute_synthetic_policy_commands(plan, commands, receipt_path, run) == 7
+    assert started == [command.id for command in commands]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["execution"]["failure_policy"] == "collect_independent"
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "synthetic.fail",
+        "failure_scope": "partition",
+        "reason": "ordinary command failure",
+    }
+    assert receipt["execution"]["global_stop_triggered"] is False
+    assert receipt["commands"][-1]["status"] == "success"
 
 
 def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
@@ -6561,7 +7101,7 @@ def _job_cleanup_with_survivor(image: Path) -> dict[str, object]:
 def test_job_closure_admits_only_declared_helpers_beside_their_linker(
     tmp_path: Path,
 ) -> None:
-    admitted = proof_plan._admitted_linker_helpers(PLAN)
+    admitted = proof_plan._admitted_linker_helpers(PLAN.toolchain_policies)
     assert admitted["vctip.exe"] == frozenset({"link.exe"})
     msvc = tmp_path / "MSVC" / "bin"
     msvc.mkdir(parents=True)
@@ -6815,6 +7355,429 @@ def test_empty_verified_selection_fails_with_its_cause(tmp_path, capsys) -> None
     status = proof_plan.main(["--verify-selected", "", "--receipt-dir", str(tmp_path)])
     assert status == 2
     assert "classifier produced no selection" in capsys.readouterr().err
+
+
+def _selection_artifact_fixture():
+    family = next(item for item in PLAN.families if item.name == "python_static")
+    family = replace(
+        family, data={**family.data, "inputs": ["owned.py"], "dependencies": []}
+    )
+    commands = tuple(
+        replace(command, data={**command.data, "dependencies": []})
+        for command in PLAN.commands
+        if command.family == family.name
+    )
+    plan = replace(PLAN, families=(family,), commands=commands, authority_inputs=())
+    context = {"run_id": 42, "run_attempt": 2, "event_name": "pull_request"}
+    # Independent wire oracle: no serializer/classifier output populates it.
+    payload = {
+        "schema": "molt.proof-selection.v1",
+        "source_commit": "a" * 40,
+        "source_tree": "b" * 40,
+        "source_tree_state": "clean",
+        "authority_sha256": "c" * 64,
+        "tier": "pr",
+        "github_context": context,
+        "selection": {
+            "mode": "changed-paths",
+            "changed_paths": ["owned.py"],
+            "reason": None,
+            "reasons": {"python_static": ["owned.py"]},
+        },
+        "selected": ["python_static"],
+    }
+    return plan, payload
+
+
+def _selection_options(payload):
+    return {
+        "tier": "pr",
+        "source_identity": {"commit": "a" * 40, "tree": "b" * 40},
+        "authority_sha256": "c" * 64,
+        "github_context": {
+            "run_id": 42,
+            "run_attempt": 2,
+            "event_name": "pull_request",
+        },
+        "event_tiers": proof_plan._EVENT_TIERS,
+        "full_selection_events": proof_plan.FULL_SELECTION_EVENTS,
+        "family_outputs": proof_plan.family_outputs,
+    }
+
+
+def _selection_api(plan):
+    return SimpleNamespace(
+        **{
+            **vars(proof_plan),
+            "ProofPlan": SimpleNamespace(load=lambda _path: plan),
+            "_source_identity": lambda: {"commit": "a" * 40, "tree": "b" * 40},
+            "_source_tree_changes": lambda: (),
+            "_authority_sha256": lambda _plan: "c" * 64,
+        }
+    )
+
+
+def test_selection_artifact_matches_independent_wire_and_declared_paths():
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    assert (
+        proof_receipts.selection_record(
+            plan, plan.select(["owned.py"]), mode="changed-paths", **options
+        )
+        == payload
+    )
+    assert proof_receipts.validate_selection(payload, plan, **options) == (
+        "python_static",
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "omitted",
+        "unknown",
+        "duplicate",
+        "tier",
+        "missing-tier",
+        "run",
+        "attempt",
+        "boolean-attempt",
+        "event",
+        "commit",
+        "tree",
+        "dirty",
+        "authority",
+        "schema",
+        "paths",
+        "reasons",
+        "mode",
+        "extra-key",
+    ],
+)
+def test_selection_artifact_refuses_tampering_before_receipts(fault):
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    if fault == "omitted":
+        payload["selected"] = []
+    elif fault == "unknown":
+        payload["selected"] = ["unknown"]
+    elif fault == "duplicate":
+        payload["selected"] *= 2
+    elif fault == "tier":
+        payload["tier"] = "main"
+    elif fault == "missing-tier":
+        del payload["tier"]
+    elif fault in {"run", "attempt", "boolean-attempt", "event"}:
+        key, value = {
+            "run": ("run_id", 43),
+            "attempt": ("run_attempt", 1),
+            "boolean-attempt": ("run_attempt", True),
+            "event": ("event_name", "push"),
+        }[fault]
+        payload["github_context"][key] = value
+    elif fault in {"commit", "tree", "dirty", "authority", "schema"}:
+        key = {
+            "commit": "source_commit",
+            "tree": "source_tree",
+            "dirty": "source_tree_state",
+            "authority": "authority_sha256",
+            "schema": "schema",
+        }[fault]
+        payload[key] = "wrong"
+    elif fault == "paths":
+        payload["selection"]["changed_paths"] = []
+    elif fault == "reasons":
+        payload["selection"]["reasons"] = {}
+    elif fault == "mode":
+        payload["selection"]["mode"] = []
+    else:
+        payload["unexpected"] = True
+    with pytest.raises(ValueError):
+        proof_receipts.validate_selection(payload, plan, **options)
+
+
+@pytest.mark.parametrize("mode", ["full", "fail-closed"])
+def test_selection_artifact_reconstructs_full_modes(mode):
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    options["github_context"] = {
+        "run_id": 42,
+        "run_attempt": 2,
+        "event_name": "merge_group",
+    }
+    options["tier"] = "main"
+    reason = (
+        "merge_group: full proof plan"
+        if mode == "full"
+        else "fail-closed event selection: missing base"
+    )
+    selection = plan.all_selected(reason=reason, fail_closed=mode == "fail-closed")
+    record = proof_receipts.selection_record(plan, selection, mode=mode, **options)
+    assert record["selection"] == {
+        "mode": mode,
+        "changed_paths": [],
+        "reason": reason,
+        "reasons": {"python_static": [reason]},
+    }
+    assert proof_receipts.validate_selection(record, plan, **options) == (
+        "python_static",
+    )
+    record["selected"] = []
+    with pytest.raises(ValueError, match="incomplete"):
+        proof_receipts.validate_selection(record, plan, **options)
+
+
+def test_selection_artifact_cannot_make_full_event_empty():
+    plan, payload = _selection_artifact_fixture()
+    options = _selection_options(payload)
+    options.update(
+        tier="main",
+        github_context={"run_id": 42, "run_attempt": 2, "event_name": "merge_group"},
+    )
+    with pytest.raises(ValueError, match="full-plan event"):
+        proof_receipts.selection_record(
+            plan, plan.select([]), mode="changed-paths", **options
+        )
+
+
+def test_selection_file_requires_executable_coverage_and_allows_canonical_empty(
+    tmp_path,
+):
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    path = tmp_path / "selection.json"
+    proof_receipts.write_selection(path, payload, receipt_root=receipts)
+    errors = proof_plan_cli.verify_selection_file(
+        api, plan, path, receipts, tier="pr", github_context=payload["github_context"]
+    )
+    expected = proof_plan._topological_commands(plan, family="python_static", tier="pr")
+    assert errors == [
+        f"{command.id}: required executable receipt is missing" for command in expected
+    ]
+    assert errors
+    for command in expected:
+        receipt = _receipt_for(command, receipts)
+        receipt.update(
+            source_commit="a" * 40, source_tree="b" * 40, authority_sha256="c" * 64
+        )
+        (receipts / f"{command.id}.json").write_text(
+            json.dumps(receipt), encoding="utf-8"
+        )
+    assert (
+        proof_plan_cli.verify_selection_file(
+            api,
+            plan,
+            path,
+            receipts,
+            tier="pr",
+            github_context=payload["github_context"],
+        )
+        == []
+    )
+    # No receipt discovery can invent the expected selected set.
+    payload["selection"] = {
+        "mode": "changed-paths",
+        "changed_paths": [],
+        "reason": None,
+        "reasons": {},
+    }
+    payload["selected"] = []
+    empty = tmp_path / "empty.json"
+    empty_receipts = tmp_path / "empty-receipts"
+    empty_receipts.mkdir()
+    proof_receipts.write_selection(empty, payload, receipt_root=empty_receipts)
+    assert (
+        proof_plan_cli.verify_selection_file(
+            api,
+            plan,
+            empty,
+            empty_receipts,
+            tier="pr",
+            github_context=payload["github_context"],
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("fault", ["dirty", "commit-drift", "authority-drift"])
+def test_selection_file_rejects_source_drift(tmp_path, fault):
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    # Empty canonical selection isolates source fencing from missing receipts.
+    payload["selection"] = {
+        "mode": "changed-paths",
+        "changed_paths": [],
+        "reason": None,
+        "reasons": {},
+    }
+    payload["selected"] = []
+    path, receipts = tmp_path / "selection.json", tmp_path / "receipts"
+    receipts.mkdir()
+    proof_receipts.write_selection(path, payload, receipt_root=receipts)
+    if fault == "dirty":
+        api._source_tree_changes = lambda: (" M owned.py",)
+    elif fault == "commit-drift":
+        identities = iter(
+            [
+                {"commit": "a" * 40, "tree": "b" * 40},
+                {"commit": "d" * 40, "tree": "b" * 40},
+            ]
+        )
+        api._source_identity = lambda: next(identities)
+    else:
+        identities = iter(["c" * 64, "d" * 64])
+        api._authority_sha256 = lambda _plan: next(identities)
+    with pytest.raises(ValueError, match="source|authority"):
+        proof_plan_cli.verify_selection_file(
+            api,
+            plan,
+            path,
+            receipts,
+            tier="pr",
+            github_context=payload["github_context"],
+        )
+
+
+def test_selection_file_custody_refuses_missing_nested_duplicate_and_replacement(
+    tmp_path,
+):
+    _, payload = _selection_artifact_fixture()
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    with pytest.raises(ValueError, match="outside"):
+        proof_receipts.write_selection(
+            receipts / "selection.json", payload, receipt_root=receipts
+        )
+    path = tmp_path / "selection.json"
+    from molt.toolchain_identity import StableRegularFileError
+
+    with pytest.raises(StableRegularFileError, match="unavailable"):
+        proof_receipts.read_selection(path, receipt_root=receipts)
+    ambiguous = tmp_path / "multiple-selections"
+    ambiguous.mkdir()
+    with pytest.raises(StableRegularFileError):
+        proof_receipts.read_selection(ambiguous, receipt_root=receipts)
+    path.write_text('{"schema":1,"schema":2}', encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
+        proof_receipts.read_selection(path, receipt_root=receipts)
+    with pytest.raises(FileExistsError):
+        proof_receipts.write_selection(path, payload, receipt_root=receipts)
+
+
+def test_selection_cli_produces_artifact_and_verifies_same_context(
+    tmp_path, monkeypatch, capsys
+):
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        proof_plan_cli,
+        environ={"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2"},
+    )
+    path, receipts = tmp_path / "selection.json", tmp_path / "receipts"
+    receipts.mkdir()
+    argv = [
+        "--selection-output",
+        str(path),
+        "--receipt-dir",
+        str(receipts),
+        "--path",
+        "owned.py",
+        "--event-name",
+        "pull_request",
+        "--tier",
+        "pr",
+    ]
+    assert proof_plan_cli.main(api, argv) == 0
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+    verify = [
+        "--verify-selection",
+        str(path),
+        "--receipt-dir",
+        str(receipts),
+        "--event-name",
+        "pull_request",
+        "--tier",
+        "pr",
+    ]
+    assert proof_plan_cli.main(api, verify) == 1
+    assert "required executable receipt is missing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["", "0", "-1", "1.0", " 2", "２"])
+def test_selection_cli_requires_positive_decimal_run_context(value):
+    with pytest.raises(ValueError, match="GITHUB_RUN_ATTEMPT"):
+        proof_plan_cli._github_selection_context(
+            {"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": value}, "pull_request"
+        )
+
+
+def test_selection_file_context_refusal_precedes_receipt_discovery(
+    tmp_path, monkeypatch
+):
+    plan, payload = _selection_artifact_fixture()
+    path, receipts = tmp_path / "selection.json", tmp_path / "receipts"
+    proof_receipts.write_selection(path, payload, receipt_root=receipts)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("mismatched selection reached executable receipt discovery")
+
+    monkeypatch.setattr(proof_receipts, "verify_receipts", forbidden)
+    with pytest.raises(ValueError, match="github_context"):
+        proof_plan_cli.verify_selection_file(
+            _selection_api(plan),
+            plan,
+            path,
+            receipts,
+            tier="pr",
+            github_context={
+                "run_id": 42,
+                "run_attempt": 3,
+                "event_name": "pull_request",
+            },
+        )
+
+
+@pytest.mark.parametrize("fault", ["tier", "namespace", "dirty"])
+def test_selection_cli_refuses_invalid_publication_before_artifact(
+    tmp_path, monkeypatch, fault
+):
+    plan, _ = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    api.active_tier = lambda: proof_plan.active_tier({})
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        proof_plan_cli,
+        environ={"GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2"},
+    )
+    receipts = tmp_path / "receipts"
+    path = (
+        receipts / "selection.json"
+        if fault == "namespace"
+        else tmp_path / "selection.json"
+    )
+    if fault == "dirty":
+        api._source_tree_changes = lambda: (" M owned.py",)
+    argv = [
+        "--selection-output",
+        str(path),
+        "--receipt-dir",
+        str(receipts),
+        "--path",
+        "owned.py",
+        "--event-name",
+        "pull_request",
+    ]
+    if fault != "tier":
+        argv.extend(["--tier", "pr"])
+    assert proof_plan_cli.main(api, argv) == 2
+    assert not path.exists()
 
 
 def test_active_tier_rejects_unknown_explicit_tiers() -> None:
@@ -7290,12 +8253,10 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         "p.ProofPlan.load=lambda _:plan\np._topological_commands=lambda *a,**k:commands\n"
         "p._source_tree_changes=lambda:()\np.toolchain_fingerprints=lambda *a,**k:{}\n"
         "p._source_identity=lambda:{'commit':'a'*40,'tree':'b'*40}\n"
-        "from tools.memory_guard_core.cli_contract import guardian_argv\n"
-        # The guardian's script sits after its interpreter flags; the argv
-        # authority says where.
-        "script=len(guardian_argv(sys.executable,'guardian'))-1\n"
+        "from molt.python_interpreter import parse_python_invocation\n"
         "start=CommandExecutor.start_owned\n"
         "def held_start(self,args,**kwargs):\n"
+        " script=1+len(parse_python_invocation(args).interpreter_options)\n"
         f" return start(self,[*args[:script],{str(worker)!r},*args[script+1:]],**kwargs)\n"
         "CommandExecutor.start_owned=held_start\n"
         f"raise SystemExit(p.main(['--run-family','synthetic','--receipt',{str(receipt)!r}]))\n",
@@ -7468,9 +8429,13 @@ def test_wasi_compiler_fingerprint_bypasses_native_path_and_binds_helpers(
 
     with monkeypatch.context() as io_scope:
         io_scope.setattr(Path, "open", no_duplicate_image_read)
-        first = proof_plan._version_fingerprint(policy, environment=os.environ)
+        first = proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
         closure["resources"] = "changed helper"
-        second = proof_plan._version_fingerprint(policy, environment=os.environ)
+        second = proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
         assert first["path"] == str(compiler) == second["path"]
         assert first["identity_sha256"] != second["identity_sha256"]
         assert selected == ["clang", "clang"]
@@ -7525,7 +8490,9 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
             argv, 0, observed + "\n", ""
         ),
     )
-    fingerprint = proof_plan._version_fingerprint(policy, environment=os.environ)
+    fingerprint = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert fingerprint["version"] == observed
     assert (
         fingerprint["executable_sha256"]
@@ -7613,7 +8580,10 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
             ),
         )
         sdk = proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("wasi-clang",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("wasi-clang",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )["wasi-clang"]
     command = next(item for item in PLAN.commands if item.id == "python.static.ty")
     receipt_root = tmp_path / "receipts"
@@ -7729,6 +8699,34 @@ def test_luau_lowering_changes_select_owning_library_without_native_codegen(
         argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
     ] == ["molt-backend-luau"]
     assert {"rustc", "cargo", "lune"} <= set(PLAN.toolchain_closure(gate.toolchains))
+    assert isolated.select(["README.md"]) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "runtime/molt-backend-rust/src/rust/prelude/system.rs",
+        "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
+        "runtime/molt-backend-rust/tests/rust_transpiler_preview.rs",
+        "runtime/molt-backend-rust/Cargo.toml",
+    ],
+)
+def test_rust_emitter_changes_execute_source_without_native_codegen(path: str) -> None:
+    from tools import molt_dev_policy
+
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == "backend-rust")
+    isolated = replace(config, rules=[rule], always=[])
+    gates, matched = isolated.select([path])
+    assert [selected.name for selected in matched] == ["backend-rust"]
+    (gate,) = gates
+    argv = shlex.split(gate.command)
+    assert argv[:2] == ["cargo", "test"]
+    assert argv[argv.index("--test") + 1] == "rust_transpiler_preview"
+    assert argv[argv.index("--features") + 1] == "rust-backend"
+    assert [
+        argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
+    ] == ["molt-backend-rust"]
     assert isolated.select(["README.md"]) == ([], [])
 
 
@@ -7903,11 +8901,11 @@ def test_runtime_boundary_consumers_keep_executable_toolchain_authority():
         assert envelope["proof_plan_command_ids"] == [row.id]
         expected_tools = set(row.toolchains)
         if "cargo" in expected_tools:
-            expected_tools.update({"git", "build-python"})
+            expected_tools.add("git")
         assert set(envelope["toolchains"]) == expected_tools
     assert (
         "tests/cli/test_cli_native_main_stub_authority.py::"
-        "test_rendered_native_main_reports_owned_raised_exception"
+        "test_rendered_native_main_hands_the_runtime_status_to_its_exit"
     ) in native.argv
     assert {"clang", "llvm-ar", "llvm-nm", "wasm-ld"} <= set(native.toolchains)
     assert {"cargo", "rustc", "wasi-clang", "wasm-ld"} <= set(wasi.toolchains)
@@ -8053,7 +9051,9 @@ def test_rust_fingerprint_keeps_selected_physical_tool_without_rustup(
         lambda *args, **kwargs: pytest.fail("physical component invoked rustup"),
     )
     policy = next(row for row in PLAN.toolchain_policies if row.name == name)
-    result = proof_plan._version_fingerprint(policy, environment=os.environ)
+    result = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert result["content_path"] == str(selected)
     assert (
         result["executable_sha256"] == hashlib.sha256(selected.read_bytes()).hexdigest()
@@ -8090,7 +9090,10 @@ def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
         ValueError, match="helper differs from its provisioned generation"
     ):
         proof_plan.toolchain_fingerprints(
-            PLAN.toolchain_policies, ("wasi-clang",), environment=os.environ
+            PLAN.toolchain_policies,
+            ("wasi-clang",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
 
 
@@ -8410,7 +9413,7 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
     )
     calls = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         calls.append(policy.name)
         if policy.name == "raises":
             failure = OSError("independent injected probe failure")
@@ -8429,6 +9432,7 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
             tuple(p.name for p in policies),
             owners={p.name: ("local.example.0",) for p in policies},
             environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     message = str(caught.value)
     for expected in (
@@ -8449,11 +9453,37 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
     assert set(calls) == {"raises", "missing", "wrong"}
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "src/molt/target_python.py",
+        "src/molt/target_python_policy.py",
+        "src/molt/_python_release_generated.py",
+    ],
+)
+def test_target_release_changes_select_extension_identity_consumers(changed):
+    from tools import molt_dev_policy
+
+    gates, _ = molt_dev_policy.GateConfig.load(PLAN.path).select([changed])
+    selected = {
+        arg
+        for gate in gates
+        for arg in (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+        if arg.startswith("tests/")
+    }
+    assert {
+        "tests/cli/test_source_extension_set_registry.py",
+        "tests/cli/test_source_extension_producer.py",
+    } <= selected
+
+
 def test_canonical_target_python_catalog_is_stdlib_only():
     # Staged-source projection has neither site packages nor ambient imports.
     # Exercise the real authority; a constant-only catalog fixture hides eager
     # dependencies that break generation from the index.
-    source = proof_plan.ROOT / "src/molt/target_python.py"
+    source = proof_plan.ROOT / "src/molt/target_python_policy.py"
     result = run_guarded_test_process(
         [
             sys.executable,
@@ -8472,20 +9502,23 @@ def test_canonical_target_python_catalog_is_stdlib_only():
         timeout=5,
     )
     assert result.returncode == 0, result.stderr
-    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
     assert tuple(json.loads(result.stdout)) == SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
 
-def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_path):
-    from molt import target_python
+@pytest.mark.parametrize("catalog", [("3.12", "3.15"), ("3.0", "4.0")])
+def test_selected_target_python_family_uses_canonical_catalog(
+    monkeypatch, tmp_path, catalog
+):
+    from molt import target_python_policy
 
-    source = tmp_path / "src/molt/target_python.py"
+    source = tmp_path / "src/molt/target_python_policy.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.12', '3.15')\n", encoding="utf-8"
+        f"SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = {catalog!r}\n", encoding="utf-8"
     )
-    driver_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    driver_catalog = target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     driver_path = list(sys.path)
     policies = proof_plan.load_toolchain_policies(
         {
@@ -8504,8 +9537,7 @@ def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_p
     )
     assert set(proof_plan.toolchain_closure(policies, ("target-pythons",))) == {
         "uv",
-        "target-pythons.3.12",
-        "target-pythons.3.15",
+        *(f"target-pythons.{version}" for version in catalog),
     }
     for policy in policies:
         if policy.name.startswith("target-pythons."):
@@ -8517,8 +9549,19 @@ def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_p
             assert "--no-python-downloads" in policy.data["content_path_command"]
             assert policy.data["setup_command"] == "uv python install " + minor
             assert policy.root == tmp_path
-    assert target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is driver_catalog
-    assert sys.modules["molt.target_python"] is target_python
+    assert target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is driver_catalog
+    assert sys.modules["molt.target_python_policy"] is target_python_policy
+    assert sys.path == driver_path
+    # A selected package may redirect its module search path. The child must
+    # reject the foreign origin, even when it exports a well-formed catalog.
+    (source.parent / "__init__.py").write_text(
+        f"__path__ = [{str(Path(target_python_policy.__file__).parent)!r}]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="policy origin mismatch"):
+        proof_plan._selected_target_python_versions(tmp_path)
+    assert target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is driver_catalog
+    assert sys.modules["molt.target_python_policy"] is target_python_policy
     assert sys.path == driver_path
 
 
@@ -8548,14 +9591,17 @@ def test_selected_dependency_chain_has_linear_fact_traversal(monkeypatch):
     )
     probed = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         probed.append(policy.name)
         return None
 
     monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
     with pytest.raises(ValueError) as caught:
         proof_plan.toolchain_fingerprints(
-            policies, (f"image-{size - 1}",), environment=os.environ
+            policies,
+            (f"image-{size - 1}",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     assert probed == ["image-0"]
     message = str(caught.value)
@@ -8584,7 +9630,7 @@ def test_selected_executable_group_dependencies_admit_before_consumers(monkeypat
     )
     probed = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         if policy.name == "consumer":
             assert set(probed) == {"root", "second"}
         probed.append(policy.name)
@@ -8593,7 +9639,10 @@ def test_selected_executable_group_dependencies_admit_before_consumers(monkeypat
     monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
     assert set(
         proof_plan.toolchain_fingerprints(
-            policies, ("consumer",), environment=os.environ
+            policies,
+            ("consumer",),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     ) == {
         "root",
@@ -8692,7 +9741,10 @@ def test_locked_node_package_admission_reports_real_node_missing_and_version_mis
     )
     with pytest.raises(ValueError) as first:
         proof_plan.toolchain_fingerprints(
-            policies, ("missing", "mismatch"), environment=os.environ
+            policies,
+            ("missing", "mismatch"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     assert "missing:" in str(first.value)
     assert "mismatch:" in str(first.value)
@@ -8700,13 +9752,19 @@ def test_locked_node_package_admission_reports_real_node_missing_and_version_mis
     install("missing", "1.0.0")
     with pytest.raises(ValueError) as second:
         proof_plan.toolchain_fingerprints(
-            policies, ("missing", "mismatch"), environment=os.environ
+            policies,
+            ("missing", "mismatch"),
+            environment=os.environ,
+            python_executable=Path(sys.executable),
         )
     assert "missing:" not in str(second.value)
     assert "mismatch:" in str(second.value)
     install("mismatch", "1.0.0")
     identities = proof_plan.toolchain_fingerprints(
-        policies, ("missing", "mismatch"), environment=os.environ
+        policies,
+        ("missing", "mismatch"),
+        environment=os.environ,
+        python_executable=Path(sys.executable),
     )
     assert set(identities) == {"node", "missing", "mismatch"}
     assert (
@@ -8752,7 +9810,9 @@ def test_selected_runtime_relative_entrypoint_uses_declared_probe_cwd(
         "find_executable",
         lambda _command, *, environment, cwd=None: Path(str(fixture.uv)),
     )
-    identity = proof_plan._version_fingerprint(policy, environment=os.environ)
+    identity = proof_plan._version_fingerprint(
+        policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     proof_plan.validate_selected_python_fingerprint(policy, identity)
     assert launches == [[str(selected), "--version"]]
     assert identity["content_path"] == str(selected)
@@ -8825,7 +9885,9 @@ def test_selected_runtime_rejects_alias_normalization_that_changes_physical_imag
         ),
     )
     with pytest.raises(ValueError) as caught:
-        proof_plan._version_fingerprint(policy, environment=os.environ)
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=Path(sys.executable)
+        )
     message = str(caught.value)
     assert "selected-runtime: content resolver failed" in message
     assert "canonical entrypoint alias selects a different physical image" in message
@@ -8857,7 +9919,9 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
         "find_executable",
         lambda _command, *, environment, cwd=None: Path(str(fixture.uv)),
     )
-    before = proof_plan._version_fingerprint(fixture.policy, environment=os.environ)
+    before = proof_plan._version_fingerprint(
+        fixture.policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     proof_plan.validate_selected_python_fingerprint(fixture.policy, before)
     assert before["path"] == str(fixture.uv)
     assert before["launcher_path"] == str(fixture.uv.resolve())
@@ -8871,7 +9935,9 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
     library, unicode_file = fixture.installations[custody_spelling(fixture.selected[0])]
     with unicode_file.open("ab") as stream:
         stream.write(b"changed database provider with unchanged process images")
-    after = proof_plan._version_fingerprint(fixture.policy, environment=os.environ)
+    after = proof_plan._version_fingerprint(
+        fixture.policy, environment=os.environ, python_executable=Path(sys.executable)
+    )
     assert after["version"] == before["version"]
     assert after["launcher_sha256"] == before["launcher_sha256"]
     assert after["executable_sha256"] == before["executable_sha256"]
@@ -8986,19 +10052,39 @@ def test_executor_empty_selection_does_not_sample_memory(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "path",
+    "path,isolated",
     [
-        "deploy/browser/simd-ops-rs/src/lib.rs",
-        "deploy/browser/compute-engine.js",
-        "deploy/browser/simd-ops.wasm",
-        "tools/build_browser_simd.py",
-        "tests/e2e/test_simd_differential.py",
+        ("deploy/browser/simd-ops-rs/src/lib.rs", True),
+        ("deploy/browser/compute-engine.js", True),
+        ("deploy/browser/simd-ops.wasm", True),
+        ("tools/build_browser_simd.py", True),
+        ("tests/e2e/test_simd_differential.py", True),
+        ("rust-toolchain.toml", False),
+        (".cargo/config.toml", False),
+        ("src/molt/wasm_artifact.py", False),
     ],
 )
-def test_browser_simd_changes_have_a_standalone_source_build_proof(path: str) -> None:
+def test_browser_simd_changes_have_a_standalone_source_build_proof(
+    path: str, isolated: bool
+) -> None:
+    from tools import molt_dev_policy
+
     selected = _classes(path)
     assert selected["browser_simd"]
-    assert not selected["rust"] and not selected["llvm"]
+    if isolated:
+        assert not selected["rust"] and not selected["llvm"]
+    # Exercise the actual local receiver too: CI family selection alone did not
+    # protect local pin/config changes from leaving the shipped module stale.
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == "browser-simd")
+    gates, matched = replace(config, rules=[rule], always=[]).select([path])
+    assert [row.name for row in matched] == ["browser-simd"]
+    (gate,) = gates
+    assert {
+        "tests/tools/test_build_browser_simd.py",
+        "tests/e2e/test_simd_differential.py",
+        "tests/test_browser_compute_backend_semantics.py",
+    } <= set(gate.command)
     commands = {
         command.id: command
         for command in PLAN.commands
@@ -9012,7 +10098,6 @@ def test_browser_simd_changes_have_a_standalone_source_build_proof(path: str) ->
         PLAN.required_toolchains(contract)
     )
     assert "wasm-ld" not in PLAN.required_toolchains(contract)
-    assert proof_plan.cargo_build_python(contract.data) is False
 
 
 @pytest.mark.parametrize(
@@ -9146,7 +10231,11 @@ def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_i
     environ = {"PATH": "/usr/bin", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
     with pytest.raises(ValueError) as refused:
         proof_plan.admit_toolchains(
-            PLAN.toolchain_policies, ("npm",), environ=environ, root=proof_plan.ROOT
+            PLAN.toolchain_policies,
+            ("npm",),
+            environ=environ,
+            root=proof_plan.ROOT,
+            python_executable=Path(sys.executable),
         )
     message = str(refused.value)
     npm = tool_releases.tool_release("npm", proof_plan.ROOT)
@@ -9223,6 +10312,7 @@ def test_a_failed_checkout_input_never_claims_admission_does_not_download(
             ("browser-acorn",),
             environ={"PATH": ""},
             root=proof_plan.ROOT,
+            python_executable=Path(sys.executable),
         )
     message = str(refused.value)
     assert "browser-acorn: cannot provision archive: offline" in message
@@ -9321,35 +10411,39 @@ def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
     assert len(verified) == before + 2
 
 
+@pytest.mark.parametrize("retired_installation", ["tool", "runtime"])
 def test_a_runtime_tool_is_admitted_by_its_attested_installation(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, retired_installation
 ) -> None:
     from molt import tool_releases
+    from tests.test_tool_releases import _runtime_root
 
+    # Owning offline fixture: real pin/host-asset metadata and cached archives.
+    # Provisioning/extraction, package-tree hashing, both installation receipts,
+    # discovery and proof admission's installation-key cache all remain real.
+    root = _runtime_root(tmp_path)
+    environment = {"PATH": "", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
     policies = {policy.name: policy for policy in PLAN.toolchain_policies}
-    npm, node = policies["npm"], policies["node"]
-    assert (npm.projection, node.projection) == ("runtime-tool-release", "tool-release")
-
-    def installed(name, path, digest, tree=None):
-        release = tool_releases.tool_release(name, proof_plan.ROOT)
-        return tool_releases.ToolDiscovery(
-            release=release,
-            prefix=path.parent,
-            executable=path,
-            executable_sha256=digest,
-            asset=next(iter(release.assets.values())),
-            tree_sha256=tree,
-        )
-
-    command = tool_releases.PinnedCommand(
-        installed("npm", tmp_path / "npm-cli.js", "a" * 64, "b" * 64),
-        installed("node", tmp_path / "node", "c" * 64),
+    npm = replace(
+        policies["npm"],
+        root=root,
+        data={**policies["npm"].data, "version_pattern": r"^1\.2\.3$"},
+    )
+    assert (npm.projection, policies["node"].projection) == (
+        "runtime-tool-release",
+        "tool-release",
     )
     monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
+    original = tool_releases.pinned_command
     calls = []
+    discovered = []
 
-    def pinned(*args, **kwargs):
-        calls.append(kwargs.get("provision", False))
+    def pinned(tool, repo_root, *, environ, cwd=None, provision=False):
+        calls.append(provision)
+        command = original(
+            tool, repo_root, environ=environ, cwd=cwd, provision=provision
+        )
+        discovered.append(command)
         return command
 
     monkeypatch.setattr(tool_releases, "pinned_command", pinned)
@@ -9357,47 +10451,316 @@ def test_a_runtime_tool_is_admitted_by_its_attested_installation(
 
     def probe(name, argv, **kwargs):
         probes.append(list(argv))
-        return SimpleNamespace(stdout="12.2.1\n", stderr="")
+        return SimpleNamespace(stdout="1.2.3\n", stderr="")
 
     monkeypatch.setattr(proof_plan.toolchain_probe, "run_toolchain_probe", probe)
-    # Admission provisions a selected runtime tool, as it provisions a
-    # checkout input, then verifies it once for the whole admission.
     assert (
         proof_plan._provision_runtime_tools(
-            PLAN.toolchain_policies, ("npm",), root=proof_plan.ROOT, environment={}
+            (npm,), ("npm",), root=root, environment=environment
         )
         is None
     )
-    identity = proof_plan._version_fingerprint(npm, environment={"PATH": ""})
+    identity = proof_plan._version_fingerprint(
+        npm, environment=environment, python_executable=Path(sys.executable)
+    )
     projected = proof_plan.project_toolchains(
-        PLAN.toolchain_policies, ("npm",), environ={"PATH": "/usr/bin"}
+        (npm,), ("npm",), environ=environment, root=root
     )
     assert calls == [True]
-    assert not any(entry.startswith("npm:") for entry in projected.missing)
-    assert probes == [
-        [str(tmp_path / "node"), str(tmp_path / "npm-cli.js"), "--version"]
-    ]
-    assert identity["version"] == "12.2.1"
-    assert (identity["tree_sha256"], identity["launcher_sha256"]) == (
-        "b" * 64,
-        "c" * 64,
+    (command,) = discovered
+    assert command.runtime is not None
+    assert projected.missing == ()
+    assert probes == [[*command.argv, "--version"]]
+    assert identity["version"] == "1.2.3"
+    assert identity["tree_sha256"] == tool_releases.tree_sha256(
+        command.tool.prefix / tool_releases.PACKAGE_DIRNAME
     )
-    assert identity["executable_sha256"] == "a" * 64
-    # The launched file is the runtime; the content is the entrypoint.
-    assert identity["path"] == identity["launcher_path"] == str(tmp_path / "node")
-    assert identity["content_path"] == str(tmp_path / "npm-cli.js")
+    assert (
+        identity["executable_sha256"]
+        == hashlib.sha256(command.tool.executable.read_bytes()).hexdigest()
+    )
+    assert (
+        identity["launcher_sha256"]
+        == hashlib.sha256(command.runtime.executable.read_bytes()).hexdigest()
+    )
+    assert (
+        identity["path"] == identity["launcher_path"] == str(command.runtime.executable)
+    )
+    assert identity["content_path"] == str(command.tool.executable)
+    for installation in (command.tool, command.runtime):
+        assert (installation.prefix / tool_releases.TOOL_ATTESTATION_FILENAME).is_file()
 
-    def missing(*args, **kwargs):
-        raise tool_releases.ToolReleaseError("not provisioned")
-
-    monkeypatch.setattr(tool_releases, "pinned_command", missing)
-    monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
-    assert proof_plan._version_fingerprint(npm, environment={"PATH": ""}) is None
-    assert "npm: not provisioned" in proof_plan._provision_runtime_tools(
-        PLAN.toolchain_policies, ("npm",), root=proof_plan.ROOT, environment={}
+    # Retiring either installation's receipt must invalidate the cached command;
+    # projection cannot adopt its executable from PATH or silently reprovision.
+    retired = getattr(command, retired_installation)
+    receipt = retired.prefix / tool_releases.TOOL_ATTESTATION_FILENAME
+    receipt.unlink()
+    assert (
+        proof_plan._version_fingerprint(
+            npm, environment=environment, python_executable=Path(sys.executable)
+        )
+        is None
     )
     projected = proof_plan.project_toolchains(
-        PLAN.toolchain_policies, ("npm",), environ={"PATH": "/usr/bin"}
+        (npm,), ("npm",), environ=environment, root=root
     )
     assert "npm: python3 -m molt.tool_releases provision npm" in projected.missing
+    assert calls == [True, False, False]
+    assert not receipt.exists()
     assert str(tmp_path) not in projected.delta.get("PATH", "")
+
+
+@pytest.mark.parametrize(
+    "selected", [None, Path("python"), Path("relative/bin/python")]
+)
+def test_environment_fingerprint_requires_an_exact_prepared_entrypoint(
+    tmp_path, monkeypatch, selected
+):
+    policy = proof_plan.ToolchainPolicy(
+        "source-interpreter",
+        {
+            "executable": "{python}",
+            "python_identity_role": "environment",
+            "version_args": ["--version"],
+            "version_pattern": "^Python",
+        },
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        proof_plan,
+        "_find_tool",
+        lambda *args: pytest.fail("unbound Python reached PATH discovery"),
+    )
+    with pytest.raises(ValueError, match="environment Python"):
+        proof_plan._version_fingerprint(
+            policy, environment=os.environ, python_executable=selected
+        )
+
+
+@pytest.mark.parametrize(
+    ("event_name", "expected_tier"),
+    [("pull_request", "pr"), ("pull_request_target", "pr"), ("push", "main")],
+)
+def test_selection_cli_derives_artifact_tier_from_supported_event(
+    tmp_path, monkeypatch, event_name, expected_tier
+):
+    plan, expected = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    environ = {
+        "GITHUB_RUN_ID": "42",
+        "GITHUB_RUN_ATTEMPT": "2",
+        "GITHUB_EVENT_NAME": event_name,
+    }
+    # Exercise the real tier owner with explicit input, without changing the
+    # process environment or duplicating its event mapping in a fake API.
+    api.active_tier = lambda: proof_plan.active_tier(environ)
+    install_module_view(monkeypatch, "os", os, proof_plan_cli, environ=environ)
+    expected["tier"] = expected_tier
+    expected["github_context"]["event_name"] = event_name
+    path = tmp_path / "selection.json"
+    assert (
+        proof_plan_cli.main(
+            api,
+            [
+                "--selection-output",
+                str(path),
+                "--receipt-dir",
+                str(tmp_path / "receipts"),
+                "--path",
+                "owned.py",
+            ],
+        )
+        == 0
+    )
+    assert json.loads(path.read_text(encoding="utf-8")) == expected
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "wrong-tested-source",
+        "missing-proof",
+        "receipt-command",
+        "transfer-source-mutation",
+        "final-read-source-mutation",
+        "zip-traversal",
+    ],
+)
+def test_ci_selection_transport_joins_real_selection_zip_and_receipt_owners(
+    tmp_path, monkeypatch, fault
+):
+    import io
+    import zipfile
+
+    from tools import ci_proof_evidence
+
+    plan, payload = _selection_artifact_fixture()
+    api = _selection_api(plan)
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    source = repo / "non-authority.py"
+    original_source = b"VALUE = 1\n"
+    source.write_bytes(original_source)
+    # Explicit source observations use real fixture bytes. The authority digest
+    # stays fixed, so an authority-only closing fence cannot satisfy this test.
+    api._source_tree_changes = lambda: (
+        () if source.read_bytes() == original_source else (" M non-authority.py",)
+    )
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        ci_proof_evidence,
+        environ={"MOLT_EXT_ROOT": str(tmp_path / "artifacts")},
+    )
+    run = {
+        "databaseId": 42,
+        "attempt": 2,
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "success",
+        # GitHub's PR head is not the merge checkout actually tested by CI.
+        "headSha": "d" * 40,
+    }
+    assert payload["source_commit"] != run["headSha"]
+    if fault == "wrong-tested-source":
+        payload["source_commit"] = run["headSha"]
+
+    def make_zip(members):
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name, contents in members.items():
+                archive.writestr(name, contents)
+        return stream.getvalue()
+
+    selection_members = {"selection.json": json.dumps(payload).encode("utf-8")}
+    if fault == "zip-traversal":
+        selection_members["../escape.py"] = b"must not be published"
+    archives = {101: make_zip(selection_members)}
+    receipt_members = {}
+    expected_commands = ("python.static.ty", "python.static.stdlib-intrinsics")
+    assert tuple(command.id for command in plan.commands) == expected_commands
+    for index, command in enumerate(plan.commands):
+        evidence_root = tmp_path / f"declared-evidence-{index}"
+        receipt = _receipt_for(command, evidence_root)
+        receipt.update(
+            source_commit="a" * 40,
+            source_tree="b" * 40,
+            authority_sha256="c" * 64,
+        )
+        if fault == "receipt-command" and index == 0:
+            receipt["commands"][0]["argv"] = ["not-the-declared-command"]
+        receipt_members[f"receipt-{index}.json"] = json.dumps(receipt).encode("utf-8")
+        for relative in command.evidence_outputs:
+            assert relative not in receipt_members
+            receipt_members[relative] = (evidence_root / relative).read_bytes()
+    archives[102] = make_zip(receipt_members)
+    artifact_ids = [101] if fault == "missing-proof" else [101, 102]
+    artifacts = [
+        {
+            "id": artifact_id,
+            "name": (
+                "proof-selection-2" if artifact_id == 101 else "proof-receipt-static"
+            ),
+            "expired": False,
+            "digest": "sha256:" + hashlib.sha256(archives[artifact_id]).hexdigest(),
+            "workflow_run": {"id": 42, "head_sha": run["headSha"]},
+        }
+        for artifact_id in artifact_ids
+    ]
+    downloaded = []
+    observed_runs = []
+
+    def inventory(argv, **kwargs):
+        assert argv == [
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            "repos/{owner}/{repo}/actions/runs/42/artifacts?per_page=100",
+        ]
+        assert kwargs["cwd"] == repo
+        return json.dumps([{"artifacts": artifacts}])
+
+    def download(argv, **kwargs):
+        artifact_id = artifact_ids[len(downloaded)]
+        assert argv == [
+            "gh",
+            "api",
+            f"repos/{{owner}}/{{repo}}/actions/artifacts/{artifact_id}/zip",
+        ]
+        assert kwargs["cwd"] == repo
+        assert kwargs["check"] is True and kwargs["text"] is False
+        assert kwargs["capture_output"] is True
+        kwargs["stdout_capture_path"].write_bytes(archives[artifact_id])
+        kwargs["stderr_capture_path"].write_bytes(b"")
+        downloaded.append(artifact_id)
+        if artifact_id == 102 and fault == "transfer-source-mutation":
+            source.write_bytes(b"VALUE = 2\n")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    def read_run(run_id):
+        assert run_id == 42
+        observed_runs.append(run_id)
+        if fault == "final-read-source-mutation":
+            source.write_bytes(b"VALUE = 2\n")
+        return dict(run)
+
+    # Only remote inventory, archive transport, and run observation are faked.
+    # Extraction, selection reconstruction, exact source/context checks, receipt
+    # discovery, command/toolchain verification and both source fences are real.
+    result = ci_proof_evidence.verify_run(
+        run,
+        repo_root=repo,
+        commands=SimpleNamespace(check_output=inventory, run=download),
+        read_run=read_run,
+        proof_api=api,
+    )
+    if fault is None:
+        assert result.status == "verified", result.errors
+        assert result.errors == ()
+        assert result.receipt_artifacts == 1
+        assert downloaded == [101, 102]
+        assert observed_runs == [42]
+        assert source.read_bytes() == original_source
+        assert result.evidence_dir is not None
+        evidence = Path(result.evidence_dir)
+        assert (
+            json.loads(
+                (evidence / "selection" / "101" / "selection.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            == payload
+        )
+        for index in range(len(expected_commands)):
+            assert (evidence / "receipts" / "102" / f"receipt-{index}.json").is_file()
+    elif fault == "wrong-tested-source":
+        assert result.status == "unavailable"
+        assert any("source_commit" in error for error in result.errors)
+        assert downloaded == [101] and observed_runs == []
+    elif fault == "missing-proof":
+        assert result.status == "failed"
+        assert result.errors == tuple(
+            f"{command_id}: required executable receipt is missing"
+            for command_id in expected_commands
+        )
+        assert downloaded == [101] and observed_runs == [42]
+    elif fault == "receipt-command":
+        assert result.status == "failed"
+        assert result.errors == (
+            "python.static.ty: receipt command does not match authority",
+        )
+        assert downloaded == [101, 102] and observed_runs == [42]
+    elif fault == "zip-traversal":
+        assert result.status == "unavailable"
+        assert result.errors == ("archive member path escapes extraction root",)
+        assert downloaded == [101] and observed_runs == []
+        assert not list(tmp_path.rglob("escape.py"))
+    else:
+        assert result.status == "unavailable"
+        assert any("source" in error for error in result.errors)
+        assert downloaded == [101, 102]
+        assert observed_runs == ([42] if fault == "final-read-source-mutation" else [])
+        assert source.read_bytes() == b"VALUE = 2\n"

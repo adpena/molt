@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend_process::origin::DaemonCacheEntry;
 use std::sync::Arc;
 
 fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest {
@@ -10,7 +11,7 @@ fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest 
         function_cache_key: None,
         skip_module_output_if_synced: false,
         skip_function_output_if_synced: false,
-        ir_source: DaemonIrSource::Probe,
+        ir_source: DaemonIrSource::Probe(Vec::new()),
         config_namespace: None,
     }
 }
@@ -22,14 +23,17 @@ fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]
         "id": "cache-fixture", "output": "unused", "cache_key": source,
         "is_wasm": kind == "wasm",
         "native_output_kind": if kind == "wasm" { None } else { Some(kind) },
-        "probe_cache_only": true,
+        "probe_cache_only": true, "function_digests": "",
     });
     let mut job = DaemonJobRequest::from_json_value(&value, "fixture").unwrap();
     let key = job
         .take_artifact_cache_keys()
         .expect("fixture cache identity")
         .module;
-    cache.insert(key.expect("nonempty fixture key"), Arc::from(bytes));
+    cache.insert(
+        key.expect("nonempty fixture key"),
+        DaemonCacheEntry::fixture(bytes),
+    );
 }
 
 #[test]
@@ -75,6 +79,9 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
                     "id":"invalid", "is_wasm":false, "native_output_kind":kind,
                     "output":output.to_string_lossy(), "cache_key":"same", "probe_cache_only":probe
                 });
+                if probe {
+                    value["function_digests"] = "".into();
+                }
                 if !probe {
                     value["ir_path"] = root
                         .join("absent-ir.msgpack")
@@ -86,7 +93,12 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
                     DaemonJobRequest::from_json_value(&value, "job").expect("parse job"),
                     &cache,
                 );
-                assert!(!result.ok && !result.cached && !result.needs_ir && !result.output_written);
+                assert!(
+                    !result.ok
+                        && !result.cached
+                        && !result.missing_functions.is_some()
+                        && !result.output_written
+                );
                 assert!(
                     result
                         .message
@@ -105,7 +117,7 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
         let output = root.join("wasm-output");
         let value = serde_json::json!({
             "id":"wasm", "is_wasm":true, "output":output.to_string_lossy(),
-            "cache_key":"same", "probe_cache_only":true
+            "cache_key":"same", "probe_cache_only":true, "function_digests": ""
         });
         let result = compile_single_job(
             DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm"),
@@ -148,6 +160,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         Some("manifest"),
         "partition",
         None,
+        None,
     )
     .expect("matching stdlib generation");
     unsafe {
@@ -166,6 +179,9 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
                 "id": "invalid-object", "is_wasm": false, "native_output_kind": "object",
                 "output": output.to_string_lossy(), "cache_key": "same", "probe_cache_only": probe
             });
+            if probe {
+                value["function_digests"] = "".into();
+            }
             if !probe {
                 value["ir_path"] = root
                     .join("absent-ir.msgpack")
@@ -175,7 +191,12 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
             }
             let job = DaemonJobRequest::from_json_value(&value, "job").expect("parse job");
             let result = compile_single_job(job, &cache);
-            assert!(!result.ok && !result.cached && !result.needs_ir && !result.output_written);
+            assert!(
+                !result.ok
+                    && !result.cached
+                    && !result.missing_functions.is_some()
+                    && !result.output_written
+            );
             assert!(
                 result
                     .message
@@ -193,7 +214,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         let output = root.join("wasm-output.wasm");
         let value = serde_json::json!({
             "id": "wasm", "is_wasm": true, "output": output.to_string_lossy(),
-            "cache_key": "same", "probe_cache_only": true
+            "cache_key": "same", "probe_cache_only": true, "function_digests": ""
         });
         let result = compile_single_job(
             DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm job"),
@@ -227,11 +248,11 @@ fn daemon_cache_artifact_kinds_cannot_alias_even_for_equal_caller_keys() {
         ("archive", b"archive".as_slice()),
     ] {
         let output = root.join(kind);
-        let request = serde_json::json!({"id":kind, "is_wasm":false, "native_output_kind":kind, "output":output.to_string_lossy(), "cache_key":"same", "function_cache_key":"same-functions", "probe_cache_only":true});
+        let request = serde_json::json!({"id":kind, "is_wasm":false, "native_output_kind":kind, "output":output.to_string_lossy(), "cache_key":"same", "function_cache_key":"same-functions", "probe_cache_only":true, "function_digests": ""});
         let job = DaemonJobRequest::from_json_value(&request, "job").expect("parse job");
         let miss = compile_single_job(job, &cache);
         assert!(
-            miss.needs_ir,
+            miss.missing_functions.is_some(),
             "other artifact kinds cannot satisfy this cache probe"
         );
         seed_daemon_cache(&cache, kind, "same-functions", expected);
@@ -288,6 +309,7 @@ fn assert_compiled_cache_target_isolation(
         std::fs::remove_file(&lease).expect("retire producer lease");
         request.as_object_mut().unwrap().remove("ir_path");
         request["probe_cache_only"] = true.into();
+        request["function_digests"] = "".into();
         for (index, (field, value)) in alternatives.iter().enumerate() {
             let output = root.join(format!("{tier}-different-{index}"));
             let mut changed = request.clone();
@@ -295,7 +317,7 @@ fn assert_compiled_cache_target_isolation(
             changed["output"] = output.to_str().unwrap().into();
             let miss = compile(&changed);
             assert!(
-                miss.ok && miss.needs_ir && !miss.cached && !miss.output_written,
+                miss.ok && miss.missing_functions.is_some() && !miss.cached && !miss.output_written,
                 "{tier}/{field}={value}: different target reused cached bytes: {miss:?}"
             );
             assert!(!output.exists(), "a miss must not publish output");
@@ -306,10 +328,14 @@ fn assert_compiled_cache_target_isolation(
         request["id"] = "replay".into();
         request["output"] = replay.to_str().unwrap().into();
         let hit = compile(&request);
-        assert!(hit.ok && hit.cached && !hit.needs_ir && hit.output_written);
+        assert!(hit.ok && hit.cached && !hit.missing_functions.is_some() && hit.output_written);
         assert_eq!(std::fs::read(replay).unwrap(), expected);
         assert!(!lease.exists());
-        assert_eq!(cache.usage().0, 1, "only the actual producer inserts");
+        assert_eq!(
+            cache.artifact_entries(),
+            1,
+            "only the actual producer inserts"
+        );
     }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
@@ -401,24 +427,46 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             "{built:?}"
         );
         let expected = std::fs::read(original).unwrap();
+        let origin = built.origin.as_ref().expect("actual compile origin");
+        assert_eq!(origin.input.lease.size, lease_bytes.len() as u64);
+        assert_eq!(
+            origin.input.lease.sha256,
+            <sha2::Sha256 as sha2::Digest>::digest(&lease_bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        assert_eq!(origin.output.size, expected.len() as u64);
+        assert_eq!(
+            origin.output.sha256,
+            <sha2::Sha256 as sha2::Digest>::digest(&expected)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
         assert_eq!(memory_minimum(&expected), 1024);
         request["jobs"][0]
             .as_object_mut()
             .unwrap()
             .remove("ir_path");
         request["jobs"][0]["probe_cache_only"] = true.into();
+        request["jobs"][0]["function_digests"] = "".into();
 
         let changed_output = root.join(format!("{tier}-changed.wasm"));
         request["jobs"][0]["output"] = changed_output.to_str().unwrap().into();
         request["env"]["MOLT_WASM_MIN_PAGES"] = "2048".into();
         let miss = run(&request);
         assert!(
-            miss.ok && miss.needs_ir && !miss.cached && !miss.output_written,
+            miss.ok && miss.missing_functions.is_some() && !miss.cached && !miss.output_written,
             "{miss:?}"
         );
         assert!(!changed_output.exists());
         // Compile the changed semantics and inspect its literal binary effect.
         request["jobs"][0]["probe_cache_only"] = false.into();
+        request["jobs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("function_digests");
         request["jobs"][0]["ir_path"] = lease.clone().into();
         let changed = run(&request);
         assert!(
@@ -435,6 +483,7 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             .unwrap()
             .remove("ir_path");
         request["jobs"][0]["probe_cache_only"] = true.into();
+        request["jobs"][0]["function_digests"] = "".into();
         request["env"] = serde_json::json!({"MOLT_WASM_MIN_PAGES":"1024"});
         for (case, additions) in [
             ("same", serde_json::json!({})),
@@ -460,12 +509,17 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             replay["jobs"][0]["output"] = output.to_str().unwrap().into();
             let hit = run(&replay);
             assert!(
-                hit.ok && hit.cached && !hit.needs_ir && hit.output_written,
+                hit.ok && hit.cached && !hit.missing_functions.is_some() && hit.output_written,
                 "{tier}/{case}: {hit:?}"
+            );
+            assert_eq!(
+                hit.origin.as_ref(),
+                Some(origin),
+                "cache hit retains producing origin"
             );
             assert_eq!(std::fs::read(output).unwrap(), expected);
         }
-        assert_eq!(cache.usage().0, 2, "only real producers insert");
+        assert_eq!(cache.artifact_entries(), 2, "only real producers insert");
         assert_eq!(
             std::fs::read(&lease).unwrap(),
             lease_bytes,
@@ -476,7 +530,46 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
 }
 
 #[test]
-fn daemon_cache_get_bytes_updates_lru_without_cloning() {
+fn daemon_cache_hit_does_not_retag_the_original_emitter() {
+    use crate::backend_process::origin::CodegenOrigin;
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
+    let root =
+        molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-origin-hit").unwrap();
+    std::fs::create_dir(&root).unwrap();
+    for tier in ["module", "function"] {
+        let output = root.join(tier);
+        let make_job = || {
+            let mut job = cache_fixture_job(
+                served_target(),
+                if tier == "module" { "original" } else { "" },
+            );
+            job.function_cache_key = (tier == "function").then(|| "original".to_owned());
+            job.output = output.to_str().unwrap().to_owned();
+            job
+        };
+        let keys = make_job().take_artifact_cache_keys().unwrap();
+        let key = keys.module.or(keys.function).unwrap();
+        let mut entry = DaemonCacheEntry::fixture(b"original output");
+        let original = Arc::get_mut(&mut entry).unwrap();
+        let emitter = if std::process::id() == 1 { 2 } else { 1 };
+        original.origin.producer.process_id = emitter;
+        original.origin.codegen = CodegenOrigin::InProcess {
+            process_id: emitter,
+        };
+        let expected = original.origin.clone();
+        let cache = DaemonCache::new(None);
+        cache.insert(key, entry);
+        let hit = compile_single_job(make_job(), &cache);
+        assert!(hit.ok && hit.cached && hit.output_written, "{hit:?}");
+        assert_eq!(hit.cache_tier.as_deref(), Some(tier));
+        assert_eq!(hit.origin, Some(expected));
+        assert_eq!(std::fs::read(&output).unwrap(), b"original output");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn daemon_cache_get_entry_updates_lru_without_cloning() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut cache = DaemonLru::new(None);
     let key = cache_fixture_job(served_target(), "module")
@@ -484,14 +577,17 @@ fn daemon_cache_get_bytes_updates_lru_without_cloning() {
         .expect("fixture cache identity")
         .module;
     let key = key.unwrap();
-    cache.insert(Arc::clone(&key), Arc::from(vec![1, 2, 3, 4]));
+    cache.insert(
+        Arc::clone(&key),
+        DaemonCacheEntry::fixture(vec![1, 2, 3, 4]),
+    );
 
-    let bytes = cache.get_bytes(&key).expect("cache hit");
-    assert_eq!(bytes.as_ref(), &[1, 2, 3, 4]);
+    let bytes = cache.get_entry(&key).expect("cache hit");
+    assert_eq!(bytes.bytes.as_ref(), &[1, 2, 3, 4]);
 
     assert_eq!(cache.usage().0, 1);
     assert!(
-        cache.usage().1 > bytes.len(),
+        cache.usage().1 > bytes.bytes.len(),
         "keys and storage participate in the budget"
     );
 }
@@ -500,7 +596,7 @@ fn daemon_cache_get_bytes_updates_lru_without_cloning() {
 fn daemon_cache_can_share_bytes_across_keys() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
     let mut cache = DaemonLru::new(None);
-    let shared = Arc::<[u8]>::from(vec![9, 8, 7, 6]);
+    let shared = DaemonCacheEntry::fixture(vec![9, 8, 7, 6]);
     let module_key = cache_fixture_job(served_target(), "module")
         .take_artifact_cache_keys()
         .expect("fixture cache identity")
@@ -514,8 +610,8 @@ fn daemon_cache_can_share_bytes_across_keys() {
     cache.insert(Arc::clone(&module_key), Arc::clone(&shared));
     cache.insert(Arc::clone(&function_key), shared);
 
-    let module = cache.get_bytes(&module_key).expect("module entry");
-    let function = cache.get_bytes(&function_key).expect("function entry");
+    let module = cache.get_entry(&module_key).expect("module entry");
+    let function = cache.get_entry(&function_key).expect("function entry");
     assert!(Arc::ptr_eq(&module, &function));
 }
 
@@ -535,15 +631,18 @@ fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
         .expect("fixture cache identity")
         .module;
     let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
-    let payload = Arc::<[u8]>::from([1, 2, 3, 4].as_slice());
+    let payload = DaemonCacheEntry::fixture([1, 2, 3, 4].as_slice());
     let mut probe = DaemonLru::new(None);
     probe.insert(Arc::clone(&first), Arc::clone(&payload));
     let budget = 2 * probe.usage().1;
     let mut cache = DaemonLru::new(Some(budget));
     cache.insert(Arc::clone(&first), Arc::clone(&payload));
-    cache.insert(Arc::clone(&second), Arc::from([5, 6, 7, 8].as_slice()));
+    cache.insert(
+        Arc::clone(&second),
+        DaemonCacheEntry::fixture([5, 6, 7, 8].as_slice()),
+    );
     for _ in 0..1024 {
-        let hit = cache.get_bytes(&first).expect("warm first entry");
+        let hit = cache.get_entry(&first).expect("warm first entry");
         assert!(Arc::ptr_eq(&hit, &payload));
         assert_eq!(
             cache.usage(),
@@ -552,10 +651,16 @@ fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
         );
     }
     assert_eq!(cache.usage(), (2, budget));
-    cache.insert(Arc::clone(&third), Arc::from([9, 10, 11, 12].as_slice()));
-    assert!(cache.get_bytes(&second).is_none(), "evict the cold entry");
-    assert!(Arc::ptr_eq(&cache.get_bytes(&first).unwrap(), &payload));
-    assert_eq!(cache.get_bytes(&third).unwrap().as_ref(), &[9, 10, 11, 12]);
+    cache.insert(
+        Arc::clone(&third),
+        DaemonCacheEntry::fixture([9, 10, 11, 12].as_slice()),
+    );
+    assert!(cache.get_entry(&second).is_none(), "evict the cold entry");
+    assert!(Arc::ptr_eq(&cache.get_entry(&first).unwrap(), &payload));
+    assert_eq!(
+        cache.get_entry(&third).unwrap().bytes.as_ref(),
+        &[9, 10, 11, 12]
+    );
     assert_eq!(cache.usage(), (2, budget));
 }
 
@@ -578,13 +683,39 @@ fn daemon_tiny_outputs_cannot_hide_large_request_metadata() {
         let key = job.take_artifact_cache_keys().unwrap().module.unwrap();
         let weak = Arc::downgrade(&key);
         let mut cache = DaemonLru::new(Some(1024));
-        cache.insert(key, Arc::from([1].as_slice()));
+        cache.insert(key, DaemonCacheEntry::fixture([1].as_slice()));
         assert_eq!(cache.usage(), (0, 0), "unaccounted {dimension}");
         assert!(
             weak.upgrade().is_none(),
             "rejected {dimension} key cannot linger in order storage"
         );
     }
+}
+
+#[test]
+fn daemon_tiny_output_charges_retained_assembly_origin_capacity() {
+    let _scope = molt_backend::backend_environment::enter(Arc::default());
+    let key = cache_fixture_job(served_target(), "small")
+        .take_artifact_cache_keys()
+        .unwrap()
+        .module
+        .unwrap();
+    let mut entry = DaemonCacheEntry::fixture([1]);
+    // A short logical value can still retain a large allocation. The independent
+    // 1 KiB limit must refuse it, including the origin's unused string capacity.
+    Arc::get_mut(&mut entry)
+        .unwrap()
+        .origin
+        .input
+        .function_digests = String::with_capacity(16 * 1024);
+    let weak = Arc::downgrade(&entry);
+    let mut cache = DaemonLru::new(Some(1024));
+    cache.insert(key, entry);
+    assert_eq!(cache.usage(), (0, 0));
+    assert!(
+        weak.upgrade().is_none(),
+        "rejected origin storage must be released"
+    );
 }
 
 #[test]
@@ -613,15 +744,18 @@ fn daemon_semantic_metadata_has_fixed_charge_and_retains_no_request() {
     }
     assert_ne!(keys[0], keys[1], "actual setting bytes remain semantic");
     let mut probe = DaemonLru::new(None);
-    probe.insert(Arc::clone(&keys[0]), Arc::from([1].as_slice()));
+    probe.insert(
+        Arc::clone(&keys[0]),
+        DaemonCacheEntry::fixture([1].as_slice()),
+    );
     let charge = probe.usage().1;
     let mut cache = DaemonLru::new(Some(2 * charge));
     for (index, key) in keys.iter().enumerate() {
-        cache.insert(Arc::clone(key), Arc::from([1].as_slice()));
+        cache.insert(Arc::clone(key), DaemonCacheEntry::fixture([1].as_slice()));
         assert_eq!(cache.usage(), (index + 1, (index + 1) * charge));
     }
     for key in keys {
-        assert_eq!(cache.get_bytes(&key).unwrap().as_ref(), &[1]);
+        assert_eq!(cache.get_entry(&key).unwrap().bytes.as_ref(), &[1]);
     }
 }
 
@@ -639,7 +773,7 @@ fn daemon_tiny_outputs_charge_native_target_storage() {
         .module
         .unwrap();
     let mut cache = DaemonLru::new(Some(1024));
-    cache.insert(key, Arc::from([1].as_slice()));
+    cache.insert(key, DaemonCacheEntry::fixture([1].as_slice()));
     assert_eq!(cache.usage(), (0, 0));
 }
 
@@ -653,7 +787,7 @@ fn daemon_eviction_drops_the_actual_typed_key_immediately() {
         .module
         .unwrap();
     let weak = Arc::downgrade(&key);
-    cache.insert(key, Arc::from([1].as_slice()));
+    cache.insert(key, DaemonCacheEntry::fixture([1].as_slice()));
     let budget = cache.usage().1;
     // Move the populated owner into the exact budget, without cloning its key.
     let mut bounded = DaemonLru::new(Some(budget));
@@ -663,13 +797,13 @@ fn daemon_eviction_drops_the_actual_typed_key_immediately() {
         .module
         .unwrap();
     let first_weak = Arc::downgrade(&first);
-    bounded.insert(first, Arc::from([1].as_slice()));
+    bounded.insert(first, DaemonCacheEntry::fixture([1].as_slice()));
     let second = cache_fixture_job(served_target(), "second")
         .take_artifact_cache_keys()
         .unwrap()
         .module
         .unwrap();
-    bounded.insert(second, Arc::from([2].as_slice()));
+    bounded.insert(second, DaemonCacheEntry::fixture([2].as_slice()));
     assert_eq!(bounded.usage().0, 1);
     assert!(
         first_weak.upgrade().is_none(),
@@ -688,14 +822,17 @@ fn daemon_replacement_releases_equal_keys_with_different_allocation_capacity() {
     job.cache_key.push_str("same");
     let old = job.take_artifact_cache_keys().unwrap().module.unwrap();
     let weak = Arc::downgrade(&old);
-    cache.insert(old, Arc::from([1].as_slice()));
+    cache.insert(old, DaemonCacheEntry::fixture([1].as_slice()));
     let charged_before = cache.usage().1;
     let replacement = cache_fixture_job(served_target(), "same")
         .take_artifact_cache_keys()
         .unwrap()
         .module
         .unwrap();
-    cache.insert(Arc::clone(&replacement), Arc::from([2].as_slice()));
+    cache.insert(
+        Arc::clone(&replacement),
+        DaemonCacheEntry::fixture([2].as_slice()),
+    );
     assert!(
         weak.upgrade().is_none(),
         "replaced metadata cannot survive in stale order generations"
@@ -705,7 +842,7 @@ fn daemon_replacement_releases_equal_keys_with_different_allocation_capacity() {
         cache.usage().1 < charged_before,
         "charge follows the actual retained owner"
     );
-    assert_eq!(cache.get_bytes(&replacement).unwrap().as_ref(), &[2]);
+    assert_eq!(cache.get_entry(&replacement).unwrap().bytes.as_ref(), &[2]);
 }
 
 #[test]
@@ -745,7 +882,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
             function_cache_key: Some("function".to_string()),
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
-            ir_source: DaemonIrSource::Probe,
+            ir_source: DaemonIrSource::Probe(Vec::new()),
             config_namespace: None,
         },
         &cache,
@@ -753,7 +890,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 
     assert!(result.ok);
     assert!(!result.cached);
-    assert!(result.needs_ir);
+    assert!(result.missing_functions.is_some());
     assert!(!result.output_written);
 }
 
@@ -765,7 +902,7 @@ fn daemon_probes_and_full_cache_hits_do_not_open_ir() {
         .take_artifact_cache_keys()
         .expect("fixture cache identity")
         .module;
-    cache.insert(key.unwrap(), Arc::from(vec![1_u8, 2, 3]));
+    cache.insert(key.unwrap(), DaemonCacheEntry::fixture(vec![1_u8, 2, 3]));
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
@@ -775,7 +912,7 @@ fn daemon_probes_and_full_cache_hits_do_not_open_ir() {
     let missing_lease = output.with_extension("missing-ir");
     assert!(!missing_lease.exists());
     for ir_source in [
-        DaemonIrSource::Probe,
+        DaemonIrSource::Probe(Vec::new()),
         DaemonIrSource::Lease(missing_lease.to_string_lossy().into_owned()),
     ] {
         let result = compile_single_job(
@@ -795,7 +932,7 @@ fn daemon_probes_and_full_cache_hits_do_not_open_ir() {
 
         assert!(result.ok);
         assert!(result.cached);
-        assert!(!result.needs_ir);
+        assert!(!result.missing_functions.is_some());
         assert!(output.exists());
     }
     let _ = std::fs::remove_file(output);
@@ -834,7 +971,7 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
             function_cache_key: Some("function".to_string()),
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
-            ir_source: DaemonIrSource::Probe,
+            ir_source: DaemonIrSource::Probe(Vec::new()),
             config_namespace: None,
         },
         &cache,
@@ -842,7 +979,7 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
 
     assert!(result.ok);
     assert!(!result.cached);
-    assert!(result.needs_ir);
+    assert!(result.missing_functions.is_some());
     assert!(!output.exists());
     let _ = std::fs::remove_dir_all(root);
 }
@@ -889,7 +1026,7 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
                     "id": case, "is_wasm": is_wasm,
                     "output": output.to_string_lossy(),
                     "cache_key": "module", "function_cache_key": "function",
-                    "probe_cache_only": true,
+                    "probe_cache_only": true, "function_digests": "",
                 });
                 if !is_wasm {
                     request["native_output_kind"] = kind.into();
@@ -901,7 +1038,11 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
                 let expected_hit = dump.is_none();
                 assert!(result.ok, "{kind}/{tier}/{case}: {:?}", result.message);
                 assert_eq!(result.cached, expected_hit, "{kind}/{tier}/{case}");
-                assert_eq!(result.needs_ir, !expected_hit, "{kind}/{tier}/{case}");
+                assert_eq!(
+                    result.missing_functions.is_some(),
+                    !expected_hit,
+                    "{kind}/{tier}/{case}"
+                );
                 assert_eq!(result.output_written, expected_hit, "{kind}/{tier}/{case}");
                 assert_eq!(output.exists(), expected_hit, "{kind}/{tier}/{case}");
                 if expected_hit {
@@ -994,6 +1135,27 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
         results.windows(2).all(|pair| pair[0].1 == pair[1].1),
         "builds wrote different bytes for one artifact"
     );
+    let producer = results
+        .iter()
+        .find(|(response, _)| !response.cached)
+        .unwrap();
+    let origin = producer.0.origin.as_ref().expect("producer origin");
+    assert_eq!(origin.output.size, producer.1.len() as u64);
+    assert_eq!(
+        origin.output.sha256,
+        <sha2::Sha256 as sha2::Digest>::digest(&producer.1)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    for (response, _) in &results {
+        assert_eq!(
+            response.origin.as_ref(),
+            Some(origin),
+            "followers retain producing origin"
+        );
+    }
+
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
 
@@ -1010,8 +1172,8 @@ fn daemon_messagepack_lease_rejects_suffix_before_output_publication() {
     std::fs::create_dir(&root).unwrap();
     let lease = root.join("input.msgpack");
     let output = root.join("output.o");
-    // Literal wire bytes independent of the fixture encoder: {"functions": []}.
-    let frame = b"\x81\xa9functions\x90";
+    // Literal wire bytes independent of the fixture encoder: the empty lease.
+    let frame = b"\x82\xaffunction_bodies\x90\xb0function_digests\xc4\x00";
     for suffix in [frame.as_slice(), b"\x00", b"\xc1", b" "] {
         let mut bytes = frame.to_vec();
         bytes.extend_from_slice(suffix);
@@ -1057,5 +1219,184 @@ fn daemon_rejects_retired_json_lease_without_replacing_output() {
     let error = response.message.expect("invalid MessagePack diagnostic");
     assert!(error.contains("msgpack IR"), "{error}");
     assert_eq!(std::fs::read(output).unwrap(), b"previous output");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// One daemon request for `document`: a probe naming its digests, or a compile
+/// whose lease ships the positions `ship` selects.
+#[cfg(all(molt_backend_daemon, feature = "native-backend"))]
+fn content_addressed_request(
+    document: &molt_ir::ir::BackendIrDocument,
+    output: &std::path::Path,
+    key: &str,
+    lease: Option<&dyn Fn(usize) -> bool>,
+) -> DaemonRequest {
+    let mut job = serde_json::json!({
+        "id": key, "is_wasm": false, "native_output_kind": "archive",
+        "output": output.to_string_lossy(), "cache_key": key,
+    });
+    match lease {
+        None => {
+            job["probe_cache_only"] = true.into();
+            job["function_digests"] = molt_ir::addressed_program::lease_function_digests(document)
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<String>()
+                .into();
+        }
+        Some(ship) => {
+            let path = output.with_extension(format!("{key}.msgpack"));
+            let bytes = molt_ir::addressed_program::encode_lease(document, ship).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            job["ir_path"] = path.to_string_lossy().as_ref().into();
+        }
+    }
+    let request = serde_json::json!({
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION, "config_digest": "store", "env": {},
+        "jobs": [job],
+    });
+    DaemonRequest::from_json_bytes(&serde_json::to_vec(&request).unwrap()).unwrap()
+}
+
+#[cfg(all(molt_backend_daemon, feature = "native-backend"))]
+fn run_content_addressed(cache: &DaemonCache, request: DaemonRequest) -> DaemonJobResponse {
+    let _scope = molt_ir::backend_environment::enter(request.environment);
+    let job = request.jobs.expect("jobs").pop().expect("job");
+    compile_single_job(job, cache)
+}
+
+#[test]
+#[cfg(all(molt_backend_daemon, feature = "native-backend"))]
+fn the_function_store_ships_each_body_once_and_asks_again_after_eviction() {
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
+    let root = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-store")
+        .expect("unique fixture path");
+    std::fs::create_dir(&root).unwrap();
+    let program = |extra_op: bool| {
+        let mut main_ops = vec![
+            serde_json::json!({"kind": "call", "s_value": "helper"}),
+            serde_json::json!({"kind": "ret_void"}),
+        ];
+        if extra_op {
+            main_ops.insert(0, serde_json::json!({"kind": "nop"}));
+        }
+        molt_ir::ir::BackendIrDocument::from_json_value(&serde_json::json!({
+            "functions": [
+                {"return_abi": "void", "name": "molt_main", "params": [], "ops": main_ops},
+                {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
+            ],
+            "profile": null
+        }))
+        .unwrap()
+    };
+    let (first, edited) = (program(false), program(true));
+    let missing = |response: &DaemonJobResponse| {
+        assert!(response.ok, "{:?}", response.message);
+        response.missing_functions.clone()
+    };
+
+    let cache = DaemonCache::new(None);
+    let output = root.join("first.a");
+    let probe = run_content_addressed(
+        &cache,
+        content_addressed_request(&first, &output, "first", None),
+    );
+    assert_eq!(
+        missing(&probe),
+        Some(vec![0, 1]),
+        "a cold store lacks every body"
+    );
+    let compiled = run_content_addressed(
+        &cache,
+        content_addressed_request(&first, &output, "first", Some(&|_| true)),
+    );
+    assert_eq!(missing(&compiled), None);
+    assert!(compiled.output_written && output.exists());
+
+    // An edit changes one body; the probe asks for that body alone, and a lease
+    // that ships only it compiles the whole program.
+    let output = root.join("edited.a");
+    let probe = run_content_addressed(
+        &cache,
+        content_addressed_request(&edited, &output, "edited", None),
+    );
+    assert_eq!(missing(&probe), Some(vec![0]));
+    let compiled = run_content_addressed(
+        &cache,
+        content_addressed_request(&edited, &output, "edited", Some(&|position| position == 0)),
+    );
+    assert_eq!(missing(&compiled), None);
+    assert!(compiled.output_written && output.exists());
+    assert!(probe.origin.is_none(), "a probe did not compile anything");
+    let origin = compiled.origin.as_ref().expect("completed assembly origin");
+    let lease = std::fs::read(output.with_extension("edited.msgpack")).unwrap();
+    #[derive(serde::Deserialize)]
+    struct ObservedLease<'a> {
+        #[serde(borrow)]
+        function_digests: &'a [u8],
+        function_bodies: Vec<serde::de::IgnoredAny>,
+    }
+    let observed: ObservedLease<'_> = rmp_serde::from_slice(&lease).unwrap();
+    assert_eq!(
+        observed.function_bodies.len(),
+        1,
+        "only the changed body crossed the lease"
+    );
+    assert_eq!(
+        observed.function_digests.len(),
+        64,
+        "both bodies were assembled in order"
+    );
+    let ordered: String = observed
+        .function_digests
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(origin.input.function_digests, ordered);
+    assert_eq!(origin.input.lease.size, lease.len() as u64);
+    assert_eq!(
+        origin.input.lease.sha256,
+        <sha2::Sha256 as sha2::Digest>::digest(&lease)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let hit_output = root.join("edited-hit.a");
+    let hit = run_content_addressed(
+        &cache,
+        content_addressed_request(&edited, &hit_output, "edited", None),
+    );
+    assert!(hit.cached && hit.output_written);
+    assert_eq!(
+        hit.origin.as_ref(),
+        Some(origin),
+        "reused bytes keep their original partial lease and emitter"
+    );
+    assert_eq!(
+        std::fs::read(hit_output).unwrap(),
+        std::fs::read(&output).unwrap()
+    );
+
+    // A store too small for any body keeps none: a partial lease names exactly
+    // the unshipped position, and the complete lease that follows compiles.
+    let starved = DaemonCache::new(Some(1));
+    let output = root.join("starved.a");
+    let partial = run_content_addressed(
+        &starved,
+        content_addressed_request(&edited, &output, "starved", Some(&|position| position == 0)),
+    );
+    assert_eq!(missing(&partial), Some(vec![1]));
+    assert!(!partial.output_written && !output.exists());
+    assert!(
+        partial.origin.is_none(),
+        "a missing resident body has no emission origin"
+    );
+    let complete = run_content_addressed(
+        &starved,
+        content_addressed_request(&edited, &output, "starved", Some(&|_| true)),
+    );
+    assert_eq!(missing(&complete), None);
+    assert!(complete.output_written && output.exists());
     std::fs::remove_dir_all(root).unwrap();
 }

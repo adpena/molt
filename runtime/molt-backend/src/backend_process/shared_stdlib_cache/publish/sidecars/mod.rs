@@ -12,3 +12,8 @@ pub(super) use validation::{
     shared_stdlib_cache_recorded_digest,
 };
 pub(crate) use write::write_shared_stdlib_cache_sidecars;
+
+pub(super) use read::read_stdlib_cache_origins_unlocked;
+
+#[cfg(test)]
+pub(crate) use read::read_shared_stdlib_cache_origins;

@@ -35,7 +35,7 @@ const BROKER_TIMEOUT_MS = 10_000;
 const rawPolicy = process.env[POLICY_ENV];
 if (rawPolicy) {
     const policy = JSON.parse(rawPolicy);
-    if (!policy || policy.schema !== 'molt.proof-child-custody.v1') {
+    if (!policy || policy.schema !== 'molt.proof-child-custody.v2') {
       throw new Error('malformed proof child custody policy');
     }
 
@@ -245,7 +245,21 @@ if (rawPolicy) {
       return index >= 0 ? args[index] : undefined;
     }
 
-    function decide(requested, options) {
+    function pythonEnvironment(environment) {
+      const selected = {};
+      for (const name of ['PYTHONPYCACHEPREFIX', 'PYTHONDONTWRITEBYTECODE']) {
+        // Node sorts Windows environment keys and uses the first spelling of
+        // each case-insensitive name when forming the actual child block.
+        const key = process.platform === 'win32'
+          ? Object.keys(environment).sort().find((candidate) => candidate.toUpperCase() === name)
+          : name;
+        const value = key === undefined ? undefined : environment[key];
+        selected[name] = value === undefined ? null : String(value);
+      }
+      return selected;
+    }
+
+    function decide(requested, argv, options) {
       const environment = options?.env || process.env;
       const cwd = options?.cwd === undefined
         ? process.cwd()
@@ -257,6 +271,9 @@ if (rawPolicy) {
           event: 'spawn-intent',
           sequence,
           requested: String(requested),
+          argv: [String(options?.argv0 ?? requested), ...argv.map(String)],
+          python_environment: pythonEnvironment(environment),
+          windows_verbatim_arguments: options?.windowsVerbatimArguments ?? false,
           path: environmentValue(environment, 'PATH'),
           path_ext: environmentValue(environment, 'PATHEXT'),
           cwd,
@@ -292,7 +309,7 @@ if (rawPolicy) {
       childProcess[name] = function custodySpawn(requested, ...args) {
         const rewritten = rewriteOptions(args);
         const options = effectiveOptions(rewritten);
-        const decision = decide(requested, options);
+        const decision = decide(requested, Array.isArray(rewritten[0]) ? rewritten[0] : [], options);
         return original.call(this, decision.resolved, ...rewritten);
       };
     }

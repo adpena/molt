@@ -50,7 +50,6 @@ from molt.frontend.visitors.class_method_compilation import (
 class ClassDefVisitorMixin(ClassMethodCompilationMixin):
     def _emit_dataclass_application(
         self,
-        node: ast.ClassDef,
         class_info: ClassInfo,
         class_val: MoltValue,
     ) -> MoltValue:
@@ -69,9 +68,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
         When ``class_info`` is not a dataclass this is a no-op and returns
         ``class_val`` unchanged.  Otherwise it emits the
-        ``dataclasses.dataclass(cls, init=..., repr=..., ...)`` call, rebinds the
-        class name to the (possibly rebuilt — e.g. ``slots=True``) result, and
-        returns that new value.
+        ``dataclasses.dataclass(cls, init=..., repr=..., ...)`` call and returns
+        the possibly rebuilt (for example, ``slots=True``) result. The class
+        statement publishes only its final value after all transforms.
         """
         if not class_info.get("dataclass"):
             return class_val
@@ -126,10 +125,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 )
             )
         # ``dataclass`` always returns the (possibly rebuilt) class object.
-        # Capture and rebind so that ``slots=True`` — which produces a brand-new
-        # class via ``_add_slots`` — and any future rebuild paths replace the
-        # original binding.  For the non-slots path the function mutates and
-        # returns the same object, so the rebind is a no-op.
+        # Preserve the rebuilt object for final statement publication. No
+        # intermediate class value is visible in the defining namespace.
         applied_cls = MoltValue(self.next_var(), type_hint="type")
         self.emit(
             MoltOp(
@@ -138,7 +135,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 result=applied_cls,
             )
         )
-        self._publish_class_value(node.name, applied_cls)
         return applied_cls
 
     def _class_layout_version(
@@ -441,28 +437,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
         return tuple(attrs)
 
-    def _publish_class_value(self, name: str, class_val: MoltValue) -> None:
-        """Bind a freshly built class object into its defining scope.
-
-        Single source of truth for the four ``visit_ClassDef`` publication
-        paths (static / dataclass-rebuilt / dynamic / decorated).  A nested
-        ``class`` statement (``self._class_body_depth > 0``) is a member of the
-        enclosing class body, exactly like a method or a class-attribute
-        assignment.  Those bind into the class-body namespace with a *direct*
-        ``self.locals[name] = value`` write (see the method and ``ast.Assign``
-        branches in the body loop) rather than the function-local store
-        machinery (boxed cells / async closure slots), and they are never
-        published to module globals — even when the outermost enclosing class
-        lives at module scope.  The enclosing class-body loop harvests this
-        binding into ``class_attr_values``; here we only need a deterministic
-        ``self.locals`` entry, so we mirror that direct write.
-        """
-
-        if self._class_body_depth > 0:
-            self.locals[name] = class_val
-            return
-        self._publish_definition_binding(name, class_val)
-
     def _verify_classcell_result(
         self, class_name: str, cell: MoltValue, result: MoltValue
     ) -> None:
@@ -744,14 +718,24 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         return dataclass_opts, other_decorators
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        previous_annotations = self.class_annotation_items
+        previous_exec_map = self.class_annotation_exec_map
+        previous_exec_counter = self.class_annotation_exec_counter
+        previous_type_params = self.type_parameter_bindings
+        try:
+            self._emit_class_definition(node)
+        finally:
+            self.class_annotation_items = previous_annotations
+            self.class_annotation_exec_map = previous_exec_map
+            self.class_annotation_exec_counter = previous_exec_counter
+            self.type_parameter_bindings = previous_type_params
+
+    def _emit_class_definition(self, node: ast.ClassDef) -> None:
         class_id = self._class_id_for_definition(node)
         self.local_class_ids.append(class_id)
         # CPython 3.13 added __firstlineno__ and __static_attributes__ to every
         # class namespace; earlier targets never see either key.
         source_keys = self.target_python >= (3, 13)
-        prev_class_annotations = self.class_annotation_items
-        prev_class_exec_map = self.class_annotation_exec_map
-        prev_class_exec_counter = self.class_annotation_exec_counter
         self.class_annotation_items = []
         self.class_annotation_exec_map = None
         self.class_annotation_exec_counter = 0
@@ -771,14 +755,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     )
                 decorator_vals.append(decorator_val)
 
-        type_param_vals, type_param_map = self._emit_type_params_values(
-            getattr(node, "type_params", None)
-        )
-        prev_type_params = self.annotation_type_params
+        type_param_vals, type_param_map = self._emit_type_params_values(node)
         if type_param_map:
-            merged = dict(prev_type_params)
+            merged = dict(self.type_parameter_bindings)
             merged.update(type_param_map)
-            self.annotation_type_params = merged
+            self.type_parameter_bindings = merged
 
         base_vals: list[MoltValue] = []
         # Each base resolves through binding flow to a class statement or a
@@ -1427,6 +1408,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         self._class_ns_stack.append(class_ns_scope)
         self._push_qualname(python_definition_name(node), False, qualname=qualname)
         python_frame_scope = self._enter_python_frame_context_scope(class_body=True)
+        class_body_complete = False
         try:
             if dynamic_namespace is not None:
                 key_val = MoltValue(self.next_var(), type_hint="str")
@@ -1469,26 +1451,6 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 if isinstance(item, (ast.Global, ast.Nonlocal)):
                     # Class directives belong to this namespace, never to the
                     # enclosing function frame used to lower its body.
-                    continue
-                if isinstance(item, ast.ClassDef):
-                    # A nested ``class`` statement.  Lower it recursively: this
-                    # emits the nested class's own ``CLASS_DEF`` (so the class
-                    # object exists before it is attached to the enclosing
-                    # class) and — because ``self._class_body_depth > 0`` — binds
-                    # it into ``self.locals`` rather than module globals.  Harvest
-                    # that binding into the enclosing class namespace, mirroring
-                    # the plain class-attribute ``Assign`` path below so methods
-                    # referencing the nested class by name resolve and the class
-                    # object is published as ``Enclosing.Nested``.
-                    self.visit_ClassDef(item)
-                    nested_val = self.locals.get(item.name)
-                    if nested_val is None:
-                        raise FrontendRejection(
-                            Diagnostic.INTERNAL_INVARIANT,
-                            "Nested class lowering produced no bound value for "
-                            f"'{item.name}'",
-                        )
-                    bind_class_name(item.name, nested_val)
                     continue
                 if isinstance(item, ast.TypeAlias):
                     self.visit_TypeAlias(item)
@@ -1582,6 +1544,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     "__classdictcell__",
                     class_ns_scope.annotation_namespace_cell,
                 )
+            class_body_complete = True
         finally:
             self._pop_qualname()
             self._class_body_depth -= 1
@@ -1593,7 +1556,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 class_ns_scope.global_names,
                 class_ns_scope.nonlocal_names,
             )
-            self._exit_python_frame_context_scope(python_frame_scope)
+            self._exit_python_frame_context_scope(
+                python_frame_scope, emit_cleanup=class_body_complete
+            )
 
         if dynamic_build:
             if (
@@ -1759,31 +1724,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 )
             if classcell_val is not None:
                 self._verify_classcell_result(class_id.name, classcell_val, class_val)
-            self._publish_class_value(node.name, class_val)
-            # ``@dataclass`` runtime application is construction-method-agnostic:
-            # it operates on the finished ``class_val`` via ``setattr`` /
-            # ``cls.x = ...`` and reads ``cls.__annotations__`` through the versioned
-            # eager/lazy runtime authority.  Apply it here for the static-outlined
-            # path; the ``dynamic_build`` branch below applies the SAME helper, so
-            # a dataclass whose body needs block execution (P0 #50) still gets its
-            # generated dunders.
-            class_val = self._emit_dataclass_application(node, class_info, class_val)
-        else:
-            # Dynamic path
-            self._publish_class_value(node.name, class_val)
-            # The metaclass owns construction and may return any object,
-            # including an existing type. Its result is never a compiler
-            # layout owner. Native type construction seals physical storage;
-            # dynamic class facts do not authorize field/layout guards.
-            # ``@dataclass`` runtime application on the dynamic-build path (P0
-            # #50).  A dataclass whose body needs block execution (control flow /
-            # ``del`` / non-Name assign target) is routed through ``dynamic_build``
-            # and built via the metaclass call; the dataclass transform — which
-            # installs ``__init__`` / ``__repr__`` / ``__eq__`` / ``__hash__`` /
-            # frozen guards onto the finished class — must still run.  This is the
-            # SAME helper the static-outlined path calls: one code path publishes
-            # the dataclass transform regardless of how the class object was built.
-            class_val = self._emit_dataclass_application(node, class_info, class_val)
+        # Static and dynamic construction return a value. Dataclass rebuilding
+        # and ordinary decorators transform it before the defining scope sees
+        # one final binding, including custom class namespace mappings.
+        class_val = self._emit_dataclass_application(class_info, class_val)
         if type_param_vals:
             self._emit_attach_type_params(class_val, type_param_vals)
             class_getitem = self._emit_module_attr_get_on(
@@ -1820,7 +1764,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 )
                 decorated = res
             class_val = decorated
-            self._publish_class_value(node.name, class_val)
+
+        self._publish_definition_binding(node.name, class_val)
 
         bound_class = self.globals.get(node.name)
         if (
@@ -1843,8 +1788,4 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             class_info.pop("class_value_name", None)
             class_info.pop("constructor_fold_safe", None)
 
-        self.class_annotation_items = prev_class_annotations
-        self.class_annotation_exec_map = prev_class_exec_map
-        self.class_annotation_exec_counter = prev_class_exec_counter
-        self.annotation_type_params = prev_type_params
         return None

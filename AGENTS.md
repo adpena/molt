@@ -11,15 +11,13 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   actionable custody blocker, and preserve the evidence until the integration owner closes it.
 - Reuse existing work before creating an isolated lane. New isolated work uses the managed
   lane/landing queue lifecycle in `docs/ops/INTEGRATION.md`, which owns automatic retirement.
-- Questions and reviews authorize inspection; change requests authorize in-scope implementation
-  and relevant local checks. Define completion and the integration owner for the current outcome.
+- Questions and reviews authorize inspection; change requests authorize scoped fixes and checks. Name completion and its integration owner.
 - Pause only for input the user alone can provide, a real scope change, or a destructive,
   irreversible, privileged, or externally consequential action that was not already authorized.
   Proceed with safe, reversible work that follows from the request.
 - Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
   useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
-- Ground progress and completion claims in evidence from the current run. Say plainly what passed,
-  failed, was skipped, or remains unknown.
+- Ground claims in current-run evidence; state passes, failures, skips and unknowns.
 - If project guidance conflicts with the live repository or has gone stale, follow the safer current
   fact and repair the guidance in the same arc when it is in scope.
 
@@ -48,8 +46,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Prefer the simplest direct design. Add abstraction only to remove duplication, make an invariant
   explicit, or enable measured optimization. Systematize families instead of type- or backend-local
   fixes; specialized representations are welcome when they materially help and keep the protocol.
-- Treat frontend, IR, passes, backends, runtime, ABI, tooling, diagnostics, packaging, tests, and
-  docs as projections of the same architecture.
+- Treat all compiler layers, runtime, ABI, tooling, diagnostics, packaging, tests and docs as one architecture.
 
 ## Build to the state of the art
 
@@ -61,8 +58,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   come from one declarative definition that generates closed types, so the compiler (exhaustive
   Rust matches, `Literal` types under `ty`) rejects a stale consumer. A source-scraping audit is a
   bridge: delete it when the type system enforces the same fact.
-- Every registered entity has a proven producer. Removing the last producer removes every consumer
-  in the same change; `tools/op_kinds/census.py` proves this for op kinds.
+- Every registered entity needs a proven producer; retire its consumers with its last producer.
+  `tools/op_kinds/census.py` proves op kinds. Test filters need a producer in the selected crate/features.
 
 ## Project direction
 
@@ -73,12 +70,10 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   to an upstream defect—not a hidden substitute implementation.
 - Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
   runtime memory management and every shipped backend/profile are first-class optimization surfaces.
-- Design for free-threaded and GIL-less execution while preserving deterministic expected CPython
-  behavior by default.
+- Preserve deterministic CPython behavior by default while designing for free-threaded and GIL-less execution.
 - Support claims are explicit matrices over target OS, architecture, ABI, Python version,
   concurrency mode, backend, profile, and optimization level. Gate only on demonstrated capability,
-  correctness, or performance—not on implementation convenience. Unsupported cells fail early with
-  useful diagnostics.
+  correctness or performance, never convenience. Refuse unsupported cells early with useful diagnostics.
 - Portability covers compiler/runtime, CLI, tests, build/release tooling, and developer apparatus
   alike; host-specific assumptions must not leak into target semantics or shared infrastructure.
 
@@ -109,15 +104,19 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 ## Work with the live repository
 
-- Start with `uv run --python 3.12 python tools/agent_coordination.py context` (`--json` for the
-  versioned model), `git status`, applicable nested instructions, and the current source/proof
-  state. For active multi-agent or Pact work, read only the relevant live sections of
-  `docs/agent/ORCHESTRATION.md`.
-- Preserve user and parallel-agent work. Never reset, clean, overwrite, revert or broadly stage
-  unrelated changes. Integrate with pathspecs and review every diff before commit or landing.
+- Start with `uv run --python 3.12 python tools/agent_coordination.py context` (`--json` for its
+  versioned model), `git status`, nested instructions and current source/proof state. For active
+  multi-agent or Pact work, read the relevant `docs/agent/ORCHESTRATION.md` sections.
+- Preserve user and parallel-agent work; never reset, clean, overwrite, revert or stage unrelated edits.
+  Bind Git mutations to an explicit checkout (`git -C` or a bound Git object), assert its branch/HEAD
+  and exact owned path set, and review the scoped diff before staging, committing or landing.
 - Generated files are projections; change the source or generator and regenerate in the same arc.
 - Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
   reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).
+- Resolve versioned CPython oracles through the interpreter/source authorities and verify the exact
+  reference identity. Never use project-scoped `uv run --python` to switch minors in an active
+  checkout: it replaces the shared environment. Extra environments need an explicitly owned
+  `UV_PROJECT_ENVIRONMENT`; close existing readers before changing an environment.
 - Keep operational history, incidents, long procedures and tutorials out of this always-loaded file;
   put durable detail in the owning design, spec, runbook, skill, test or live board. Keep per-run
   logs, scratch plans and worker handoffs out of tracked source (`docs/ROOT_LAYOUT.md`); preserve
@@ -125,37 +124,38 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 ## Delegate deliberately
 
-- Before designing, implementing or deleting, search canonical authority, relevant history/handoffs
-  and preserved WIP/donor trees. Report the invariant's owner and what to reuse, reconcile or retire.
-  Task messages and memories are leads to verify, not permission for a second implementation.
-  Ask the integrator when ownership or custody is unclear.
-- Use subagents for independent, bounded exploration, audits, log analysis, proof review, mechanical
-  migration and disjoint implementation. Keep working, redirect drifting lanes and integrate evidence.
-  Avoid overlapping writers and redundant proofs; the parent owns architecture, integration,
-  verification and cleanup.
+- Before designing, implementing or deleting, search canonical authority, history, handoffs and WIP.
+  Report the invariant's owner and what to reuse, reconcile or retire, including preserved donors.
+  Verify task messages and memory as leads; ask the integrator about unclear ownership or custody.
+- Use subagents for bounded exploration, audits, log analysis, review and disjoint/mechanical changes.
+  Keep working, redirect drifting lanes and integrate evidence. Avoid overlapping writers or proofs;
+  the parent owns architecture, integration, verification and cleanup.
 - Record active worker ownership and handoff state in the coordination records described in
   `docs/ops/MULTI_AGENT_COORDINATION.md`; task messages and worktree names are not source locks.
-- Match model and effort: strongest reasoning for load-bearing architecture/correctness, faster
-  workers for bounded scans and mechanical work. Respect operator concurrency limits for Codex
-  and external workers; use Astra for complex, mission-critical or long-running reasoning.
-  Claude Fable/Opus may independently design or review under the same search, ownership and evidence
-  discipline, without opening a second integration lane.
+- Match model and effort: strongest reasoning for architecture/correctness, faster workers for
+  bounded scans and mechanical work. Respect operator concurrency limits for all workers; use Astra
+  for complex, mission-critical or long-running reasoning. Claude Fable/Opus follows the same search,
+  ownership and evidence discipline for independent design/review, without a second integration lane.
 
 ## Verify the claim, not the ritual
 
 - Tests must distinguish correct behavior from a plausible defect using an independent oracle.
   Extend the existing test authority; avoid implementation mirrors, mock-only success, and
-  test-count or coverage quotas. When adding or reviewing tests, use
-  `docs/spec/areas/testing/0007-testing.md` for test quality.
+  test-count or coverage quotas. Follow `docs/spec/areas/testing/0007-testing.md` when adding or reviewing tests.
 - Prove the exact changed contract first, then widen in proportion to the claim (static checks,
   unit, differential and integration tests, target execution, profiling, benchmarks). One green
   cell does not prove a family-wide claim; a narrow check that fully proves the owned invariant
   needs no broad suite. Repeat checks only for changed inputs, a new failure or an open claim.
+- Preflight selected toolchains, targets and runtime prerequisites through their owners with the full
+  child environment before expensive work; parser acceptance alone does not prove readiness. Validate
+  mutation targets canonically and turn mistakes into checks at that boundary, without duplicate gates.
+- Stop dependent command batches at the first failure. Classify product, harness, artifact drift or
+  unknown before retrying; preserve failed receipts. Reuse completed phases only when source, tool,
+  environment, workload and artifacts match; rerun only missing or invalidated obligations.
 - Run the owning proof families locally before pushing; CI arbitrates release candidates. Make
   repeated manual triage, profiling or log pipelines a tested tool and point to it below.
 - Every test file belongs to a proof cell; a test that no cell runs rots without notice.
-- Treat a frozen or silent process as unknown until logs, artifacts, guard state, or live process
-  evidence establishes its result.
+- Treat silent or frozen processes as unknown until logs, artifacts, guard state or live process evidence establish a result.
 - Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
   paths, allocations and cleanup. Fix newly exposed in-scope defects instead of merely reporting them.
 - Align public docs in the same change: `README.md` and onboarding, then owning contract/status
@@ -171,16 +171,15 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   trailer and no "Generated with Claude Code" footer. `tools/check_commit_attribution.py` enforces
   this in the `commit-msg` hook and in CI (the `repository_policy` proof-plan family).
 - Dependencies, toolchains, Actions: newest release >=7 days old; advisory fixes by dated exemption.
-- Never use destructive Git operations or broad filesystem cleanup without explicit authorization
-  and verified targets.
+- Destructive Git operations and broad filesystem cleanup require explicit authorization and verified targets.
 - Before retiring old WIP, make at least two passes through its source, history and current owners,
   including an independent pass when available. Harvest and land useful changes through current
   authorities; identify what is already satisfied or intentionally superseded. Preserve unresolved
   signal with an indexed recovery path and explicit owner or question. An archive alone is not
   reconciliation, and age or a cache-like name is not evidence that source can be deleted.
-- Molt process cleanup may stop only a live-proved Molt-owned child or worker, never Codex, Claude,
-  app/renderer/server helpers, MCP/plugin processes, shell hosts, Git pollers, ancestors or
-  ambiguous host control-plane processes; keep evidence and repair custody if identity is unclear.
+- Molt process cleanup may stop only a live-proved Molt-owned child or worker; test observers use `tests/process_guard_common.py`.
+  Never stop Codex, Claude, app/renderer/server helpers, MCP/plugin processes, shell hosts,
+  Git pollers, ancestors or ambiguous host control-plane processes; preserve evidence and repair unclear custody.
 - Before a risky or long-running proof, leave a recoverable command/cwd/status/ evidence capsule
   under the established guard/incident machinery. Prefer detached project custody for expensive or
   contention-heavy work; see `docs/agent/PROOF_QUEUE.md` when that machinery is actually needed.

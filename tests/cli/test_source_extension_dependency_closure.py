@@ -33,7 +33,10 @@ def test_depfile_parser_preserves_escaped_paths_and_continuations(
     )
 
     assert error is None
-    assert paths == (source.resolve(), header.resolve())
+    assert paths == (
+        dependency_files.DependencyPath(source.absolute(), source.resolve()),
+        dependency_files.DependencyPath(header.absolute(), header.resolve()),
+    )
 
 
 def test_object_closure_identity_includes_checksummed_headers(
@@ -464,3 +467,21 @@ def test_wasm_binding_projection_reaches_eager_object_closure(
     )
     assert errors == []
     assert closure is not None and closure.objects == tuple(facts)
+
+
+def test_depfile_retains_lexical_aliases_without_duplicating_content_identity(tmp_path):
+    target = tmp_path / "content.h"
+    target.write_text("#define VALUE 7\n", encoding="utf-8")
+    alias = tmp_path / "selected.h"
+    alias.symlink_to(target.name)
+    report = tmp_path / "aliases.d"
+    report.write_text("object: selected.h content.h selected.h\n", encoding="utf-8")
+    paths, error = dependency_files.parse_make_depfile(
+        report, cwd=tmp_path, producer="compiler"
+    )
+    assert error is None
+    assert paths == (
+        dependency_files.DependencyPath(alias, target),
+        dependency_files.DependencyPath(target, target),
+    )
+    assert tuple(dict.fromkeys(row.resolved for row in paths)) == (target,)

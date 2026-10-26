@@ -16,7 +16,7 @@ default = ["tls"]
 tls = ["dep:rustls", "dep:webpki-roots"]
 
 [dependencies]
-molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi" }
+molt-runtime-capi = { path = "../molt-runtime-capi" }
 # Core runtime types used by the HTTP/logging implementations
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }

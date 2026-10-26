@@ -559,3 +559,36 @@ def test_status_summary_includes_startup_line() -> None:
     assert "Startup/size: native hello-world 65536 (0.06 MB)" in summary
     assert "warm 6.0ms / cold(first-sighting) 180.0ms" in summary
     assert "budget OK" in summary
+
+
+def test_profile_report_keeps_requested_and_observed_coordinates_distinct():
+    from tools.bench_report import _format_run_settings
+
+    selection = {
+        "backend": "native",
+        "target": "native",
+        "guest_profile": "release",
+        "runtime_profile": "release-output",
+        "compiler_profile": "release",
+    }
+    payload = {
+        "provenance": {"requested_profile": "release"},
+        "benchmarks": {
+            "sample": {
+                "build_observation": {
+                    "kind": "molt-build-observation-v1",
+                    "selected_profiles": selection,
+                }
+            }
+        },
+    }
+    text = _format_run_settings(payload)
+    assert "requested_profile=release" in text
+    assert "runtime=release-output" in text and "compiler=release" in text
+    assert "release-fast" not in text
+    assert "observed_profiles=unbound" in _format_run_settings(
+        {
+            "provenance": {"profile": "release-fast"},
+            "benchmarks": {"old": {"molt_ok": True}},
+        }
+    )

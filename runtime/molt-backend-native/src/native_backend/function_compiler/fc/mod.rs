@@ -108,7 +108,6 @@ pub(in crate::native_backend::function_compiler) mod scalar_builtins;
 pub(in crate::native_backend::function_compiler) mod sequence_ops;
 pub(in crate::native_backend::function_compiler) mod set_ops;
 pub(in crate::native_backend::function_compiler) mod slice_ops;
-pub(in crate::native_backend::function_compiler) mod statistics;
 pub(in crate::native_backend::function_compiler) mod subscript_get;
 pub(in crate::native_backend::function_compiler) mod subscript_store;
 pub(in crate::native_backend::function_compiler) mod text_transform;

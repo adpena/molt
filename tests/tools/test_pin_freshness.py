@@ -1336,6 +1336,36 @@ def test_every_action_and_package_manager_is_a_pin() -> None:
     }
 
 
+def test_virtualenv_persistent_floor_excludes_advisory_affected_releases() -> None:
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    # GHSA-cx6f-vjhg-g3cc affects 21.14.9 through 21.14.12. The temporary
+    # exact age pin must not hide a persistent floor that permits its return.
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    requirements = []
+    for raw in project["tool"]["uv"]["constraint-dependencies"]:
+        requirement = Requirement(raw)
+        if requirement.name == "virtualenv":
+            requirements.append(requirement)
+    floors = [
+        requirement.specifier
+        for requirement in requirements
+        if not any(item.operator == "==" for item in requirement.specifier)
+    ]
+    assert floors
+    for affected in ("21.14.9", "21.14.10", "21.14.11", "21.14.12"):
+        assert any(affected not in floor for floor in floors)
+    locked = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    versions = [
+        row["version"] for row in locked["package"] if row["name"] == "virtualenv"
+    ]
+    assert versions
+    for version in versions:
+        assert Version(version) >= Version("21.14.13")
+        assert all(version in requirement.specifier for requirement in requirements)
+
+
 # The lock resolvers: uv's and npm's own release-age settings and exemptions.
 
 UV_RULE = (

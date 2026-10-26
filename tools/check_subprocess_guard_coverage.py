@@ -4,8 +4,8 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import sys
@@ -228,17 +228,17 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "native query-negative control terminates only its own known sleeping child before bounded wait",
     ),
     AllowedRawSubprocessUse(
-        "tests/cli/test_source_record_store.py",
-        "_close_fork_observer",
+        "tests/process_guard_common.py",
+        "close_owned_multiprocessing_child",
         "process.terminate",
-        "bounded SQLite/fork metadata oracle must inherit the parent's exact "
-        "handle and lock; cleanup targets only its created child after a finite pipe wait",
+        "direct multiprocessing observers own their exact child handle; "
+        "shared bounded cleanup targets only that caller-created child",
     ),
     AllowedRawSubprocessUse(
-        "tests/cli/test_source_record_store.py",
-        "_close_fork_observer",
+        "tests/process_guard_common.py",
+        "close_owned_multiprocessing_child",
         "process.kill",
-        "escalates only that same unreaped fork observer after a bounded terminate/join",
+        "escalates only that same unreaped multiprocessing observer after a bounded terminate/join",
     ),
     AllowedRawSubprocessUse(
         "tests/test_molt_queue_cli.py",
@@ -945,6 +945,24 @@ class _SubprocessVisitor(ast.NodeVisitor):
         self.stack: list[str] = []
         self.constant_scopes: list[dict[str, object]] = [{}]
         self.calls: list[RawSubprocessCall] = []
+        # Handlers are stable during one scan; analysis state remains mutable.
+        # Bound methods retain this visitor, so scan_observation clears these
+        # references in its finally path, including when a handler raises.
+        self._visit_handlers: dict[type[ast.AST], Callable[[ast.AST], None]] = {}
+
+    def visit(self, node: ast.AST) -> None:
+        node_type = type(node)
+        handler = self._visit_handlers.get(node_type)
+        if handler is None:
+            handler = self._resolve_visit_handler(node_type)
+            self._visit_handlers[node_type] = handler
+        return handler(node)
+
+    def _resolve_visit_handler(
+        self, node_type: type[ast.AST]
+    ) -> Callable[[ast.AST], None]:
+        # Retain NodeVisitor's inherited-method and unknown-node behavior.
+        return getattr(self, "visit_" + node_type.__name__, self.generic_visit)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -1244,15 +1262,92 @@ def _iter_text_files(paths: Sequence[Path], *, root: Path) -> Iterable[Path]:
             yield candidate
 
 
+@dataclass(slots=True)
+class PythonSourceObservation:
+    """One file's bytes and lazy parses, owned by one streaming audit step.
+
+    This is not a cross-file or persistent cache. Different BOM/filename
+    semantics remain distinct parses; warning-free visitors share one AST.
+    Compiler diagnostics belong to ast.parse under the caller's warning policy,
+    so warning-bearing inputs are reparsed rather than replaying warnings.
+    """
+
+    data: bytes
+    relative_path: str
+    _text: str | None = field(default=None, init=False, repr=False)
+    _parses: dict[
+        tuple[str, bool],
+        tuple[ast.Module | None, SyntaxError | None, tuple[type[Warning], ...]],
+    ] = field(default_factory=dict, init=False, repr=False)
+
+    @property
+    def text(self) -> str:
+        if self._text is None:
+            self._text = decoded_text(self.data, encoding="utf-8")
+        return self._text
+
+    def tree(
+        self,
+        *,
+        filename: str | None = None,
+        strip_bom: bool = False,
+        emit_syntax_warnings: bool = True,
+    ) -> ast.Module:
+        name = self.relative_path if filename is None else filename
+        has_bom = strip_bom and self.text.startswith("\ufeff")
+        text = self.text[1:] if has_bom else self.text
+        key = (name, has_bom)
+        if key not in self._parses:
+            tree = None
+            error = None
+            # Discover whether sharing is safe without interpreting warning
+            # filters. A warning-free parse is independent of warning policy.
+            with warnings.catch_warnings(record=True) as observed:
+                warnings.simplefilter("always")
+                try:
+                    tree = ast.parse(text, filename=name)
+                except SyntaxError as exc:
+                    error = exc
+            self._parses[key] = (
+                tree,
+                error,
+                tuple(warning.category for warning in observed),
+            )
+        tree, error, categories = self._parses[key]
+        if categories:
+            if emit_syntax_warnings:
+                # CPython can promote a compiler warning to SyntaxError under
+                # an error filter. Only the real parser owns that conversion.
+                return ast.parse(text, filename=name)
+            if any(not issubclass(category, SyntaxWarning) for category in categories):
+                # Raw scanning suppresses SyntaxWarning only. Preserve the
+                # ambient policy for any other compiler warning category.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    return ast.parse(text, filename=name)
+        if error is not None:
+            raise error
+        assert tree is not None
+        return tree
+
+
+def scan_observation(
+    source: PythonSourceObservation, rel: str
+) -> tuple[RawSubprocessCall, ...]:
+    """Apply the raw-call oracle to an already observed source file."""
+    tree = source.tree(filename=rel, strip_bom=True, emit_syntax_warnings=False)
+    text = source.text.removeprefix("\ufeff")
+    visitor = _SubprocessVisitor(path=rel, source_text=text)
+    try:
+        visitor.visit(tree)
+        return tuple(visitor.calls)
+    finally:
+        visitor._visit_handlers.clear()
+
+
 def scan_source(data: bytes, rel: str) -> tuple[RawSubprocessCall, ...]:
     """Raw process calls in one source: a pure function of its bytes and path."""
-    source_text = decoded_text(data, encoding="utf-8-sig")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", SyntaxWarning)
-        tree = ast.parse(source_text, filename=rel)
-    visitor = _SubprocessVisitor(path=rel, source_text=source_text)
-    visitor.visit(tree)
-    return tuple(visitor.calls)
+    return scan_observation(PythonSourceObservation(data, rel), rel)
 
 
 def _scan_file(
@@ -1319,15 +1414,14 @@ def _scoped_allowlist(
     return tuple(selected)
 
 
-def audit_paths(
-    paths: Sequence[Path] | None = None,
+def _audit_scope(
+    paths: Sequence[Path] | None,
     *,
-    root: Path = REPO_ROOT,
+    root: Path,
     allowlist: Sequence[AllowedRawSubprocessUse] | None = None,
     text_paths: Sequence[Path] | None = None,
-    records: ScanRecords | None = None,
-) -> SubprocessGuardAudit:
-    """Audit the selected inventory; explicit allowlists are checked in full."""
+) -> tuple[Sequence[Path], Sequence[Path], Sequence[AllowedRawSubprocessUse]]:
+    """Resolve one requested inventory and its exact allowance scope."""
     if paths is None:
         paths = default_targets(root)
     default_scope = tuple(paths) == default_targets(root)
@@ -1339,6 +1433,21 @@ def audit_paths(
             if default_scope
             else _scoped_allowlist(paths, text_paths, root=root)
         )
+    return paths, text_paths, allowlist
+
+
+def audit_paths(
+    paths: Sequence[Path] | None = None,
+    *,
+    root: Path = REPO_ROOT,
+    allowlist: Sequence[AllowedRawSubprocessUse] | None = None,
+    text_paths: Sequence[Path] | None = None,
+    records: ScanRecords | None = None,
+) -> SubprocessGuardAudit:
+    """Audit the selected inventory; explicit allowlists are checked in full."""
+    paths, text_paths, allowlist = _audit_scope(
+        paths, root=root, allowlist=allowlist, text_paths=text_paths
+    )
     scanned_files = 0
     raw_calls: list[RawSubprocessCall] = []
     for path in _iter_python_files(paths, root=root):
@@ -1348,6 +1457,16 @@ def audit_paths(
         scanned_files += 1
         raw_calls.extend(_scan_text_file(path, root=root))
 
+    return audit_calls(raw_calls, scanned_files=scanned_files, allowlist=allowlist)
+
+
+def audit_calls(
+    raw_calls: Sequence[RawSubprocessCall],
+    *,
+    scanned_files: int,
+    allowlist: Sequence[AllowedRawSubprocessUse],
+) -> SubprocessGuardAudit:
+    """Apply the sole allowance/count policy to freshly observed calls."""
     allowed_by_key: Mapping[tuple[str, str, str], AllowedRawSubprocessUse] = {
         entry.key: entry for entry in allowlist
     }

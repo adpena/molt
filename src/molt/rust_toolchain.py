@@ -566,6 +566,22 @@ class RustFlagSpan:
         )
 
 
+def rust_remap_path_flags(mappings: Sequence[tuple[Path, str]]) -> tuple[str, ...]:
+    """Encode ordered rustc prefix mappings without shell or path rewriting.
+
+    rustc splits at the last '=' and the last matching mapping wins. The
+    default scope includes both diagnostics and object metadata. Keep these
+    tokens intact through Cargo's encoded flag transport, including spaces.
+    """
+    for source, destination in mappings:
+        if not os.fspath(source) or "=" in destination or "\0" in destination:
+            raise ValueError("invalid Rust path remapping")
+    return tuple(
+        f"--remap-path-prefix={source}={destination}"
+        for source, destination in mappings
+    )
+
+
 def canonical_rust_codegen_option(value: str) -> str:
     """rustc accepts underscores and hyphens in keys, not rewritten values."""
     key, separator, operand = value.partition("=")

@@ -1057,6 +1057,7 @@ def run_guarded(
         if scratch_lease is None or scratch_finalized:
             return scratch_cleanup_error
         scratch_finalized = True
+        timings = _temporary_artifacts.ScratchFinalizationTimings()
         finalize_started = time.perf_counter()
         try:
             outcome = _temporary_artifacts.finish_guard_scratch(
@@ -1064,6 +1065,7 @@ def run_guarded(
                 closed=closed,
                 success=success,
                 evidence=evidence,
+                timings=timings,
             )
             temporary_artifacts = {
                 **dict(outcome),
@@ -1089,7 +1091,10 @@ def run_guarded(
             # finish_guard_scratch owns the normal release. Keep this idempotent
             # fallback for every partial/exceptional terminalization path.
             try:
-                scratch_lease.release()
+                with timings.measure(
+                    _temporary_artifacts.ScratchFinalizationPhase.LEASE_RELEASE
+                ):
+                    scratch_lease.release()
             except BaseException as exc:
                 release_error = f"{type(exc).__name__}: {exc}"
                 scratch_cleanup_error = (
@@ -1104,6 +1109,7 @@ def run_guarded(
                     "closure": dict(evidence),
                 }
         assert temporary_artifacts is not None
+        temporary_artifacts["finalize_phase_elapsed_s"] = timings.json_payload()
         cast(dict[str, object], temporary_artifacts)["finalize_elapsed_s"] = max(
             0.0, time.perf_counter() - finalize_started
         )
@@ -1129,6 +1135,35 @@ def run_guarded(
         # Register before child birth: an unknown terminal result or raised
         # cleanup failure may outlive this frame and every result reference.
         atexit.register(state_use.close)
+        # Selection is pure: RunContext may publish a new scratch root without
+        # creating it. Native tools use these paths directly, unlike Python's
+        # tempfile fallback. Materialize the actual selections before birth;
+        # they remain caller-owned, outside this guard's scratch reclamation.
+        # A pinned startup worker restores logical_cwd before running tools,
+        # so relative selections follow that consumer directory, as above.
+        working: Path | None = None
+        temporary_roots: dict[Path, str] = {}
+        for name in ("TMPDIR", "TMP", "TEMP"):
+            raw = child_env.get(name)
+            if raw:
+                path = Path(raw)
+                if not path.is_absolute():
+                    if working is None:
+                        selected_cwd = cwd if logical_cwd is None else logical_cwd
+                        working = (
+                            Path.cwd() if selected_cwd is None else Path(selected_cwd)
+                        )
+                        if not working.is_absolute():
+                            working = Path.cwd() / working
+                    path = working / path
+                temporary_roots.setdefault(path, name)
+        for path, name in temporary_roots.items():
+            try:
+                if not path.is_dir():
+                    path.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                error.add_note(f"preparing selected child {name} directory: {path}")
+                raise
         scratch_lease = _temporary_artifacts.acquire_guard_scratch(ROOT, child_env)
         inherited_scratch = child_env.get(_temporary_artifacts.SCRATCH_ENV)
         if (
@@ -3289,11 +3324,14 @@ def _worker_env(
     )
 
 
-def _worker_argv(args: argparse.Namespace) -> list[str]:
+def _worker_argv(
+    args: argparse.Namespace, *, verifier_bytecode_prefix: Path
+) -> list[str]:
     return _cli_contract.worker_argv(
         args,
         python_executable=sys.executable,
         script_path=Path(__file__).resolve(),
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
     )
 
 
@@ -3305,6 +3343,7 @@ def main(
     environ: Mapping[str, str] | None = None,
 ) -> int:
     current_env = os.environ if environ is None else environ
+    maintenance_cwd = Path.cwd()
     args = _parser().parse_args(argv)
     command = list(args.command)
     if command and command[0] == "--":
@@ -3319,6 +3358,11 @@ def main(
             print("memory_guard: command is required", file=sys.stderr)
             return 2
         command = internal_command
+    from molt.dx import checkout_state_maintenance_environment
+
+    selected = checkout_state_maintenance_environment(ROOT, current_env)
+    if selected is not None:
+        current_env = selected
     current_env = test_custody_launch_env(command, environ=current_env)
     try:
         budget = adaptive_memory_budget(environ=current_env)
@@ -3370,7 +3414,18 @@ def main(
         print(f"memory_guard: {exc}", file=sys.stderr)
         return 2
     if hide_command_argv and current_env.get(INTERNAL_WORKER_ENV) != "1":
-        worker_argv = _worker_argv(args)
+        from molt.memory_guard_paths import memory_guard_state_root
+
+        # POSIX exec replaces this frame; retained control custody, rather than
+        # a process-local temporary context, owns the worker's startup namespace.
+        startup_root = memory_guard_state_root(ROOT, current_env)
+        startup_root.mkdir(parents=True, exist_ok=True)
+        verifier_bytecode_prefix = _temporary_artifacts.new_temporary_directory(
+            startup_root, prefix="worker-bytecode-"
+        )
+        worker_argv = _worker_argv(
+            args, verifier_bytecode_prefix=verifier_bytecode_prefix
+        )
         if _process_model.is_windows_process_model():
             completed = subprocess.run(
                 worker_argv,
@@ -3533,6 +3588,15 @@ def main(
     )
     if summary_failed:
         return 2 if result.returncode == 0 else result.returncode
+    # A worker with startup custody belongs to a caller that still verifies
+    # source and publishes its own terminal receipt. It collects at that outer
+    # boundary; this standalone facade has already published its guard result.
+    if not current_env.get("MOLT_MEMORY_GUARD_STARTUP_JSON") and not current_env.get(
+        "MOLT_PROOF_QUEUE"
+    ):
+        from molt.dx import collect_checkout_state_after_result
+
+        collect_checkout_state_after_result(current_env, cwd=maintenance_cwd)
     return result.returncode
 
 

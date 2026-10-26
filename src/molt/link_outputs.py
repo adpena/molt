@@ -39,6 +39,7 @@ def wasm_link_output_paths(
     inputs: Iterable[Path] = (),
     external_selection: bool = False,
     optimize: bool = False,
+    capture_inputs: bool = False,
 ) -> dict[str, Path]:
     outputs = {"linked": linked}
     if optimize:
@@ -55,5 +56,16 @@ def wasm_link_output_paths(
         )
         if optimize:
             outputs["app_optimizer"] = wasm_optimizer_attestation_path(outputs["app"])
+    if capture_inputs:
+        outputs["input_observation"] = linked.with_name(
+            linked.name + ".molt-link-inputs.json"
+        )
+        outputs["linked_input_reproducer"] = linked.with_name(
+            linked.name + ".molt-link-inputs.tar"
+        )
+        if split_output_dir is not None:
+            outputs["app_input_reproducer"] = (
+                split_output_dir / "app.wasm.molt-link-inputs.tar"
+            )
     validate_link_output_paths(outputs, inputs=inputs)
     return outputs

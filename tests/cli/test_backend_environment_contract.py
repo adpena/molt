@@ -134,16 +134,20 @@ def test_compilation_diagnostics_bypass_backend_candidates_and_synced_outputs(
         )
 
     if synced_output:
-        assert admit() == (True, tier)
+        hit = admit()
+        assert hit is not None and hit.tier == tier
+        assert hit.emission_origin is None
         assert output.read_bytes() == wasm_bytes
         candidate.unlink()
     for value in ("", "1"):
         monkeypatch.setenv("MOLT_DUMP_IR", value)
-        assert admit() == (False, None)
+        assert admit() is None
         assert output.exists() == synced_output
     monkeypatch.delenv("MOLT_DUMP_IR")
     monkeypatch.setenv("MOLT_BACKEND_TIMING", "1")
-    assert admit() == (True, tier)
+    hit = admit()
+    assert hit is not None and hit.tier == tier
+    assert hit.emission_origin is None
     assert output.read_bytes() == wasm_bytes
 
 
@@ -190,6 +194,7 @@ def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, 
 
     payload, error = _backend_daemon_compile_request_bytes(
         ir_path=None if probe else Path("backend-ir.msgpack"),
+        probe_function_digests="" if probe else None,
         backend_output=tmp_path / "app.a",
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="bin"

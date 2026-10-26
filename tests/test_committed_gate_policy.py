@@ -8,11 +8,13 @@ reads changes (HF-457); the driver's own tests run only when the driver does.
 from __future__ import annotations
 
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import tomllib
 
 import pytest
 
 from molt.process_environment import ProcessEnvironment
+from molt import host_capacity
 from tools.molt_dev_gates import display
 from tools.molt_dev_policy import GateConfig
 
@@ -120,11 +122,27 @@ def test_structural_audit_producers_select_all_parser_consumers(source):
     }
 
 
-def test_unicode_width_source_keeps_its_admitted_runtime_replay_control():
+@pytest.mark.parametrize(
+    "source",
+    [
+        "tools/build_control_path.py",
+        "tools/harness_memory_guard.py",
+        "src/molt/build_state_layout.py",
+        "src/molt/memory_guard_paths.py",
+        "src/molt/dx.py",
+        "tests/test_build_state_layout.py",
+    ],
+)
+def test_build_control_path_producers_select_their_consumer_contract(source):
+    cfg = GateConfig.load(COMMITTED_GATES)
+    assert "tests/test_build_state_layout.py" in _selected_pytest_targets(cfg, [source])
+
+
+def test_unicode_source_facts_select_their_complete_pinned_source_owner():
     cfg = GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, ["tools/gen_unicode_width.py"]) == {
         "tests/tools/test_import_file.py",
-        "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
+        "tests/test_runtime_build_python.py",
     }
 
 
@@ -161,7 +179,6 @@ def test_shared_scan_record_producers_select_all_consumer_owners(source):
         "tests/test_structural_audit.py",
         "tests/test_generator_manifest.py",
         "tests/test_gen_stringprep_tables.py",
-        "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
     }
 
 
@@ -191,7 +208,7 @@ def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(source):
     }
 
 
-def test_landing_pytest_inherits_actual_larger_owning_units():
+def test_landing_pytest_preserves_each_actual_owning_envelope():
     cfg = GateConfig.load(COMMITTED_GATES)
     gates, _rules = cfg.select(
         [
@@ -207,18 +224,48 @@ def test_landing_pytest_inherits_actual_larger_owning_units():
     )
     assert "--molt-worker-memory-gb=6.25" in import_run
     assert import_run[import_run.index("-k") + 1].startswith("backend_codegen or ")
-    merged = next(
+    light = next(
         gate
         for gate in gates
         if isinstance(gate, tuple) and "tests/test_table_drift_gate.py" in gate
     )
-    # Backend preparation consumes admitted frontend digest seeds, so its joined
-    # assembly proof includes CLI controls and inherits that cell's declared unit.
-    # Compiled heavy-regression cells remain separate below.
-    assert "--molt-worker-memory-gb=6.25" in merged
-    assert "tests/test_resource_enforcement_e2e.py" not in merged
-    assert "tests/test_wasm_runtime_heavy_regressions.py" not in merged
-    assert "-k" not in merged and "-m" not in merged[3:]
+    # Equal-tool targets conservatively share their largest requirement.
+    # Read declared units independently; do not ask the selection's own index.
+    declarations = tomllib.loads(COMMITTED_GATES.read_text(encoding="utf-8"))
+    covering: dict[str, float] = {}
+    descendants: dict[str, float] = {}
+    for row in declarations["command"]:
+        if "pytest_worker_memory_gb" not in row:
+            continue
+        unit = float(row["pytest_worker_memory_gb"])
+        for target in row.get("pytest", ()):
+            path, node, _ = target.partition("::")
+            descendants[path] = max(descendants.get(path, 0.0), unit)
+            if not node:
+                covering[path] = max(covering.get(path, 0.0), unit)
+    envelopes = []
+    for target in (arg for arg in light if arg.startswith("tests/")):
+        # This committed consumer cohort requests whole files. A named-node
+        # migration needs a new independent envelope oracle at that boundary.
+        assert "::" not in target and target.endswith(".py")
+        path = PurePosixPath(target)
+        inherited = [
+            covering[str(parent)]
+            for parent in (path, *path.parents)
+            if str(parent) in covering
+        ]
+        envelopes.append(
+            max(
+                max(inherited)
+                if inherited
+                else host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB,
+                descendants.get(target, 0.0),
+            )
+        )
+    assert f"--molt-worker-memory-gb={max(envelopes)}" in light
+    assert "tests/test_resource_enforcement_e2e.py" not in light
+    assert "tests/test_wasm_runtime_heavy_regressions.py" not in light
+    assert "-k" not in light and "-m" not in light[3:]
 
 
 def _gate_args(gate):
@@ -291,8 +338,8 @@ def test_proof_policy_edits_select_receivers_without_package_production(path):
         "src/molt/cli/source_extension_set_registry.py",
         "src/molt/cli/source_extension_invocation.py",
         "src/molt/cli/source_extension_producer.py",
-        "src/molt/cli/source_build_environment.py",
-        "src/molt/cli/source_build_environment_schema.py",
+        "src/molt/source_build_environment.py",
+        "src/molt/source_build_environment_schema.py",
         "src/molt/source_extension_link_inputs.py",
         "tests/cli/test_source_build_environment_probe.py",
         "tests/tools/test_scientific_stack_versions.py",
@@ -572,8 +619,13 @@ def test_committed_gate_manifest_selects_codec_table_registry():
     ]
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
-    assert "tests/test_gen_codecs.py" in merged
+    assert (
+        sum(
+            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
+            for gate in gates
+        )
+        == 1
+    )
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     gates = [gate.command for gate in gates]
@@ -608,8 +660,25 @@ def test_committed_gate_manifest_selects_codec_table_registry():
     assert "codec-tables" in {r.name for r in matched}
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    merged = next(gate for gate in gates if isinstance(gate, tuple))
-    assert "tests/test_gen_codecs.py" in merged
+    assert (
+        sum(
+            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
+            for gate in gates
+        )
+        == 1
+    )
+
+    gates, matched = cfg.select(["config/codec_aliases.toml"])
+    gates = [gate.command for gate in gates]
+    assert "codec-tables" in {r.name for r in matched}
+    assert gates.count("python tools/generators.py check") == 1
+    assert (
+        sum(
+            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
+            for gate in gates
+        )
+        == 1
+    )
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet():
@@ -670,7 +739,12 @@ def test_transitive_cargo_metadata_availability_adds_no_build_requirement():
     gates, _ = cfg.select(["docs/agent/V1_HANDOFF_FINDINGS.md"])
     # This is the real ledger-only policy, including its generator dependency.
     assert ("python", "git", "generators") in [gate.toolchains for gate in gates]
-    environments = {gate.toolchains: ProcessEnvironment({}) for gate in gates}
+    from tools.molt_dev_policy import GateEnvironment
+
+    environments = {
+        gate.toolchains: GateEnvironment(ProcessEnvironment({}), None, False)
+        for gate in gates
+    }
     assert cfg.cargo_outputs(environments) == {}
 
 

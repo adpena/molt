@@ -12,6 +12,7 @@ import sysconfig
 import re
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -104,15 +105,47 @@ FETCHED_ENTRIES = (
 CPYTHON_URL = "https://github.com/python/cpython.git"
 
 
+def _release_header(
+    python: str, *, micro: int = 1, level: str = "FINAL", serial: int = 0
+) -> str:
+    major, minor = python.split(".")
+    return (
+        "#define PY_RELEASE_LEVEL_ALPHA 0xA\n"
+        "#define PY_RELEASE_LEVEL_BETA 0xB\n"
+        "#define PY_RELEASE_LEVEL_GAMMA 0xC\n"
+        "#define PY_RELEASE_LEVEL_FINAL 0xF\n"
+        f"#define PY_MAJOR_VERSION {major}\n"
+        f"#define PY_MINOR_VERSION {minor}\n"
+        f"#define PY_MICRO_VERSION {micro}\n"
+        f"#define PY_RELEASE_LEVEL PY_RELEASE_LEVEL_{level}\n"
+        f"#define PY_RELEASE_SERIAL {serial}\n"
+    )
+
+
 def _evidence_inputs(python: str) -> tuple[gen.SourceInput, ...]:
-    return tuple(
-        gen.SourceInput(
-            role,
-            template.format(python=python),
-            gen._git_blob_id(f"{role} fixture\n".encode()),
-            f"{role} fixture\n",
+    inputs = []
+    for role, template in gen.EVIDENCE_PATHS:
+        text = _release_header(python) if role == "release" else f"{role} fixture\n"
+        inputs.append(
+            gen.SourceInput(
+                role,
+                template.format(python=python),
+                gen._git_blob_id(text.encode()),
+                text,
+            )
         )
-        for role, template in gen.EVIDENCE_PATHS
+    return tuple(inputs)
+
+
+def _with_release(snapshot: gen.SourceSnapshot, text: str) -> gen.SourceSnapshot:
+    return replace(
+        snapshot,
+        inputs=tuple(
+            replace(item, text=text, git_object=gen._git_blob_id(text.encode()))
+            if item.role == "release"
+            else item
+            for item in snapshot.inputs
+        ),
     )
 
 
@@ -162,6 +195,9 @@ def fixture_authority(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(gen, "SNAPSHOT_PATH", snapshot)
     monkeypatch.setattr(gen, "DEFAULT_PYTHONS", ("3.12",))
     monkeypatch.setattr(gen, "OUT_PATH", tmp_path / "stdlib_module_union.py")
+    monkeypatch.setattr(
+        gen, "OUT_RELEASE_PATH", tmp_path / "_python_release_generated.py"
+    )
     return tmp_path
 
 
@@ -279,7 +315,7 @@ def test_committed_outputs_render_offline(monkeypatch, capsys) -> None:
     monkeypatch.setattr(gen, "harness_memory_guard", NoSubprocess())
 
     assert gen.main(["--check"]) == 0
-    assert "4 generated output(s) current" in capsys.readouterr().out
+    assert "5 generated output(s) current" in capsys.readouterr().out
 
 
 def test_committed_snapshot_covers_every_supported_pin() -> None:
@@ -371,11 +407,26 @@ def test_a_snapshot_that_disagrees_with_the_pins_fails_closed(
 # --- Refresh ---------------------------------------------------------------
 
 
+@pytest.mark.parametrize("changed", ["lib", "evidence"])
 def test_refresh_fails_closed_when_content_at_a_pinned_revision_changes(
     fixture_authority: Path,
+    changed: str,
 ) -> None:
+    prior = _snapshot()
+    prior = replace(prior, inputs=prior.inputs[:-1])
+    gen.SNAPSHOT_PATH.write_text(gen.render_snapshot({"3.12": prior}), encoding="utf-8")
     before = gen.SNAPSHOT_PATH.read_bytes()
     tampered = _snapshot(entries=("abc.py", "abc_fake.py"))
+    if changed == "evidence":
+        full = _snapshot()
+        original = full.inputs[0]
+        changed_text = "changed source at the same revision\n"
+        altered = replace(
+            original,
+            text=changed_text,
+            git_object=gen._git_blob_id(changed_text.encode()),
+        )
+        tampered = replace(full, inputs=(altered, *full.inputs[1:]))
 
     with pytest.raises(RuntimeError, match="does not match the receipt") as raised:
         gen.refresh_sources(fetch=lambda pin: tampered)
@@ -391,6 +442,20 @@ def test_refresh_replaces_a_moved_pin_and_keeps_an_unchanged_one(
     assert gen.refresh_sources(fetch=lambda pin: _snapshot()) == 0
     assert gen.SNAPSHOT_PATH.read_bytes() == before
     assert "current" in capsys.readouterr().out
+
+    # The previous source cohort predates the newly declared Unicode roles.
+    complete = _snapshot()
+    prior = replace(
+        complete,
+        inputs=tuple(
+            item for item in complete.inputs if not item.role.startswith("unicode_")
+        ),
+    )
+    gen.SNAPSHOT_PATH.write_text(gen.render_snapshot({"3.12": prior}), encoding="utf-8")
+    with pytest.raises(ValueError, match="complete source evidence"):
+        gen.load_snapshot(gen.SNAPSHOT_PATH)
+    assert gen.refresh_sources(fetch=lambda pin: complete) == 0
+    assert gen.load_snapshot(gen.SNAPSHOT_PATH) == {"3.12": complete}
 
     _write_pins(gen.PINS_PATH, {"3.12": ("v3.12.2", "d" * 40)})
     moved = _snapshot(tag="v3.12.2", revision="d" * 40, entries=("abc.py",))
@@ -420,7 +485,7 @@ def test_git_failure_fails_closed_through_the_memory_guard(
 
     monkeypatch.setattr(
         gen.harness_memory_guard,
-        "guarded_completed_process",
+        "guarded_completed_process_to_tempfiles",
         fake_guarded_completed_process,
     )
 
@@ -429,8 +494,47 @@ def test_git_failure_fails_closed_through_the_memory_guard(
 
     assert captured["cmd"] == ["git", "fetch", "origin"]
     assert captured["prefix"] == "MOLT_GENERATOR"
-    assert captured["text"] is False
+    assert captured["input"] is None
     assert captured["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing-revision", "missing-path", "type", "oid", "size", "extra", "truncated"],
+)
+def test_source_batch_metadata_refuses_incomplete_or_misbound_objects(
+    monkeypatch, tmp_path, corruption
+):
+    first = b"a" * 40 + b" blob 1\n"
+    second = b"b" * 40 + b" tree 12\n"
+    data = first + second
+    if corruption == "missing-revision":
+        data = b"HEAD:source missing\n" + second
+    elif corruption == "missing-path":
+        data = b"c" * 40 + b":other missing\n" + second
+    elif corruption == "type":
+        data = second + first
+    elif corruption == "oid":
+        data = data[1:]
+    elif corruption == "size":
+        data = data.replace(b" blob 1", b" blob -1")
+    elif corruption == "extra":
+        data += first
+    else:
+        data = data[:-1]
+    calls = []
+
+    def git(args, *, cwd, input=None):
+        calls.append(args)
+        assert args[-1] == "--batch-check", "invalid metadata reached blob read"
+        return data
+
+    monkeypatch.setattr(gen, "_git", git)
+    with pytest.raises(ValueError, match="Git source batch metadata"):
+        gen._git_source_objects(
+            tmp_path, "c" * 40, [("source", "blob"), ("Lib", "tree")]
+        )
+    assert len(calls) == 1
 
 
 def _fixture_remote(
@@ -478,13 +582,50 @@ def _fixture_remote(
     return root, git("rev-parse", "HEAD"), git("rev-parse", "HEAD:Lib")
 
 
-def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "path, kind", [("Grammar/python.gram", "blob"), ("Missing", "tree")]
+)
+def test_source_batch_reports_an_exact_missing_pinned_path(
+    tmp_path: Path, monkeypatch, path: str, kind: Literal["blob", "tree"]
+) -> None:
+    remote, revision, _ = _fixture_remote(tmp_path / "cpython", include_grammar=False)
+    git = gen._git
+    replies = []
+
+    def observe_git(args, *, cwd, **kwargs):
+        assert args[-1] == "--batch-check", "missing source reached blob read"
+        reply = git(args, cwd=cwd, **kwargs)
+        replies.append(reply)
+        return reply
+
+    monkeypatch.setattr(gen, "_git", observe_git)
+    with pytest.raises(RuntimeError, match=re.escape(f"{revision} is missing {path}")):
+        gen._git_source_objects(remote, revision, [(path, kind)])
+    # Actual Git output, not a fixture spelling or a parser-derived oracle.
+    assert replies == [f"{revision}:{path} missing\n".encode("utf-8")]
+
+
+def test_fetch_reads_a_pinned_tag_without_blobs(
+    tmp_path: Path, monkeypatch, record_property
+) -> None:
     remote, revision, lib_object = _fixture_remote(tmp_path / "cpython")
     pin = gen.CPythonSource(
         python="3.12", revision=revision, tag="v3.12.1", git_url=remote.as_uri()
     )
 
+    calls = []
+    git = gen._git
+
+    def observe_git(args, *, cwd, **kwargs):
+        output = git(args, cwd=cwd, **kwargs)
+        arguments = list(args[2:]) if args[:1] == ["-C"] else list(args)
+        calls.append({"argv": arguments, "stdout_bytes": len(output)})
+        return output
+
+    monkeypatch.setattr(gen, "_git", observe_git)
     snapshot = gen.fetch_pinned_source(pin)
+    record_property("source_fetch_transport", json.dumps(calls, sort_keys=True))
+    record_property("source_receipts", json.dumps(snapshot.receipts(), sort_keys=True))
     roundtrip = json.loads(gen.render_snapshot({"3.12": snapshot}))["sources"][0]
     assert gen._snapshot_from_row(roundtrip, "fixture") == snapshot
 
@@ -510,6 +651,11 @@ def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
         "token_grammar",
         "token_module",
         "token_generator",
+        "unicode_type_table",
+        "unicode_database_table",
+        "unicode_generator",
+        "unicode_type_implementation",
+        "unicode_database_implementation",
     )
     for item in snapshot.inputs:
         if item.role == "public_headers":
@@ -522,6 +668,12 @@ def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
         EXPECTED_PY_MODULES,
         EXPECTED_PY_PACKAGES,
     )
+    assert len(calls) == 8, calls
+    assert sum(row["argv"][:1] == ["rev-parse"] for row in calls) == 1
+    assert [row["argv"] for row in calls if row["argv"][:1] == ["cat-file"]] == [
+        ["cat-file", "--batch-check"],
+        ["cat-file", "--batch"],
+    ]
 
     moved = gen.CPythonSource(
         python="3.12", revision="f" * 40, tag="v3.12.1", git_url=remote.as_uri()
@@ -597,7 +749,11 @@ def test_generated_outputs_derive_every_supported_version(
     rendered = gen.generated_outputs()
 
     output = fixture_authority / "stdlib_module_union.py"
-    assert set(rendered) == {output, fixture_authority / "stdlib_module_union_3_12.py"}
+    assert set(rendered) == {
+        output,
+        fixture_authority / "stdlib_module_union_3_12.py",
+        gen.OUT_RELEASE_PATH,
+    }
     assert not any(path.exists() for path in rendered)
     for path, text in rendered.items():
         path.write_text(text, encoding="utf-8")
@@ -606,6 +762,10 @@ def test_generated_outputs_derive_every_supported_version(
     assert namespace["STDLIB_PACKAGE_UNION"] == EXPECTED_PACKAGES
     assert namespace["STDLIB_PY_MODULE_UNION"] == EXPECTED_PY_MODULES
     assert namespace["STDLIB_PY_PACKAGE_UNION"] == EXPECTED_PY_PACKAGES
+    releases = runpy.run_path(str(gen.OUT_RELEASE_PATH))["CPYTHON_RELEASES"]
+    assert releases == {"3.12": (3, 12, 1, "final", 0)}
+    with pytest.raises(TypeError):
+        releases["3.12"] = (3, 12, 0, "final", 0)
 
 
 def test_generated_outputs_fail_closed_on_a_retired_version_module(
@@ -656,6 +816,161 @@ def test_pending_source_capture_does_not_admit_or_generate_target(
     outputs = gen.generated_outputs()
     assert not any("3_15" in path.name for path in outputs)
     assert gen.DEFAULT_PYTHONS == ("3.12",)
+    gen.OUT_RELEASE_PATH.write_text(outputs[gen.OUT_RELEASE_PATH], encoding="utf-8")
+    namespace = runpy.run_path(str(gen.OUT_RELEASE_PATH))
+    assert namespace["CPYTHON_RELEASES"] == {
+        "3.12": (3, 12, 1, "final", 0),
+        "3.15": (3, 15, 1, "final", 0),
+    }
+
+
+@pytest.mark.parametrize(
+    ("level", "serial", "expected"),
+    [
+        ("ALPHA", 2, "alpha"),
+        ("BETA", 5, "beta"),
+        ("GAMMA", 7, "candidate"),
+        ("FINAL", 0, "final"),
+    ],
+)
+def test_release_fields_come_from_receipted_header_not_tag_or_host(
+    level, serial, expected
+):
+    snapshot = _with_release(
+        _snapshot(tag="v3.12.1"),
+        _release_header("3.12", micro=19, level=level, serial=serial),
+    )
+    assert gen.derive_python_release(snapshot) == (3, 12, 19, expected, serial)
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "message"),
+    [
+        ("#define PY_MICRO_VERSION 1\n", "", "missing release macros"),
+        (
+            "#define PY_MICRO_VERSION 1",
+            "#define PY_MICRO_VERSION 1\n#define PY_MICRO_VERSION 1",
+            "duplicate release macro",
+        ),
+        ("PY_MAJOR_VERSION 3", "PY_MAJOR_VERSION 4", "major/minor"),
+        ("PY_MINOR_VERSION 12", "PY_MINOR_VERSION 13", "major/minor"),
+        ("PY_MICRO_VERSION 1", "PY_MICRO_VERSION -1", "literal unsigned integer"),
+        ("PY_MICRO_VERSION 1", "PY_MICRO_VERSION (1 + 2)", "literal unsigned integer"),
+        ("PY_MICRO_VERSION 1", "PY_MICRO_VERSION 256", "exceeds 255"),
+        ("PY_RELEASE_SERIAL 0", "PY_RELEASE_SERIAL 16", "exceeds 15"),
+        (
+            "PY_RELEASE_SERIAL 0",
+            "PY_RELEASE_SERIAL 1",
+            "final release must have serial 0",
+        ),
+        (
+            "PY_RELEASE_LEVEL PY_RELEASE_LEVEL_FINAL",
+            "PY_RELEASE_LEVEL UNKNOWN",
+            "unknown release level macro",
+        ),
+        ("#define PY_RELEASE_LEVEL_FINAL 0xF\n", "", "literal unsigned integer"),
+        (
+            "PY_RELEASE_LEVEL_FINAL 0xF",
+            "PY_RELEASE_LEVEL_FINAL 0xB",
+            "CPython release nibble",
+        ),
+    ],
+)
+def test_release_header_rejects_missing_ambiguous_and_unrepresentable_fields(
+    before, after, message
+):
+    snapshot = _with_release(
+        _snapshot(), _release_header("3.12").replace(before, after)
+    )
+    with pytest.raises(ValueError, match=message):
+        gen.derive_python_release(snapshot)
+
+
+def test_release_macro_comments_are_not_definitions():
+    text = "/*\n#define PY_MICRO_VERSION 99\n*/\n" + _release_header("3.12")
+    text = text.replace(
+        "PY_MICRO_VERSION 1", "PY_MICRO_VERSION 1 /* patch */ // release"
+    )
+    assert gen.derive_python_release(_with_release(_snapshot(), text)) == (
+        3,
+        12,
+        1,
+        "final",
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (_release_header("3.12") + "/*", "malformed release-header comment"),
+        (
+            _release_header("3.12").replace(
+                "PY_MICRO_VERSION 1", "PY_MICRO_VERSION 1/* patch */2"
+            ),
+            "literal unsigned integer",
+        ),
+    ],
+)
+def test_release_comments_cannot_hide_malformed_or_concatenated_fields(text, message):
+    with pytest.raises(ValueError, match=message):
+        gen.derive_python_release(_with_release(_snapshot(), text))
+
+
+def test_release_projection_preserves_source_receipt_validation(fixture_authority):
+    def tamper(row):
+        release = next(item for item in row["inputs"] if item["role"] == "release")
+        release["text"] = release["text"].replace(
+            "PY_MICRO_VERSION 1", "PY_MICRO_VERSION 9"
+        )
+
+    _rewrite_snapshot(gen.SNAPSHOT_PATH, tamper)
+    with pytest.raises(ValueError, match="source evidence sha256 mismatch"):
+        gen.generated_outputs()
+    assert not gen.OUT_RELEASE_PATH.exists()
+
+
+@pytest.mark.parametrize(
+    "prior", [None, "CPYTHON_RELEASES = {'3.12': (3, 12, 0, 'final', 0)}\n"]
+)
+def test_release_projection_regenerates_without_target_or_generated_imports(
+    fixture_authority, prior
+):
+    if prior is not None:
+        gen.OUT_RELEASE_PATH.write_text(prior, encoding="utf-8")
+    code = r"""
+import importlib.abc
+import runpy
+import sys
+from pathlib import Path
+
+class NoTargetFacts(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {"molt.target_python", "molt._python_release_generated"}:
+            raise AssertionError("generator imported its target-fact consumer: " + fullname)
+
+assert "molt.target_python" not in sys.modules
+assert "molt._python_release_generated" not in sys.modules
+sys.meta_path.insert(0, NoTargetFacts())
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, str(Path(sys.argv[1]) / "src"))
+from tools import gen_stdlib_module_union as gen
+
+root = Path(sys.argv[2])
+gen.PINS_PATH = root / "pins.toml"
+gen.SNAPSHOT_PATH = root / "snapshot.json"
+gen.OUT_PATH = root / "stdlib_module_union.py"
+gen.OUT_RELEASE_PATH = root / "_python_release_generated.py"
+gen.DEFAULT_PYTHONS = ("3.12",)
+assert gen.main(["--write"]) == 0
+assert runpy.run_path(str(gen.OUT_RELEASE_PATH))["CPYTHON_RELEASES"] == {"3.12": (3, 12, 1, "final", 0)}
+print("release projection repaired")
+"""
+    result = run_guarded_test_process(
+        [sys.executable, "-I", "-B", "-c", code, str(gen.ROOT), str(fixture_authority)],
+        check=True,
+    )
+    assert "release projection repaired" in result.stdout
 
 
 def _comparison_reference_policy(root: Path, references: list[str]) -> Path:
@@ -821,10 +1136,10 @@ def test_source_comparison_assesses_real_delta_and_reuses_current_families(
     assert removed["retention"] == "retain-for-owning-version-review"
     assert removed["current_sha256"] == gen._sha256(legacy.read_bytes())
     assert assessment["analysis_target"] in gen.DEFAULT_PYTHONS
+    assert all(row["declared_observation"] for row in assessment["numeric_contexts"])
     assert all(
-        not row["declared_observation"] for row in assessment["numeric_contexts"]
+        isinstance(row["message"], str) for row in assessment["numeric_contexts"]
     )
-    assert all(row["message"] is None for row in assessment["numeric_contexts"])
     assert all(
         row["execution_evidence"] == "UNKNOWN" for row in assessment["numeric_contexts"]
     )
@@ -939,7 +1254,14 @@ def test_source_comparison_refuses_changed_current_source(
 
 @pytest.mark.parametrize("mutation", ["missing", "role", "path", "text", "forged_hash"])
 @pytest.mark.parametrize(
-    "role", ["ast_schema", "token_grammar", "token_module", "token_generator"]
+    "role",
+    [
+        "ast_schema",
+        "token_grammar",
+        "token_module",
+        "token_generator",
+        "unicode_type_table",
+    ],
 )
 def test_source_evidence_rejects_missing_misbound_and_forged_bytes(
     fixture_authority, mutation, role
@@ -1005,23 +1327,83 @@ def test_declared_pending_pin_requires_captured_inputs(fixture_authority):
         gen.generated_outputs()
 
 
-@pytest.mark.parametrize("missing_role", ["ASDL", "grammar"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "ASDL",
+        "grammar",
+        "fetched_missing",
+        "fetched_pin",
+        "prior_text",
+        "prior_blob",
+        "prior_role",
+        "prior_duplicate",
+        "prior_reordered",
+        "prior_path",
+        "prior_canonical",
+    ],
+)
 def test_refresh_never_writes_partial_evidence_on_late_failure(
-    fixture_authority, missing_role
+    fixture_authority, failure
 ):
+    prior = _snapshot()
+    prior = replace(prior, inputs=prior.inputs[:-1])
+    gen.SNAPSHOT_PATH.write_text(gen.render_snapshot({"3.12": prior}), encoding="utf-8")
+    if failure.startswith("prior_"):
+
+        def corrupt(row):
+            inputs = row["inputs"]
+            if failure in ("prior_text", "prior_blob"):
+                inputs[0]["text"] = "changed\n"
+                if failure == "prior_blob":
+                    inputs[0]["sha256"] = gen._sha256(b"changed\n")
+            elif failure == "prior_role":
+                inputs[0]["role"] = "unknown_evidence"
+            elif failure == "prior_duplicate":
+                inputs.insert(1, dict(inputs[0]))
+            elif failure == "prior_reordered":
+                inputs[:2] = reversed(inputs[:2])
+            elif failure == "prior_path":
+                inputs[0]["path"] = "Include/other.h"
+
+        _rewrite_snapshot(gen.SNAPSHOT_PATH, corrupt)
+        if failure == "prior_canonical":
+            gen.SNAPSHOT_PATH.write_text(
+                json.dumps(json.loads(gen.SNAPSHOT_PATH.read_text(encoding="utf-8"))),
+                encoding="utf-8",
+            )
     before = gen.SNAPSHOT_PATH.read_bytes()
     _write_pins(
         gen.PINS_PATH, {"3.12": ("v3.12.1", "a" * 40), "3.15": ("v3.15.0", "c" * 40)}
     )
+    fetched_versions = []
 
     def fetch(pin):
+        fetched_versions.append(pin.python)
         if pin.python == "3.15":
-            raise RuntimeError(f"missing pinned {missing_role} blob")
+            if failure in ("ASDL", "grammar"):
+                raise RuntimeError(f"missing pinned {failure} blob")
+            pending = _snapshot(python=pin.python, tag=pin.tag, revision=pin.revision)
+            if failure == "fetched_missing":
+                return replace(pending, inputs=pending.inputs[:-1])
+            return replace(pending, revision="d" * 40)
         return _snapshot()
 
-    with pytest.raises(RuntimeError, match=f"missing pinned {missing_role}"):
+    message = (
+        "canonical form"
+        if failure == "prior_canonical"
+        else "evidence"
+        if failure.startswith("prior_") or failure == "fetched_missing"
+        else "pin"
+        if failure == "fetched_pin"
+        else f"missing pinned {failure}"
+    )
+    with pytest.raises((RuntimeError, ValueError), match=message):
         gen.refresh_sources(fetch=fetch)
     assert gen.SNAPSHOT_PATH.read_bytes() == before
+    assert fetched_versions == (
+        [] if failure.startswith("prior_") else ["3.12", "3.15"]
+    )
 
 
 @pytest.mark.parametrize(

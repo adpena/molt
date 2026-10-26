@@ -172,9 +172,10 @@ fn native_batch_failure_artifact_retains_closed_context_for_replay() {
     std::fs::remove_dir_all(&source_dir).expect("source batch temp dir cleanup");
 
     let copied_job_path = artifact_dir.join("batch_7.json");
-    let copied_job: NativeBatchObjectJob =
-        read_json_artifact(&copied_job_path, "copied native batch job")
-            .expect("read copied native batch job");
+    let copied_job: NativeBatchObjectJob = serde_json::from_slice(
+        &std::fs::read(&copied_job_path).expect("read copied native batch job"),
+    )
+    .expect("decode copied native batch job");
     assert_eq!(
         serde_json::to_value(&copied_job.module_context).unwrap(),
         serde_json::to_value(molt_backend::NativeBackendModuleContext::default()).unwrap()

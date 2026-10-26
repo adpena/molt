@@ -21,6 +21,7 @@ class _TimedResult(NamedTuple):
     stdout: str
     stderr: str
     duration_s: float
+    descendants_closed: bool = False
 
 
 def _run_command(
@@ -81,14 +82,20 @@ def _run_command_timed(
         capture_output=capture_output,
         memory_guard_prefix=memory_guard_prefix,
     )
+    return _timed_process_result(result, started=start)
+
+
+def _timed_process_result(result: Any, *, started: float) -> _TimedResult:
+    """Project one already guarded result without changing its lifetime owner."""
     duration = getattr(result, "elapsed_s", None)
     if duration is None:
-        duration = time.perf_counter() - start
+        duration = time.perf_counter() - started
     return _TimedResult(
         result.returncode,
         result.stdout or "",
         result.stderr or "",
         duration,
+        getattr(result, "descendants_closed", False) is True,
     )
 
 

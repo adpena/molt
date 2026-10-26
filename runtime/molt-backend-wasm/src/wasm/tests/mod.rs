@@ -1,5 +1,6 @@
 mod support;
 
+mod anchor_storage;
 mod async_work_poll;
 mod call_indirect_table;
 mod container_scalar;

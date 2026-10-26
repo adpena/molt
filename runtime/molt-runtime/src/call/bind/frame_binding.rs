@@ -273,7 +273,13 @@ pub(super) unsafe fn function_binding_shape(
             FunctionBindingField::VarKeywords,
         ] {
             if name != FunctionBindingField::BindKind || !fixed_builtin {
-                full_binder |= !obj_from_bits(function_binding_meta(py, func_ptr, name)).is_none();
+                let value = obj_from_bits(function_binding_meta(py, func_ptr, name));
+                full_binder |= !value.is_none()
+                    && (name != FunctionBindingField::BindKind
+                        || value
+                            .as_int()
+                            .and_then(BuiltinBindingPolicy::from_abi)
+                            .is_none_or(BuiltinBindingPolicy::requires_custom_binding));
             }
         }
         let kwonly = obj_from_bits(function_binding_meta(
@@ -726,6 +732,40 @@ unsafe fn bind_python_frame<'a, 'py>(
             );
         }
 
+        let positional_range = obj_from_bits(function_binding_meta(
+            _py,
+            func_ptr,
+            FunctionBindingField::BindKind,
+        ))
+        .as_int()
+        .and_then(BuiltinBindingPolicy::from_abi)
+            == Some(BuiltinBindingPolicy::PositionalRange);
+        if positional_range {
+            if posonly != arg_names.len()
+                || !kwonly_names.is_empty()
+                || has_vararg
+                || has_varkw
+                || function_arity_usize(func_ptr) != Some(arg_names.len())
+            {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "invalid fixed positional builtin metadata",
+                ));
+            }
+            // Expansion and argument evaluation already completed. Native
+            // positional-only callables reject keywords before arity checks.
+            if args.keyword_count() != 0 {
+                let name = string_obj_to_owned(obj_from_bits(function_name_bits(_py, func_ptr)))
+                    .unwrap_or_else(|| "function".to_string());
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!("{name}() takes no keyword arguments"),
+                ));
+            }
+        }
+
         let layout = FrameSlotLayout {
             positional: arg_names.len(),
             has_vararg,
@@ -940,6 +980,34 @@ unsafe fn bind_python_frame<'a, 'py>(
         let defaults: &[u64] = defaults_pin.as_deref().unwrap_or(&[]);
 
         let defaults_len = defaults.len();
+        if positional_range {
+            let Some(required) = total_pos.checked_sub(defaults_len) else {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "invalid fixed positional builtin defaults",
+                ));
+            };
+            if supplied < required || supplied > total_pos {
+                let name = string_obj_to_owned(obj_from_bits(function_name_bits(_py, func_ptr)))
+                    .unwrap_or_else(|| "function".to_string());
+                let (qualifier, expected) = if required == total_pos {
+                    ("", total_pos)
+                } else if supplied < required {
+                    ("at least ", required)
+                } else {
+                    ("at most ", total_pos)
+                };
+                let plural = if expected == 1 { "" } else { "s" };
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!(
+                        "{name} expected {qualifier}{expected} argument{plural}, got {supplied}"
+                    ),
+                ));
+            }
+        }
         if supplied > total_pos && !has_vararg {
             // CPython reports the live default range and only keyword-only
             // arguments already supplied, before filling any defaults.

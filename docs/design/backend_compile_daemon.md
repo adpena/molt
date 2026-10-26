@@ -255,25 +255,150 @@ does not establish authenticated compiler-input or release provenance.
 `src/molt/backend_daemon_protocol_version.txt` owns the protocol version. Python
 reads that packaged integer; Rust includes the same expression at compile time.
 The file participates in backend source identity, package data and release
-source inventory. Protocol 2 retires inline IR. Request parsing constructs one
-closed `DaemonIrSource`: `Probe`, with no `ir_path` field, or `Lease`, with a
-nonempty MessagePack path. Even a null retired `ir` or a null probe path is an
-error. The Python request producer likewise takes only a path or probe state.
-This removes combinations of optional documents, paths and probe booleans from
-the admitted job model.
+source inventory. Protocol 2 retired inline IR. Protocol 5 sends each function
+body to a daemon at most once while the daemon keeps it (HF-516), with
+original-emission provenance carried by the compiled artifact entry. Protocol 5
+is the single combined revision; neither incompatible protocol-3 proposal is
+admitted. See [original emission origin](../spec/areas/tooling/0001-toolchains.md#original-emission-and-retained-cache-generations)
+for the partial-lease/ordered-assembly observation and its admission limits.
+
+#### Content-addressed function transport (protocol 5)
+
+On 2026-10-23 (macOS arm64, development backend, load average 4-8) a one-line
+edit of a 27-line asyncio program (96 modules, 3,638 functions, 677,711
+operations) streamed 38.7 MB of MessagePack to the daemon. The CLI spent
+0.76-2.13 s encoding it. The daemon spent 0.27 s decoding it and 0.41 s
+validating every body, then 1.03 s partitioning the shared stdlib, to compile 8
+functions in 0.10 s. Only one function had changed.
+
+A function's identity is its digest: SHA-256 over the domain tag
+`molt.function-body.msgpack.v1\0` and the exact sorted MessagePack body
+(`src/molt/cli/function_records.py`). The frontend computes it once per body and
+stores it with the lowering record; `FunctionDigests` is the CLI's one owner.
+
+The lease is one MessagePack map with sorted keys: the header fields
+(`code_slots`, `module_registry`, `profile`; other header keys are refused),
+`function_digests` (one `bin` of 32·N bytes in program order) and
+`function_bodies` (an array of `bin`, each the exact bytes of one body). The
+receiver hashes each shipped body. A body whose digest is not in the program
+list, a repeated digest, or a listed digest with neither a shipped body nor a
+resident copy is an error. JSON, CBOR and NDJSON inputs are distinct public
+interfaces and keep their `functions` array.
+
+```text
+CLI                                   daemon
+probe {function_digests: hex}  ---->  artifact cache hit: reply
+                                      miss: reply needs_ir, missing_functions
+                                      (indices the store lacks; lookups promote
+                                      the rest, as FindMissingBlobs extends
+                                      blob lifetimes)
+lease: header + digests + the   ---->  admit shipped bodies: hash, decode,
+missing bodies only                    per-function validation
+                                      resolve the rest from the store
+                                      evicted since the probe: needs_ir again;
+                                      the CLI resends every body, which cannot
+                                      miss
+                                      program validation, compile, insert
+                                      admitted bodies, reply
+```
+
+Request parsing constructs one closed `DaemonIrSource`: `Probe` with the
+program's digests and no `ir_path`, or `Lease` with a nonempty MessagePack
+path. A probe without digests, a null probe path or a retired inline `ir` is an
+error.
+
+The daemon keeps decoded, validated `FunctionIR` values in its one resident
+cache, under the one `MOLT_BACKEND_DAEMON_CACHE_MB` budget, beside compiled
+artifacts. An entry charges the exact heap ownership of its function; the
+weigher destructures every field, so a new field fails it until its allocation
+is counted. A compile holds an `Arc` for each function it uses, so eviction
+during a compile drops only the store's reference. Validation splits into a
+per-function part, run once when a body enters the store, and a cross-function
+part (inherited execution contexts, extern call ABIs, direct-call custody,
+source call forms, code slots and module slots), run on every assembly.
+
+One-shot backends, the fact graph and `molt-jit` read the same format with every
+body shipped; they keep no store.
+
+Trust: a function the CLI does not ship relies on its seeded digest. The
+artifact cache key already relies on the same seeds (the payload digest is a
+Merkle node over them), so protocol 5 adds no new trust; `MOLT_VERIFY_FUNCTION_DIGESTS=1`
+re-encodes every seed. Every shipped body is verified by its receiver.
+
+Costs per build: the CLI reads N memoized digests and hex-joins 32·N bytes into
+the probe; the daemon parses them and does N hash lookups under one lock;
+assembly clones N resident functions (the historical protocol-3 donor measured
+51 ms for 3,638 functions and 677,711 operations at opt-level 1, against 640 ms
+to decode and validate them) and runs
+the cross-function validation. A shipped body costs what every body cost
+before: one encode, one SHA-256, one decode and one validation. A cold daemon
+pays an added clone of each body it admits. The resident decoded IR is the named
+trade: memory for skipped decode and validation.
+
+Historical donor measurements on 2026-10-23 (macOS arm64, the same host,
+alternating builds of base 0457e7400 and the addressed-transport protocol-3
+donor, one-line edits of the program above):
+
+| Metric | Protocol 2 | Protocol 3 donor |
+|---|---|---|
+| CLI lease encode | 735-913 ms, 38.7 MB | 1 ms, 0.259 MB (1 body) |
+| `backend_daemon_compile`, diagnostics on, 4 rounds, load 6-15 | 3.5-3.7 s | 1.7-1.9 s |
+| CLI daemon client wall time, no diagnostics, 2 rounds, load 4.7-5.6 | 2.41, 2.92 s | 1.07, 1.10 s |
+| Whole build wall time, same rounds | 12.2, 14.8 s | 10.1, 10.6 s |
+| Daemon lease read and assembly (sampled) | 681 ms | 147 ms |
+| New program sharing the stdlib: bodies sent, `backend_daemon_compile` | 3,638, 5.4 s | 5, 3.7 s |
+| Daemon RSS after both programs | 621 MB | 1,024 MB |
+
+These measurements do not qualify the combined protocol 5, which additionally
+hashes consumed lease bytes and retains, transports and verifies the original
+emission observation. Its integrated latency and memory remain unmeasured.
+
+The donor's resident store charged 420 MB for 3,652 functions: decoded
+`FunctionIR` is about 11 times its MessagePack size. That is the named cost of
+skipping decode and validation. The remaining edit cost is whole-program work
+in the daemon: the shared-stdlib partition (1.04 s sampled), the app callable
+manifest (80 ms) and the stdlib archive transfer for a new program (1.83 s).
 
 The CLI allocates a lease only after a cache miss. It writes an exclusive file
-using the existing sorted function-body MessagePack codec, with standard map
-and array headers and one encoded top-level array element resident at a time.
+with standard map and array headers and one encoded body resident at a time.
 A failed create does not grant cleanup ownership; a failed write removes only
 the newly created lease. The lease lives until its synchronous request ends.
-Daemon and standalone receivers share the existing direct typed reader rather
-than decoding through a JSON value tree. Both require EOF and admit a regular
-file descriptor using the existing nonblocking/device-aware open authority.
-Cache hits never open unused leases. Input file size remains governed by the
-caller and compiler resource guard; the stdin byte ceiling does not bound files.
+Daemon and standalone receivers share one direct typed reader rather than
+decoding through a JSON value tree. Both require EOF and admit a regular file
+descriptor using the existing nonblocking/device-aware open authority. Cache
+hits never open unused leases. Input file size remains governed by the caller
+and compiler resource guard; the stdin byte ceiling does not bound files.
 Public JSON exports, MLIR's JSON stdin and batch-artifact JSON are distinct
 interfaces and retain their formats.
+
+Prior art, read 2026-10-23:
+
+- Bazel's Remote Execution API sends a digest list to
+  `ContentAddressableStorage.FindMissingBlobs`, uploads only the missing blobs,
+  and lets `Execute` fail with `FAILED_PRECONDITION` and one `MISSING` violation
+  per absent input, after which the client uploads again. Servers "SHOULD
+  increase the lifetimes of the referenced blobs" on a probe
+  ([remote_execution.proto](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)).
+  Protocol 5 has the same shape with a request-scoped list and indices.
+- rustc reuses a query result when `try_mark_green` proves its inputs
+  unchanged by fingerprint, and reuses a codegen unit's object files when the
+  unit's dep-node is green
+  ([incremental compilation in detail](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)).
+  Molt's per-function digests play the fingerprint role for the transport.
+- Cranelift's incremental cache keys a function by a SHA-256 over its
+  parameter-free stencil, the ISA and flags, and a version marker, and applies
+  the parameters after a hit
+  ([incremental_cache.rs](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/codegen/src/incremental_cache.rs)).
+  The daemon store is keyed by body content only; the backend binary is fixed
+  for a daemon's life, so its version needs no key field.
+- Mojo, open source since 2026-08-18 under Apache-2.0 with LLVM exceptions,
+  caches transforms in a tiered `BlobCache` (an in-memory backend that delegates
+  to a filesystem backend) keyed by a strong hash of the serialized module and
+  pipeline (`Cache/include/Cache/CachedTransform.h`, `BlobCache.h`), but its
+  compilation server still sends the whole printed MLIR module per request
+  (`Mojo/tools/compilation-server/Protocol.h`, `EmitArchiveParams.module`) in
+  [modular/modular](https://github.com/modular/modular). Molt's store is that
+  in-memory tier; protocol 5 also removes the whole-program send.
 
 Executable transport maps use lexical key order in both JSON and MessagePack.
 Cold lowering and hydrated function records can have different insertion orders;
@@ -356,3 +481,13 @@ release acceptance.
 - A client that disconnects does not cancel its compile; the output still reaches the cache.
 - The rest of HF-211: the process settings outside the catalog (cache roots, daemon limits) could move
   to typed accessors as well.
+
+
+### Original producer retention
+
+The common `backend_process/origin` owner serves one-shot and daemon emissions;
+protocol 5 transports producer kind, original scope/PID, addressed input and output
+identities. The [toolchain origin contract](../spec/areas/tooling/0001-toolchains.md#original-emission-and-retained-cache-generations)
+owns persisted generation, shared-stdlib, post-closure and cost semantics. Scope is
+an untrusted routing correlation outside semantic cache keys. Existing measurements
+of earlier protocol revisions do not qualify this origin/retention revision.

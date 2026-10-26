@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import os
-import platform
 import shlex
-import shutil
 import subprocess
 import sys
 import time
@@ -25,9 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 from molt.process_environment import ProcessEnvironment  # noqa: E402
-from molt import target_python  # noqa: E402
+from molt import target_python_policy  # noqa: E402
 from molt.dx import (  # noqa: E402
-    DEFAULT_UV_PROJECT_PYTHON,
     DX_ENV_KEYS,
     DxProject,
     render_env,
@@ -67,85 +64,47 @@ def _check_call_guarded(
         raise subprocess.CalledProcessError(result.returncode, cmd)
 
 
-def _uv_project_env_dir(env: Mapping[str, str] | None = None) -> Path:
-    if env is None:
-        return DX.project_env_dir()
-    return DX.uv_project_env_dir(env)
-
-
-def _uv_project_python(env: Mapping[str, str] | None = None) -> Path:
-    return DX.project_python(env)
-
-
-def _uv_project_env_matches_python(
-    requested: str | None,
-    env: Mapping[str, str] | None = None,
-) -> bool:
-    guard_env = _canonical_harness_env(os.environ if env is None else env)
-    project_python = _uv_project_python(guard_env)
-    if not project_python.exists():
-        return False
-    if not requested:
-        return True
-    limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", guard_env)
-    try:
-        result = harness_memory_guard.guarded_completed_process(
-            [
-                str(project_python),
-                "-c",
-                "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')",
-            ],
-            prefix="MOLT_TEST_SUITE",
-            cwd=ROOT,
-            env=guard_env,
-            capture_output=True,
-            text=True,
-            limits=limits,
-        )
-    except OSError:
-        return False
-    return result.returncode == 0 and result.stdout.strip() == requested
-
-
-def _normalized_uv_run_env(
-    env: Mapping[str, str],
-    *,
-    python: str | None,
-) -> ProcessEnvironment:
-    project_env_matches_python: bool | None = None
-    if env.get("UV_NO_SYNC") == "1":
-        project_env_matches_python = _uv_project_env_matches_python(python, env)
-    return DX.normalized_uv_run_env(
-        env,
-        python=python,
-        project_env_matches_python=project_env_matches_python,
-    )
-
-
 def run_uv(
     args: list[str],
     python: str | None = None,
     env: Mapping[str, str] | None = None,
     tty: bool = False,
 ) -> None:
-    cmd = ["uv", "run"]
-    if python:
-        cmd.extend(["--python", python])
-        if (
-            python == "3.14"
-            and sys.platform == "darwin"
-            and platform.machine().lower() in {"arm64", "aarch64"}
-        ):
-            if shutil.which("python3.14"):
-                cmd.append("--no-managed-python")
-            else:
-                raise RuntimeError(
-                    "uv-managed Python 3.14 hangs on arm64; install python3.14 "
-                    "or remove 3.14 from the test matrix."
-                )
-    cmd.extend(args)
-    base_env = _canonical_harness_env(os.environ if env is None else env)
-    run_env = _normalized_uv_run_env(base_env, python=python)
+    from tools.venv_exec import resolve_command, resolve_venv, venv_env
+
+    intent_env = ProcessEnvironment(os.environ if env is None else env)
+    if intent_env.get("MOLT_VENV") and python is not None:
+        raise RuntimeError(
+            "managed Python selection cannot replace an explicitly borrowed MOLT_VENV"
+        )
+    if python is not None:
+        intent_env = intent_env.updated({"MOLT_UV_PROJECT_PYTHON": python})
+    base_env = _canonical_harness_env(intent_env)
+    if base_env.get("MOLT_VENV"):
+        # Maintenance borrows exactly the caller's environment. It neither
+        # provisions a managed image nor asks uv to select or sync a project.
+        selected_root = resolve_venv(repo_root=ROOT, env=base_env)
+        run_env = venv_env(venv=selected_root, env=base_env, managed=False)
+        cmd = resolve_command(args, venv=selected_root, managed=False)
+        limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
+        _check_call_guarded(cmd, run_env, limits=limits)
+        return
+
+    from molt.checkout_provisioning import ensure
+    from tools.proof_command_argv import uv_environment_command
+
+    selected = ensure("uv-environment", ROOT, base_env, python=python)
+    assert selected.environment_root is not None
+    run_env = DX.normalized_uv_run_env(
+        base_env.updated({"UV_PROJECT_ENVIRONMENT": str(selected.environment_root)}),
+        python=None,
+    )
+    payload = resolve_command(args, venv=selected.environment_root, managed=True)
+    cmd = uv_environment_command(
+        ["uv", "run", "--", *payload],
+        repo_root=ROOT,
+        environment_root=selected.environment_root,
+    )
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
     _check_call_guarded(cmd, run_env, limits=limits)
 
@@ -225,6 +184,19 @@ def _split_command_sequence(
 
 
 def _run_repo_cmd(cmd: list[str], env: Mapping[str, str], *, tty: bool) -> None:
+    from tools.proof_command_argv import is_python_command
+    from tools.venv_exec import resolve_command
+
+    if cmd and is_python_command(cmd[0]):
+        if env.get("MOLT_VENV"):
+            raise RuntimeError(
+                "managed repository execution cannot replace an explicitly borrowed MOLT_VENV"
+            )
+        selected = DX.uv_project_env_dir(env)
+        # Bounded recipe selection is owned by DX; argument assembly never
+        # probes the runtime or mutates the selected published image.
+        env = DX.normalized_uv_run_env(env, python=None)
+        cmd = resolve_command(cmd, venv=selected, managed=True)
     _log("$ " + " ".join(shlex.quote(part) for part in cmd))
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     _check_call_guarded(cmd, env, limits=limits)
@@ -444,7 +416,15 @@ def main() -> None:
     if cmd[0] == "env":
         _print_canonical_env(_canonical_env())
     elif cmd[0] == "install":
-        _run_dx_command("install", _canonical_env(), tty=use_tty)
+        from molt.checkout_provisioning import ensure
+
+        env = _canonical_env()
+        if env.get("MOLT_VENV"):
+            raise RuntimeError(
+                "managed installation cannot replace an explicitly borrowed MOLT_VENV"
+            )
+        selected = ensure("uv-environment", ROOT, env)
+        _log(f"development image selected: {selected.environment_root}")
     elif cmd[0] == "clippy":
         _run_dx_command("clippy", _canonical_env(), tty=use_tty)
     elif cmd[0] == "security":
@@ -500,8 +480,17 @@ def main() -> None:
             src_path if not existing else f"{src_path}{os.pathsep}{existing}"
         )
         _log(f"PYTHONPATH={env['PYTHONPATH']}")
+        if env.get("MOLT_VENV"):
+            raise RuntimeError("the version matrix requires managed development images")
+        if env.get("UV_PROJECT_ENVIRONMENT"):
+            from molt.source_build_environment import load_development_environment
+
+            load_development_environment(
+                Path(env["UV_PROJECT_ENVIRONMENT"]), repo_root=ROOT
+            )
+        env.pop("UV_PROJECT_ENVIRONMENT", None)
         for index, python in enumerate(
-            target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+            target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
         ):
             _log(f"tests start (python {python})")
             start = time.monotonic()
@@ -517,25 +506,21 @@ def main() -> None:
     elif cmd[0] == "doctor":
         run_uv(
             ["python", "-m", "molt.cli", "doctor", *cmd[1:]],
-            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "setup":
         run_uv(
             ["python", "-m", "molt.cli", "setup", *cmd[1:]],
-            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "update":
         run_uv(
             ["python", "-m", "molt.cli", "update", *cmd[1:]],
-            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "validate":
         run_uv(
             ["python", "-m", "molt.cli", "validate", *cmd[1:]],
-            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "clean-artifacts":

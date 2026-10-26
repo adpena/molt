@@ -164,6 +164,7 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
         "strip": True,
         "receipt": None,
         "link_selection": selection,
+        "link_input_artifacts": None,
         "validate_inputs": None,
     }
     assert binary.read_bytes() == b"finalized"

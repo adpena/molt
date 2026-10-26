@@ -22,7 +22,7 @@ from molt.cli.python_import_resolution import (  # noqa: E402
 def _direct_local_imports(path: Path) -> set[str]:
     resolver = LocalPythonModuleResolver(
         (REPO_ROOT / "tools", REPO_ROOT / "src", REPO_ROOT),
-        source_roots=(REPO_ROOT / "tools", REPO_ROOT / "src"),
+        source_roots=(REPO_ROOT / "tools", REPO_ROOT / "src", REPO_ROOT / "bench"),
     )
     policy = PythonImportPolicy(
         module_level_only=False,
@@ -91,3 +91,21 @@ def test_bump_and_relock_rewrite_only_the_lock(tmp_path: Path) -> None:
         before.paths,
         dict(before.mechanics),
     )
+
+
+def test_comparison_verdict_authorities_are_governed_not_unlocked_mechanics() -> None:
+    methodology = pm.load()
+    owners = {
+        "tools/bench_evidence.py",
+        "tools/bench_reporting.py",
+        "tools/bench_diff.py",
+        "tools/bench_dashboard.py",
+        "tools/perf_regression.py",
+        "bench/harness.py",
+        "src/molt/compilation_target.py",
+        "src/molt/native_target.py",
+        "src/molt/native_target_shape.py",
+        "src/molt/llvm_linker_roles.py",
+    }
+    assert owners <= set(methodology.paths)
+    assert not owners & set(methodology.mechanics)

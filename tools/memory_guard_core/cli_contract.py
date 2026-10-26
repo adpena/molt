@@ -183,15 +183,29 @@ def worker_env(
     return ProcessEnvironment(result)
 
 
-def guardian_argv(python_executable: str, script_path: str | Path) -> list[str]:
+def guardian_argv(
+    python_executable: str,
+    script_path: str | Path,
+    *,
+    verifier_bytecode_prefix: Path,
+) -> list[str]:
     """Start the source-bound guardian before any workload Python startup code.
 
     Guardians require only the standard library and bind their repository from
     their own file. Isolate their interpreter from PYTHON* startup settings and
     site/.pth hooks; leave the process environment and workload argv intact for
     the guarded child, whose startup policy is its caller's choice.
+    The caller owns the fresh empty prefix through terminal guardian closure;
+    argv construction never allocates or retires its storage.
     """
-    return [python_executable, "-I", "-S", str(script_path)]
+    from molt.python_environment_identity import python_identity_verifier_arguments
+
+    return [
+        python_executable,
+        *python_identity_verifier_arguments(verifier_bytecode_prefix),
+        "-S",
+        str(script_path),
+    ]
 
 
 def worker_argv(
@@ -199,8 +213,13 @@ def worker_argv(
     *,
     python_executable: str,
     script_path: Path,
+    verifier_bytecode_prefix: Path,
 ) -> list[str]:
-    result = guardian_argv(python_executable, script_path) + [
+    result = guardian_argv(
+        python_executable,
+        script_path,
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
+    ) + [
         "--poll-interval",
         str(args.poll_interval),
     ]

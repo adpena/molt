@@ -1,10 +1,11 @@
-"""Provisioned Python environment capture and v6 schema validation."""
+"""Provisioned Python environment capture and v7 schema validation."""
 
 from __future__ import annotations
 
 import base64
 import configparser
 import csv
+import enum
 import hmac
 import importlib.machinery
 import importlib.util
@@ -20,18 +21,23 @@ from email.parser import Parser
 from pathlib import Path, PurePath
 from typing import cast
 
-from molt.exact_json import canonical_json_sha256
+from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.python_environment_location import (
     _active_environment_prefix,
     _environment_sysconfig_path,
     _site_roots,
     editable_direct_url_path,
+    environment_bytecode_prefix,
+    ENVIRONMENT_BYTECODE_DIRECTORY,
+    SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+    environment_provisioning_record_path,
 )
 from molt.python_file_node_custody import (
     PythonFileCaptureContext,
     _FileNodePool,
     _is_file_entry,
     _is_junction,
+    _portable_path_key,
     _relative_path,
     _root_forest,
     _stable_tree_inventory,
@@ -58,8 +64,9 @@ from molt.python_runtime_identity import (
     runtime_explicit_file_content,
     validate_python_runtime_identity,
 )
+from molt.toolchain_identity import stable_executable_probe
 
-PYTHON_ENVIRONMENT_IDENTITY_SCHEMA = "molt.python-environment-closure.v6"
+PYTHON_ENVIRONMENT_IDENTITY_SCHEMA = "molt.python-environment-closure.v7"
 PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA = "molt.python-environment-capabilities.v2"
 _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 _ENVIRONMENT_IDENTITY_FIELDS = frozenset(
@@ -109,6 +116,7 @@ _DISTRIBUTION_IDENTITY_FIELDS = frozenset(
         "entry_points_sha256",
         "console_scripts",
         "external_source",
+        "wheel",
     }
 )
 
@@ -524,6 +532,33 @@ def _installed_distributions(
             if installer_path in tree_by_path
             else None
         )
+        wheel_path = f"{metadata_root}/WHEEL"
+        wheel = None
+        if wheel_path in tree_by_path:
+            wheel_node_id, wheel_node = file_node(wheel_path, label=f"{name} WHEEL")
+            try:
+                wheel_message = Parser().parsestr(
+                    pool.read_bound(wheel_node_id, label=f"{name} WHEEL").decode(
+                        "utf-8"
+                    )
+                )
+            except UnicodeDecodeError as exc:
+                raise PythonEnvironmentIdentityError(
+                    "installed WHEEL is not UTF-8"
+                ) from exc
+            builds = wheel_message.get_all("Build", [])
+            tags = wheel_message.get_all("Tag", [])
+            if len(builds) > 1 or not tags or len(set(tags)) != len(tags):
+                raise PythonEnvironmentIdentityError(
+                    "installed WHEEL tags/build are invalid"
+                )
+            wheel = {
+                "path": wheel_path,
+                "sha256": wheel_node["sha256"],
+                "tags": sorted(tags),
+                "build": builds[0] if builds else None,
+            }
+            _validate_distribution_wheel(wheel)
         rows.append(
             {
                 "name": name,
@@ -542,13 +577,55 @@ def _installed_distributions(
                 "entry_points_sha256": canonical_json_sha256(entry_points),
                 "console_scripts": console_scripts,
                 "external_source": external_source,
+                "wheel": wheel,
             }
         )
     rows.sort(key=lambda row: (str(row["name"]), str(row["version"])))
     return rows, owned_files, console_owners
 
 
-def _bytecode_owner(
+def _validate_distribution_wheel(wheel: object) -> None:
+    if wheel is None:
+        return
+    if not isinstance(wheel, Mapping) or set(wheel) != {
+        "path",
+        "sha256",
+        "tags",
+        "build",
+    }:
+        raise PythonEnvironmentIdentityError("installed WHEEL identity is invalid")
+    tags = wheel["tags"]
+    build = wheel["build"]
+    if (
+        not _valid_relative_payload_path(wheel["path"])
+        or not str(wheel["path"]).endswith(".dist-info/WHEEL")
+        or not _valid_sha256(wheel["sha256"])
+        or not isinstance(tags, list)
+        or not tags
+        or any(
+            not isinstance(tag, str)
+            or re.fullmatch(r"[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+", tag) is None
+            for tag in tags
+        )
+        or tags != sorted(set(tags))
+        or (
+            build is not None
+            and (
+                not isinstance(build, str)
+                or re.fullmatch(r"[0-9][A-Za-z0-9_]*", build) is None
+            )
+        )
+    ):
+        raise PythonEnvironmentIdentityError("installed WHEEL tags/build are invalid")
+
+
+class _BytecodeDisposition(enum.Enum):
+    UNOWNED = enum.auto()
+    OWNED = enum.auto()
+    INERT = enum.auto()
+
+
+def _bytecode_disposition(
     relative: str,
     root: Path,
     owned: set[str],
@@ -557,11 +634,13 @@ def _bytecode_owner(
     pool: _FileNodePool,
     *,
     pytest_version: str | None,
-) -> str | None:
+    source_paths_by_key: Mapping[str, str],
+    excluded_path_keys: frozenset[str],
+) -> _BytecodeDisposition:
     path = root / Path(relative)
     if path.suffix.casefold() != ".pyc":
-        return None
-    pytest_rewrite = False
+        return _BytecodeDisposition.UNOWNED
+    pytest_variant: str | None = None
     cache_tag = re.escape(str(sys.implementation.cache_tag))
     cache_match = (
         re.fullmatch(
@@ -571,39 +650,64 @@ def _bytecode_owner(
         if path.parent.name == "__pycache__"
         else None
     )
+    cache_layout = cache_match is not None
     if cache_match is not None:
         source = path.parent.parent / f"{cache_match.group('stem')}.py"
         variant = cache_match.group("variant")
         if variant.startswith("-pytest-"):
-            pytest_rewrite = True
-            if pytest_version is None or variant != f"-pytest-{pytest_version}":
-                raise PythonEnvironmentIdentityError(
-                    f"pytest bytecode cache has no matching tool identity: {path}"
-                )
+            pytest_variant = variant
     else:
         try:
             source = Path(importlib.util.source_from_cache(str(path)))
+            # PEP 3147 also permits caches for other interpreter tags.
+            cache_layout = path.parent.name == "__pycache__"
         except (ValueError, NotImplementedError):
             source = path.with_suffix(".py")
     try:
         source_relative = _relative_path(source, root, label="bytecode source")
     except PythonEnvironmentIdentityError:
-        return None
-    if source_relative not in owned:
-        return None
+        return _BytecodeDisposition.UNOWNED
+    source_key = _portable_path_key(source_relative)
+    source_relative = source_paths_by_key.get(source_key, source_relative)
+    source = root / source_relative
     source_row = tree_by_path.get(source_relative)
     bytecode_row = tree_by_path.get(relative)
+    if (
+        cache_layout
+        and source_row is None
+        and bytecode_row is not None
+        and bytecode_row.get("kind") in {"file", "hardlink"}
+    ):
+        # An explicitly omitted source (or parent) is unknown, not absent.
+        candidate = source_key
+        while candidate:
+            if candidate in excluded_path_keys:
+                return _BytecodeDisposition.UNOWNED
+            candidate, _, _ = candidate.rpartition("/")
+        # PEP 3147 case 3: ordinary imports ignore a cache without its source.
+        # Keep the bytes in the captured tree, without inventing a source owner
+        # or requiring a removed rewrite tool. Adjacent sourceless .pyc files
+        # remain executable and cannot enter this branch.
+        return _BytecodeDisposition.INERT
+    if source_relative not in owned:
+        return _BytecodeDisposition.UNOWNED
     if (
         source_row is None
         or bytecode_row is None
         or not _is_file_entry(source_row)
         or not _is_file_entry(bytecode_row)
     ):
-        return None
+        return _BytecodeDisposition.UNOWNED
     source_node = source_row.get("node")
     bytecode_node = bytecode_row.get("node")
     if not isinstance(source_node, str) or not isinstance(bytecode_node, str):
-        return None
+        return _BytecodeDisposition.UNOWNED
+    if pytest_variant is not None and (
+        pytest_version is None or pytest_variant != f"-pytest-{pytest_version}"
+    ):
+        raise PythonEnvironmentIdentityError(
+            f"pytest bytecode cache has no matching tool identity: {path}"
+        )
     source_data = pool.read_bound(source_node, label="owned bytecode source")
     bytecode = pool.read_bound(bytecode_node, label="generated bytecode")
     if len(bytecode) < 16 or bytecode[:4] != importlib.util.MAGIC_NUMBER:
@@ -624,7 +728,7 @@ def _bytecode_owner(
         timestamp, source_size = struct.unpack_from("<II", bytecode, 8)
         source_stat = metadata_by_path.get(source_relative)
         if source_stat is None:
-            return None
+            return _BytecodeDisposition.UNOWNED
         if timestamp != int(source_stat.st_mtime) & 0xFFFFFFFF or source_size != (
             len(source_data) & 0xFFFFFFFF
         ):
@@ -637,8 +741,10 @@ def _bytecode_owner(
         raise PythonEnvironmentIdentityError(
             f"generated bytecode optimization level is unsupported: {path}"
         )
-    if pytest_rewrite:
-        return source_relative
+    if pytest_variant is not None:
+        raise PythonEnvironmentIdentityError(
+            f"pytest rewrite bytecode has no admitted producer provenance: {path}"
+        )
     expected_code = compile(
         source_data,
         str(source),
@@ -650,7 +756,225 @@ def _bytecode_owner(
         raise PythonEnvironmentIdentityError(
             f"generated bytecode does not match its owned source: {path}"
         )
-    return source_relative
+    return _BytecodeDisposition.OWNED
+
+
+def _ordinary_cache_bytes(source: bytes, filename: str, optimization: int) -> bytes:
+    code = compile(source, filename, "exec", dont_inherit=True, optimize=optimization)
+    return (
+        importlib.util.MAGIC_NUMBER
+        + struct.pack("<I", 3)
+        + importlib.util.source_hash(source)
+        + marshal.dumps(code)
+    )
+
+
+def _image_cache_from_source(source: Path, prefix: Path, optimization: int) -> Path:
+    """Rebase CPython's actual verifier cache suffix into the image namespace.
+
+    cache_from_source owns drive stripping, optimization tags and separators.
+    Changing sys.pycache_prefix, even briefly, would let concurrent imports read
+    unadmitted image code; derive the relative path without changing the reader.
+    """
+    if sys.pycache_prefix is None:
+        raise PythonEnvironmentIdentityError(
+            "Python verifier has no pre-start bytecode prefix"
+        )
+    verifier_prefix = Path(sys.pycache_prefix).absolute()
+    cache = Path(
+        importlib.util.cache_from_source(
+            str(source), optimization="" if optimization == 0 else optimization
+        )
+    ).absolute()
+    try:
+        suffix = cache.relative_to(verifier_prefix)
+    except ValueError as exc:
+        raise PythonEnvironmentIdentityError(
+            f"CPython cache path escapes the verifier prefix: {cache}"
+        ) from exc
+    if not suffix.parts or ".." in suffix.parts:
+        raise PythonEnvironmentIdentityError(
+            f"CPython cache path has no confined verifier suffix: {cache}"
+        )
+    return prefix / suffix
+
+
+def _ordinary_bytecode_projection(
+    root: Path,
+    tree_by_path: Mapping[str, Mapping[str, object]],
+    owned: set[str],
+    pool: _FileNodePool,
+    runtime: Mapping[str, object],
+    runtime_roots: Sequence[tuple[str, Path]],
+    runtime_pool: _FileNodePool,
+    external: Mapping[str, object],
+    external_roots: Sequence[tuple[str, Path]],
+    *,
+    publish: bool,
+) -> None:
+    """One producer/receiver for immutable ordinary caches, never rewrite caches.
+
+    Source bytes come from captured nodes. The table holds references, not code
+    objects or source buffers; compilation/marshalling is bounded to one module.
+    CPython owns path mapping (including Windows drives and optimization tags).
+    """
+    prefix = environment_bytecode_prefix(root)
+    verifier_prefix = (
+        Path(sys.pycache_prefix).absolute() if sys.pycache_prefix is not None else None
+    )
+    if (
+        verifier_prefix is None
+        or verifier_prefix == prefix
+        or verifier_prefix.is_relative_to(root)
+        or not verifier_prefix.is_dir()
+        or verifier_prefix.is_symlink()
+        or _is_junction(verifier_prefix)
+        or any(verifier_prefix.iterdir())
+    ):
+        raise PythonEnvironmentIdentityError(
+            "image admission requires a separate empty verifier bytecode prefix"
+        )
+    if not prefix.is_dir() or prefix.is_symlink() or _is_junction(prefix):
+        raise PythonEnvironmentIdentityError(
+            "image bytecode prefix is not a real directory"
+        )
+    sources: list[tuple[Path, str, _FileNodePool]] = []
+    for relative in sorted(owned):
+        row = tree_by_path.get(relative)
+        if relative.endswith(".py") and row is not None and _is_file_entry(row):
+            sources.append((root / relative, str(row["node"]), pool))
+    locations = dict(runtime_roots)
+    for tree in cast(Sequence[Mapping[str, object]], runtime["runtime_roots"]):
+        for row in cast(Sequence[Mapping[str, object]], tree["entries"]):
+            relative = str(row["path"])
+            if relative.endswith(".py") and _is_file_entry(row):
+                sources.append(
+                    (
+                        locations[str(tree["id"])] / relative,
+                        str(row["node"]),
+                        runtime_pool,
+                    )
+                )
+    expected: dict[str, tuple[Path, str, _FileNodePool, int]] = {}
+    for source, node, owner in sources:
+        for optimization in (0, 1, 2):
+            cache = _image_cache_from_source(source, prefix, optimization)
+            key = os.path.normcase(os.path.abspath(cache))
+            previous = expected.get(key)
+            if previous is not None and previous[0] != source:
+                raise PythonEnvironmentIdentityError(
+                    f"bytecode source paths collide: {previous[0]} and {source}"
+                )
+            expected[key] = (source, node, owner, optimization)
+    # Mutable editable sources cannot alias a populated fixed-source cache on
+    # Windows, where CPython removes the drive from the prefix mapping.
+    roots = dict(external_roots)
+    for tree in cast(Sequence[Mapping[str, object]], external["trees"]):
+        external_root = roots[str(tree["source_root"])] / str(tree["source_path"])
+        for row in cast(Sequence[Mapping[str, object]], tree["entries"]):
+            if str(row["path"]).endswith(".py") and _is_file_entry(row):
+                source = external_root / str(row["path"])
+                for optimization in (0, 1, 2):
+                    key = os.path.normcase(
+                        str(_image_cache_from_source(source, prefix, optimization))
+                    )
+                    if key in expected and expected[key][0] != source:
+                        raise PythonEnvironmentIdentityError(
+                            f"editable source aliases an immutable bytecode source: {source}"
+                        )
+    if publish:
+        if any(prefix.iterdir()):
+            raise PythonEnvironmentIdentityError(
+                "ordinary bytecode publication requires an empty owned prefix"
+            )
+        producer_groups: dict[
+            tuple[str, _FileNodePool, str], list[tuple[Path, int]]
+        ] = {}
+        for source, node, owner, optimization in expected.values():
+            producer_groups.setdefault((str(source), owner, node), []).append(
+                (source, optimization)
+            )
+        for (filename, owner, node), variants in producer_groups.items():
+            source_data = owner.read_bound(
+                node, label="ordinary bytecode producer source"
+            )
+            try:
+                for source, optimization in variants:
+                    try:
+                        bytecode = _ordinary_cache_bytes(
+                            source_data, filename, optimization
+                        )
+                    except SyntaxError:
+                        # Keep each optimization's independent attempt for
+                        # invalid fixtures or source for another Python version.
+                        continue
+                    target = _image_cache_from_source(source, prefix, optimization)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open("xb") as output:
+                        output.write(bytecode)
+                    del bytecode
+            finally:
+                # Release this module before reading the next one's bytes.
+                del source_data
+    else:
+        receiver_groups: dict[
+            tuple[str, _FileNodePool, str], list[tuple[str, str, int]]
+        ] = {}
+        for relative, row in tree_by_path.items():
+            if (
+                not relative.startswith(ENVIRONMENT_BYTECODE_DIRECTORY + "/")
+                or row.get("kind") == "directory"
+            ):
+                continue
+            key = os.path.normcase(str(root / relative))
+            binding = expected.get(key)
+            if binding is None or row.get("kind") not in {"file", "hardlink"}:
+                raise PythonEnvironmentIdentityError(
+                    f"image bytecode has no ordinary source producer: {relative}"
+                )
+            source, node, owner, optimization = binding
+            receiver_groups.setdefault((str(source), owner, node), []).append(
+                (relative, str(row["node"]), optimization)
+            )
+        for (filename, owner, node), variants in receiver_groups.items():
+            source_data = owner.read_bound(node, label="ordinary bytecode source")
+            try:
+                for relative, cache_node, optimization in variants:
+                    actual = pool.read_bound(
+                        cache_node, label="ordinary bytecode projection"
+                    )
+                    if actual != _ordinary_cache_bytes(
+                        source_data, filename, optimization
+                    ):
+                        raise PythonEnvironmentIdentityError(
+                            "image bytecode differs from its source/runtime "
+                            f"derivation: {relative}"
+                        )
+                    del actual
+            finally:
+                del source_data
+
+
+def immutable_environment_image(payload: Mapping[str, object]) -> dict[str, object]:
+    """Seal package bytes and editable bindings, not mutable external sources.
+
+    Full environment capture still includes and verifies those source trees for
+    every operation. Only the reusable installation attestation projects them.
+    """
+    image = {
+        key: value
+        for key, value in payload.items()
+        if key != "environment_closure_sha256"
+    }
+    external = cast(Mapping[str, object], image["external_import_custody"])
+    image["external_import_custody"] = {
+        **external,
+        "trees": [
+            {key: tree[key] for key in ("id", "source_root", "source_path", "roles")}
+            for tree in cast(Sequence[Mapping[str, object]], external["trees"])
+        ],
+    }
+    return {"image": image, "image_sha256": canonical_json_sha256(image)}
 
 
 def _active_environment_import_roots(
@@ -821,6 +1145,7 @@ def capture_current_python_environment(
     admitted_external_roots: Sequence[Path] = (),
     capture_context: PythonFileCaptureContext | None = None,
     with_custody: bool = False,
+    publish_bytecode: bool = False,
 ) -> dict[str, object]:
     """Capture an exact immutable environment using the active interpreter."""
 
@@ -868,6 +1193,38 @@ def capture_current_python_environment(
             f"environment scripts root is not a real directory: {scripts_root}"
         )
     site_roots = _site_roots(canonical_root)
+    if publish_bytecode:
+        # The existing publisher holds the address lock across this child. The
+        # exact sibling record is the only recoverable unpublished generation;
+        # a published image is never a bytecode writer destination.
+        manifest = canonical_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST
+        provisional = environment_provisioning_record_path(canonical_root)
+        try:
+            record = loads_exact(provisional.read_text(encoding="utf-8"))
+            recipe = record["custody"]
+            address = {
+                key: value for key, value in recipe.items() if key != "environment_id"
+            }
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise PythonEnvironmentIdentityError(
+                "ordinary bytecode publication has no exact provisional owner"
+            ) from exc
+        if (
+            manifest.exists()
+            or manifest.is_symlink()
+            or set(record) != {"state", "custody"}
+            or record["state"] != "provisioning"
+            or recipe.get("environment_id") != canonical_root.name
+            or canonical_json_sha256(address) != canonical_root.name
+        ):
+            raise PythonEnvironmentIdentityError(
+                "ordinary bytecode publication requires an unpublished exact-address image"
+            )
+        environment_bytecode_prefix(canonical_root).mkdir(exist_ok=True)
+        excluded_relative_paths = (
+            *excluded_relative_paths,
+            ENVIRONMENT_BYTECODE_DIRECTORY,
+        )
     excluded = frozenset(
         unicodedata.normalize("NFC", Path(value).as_posix())
         for value in excluded_relative_paths
@@ -880,6 +1237,12 @@ def capture_current_python_environment(
     )
     tree_entries = cast(list[Mapping[str, object]], tree["entries"])
     tree_by_path = {str(row["path"]): row for row in tree_entries}
+    source_paths_by_key = {
+        _portable_path_key(path): path
+        for path in tree_by_path
+        if path.casefold().endswith(".py")
+    }
+    excluded_path_keys = frozenset(_portable_path_key(path) for path in excluded)
     nodes = tree_pool.nodes
     nodes_by_id = {str(row["id"]): row for row in nodes}
     site_relatives = tuple(
@@ -951,7 +1314,7 @@ def capture_current_python_environment(
             for site in site_relatives
         ):
             if (
-                _bytecode_owner(
+                _bytecode_disposition(
                     relative,
                     canonical_root,
                     owned_files,
@@ -959,8 +1322,10 @@ def capture_current_python_environment(
                     tree_metadata,
                     tree_pool,
                     pytest_version=pytest_version,
+                    source_paths_by_key=source_paths_by_key,
+                    excluded_path_keys=excluded_path_keys,
                 )
-                is None
+                is _BytecodeDisposition.UNOWNED
             ):
                 unowned.append(relative)
     if unowned:
@@ -1019,6 +1384,23 @@ def capture_current_python_environment(
         bootstrap_paths=admitted_bootstrap,
         capture_context=capture_context,
     )
+    if (
+        publish_bytecode
+        or (canonical_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists()
+        or environment_provisioning_record_path(canonical_root).exists()
+    ):
+        _ordinary_bytecode_projection(
+            canonical_root,
+            tree_by_path,
+            owned_files,
+            tree_pool,
+            runtime,
+            runtime_roots,
+            runtime_pool,
+            external_import_custody,
+            external_roots,
+            publish=publish_bytecode,
+        )
     native_modules = [
         {
             "path": str(row["path"]),
@@ -1067,6 +1449,7 @@ def python_environment_executable_files(
     root: Path,
     *,
     base_executable: Path,
+    base_executable_selector: Path,
 ) -> list[dict[str, object]]:
     """Project every environment-owned process launcher from one closure."""
 
@@ -1126,6 +1509,32 @@ def python_environment_executable_files(
             "sha256": runtime_base["sha256"],
         }
     )
+    selector = Path(str(canonical_absolute_path(str(base_executable_selector))))
+    base = Path(base_executable).resolve(strict=True)
+    if selector != base:
+        with stable_executable_probe(selector, label="Python base selector") as (
+            entrypoint,
+            content,
+        ):
+            if content.path != base:
+                raise PythonEnvironmentIdentityError(
+                    "Python base selector differs from its captured physical base"
+                )
+            if (
+                content.size != runtime_base["size"]
+                or content.sha256 != runtime_base["sha256"]
+            ):
+                raise PythonEnvironmentIdentityError(
+                    "Python base selector content differs from its runtime node"
+                )
+            projected.append(
+                {
+                    "role": "interpreter-alias:base-selector",
+                    "path": str(entrypoint),
+                    "size": runtime_base["size"],
+                    "sha256": runtime_base["sha256"],
+                }
+            )
     console_scripts = cast(Mapping[str, list[str]], environment["console_scripts"])
     projected_paths: set[str] = {str(row["path"]) for row in projected}
     selected_content = projected[0]
@@ -1566,6 +1975,26 @@ def validate_python_environment_identity(payload: object) -> dict[str, object]:
                 "Python distribution identity is invalid"
             )
         distribution_names.add(name)
+        wheel = distribution.get("wheel")
+        _validate_distribution_wheel(wheel)
+        if wheel is not None:
+            wheel = cast(Mapping[str, object], wheel)
+            entry = tree_by_path.get(str(wheel["path"]))
+            node = (
+                nodes_by_id.get(str(entry.get("node"))) if entry is not None else None
+            )
+            if (
+                node is None
+                or node["sha256"] != wheel["sha256"]
+                or not any(
+                    item.get("path") == wheel["path"]
+                    for item in installed
+                    if isinstance(item, Mapping)
+                )
+            ):
+                raise PythonEnvironmentIdentityError(
+                    "installed WHEEL is outside distribution custody"
+                )
         external_source = distribution.get("external_source")
         if external_source is None:
             if distribution.get("direct_url_sha256") != _EMPTY_SHA256:

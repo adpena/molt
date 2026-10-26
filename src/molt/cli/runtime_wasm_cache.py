@@ -11,7 +11,7 @@ from molt.default_paths import _default_molt_cache
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmGeneration,
-    hydrate_runtime_wasm_generation,
+    _runtime_wasm_store,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_path,
@@ -33,52 +33,49 @@ def _cached_pair_paths(identity: RuntimeBuildIdentity) -> tuple[Path, Path, Path
     return shared, reloc, runtime_wasm_generation_path(shared)
 
 
-def hydrate_runtime_wasm_pair_from_shared_cache(
+def admit_runtime_wasm_pair_from_shared_cache(
     *,
-    dest_shared: Path,
-    dest_reloc: Path,
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
     environment: ProcessEnvironment,
 ) -> RuntimeWasmGeneration | None:
-    _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_attempts"] = (
-        int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_attempts"]) + 1
+    """Admit the exact cached family in place; the caller checks its exports.
+
+    Codegen pins this admitted receipt before emitting app layout. The mutable
+    host selection is not rewritten and no second runtime copy is needed.
+    """
+    _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_attempts"] = (
+        int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_attempts"]) + 1
     )
     _cache_shared, _cache_reloc, cache_manifest = _cached_pair_paths(shared_identity)
     if not cache_manifest.is_file():
-        _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_misses"] = (
-            int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_misses"]) + 1
-        )
-        return None
-    generation = read_runtime_wasm_generation(
-        cache_manifest,
-        expected_shared_identity=shared_identity,
-        expected_reloc_identity=reloc_identity,
-    )
-    if generation is None:
-        _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_failures"] = (
-            int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
+        _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_misses"] = (
+            int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_misses"]) + 1
         )
         return None
     try:
-        generation.cargo_environment.verify(environment)
-        hydrated = hydrate_runtime_wasm_generation(
-            source_manifest=cache_manifest,
-            source_generation=generation,
-            dest_shared=dest_shared,
-            dest_reloc=dest_reloc,
-            expected_shared_identity=shared_identity,
-            expected_reloc_identity=reloc_identity,
-        )
+        # Renew the same store that publication and codegen binding use. The
+        # lock covers admission through renewal so eviction cannot win between
+        # observing the members and recording their use. No member is copied.
+        with _runtime_wasm_store(cache_manifest.parent) as store:
+            generation = read_runtime_wasm_generation(
+                cache_manifest,
+                expected_shared_identity=shared_identity,
+                expected_reloc_identity=reloc_identity,
+            )
+            if generation is None:
+                raise ValueError("cached runtime WASM generation failed admission")
+            generation.cargo_environment.verify(environment)
+            store.use(generation.shared.name, generation.reloc.name)
     except (OSError, ValueError):
-        _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_failures"] = (
-            int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
+        _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_failures"] = (
+            int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_failures"]) + 1
         )
         return None
-    _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_hits"] = (
-        int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_hits"]) + 1
+    _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_hits"] = (
+        int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["admit_hits"]) + 1
     )
-    return hydrated
+    return generation
 
 
 def publish_runtime_wasm_pair_to_shared_cache(

@@ -1,6 +1,14 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "bench/harness.py",
+    "src/molt/compilation_target.py",
+    "src/molt/native_target.py",
+    "tools/bench_dashboard.py",
+    "tools/bench_diff.py",
+    "tools/bench_evidence.py",
+    "tools/bench_reporting.py",
+    "tools/perf_regression.py",
     "src/molt/binaryen_identity.py",
     "src/molt/binaryen_toolchain.py",
     "src/molt/llvm_wasi_tools.py",
@@ -105,6 +113,8 @@
     "src/molt/metric_ratios.py",
     "src/molt/node_runtime.py",
     "src/molt/target_python.py",
+    "src/molt/target_python_policy.py",
+    "src/molt/_python_release_generated.py",
     "src/molt/compiler_analysis/python_syntax.py",
     "tests/tools/test_check_perf_gate_wiring.py",
     "tests/tools/test_perf_authority.py",
@@ -200,6 +210,11 @@
     "src/molt/dx.py",
     "src/molt/checkout_state.py",
     "src/molt/checkout_provisioning.py",
+    "src/molt/source_build_environment.py",
+    "src/molt/source_build_environment_schema.py",
+    "src/molt/source_build_requirements.py",
+    "src/molt/python_interpreter.py",
+    "src/molt/compiler_analysis/__init__.py",
     "src/molt/backend_daemon_paths.py",
     "src/molt/default_paths.py",
     "src/molt/environment_registry.py",
@@ -213,6 +228,7 @@
     "src/molt/cargo_workspace.py",
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
+    "src/molt/llvm_link_plan.py",
     "src/molt/wasi_sdk_identity.py",
     "src/molt/wasi_c_abi_protocol.txt",
     "tools/provision_wasi_sdk.py",
@@ -353,6 +369,7 @@
     "tests/test_ci_cargo_cache.py",
     "tools/ci_cargo_cache.py",
     "tools/ci_triage.py",
+    "tools/ci_proof_evidence.py",
     "tests/tools/test_ci_triage.py",
     "tests/test_cpython_regrtest_memory_guard.py",
     "tests/test_generator_manifest.py",
@@ -490,6 +507,7 @@
         "tests/tools/test_rust_toolchain_contract.py/**",
         "tests/test_gen_cpython_abi_layout.py/**",
         "tests/tools/test_perf_release_integrity.py/**",
+        "tests/test_runtime_build_python.py/**",
         "tests/test_dead_code_allow_ratchet.py/**",
         "tests/tools/test_advisory_classifier.py/**",
         "tests/tools/test_check_ir_structure.py/**",
@@ -636,6 +654,7 @@
         "tests/test_artifact_poison_gate.py/**",
         "tests/tools/test_signed_ratio.py/**",
         "tests/test_agent_coordination.py/**",
+        "tests/tools/test_release_outcomes.py/**",
         "tests/tools/test_apparatus_agent_safety.py/**",
         "tests/tools/test_check_commit_attribution.py/**",
         "tests/tools/test_check_gate_flips.py/**",
@@ -873,7 +892,6 @@
         "vendor/rust/cranelift-object/**",
         "tools/metamorphic_runner.py",
         "tests/cli/test_runtime_build_identity.py/**",
-        "tests/test_runtime_build_python.py/**",
         "tests/cli/test_cli_python_source_closure.py/**",
         "tests/cli/test_native_symbol_authority.py/**",
         "tests/cli/test_cli_extension_commands.py/**",
@@ -915,6 +933,7 @@
       "executor": "github-job",
       "inputs": [
         ".github/workflows/ci.yml",
+        ".cargo/config.toml",
         "rust-toolchain.toml",
         "src/molt/wasm_artifact.py",
         "deploy/browser/compute-engine.js",
@@ -1019,6 +1038,8 @@
         "runtime/molt-artifact-publish/**",
         "runtime/molt-backend-mlir/**",
         "runtime/molt-backend-native/**",
+        "runtime/molt-llvm-link/**",
+        "src/molt/llvm_link_plan.py",
         "runtime/molt-ir/**",
         "runtime/molt-passes/**",
         "runtime/molt-tir/**",
@@ -1194,8 +1215,9 @@
         "src/molt/cli/external_native.py",
         "src/molt/cli/module_graph.py",
         "src/molt/cli/python_module_names.py",
-        "src/molt/cli/source_build_environment.py",
-        "src/molt/cli/source_build_environment_schema.py",
+        "src/molt/source_build_environment.py",
+        "src/molt/source_build_environment_schema.py",
+        "src/molt/source_build_requirements.py",
         "src/molt/cli/source_build_inventory.py",
         "src/molt/python_*.py",
         "src/molt/native_artifact_header.py",
@@ -1364,7 +1386,6 @@
         "proof-results/nightly/prepare"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1547,7 +1568,6 @@
         "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1592,7 +1612,6 @@
         "proof-results/nightly/deterministic-runtime.json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1633,7 +1652,6 @@
         "slow"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1675,7 +1693,6 @@
         "proof-results/nightly/ir-verification.json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
         "nightly.determinism.ir-hashseed",
@@ -1714,7 +1731,6 @@
         "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1758,7 +1774,6 @@
         "proof-results/reproducibility-tier3.json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1801,7 +1816,6 @@
         "proof-results/fuzz-compiler-extended.json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1841,7 +1855,6 @@
         "auto"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -1915,7 +1928,6 @@
         "tests/differential"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -2026,7 +2038,6 @@
         "auto"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -2098,7 +2109,6 @@
         "auto"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "macos-arm64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -2170,7 +2180,6 @@
         "auto"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -2240,7 +2249,6 @@
         "-v"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -2280,7 +2288,6 @@
         "-v"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "macos-arm64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -2321,7 +2328,6 @@
         "--durations=10"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "env": {
@@ -2428,7 +2434,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -2464,7 +2469,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -2508,7 +2512,6 @@
         "120"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -3485,7 +3488,10 @@
         "pytest",
         "-q",
         "-n",
-        "auto"
+        "auto",
+        "-p",
+        "tools.pytest_profile",
+        "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -3496,6 +3502,9 @@
         "repository.canonicalization",
         "repository.call-fact-coverage",
         "repository.perf-methodology"
+      ],
+      "evidence_outputs": [
+        "proof-receipts/evidence/repository-docs-tests"
       ],
       "family": "repository_policy",
       "id": "repository.docs-tests",
@@ -3567,6 +3576,7 @@
       "toolchains": [
         "python",
         "uv",
+        "rustc",
         "rustfmt"
       ]
     },
@@ -3584,12 +3594,12 @@
         "not slow"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-repository-policy",
       "dependencies": [],
       "family": "repository_policy",
       "id": "repository.tooling-tests",
       "pytest": [
+        "tests/test_runtime_build_python.py",
         "tests/test_dead_code_allow_ratchet.py",
         "tests/tools/test_advisory_classifier.py",
         "tests/tools/test_check_ir_structure.py",
@@ -3773,6 +3783,7 @@
       "id": "repository.agent-coordination",
       "pytest": [
         "tests/test_agent_coordination.py",
+        "tests/tools/test_release_outcomes.py",
         "tests/tools/test_apparatus_agent_safety.py",
         "tests/tools/test_check_commit_attribution.py",
         "tests/tools/test_check_gate_flips.py",
@@ -3816,7 +3827,6 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "env": {
@@ -3857,7 +3867,6 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "env": {
@@ -3896,7 +3905,6 @@
         "auto"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -3942,7 +3950,6 @@
         "molt-wasm-host"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -3983,7 +3990,6 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "family": "wasm",
@@ -4024,7 +4030,6 @@
         "--json"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "family": "wasm",
@@ -4067,7 +4072,6 @@
         "/tmp/molt-wasm-ci/hello/hello.wasm"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4153,7 +4157,6 @@
         "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4236,7 +4239,6 @@
         "/tmp/test_hello.luau"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4281,7 +4283,6 @@
         "/tmp/test_string_comprehension.luau"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4326,7 +4327,6 @@
         "/tmp/molt-wasm-ci/sieve/sieve.wasm"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4481,7 +4481,6 @@
         "-q"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4532,7 +4531,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4584,7 +4582,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4628,7 +4625,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4643,7 +4639,8 @@
         "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls"
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [
@@ -4679,7 +4676,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4723,7 +4719,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4767,7 +4762,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4811,7 +4805,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4855,7 +4848,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend"
@@ -4901,7 +4893,6 @@
         "-q"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -4948,7 +4939,6 @@
         "native"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -4998,7 +4988,6 @@
         "wasm"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -5067,7 +5056,6 @@
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -5313,6 +5301,8 @@
         "-m",
         "pytest",
         "-q",
+        "-n",
+        "auto",
         "-m",
         "not slow"
       ],
@@ -5333,48 +5323,7 @@
         "tests/test_python_runtime_identity.py",
         "tests/tools/test_toolchain_capture.py"
       ],
-      "resource_class": "python-tests",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python",
-        "-m",
-        "pytest",
-        "-q",
-        "-m",
-        "not slow"
-      ],
-      "cache_domain": "pytest",
-      "cell": "macos-arm64-py312-unit",
-      "dependencies": [],
-      "family": "python_unit",
-      "id": "python.unit.python-custody.macos",
-      "pytest": [
-        "tests/test_python_environment_identity.py",
-        "tests/test_python_external_custody.py",
-        "tests/test_python_uv_lock_identity.py",
-        "tests/test_python_identity_adversarial.py",
-        "tests/test_toolchain_identity.py",
-        "tests/test_toolchain_executable_selection.py",
-        "tests/test_python_native_dependency_custody.py",
-        "tests/test_python_native_locations.py",
-        "tests/test_python_runtime_identity.py",
-        "tests/tools/test_toolchain_capture.py"
-      ],
+      "pytest_worker_memory_gb": 1.75,
       "resource_class": "python-tests",
       "tiers": [
         "pre-push",
@@ -5403,7 +5352,51 @@
         "not slow"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
+      "cell": "macos-arm64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.python-custody.macos",
+      "pytest": [
+        "tests/test_python_environment_identity.py",
+        "tests/test_python_external_custody.py",
+        "tests/test_python_uv_lock_identity.py",
+        "tests/test_python_identity_adversarial.py",
+        "tests/test_toolchain_identity.py",
+        "tests/test_toolchain_executable_selection.py",
+        "tests/test_python_native_dependency_custody.py",
+        "tests/test_python_native_locations.py",
+        "tests/test_python_runtime_identity.py",
+        "tests/tools/test_toolchain_capture.py"
+      ],
+      "pytest_worker_memory_gb": 1.75,
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "-m",
+        "not slow"
+      ],
+      "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -5461,7 +5454,6 @@
         "not slow"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "macos-arm64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -5997,7 +5989,6 @@
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-unit-collection",
       "dependencies": [],
       "family": "python_unit_collection",
@@ -6850,7 +6841,6 @@
         "not slow"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -6945,7 +6935,6 @@
         "not slow"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "macos-arm64-py312-unit",
       "dependencies": [],
       "family": "python_unit",
@@ -7139,7 +7128,6 @@
       "id": "native.integration.python-custody",
       "pytest": [
         "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe",
-        "tests/test_runtime_build_python.py",
         "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
@@ -7149,7 +7137,7 @@
         "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution",
         "tests/cli/test_link_selection_admission.py",
         "tests/cli/test_c_api_headers.py",
-        "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_reports_owned_raised_exception"
+        "tests/cli/test_cli_native_main_stub_authority.py::test_rendered_native_main_hands_the_runtime_status_to_its_exit"
       ],
       "resource_class": "python-tests",
       "tiers": [
@@ -7182,7 +7170,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7222,7 +7209,6 @@
         "--durations=0"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7265,7 +7251,6 @@
         "--durations=20"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7312,7 +7297,6 @@
         "--durations=10"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7360,7 +7344,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-wasi-dev",
       "dependencies": [],
       "family": "rust",
@@ -7388,7 +7371,6 @@
         "tools/check_cargo_locks.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -7418,7 +7400,6 @@
         "fuzz/Cargo.toml"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c++"
@@ -7451,7 +7432,6 @@
         "runtime/molt-backend/fuzz/Cargo.toml"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c++"
@@ -7484,7 +7464,6 @@
         "runtime/molt-runtime/fuzz/Cargo.toml"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7520,7 +7499,6 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-py312-browser-simd-release",
       "dependencies": [],
       "family": "browser_simd",
@@ -7559,7 +7537,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-py312-browser-simd-release",
       "cwd": "deploy/browser/simd-ops-rs",
       "dependencies": [],
@@ -7589,7 +7566,6 @@
         "molt-runtime-math"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-aarch64-dev",
       "dependencies": [],
       "family": "rust",
@@ -7616,7 +7592,6 @@
         "tools/run_cargo_test_truth.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7732,7 +7707,6 @@
         "read::macho::test_macho_load_command_offset"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -7785,6 +7759,8 @@
         "-p",
         "molt-runtime-core",
         "-p",
+        "molt-runtime-math",
+        "-p",
         "molt-stdlib-text",
         "-p",
         "molt-runtime-platform",
@@ -7794,7 +7770,7 @@
         "zlib-rs@0.6.8",
         "--no-default-features",
         "--features",
-        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
+        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
         "--",
         "errno_build_tests::",
         "socket_constants::tests::",
@@ -7823,12 +7799,13 @@
         "gpu_runtime_tests::",
         "kernel_storage::",
         "regex::",
-        "text_storage::",
+        "unicode_target::",
+        "numeric_ratio::",
+        "math::statistics_reduction_tests::",
         "--nocapture",
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -7876,7 +7853,6 @@
         "8"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -7925,7 +7901,6 @@
         "120"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-wasi-dev",
       "dependencies": [],
       "family": "rust",
@@ -7969,7 +7944,6 @@
         "600"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c"
@@ -8021,7 +7995,6 @@
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -8063,7 +8036,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -8109,7 +8081,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -8144,7 +8115,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -8179,7 +8149,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -8214,7 +8183,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -8248,7 +8216,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -8282,7 +8249,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -8316,7 +8282,6 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -8347,7 +8312,6 @@
         "native-backend llvm"
       ],
       "cache_domain": "llvm-cargo",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -8392,7 +8356,6 @@
         "--no-fail-fast"
       ],
       "cache_domain": "llvm-cargo",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -8436,7 +8399,6 @@
         "--no-fail-fast"
       ],
       "cache_domain": "llvm-cargo",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -8484,7 +8446,6 @@
         "warnings"
       ],
       "cache_domain": "llvm-cargo",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "target": [
           "c"
@@ -8521,7 +8482,6 @@
         "--no-fail-fast"
       ],
       "cache_domain": "mlir-cargo",
-      "cargo_build_python": false,
       "cargo_native_units": {
         "host": [
           "c++"
@@ -8602,7 +8562,6 @@
         "integer_carrier_matrix"
       ],
       "cache_domain": "llvm-cargo",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -8695,7 +8654,6 @@
         "deny"
       ],
       "cache_domain": "cargo-security",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-audit",
       "dependencies": [],
       "family": "rust_security",
@@ -8723,7 +8681,6 @@
         "tmp/security/cargo-audit-advisory-db"
       ],
       "cache_domain": "cargo-security",
-      "cargo_build_python": false,
       "cell": "linux-x86_64-rust-audit",
       "dependencies": [
         "security.rust.deny"
@@ -8853,7 +8810,6 @@
         "-q"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "linux-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -8896,7 +8852,6 @@
         "-q"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "macos-arm64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -8939,7 +8894,6 @@
         "-q"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -8983,7 +8937,6 @@
         "-q"
       ],
       "cache_domain": "pytest",
-      "cargo_build_python": true,
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
       "family": "platform_portability",
@@ -9053,7 +9006,6 @@
         "tools/run_candidate_runtime_costs.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_build_python": true,
       "cargo_native_units": {
         "target": [
           "c",
@@ -9506,7 +9458,7 @@
       "local.apparatus-learning-protection.0": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-      "local.backend-daemon-cache.1": "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test rust_transpiler_preview -- --test-threads=1",
+      "local.backend-daemon-cache.1": "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn --test rust_transpiler_preview -- --test-threads=1",
       "local.backend-daemon-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_backend_daemon_custody.py tests/test_backend_daemon_argv.py tests/test_backend_daemon_suite_custody.py tests/test_molt_diff_daemon_pruning.py tests/test_bench_individual_tool.py",
       "local.backend-environment-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_backend_environment_contract.py tests/cli/test_llvm_wasi_tools.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
       "local.backend-environment-contract.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env' tests/cli/test_cli_import_collection.py",
@@ -9514,9 +9466,11 @@
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-luau.0": "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --no-fail-fast",
+      "local.backend-rust.0": "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast",
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.browser-simd.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_build_browser_simd.py tests/e2e/test_simd_differential.py tests/test_browser_compute_backend_semantics.py",
+      "local.build-control-paths.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_build_state_layout.py",
       "local.build-output-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_cli_build_identity.py tests/cli/test_cli_build_output_layout_authority.py tests/cli/test_cli_frontend_pipeline_authority.py",
       "local.builtin-binding-guard-authority.0": "cargo test --locked --profile dev-fast -p molt-runtime --lib binding_guards",
       "local.builtin-binding-guard-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
@@ -9543,6 +9497,7 @@
       "local.frontend-python.1": "python tools/verified_subset.py check",
       "local.frontend-python.2": "python tools/check_dynamic_policy.py",
       "local.generator-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_generator_manifest.py",
+      "local.git-process-policy.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_command_execution.py",
       "local.gpu-runtime.0": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_heap_kinds.py",
@@ -9568,6 +9523,7 @@
       "local.native-launch-abi.0": "cargo test --locked --profile dev-fast -p molt-jit --test runner_launch",
       "local.native-launch-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_native_launch_abi.py",
       "local.native-object-emission.0": "cargo test --locked --profile dev-fast -p object@0.40.0 -p cranelift-object@0.137.0 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho --skip read::macho::test_macho_load_command_offset",
+      "local.native-test-failure-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_native_process_guard.py",
       "local.op-kind-registry.0": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
       "local.performance-measurement.0": "python tools/perf_methodology.py --check",
@@ -9578,17 +9534,18 @@
       "local.process-environment-consumers.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k batch_suite_trip_uses_submitted_request_custody_before_shutdown tests/test_molt_diff_memory_guard.py",
       "local.process-environment-consumers.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker' tests/test_demo_bench_memory_guard.py",
       "local.public-contract.0": "python tools/public_contract_gate.py --check",
-      "local.public-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_public_contract_gate.py",
+      "local.public-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_public_contract_gate.py tests/tools/test_release_exit_gate.py tests/tools/test_release_criterion_receipt.py tests/tools/test_release_matrix_acceptance.py",
       "local.python-effect-capability-authority.0": "cargo test --locked -p molt-ir --lib python_effects_generated",
       "local.python-effect-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_effects.py",
       "local.python-identity-catalog-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
       "local.python-source-dependencies.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_python_namespace_graph.py tests/cli/test_cli_python_source_closure.py tests/cli/test_cli_python_import_authority.py tests/cli/test_cli_lowering_cache_tooling_scope.py tests/cli/test_source_pure_import_requests.py",
-      "local.repository-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_encoding_gate.py tests/tools/test_signed_ratio.py tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_environment_registry.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_structural_audit_records.py tests/test_structural_audit.py tests/test_generator_manifest.py tests/test_gen_stringprep_tables.py tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
-      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_cargo_search_path.py tests/cli/test_product_store.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py tests/test_toolchain_facts.py tests/tools/test_tool_identity_reuse.py",
-      "local.runtime-cargo-input-custody.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy' tests/tools/test_toolchain_capture.py tests/tools/test_cargo_bindgen_toolchain.py tests/tools/test_proof_queue_execution_custody_p0.py tests/test_platform_toolchain.py",
+      "local.release-work-state.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_agent_coordination.py tests/tools/test_release_outcomes.py",
+      "local.repository-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_encoding_gate.py tests/tools/test_signed_ratio.py tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_environment_registry.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_structural_audit_records.py tests/test_structural_audit.py tests/test_generator_manifest.py tests/test_gen_stringprep_tables.py",
+      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_cargo_search_path.py tests/cli/test_product_store.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py tests/test_toolchain_facts.py tests/tools/test_tool_identity_reuse.py",
+      "local.runtime-cargo-input-custody.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 -k 'rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy' tests/tools/test_toolchain_capture.py tests/tools/test_cargo_bindgen_toolchain.py tests/tools/test_proof_queue_execution_custody_p0.py tests/test_platform_toolchain.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
-      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
+      "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-lang-obj-model -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
       "local.runtime-regex.1": "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --compiler-profile dev --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/codecs_error_handlers_basic.py \"tests/differential/stdlib/re_*.py\"",
       "local.runtime-regex.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_stdlib_re.py",
       "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
@@ -9609,7 +9566,8 @@
       "local.suite-honesty.0": "python tools/check_differential_suite_layout.py",
       "local.suite-honesty.1": "python tools/check_suite_honesty.py",
       "local.table-drift.0": "python tools/check_table_drift.py --check",
-      "local.table-drift.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_table_drift_gate.py tests/tools/test_gen_token_metadata.py tests/tools/test_gen_stdlib_module_union_memory_guard.py",
+      "local.table-drift.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_table_drift_gate.py tests/tools/test_gen_token_metadata.py tests/tools/test_gen_stdlib_module_union_memory_guard.py tests/test_compat_multibackend_oracle.py tests/test_molt_diff_memory_guard.py tests/test_molt_diff_expected_failures.py tests/test_molt_diff_scheduling.py tests/test_target_python_oracle.py tests/cli/test_cli_target_python.py tests/cli/test_backend_initialization_contract.py tests/cli/test_cli_cache_fingerprint.py",
+      "local.target-python-extension-release-identity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_producer.py",
       "local.timing-ratio-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_signed_ratio.py",
       "local.tinygrad-op-contract.0": "python tools/check_tinygrad_pin.py --check",
       "local.tinygrad-op-contract.1": "python tools/gen_gpu_op_contract.py --check",
@@ -9617,7 +9575,7 @@
       "local.tinygrad-upat-static-exec-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_tinygrad_upat_static_exec_registry.py",
       "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
-      "local.unicode-width-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
+      "local.unicode-source-facts.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_runtime_build_python.py",
       "local.wasm-abi-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_wasm_abi.py",
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
@@ -10041,7 +9999,10 @@
           "src/molt/_host_capabilities_generated.py",
           "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
           "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
+          "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
           "src/molt/target_python.py",
+          "src/molt/target_python_policy.py",
+          "src/molt/_python_release_generated.py",
           "wasm/host_capabilities_generated.js",
           "docs/spec/areas/security/host_capabilities.generated.md",
           "tests/test_gen_host_capabilities.py"
@@ -10240,6 +10201,7 @@
         ],
         "toolchains": [
           "python",
+          "rustc",
           "rustfmt"
         ]
       },
@@ -10251,6 +10213,7 @@
         "gates": [],
         "globs": [
           "tools/gen_codecs.py",
+          "config/codec_aliases.toml",
           "runtime/molt-runtime/src/object/ops_encoding.rs",
           "runtime/molt-stdlib-text/src/codec_registry.rs",
           "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
@@ -10364,7 +10327,8 @@
           "tests/cli/test_source_extension_*.py",
           "tests/tools/test_native_link_benchmark.py",
           "tests/tools/test_scientific_stack_versions.py",
-          "src/molt/cli/source_build_environment*.py",
+          "src/molt/source_build_environment*.py",
+          "src/molt/source_build_requirements.py",
           "tests/cli/test_source_build_environment_probe.py"
         ],
         "name": "source-extension-package-sets",
@@ -10458,7 +10422,8 @@
           "tests/test_proof_plan.py",
           "tests/tools/test_native_link_benchmark.py",
           "tests/tools/test_scientific_stack_versions.py",
-          "src/molt/cli/source_build_environment*.py",
+          "src/molt/source_build_environment*.py",
+          "src/molt/source_build_requirements.py",
           "tests/cli/test_source_build_environment_probe.py",
           "tools/proof_queue_pkg/command_identity.py",
           "tools/proof_queue_pkg/toolchain_capture.py",
@@ -10866,6 +10831,28 @@
       },
       {
         "command_ids": [
+          "local.build-control-paths.pytest"
+        ],
+        "description": "Build-control and guard path producers select their real consumer contract.",
+        "gates": [],
+        "globs": [
+          "tools/build_control_path.py",
+          "tools/harness_memory_guard.py",
+          "src/molt/build_state_layout.py",
+          "src/molt/memory_guard_paths.py",
+          "src/molt/dx.py",
+          "tests/test_build_state_layout.py"
+        ],
+        "name": "build-control-paths",
+        "pytest": [
+          "tests/test_build_state_layout.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.repository-scan-records.pytest"
         ],
         "description": "Shared scan-record storage and replay select all scanner consumers.",
@@ -10886,8 +10873,7 @@
           "tests/tools/test_structural_audit_records.py",
           "tests/test_structural_audit.py",
           "tests/test_generator_manifest.py",
-          "tests/test_gen_stringprep_tables.py",
-          "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime"
+          "tests/test_gen_stringprep_tables.py"
         ],
         "toolchains": [
           "python"
@@ -10949,16 +10935,16 @@
       },
       {
         "command_ids": [
-          "local.unicode-width-scan-records.pytest"
+          "local.unicode-source-facts.pytest"
         ],
-        "description": "Unicode-width facts replay against the admitted runtime.",
+        "description": "Pinned source Unicode facts, schema refusal, and independent emitted-table oracle.",
         "gates": [],
         "globs": [
           "tools/gen_unicode_width.py"
         ],
-        "name": "unicode-width-scan-records",
+        "name": "unicode-source-facts",
         "pytest": [
-          "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime"
+          "tests/test_runtime_build_python.py"
         ],
         "toolchains": [
           "python"
@@ -11118,7 +11104,6 @@
           "src/molt/cli/wasm_facts_tool.py",
           "src/molt/host_tool_products.py",
           "src/molt/cli/runtime_build_identity.py",
-          "src/molt/cli/runtime_build_python.py",
           "src/molt/cli/runtime_cargo_plan.py",
           "src/molt/cli/rustc_probes.py",
           "src/molt/cli/runtime_fingerprints.py",
@@ -11205,6 +11190,25 @@
       },
       {
         "command_ids": [
+          "local.native-test-failure-diagnostics.pytest"
+        ],
+        "description": "Native compile/run failure retention, byte identity and original failure preservation.",
+        "gates": [],
+        "globs": [
+          "tests/native_process_guard.py",
+          "tests/test_native_process_guard.py",
+          "tests/test_native_lir_loop_join_semantics.py"
+        ],
+        "name": "native-test-failure-diagnostics",
+        "pytest": [
+          "tests/test_native_process_guard.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.rust-toolchain.0",
           "local.rust-toolchain.pytest"
         ],
@@ -11252,6 +11256,8 @@
           "include/molt/Python.h",
           "runtime/molt-cpython-abi/include/Python.h",
           "src/molt/target_python.py",
+          "src/molt/target_python_policy.py",
+          "src/molt/_python_release_generated.py",
           "tools/stdlib_module_union.py",
           "tools/gen_stdlib_module_union.py",
           "config/cpython_stdlib_snapshot.json",
@@ -11267,11 +11273,41 @@
         "pytest": [
           "tests/test_table_drift_gate.py",
           "tests/tools/test_gen_token_metadata.py",
-          "tests/tools/test_gen_stdlib_module_union_memory_guard.py"
+          "tests/tools/test_gen_stdlib_module_union_memory_guard.py",
+          "tests/test_compat_multibackend_oracle.py",
+          "tests/test_molt_diff_memory_guard.py",
+          "tests/test_molt_diff_expected_failures.py",
+          "tests/test_molt_diff_scheduling.py",
+          "tests/test_target_python_oracle.py",
+          "tests/cli/test_cli_target_python.py",
+          "tests/cli/test_backend_initialization_contract.py",
+          "tests/cli/test_cli_cache_fingerprint.py"
         ],
         "toolchains": [
           "python",
           "rustfmt"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.target-python-extension-release-identity.pytest"
+        ],
+        "description": "Pinned target release fields agree with registered and recorded extension variants without masking ABI rejection controls.",
+        "gates": [],
+        "globs": [
+          "src/molt/target_python.py",
+          "src/molt/target_python_policy.py",
+          "src/molt/_python_release_generated.py",
+          "tests/cli/test_source_extension_set_registry.py",
+          "tests/cli/test_source_extension_producer.py"
+        ],
+        "name": "target-python-extension-release-identity",
+        "pytest": [
+          "tests/cli/test_source_extension_set_registry.py",
+          "tests/cli/test_source_extension_producer.py"
+        ],
+        "toolchains": [
+          "python"
         ]
       },
       {
@@ -11373,6 +11409,7 @@
           "tests/test_ci_cargo_cache.py",
           "tools/ci_cargo_cache.py",
           "tools/ci_triage.py",
+          "tools/ci_proof_evidence.py",
           "tests/tools/test_ci_triage.py",
           "tests/test_resource_pressure.py",
           "tests/test_translation_validate_roots.py",
@@ -11512,6 +11549,7 @@
           "python tools/perf_methodology.py --check"
         ],
         "globs": [
+          "tools/git_identity.py",
           "tools/bench.py",
           "tools/bench_audit.py",
           "tools/bench_reporting.py",
@@ -11715,6 +11753,25 @@
       },
       {
         "command_ids": [
+          "local.git-process-policy.pytest"
+        ],
+        "description": "Git process settings retain inherited configuration and native failure semantics.",
+        "gates": [],
+        "globs": [
+          "tools/git_identity.py",
+          "tools/git_transfer.py",
+          "tests/tools/test_command_execution.py"
+        ],
+        "name": "git-process-policy",
+        "pytest": [
+          "tests/tools/test_command_execution.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.public-contract.0",
           "local.public-contract.pytest"
         ],
@@ -11731,21 +11788,32 @@
           "src/molt/cli/__init__.py",
           "src/molt/release_matrix.py",
           "src/molt/target_python.py",
+          "src/molt/target_python_policy.py",
+          "src/molt/_python_release_generated.py",
           "src/molt/compiler_distribution.py",
           "src/molt/verified_subset.py",
           "tools/gen_release_matrix.py",
           "tools/legacy_inventory.py",
           "tools/pact_witness_receipt.py",
           "tools/phase_exit_manifest.py",
+          "tools/git_identity.py",
           "tools/release_exit_gate.py",
+          "tools/release_criterion_receipt.py",
+          "tools/release_matrix_acceptance.py",
           "tools/release/release_authority.py",
           "tools/release/release_model.py",
           "tools/public_contract_gate.py",
-          "tests/tools/test_public_contract_gate.py"
+          "tests/tools/test_public_contract_gate.py",
+          "tests/tools/test_release_exit_gate.py",
+          "tests/tools/test_release_criterion_receipt.py",
+          "tests/tools/test_release_matrix_acceptance.py"
         ],
         "name": "public-contract",
         "pytest": [
-          "tests/tools/test_public_contract_gate.py"
+          "tests/tools/test_public_contract_gate.py",
+          "tests/tools/test_release_exit_gate.py",
+          "tests/tools/test_release_criterion_receipt.py",
+          "tests/tools/test_release_matrix_acceptance.py"
         ],
         "toolchains": [
           "python"
@@ -11758,6 +11826,8 @@
         "description": "Installed executable admission, provenance and complete bundle/wheel consumer projections move together.",
         "gates": [],
         "globs": [
+          "tools/git_identity.py",
+          "tools/release/git_source_snapshot.py",
           "src/molt/compiler_distribution.py",
           "src/molt/host_tool_products.py",
           "src/molt/cli/wasm_facts_tool.py",
@@ -11815,6 +11885,9 @@
         "description": "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer.",
         "gates": [],
         "globs": [
+          ".cargo/config.toml",
+          "rust-toolchain.toml",
+          "src/molt/wasm_artifact.py",
           "deploy/browser/compute-engine.js",
           "deploy/browser/simd-ops-rs/**",
           "deploy/browser/simd-ops.wasm",
@@ -11922,18 +11995,24 @@
           "local.backend-daemon-cache.0",
           "local.backend-daemon-cache.1"
         ],
-        "description": "Exercise typed daemon target identity, LRU and flights on the compiler-authorities feature graph.",
+        "description": "Exercise daemon identity, worker processes and shared-stdlib reuse on one compiler-authorities feature graph.",
         "gates": [
           "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-          "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test rust_transpiler_preview -- --test-threads=1"
+          "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn --test rust_transpiler_preview -- --test-threads=1"
         ],
         "globs": [
           "runtime/molt-backend/Cargo.toml",
           "runtime/molt-backend/src/backend_process/cli_args/**/*.rs",
           "runtime/molt-backend/src/backend_process/native_artifact.rs",
+          "runtime/molt-backend/src/backend_process/input/**/*.rs",
+          "runtime/molt-backend/src/backend_process/native_batch.rs",
+          "runtime/molt-backend/src/backend_process/native_batch/**/*.rs",
+          "runtime/molt-backend/src/backend_process/shared_stdlib_cache.rs",
+          "runtime/molt-backend/src/backend_process/shared_stdlib_cache/**/*.rs",
           "runtime/molt-backend/src/backend_process/daemon/**/*.rs",
           "runtime/molt-backend/src/main_tests/daemon*.rs",
-          "runtime/molt-backend/tests/daemon_server.rs"
+          "runtime/molt-backend/tests/daemon_server.rs",
+          "runtime/molt-backend/tests/native_batch_worker_spawn.rs"
         ],
         "name": "backend-daemon-cache",
         "toolchains": [
@@ -12047,6 +12126,25 @@
       },
       {
         "command_ids": [
+          "local.backend-rust.0"
+        ],
+        "description": "Execute emitted Rust source in its owning crate, without building a native code generator.",
+        "gates": [
+          "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-backend-rust/**/*.rs",
+          "runtime/molt-backend-rust/Cargo.toml"
+        ],
+        "name": "backend-rust",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
           "local.backend-llvm.0"
         ],
         "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
@@ -12056,6 +12154,9 @@
         "globs": [
           "runtime/test_support/native_object_execution.rs",
           "runtime/molt-backend-native/Cargo.toml",
+          "runtime/molt-backend-native/src/lib.rs",
+          "runtime/molt-llvm-link/**",
+          "src/molt/llvm_link_plan.py",
           "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
         ],
         "name": "backend-llvm",
@@ -12171,13 +12272,15 @@
         "command_ids": [
           "local.runtime-lib.0"
         ],
-        "description": "Runtime/object-model Rust: one default-feature image with ordinary and isolated lifecycle semantics; performance probes remain unrun. Clippy belongs to rust-clippy-changed.",
+        "description": "Runtime/object-model Rust: one Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed.",
         "gates": [
           "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8"
         ],
         "globs": [
           "runtime/molt-runtime/**/*.rs",
           "runtime/molt-obj-model/**/*.rs",
+          "runtime/molt-runtime-core/src/numeric_ratio.rs",
+          "runtime/molt-runtime-math/src/math.rs",
           "runtime/**/Cargo.toml"
         ],
         "name": "runtime-lib",
@@ -12380,14 +12483,14 @@
         ],
         "description": "Typed regex parser/matcher and shared lossless text codec: one fast-profile Rust cohort, facade contracts and actual native/WASM CPython comparisons.",
         "gates": [
-          "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
+          "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-lang-obj-model -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
           "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --compiler-profile dev --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/codecs_error_handlers_basic.py \"tests/differential/stdlib/re_*.py\""
         ],
         "globs": [
           "runtime/molt-runtime-regex/**/*.rs",
           "runtime/molt-runtime-regex/Cargo.toml",
-          "runtime/molt-runtime-core/src/text_storage.rs",
-          "runtime/molt-runtime-core/src/text_storage_tests.rs",
+          "runtime/molt-obj-model/src/text_storage.rs",
+          "runtime/molt-obj-model/src/text_storage_tests.rs",
           "runtime/molt-stdlib-text/Cargo.toml",
           "runtime/molt-runtime/src/regex_bridge.rs",
           "src/molt/stdlib/re/**/*.py",
@@ -12469,16 +12572,34 @@
           "cargo",
           "python"
         ]
+      },
+      {
+        "command_ids": [
+          "local.release-work-state.pytest"
+        ],
+        "description": "Committed release facts and strict, explicitly declared outcome dependencies in canonical agent context.",
+        "gates": [],
+        "globs": [
+          "tools/agent_coordination.py",
+          "tools/release_outcomes.py",
+          "tests/test_agent_coordination.py",
+          "tests/tools/test_release_outcomes.py"
+        ],
+        "name": "release-work-state",
+        "pytest": [
+          "tests/test_agent_coordination.py",
+          "tests/tools/test_release_outcomes.py"
+        ],
+        "toolchains": [
+          "python",
+          "uv"
+        ]
       }
     ],
     "toolchains": {
       "local.always.0": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12486,10 +12607,6 @@
       "local.always.1": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12497,10 +12614,6 @@
       "local.always.10": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12508,10 +12621,6 @@
       "local.always.11": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12519,10 +12628,6 @@
       "local.always.12": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12530,10 +12635,6 @@
       "local.always.13": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12541,10 +12642,6 @@
       "local.always.14": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12552,10 +12649,6 @@
       "local.always.15": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12563,10 +12656,6 @@
       "local.always.16": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12574,10 +12663,6 @@
       "local.always.17": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12585,10 +12670,6 @@
       "local.always.18": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12596,10 +12677,6 @@
       "local.always.19": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12607,10 +12684,6 @@
       "local.always.2": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12618,10 +12691,6 @@
       "local.always.20": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12629,10 +12698,6 @@
       "local.always.21": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12640,10 +12705,6 @@
       "local.always.22": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12651,10 +12712,6 @@
       "local.always.23": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12662,10 +12719,6 @@
       "local.always.3": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12673,10 +12726,6 @@
       "local.always.4": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12684,10 +12733,6 @@
       "local.always.5": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12695,10 +12740,6 @@
       "local.always.6": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12706,10 +12747,6 @@
       "local.always.7": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12717,10 +12754,6 @@
       "local.always.8": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12728,10 +12761,6 @@
       "local.always.9": [
         "python",
         "git",
-        "target-pythons.3.12",
-        "uv",
-        "target-pythons.3.13",
-        "target-pythons.3.14",
         "rustfmt",
         "browser-acorn",
         "node"
@@ -12826,6 +12855,12 @@
         "cargo",
         "git"
       ],
+      "local.backend-rust.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
       "local.browser-loader-deployment.pytest": [
         "python",
         "uv",
@@ -12844,6 +12879,9 @@
         "cargo",
         "git",
         "node"
+      ],
+      "local.build-control-paths.pytest": [
+        "python"
       ],
       "local.build-output-identity.pytest": [
         "python",
@@ -12962,6 +13000,9 @@
       "local.generator-manifest.pytest": [
         "python"
       ],
+      "local.git-process-policy.pytest": [
+        "python"
+      ],
       "local.gpu-runtime.0": [
         "python",
         "rustc",
@@ -13000,6 +13041,7 @@
       ],
       "local.intrinsic-registry.pytest": [
         "python",
+        "rustc",
         "rustfmt"
       ],
       "local.linux-vm-apparatus.pytest": [
@@ -13084,6 +13126,9 @@
         "cargo",
         "git"
       ],
+      "local.native-test-failure-diagnostics.pytest": [
+        "python"
+      ],
       "local.op-kind-registry.0": [
         "python",
         "rustfmt"
@@ -13143,6 +13188,10 @@
       ],
       "local.python-source-dependencies.pytest": [
         "python"
+      ],
+      "local.release-work-state.pytest": [
+        "python",
+        "uv"
       ],
       "local.repository-scan-records.pytest": [
         "python"
@@ -13289,6 +13338,9 @@
         "python",
         "rustfmt"
       ],
+      "local.target-python-extension-release-identity.pytest": [
+        "python"
+      ],
       "local.timing-ratio-authority.pytest": [
         "python"
       ],
@@ -13321,7 +13373,7 @@
         "node",
         "wasm-ld"
       ],
-      "local.unicode-width-scan-records.pytest": [
+      "local.unicode-source-facts.pytest": [
         "python"
       ],
       "local.wasm-abi-registry.pytest": [
@@ -13905,7 +13957,7 @@
       "selection_only": true,
       "setup_command": "uv python install 3.12",
       "setup_evidence": [
-        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+        "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
       ],
       "setup_value": "3.12",
       "version_args": [
@@ -13939,7 +13991,7 @@
       "selection_only": true,
       "setup_command": "uv python install 3.13",
       "setup_evidence": [
-        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+        "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
       ],
       "setup_value": "3.13",
       "version_args": [
@@ -13973,7 +14025,7 @@
       "selection_only": true,
       "setup_command": "uv python install 3.14",
       "setup_evidence": [
-        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+        "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
       ],
       "setup_value": "3.14",
       "version_args": [
@@ -13994,7 +14046,6 @@
     {
       "generator_manifest": "tools/generator_manifest.toml",
       "members": [
-        "target-pythons",
         "rustfmt",
         "browser-acorn"
       ],
@@ -14123,22 +14174,6 @@
         "--version"
       ],
       "version_pattern": "^lune 0\\.11\\.1$"
-    },
-    {
-      "compiler_tool_selector": "build-python",
-      "executable": "build-python",
-      "name": "build-python",
-      "python_identity_role": "runtime",
-      "selection_only": true,
-      "setup_evidence": [
-        "runtime/build_support/build_python.rs::MOLT_BUILD_PYTHON"
-      ],
-      "setup_value": "effective Cargo build Python",
-      "version_args": [
-        "--version"
-      ],
-      "version_from_content_path": true,
-      "version_pattern": "^Python 3\\.[0-9]+\\.[0-9]+.*$"
     },
     {
       "content_path_command": [

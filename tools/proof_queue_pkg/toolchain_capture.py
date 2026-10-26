@@ -1313,10 +1313,10 @@ def select_cargo_native_units(
     """Resolve declared role/language pairs without compiler probes or hashing."""
     from tools.proof_plan import cargo_native_units
     from molt.cli.runtime_cargo_plan import (
-        _c_tool_environment_names,
         _resolve_c_build_resources,
-        runtime_c_tool_selection,
     )
+    from molt.cargo_execution_policy import cargo_c_tool_environment_names
+    from molt.cli.runtime_tool_selection import runtime_c_tool_selection
 
     requirements = cargo_native_units(
         {
@@ -1369,7 +1369,9 @@ def select_cargo_native_units(
             *("cc" if language == "c" else "cxx" for language in languages),
             "ar",
         ]:
-            names = _c_tool_environment_names(role, target=triple, host_target=host)
+            names = cargo_c_tool_environment_names(
+                role, target=triple, host_target=host
+            )
             selected = next(
                 (selected_env[name] for name in names if selected_env.get(name)), None
             )
@@ -1412,7 +1414,7 @@ def select_cargo_native_units(
             flags = [
                 token
                 for name in reversed(
-                    _c_tool_environment_names(
+                    cargo_c_tool_environment_names(
                         flag_role, target=triple, host_target=host
                     )
                 )
@@ -2114,8 +2116,8 @@ def _cargo_flag_context(
     from molt.cli.runtime_cargo_plan import (
         capture_cargo_configuration_inputs,
         cargo_selected_value,
-        _tool_path,
     )
+    from molt.cli.runtime_tool_selection import runtime_tool_path
     from molt.cli.rustc_probes import rust_probe_command
     from molt.cli.cargo_target_cfg import (
         cargo_target_query_arguments,
@@ -2209,7 +2211,7 @@ def _cargo_flag_context(
             "",
         )
         if value:
-            wrappers[variable] = _tool_path(
+            wrappers[variable] = runtime_tool_path(
                 value, root=cwd, env=configured_env, role=variable
             )
     context = {
@@ -2572,77 +2574,6 @@ def _require_stable_cargo_version(version: object) -> None:
 
 
 RUNTIME_GATE_RUST_SELECTION_SCHEMA = "molt.proof-runtime-gate-rust-selection.v2"
-
-
-def toolchain_capture_environment(
-    policy,
-    *,
-    environment: Mapping[str, str],
-    cwd: Path,
-    cargo_command: Sequence[str] = ("cargo",),
-) -> ProcessEnvironment:
-    """Build generators observe Cargo's effective environment, including force."""
-    environment = ProcessEnvironment(environment)
-    if policy.data.get("compiler_tool_selector") != "build-python":
-        return environment
-    from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
-
-    configured = capture_cargo_configuration_inputs(
-        cwd, env=environment, cargo_command=cargo_command
-    )[1]
-    return ProcessEnvironment(configured, rule=environment.rule)
-
-
-def bind_build_python_environment(identity, *, policy, env, cwd, cargo_command):
-    """Project the isolated generator already held by queue file/image custody."""
-    from molt.python_runtime_admission import (
-        build_python_identity,
-        resolve_build_python,
-    )
-    from tools import proof_plan
-
-    selected = identity["python_runtime"]
-    proof_plan.validate_selected_python_runtime(policy, selected)
-    entrypoint = Path(selected["launch_argv"][0])
-    images = [
-        image
-        for image in identity["process_images"]
-        if image["role"] == policy.name + "-selected-interpreter"
-    ]
-    if len(images) != 1 or images[0]["path"] != str(entrypoint):
-        raise ValueError("build Python signature lacks its admitted executable image")
-    image = images[0]
-    material = build_python_identity(
-        entrypoint=entrypoint,
-        content_path=Path(
-            selected["startup_selection"]["selected_executable"]["resolved"]
-        ),
-        size=image["size_bytes"],
-        sha256=image["sha256"],
-        runtime=selected["runtime"],
-    )
-    signature = canonical_json_sha256(material)
-    previous = env.get("MOLT_BUILD_PYTHON_SIGNATURE")
-    if previous is not None and previous != signature:
-        raise ValueError("build Python signature differs from its isolated capture")
-    bound = ProcessEnvironment(env).updated(
-        {
-            "MOLT_BUILD_PYTHON": str(entrypoint),
-            "MOLT_BUILD_PYTHON_SIGNATURE": signature,
-        }
-    )
-    effective = toolchain_capture_environment(
-        policy,
-        environment=bound,
-        cwd=cwd,
-        cargo_command=cargo_command,
-    )
-    if (
-        resolve_build_python(effective, cwd=cwd) != entrypoint
-        or effective.get("MOLT_BUILD_PYTHON_SIGNATURE") != signature
-    ):
-        raise ValueError("Cargo configuration overrides the admitted build Python")
-    return bound
 
 
 def resolve_runtime_gate_cargo_operation(operation, *, cwd, env, compiler_host):
@@ -4095,7 +4026,7 @@ def _validate_runtime_gate_rust_selection(
         target = row["selection"]["target"]
         if target in managed:
             projection = managed[target]
-            from molt.cli.runtime_cargo_plan import _c_tool_environment_names
+            from molt.cargo_execution_policy import cargo_c_tool_environment_names
 
             abi = WasiCAbiProjection.decode(projection["c_abi"])
 
@@ -4107,7 +4038,7 @@ def _validate_runtime_gate_rust_selection(
                 expected.extend(
                     token
                     for name in reversed(
-                        _c_tool_environment_names(
+                        cargo_c_tool_environment_names(
                             flags, target=target, host_target=host
                         )
                     )
@@ -4823,7 +4754,9 @@ def frozen_files(payload: object) -> list[FrozenFile]:
             return
         normalized = _image_path_key(path)
         size = raw_size if isinstance(raw_size, int) and raw_size >= 0 else None
-        row = FrozenFile(str(path), digest, size)
+        # Store the same lexical coordinate used for deduplication. Canonical
+        # JSON can reorder callers with different spellings of that entry.
+        row = FrozenFile(normalized, digest, size)
         prior = files.get(normalized)
         if prior is not None and prior.sha256 != digest:
             raise ValueError(f"captured file has conflicting identities: {path}")

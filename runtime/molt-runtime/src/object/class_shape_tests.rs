@@ -22,7 +22,7 @@ fn class_with_field(py: &PyToken<'_>) -> u64 {
 }
 
 #[test]
-fn every_task_shape_keeps_capture_and_dictionary_ownership_disjoint() {
+fn every_available_task_shape_keeps_capture_and_dictionary_ownership_disjoint() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
@@ -35,6 +35,12 @@ fn every_task_shape_keeps_capture_and_dictionary_ownership_disjoint() {
             for shape in (0..=ObjectShapeId::MAX_ID)
                 .filter_map(ObjectShapeId::from_u16)
                 .filter(|&shape| object_shape_is_task(shape))
+                // Resource-bearing I/O tasks have producers only when the
+                // canonical networking provider is present in this build.
+                .filter(|&shape| {
+                    cfg!(molt_net)
+                        || object_shape_resource_slot(shape) == ObjectShapeResourceSlot::None
+                })
             {
                 // Slot zero is empty, including for resource-bearing tasks.
                 // Slot one is an ordinary owned capture, not a dictionary.
@@ -146,6 +152,74 @@ fn task_construction_without_poll_address_still_owns_capture_storage() {
                 );
             }
             dec_ref_bits(py, owner);
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let value = MoltObject::from_int(19).bits();
+            let source = crate::molt_itertools_repeat(value, MoltObject::from_int(4).bits());
+            let readers = crate::molt_itertools_tee(source, MoltObject::from_int(1).bits());
+            assert!(!exception_pending(py));
+            let reader = seq_access::item(obj_from_bits(readers).as_ptr().unwrap(), 0).unwrap();
+            inc_ref_bits(py, reader);
+            dec_ref_bits(py, readers);
+            assert!(!exception_pending(py));
+            assert_eq!(crate::molt_itertools_tee_next(reader), value);
+            let ptr = obj_from_bits(reader).as_ptr().unwrap();
+            let cursor = ptr
+                .cast::<molt_runtime_core::itertools_tee::TeeCursor>()
+                .read();
+            assert_eq!(cursor.index, 1);
+            let class = object_class_bits(ptr);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            assert!(!object_has_class_shape(ptr));
+            assert!(instance_dict_bits_ptr(ptr).is_null());
+            assert!(matches!(
+                field_storage::current_dictionary(py, ptr),
+                Ok(None)
+            ));
+            assert!(field_storage::field_at_offset(py, ptr, 0).is_none());
+            let mut fields = 0;
+            field_storage::for_each_instance_field(py, ptr, class_ptr, &mut |_, _| fields += 1);
+            assert_eq!(fields, 0);
+            field_storage::reset(py, ptr);
+            let after = ptr
+                .cast::<molt_runtime_core::itertools_tee::TeeCursor>()
+                .read();
+            assert_eq!(after.block_bits, cursor.block_bits);
+            assert_eq!(after.index, cursor.index);
+            let block_ptr = obj_from_bits(cursor.block_bits).as_ptr().unwrap();
+            assert!(instance_dict_bits_ptr(block_ptr).is_null());
+            let mut edges = Vec::new();
+            heap_lifecycle::visit_owned_edges(py, ptr, &mut |child| edges.push(child));
+            assert_eq!(edges.iter().filter(|&&child| child == block_ptr).count(), 1);
+            assert_eq!(edges.iter().filter(|&&child| child == class_ptr).count(), 1);
+
+            // Normal attribute lookup must pass the native payload untouched
+            // before binding the public copy descriptor.
+            let key = attr_name_bits_from_bytes(py, b"__copy__").unwrap();
+            let bound = crate::molt_get_attr_name(reader, key);
+            assert!(!exception_pending(py));
+            let copied = call_callable0(py, bound);
+            assert!(!exception_pending(py));
+            assert_ne!(copied, reader);
+            // Exercise type.__call__ itself: it prepends the explicit cls
+            // operand before binding the registered native __new__ ABI.
+            let constructed = call_callable1(py, class, reader);
+            assert!(!exception_pending(py), "tee class constructor failed");
+            assert_ne!(constructed, reader);
+            assert_eq!(crate::molt_itertools_tee_next(constructed), value);
+            assert_eq!(crate::molt_itertools_tee_next(copied), value);
+            assert_eq!(crate::molt_itertools_tee_next(reader), value);
+            for bits in [constructed, copied, bound, key, reader, source] {
+                dec_ref_bits(py, bits);
+            }
             assert!(!exception_pending(py));
         }
     });

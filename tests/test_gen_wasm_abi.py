@@ -2023,8 +2023,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["pipe_transport_drop"].get("runtime_feature") is None
     assert imports["email_message_drop"]["runtime_feature"] == "stdlib_email"
     assert imports["xml_element_drop"]["runtime_feature"] == "stdlib_xml"
-    assert imports["statistics_mean_slice"]["runtime_feature"] == "stdlib_math"
-    assert imports["statistics_stdev_slice"]["runtime_feature"] == "stdlib_math"
+    assert imports["statistics_mean"]["runtime_feature"] == "stdlib_math"
+    assert imports["statistics_stdev"]["runtime_feature"] == "stdlib_math"
     assert not any(name.startswith("sqlite3_") for name in imports)
     for reserved in data["reserved_runtime_callable"]:
         reserved_import = imports[reserved["import_name"]]
@@ -3782,3 +3782,66 @@ def test_manifest_field_authority_covers_sources_and_recomputes_projections() ->
     actual = manifest.validate_loaded_manifest(loaded)
     for field in manifest.DERIVED_MANIFEST_FIELDS:
         assert actual[field] == expected[field], field
+
+
+@pytest.mark.parametrize("invalid", ["unknown", "named", "variadic", "defaults"])
+def test_builtin_positional_policy_rejects_invalid_declarations(
+    monkeypatch, invalid: str
+) -> None:
+    import ast
+    from dataclasses import replace
+    from molt.builtin_callables import BUILTIN_FUNC_SPECS, BuiltinBindingPolicy
+
+    spec = BUILTIN_FUNC_SPECS["iter"]
+    changes = {
+        "unknown": {"bind_kind": 7},
+        "named": {"pos_or_kw_params": ("extra",)},
+        "variadic": {"vararg": "rest"},
+        "defaults": {"defaults": (ast.Constant(None),) * 3},
+    }[invalid]
+    assert spec.bind_kind is BuiltinBindingPolicy.POSITIONAL_RANGE
+    monkeypatch.setitem(BUILTIN_FUNC_SPECS, "iter", replace(spec, **changes))
+    with pytest.raises(ValueError, match="binding policy|fixed positional metadata"):
+        gen_wasm_abi._python_builtin_global_callables(gen_wasm_abi.load_manifest())
+
+
+def test_builtin_binding_policy_projects_typed_identity_and_hot_path() -> None:
+    from molt.builtin_callables import BUILTIN_FUNC_SPECS, BuiltinBindingPolicy
+
+    data = gen_wasm_abi.load_manifest()
+    rendered = gen_wasm_abi.render_runtime_callables_rs(data)
+    assert (
+        "BuiltinBindingPolicy"
+        not in gen_wasm_abi.render_python_builtin_callables_rs(data)
+    )
+    assert "molt_ir::" not in rendered
+    assert "bind_kind: Option<BuiltinBindingPolicy>" in rendered
+    for policy in BuiltinBindingPolicy:
+        variant = policy.name.title().replace("_", "")
+        assert f"{variant} = {int(policy)}" in rendered
+        assert f"{int(policy)} => Some(Self::{variant})" in rendered
+        assert (
+            f"Self::{variant} => {str(policy.requires_custom_binding).lower()}"
+            in rendered
+        )
+    assert BuiltinBindingPolicy.CLINIC_NAMED.requires_custom_binding
+    assert not BuiltinBindingPolicy.POSITIONAL_RANGE.requires_custom_binding
+    assert {
+        name
+        for name, spec in BUILTIN_FUNC_SPECS.items()
+        if spec.bind_kind is BuiltinBindingPolicy.POSITIONAL_RANGE
+    } == {
+        "iter",
+        "next",
+        "getattr",
+        "dir",
+        "vars",
+        "format",
+        "divmod",
+        "hasattr",
+        "setattr",
+        "delattr",
+        "anext",
+        "isinstance",
+        "issubclass",
+    }

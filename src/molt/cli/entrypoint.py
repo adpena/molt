@@ -154,11 +154,30 @@ def main(build_fn: Callable[[BuildRequest], int] | None = None) -> int:
     publish_cfg = _resolve_command_config(config, "publish")
     cfg_capabilities = _resolve_capabilities_config(config)
 
+    maintenance_cwd = Path.cwd()
+    maintenance_environment = None
+    if args.command in {
+        "run",
+        "compare",
+        "test",
+        "diff",
+        "bench",
+        "profile",
+        "lint",
+        "harness",
+        "deploy",
+    }:
+        from molt.dx import checkout_state_maintenance_environment
+        from molt.source_root import compiler_source_root
+
+        maintenance_environment = checkout_state_maintenance_environment(
+            compiler_source_root(), os.environ
+        )
     try:
         from molt.checkout_state import checkout_state_use
 
         with _cli_profile(), checkout_state_use(((Path(sys.prefix), None),)):
-            return entrypoint_dispatch._dispatch_entrypoint_command(
+            result = entrypoint_dispatch._dispatch_entrypoint_command(
                 args,
                 parser=parser,
                 build_fn=build_fn,
@@ -176,12 +195,24 @@ def main(build_fn: Callable[[BuildRequest], int] | None = None) -> int:
     except GuardInfrastructureError as exc:
         # The guard failed, not the command it ran: report it as such, with
         # the guard's own exit code, wherever the failure surfaced.
-        return fail(
+        result = fail(
             str(exc),
             bool(getattr(args, "json", False)),
             code=guard_infrastructure_exit_code(),
             command=str(args.command),
         )
+    if maintenance_environment is not None and not maintenance_environment.get(
+        "MOLT_PROOF_QUEUE"
+    ):
+        from molt.dx import collect_checkout_state_after_result
+
+        # Direct reporters also need a terminal publication barrier.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        collect_checkout_state_after_result(
+            maintenance_environment, cwd=maintenance_cwd
+        )
+    return result
 
 
 if __name__ == "__main__":

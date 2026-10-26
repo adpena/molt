@@ -17,11 +17,13 @@ use super::paths::{
     NATIVE_STDLIB_OBJECT_DIRECTORY, native_stdlib_archive_entry_path, stdlib_archive_cache_root,
 };
 use crate::backend_process::native_batch::{
-    MappedObject, NativeBatchObjectJob, validate_native_object_bytes,
+    MappedObject, NativeBatchObjectJob, NativeWorkerOrigin, validate_native_object_bytes,
 };
 
-const MAGIC: &[u8; 8] = b"MOLTNO01";
-const HEADER_SIZE: usize = 8 + 32 + 32 + 8;
+const MAGIC: &[u8; 8] = b"MOLTNO02";
+const HEADER_SIZE: usize = 8 + 32 + 32 + 8 + 8;
+// The worker transport admits at most 16 KiB for its complete origin.
+const MAX_ORIGIN_BYTES: usize = 16_384;
 
 pub(crate) struct StdlibObjectCache {
     /// The cache root that holds both constituent and archive generations.
@@ -179,7 +181,10 @@ impl StdlibObjectCache {
     /// verified. The mapping then owns that generation's bytes until archive
     /// assembly drops it, even if retention unlinks the entry meanwhile. No
     /// private copy is written: a warm entry costs a mapping and a digest.
-    pub(crate) fn admit(&self, key: &[u8; 32]) -> io::Result<Option<MappedObject>> {
+    pub(crate) fn admit(
+        &self,
+        key: &[u8; 32],
+    ) -> io::Result<Option<(MappedObject, NativeWorkerOrigin)>> {
         let path = self.path(key);
         with_shared_stdlib_cache_publish_lock(&path, || {
             let file = match File::open(&path) {
@@ -188,29 +193,52 @@ impl StdlibObjectCache {
                 Err(error) => return Err(error),
             };
             let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }?;
-            admitted_object(&bytes, key)?;
+            // Older envelopes have no emission origin. They are unadmitted
+            // generations, never adapted or relabeled as a current emission.
+            if !bytes.starts_with(MAGIC) {
+                return Ok(None);
+            }
+            let (offset, origin) = admitted_object(&bytes, key)?;
             refresh_cache_entry_recency(path.parent().expect("entry owner"));
-            MappedObject::within(bytes, HEADER_SIZE).map(Some)
+            Ok(Some((MappedObject::within(bytes, offset)?, origin)))
         })
     }
 
-    pub(crate) fn publish(&self, key: &[u8; 32], output: &Path) -> io::Result<u64> {
+    pub(crate) fn publish(
+        &self,
+        key: &[u8; 32],
+        output: &Path,
+        origin: &NativeWorkerOrigin,
+    ) -> io::Result<NativeWorkerOrigin> {
         let file = File::open(output)?;
         let object = unsafe { memmap2::MmapOptions::new().map(&file) }?;
         validate_native_object_bytes(&object)?;
         let output_digest: [u8; 32] = Sha256::digest(&object).into();
+        validate_origin_output(origin, &output_digest, object.len())?;
+        let encoded = serde_json::to_vec(origin).map_err(io::Error::other)?;
+        if encoded.len() > MAX_ORIGIN_BYTES {
+            return Err(invalid(
+                "native stdlib constituent origin exceeds its bound",
+            ));
+        }
         let path = self.path(key);
         with_shared_stdlib_cache_publish_lock(&path, || {
             match File::open(&path) {
                 Ok(existing) => {
                     let bytes = unsafe { memmap2::MmapOptions::new().map(&existing) }?;
-                    let admitted = admitted_object(&bytes, key)?;
-                    if admitted != object.as_ref() {
-                        return Err(invalid(
-                            "identical native object inputs produced different output bytes",
-                        ));
+                    if bytes.starts_with(MAGIC) {
+                        let (offset, winner) = admitted_object(&bytes, key)?;
+                        if &bytes[offset..] != object.as_ref() {
+                            return Err(invalid(
+                                "identical native object inputs produced different output bytes",
+                            ));
+                        }
+                        // The first generation owns its original emitter even
+                        // when another worker independently emits equal bytes.
+                        return Ok(winner);
                     }
-                    return Ok(object.len() as u64);
+                    // Unsupported old envelopes are replaced only under this
+                    // publication lock, after the complete new origin is bound.
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
@@ -220,9 +248,11 @@ impl StdlibObjectCache {
                 writer.write_all(key)?;
                 writer.write_all(&output_digest)?;
                 writer.write_all(&(object.len() as u64).to_le_bytes())?;
+                writer.write_all(&(encoded.len() as u64).to_le_bytes())?;
+                writer.write_all(&encoded)?;
                 writer.write_all(&object)
             })?;
-            Ok(object.len() as u64)
+            Ok(origin.clone())
         })
     }
 }
@@ -231,21 +261,52 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn admitted_object<'a>(bytes: &'a [u8], key: &[u8; 32]) -> io::Result<&'a [u8]> {
+fn admitted_object(bytes: &[u8], key: &[u8; 32]) -> io::Result<(usize, NativeWorkerOrigin)> {
     if bytes.len() < HEADER_SIZE || &bytes[..8] != MAGIC || &bytes[8..40] != key {
         return Err(invalid(
             "native stdlib constituent has an invalid schema or input identity",
         ));
     }
     let length = u64::from_le_bytes(bytes[72..80].try_into().unwrap());
-    let object = &bytes[HEADER_SIZE..];
-    if length != object.len() as u64 || Sha256::digest(object)[..] != bytes[40..72] {
+    let origin_length = u64::from_le_bytes(bytes[80..88].try_into().unwrap());
+    if origin_length == 0 || origin_length > MAX_ORIGIN_BYTES as u64 {
+        return Err(invalid(
+            "native stdlib constituent origin extent is invalid",
+        ));
+    }
+    let offset = HEADER_SIZE + origin_length as usize;
+    let encoded = bytes
+        .get(HEADER_SIZE..offset)
+        .ok_or_else(|| invalid("native stdlib constituent origin extent exceeds its entry"))?;
+    let origin: NativeWorkerOrigin = serde_json::from_slice(encoded).map_err(|error| {
+        invalid(&format!(
+            "invalid native stdlib constituent origin: {error}"
+        ))
+    })?;
+    let object = &bytes[offset..];
+    let digest: [u8; 32] = Sha256::digest(object).into();
+    if length != object.len() as u64 || digest[..] != bytes[40..72] {
         return Err(invalid(
             "native stdlib constituent output digest/extent mismatch",
         ));
     }
     validate_native_object_bytes(object)?;
-    Ok(object)
+    validate_origin_output(&origin, &digest, object.len())?;
+    Ok((offset, origin))
+}
+
+fn validate_origin_output(
+    origin: &NativeWorkerOrigin,
+    digest: &[u8; 32],
+    size: usize,
+) -> io::Result<()> {
+    origin.validate()?;
+    if origin.output.size != size as u64 || origin.output.sha256 != bytes_to_lower_hex(digest) {
+        return Err(invalid(
+            "native stdlib constituent origin names different output bytes",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

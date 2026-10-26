@@ -19,6 +19,7 @@ from molt.cargo_execution_policy import (
     cargo_compiler_wrappers,
     normalize_cargo_environment,
     require_cargo_build_capacity,
+    sccache_auto_selection_allowed,
     sccache_compiler_wrappers,
     without_sccache_compiler_wrappers,
 )
@@ -290,13 +291,17 @@ def _adopt_normalized_cargo_environment(env: ProcessEnvironmentBuilder) -> None:
     ``CARGO_INCREMENTAL`` that sccache refuses), so adopting it must delete
     names as well as update them.
     """
-    normalized, _applied = normalize_cargo_environment(env)
+    normalized, _applied = normalize_cargo_environment(
+        env, cwd=None, admit_c_tools=False
+    )
     for name in [name for name in env if name not in normalized]:
         del env[name]
     env.update(normalized)
 
 
 def _maybe_enable_sccache(env: ProcessEnvironmentBuilder) -> None:
+    if not sccache_auto_selection_allowed(env):
+        return
     if cargo_compiler_wrappers(env):
         _adopt_normalized_cargo_environment(env)
         return
@@ -364,10 +369,10 @@ def _cargo_build_env(
     # refuses, so the Cargo profile turns it on for workspace crates while
     # sccache caches registry crates. Every production nested Cargo build
     # obtains its environment through this authority.
-    normalized_env, _applied = normalize_cargo_environment(env, default_incremental="1")
+    normalized_env, _applied = normalize_cargo_environment(
+        env, cwd=None, default_incremental="1", admit_c_tools=False
+    )
     env = ProcessEnvironmentBuilder(normalized_env)
-    if sys.executable:
-        env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
     _maybe_enable_lld_link(env)
     _maybe_enable_sccache(env)
@@ -501,7 +506,7 @@ def _run_cargo_attempt(
     resolved_environment: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
     normalized_env = (
-        env if resolved_environment else normalize_cargo_environment(env)[0]
+        env if resolved_environment else normalize_cargo_environment(env, cwd=cwd)[0]
     )
     if normalized_env.get("CARGO_TARGET_DIR") is None:
         raise ValueError(
@@ -604,7 +609,7 @@ def _run_cargo_with_sccache_retry(
     tempfile_runner: _TempfileCargoRunner | None = None,
     progress_label: str | None = None,
 ) -> CargoExecutionResult:
-    execution_env, _applied = normalize_cargo_environment(env)
+    execution_env, _applied = normalize_cargo_environment(env, cwd=cwd)
     started = time.perf_counter()
     build = _run_cargo_attempt(
         cmd,

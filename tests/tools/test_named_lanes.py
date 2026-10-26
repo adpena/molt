@@ -15,6 +15,7 @@ import pytest
 from molt.process_environment import NameRule, ProcessEnvironment
 
 from tests.executable_test_support import custody_spelling
+from tests.llvm_sdk_test_support import native_sdk_projection_fixture
 from tests.process_guard_common import current_thread_only
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission
@@ -258,16 +259,16 @@ def test_llvm_family_lanes_project_the_complete_declared_sdk(
     from molt import llvm_toolchain
     from tools.proof_queue_pkg import guarded_execution as ge
 
-    prefix = tmp_path / "llvm SDK"
     config = tmp_path / "external config/bin/llvm-config"
+    verification = native_sdk_projection_fixture(
+        tmp_path / "llvm SDK", monkeypatch, source_root=ROOT, llvm_config=config
+    )
+    prefix = verification.prefix
     ambient = os.pathsep.join(
         [str(tmp_path / "system-llvm/bin"), str(tmp_path / "other")]
     )
     pin = llvm_toolchain.required_llvm_backend_pin(ge.state.ROOT)
     assert pin is not None
-    verification = SimpleNamespace(
-        prefix=prefix, llvm_config=config, version=pin.default_release
-    )
     observed = []
 
     def verify(root, *, environ, cwd):
@@ -302,11 +303,27 @@ def test_llvm_family_lanes_project_the_complete_declared_sdk(
     assert actual[pin.env_var] == str(config.parent.parent)
     assert actual[llvm_toolchain.mlir_sys_prefix_env_var(pin.major)] == str(prefix)
     assert actual[llvm_toolchain.tablegen_prefix_env_var(pin.major)] == str(prefix)
+    import json
+
+    link = json.loads(actual[llvm_toolchain.LLVM_NATIVE_LINK_PLAN_ENV])
+    assert link["llvm_config"] == str(config)
+    assert link["driver"] == str(prefix / "bin/clang++")
+    assert [(row["name"], row["source"]) for row in link["libraries"]] == [
+        ("LLVMCore", "sdk"),
+        ("compression", "system"),
+        ("m", "system"),
+        ("stdc++", "system"),
+    ]
     assert selected == {"PATH": ambient}
     assert ge.project_declared_sdk_environment(
         selected, ["python", "uv"], cwd=tmp_path
     ) == ProcessEnvironment(selected, rule=NameRule.host())
     assert len(observed) == 1
+
+    driver = prefix / "bin/clang++"
+    driver.write_bytes(b"changed after SDK verification")
+    with pytest.raises(llvm_toolchain.LlvmToolchainConfigError, match="driver changed"):
+        ge.project_declared_sdk_environment(selected, ["clang"], cwd=tmp_path)
 
     monkeypatch.setattr(
         llvm_toolchain,
@@ -331,7 +348,10 @@ def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
     installation = llvm_toolchain.load_wasi_sdk_installation(
         ge.state.ROOT, sdk_prefix, verify_tree=False
     )
-    native = tmp_path / "llvm-native"
+    verification = native_sdk_projection_fixture(
+        tmp_path / "llvm-native", monkeypatch, source_root=ROOT
+    )
+    native = verification.prefix
     ambient = str(tmp_path / "ambient")
     selected = {"PATH": ambient, "WASI_SDK_PATH": str(installation.sdk)}
     pin = llvm_toolchain.required_llvm_backend_pin(ge.state.ROOT)
@@ -344,11 +364,7 @@ def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
         assert root == ge.state.ROOT
         assert environ == {**selected, "MOLT_WASM_LD": str(installation.wasm_ld)}
         observed.append("native")
-        return SimpleNamespace(
-            prefix=native,
-            llvm_config=native / "bin/llvm-config",
-            version=pin.default_release,
-        )
+        return verification
 
     monkeypatch.setattr(llvm_toolchain, "verify_available_llvm_toolchain", native_sdk)
     if llvm_toolchain.sys.platform == "darwin":
@@ -703,8 +719,8 @@ def test_disposable_named_override_is_refused_before_environment_provision(
 def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_id: str
 ) -> None:
-    from molt.cli import source_build_environment as environment_authority
-    from molt.cli import source_build_environment_schema as environment_authority_schema
+    from molt import source_build_environment as environment_authority
+    from molt import source_build_environment_schema as environment_authority_schema
 
     custody = tmp_path / "environments"
     root = custody / ("a" * 64)
@@ -797,41 +813,79 @@ def test_witness_refuses_environment_redirection_before_setup(
 def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
     tmp_path: Path,
 ) -> None:
-    import hashlib
-    from molt.cli.source_build_environment_schema import (
+    import sys
+    from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
-    from tools.proof_queue_pkg import execution_custody
+    from molt.python_environment_location import environment_bytecode_arguments
+    from tools.proof_queue_pkg import execution_custody, process_image_capture
 
     captured = tmp_path / "captured" / "python.exe"
     copied = tmp_path / "uncaptured" / "python.exe"
     for path in (captured, copied):
         path.parent.mkdir()
-        path.write_bytes(b"same-image")
+        # A real interpreter image also supports Windows resource inspection;
+        # neither copied image is executed by this decision-boundary control.
+        shutil.copyfile(
+            Path(getattr(sys, "_base_executable", sys.executable)).resolve(), path
+        )
+        path.chmod(0o755)
+    assert captured.read_bytes() == copied.read_bytes()
     (copied.parent / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
         "{}", encoding="utf-8"
     )
     # The decision primitive needs no listener or running process.
     server = object.__new__(execution_custody.ChildCustodyEventServer)
-    server.policy = {
-        "descendants": "declared-toolchains",
-        "allowed": [
-            {
-                "toolchain": "python",
-                "path": custody_spelling(captured),
-                "sha256": hashlib.sha256(b"same-image").hexdigest(),
+    image = process_image_capture.capture_image("selected-interpreter", captured)
+    server.policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {
+            "python": {
+                "location": {"prefix": str(captured.parent)},
+                "process_images": [image],
             }
-        ],
+        },
+        environment_executables={},
+    )
+    (grant,) = server.policy["allowed"]
+    assert grant["path"] == custody_spelling(captured)
+    assert grant["python_launch"] == "interpreter"
+    assert grant["python_bytecode"] == {
+        "environment_root": str(captured.parent),
+        "pycache_prefix": str(captured.parent / "bytecode"),
     }
-    # The Node hook launches the broker's selection, so an absolute selection
-    # is the image on every host.
-    admitted = server._decide_child({"requested": str(captured)}, "node")
-    assert admitted["admitted"] is True
-    rejected = server._decide_child({"requested": str(copied)}, "node")
+
+    def intent(path):
+        return {
+            "requested": str(path),
+            "argv": [
+                str(path),
+                *environment_bytecode_arguments(captured.parent),
+                "-I",
+                "-c",
+                "pass",
+            ],
+            "python_environment": {
+                "PYTHONPYCACHEPREFIX": None,
+                "PYTHONDONTWRITEBYTECODE": None,
+            },
+            "windows_verbatim_arguments": False,
+        }
+
+    # Node launches the broker's exact selection on every host. A published-
+    # looking sibling with identical bytes still has no captured path grant.
+    admitted = server._decide_child(intent(captured), "node")
+    assert admitted["admitted"] is True, admitted
+    rejected = server._decide_child(intent(copied), "node")
     assert rejected["admitted"] is False
     assert rejected["reason"] == "outside-declared-toolchain-closure"
+    unsafe = intent(captured)
+    unsafe["argv"] = [str(captured), "-I", "-c", "pass"]
+    refused_startup = server._decide_child(unsafe, "node")
+    assert refused_startup["admitted"] is False
+    assert refused_startup["reason"].startswith("python-bytecode-custody:")
     captured.write_bytes(b"changed-image")
-    changed = server._decide_child({"requested": str(captured)}, "node")
+    changed = server._decide_child(intent(captured), "node")
     assert changed["admitted"] is False
 
 
@@ -982,20 +1036,13 @@ def test_differential_host_tools_follow_selected_cases_and_platform(
     monkeypatch.setattr(test_policy, "current_platform_name", lambda: platform)
     lane = PLAN.named_lane("runtime.public-consumers.native")
     base = set(PLAN.toolchain_closure(lane.toolchains))
-    # Admission adds the Cargo build generator the lane declares; the static
-    # lane closure has no Cargo context (docs/agent/PROOF_QUEUE.md).
-    generator = (
-        set(PLAN.toolchain_closure(["build-python"]))
-        if lane.data.get("cargo_build_python") is True
-        else set()
-    )
     for case, extra in ((first, expected), (second, set())):
         relative = case.relative_to(root).as_posix()
         command = command_admission.selected_differential_lane_command(
             lane.id, cases=[relative]
         )
         envelope = command_admission.envelope_for_command(command)
-        assert set(envelope["toolchains"]) == base | extra | generator
+        assert set(envelope["toolchains"]) == base | extra
         assert envelope["process_closure"]["toolchains"] == envelope["toolchains"]
         # Default recipes consume the same declaration as explicit selections.
         default = replace(lane, data={**lane.data, "differential_cases": [relative]})
@@ -1135,8 +1182,8 @@ def test_differential_list_must_be_owned_and_cli_rejects_unknown_options(
 def test_prepared_differential_lane_keeps_selected_files(
     selected_diff_sources, monkeypatch
 ):
-    from molt.cli import source_build_environment as environment_authority
-    from molt.cli.source_build_environment_schema import (
+    from molt import source_build_environment as environment_authority
+    from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
 

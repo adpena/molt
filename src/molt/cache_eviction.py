@@ -26,6 +26,8 @@ from molt.default_paths import (
     protected_cache_roots,
     shared_cache_lock_path,
     is_backend_cache_artifact_name,
+    backend_cache_sync_receipt_path,
+    backend_cache_publication_lock_name,
     native_stdlib_archive_cache_entry,
     native_stdlib_object_cache_entry,
     resolve_budget,
@@ -33,7 +35,11 @@ from molt.default_paths import (
     wasm_link_cache_paths,
 )
 
-from molt.file_publication import is_staged_file_path
+from molt.file_publication import (
+    durable_remove_path,
+    is_staged_file_path,
+    reclaim_retired_paths,
+)
 
 from molt.file_locks import (
     _file_lock_owned_operation,
@@ -56,6 +62,9 @@ class CacheEntry:
     size_bytes: int
     metadata: os.stat_result
     lock_path: Path | None = None
+    retirement_scope: str | None = None
+    companions: tuple[tuple[Path, os.stat_result], ...] = ()
+    absent_peer: Path | None = None
 
     @property
     def mtime(self) -> float:
@@ -89,6 +98,7 @@ class PruneCompleted(TypedDict):
     source_record_checkpoint_busy: bool | None
     protected_state: list[str]
     legacy_native_state: list[str]
+    legacy_source_record_state: list[str]
 
 
 class PruneSkipped(TypedDict):
@@ -203,12 +213,39 @@ def _collect_entries(
     if cache_root in protected:
         return entries
 
-    def append(path: Path, lock: Path | None = None) -> None:
+    def append(
+        path: Path,
+        lock: Path | None = None,
+        *,
+        retirement_scope: str | None = None,
+        companions: tuple[Path, ...] = (),
+        absent_peer: Path | None = None,
+    ) -> None:
         try:
             metadata = path.lstat()
         except FileNotFoundError:
             return
-        entries.append(CacheEntry(path, _entry_size_bytes(path), metadata, lock))
+        observed_companions = []
+        for companion in companions:
+            try:
+                companion_metadata = companion.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(companion_metadata.st_mode):
+                return
+            observed_companions.append((companion, companion_metadata))
+        entries.append(
+            CacheEntry(
+                path,
+                _entry_size_bytes(path)
+                + sum(row.st_size for _, row in observed_companions),
+                metadata,
+                lock,
+                retirement_scope,
+                tuple(observed_companions),
+                absent_peer,
+            )
+        )
 
     children = _children(cache_root)
     standalone_names = _LegacyStandaloneNames()
@@ -298,26 +335,51 @@ def _collect_entries(
         if child.name == SHARED_SOURCE_RECORDS_DIRECTORY and _is_direct_directory(
             child
         ):
-            # Each schema version owns one store file; the current store keeps
-            # its row maintenance below. A superseded version's files (and the
-            # unversioned store before versioned names) are ordinary entries,
-            # retired by last use like any other cache file.
-            from molt.cli.source_record_store import superseded_store_file
+            # A namespace is one SQLite/WAL identity. Only older namespaces
+            # speaking the lifetime protocol can retire, under their exclusive
+            # reader lock; current/newer and legacy flat stores stay untouched.
+            from molt.cli.source_record_store import (
+                SOURCE_RECORD_RETIREMENT_SCOPE,
+                source_record_namespace_paths,
+                superseded_store_namespace,
+            )
 
-            for leaf in _children(child):
-                if (
-                    superseded_store_file(leaf.name)
-                    and leaf.is_file()
-                    and not leaf.is_symlink()
+            for namespace in _children(child):
+                if superseded_store_namespace(namespace.name) and _is_direct_directory(
+                    namespace
                 ):
-                    append(leaf)
+                    _, lock = source_record_namespace_paths(cache_root, namespace.name)
+                    append(
+                        namespace, lock, retirement_scope=SOURCE_RECORD_RETIREMENT_SCOPE
+                    )
             continue
         if (
             is_backend_cache_artifact_name(child.name)
             and child.is_file()
             and not child.is_symlink()
         ):
-            append(child)
+            append(
+                child,
+                shared_cache_lock_path(
+                    cache_root, backend_cache_publication_lock_name(child)
+                ),
+                companions=(backend_cache_sync_receipt_path(child),),
+            )
+        elif child.name.endswith(".sync.json"):
+            artifact = child.with_name(child.name.removesuffix(".sync.json"))
+            if (
+                is_backend_cache_artifact_name(artifact.name)
+                and not artifact.exists()
+                and child.is_file()
+                and not child.is_symlink()
+            ):
+                append(
+                    child,
+                    shared_cache_lock_path(
+                        cache_root, backend_cache_publication_lock_name(artifact)
+                    ),
+                    absent_peer=artifact,
+                )
         # Unknown namespaces may own live mutable stages or persistent controls.
         # Their root is never an inferred recursive eviction unit.
     return entries
@@ -495,15 +557,35 @@ def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
             # A reader refreshed this entry (or a publisher replaced it) after
             # inventory. The old observation no longer owns its eviction.
             return "busy"
+        if entry.absent_peer is not None and (
+            entry.absent_peer.exists() or entry.absent_peer.is_symlink()
+        ):
+            return "busy"
+        for companion, observed in entry.companions:
+            try:
+                companion_current = companion.lstat()
+            except FileNotFoundError:
+                return "busy"
+            if not _same_cache_generation(companion_current, observed):
+                return "busy"
         if dry_run:
             return "removed"
-        if _is_direct_directory(entry.path):
+        if entry.retirement_scope is not None:
+            try:
+                durable_remove_path(entry.path, retirement_scope=entry.retirement_scope)
+            except ValueError:
+                # Malformed/changed retirement residue stays as evidence. It
+                # must fail this entry without abandoning unrelated eviction.
+                return "failed"
+        elif _is_direct_directory(entry.path):
             try:
                 shutil.rmtree(entry.path, ignore_errors=False)
             except FileNotFoundError:
                 pass
         else:
             entry.path.unlink(missing_ok=True)
+            for companion, _ in entry.companions:
+                companion.unlink(missing_ok=True)
         return "failed" if entry.path.exists() or entry.path.is_symlink() else "removed"
     except OSError:
         return "failed"
@@ -533,6 +615,7 @@ def _prune_locked(
     removed_count = removed_bytes = busy = failures = 0
     row_count = row_bytes = removed_rows = removed_row_bytes = 0
     store_failed = store_busy = store_unmigrated = False
+    legacy_records: list[str] = []
     row_enabled = True
     record_batch_rows = record_batch_bytes = 0
     physical_before = physical_after = None
@@ -546,7 +629,9 @@ def _prune_locked(
             # Keep the ordinary file-only pruner lightweight and never create a
             # database just to discover that there are no source records.
             from molt.cli.source_record_store import (
-                STORE_NAME,
+                SOURCE_RECORD_RETIREMENT_SCOPE,
+                STORE_RELATIVE_PATH,
+                legacy_source_record_file,
                 SOURCE_RECORD_BATCH_MAX_RECORDS,
                 SOURCE_RECORD_BATCH_MAX_BYTES,
                 SourceRecordUnavailable,
@@ -555,13 +640,30 @@ def _prune_locked(
                 source_record_store,
             )
 
-            database = record_root / STORE_NAME
+            legacy_records = [
+                str(leaf)
+                for leaf in _children(record_root)
+                if legacy_source_record_file(leaf.name)
+                and leaf.is_file()
+                and not leaf.is_symlink()
+            ]
+            if not dry_run:
+                try:
+                    # The global prune lock owns this retirement scope. A prior
+                    # partial reclamation never leaves WAL at a new live name.
+                    reclaim_retired_paths(
+                        record_root, retirement_scope=SOURCE_RECORD_RETIREMENT_SCOPE
+                    )
+                except (OSError, ValueError):
+                    store_failed = True
+                    failures += 1
+            database = cache_root / STORE_RELATIVE_PATH
             if database.is_file() and not database.is_symlink():
                 record_batch_rows = SOURCE_RECORD_BATCH_MAX_RECORDS
                 record_batch_bytes = SOURCE_RECORD_BATCH_MAX_BYTES
                 store_errors = (SourceRecordUnavailable,)
                 store_busy_errors = (SourceRecordBusy,)
-                store = source_record_store(record_root)
+                store = source_record_store(cache_root)
                 physical_before = store.physical_bytes()
                 try:
                     maintenance = stack.enter_context(
@@ -573,8 +675,8 @@ def _prune_locked(
                     store_busy = True
                     maintenance = None
                 except SourceRecordUnmigrated:
-                    # A dry run cannot migrate a legacy store; report it rather
-                    # than count a failure. A writing sweep migrates it.
+                    # A dry run cannot publish a virgin schema; report it rather
+                    # than count a failure. A writing sweep initializes it.
                     store_unmigrated = True
                     maintenance = None
                 except SourceRecordUnavailable:
@@ -591,7 +693,7 @@ def _prune_locked(
             if maintenance is None or inventory is None:
                 return
             try:
-                for observed in maintenance.iter_lru():
+                for observed in maintenance.iter_lru(inventory):
                     if not row_enabled:
                         return
                     yield observed
@@ -727,6 +829,7 @@ def _prune_locked(
         "protected_state": [
             str(path) for path in protected_cache_roots(cache_root, environ=environ)
         ],
+        "legacy_source_record_state": legacy_records,
         "legacy_native_state": [
             str(path) for path in _children(cache_root) if _legacy_native_entry(path)
         ]
@@ -884,7 +987,12 @@ def automatic_retention(
         return {
             name: value
             for name, value in report.items()
-            if name not in {"protected_state", "legacy_native_state"}
+            if name
+            not in {
+                "protected_state",
+                "legacy_native_state",
+                "legacy_source_record_state",
+            }
         }
     except (OSError, ValueError, RuntimeError) as exc:
         return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
@@ -910,6 +1018,7 @@ def prune_report_lines(
         f"evictable.after={_format_bytes(result['bytes_remaining'])}",
         f"protected_state.roots={len(result['protected_state'])}",
         f"legacy_native.protected={len(result['legacy_native_state'])}",
+        f"legacy_source_records.protected={len(result['legacy_source_record_state'])}",
         f"inventory.elapsed_s={result['inventory_elapsed_seconds']:.6f}",
         f"prune.elapsed_s={result['elapsed_seconds']:.6f}",
         f"remaining.entries={result['entries_remaining']}",

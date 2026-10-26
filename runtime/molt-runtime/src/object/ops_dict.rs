@@ -580,57 +580,60 @@ pub extern "C" fn molt_dict_clear(dict_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let original = dict_bits;
-        let obj = obj_from_bits(dict_bits);
-        let Some(ptr) = obj.as_ptr() else {
+/// Copy a dictionary under an already admitted runtime entry. Exact-dict
+/// callers share table cloning, ownership and GC tracking without re-entry.
+pub(crate) fn copy_dict(_py: &PyToken<'_>, dict_bits: u64) -> u64 {
+    let original = dict_bits;
+    let obj = obj_from_bits(dict_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
+    };
+    unsafe {
+        let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+            Ok(storage) => storage,
+            Err(()) => return MoltObject::none().bits(),
+        }) else {
             return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
         };
-        unsafe {
-            let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
-                Ok(storage) => storage,
-                Err(()) => return MoltObject::none().bits(),
-            }) else {
-                return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
-            };
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
-            }
-            let out_ptr = alloc_dict_with_pairs(_py, &[]);
-            if out_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let result = MoltObject::from_ptr(out_ptr).bits();
-            if dict_len(dict_ptr) == 0 {
-                return result;
-            }
-            let direct = match crate::object::mapping_merge::direct_dict(_py, original) {
-                Ok(direct) => direct.is_some(),
-                Err(()) => {
-                    dec_ref_bits(_py, result);
-                    return MoltObject::none().bits();
-                }
-            };
-            let copied = if direct
-                && dict_len(dict_ptr)
-                    >= super::ops::dict_usable_capacity(dict_entries(dict_ptr).len())
-            {
-                super::ops::dict_clone_into_empty(_py, dict_ptr, out_ptr)
-            } else {
-                dict_update_apply(_py, result, dict_update_set_in_place, original)
-            };
-            if !copied {
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
+        }
+        let out_ptr = alloc_dict_with_pairs(_py, &[]);
+        if out_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let result = MoltObject::from_ptr(out_ptr).bits();
+        if dict_len(dict_ptr) == 0 {
+            return result;
+        }
+        let direct = match crate::object::mapping_merge::direct_dict(_py, original) {
+            Ok(direct) => direct.is_some(),
+            Err(()) => {
                 dec_ref_bits(_py, result);
                 return MoltObject::none().bits();
             }
-            result
+        };
+        let copied = if direct
+            && dict_len(dict_ptr) >= super::ops::dict_usable_capacity(dict_entries(dict_ptr).len())
+        {
+            super::ops::dict_clone_into_empty(_py, dict_ptr, out_ptr)
+        } else {
+            dict_update_apply(_py, result, dict_update_set_in_place, original)
+        };
+        if !copied {
+            dec_ref_bits(_py, result);
+            return MoltObject::none().bits();
         }
-    })
+        result
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { copy_dict(_py, dict_bits) })
 }
 
 #[unsafe(no_mangle)]

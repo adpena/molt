@@ -9,6 +9,8 @@ and module chunk reset paths.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -28,6 +30,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     TypeHint,
+    TypeParameterBinding,
 )
 from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
 from molt.logical_source_paths import is_stdlib_logical_path
@@ -49,6 +52,7 @@ FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "frame_home_slots",
     "compiler_bindings",
     "parameter_bindings",
+    "type_parameter_bindings",
     "boxed_locals",
     "closure_locals",
     "comp_shadow_locals",
@@ -196,6 +200,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.frame_home_slots: dict[str, int] | None = None
         self.compiler_bindings: dict[str, MoltValue] = {}
         self.parameter_bindings: dict[str, str] = {}
+        self.type_parameter_bindings: dict[str, TypeParameterBinding] = {}
         self.boxed_locals = {}
         self.closure_locals = set()
         self.comp_shadow_locals = set()
@@ -312,7 +317,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         known_func_kinds: dict[str, dict[str, str]] | None = None,
         native_callable_exports: dict[str, dict[str, Any]] | None = None,
         native_python_exports: set[str] | None = None,
-        native_support_function_roots: set[str] | None = None,
+        module_body_selection: ModuleBodySelection | None = None,
         target_python: tuple[int, int] = (3, 12),
         target_sys_platform: str | None = None,
         module_chunking: bool = False,
@@ -410,7 +415,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.eager_annotations = target_python < (3, 14)
         self.parse_codec = parse_codec
         self.type_hint_policy = type_hint_policy
-        self.annotation_type_params: dict[str, MoltValue] = {}
         self.in_annotation = False
         self._reset_type_hint_scope_state(reset_bytearray_len=True)
         self.global_elem_hints: dict[str, TypeHint] = {}
@@ -463,15 +467,22 @@ class GeneratorStateMixin(GeneratorMixinBase):
             for qualified_name in (native_python_exports or set())
             if isinstance(qualified_name, str) and qualified_name
         }
-        self.native_support_function_roots: set[str] | None = (
-            None
-            if native_support_function_roots is None
-            else {
-                name
-                for name in native_support_function_roots
-                if isinstance(name, str) and name
-            }
-        )
+        if module_body_selection is None:
+            support_roots: set[str] = set()
+            for qualified_name, spec in self.native_callable_exports.items():
+                if spec.get("provider_module") != self.module_name:
+                    continue
+                name = spec.get("name")
+                if not isinstance(name, str) or not name:
+                    name = qualified_name.rsplit(".", 1)[-1]
+                if name:
+                    support_roots.add(name)
+            module_body_selection = ModuleBodySelection.from_requested_roots(
+                support_roots
+            )
+        if not isinstance(module_body_selection, ModuleBodySelection):
+            raise ValueError("frontend requires a module body selection")
+        self.module_body_selection: ModuleBodySelection = module_body_selection
         self.module_func_defaults: dict[str, dict[str, Any]] = {}
         self.module_annotations: MoltValue | None = None
         self.module_annotation_items: list[tuple[str, ast.expr, int]] = []

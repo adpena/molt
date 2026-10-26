@@ -16,9 +16,7 @@ from __future__ import annotations
 
 from molt.temporary_artifacts import OwnedTemporaryDirectory
 
-import base64
-import csv
-import io
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 import shutil
 from typing import Callable
@@ -29,15 +27,10 @@ from packaging.utils import parse_wheel_filename
 from molt.portable_paths import portable_relative_path
 from molt.source_root import PACKAGED_DISTRIBUTION_PATH
 from molt.toolchain_identity import stable_regular_file_content_identity
+from molt.wheel_record import wheel_record_bytes
 
 from .archive import ArchivePolicy, write_reproducible_zip
 from .binary_compatibility import wheel_platform_tag_matches
-
-
-def _record_hash(path: Path) -> tuple[str, int]:
-    identity = stable_regular_file_content_identity(path, label="platform wheel member")
-    digest = base64.urlsafe_b64encode(bytes.fromhex(str(identity["sha256"])))
-    return "sha256=" + digest.rstrip(b"=").decode("ascii"), int(identity["size"])
 
 
 def write_platform_wheel(
@@ -94,13 +87,22 @@ def write_platform_wheel(
             ).encode("utf-8")
         )
         shutil.copytree(bundle_root, stage.joinpath(*data.parts))
-        record = io.StringIO(newline="")
-        writer = csv.writer(record, lineterminator="\n")
-        for path in sorted(p for p in stage.rglob("*") if p.is_file()):
-            relative = path.relative_to(stage).as_posix()
-            writer.writerow((relative, *_record_hash(path)))
-        writer.writerow((f"{dist_info}/RECORD", "", ""))
-        (stage / dist_info / "RECORD").write_bytes(record.getvalue().encode("utf-8"))
+
+        def record_entries() -> Iterator[tuple[str, bytes, int]]:
+            for path in sorted(p for p in stage.rglob("*") if p.is_file()):
+                relative = path.relative_to(stage).as_posix()
+                identity = stable_regular_file_content_identity(
+                    path, label="platform wheel member"
+                )
+                yield (
+                    relative,
+                    bytes.fromhex(str(identity["sha256"])),
+                    int(identity["size"]),
+                )
+
+        (stage / dist_info / "RECORD").write_bytes(
+            wheel_record_bytes(record_entries(), record_path=f"{dist_info}/RECORD")
+        )
 
         def mode(relative: PurePosixPath) -> int:
             # pip keeps only the executable bit; bundle members keep the exact

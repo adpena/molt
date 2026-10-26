@@ -324,6 +324,7 @@ def test_object_shape_abi_is_generated_from_same_authority() -> None:
         "id": 0,
         "family": "plain",
         "resource_slot0": "none",
+        "class_fields": True,
     }
     assert {row["name"] for row in shapes} >= {
         "GENERIC_TASK_PAYLOAD",
@@ -357,7 +358,7 @@ def test_no_manual_heap_policy_or_shape_authority_survives() -> None:
         "runtime/molt-runtime/src/object/heap_kinds_generated.rs"
     ]
     assert all(
-        set(row) == {"name", "id", "family", "resource_slot0"}
+        set(row) == {"name", "id", "family", "resource_slot0", "class_fields"}
         for row in _gen().load_object_shapes()
     ), "shape lifecycle and native-resource facts must remain generated"
     descriptor_consumers = []
@@ -860,3 +861,17 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     # Suspended-task allocation is rejected before Luau emission; it is not
     # another spelling for a fully initialized ordinary table.
     assert '"alloc_task"' not in luau
+
+
+@pytest.mark.parametrize("policy", [None, '"managed"', "1"])
+def test_object_shape_requires_explicit_physical_field_policy(
+    tmp_path: Path, policy: str | None
+) -> None:
+    gen = _gen()
+    source = gen.TABLE.read_text(encoding="utf-8")
+    replacement = "" if policy is None else f"class_fields = {policy}\n"
+    source = source.replace("class_fields = true\n", replacement, 1)
+    table = tmp_path / "heap_kinds.toml"
+    table.write_text(source, encoding="utf-8")
+    with pytest.raises(ValueError, match="object-shape class_fields"):
+        gen.load_object_shapes(table)

@@ -719,3 +719,34 @@ def test_runtime_build_abi_is_the_registry_narrowed_by_that_build_only() -> None
             target_os="macos",
         )
     }
+
+
+@pytest.mark.parametrize(
+    ("target_triple", "has_network_provider"),
+    [
+        ("aarch64-apple-darwin", True),
+        ("x86_64-unknown-linux-gnu", True),
+        ("wasm32-wasip1", True),
+        ("wasm32-unknown-unknown", True),
+        ("x86_64-pc-windows-msvc", False),
+    ],
+)
+def test_network_runtime_abi_includes_select_without_widening_provider_targets(
+    target_triple: str, has_network_provider: bool
+) -> None:
+    from molt._wasm_runtime_exports import wasm_runtime_import_names_for_features
+    from molt.cli.runtime_features import runtime_enabled_cargo_features
+
+    watcher = _import_for_runtime_symbol("molt_asyncio_fd_watcher_new")
+    select = _import_for_runtime_symbol("molt_select_select")
+    request = ("no-default-features", "stdlib_micro")
+    micro = wasm_runtime_import_names_for_features(
+        runtime_enabled_cargo_features(request), target_triple=target_triple
+    )
+    network = wasm_runtime_import_names_for_features(
+        runtime_enabled_cargo_features((*request, "stdlib_net")),
+        target_triple=target_triple,
+    )
+    assert watcher not in micro and select not in micro
+    assert select in network
+    assert (watcher in network) is has_network_provider

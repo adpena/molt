@@ -36,7 +36,6 @@ if str(SRC_ROOT) not in sys.path:
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
     conformance_exit_code,
-    ensure_molt_conformance_dirs,
     load_molt_conformance_suite,
     write_molt_conformance_summary,
 )
@@ -117,7 +116,7 @@ def _molt_build_env(repo_root: Path = REPO_ROOT) -> dict[str, str]:
     """Return canonical build env defaults for conformance runs."""
     env = os.environ.copy()
     session_id = env.get("MOLT_SESSION_ID") or "monty-conformance"
-    env.update(build_molt_conformance_env(repo_root, session_id, env))
+    env.update(build_molt_conformance_env(repo_root, session_id, env, create_dirs=True))
     return env
 
 
@@ -290,10 +289,6 @@ class ConformanceBatchCompiler:
             env_overrides=_batch_env_overrides(self._env),
             timeout=remaining_timeout(),
         )
-
-
-def _ensure_build_dirs(env: dict[str, str]) -> None:
-    ensure_molt_conformance_dirs(env)
 
 
 def _exit_code_for_stats(stats: Stats) -> int:
@@ -634,7 +629,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Selected {len(test_files)} test files\n")
 
     env = _molt_build_env()
-    _ensure_build_dirs(env)
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     tmp_root = execution_scratch(env)
     tmp_root.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.runtime_wasm_build_support import runtime_reloc_publication_action
+
 from molt.process_environment import ProcessEnvironmentBuilder
 
 import os
@@ -11,6 +13,7 @@ import sys
 import threading
 import time
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -19,7 +22,6 @@ from molt import toolchain_identity
 from molt.cli import runtime_build_identity as identity
 from molt.cli.cargo_search_path import derives_cargo_search_path
 from molt.cli import runtime_native_build
-from molt.cli.runtime_build_python import bind_runtime_build_python
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
     RUNTIME_WASM_COMBINED_ARTIFACTS,
@@ -29,13 +31,13 @@ from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 from tests.process_guard_common import current_thread_only, install_module_view
-from tests.rust.process_guard import run_rust_test_process
 from tests.executable_test_support import native_executable_donor
 from tests.runtime_build_identity_helper import (
-    build_python_identity_fixture,
     RuntimeFixtureRoot,
+    publication_executor,
     clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
+    runtime_cargo_plan,
 )
 from molt.llvm_toolchain import (
     wasi_c_abi_plan,
@@ -56,6 +58,7 @@ from molt.python_runtime_identity import (
 from tests.python_environment_test_support import runtime_identity_manifest
 from tests.executable_test_support import (
     build_native_executable,
+    native_fixture_build_timeout,
     native_executable_name,
     write_mock_executable,
 )
@@ -221,21 +224,25 @@ def _resolve(
                     "shared",
                     *((("-C", f"link-arg=@{response_path}")) if response_path else ()),
                 ),
-                publication_transform=(
-                    publication if kind == "shared" else "strip-final-link-metadata-v1"
+                publication=schema.RuntimePublicationAction(
+                    schema.RuntimePublicationTransform.SHARED,
+                    publication == "unstripped-debug-v1",
+                    identity.capture_runtime_publication_executor(
+                        root, schema.RuntimePublicationTransform.SHARED
+                    ),
                 ),
-                preserve_debug=False,
                 link_args=("--export=shared",),
             ),
             schema.RuntimeBuildMemberPlan(
                 kind="reloc",
                 resolved_rustflags=("-C", "panic=abort", "--cfg", "reloc"),
-                publication_transform=(
-                    publication
-                    if kind == "reloc"
-                    else "relocatable-wasm-byte-identity-v1"
+                publication=runtime_reloc_publication_action(
+                    ("-C", "link-arg=--export=reloc"),
+                    module_name="molt_runtime_reloc.wasm",
+                    executor=identity.capture_runtime_publication_executor(
+                        root, schema.RuntimePublicationTransform.RELOC
+                    ),
                 ),
-                preserve_debug=False,
                 link_args=("--export=reloc",),
             ),
         ),
@@ -286,11 +293,6 @@ def identity_root(
 
     monkeypatch.setattr(rustc_probes, "rust_target_metadata", target_metadata)
     monkeypatch.setattr(cargo_plans, "_rust_resource_roots", lambda *args, **kwargs: ())
-    monkeypatch.setattr(
-        identity,
-        "_python_identity",
-        lambda _env, **_kwargs: build_python_identity_fixture(),
-    )
     (tmp_path / "Cargo.toml").write_text(
         '[profile.release-output]\ninherits = "release"\n[profile.dev-fast]\ninherits = "dev"\n',
         encoding="utf-8",
@@ -298,13 +300,13 @@ def identity_root(
     source = tmp_path / "runtime" / "src"
     source.mkdir(parents=True)
     (source / "lib.rs").write_text("pub fn runtime() {}\n", encoding="utf-8")
+    for transform in schema.RuntimePublicationTransform:
+        for relative in schema.runtime_publication_executor_paths(transform):
+            executor = tmp_path / relative
+            executor.parent.mkdir(parents=True, exist_ok=True)
+            executor.write_text("# publication executor fixture\n", encoding="utf-8")
     tooling = tmp_path / "runtime-planner.py"
     tooling.write_text("# runtime planning authority\n", encoding="utf-8")
-    monkeypatch.setattr(
-        identity,
-        "runtime_build_tooling_paths",
-        lambda root: (root / "runtime-planner.py",),
-    )
     archive_root = tmp_path / "archives"
     archive_root.mkdir()
     (archive_root / "libcompiler_builtins.rlib").write_bytes(b"rust compiler builtins")
@@ -318,8 +320,8 @@ def identity_root(
     )
     monkeypatch.setattr(
         identity,
-        "_cargo_crate_source_closure",
-        lambda *, project_root, **_kwargs: (project_root / "runtime" / "src",),
+        "wasm_cpython_abi_source_paths",
+        lambda project_root: (project_root / "runtime" / "src",),
     )
     monkeypatch.setattr(
         cargo_plans.RuntimeCargoPlan,
@@ -341,7 +343,7 @@ def identity_root(
 
 
 @pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
-def test_resolvers_own_one_source_and_tooling_observation_per_call(
+def test_resolvers_own_one_source_observation_per_call(
     identity_root: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     observations: list[tuple[str, ...]] = []
@@ -359,23 +361,20 @@ def test_resolvers_own_one_source_and_tooling_observation_per_call(
         return _resolve(identity_root, kind=kind, publication="tree-observation")
 
     before = resolve()
-    assert observations == [
-        ("source/runtime/src", "runtime-tooling/runtime-planner.py")
-    ]
+    assert observations == [("source/runtime/src",)]
     # A separate live admission must see files introduced after the first one.
     (identity_root / "runtime/src/new.rs").write_bytes(b"new source input")
     after_source = resolve()
     assert len(observations) == 2
     assert before.compile_digest != after_source.compile_digest
     assert (
-        before.payload["family"]["publication_authority"]
-        == after_source.payload["family"]["publication_authority"]
+        before.payload["family"]["members"] == after_source.payload["family"]["members"]
     )
     (identity_root / "runtime-planner.py").write_bytes(b"new publication input")
     after_tooling = resolve()
     assert len(observations) == 3
     assert after_source.compile_digest == after_tooling.compile_digest
-    assert after_source.family_digest != after_tooling.family_digest
+    assert after_source == after_tooling
     assert observations == [observations[0]] * 3
 
 
@@ -551,7 +550,7 @@ def test_dependency_profile_fields_invalidate_compile_and_member_identity(
     assert len({item.digest for item in identities}) == 3
 
 
-def test_publication_authority_content_is_family_identity_input(
+def test_unconsumed_planner_edit_preserves_complete_product_identity(
     identity_root: Path,
 ) -> None:
     before = _resolve(
@@ -569,8 +568,8 @@ def test_publication_authority_content_is_family_identity_input(
     )
 
     assert before.compile_digest == after.compile_digest
-    assert before.family_digest != after.family_digest
-    assert before.digest != after.digest
+    assert before.family_digest == after.family_digest
+    assert before.digest == after.digest
 
 
 def test_exact_producer_artifact_selection_is_family_identity_input(
@@ -617,7 +616,7 @@ def test_identity_json_objects_reject_non_string_key_aliasing() -> None:
     with pytest.raises(ValueError, match="incomplete"):
         schema.RuntimeBuildIdentity.from_dict(
             {
-                "schema": "molt.runtime-build-member-identity.v3",
+                "schema": "molt.runtime-build-member-identity.v5",
                 "digest": "0" * 64,
                 "compile_digest": "0" * 64,
                 "family_digest": "0" * 64,
@@ -687,13 +686,15 @@ def test_identity_rejects_digest_valid_shape_and_type_drift(
         schema.RuntimeBuildIdentity.from_dict(compile_extra)
 
     member_type = json.loads(json.dumps(baseline))
-    member_type["payload"]["family"]["members"]["shared"]["preserve_debug"] = 1
+    member_type["payload"]["family"]["members"]["shared"]["publication"][
+        "preserve_debug"
+    ] = 1
     _reseal_runtime_build_identity(member_type)
-    with pytest.raises(ValueError, match="member shape"):
+    with pytest.raises(ValueError, match="publication|member shape"):
         schema.RuntimeBuildIdentity.from_dict(member_type)
 
     direct_payload = member_type["payload"]
-    with pytest.raises(ValueError, match="member shape"):
+    with pytest.raises(ValueError, match="publication|member shape"):
         schema.RuntimeBuildIdentity(
             digest=member_type["digest"],
             compile_digest=member_type["compile_digest"],
@@ -702,56 +703,23 @@ def test_identity_rejects_digest_valid_shape_and_type_drift(
         )
 
 
-def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
-    tmp_path: Path,
-) -> None:
-    authority_paths = {
-        path.relative_to(tmp_path).as_posix()
-        for path in identity.runtime_build_tooling_paths(tmp_path)
-    }
-    assert "pyproject.toml" in authority_paths
-    assert "src/molt/cli/cargo_command.py" in authority_paths
-    assert "src/molt/cli/cargo_build_reads.py" in authority_paths
-    assert "src/molt/pyproject.toml" not in authority_paths
-    for relative in authority_paths:
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# {relative}\n", encoding="utf-8")
-    unrelated = tmp_path / "src/molt/cli/frontend_pipeline.py"
-    unrelated.write_text("# unrelated 1\n", encoding="utf-8")
-
-    _, before = identity._capture_runtime_build_trees(tmp_path, ())
-    unrelated.write_text("# unrelated 2\n", encoding="utf-8")
-    _, after_unrelated = identity._capture_runtime_build_trees(tmp_path, ())
-    assert "src/molt/rust_toolchain.py" in authority_paths
-    owned = tmp_path / "src/molt/cli/cargo_build_reads.py"
-    owned.write_text("# runtime authority changed\n", encoding="utf-8")
-    _, after_owned = identity._capture_runtime_build_trees(tmp_path, ())
-
-    assert before["schema"] == "molt.runtime-build-tooling-authority.v2"
-    assert before["file_count"] == len(authority_paths)
-    assert after_unrelated == before
-    assert after_owned["digest"] != before["digest"]
-
-
-def test_runtime_tooling_source_projection_is_independent_of_install_layout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from molt import python_environment_identity as capture
-
-    source = tmp_path / "compiler-source"
-    expected = identity.runtime_build_tooling_paths(source)
-    package = tmp_path / "environment/Lib/site-packages/molt"
-    monkeypatch.setattr(
-        identity, "__file__", str(package / "cli/runtime_build_identity.py")
-    )
-    monkeypatch.setattr(
-        capture, "__file__", str(package / "python_environment_identity.py")
-    )
-    assert identity.runtime_build_tooling_paths(source) == expected
-    assert source / "src/molt/python_environment_identity.py" in expected
-    assert source / "src/sitecustomize.py" in expected
-    assert source / "pyproject.toml" in expected
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "src/molt/dx.py",
+        "src/molt/cli/runtime_build_identity.py",
+        "src/molt/cli/runtime_wasm_build_spec.py",
+        "src/molt/file_publication.py",
+    ],
+)
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc"])
+def test_tooling_source_is_not_a_product_input(identity_root, relative, kind):
+    before = _resolve(identity_root, kind=kind, publication="stable")
+    path = identity_root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# unrelated implementation edit\n", encoding="utf-8")
+    after = _resolve(identity_root, kind=kind, publication="stable")
+    assert before == after
 
 
 def test_native_cpu_policy_splits_the_native_runtime_identity(
@@ -869,7 +837,8 @@ def test_build_script_environment_is_semantic_content_identity(
         extra_env={**common, "PYTHONPATH": str(relocated)},
     )
     assert changed_pythonpath == baseline
-    assert build_script["python_import_policy"] == "isolated-no-site-v1"
+    assert "python_import_policy" not in build_script
+    assert "build_python" not in build_script
     assert "PYTHONPATH" not in build_script
 
     changed_exports = _resolve(
@@ -883,91 +852,6 @@ def test_build_script_environment_is_semantic_content_identity(
         },
     )
     assert changed_exports.compile_digest != baseline.compile_digest
-
-
-@pytest.mark.parametrize("raw", [None, "", os.pathsep, "missing", "source-root"])
-def test_build_script_python_import_policy_never_enumerates_ambient_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str | None
-) -> None:
-    environment = {} if raw is None else {"PYTHONPATH": raw}
-    if raw == "source-root":
-        environment["PYTHONPATH"] = str(tmp_path)
-    monkeypatch.setattr(
-        identity,
-        "_tree_identity",
-        lambda *_args, **_kwargs: pytest.fail("ambient import roots were enumerated"),
-    )
-    result = identity._build_python_script_environment_identity(
-        environment, build_python_identity=build_python_identity_fixture()
-    )
-    assert result == identity._build_python_script_environment_identity(
-        {}, build_python_identity=build_python_identity_fixture()
-    )
-
-
-@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
-def test_build_python_signature_is_derived_not_another_identity_input(
-    identity_root: Path, kind: str
-) -> None:
-    before = _resolve(identity_root, kind=kind, publication="signature-proof")
-    python = before.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
-        "build_python"
-    ]
-    signature = canonical_json_sha256(python)
-    after = _resolve(
-        identity_root,
-        kind=kind,
-        publication="signature-proof",
-        extra_env={"MOLT_BUILD_PYTHON_SIGNATURE": signature},
-    )
-    assert after == before
-
-
-@pytest.mark.parametrize("signature", ["", "0" * 64])
-def test_build_python_signature_cannot_attest_other_captured_content(
-    identity_root: Path, signature: str
-) -> None:
-    with pytest.raises(
-        ValueError, match="Python signature differs from captured content"
-    ):
-        _resolve(
-            identity_root,
-            kind="native",
-            publication="signature-proof",
-            extra_env={"MOLT_BUILD_PYTHON_SIGNATURE": signature},
-        )
-
-
-def test_bind_build_python_signature_uses_admitted_identity_without_a_probe(
-    identity_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured = _resolve(identity_root, kind="native", publication="signature-proof")
-    plan = _test_plan(
-        identity_root,
-        {
-            "PATH": os.environ["PATH"],
-            "RUSTC": sys.executable,
-            "CARGO": sys.executable,
-            "CARGO_HOME": str(identity_root / "test-cargo-home"),
-        },
-        target_triple=None,
-    )
-    monkeypatch.setattr(
-        identity,
-        "_python_identity",
-        lambda *_args, **_kwargs: pytest.fail("signature binding launched Python"),
-    )
-    bound = bind_runtime_build_python(plan, captured)
-    python = captured.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
-        "build_python"
-    ]
-    assert bound.environment["MOLT_BUILD_PYTHON_SIGNATURE"] == canonical_json_sha256(
-        python
-    )
-    assert "MOLT_BUILD_PYTHON_SIGNATURE" not in plan.environment
-    assert bind_runtime_build_python(bound, captured) is bound
-    assert bound.command == plan.command and bound.rustflags == plan.rustflags
-    assert bound.toolchain_identity() == plan.toolchain_identity()
 
 
 @pytest.mark.skipif(
@@ -1011,19 +895,14 @@ def test_cargo_plan_path_is_derived_from_its_tools_not_its_caller(
 
 
 @pytest.mark.parametrize("producer", ["native", "wasm-cpython-abi"])
-def test_no_plan_provisioning_pins_generator_before_capture(
+def test_no_plan_provisioning_uses_cargo_tools_without_python_capture(
     tmp_path, monkeypatch, runtime_fixture_root, producer, readonly_wasi_sdk
 ):
     from functools import partial
+    from molt.python_runtime_admission import BuildPythonAdmission
+    from tests.runtime_build_identity_helper import runtime_cargo_plan
 
-    from tests.runtime_build_identity_helper import (
-        runtime_cargo_plan,
-        runtime_toolchain_content_manifest,
-    )
-
-    environment = {
-        "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, tmp_path),
-    }
+    environment = {"MOLT_BUILD_PYTHON": "missing-generator-is-not-a-rust-input"}
     sdk = readonly_wasi_sdk() if producer == "wasm-cpython-abi" else None
     if sdk is not None:
         environment.update(project_wasm_toolchain_environment(sdk, environ={}))
@@ -1032,150 +911,31 @@ def test_no_plan_provisioning_pins_generator_before_capture(
         "resolve_runtime_cargo_plan",
         partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
-    captured = []
-
-    def capture(plan, **_kwargs):
-        captured.append(plan)
-        executable = Path(plan.environment["MOLT_BUILD_PYTHON"])
-        assert executable.is_absolute()
-        assert executable.samefile(sys.executable)
-        return runtime_toolchain_content_manifest().to_dict()["payload"]["toolchain"]
-
-    monkeypatch.setattr(identity, "_capture_plan_toolchain", capture)
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("Rust toolchain capture admitted Python"),
+    )
     if producer == "native":
-        identity.provision_native_runtime_toolchain_content_manifest(
+        manifest = identity.provision_native_runtime_toolchain_content_manifest(
             project_root=tmp_path,
             env=environment,
             target_triple=None,
             cargo_command=("cargo", "rustc"),
         )
+        tools = manifest.payload["toolchain"]["tools"]
     else:
         assert sdk is not None
-        identity._wasm_compile_toolchain_content(
+        content = identity._wasm_compile_toolchain_content(
             project_root=tmp_path,
             env=environment,
             target_triple="wasm32-wasip1",
             wasi_sysroot=wasi_c_abi_plan(sdk).sysroot,
         )
-    assert len(captured) == 1
-    assert environment["MOLT_BUILD_PYTHON"] != sys.executable
-
-
-def test_build_python_signature_reexecutes_cargo_generator_for_same_path(
-    identity_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Real Cargo freshness, with a finite attested-Python boundary fixture.
-
-    The helper actually reads the changed same-path generator input. This
-    isolates Cargo's invalidation contract; it does not mutate a live Python
-    installation or claim to exercise interpreter content capture again.
-    """
-    cargo = shutil.which("cargo")
-    if cargo is None:
-        pytest.skip("Cargo is required for the generator freshness proof")
-    project = identity_root / "cargo-generator"
-    project.mkdir()
-    (project / "src").mkdir()
-    (project / "Cargo.toml").write_text(
-        '[package]\nname="python-signature-proof"\nversion="0.0.0"\nedition="2024"\n'
-        "[workspace]\n",
-        encoding="utf-8",
-    )
-    payload = project / "generator-input.txt"
-    payload.write_text("first", encoding="utf-8")
-    counter = project / "generator-runs.txt"
-    helper_source = (
-        Path(__file__).resolve().parents[2] / "runtime/build_support/build_python.rs"
-    )
-    # Match the shared helper's real ../build_support watcher. A missing
-    # watched path would make Cargo rerun every time and invalidate the oracle.
-    helper = project.parent / "build_support/build_python.rs"
-    helper.parent.mkdir()
-    shutil.copyfile(helper_source, helper)
-    script = f"from pathlib import Path\nprint(Path({str(payload)!r}).read_text())\n"
-    (project / "build.rs").write_text(
-        f"#[path = {json.dumps(str(helper))}] mod build_python;\n"
-        "use std::{env,fs,io::Write,path::PathBuf};\n"
-        "fn main() {\n"
-        f'let value = build_python::run_script(&build_python::resolve(), {json.dumps(script)}, "freshness proof");\n'
-        'let output = PathBuf::from(env::var("OUT_DIR").unwrap()).join("generated.rs");\n'
-        'fs::write(output, format!("const GENERATED: &str = {:?};", value.trim())).unwrap();\n'
-        f"let mut count = fs::OpenOptions::new().create(true).append(true).open({json.dumps(str(counter))}).unwrap();\n"
-        'writeln!(count, "{}", value.trim()).unwrap();\n}\n',
-        encoding="utf-8",
-    )
-    (project / "src/main.rs").write_text(
-        'include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n'
-        'fn main() { println!("{}", GENERATED); }\n',
-        encoding="utf-8",
-    )
-
-    def signature() -> str:
-        python = build_python_identity_fixture()
-        python["selected_executable"]["sha256"] = hashlib.sha256(
-            payload.read_bytes()
-        ).hexdigest()
-        python["identity_sha256"] = canonical_json_sha256(
-            {key: value for key, value in python.items() if key != "identity_sha256"}
-        )
-        monkeypatch.setattr(identity, "_python_identity", lambda *_a, **_k: python)
-        captured = _resolve(identity_root, kind="native", publication="signature-proof")
-        plan = _test_plan(
-            identity_root,
-            {
-                "PATH": os.environ["PATH"],
-                "RUSTC": sys.executable,
-                "CARGO": sys.executable,
-                "CARGO_HOME": str(identity_root / "test-cargo-home"),
-            },
-            target_triple=None,
-        )
-        return bind_runtime_build_python(plan, captured).environment[
-            "MOLT_BUILD_PYTHON_SIGNATURE"
-        ]
-
-    def generated(selected_signature: str) -> str:
-        environment = dict(os.environ)
-        environment.update(
-            MOLT_BUILD_PYTHON=sys.executable,
-            MOLT_BUILD_PYTHON_SIGNATURE=selected_signature,
-            CARGO_TARGET_DIR=str(project / "target"),
-            CARGO_BUILD_BUILD_DIR=str(project / "intermediates"),
-            RUSTC_WRAPPER="",
-            RUSTC_WORKSPACE_WRAPPER="",
-            CARGO_BUILD_RUSTC_WRAPPER="",
-            CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER="",
-        )
-        result = run_rust_test_process(
-            [
-                cargo,
-                "run",
-                "--quiet",
-                "--offline",
-                "--manifest-path",
-                str(project / "Cargo.toml"),
-            ],
-            cwd=str(project),
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert result.returncode == 0, result.stderr
-        return result.stdout.strip()
-
-    before = signature()
-    assert generated(before) == "first"
-    assert generated(before) == "first"
-    assert counter.read_text(encoding="utf-8").splitlines() == ["first"]
-    payload.write_text("second", encoding="utf-8")
-    # This negative control proves the selector/path alone leaves stale output.
-    assert generated(before) == "first"
-    after = signature()
-    assert after != before
-    assert generated(after) == "second"
-    assert generated(after) == "second"
-    assert counter.read_text(encoding="utf-8").splitlines() == ["first", "second"]
+        tools = content["tools"]
+    assert {"cargo", "rustc"} <= tools.keys()
+    assert "build_python" not in tools
+    assert environment["MOLT_BUILD_PYTHON"] == "missing-generator-is-not-a-rust-input"
 
 
 @pytest.mark.parametrize(
@@ -1185,15 +945,12 @@ def test_build_python_signature_reexecutes_cargo_generator_for_same_path(
         "molt.cpython-abi-build-script-environment",
     ],
 )
-def test_build_script_identity_rejects_retired_import_authority_and_policy_drift(
-    script_schema: str,
-) -> None:
-    build_python = build_python_identity_fixture()
+def test_build_script_identity_rejects_retired_python_fields_and_old_schema(
+    script_schema,
+):
     payload = {
-        "schema": script_schema + ".v3",
-        **identity._build_python_script_environment_identity(
-            {}, build_python_identity=build_python
-        ),
+        "schema": script_schema + ".v4",
+        "MOLT_WASI_C_ABI_PLAN": {"state": "ignored-for-target"},
     }
     if script_schema == "molt.runtime-build-script-environment":
         payload.update(
@@ -1202,18 +959,16 @@ def test_build_script_identity_rejects_retired_import_authority_and_policy_drift
                 "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": "ignored-for-target",
             }
         )
-    payload["MOLT_WASI_C_ABI_PLAN"] = {"state": "ignored-for-target"}
-    schema._validated_build_script_environment(
-        payload, target="x86_64-test-native", build_python=build_python
-    )
+    schema._validated_build_script_environment(payload, target="x86_64-test-native")
     for changed, message in (
-        ({**payload, "schema": script_schema + ".v1"}, "schema"),
+        ({**payload, "schema": script_schema + ".v3"}, "schema"),
         ({**payload, "PYTHONPATH": {"state": "unset"}}, "shape"),
-        ({**payload, "python_import_policy": "ambient"}, "import policy"),
+        ({**payload, "python_import_policy": "isolated-no-site-v1"}, "shape"),
+        ({**payload, "build_python": {}}, "shape"),
     ):
         with pytest.raises(ValueError, match=message):
             schema._validated_build_script_environment(
-                changed, target="x86_64-test-native", build_python=build_python
+                changed, target="x86_64-test-native"
             )
 
 
@@ -1327,9 +1082,175 @@ def test_identity_records_flag_tokens_exactly() -> None:
             kind="shared",
             resolved_rustflags="-C panic=abort",  # type: ignore[arg-type]
             link_args=(),
-            publication_transform="shared-runtime-publication-v3",
-            preserve_debug=False,
+            publication=schema.RuntimePublicationAction(
+                schema.RuntimePublicationTransform.SHARED,
+                False,
+                publication_executor(schema.RuntimePublicationTransform.SHARED),
+            ),
         )
+
+
+@pytest.mark.parametrize("joined", [False, True])
+def test_remap_projection_preserves_textual_matching_and_semantics(tmp_path, joined):
+    root = tmp_path / "source = tree"
+    projection = identity._RuntimeFlagProjection.capture((("source", root),))
+
+    def remap(source, destination):
+        operand = f"{source}={destination}"
+        return (
+            ("--remap-path-prefix=" + operand,)
+            if joined
+            else ("--remap-path-prefix", operand)
+        )
+
+    first = remap(root, "/molt/source")
+    second = remap(root / "runtime", "/molt/runtime")
+    expected = [
+        "--remap-path-prefix=${source}=/molt/source",
+        "--remap-path-prefix=${source}" + os.sep + "runtime=/molt/runtime",
+    ]
+    assert projection.rustflags((*first, *second)) == expected
+    assert projection.rustflags(("cargo", "rustc", "--", *first)) == [
+        "cargo",
+        "rustc",
+        "--",
+        expected[0],
+    ]
+    assert projection.rustflags((*second, *first)) == expected[::-1]
+    assert projection.rustflags(remap(root, "/different")) != expected[:1]
+    assert projection.rustflags(remap("${source}", "/molt/source")) != expected[:1]
+    assert projection.rustflags((*first, "--remap-path-scope=debuginfo")) != (
+        projection.rustflags((*first, "--remap-path-scope=all"))
+    )
+    # rustc does textual replacement, not filesystem normalization. These
+    # sources can match different strings even if they resolve to one path.
+    dotted = os.fspath(root) + os.sep + "runtime" + os.sep + ".."
+    assert projection.rustflags(remap(dotted, "/molt/source")) == [
+        "--remap-path-prefix=${source}"
+        + os.sep
+        + "runtime"
+        + os.sep
+        + "..=/molt/source"
+    ]
+    with pytest.raises(ValueError, match="unknown absolute host path in Rust remap"):
+        projection.rustflags(remap(os.fspath(root) + "-other", "/molt/source"))
+    # A destination is semantic text, including an absolute-looking string or
+    # '@'; it is neither a host input nor a linker response file.
+    assert projection.rustflags(remap(root, "/unowned/@destination")) == [
+        "--remap-path-prefix=${source}=/unowned/@destination"
+    ]
+
+
+def test_remap_projection_does_not_fold_windows_case_or_separators():
+    # The exact textual root is intentional; this exercises Windows spelling
+    # without pretending the host can resolve a foreign filesystem.
+    projection = identity._RuntimeFlagProjection(
+        roots=(("source", Path("unused"), r"C:\owned\Source"),)
+    )
+    assert projection.rustflags((r"--remap-path-prefix=C:\owned\Source=/molt",)) == [
+        "--remap-path-prefix=${source}=/molt"
+    ]
+    for source in (r"C:\owned\source", "C:/owned/Source"):
+        with pytest.raises(
+            ValueError, match="unknown absolute host path in Rust remap"
+        ):
+            projection.rustflags((f"--remap-path-prefix={source}=/molt",))
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+def test_runtime_source_and_build_remaps_relocate_without_losing_flags(
+    identity_root, tmp_path_factory, kind
+):
+    relocated = tmp_path_factory.mktemp("remap= second source") / "source"
+    shutil.copytree(identity_root, relocated)
+    results = []
+    for root in (identity_root, relocated):
+        # Owned target/config flags must survive. Applying an encoded env
+        # override before Cargo selection would silently lose this cfg.
+        config = root / ".cargo" / "config.toml"
+        config.parent.mkdir(exist_ok=True)
+        target = _TEST_HOST_TARGET if kind == "native" else "wasm32-wasip1"
+        config.write_text(
+            f'[target.{target}]\nrustflags = ["--cfg", "owned_configuration"]\n',
+            encoding="utf-8",
+        )
+        # _resolve deliberately selects RUSTFLAGS; the plan-level control
+        # below separately checks the configuration-only selection.
+        results.append(
+            _resolve(
+                root,
+                kind=kind,
+                publication="remap-source-build",
+                extra_env={
+                    "CARGO_TARGET_DIR": str(root.parent / (root.name + "-build"))
+                },
+            )
+        )
+    assert results[0] == results[1]
+    encoded = json.dumps(results[0].to_dict(), sort_keys=True)
+    assert str(identity_root) not in encoded and str(relocated) not in encoded
+    family = results[0].payload["family"]
+    flags = (
+        family["members"]["staticlib"]["resolved_rustflags"]
+        if kind == "cpython-abi"
+        else family["compile"]["common_config"]["base_rustflags"]
+    )
+    assert "--remap-path-prefix=${source}=/molt/source" in flags
+    assert "--remap-path-prefix=${cargo-build}=/molt/build" in flags
+
+
+@pytest.mark.parametrize("build_location", ["inside", "outside", "same", "ancestor"])
+def test_runtime_remap_order_and_cargo_configuration_selection(
+    identity_root, monkeypatch, build_location
+):
+    from molt.flag_strings import FlagStringRule
+
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    config = identity_root / ".cargo" / "config.toml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(
+        '[target.wasm32-wasip1]\nrustflags = ["--cfg", "owned_configuration"]\n',
+        encoding="utf-8",
+    )
+    build = {
+        "inside": identity_root / "target",
+        "outside": identity_root.parent / "outside-build",
+        "same": identity_root,
+        "ancestor": identity_root.parent,
+    }[build_location]
+    plan = _test_plan(
+        identity_root,
+        {
+            **os.environ,
+            "RUSTC": sys.executable,
+            "CARGO": sys.executable,
+            "CARGO_HOME": str(identity_root / "cargo-home"),
+            "CARGO_TARGET_DIR": str(build),
+            "RUSTC_WRAPPER": "",
+            "RUSTC_WORKSPACE_WRAPPER": "",
+        },
+    )
+    assert ("--cfg", "owned_configuration") in tuple(
+        zip(plan.rustflags, plan.rustflags[1:])
+    )
+    remaps = [
+        flag for flag in plan.rustflags if flag.startswith("--remap-path-prefix=")
+    ]
+    source_map = f"--remap-path-prefix={identity_root}=/molt/source"
+    build_map = f"--remap-path-prefix={build}=/molt/build"
+    if build_location in {"same", "ancestor"}:
+        assert remaps == [build_map, source_map]
+    else:
+        # Outside roots do not overlap; their relative order has no effect.
+        assert set(remaps) == {source_map, build_map}
+        if build_location == "inside":
+            assert remaps == [source_map, build_map]
+    assert (
+        FlagStringRule.CARGO_ENCODED.decode(plan.environment["CARGO_ENCODED_RUSTFLAGS"])
+        == plan.rustflags
+    )
+    plan.verify()
 
 
 def test_flag_canonicalization_enforces_path_boundaries(identity_root: Path) -> None:
@@ -1368,6 +1289,114 @@ def test_flag_projection_resolves_roots_once_not_per_export(
     operand = tmp_path / "nested" / "input.a"
     assert projection.token(str(operand)) == "${source}/nested/input.a"
     assert resolved == [path for _label, path in roots] + [operand]
+
+
+def test_flag_projection_validates_distinct_literals_once_per_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[str] = []
+    original = identity._RuntimeFlagProjection._validate_literal_token
+
+    def validate(projection, token):
+        observed.append(token)
+        return original(projection, token)
+
+    monkeypatch.setattr(
+        identity._RuntimeFlagProjection, "_validate_literal_token", validate
+    )
+    projection = identity._RuntimeFlagProjection.capture(())
+    tokens = ("-C", "link-arg=--export=molt_one", "-C", "link-arg=--export=molt_two")
+    # The two member projections retain order and duplicate tokens exactly.
+    assert projection.rustflags(tokens) == list(tokens)
+    assert projection.link_args(tokens[::-1]) == list(tokens[::-1])
+    assert observed == [
+        "-C",
+        "link-arg=--export=molt_one",
+        "link-arg=--export=molt_two",
+    ]
+    identity._RuntimeFlagProjection.capture(()).link_args(tokens)
+    assert observed[3:] == observed[:3]
+
+
+def test_flag_projection_literal_admission_does_not_cross_root_domains() -> None:
+    projection = identity._RuntimeFlagProjection.capture(())
+    token = "--cfg=literal_root"
+    assert projection.token(token) == token
+    changed = projection.prepend_root("source", Path("literal_root"))
+    for _attempt in range(2):
+        with pytest.raises(ValueError, match="embedded absolute host path"):
+            changed.token(token)
+    # Warming and rejected requests do not change value identity or its parent.
+    assert projection == identity._RuntimeFlagProjection.capture(())
+    assert projection.token(token) == token
+
+
+@pytest.mark.parametrize("prefix", ["", "-I", "-Clink-arg=", "--sysroot=", "key="])
+def test_flag_projection_reobserves_absolute_operand_after_literal_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    projection = identity._RuntimeFlagProjection.capture((("source", tmp_path),))
+    operand = tmp_path / "selected"
+    selected = tmp_path / "before"
+    resolved: list[Path] = []
+    original = Path.resolve
+
+    def resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == operand:
+            resolved.append(path)
+            return selected
+        return original(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", current_thread_only(resolve, original))
+    for _attempt in range(2):
+        assert projection.token("--export=molt_one") == "--export=molt_one"
+    token = prefix + str(operand)
+    assert projection.token(token) == prefix + "${source}/before"
+    selected = tmp_path / "after"
+    assert projection.token(token) == prefix + "${source}/after"
+    selected = tmp_path.parent / "outside"
+    with pytest.raises(ValueError, match="unknown absolute host path"):
+        projection.token(token)
+    assert resolved == [operand, operand, operand]
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "delete"])
+def test_flag_projection_reobserves_captured_response_after_literal_hits(
+    tmp_path: Path, mutation: str
+) -> None:
+    response = tmp_path / "runtime.rsp"
+    payload = b"--export=molt_one\n"
+    response.write_bytes(payload)
+    plan = runtime_cargo_plan(
+        tmp_path,
+        fixture_root=RuntimeFixtureRoot(tmp_path),
+        env={name: sys.executable for name in ("CC", "CXX", "AR", "RANLIB")},
+        cargo_command=(
+            sys.executable,
+            "rustc",
+            "--",
+            "-C",
+            "link-arg=@" + str(response),
+        ),
+    )
+    projection = identity._RuntimeFlagProjection.capture(
+        plan.logical_paths, cargo_plan=plan
+    )
+    token = "-Clink-arg=@" + str(response)
+    expected = "-Clink-arg=@response:sha256=" + hashlib.sha256(payload).hexdigest()
+    expected += ":size=" + str(len(payload))
+    assert projection.token(token) == expected
+    assert projection.token(token) == expected
+    for _attempt in range(2):
+        assert projection.token("--export=molt_one") == "--export=molt_one"
+    if mutation == "rewrite":
+        before = response.stat()
+        response.write_bytes(b"--export=molt_two\n")
+        os.utime(response, ns=(before.st_atime_ns, before.st_mtime_ns))
+    else:
+        response.unlink()
+    with pytest.raises(ValueError):
+        projection.token(token)
 
 
 def test_flag_projection_preserves_ordered_root_precedence(tmp_path: Path) -> None:
@@ -1860,10 +1889,13 @@ def test_wasi_sysroot_layout_does_not_include_unattested_parent_version(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX linker entrypoint symlink contract")
-def test_executable_identity_preserves_role_selecting_symlink(tmp_path: Path) -> None:
+def test_executable_identity_preserves_role_selecting_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # lld selects its flavor from argv[0]: `wasm-ld` is a role name for the
     # generic driver. Identity must probe the role spelling, never the link
     # target, or the generic driver refuses to run and the tool is misrecorded.
+    cold_timeout = native_fixture_build_timeout()
     generic = build_native_executable(
         tmp_path / native_executable_name("lld"),
         """
@@ -1882,6 +1914,7 @@ fn main() {
     }
 }
 """,
+        timeout=cold_timeout,
     )
     role = tmp_path / native_executable_name("wasm-ld")
     try:
@@ -1889,6 +1922,13 @@ fn main() {
     except OSError as exc:  # Windows without the symlink privilege
         pytest.skip(f"host cannot create file symlinks: {exc}")
 
+    # This is the image's first correctness execution, including OS assessment.
+    # Keep the actual probe and its argv/environment; product defaults stay 30s.
+    monkeypatch.setattr(
+        identity,
+        "probe_executable",
+        partial(identity.probe_executable, timeout=cold_timeout),
+    )
     tool = identity._executable_identity(
         "wasm-ld",
         "wasm-ld",
@@ -1899,7 +1939,7 @@ fn main() {
     assert tool["version"] == "22.1.8"
 
 
-@pytest.mark.parametrize("resource", ["archive", "sysroot", "python"])
+@pytest.mark.parametrize("resource", ["archive", "sysroot", "configuration"])
 def test_portable_manifest_is_evidence_not_live_capture_authority(
     identity_root: Path, monkeypatch: pytest.MonkeyPatch, resource: str
 ) -> None:
@@ -1921,21 +1961,16 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
             "#define WASI_ERRNO 2\\n", encoding="utf-8"
         )
     else:
-        python = build_python_identity_fixture()
-        python["selected_executable"]["sha256"] = "1" * 64
-        python["identity_sha256"] = canonical_json_sha256(
-            {key: value for key, value in python.items() if key != "identity_sha256"}
-        )
-        monkeypatch.setattr(
-            identity, "_python_identity", lambda _env, **_kwargs: python
-        )
+        config = identity_root / ".cargo" / "config.toml"
+        config.parent.mkdir(exist_ok=True)
+        config.write_text("[build]\nincremental = false\n", encoding="utf-8")
     after = _resolve(
         identity_root,
         kind="shared",
         publication="strip-final-link-metadata-v1",
         wasi_sdk=installation,
     )
-    if resource == "python":
+    if resource == "configuration":
         assert after.toolchain_manifest != restored
         assert after.compile_digest != before.compile_digest
     else:
@@ -1984,23 +2019,12 @@ def test_toolchain_manifest_is_relocatable_and_rejects_tampering(
         schema.RuntimeToolchainContentManifest.from_dict(value)
 
 
-def test_toolchain_manifest_rejects_resealed_nested_python_runtime_drift(
-    identity_root: Path,
-) -> None:
+def test_toolchain_manifest_rejects_resealed_retired_python_tool(identity_root):
     value = _provision_toolchain(identity_root).to_dict()
     payload = value["payload"]
-    build_python = payload["toolchain"]["tools"]["build_python"]
-    runtime = build_python["runtime"]
-    runtime["explicit_files"][0]["node"] = "missing-node"
-    runtime_material = dict(runtime)
-    runtime_material.pop("runtime_closure_sha256")
-    runtime["runtime_closure_sha256"] = schema._digest(runtime_material)
-    build_python_material = dict(build_python)
-    build_python_material.pop("identity_sha256")
-    build_python["identity_sha256"] = schema._digest(build_python_material)
+    payload["toolchain"]["tools"]["build_python"] = {}
     value["digest"] = schema._digest(payload)
-
-    with pytest.raises(ValueError, match="build Python closure is invalid"):
+    with pytest.raises(ValueError, match="tools are invalid"):
         schema.RuntimeToolchainContentManifest.from_dict(value)
 
 
@@ -2016,12 +2040,9 @@ def test_toolchain_manifest_concurrent_publication_is_atomic(
     identity_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = _provision_toolchain(identity_root)
-    python = build_python_identity_fixture()
-    python["selected_executable"]["sha256"] = "1" * 64
-    python["identity_sha256"] = canonical_json_sha256(
-        {key: value for key, value in python.items() if key != "identity_sha256"}
-    )
-    monkeypatch.setattr(identity, "_python_identity", lambda _env, **_kwargs: python)
+    config = identity_root / ".cargo" / "config.toml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text("[build]\nincremental = false\n", encoding="utf-8")
     second = _provision_toolchain(identity_root)
     assert first.digest != second.digest
     path = tmp_path / "runtime-toolchain.json"
@@ -2107,14 +2128,20 @@ class _CaptureSession:
         self.verify = None
         self.respond_to_verify = True
         self.wait_timeouts = []
+        self.verifier_prefixes = []
+        self.cancellation_requests = 0
 
     def poll(self):
         return self.returncode
+
+    def request_cancel(self):
+        self.cancellation_requests += 1
 
     def wait(self, timeout=None):
         # The guarded command's own wait: closure follows the child's exit.
         self.wait_timeouts.append(timeout)
         assert self.closed
+        assert self.verifier_prefixes[0].is_dir()
         self.returncode = self.returncode or 0
         self.terminal = True
         return self.returncode
@@ -2129,16 +2156,38 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
     session = _CaptureSession(runtime_receipt)
     calls = []
 
+    def live_empty_prefix(command):
+        option = command[command.index("-X") + 1]
+        assert option.startswith("pycache_prefix=")
+        prefix = Path(option.split("=", 1)[1])
+        assert prefix.is_dir() and not prefix.is_symlink()
+        assert list(prefix.iterdir()) == []
+        assert prefix not in session.verifier_prefixes
+        session.verifier_prefixes.append(prefix)
+        return prefix
+
     class Executor:
+        prefix = "MOLT_BUILD_PYTHON"
+        repo_root = Path(__file__).resolve().parents[2]
+
         def start_guarded(self, command, **kwargs):
+            live_empty_prefix(command)
             calls.append((command, kwargs))
             return session
 
-        def run(self, command, **kwargs):
-            from types import SimpleNamespace
+    def fresh_run(command, **kwargs):
+        from tests.process_guard_common import guard_result_for_test
 
-            session.fresh_calls.append((command, kwargs))
-            return SimpleNamespace(stdout=json.dumps(session.fresh_selection))
+        assert kwargs["memory_guard_prefix"] == "MOLT_BUILD_PYTHON"
+        assert kwargs["guard_source_root"] == Executor.repo_root
+        assert session.verifier_prefixes[0].is_dir()
+        live_empty_prefix(command)
+        session.fresh_calls.append((command, kwargs))
+        return guard_result_for_test(
+            command, 0, json.dumps(session.fresh_selection), "", descendants_closed=True
+        )
+
+    monkeypatch.setattr(admission.process_guard, "run_completed_command", fresh_run)
 
     monkeypatch.setattr(
         admission.process_guard, "source_command_executor", lambda _prefix: Executor()
@@ -2146,9 +2195,7 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
     return admission, selected, session, calls
 
 
-def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
-    python_session, runtime_receipt
-):
+def test_python_admission_uses_exact_isolated_facade(python_session, runtime_receipt):
     from molt.process_environment import ProcessEnvironment
 
     admission, selected, session, calls = python_session
@@ -2158,10 +2205,14 @@ def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
         "PATH": "captured-path",
     }
     with admission.BuildPythonAdmission() as owner:
-        first = identity._python_identity(environment, admission=owner)
+        first = owner.capture(environment)
+        assert session.verifier_prefixes[0].is_dir()
         first["runtime"]["version"] = "caller mutation"
-        second = identity._python_identity(environment, admission=owner)
+        second = owner.capture(environment)
+        assert session.verifier_prefixes[0].is_dir()
+        assert not session.verifier_prefixes[1].exists()
     assert session.closed
+    assert all(not prefix.exists() for prefix in session.verifier_prefixes)
     assert session.verifications == 1
     assert len(session.fresh_calls) == 1
     assert session.fresh_calls[0][0][-1] == "--runtime-selection"
@@ -2175,6 +2226,8 @@ def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
         str(selected),
         "-B",
         "-I",
+        "-X",
+        f"pycache_prefix={session.verifier_prefixes[0]}",
         "-S",
         str(
             Path(identity.__file__).resolve().parents[1]
@@ -2299,7 +2352,8 @@ def test_python_identity_rejects_ambiguous_probe_json(
         )
     session.lines.put(output + "\n")
     with pytest.raises(ValueError):
-        identity._python_identity({"MOLT_BUILD_PYTHON": str(selected)})
+        with admission.BuildPythonAdmission() as owner:
+            owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
     assert session.closed
 
 
@@ -2357,31 +2411,13 @@ def test_python_identity_timeout_revokes_without_retry(
     assert len(calls) == 1
 
 
-def test_build_python_scope_borrows_only_live_operation_owner(python_session):
-    from types import SimpleNamespace
-
-    admission, selected, session, calls = python_session
-    state = SimpleNamespace(build_python_admission=None)
-    environment = {"MOLT_BUILD_PYTHON": str(selected)}
-    from molt.cli.runtime_build_python import build_python_scope
-
-    with build_python_scope(state) as owner:
-        first = owner.capture(environment)
-        with build_python_scope(state) as borrowed:
-            assert borrowed is owner
-            assert borrowed.capture(environment) == first
-        assert not session.closed
-    assert session.closed
-    assert state.build_python_admission is None
-    assert len(calls) == 1
-
-
 def test_python_identity_unresolved_interpreter_never_spawns_probe(
     python_session, tmp_path
 ):
-    _admission, _selected, _session, calls = python_session
+    admission, _selected, _session, calls = python_session
     with pytest.raises(ValueError, match="unavailable"):
-        identity._python_identity({"MOLT_BUILD_PYTHON": str(tmp_path / "missing")})
+        with admission.BuildPythonAdmission() as owner:
+            owner.capture({"MOLT_BUILD_PYTHON": str(tmp_path / "missing")})
     assert not calls
 
 
@@ -2463,6 +2499,7 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
     admission, selected, session, _calls = python_session
     owner = admission.BuildPythonAdmission()
     owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    verifier_prefix = session.verifier_prefixes[0]
     original_stdout = session.stdout
 
     def blocked_wait(*args, **kwargs):
@@ -2480,6 +2517,7 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
     assert caught.value is primary
     assert owner._process is session
     assert not owner.terminal
+    assert verifier_prefix.is_dir()
     assert owner.cleanup_failure.admission is owner
     assert "guardian still owns live child" in primary.__notes__[0]
     assert json.loads(capsys.readouterr().err)["kind"] == "build-python-cleanup-failure"
@@ -2493,6 +2531,227 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
     monkeypatch.setattr(session, "wait", terminal_wait)
     owner.close()
     assert owner.terminal
+    assert not verifier_prefix.exists()
+
+
+def test_build_python_verifier_prefix_outlives_response_reader(
+    python_session, monkeypatch
+):
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    verifier_prefix = session.verifier_prefixes[0]
+    reader = owner._reader
+    assert reader is not None
+
+    class ReaderClosure:
+        complete = False
+
+        def join(self, *, timeout):
+            assert verifier_prefix.is_dir()
+            reader.join(timeout=timeout)
+
+        def is_alive(self):
+            return not self.complete or reader.is_alive()
+
+    closure = ReaderClosure()
+    monkeypatch.setattr(owner, "_reader", closure)
+    try:
+        with pytest.raises(
+            admission.BuildPythonCleanupError, match="reader remains live"
+        ):
+            owner.close()
+        assert session.terminal and not owner.terminal
+        assert verifier_prefix.is_dir()
+    finally:
+        closure.complete = True
+        owner.close()
+    assert owner.terminal and not verifier_prefix.exists()
+
+
+def test_build_python_verifier_prefix_cleanup_retains_exact_owner_for_retry(
+    python_session, monkeypatch, capsys
+):
+    from molt import temporary_artifacts
+
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    allocation = owner._verifier_prefix_owner
+    assert isinstance(allocation, temporary_artifacts.OwnedTemporaryDirectory)
+    allocation_path = Path(allocation.name)
+    verifier_prefix = session.verifier_prefixes[0]
+    assert allocation_path.resolve(strict=True) == verifier_prefix
+    delete = temporary_artifacts.delete_path
+    attempts = []
+
+    def fail_first_deletion(path):
+        if path == allocation_path:
+            attempts.append(path)
+            if len(attempts) == 1:
+                return False, "independent temporary deletion failure"
+        return delete(path)
+
+    monkeypatch.setattr(temporary_artifacts, "delete_path", fail_first_deletion)
+    primary = LookupError("primary operation failed")
+    try:
+        with pytest.raises(LookupError) as caught:
+            with owner:
+                raise primary
+        assert caught.value is primary
+        assert owner.terminal and verifier_prefix.is_dir()
+        assert owner._verifier_prefix_owner is allocation
+        assert "independent temporary deletion failure" in primary.__notes__[0]
+        diagnostic = json.loads(capsys.readouterr().err)
+        assert diagnostic["kind"] == "build-python-cleanup-failure"
+        owner.close()
+        assert len(attempts) == 2
+        assert owner._verifier_prefix_owner is None
+        assert not verifier_prefix.exists()
+    finally:
+        monkeypatch.setattr(temporary_artifacts, "delete_path", delete)
+        owner.close()
+
+
+@pytest.mark.parametrize("fault", ["oversized", "missing-newline", "queue-full"])
+def test_build_python_failed_reader_cancels_before_guardian_wait(
+    python_session, monkeypatch, fault
+):
+    import threading
+
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    session.lines.get_nowait()
+    if fault == "oversized":
+        monkeypatch.setattr(admission, "_RESPONSE_LIMIT", 128)
+        session.lines.put("x" * 129 + "\n")
+    elif fault == "missing-newline":
+        session.lines.put("unterminated output")
+    else:
+        for _ in range(4):
+            session.lines.put("{}\n")
+    cancelled = threading.Event()
+    order = []
+    request_cancel = session.request_cancel
+    wait = session.wait
+    get_response = owner._responses.get
+
+    def cancel():
+        order.append("cancel")
+        request_cancel()
+        cancelled.set()
+
+    def guardian_wait(*args, **kwargs):
+        # An undrained verbose child cannot prove closure until its guardian
+        # cancels it. Fail immediately rather than simulating an unbounded wait.
+        assert cancelled.is_set()
+        order.append("wait")
+        return wait(*args, **kwargs)
+
+    def await_reader_failure(*, timeout):
+        # Let the real response thread hit the independent stream/queue fault
+        # before the parent consumes anything, making queue-full deterministic.
+        assert cancelled.wait(2), "failed reader did not request guard cancellation"
+        return get_response(timeout=timeout)
+
+    monkeypatch.setattr(session, "request_cancel", cancel)
+    monkeypatch.setattr(session, "wait", guardian_wait)
+    monkeypatch.setattr(owner._responses, "get", await_reader_failure)
+    with pytest.raises(ValueError, match="identity probe failed|unsolicited output"):
+        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    assert order.index("cancel") < order.index("wait")
+    assert owner.terminal
+    assert not session.verifier_prefixes[0].exists()
+
+
+def test_build_python_unstarted_reader_preserves_primary_and_retries(
+    python_session, monkeypatch, capsys
+):
+    import threading
+
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    start = threading.Thread.start
+    primary = RuntimeError("independent reader start failure")
+
+    def refuse_reader_start(thread):
+        if thread.name == "build-python-admission-response":
+            raise primary
+        return start(thread)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", refuse_reader_start)
+        with pytest.raises(RuntimeError) as caught:
+            owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    assert caught.value is primary
+    assert session.cancellation_requests == 1
+    assert session.terminal and not owner.terminal
+    prefix = session.verifier_prefixes[0]
+    assert prefix.is_dir()
+    assert owner._reader is not None and owner._reader.ident is None
+    assert owner.cleanup_failure.admission is owner
+    assert "cannot join thread before it is started" in primary.__notes__[0]
+    assert owner.cleanup_failure.verifier_prefix in primary.__notes__[0]
+    assert Path(owner.cleanup_failure.verifier_prefix).resolve(strict=True) == prefix
+    assert json.loads(capsys.readouterr().err)["kind"] == "build-python-cleanup-failure"
+    # The retained real Thread can complete after its startup fault is removed.
+    # The session does not start a duplicate reader on its own.
+    owner._reader.start()
+    owner._reader.join(timeout=5)
+    assert not owner._reader.is_alive()
+    owner.close()
+    assert owner.terminal and not prefix.exists()
+
+
+def test_build_python_unresolved_prefix_survives_owner_collection(
+    python_session, monkeypatch
+):
+    import gc
+    import weakref
+    from molt import temporary_artifacts
+
+    admission, selected, session, _calls = python_session
+
+    def fail_guardian_wait(*args, **kwargs):
+        raise RuntimeError("guardian closure remains unproved")
+
+    monkeypatch.setattr(session, "wait", fail_guardian_wait)
+
+    def abandoned_session():
+        owner = admission.BuildPythonAdmission()
+        owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+        allocation = owner._verifier_prefix_owner
+        assert allocation is not None
+        # Preserve the original cleanup function and allocation identity solely
+        # for test teardown; no strong reference keeps the owner alive.
+        cleanup = temporary_artifacts._cleanup_temporary_directory
+        target = Path(allocation.name)
+        allocation_identity = dict(allocation._identity)
+        with pytest.raises(admission.BuildPythonCleanupError) as raised:
+            owner.close()
+        assert str(target) in str(raised.value)
+        owner._reader.join(timeout=5)
+        assert not owner._reader.is_alive()
+        return (
+            weakref.ref(owner),
+            weakref.ref(allocation),
+            target,
+            cleanup,
+            allocation_identity,
+        )
+
+    owner_ref, allocation_ref, target, cleanup, allocation_identity = (
+        abandoned_session()
+    )
+    try:
+        gc.collect()
+        assert owner_ref() is None and allocation_ref() is None
+        assert not session.terminal
+        assert target.is_dir()
+    finally:
+        # The synthetic session has no real child. Retire with the captured
+        # allocation identity, never one reconstructed from the surviving path.
+        cleanup(target, allocation_identity)
 
 
 def test_build_python_close_waits_for_the_helper_exit_without_a_deadline(
@@ -2619,3 +2878,203 @@ def test_native_executable_copy_error_preserves_existing_destination(tmp_path):
     with pytest.raises(FileExistsError):
         _copy_native_image(Path(sys.executable).resolve(strict=True), destination)
     assert destination.read_bytes() == b"existing fixture must survive"
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+def test_rust_build_identity_has_no_python_generator_dependency(
+    identity_root, monkeypatch, kind
+):
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("Rust build admitted Python"),
+    )
+    before = _resolve(identity_root, kind=kind, publication="no-python-generator")
+    after = _resolve(
+        identity_root,
+        kind=kind,
+        publication="no-python-generator",
+        extra_env={
+            "MOLT_BUILD_PYTHON": "missing-build-python",
+            "PYTHON": "missing-shadowed-python",
+            "MOLT_BUILD_PYTHON_SIGNATURE": "not-a-signature",
+            "PYTHONPATH": "missing-ambient-root",
+        },
+    )
+    assert after == before
+    assert "build_python" not in after.toolchain_manifest.payload["toolchain"]["tools"]
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+@pytest.mark.parametrize("coordinate", ["member", "family", "toolchain"])
+def test_retired_rust_python_sidecar_epochs_are_rejected(
+    identity_root, kind, coordinate
+):
+    current = _resolve(identity_root, kind=kind, publication="old-epoch")
+    if coordinate == "toolchain":
+        value = current.toolchain_manifest.to_dict()
+        value["schema"] = "molt.runtime-toolchain-content.v3"
+        with pytest.raises(ValueError, match="schema"):
+            schema.RuntimeToolchainContentManifest.from_dict(value)
+        return
+    value = current.to_dict()
+    if coordinate == "member":
+        value["schema"] = "molt.runtime-build-member-identity.v3"
+    else:
+        value["payload"]["family"]["schema"] = "molt.runtime-build-family.v3"
+        _reseal_runtime_build_identity(value)
+    with pytest.raises(ValueError, match="schema|family shape"):
+        schema.RuntimeBuildIdentity.from_dict(value)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["order", "flag", "exports", "module-name", "missing", "duplicate"]
+)
+def test_publication_action_covers_link_semantics_and_rejects_incomplete_inputs(
+    mutation,
+):
+    action = runtime_reloc_publication_action(
+        ("-C", "link-arg=--export=molt_add"),
+        module_name="molt_runtime_reloc.wasm",
+        executor=publication_executor(schema.RuntimePublicationTransform.RELOC),
+    )
+    command = list(action.link_command)
+    if mutation == "missing":
+        command.remove(schema.RuntimePublicationInput.LIBC)
+    elif mutation == "duplicate":
+        command.append(schema.RuntimePublicationInput.STATICLIB)
+    elif mutation == "order":
+        a, b = (
+            command.index(schema.RuntimePublicationInput.LIBC),
+            command.index(schema.RuntimePublicationInput.COMPILER_RT),
+        )
+        command[a], command[b] = command[b], command[a]
+    elif mutation == "flag":
+        command[0] = "--relocatable"
+    elif mutation == "module-name":
+        command[command.index("--soname=molt_runtime_reloc.wasm")] = (
+            "--soname=other.wasm"
+        )
+    if mutation in {"missing", "duplicate"}:
+        with pytest.raises(ValueError, match="incomplete"):
+            replace(action, link_command=tuple(command))
+        return
+    changed = replace(
+        action,
+        link_command=tuple(command),
+        link_exports=("--export=molt_other",)
+        if mutation == "exports"
+        else action.link_exports,
+    )
+    assert canonical_json_sha256(action.to_dict()) != canonical_json_sha256(
+        changed.to_dict()
+    )
+    assert schema.RuntimePublicationAction.from_dict(changed.to_dict()) == changed
+    from tests.runtime_build_identity_helper import runtime_build_identity
+
+    baseline = runtime_build_identity("reloc")
+
+    def with_action(selected):
+        wire = baseline.to_dict()
+        wire["payload"]["family"]["members"]["reloc"]["publication"] = (
+            selected.to_dict()
+        )
+        _reseal_runtime_build_identity(wire)
+        return schema.RuntimeBuildIdentity.from_dict(wire)
+
+    before, after = with_action(action), with_action(changed)
+    assert before.compile_digest == after.compile_digest
+    assert before.family_digest != after.family_digest
+    assert (
+        schema.runtime_build_fingerprint(before)["hash"]
+        != schema.runtime_build_fingerprint(after)["hash"]
+    )
+
+
+@pytest.mark.parametrize("coordinate", ["member", "family"])
+def test_pre_action_runtime_identity_epoch_is_rejected(coordinate):
+    from tests.runtime_build_identity_helper import runtime_build_identity
+
+    wire = runtime_build_identity("shared").to_dict()
+    if coordinate == "member":
+        wire["schema"] = "molt.runtime-build-member-identity.v4"
+    else:
+        wire["payload"]["family"]["schema"] = "molt.runtime-build-family.v4"
+        _reseal_runtime_build_identity(wire)
+    with pytest.raises(ValueError, match="schema|family shape"):
+        schema.RuntimeBuildIdentity.from_dict(wire)
+
+
+@pytest.mark.parametrize(
+    "kind,relative",
+    [
+        ("native", "src/molt/cli/native_link_manifest.py"),
+        ("native", "src/molt/cli/native_link_custody.py"),
+        ("native", "src/molt/native_target_shape.py"),
+        ("shared", "src/molt/wasm_artifact.py"),
+        ("reloc", "src/molt/cli/wasm_link_args.py"),
+        ("reloc", "src/molt/cli/runtime_identity_schema.py"),
+    ],
+)
+def test_executor_edit_changes_publication_only_and_planner_edit_reuses(
+    identity_root, kind, relative
+):
+    before = _resolve(identity_root, kind=kind, publication="stable")
+    path = identity_root / relative
+    path.write_bytes(path.read_bytes() + b"# changed output algorithm\n")
+    after = _resolve(identity_root, kind=kind, publication="stable")
+    assert before.compile_digest == after.compile_digest
+    assert before.digest != after.digest
+    assert before.family_digest != after.family_digest
+    planner = identity_root / "src/molt/cli/runtime_wasm_build_spec.py"
+    planner.parent.mkdir(parents=True, exist_ok=True)
+    planner.write_text(
+        "# planner change with identical resolved action\n", encoding="utf-8"
+    )
+    assert after == _resolve(identity_root, kind=kind, publication="stable")
+
+
+@pytest.mark.parametrize(
+    "mutation", ["absent", "null", "missing", "partial", "extra", "bad-digest"]
+)
+def test_publication_executor_receipt_rejects_incomplete_closure(mutation):
+    action = schema.RuntimePublicationAction(
+        schema.RuntimePublicationTransform.SHARED,
+        False,
+        publication_executor(schema.RuntimePublicationTransform.SHARED),
+    ).to_dict()
+    if mutation == "absent":
+        del action["executor"]
+    elif mutation == "null":
+        action["executor"] = None
+    else:
+        executor = action["executor"]
+        if mutation == "missing":
+            executor["missing"] = executor["roots"][:1]
+        elif mutation == "partial":
+            executor["roots"] = executor["roots"][:-1]
+            executor["file_count"] -= 1
+        elif mutation == "extra":
+            executor["roots"].append("unowned.py")
+            executor["file_count"] += 1
+        else:
+            executor["digest"] = "not-a-digest"
+    with pytest.raises(ValueError, match="publication|executor"):
+        schema.RuntimePublicationAction.from_dict(action)
+
+
+def test_copy_only_capi_has_no_python_executor(identity_root):
+    before = _resolve(identity_root, kind="cpython-abi", publication="stable")
+    (identity_root / "src/molt/wasm_artifact.py").write_text(
+        "# changed rewrite\n", encoding="utf-8"
+    )
+    assert _resolve(identity_root, kind="cpython-abi", publication="stable") == before
+    action = schema.runtime_publication_action(before)
+    assert action.executor is None
+    with pytest.raises(ValueError, match="byte-preserving"):
+        replace(
+            action,
+            executor=publication_executor(schema.RuntimePublicationTransform.SHARED),
+        )

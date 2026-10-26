@@ -49,7 +49,7 @@ DECLARATION_PATH = ROOT / "config" / "public_contract_v1.toml"
 SURFACE_PATH = ROOT / "config" / "public_contract_v1.surface.json"
 NATIVE_CALLABLE_ABI_PATH = ROOT / "runtime" / "native_callable_abi.toml"
 DECLARATION_SCHEMA = "molt.public-contract.v1"
-SURFACE_SCHEMA = "molt.public-contract-surface.v1"
+SURFACE_SCHEMA = "molt.public-contract-surface.v2"
 TIERS = frozenset({"stable", "preview", "internal"})
 _SCALAR = (str, int, float, bool, type(None))
 
@@ -135,11 +135,15 @@ def live_public_schemas() -> list[str]:
 _ZERO_VALUE_NARGS = (argparse.OPTIONAL, argparse.ZERO_OR_MORE, argparse.REMAINDER, 0)
 
 
-def _action_record(action: argparse.Action) -> dict[str, Any] | None:
-    if isinstance(action, argparse._HelpAction) or action.dest == "help":
-        return None
-    if isinstance(action, argparse._SubParsersAction):
-        return None
+def _argument_value(value: Any) -> Any:
+    if isinstance(value, _SCALAR):
+        return value
+    if isinstance(value, list):
+        return [_argument_value(item) for item in value]
+    raise ValueError(f"CLI contract value must be a JSON scalar or list: {value!r}")
+
+
+def _action_record(action: argparse.Action) -> dict[str, Any]:
     record: dict[str, Any] = {
         "dest": action.dest,
         "flags": list(action.option_strings),
@@ -155,33 +159,67 @@ def _action_record(action: argparse.Action) -> dict[str, Any] | None:
             action.nargs if isinstance(action.nargs, (int, str)) else str(action.nargs)
         )
     if action.choices is not None:
-        record["choices"] = sorted(str(choice) for choice in action.choices)
-    if isinstance(action.default, _SCALAR) and action.default is not argparse.SUPPRESS:
-        record["default"] = action.default
+        record["choices"] = sorted(
+            (_argument_value(choice) for choice in action.choices),
+            key=canonical_json_bytes,
+        )
+    if action.type is not None:
+        module = getattr(action.type, "__module__", None)
+        name = getattr(action.type, "__qualname__", None)
+        if not module or not name or "<" in name:
+            raise ValueError(
+                f"CLI converter needs a stable named identity: {action.type!r}"
+            )
+        record["type"] = f"{module}.{name}"
+    record["const"] = _argument_value(action.const)
+    if action.default != argparse.SUPPRESS:
+        record["default"] = _argument_value(action.default)
     return record
 
 
 def _parser_record(parser: argparse.ArgumentParser) -> dict[str, Any]:
     arguments: list[dict[str, Any]] = []
     subcommands: dict[str, dict[str, Any]] = {}
+    argument_indices: dict[argparse.Action, int] = {}
+    record: dict[str, Any] = {
+        "arguments": arguments,
+        "allow_abbrev": parser.allow_abbrev,
+        "prefix_chars": parser.prefix_chars,
+        "fromfile_prefix_chars": parser.fromfile_prefix_chars,
+        "exit_on_error": parser.exit_on_error,
+        "defaults": {
+            key: _argument_value(value) for key, value in parser._defaults.items()
+        },
+    }
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
+            record["subcommand"] = {
+                "dest": action.dest,
+                "required": bool(action.required),
+            }
             for name, subparser in sorted(action.choices.items()):
                 subcommands[name] = _parser_record(subparser)
             continue
-        record = _action_record(action)
-        if record is not None:
-            arguments.append(record)
-    arguments.sort(key=lambda item: (item["dest"], item["flags"]))
-    record: dict[str, Any] = {"arguments": arguments}
+        argument = _action_record(action)
+        argument_indices[action] = len(arguments)
+        arguments.append(argument)
+    if parser._mutually_exclusive_groups:
+        record["mutually_exclusive"] = [
+            {
+                "required": bool(group.required),
+                "arguments": [
+                    argument_indices[action] for action in group._group_actions
+                ],
+            }
+            for group in parser._mutually_exclusive_groups
+        ]
     if subcommands:
         record["subcommands"] = subcommands
     return record
 
 
 def cli_surface() -> dict[str, Any]:
-    root = _parser_record(_build_entrypoint_parser())
-    return root.get("subcommands", {})
+    return _parser_record(_build_entrypoint_parser())
 
 
 def native_callable_abi_tokens(
@@ -205,13 +243,12 @@ def native_callable_abi_tokens(
 
 
 def live_surface(declaration: Mapping[str, Any]) -> dict[str, Any]:
-    commands = cli_surface()
+    cli = cli_surface()
+    for name, command in cli["subcommands"].items():
+        command["tier"] = declaration["tiers"].get(name)
     return {
         "schema": SURFACE_SCHEMA,
-        "commands": {
-            name: {"tier": declaration["tiers"].get(name), **record}
-            for name, record in sorted(commands.items())
-        },
+        "cli": cli,
         "target_python_versions": list(SUPPORTED_CPYTHON_VERSIONS),
         "release_targets": [
             dict(sorted(dict(target).items())) for target in RELEASE_TARGETS
@@ -255,12 +292,18 @@ def surface_problems(expected_path: Path, actual: Mapping[str, Any]) -> list[str
         return []
     problems: list[str] = []
     for key in sorted(set(expected) | set(actual)):
-        if key == "commands":
+        if key == "cli":
             continue
         if expected.get(key) != actual.get(key):
             problems.append(f"{key} changed")
-    expected_commands = expected.get("commands", {})
-    actual_commands = actual.get("commands", {})
+    expected_cli = expected.get("cli", {})
+    actual_cli = actual.get("cli", {})
+    if {key: value for key, value in expected_cli.items() if key != "subcommands"} != {
+        key: value for key, value in actual_cli.items() if key != "subcommands"
+    }:
+        problems.append("entrypoint surface changed")
+    expected_commands = expected_cli.get("subcommands", {})
+    actual_commands = actual_cli.get("subcommands", {})
     for name in sorted(set(expected_commands) | set(actual_commands)):
         if expected_commands.get(name) != actual_commands.get(name):
             tier = (actual_commands.get(name) or expected_commands.get(name) or {}).get(
@@ -290,7 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     declaration = load_declaration()
     surface = live_surface(declaration)
-    problems = declaration_problems(declaration, surface["commands"])
+    commands = surface["cli"]["subcommands"]
+    problems = declaration_problems(declaration, commands)
     if args.update:
         if problems:
             for problem in problems:
@@ -309,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     rendered = " ".join(f"{tier}={count}" for tier, count in counts.items())
     print(
         f"[public-contract] {'OK' if not problems else 'DRIFT'} "
-        f"commands={len(surface['commands'])} {rendered}"
+        f"commands={len(commands)} {rendered}"
     )
     return 1 if problems else 0
 

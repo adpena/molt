@@ -105,8 +105,11 @@ def test_guarded_cli_test_popen_enters_memory_guard_wrapper(
     args = captured["args"]
     assert isinstance(args, list)
     assert args[0] == process_guard.sys.executable
-    assert args[1:3] == ["-I", "-S"]
-    assert args[3] == str(process_guard.ROOT / "tools" / "memory_guard.py")
+    assert args[1:4] == ["-B", "-I", "-X"]
+    assert args[4].startswith("pycache_prefix=")
+    verifier = Path(args[4].split("=", 1)[1])
+    assert verifier.is_dir() and not list(verifier.iterdir())
+    assert args[5:7] == ["-S", str(process_guard.ROOT / "tools" / "memory_guard.py")]
     assert "--summary-json" in args
     assert args[-4:] == ["--", "python3", "-c", "print('ok')"]
     kwargs = captured["kwargs"]

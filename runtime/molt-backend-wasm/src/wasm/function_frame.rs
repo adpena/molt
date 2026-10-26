@@ -1,11 +1,13 @@
+mod anchors;
 mod emission;
 mod planning;
 
 use super::frame_locals::{WasmDispatchFrameLocals, WasmFrameLocals};
 use super::local_analysis::ValueOccupancy;
-use super::state_dispatch::NonLinearDispatchLocals;
+use super::state_dispatch::NonLinearControlPlan;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_values::ConstantCache;
+pub(in crate::wasm) use anchors::{WasmConstAnchorRegion, WasmConstAnchorSlot};
 use planning::FrameConstAnchor;
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::ValType;
@@ -24,10 +26,6 @@ impl WasmFrameControlMode {
 
     pub(in crate::wasm) fn is_stateful(self) -> bool {
         matches!(self, Self::Stateful)
-    }
-
-    fn needs_dispatch(self) -> bool {
-        !matches!(self, Self::Plain)
     }
 }
 
@@ -61,6 +59,7 @@ pub(super) struct WasmFunctionFrame {
     guard_facts: molt_tir::passes::RuntimeGuardFacts,
     guard_profile_local: Option<u32>,
     control_mode: WasmFrameControlMode,
+    control_plan: Option<NonLinearControlPlan>,
     tail_call_eligible: bool,
     // Per-invocation custody, never a persistent generator/task field. A failed
     // entry also creates a runtime attempt marker that this invocation owns.
@@ -74,7 +73,8 @@ pub(super) struct WasmFunctionFrame {
     const_cache: ConstantCache,
     const_seed_locals: Vec<(u32, i64)>,
     const_anchors: Vec<FrameConstAnchor>,
-    const_anchor_by_op_index: BTreeMap<usize, u32>,
+    const_anchor_region: Option<WasmConstAnchorRegion>,
+    const_anchor_by_op_index: BTreeMap<usize, WasmConstAnchorSlot>,
 }
 
 impl WasmFunctionFrame {
@@ -89,15 +89,12 @@ impl WasmFunctionFrame {
         self.control_mode
     }
 
-    pub(super) fn dispatch_locals(&self) -> Option<NonLinearDispatchLocals> {
-        self.dispatch_locals.map(|locals| NonLinearDispatchLocals {
-            state_local: locals.state_local,
-            resume_state_local: locals.resume_state_local,
-            block_map_base_local: locals.block_map_base_local,
-            self_ptr_local: locals.self_ptr_local,
-            state_remap_base_local: locals.state_remap_base_local,
-            state_remap_value_local: locals.state_remap_value_local,
-        })
+    pub(super) fn dispatch_locals(&self) -> Option<WasmDispatchFrameLocals> {
+        self.dispatch_locals
+    }
+
+    pub(super) fn control_plan(&self) -> Option<&NonLinearControlPlan> {
+        self.control_plan.as_ref()
     }
 
     pub(super) fn locals(&self) -> &WasmFrameLocals {
@@ -112,14 +109,13 @@ impl WasmFunctionFrame {
         &self.runtime_lookup_only_vars
     }
 
-    pub(super) fn const_anchor_for_op(&self, op_idx: usize) -> Option<u32> {
+    pub(super) fn const_anchor_for_op(&self, op_idx: usize) -> Option<WasmConstAnchorSlot> {
         self.const_anchor_by_op_index.get(&op_idx).copied()
     }
 
-    pub(super) fn const_anchor_locals(
-        &self,
-    ) -> impl DoubleEndedIterator<Item = u32> + ExactSizeIterator + '_ {
-        self.const_anchors.iter().map(|anchor| anchor.local)
+    pub(in crate::wasm) fn const_anchor_region(&self) -> WasmConstAnchorRegion {
+        self.const_anchor_region
+            .expect("constant anchor without its invocation region")
     }
 
     pub(super) fn const_cache(&self) -> &ConstantCache {

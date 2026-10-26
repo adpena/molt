@@ -102,6 +102,28 @@ so an overriding continue cannot suppress loop-else. Structured loop markers
 remain balanced even when every body path terminates. No backend-specific
 exception or loop-target fallback is needed.
 
+Shared TIR-to-SimpleIR cleanup owns that preservation: a retained `loop_start`
+keeps its paired `loop_end` independently of executable block completion. The
+generated terminator predicate covers value/void returns and explicit transfers;
+unreachable straight-line body work is removed without removing lexical closure.
+Lowering and full verification use `molt-ir`'s one generated-role structural
+verifier, including mixed if/loop nesting and excluding path-local TRY custody.
+The cleanup adds one scalar loop depth; verification borrows the operation slice
+and uses O(n) work and O(nesting depth) stack space, with no IR clone or emitted
+program overhead. This follows the region/CFG distinction in
+[MLIR SCF](https://mlir.llvm.org/docs/Dialects/SCFDialect/) and the nested control
+grammar of [WebAssembly 3.0](https://webassembly.github.io/spec/core/syntax/instructions.html#control-instructions).
+
+Native block completion runs after FunctionBuilder sealing/finalization, in the
+existing parallel deferred compiler. Actual Cranelift CFG/dominator reachability
+rejects a reachable empty block and retires whole unreachable components through
+Cranelift 0.137's `Context::eliminate_unreachable_code`, before compilation's
+initial verification. Emission-time reachability never protects dead blocks and
+no synthetic traps fill them. This replaces the former pre-seal DFS/trap heuristic.
+It costs a CFG/dominator pass and, when enabled, post-retirement verification before
+Cranelift's normal compilation passes; it does not repair earlier SSA-builder
+invariants or establish a measured compile-time speedup.
+
 Labeled `TRY_START`/`TRY_END` carry path-local exception-region custody, not
 textual brackets. Every named frontend scope carries its handler in the same
 first operand, including context managers and generator resumption; serialization
@@ -126,16 +148,84 @@ runtime exception pending; they never unwind through caller invocation, recursio
 reference-count or Rust runtime guards. Native EH does not replace runtime
 exception push/pop state or pending-error checks. Foreign exceptions retain their
 identity when propagated through activation cleanup. Ordinary return, suspension
-and failed construction share one boxed-result epilogue, so anchor cleanup grows
-with the number of anchors rather than anchors times exits. Statically known
-forward WASM dispatch edges use their enclosing block labels directly, including
-pending-error checks and ready await continuations. The operation-to-block map
-also owns saved-state lookup; only backward or dynamic resume edges reenter the
-dispatcher. An ordinary implicit function exit uses the shared activation
-epilogue; stateful fallthrough is rejected because suspension protocols require
-an explicit terminal return. Unknown saved states, out-of-range operation
-indices and invalid dispatch-table entries trap instead of entering unrelated
-code or redispatching indefinitely.
+and failed construction share one boxed-result epilogue. SimpleIR WASM heap
+literal anchors occupy an invocation-private scratch region: one checked `8*A`
+byte allocation for `A > 0`, no region or allocator calls for `A = 0`. The
+existing resource-accounted scratch ABI owns allocation failure and freeing.
+Every slot is initialized to boxed `None` before construction, then published
+before checking pending failure. Each literal use retains its separate result
+owner. Reverse cleanup clears each slot before decref and frees the region
+once after the last release; a null allocation skips all region accesses and
+returns through the same epilogue without claiming Python frame entry. Counted
+initialization and cleanup loops keep emitted storage-management code constant
+in anchor count. This trades one allocation/free pair and linear memory traffic
+per invocation for fewer invocation-long WASM anchor locals; tiny-literal hot
+paths and compiler memory/latency are separate performance obligations. LIR-fast
+literals retain their per-operation result ownership and native anchors retain
+their native stack-slot storage. Both WASM materializers place the relocated
+payload address and exact byte length directly on the operand stack for the
+constructor. These raw operands have no frame storage or per-output aliases;
+the independent mutable constructor-output segment is reloaded immediately
+after its call. This follows WebAssembly's
+[operand-stack call semantics](https://webassembly.github.io/spec/core/exec/instructions.html)
+and the direct constant SSA values used by
+[Cranelift](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md).
+Compared with staging, this removes two declared locals per literal output,
+their stores/loads and duplicate-anchor copies, without another allocation or
+runtime call. It does not by itself establish lower register-allocation time.
+Statically known forward WASM edges use their
+enclosing block labels directly, including
+pending-error checks and ready await continuations. One pure control plan projects
+`molt-ir`'s executable operation edges and implicit exits onto the generated WASM
+physical block boundaries before frame locals or data segments are allocated.
+This topology view performs no name liveness fixed point. The existing Rust/Luau
+logical-flow projection consumes the same edge producer before its liveness work;
+WASM does not reconstruct label, lexical-loop or exceptional successors.
+
+An ordinary normalized Jumpful function admits entry at operation zero. Only reachable
+self/backward transfers require dynamic targets; a retained dispatcher adds its
+real invocation entry and maps operations to those compact target ordinals.
+Forward-only Jumpful bodies have no dispatcher loop, selector locals, operation
+lookup data or `br_table`. They keep Jumpful pending-error observation, frame
+ownership, anchors and the shared activation epilogue. Plain bodies retain their
+structured representation. Stateful admits a broader domain: its existing raw
+negative saved state decodes any in-range operation, so every physical block
+remains addressable. Positive states still use the shared terminal StateDispatch
+map, and the invocation prefix runs before initial and resumed entry. Compact
+internal ordinals never replace persisted saved-state identity. Unknown states,
+out-of-range operations and invalid dynamic ordinals trap before unrelated code.
+One scope-depth value counts forward labels and an optional dispatcher loop for
+all return, selection and redispatch consumers. Stateful fallthrough remains an
+error because suspension requires an explicit terminal return. A reachable
+`loop_end` takes the canonical latch in structured and non-linear WASM alike;
+source-unreachable lexical closers do not add Jumpful reentry alternatives.
+Final ownership cleanup can introduce backward transfers into an authored acyclic
+function. The final executable graph determines its dynamic domain; removing false
+alternatives does not necessarily eliminate that function's dispatcher or scopes.
+
+Planning retains O(operations + edges + blocks) storage in addition to the
+canonical ordered structural-index work. It does not spawn processes or perform
+syscalls. Dynamic lookup remains one checked O(1) load/branch per actual dispatch;
+forward-only entry performs none. The shared topology does not duplicate
+cross-block value analysis. Retaining forward scopes avoids a second stackifier:
+[LLVM's WebAssembly CFG stackifier](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/WebAssembly/WebAssemblyCFGStackify.cpp)
+likewise derives structured scopes from CFG transfers, while
+[MLIR control-flow edges](https://mlir.llvm.org/docs/Dialects/ControlFlowDialect/)
+keep destination and operand identity explicit. Generalizing Molt's existing LIR
+stackifier to task/exception ABI cells requires separate admission and evidence.
+Fewer entry alternatives are not a blanket total compile-time claim; frontend
+translation, backend allocation/codegen, peak memory and final execution are
+measured separately on the actual workload.
+
+Counted-loop transport operations are normalized once by the shared pre-SSA
+producer: initialize the carrier before the loop, load it at the header, and
+publish updates at the latch. Normalized/final consumers reject residual
+pre-SSA operations with function, operation and source-origin diagnostics;
+initial frontend transport admission still permits that input grammar. Final
+owned/dropped IR is never relifted to repair a missing normalization. This
+postcondition is shared by final typed projection, source backends and authored
+final codegen fixtures.
+
 Luau
 labelled transfers project the shared executable SimpleIR graph (excluding
 verifier-only reachability edges), with explicit pending/handled exception state
@@ -293,6 +383,21 @@ target/value operations. Nested class and function bodies remain separate
 lexical regions; inline class annotation storage keeps its existing namespace
 owner. Module/callable metadata oracles do not claim standalone class code-object
 support.
+
+Class statements publish their final value once through the same definition
+binding owner as functions and aliases. Static construction, dynamic metaclasses,
+dataclass rebuilding and ordinary decorators all feed that one publication.
+The active class namespace routes the store, including classes within compound
+statements and explicit global/nonlocal directives; no straight-line harvest
+from a separate local-value cache participates. Custom `__prepare__` mappings
+observe one final store after decorator application. This follows
+[CPython 3.14 `codegen_class`](https://github.com/python/cpython/blob/3.14/Python/codegen.c)
+and the [class definition binding rules](https://docs.python.org/3.14/reference/compound_stmts.html#class-definitions).
+The change removes premature/repeated stores and a host-side cache/harvest path;
+conditional classes pay the one mapping store their semantics require. Static
+class namespaces retain their existing SSA attribute projection. No new runtime
+helper, support structure, syscall or backend ABI is introduced; the newly
+required mapping store may allocate its entry through existing dictionary storage.
 
 Generic attribute reads keep boxed receivers and enter `molt_get_attr_object_ic`,
 which caches only an owned interned name before invoking `molt_get_attr_name`.
@@ -542,6 +647,22 @@ callable. Any future namespace-specialized body needs an explicit activation
 guard; guarding a constructor alone cannot certify its downstream result facts,
 branch pruning, receiver methods or loop fusion.
 
+Callable task constructors consume the shared task kind and closure extent.
+Their Python arity and optional captured closure describe payload slots; the
+compiled poll entry always takes one raw task-frame address. Native, LLVM and
+WASM trampolines allocate that frame, retain each borrowed payload occurrence
+and return the suspended task without calling its poll body. Allocation failure
+returns the allocator's exact result without payload access or completion work.
+Coroutine registration and async-generator wrapping follow `TaskConstructorLayout`;
+wrapping releases the temporary task owner even when the wrapper fails. LLVM
+direct task creation and callable trampolines share allocation and completion
+emission, while SSA boxing and borrowed call-frame copying retain their distinct
+payload custody. Construction costs one task allocation and one retain per
+payload occurrence, plus the task kind's existing completion work; poll entry
+adds no adapter, allocation or name lookup. This follows
+[CPython's suspended generator frame construction](https://github.com/python/cpython/blob/main/InternalDocs/generators.md)
+and the [language's generator-expression evaluation order](https://docs.python.org/3.12/reference/expressions.html#generator-expressions).
+
 ### Guarded builtin reads in activations (HF-79)
 
 A builtin read in a function, lambda or eager comprehension is a live lookup,
@@ -624,6 +745,16 @@ to boxed SimpleIR; equal bits do not imply one credit. Mutable bindings and thei
 snapshots cannot be conflated by a static alias map. Candidate liveness lists
 schedule cleanup but do not constitute a second release-state authority. Raw
 scalar carriers remain outside boxed-object cleanup.
+
+Before transport custody is planned, the canonical block-argument pruner
+removes payload lanes with no executable consumer, including loops, state
+transitions and exception observations. Their producers and side effects stay;
+ordinary last uses, frame homes and Python boundaries still own their release.
+This prevents retaining a borrowed value for a dead mixed scalar/object phi
+whose transport would otherwise be deleted after ownership insertion. Live
+mixed phis retain their owned contract. Cleanup arguments introduced by drop
+insertion either feed explicit reference operations or forward to live handler
+arguments; final pruning removes only transport that remains unused.
 
 Every canonical control arc carries custody. A terminator arc binds its target's
 block arguments, and a `CheckException` binds its operands to its handler's
@@ -1396,3 +1527,92 @@ A new idiom requires:
 3. Lowering steps to IR primitives
 4. Guard/deopt plan
 5. Test suite additions
+
+
+## Type-parameter frame and cell ownership
+
+A generic declaration creates its type-parameter objects once. The frontend's
+`type_parameter_bindings` overlay contains only values and planned cells owned
+by the current execution frame; it participates in the ordinary function state
+snapshot and is cleared at every function entry. A nested function, method,
+annotation evaluator, lambda, or generator expression receives inherited
+parameters through the canonical lexical closure transport. It never retains
+an enclosing frame's SSA value as an alternate lookup path.
+
+`PythonDependencyAuthority` supplies capture demand. A demanded parameter's
+single cell is allocated with its declaration, before conditional descendants,
+and is forwarded to every body and annotation consumer. Direct-only parameters
+retain their value representation. The tuple published as `__type_params__`
+contains the original objects; the lexical cell remains the shared storage
+observed by bodies and deferred annotations if reflection changes that cell.
+New inner parameters replace the declaration overlay's binding for their name;
+ordinary inherited parameters are represented by the new frame's free variables.
+
+Class lookup follows canonical binding policy: probe the live class mapping
+first, then read an eligible lexical binding only in the miss arm. A declared
+class-local miss goes to globals; a same-spelled type parameter does not change
+that rule. Explicit globals/nonlocals retain their owning storage. Original
+class bodies and base expressions use the same declaration bindings, preserving
+generic class construction without a deferred-only lookup implementation.
+
+Function definition preparation evaluates decorator expressions in source order,
+then positional and keyword defaults outside the new parameter scope. It creates
+one parameter declaration, captures the body, and publishes metadata/annotations
+from those prepared values. Bounds, constraints and parameter defaults retain
+lazy evaluators. Decorators are applied in reverse order before publication of
+the final binding. Sync, generator, coroutine and async-generator definitions,
+including methods, share this preparation authority. Stateful liveness remains
+the authority for values crossing suspension during definition inputs.
+
+Nested frame compilation uses the function lifecycle's compiler-state scope.
+It snapshots the existing reset taxonomy once, restores parent function/operation
+ownership and every snapshot field on both normal and rejected exits, and emits
+child exception-handler IR only after successful lowering. Class namespace
+identity assertions remain active; deferred evaluator failures restore the parent
+before class cleanup. Class annotation/declaration overlays also unwind on every
+exit. Compiler rejection does not emit class runtime cleanup for an abandoned
+body. This is compiler exception safety, separate from runtime exception edges.
+The scope replaces twelve manual snapshot pairs; its extra cost is one host
+context-manager allocation per compiled child, with no additional snapshot copy
+or executed-program operation. The original rejection remains the public FE008
+compatibility diagnostic's cause.
+
+The design follows [PEP 695](https://peps.python.org/pep-0695/),
+[Python's annotation-scope rules](https://docs.python.org/3.14/reference/executionmodel.html#annotation-scopes),
+and [PEP 649](https://peps.python.org/pep-0649/). CPython's
+[`codegen_nameop` and closure construction](https://github.com/python/cpython/blob/3.14/Python/codegen.c)
+use lexical cells and class-dictionary-before-cell lookup rather than references
+to an enclosing frame's evaluation stack. Molt preserves that ownership through
+its existing closure tuple and free-variable metadata protocol.
+
+Source-level cost: definition preparation adds one small host-side record and a
+scoped context per compiled definition; nongeneric declarations avoid copying
+the overlay. These compile-time allocations require measurement alongside IR
+size and compile latency. Capture planning reuses memoized lexical summaries and scales
+with the definition's existing dependency graph. A captured parameter allocates
+one cell per executed declaration, independent of the number of descendant
+closures. Uncaptured parameters allocate no cell. Deferred mapping hits load no
+parameter cell; misses pay the existing closure-slot/cell read and unbound guard.
+There are no new syscalls, processes, locks, serialization passes, or backend ABI
+changes. Moving default evaluation before callable creation removes obsolete
+callable spills around those defaults. These are structural cost bounds, not
+benchmark measurements. Native and WASM consume the same frontend contract;
+version-matched differential execution remains required for support claims.
+
+The lexical-scope syntax validator runs before reachability pruning. It uses the
+whole-body declaration and definition-region authority to reject `nonlocal`
+bindings to type parameters on every supported Python minor. Ordinary function
+bindings and CPython's ordinary class shadow retain their behavior: a class
+shadow changes descendant classification without supplying nonlocal storage.
+Decorator, default, alias and type-parameter regions retain their lexical
+boundaries. This adds a source traversal and scope-local declaration census,
+with no executed-program work. The matching reference is CPython's
+[`analyze_name` and `analyze_block`](https://github.com/python/cpython/blob/3.14/Python/symtable.c).
+
+The syntax-safety trade is one linear source walk on targets 3.13 and later,
+which previously skipped this validation. A bounded CPython 3.14.9 measurement
+over four preparsed modules totaling 19,444 AST nodes took a median 6.4 ms;
+target 3.12 retained its existing 6.4 ms walk. Traced peak temporary allocation
+was below 128 KiB for that corpus, compared with 41 KiB for the old 3.12
+validator. This measures the validator alone, without parsing or lowering;
+it does not establish whole-compile latency or executed-program performance.

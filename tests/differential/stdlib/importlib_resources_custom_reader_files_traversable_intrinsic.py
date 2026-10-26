@@ -1,26 +1,45 @@
 """Purpose: validate importlib.resources custom reader files()-only parity."""
 
 import importlib.resources
+from importlib.resources.abc import Traversable
 import io
 import types
 
 
-class _Node:
+class _Node(Traversable):
     def __init__(self, name: str, *, data: bytes | None = None, children=None) -> None:
-        self.name = name
+        self._name = name
         self._data = data
         self._children = dict(children or {})
 
-    def joinpath(self, part: str):
-        return self._children.get(part, _Node(part))
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def joinpath(self, *descendants: str):
+        current = self
+        for descendant in descendants:
+            for part in descendant.split("/"):
+                if part:
+                    current = current._children.get(part, _Node(part))
+        return current
 
     def iterdir(self):
-        return list(self._children.values())
+        return iter(self._children.values())
+
+    def is_dir(self) -> bool:
+        return self._data is None
+
+    def read_text(self, encoding=None, errors=None):
+        with self.open(encoding=encoding, errors=errors) as stream:
+            return stream.read()
 
     def is_file(self) -> bool:
         return self._data is not None
 
-    def open(self, mode: str = "r", encoding: str | None = "utf-8", errors: str | None = None):
+    def open(
+        self, mode: str = "r", encoding: str | None = "utf-8", errors: str | None = None
+    ):
         if self._data is None:
             raise IsADirectoryError(self.name)
         if "b" in mode:
@@ -68,7 +87,9 @@ module.__spec__ = types.SimpleNamespace(
 
 traversable = importlib.resources.files(module)
 entries = sorted(entry.name for entry in traversable.iterdir())
-nested_entries = sorted(entry.name for entry in traversable.joinpath("nested").iterdir())
+nested_entries = sorted(
+    entry.name for entry in traversable.joinpath("nested").iterdir()
+)
 text = importlib.resources.read_text(module, "data.txt").strip()
 raw = importlib.resources.read_binary(module, "data.txt")
 leaf = traversable.joinpath("nested").joinpath("leaf.bin").read_bytes()

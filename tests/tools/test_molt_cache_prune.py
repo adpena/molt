@@ -20,6 +20,7 @@ from molt.cli.wasm_link_cache import (
     _wasm_link_cache_entry,
 )
 from tests.process_guard_common import (
+    close_owned_multiprocessing_child,
     close_owned_test_process,
     install_module_view,
     run_custody_subject_process,
@@ -370,11 +371,10 @@ print(json.dumps({'elapsed_seconds': time.perf_counter() - started,
 _CACHE_OWNER_CODE = r"""
 import json, os, socket, sys
 from pathlib import Path
-mode, cache, project, port = sys.argv[1:]
-cache, project = Path(cache), Path(project)
+cache, port = sys.argv[1:]
+cache = Path(cache)
 os.environ['MOLT_CACHE'] = str(cache)
-os.environ['MOLT_MAX_CONCURRENT_BUILDS'] = '1'
-from molt.default_paths import shared_cache_lock_path, shared_stdlib_publish_lock_path
+from molt.default_paths import shared_stdlib_publish_lock_path
 
 def barrier(entry, lock):
     # The OS lock is held before the child announces readiness. The release
@@ -386,25 +386,17 @@ def barrier(entry, lock):
         channel.settimeout(None)
         assert channel.recv(1) == b'R'
 
-if mode == 'slot':
-    from molt.cli.cargo_execution import _build_slot, _build_slot_dir
-    with _build_slot() as index:
-        assert index == 0
-        barrier(None, _build_slot_dir() / 'slot-0.lock')
-elif mode == 'stdlib':
-    from molt.cli.backend_cache import _stdlib_object_cache_path, _shared_stdlib_cache_lock
-    from molt.file_publication import staged_file_path
-    archive = _stdlib_object_cache_path(cache / 'program.o', 'a' * 64)
-    with _shared_stdlib_cache_lock(archive):
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        archive.write_bytes(b'shared archive generation')
-        for suffix in ('.count', '.key', '.manifest.json', '.partition.json',
-                       '.sha256', '.symbol-contract.json', '.symbols.json'):
-            archive.with_suffix(suffix).write_bytes(suffix.encode())
-        staged_file_path(archive).write_bytes(b'in-flight publication')
-        barrier(archive.parent, shared_stdlib_publish_lock_path(archive))
-else:
-    raise AssertionError(mode)
+from molt.cli.backend_cache import _stdlib_object_cache_path, _shared_stdlib_cache_lock
+from molt.file_publication import staged_file_path
+archive = _stdlib_object_cache_path(cache / 'program.o', 'a' * 64)
+with _shared_stdlib_cache_lock(archive):
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(b'shared archive generation')
+    for suffix in ('.count', '.key', '.manifest.json', '.partition.json',
+                   '.sha256', '.symbol-contract.json', '.symbols.json'):
+        archive.with_suffix(suffix).write_bytes(suffix.encode())
+    staged_file_path(archive).write_bytes(b'in-flight publication')
+    barrier(archive.parent, shared_stdlib_publish_lock_path(archive))
 print('RELEASED')
 """
 
@@ -439,7 +431,7 @@ def _accept_owner(
 
 
 @contextmanager
-def _active_cache_owner(mode: str, cache: Path, project: Path):
+def _active_cache_owner(cache: Path):
     with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
@@ -449,9 +441,7 @@ def _active_cache_owner(mode: str, cache: Path, project: Path):
                 "-B",
                 "-c",
                 _CACHE_OWNER_CODE,
-                mode,
                 str(cache),
-                str(project),
                 str(server.getsockname()[1]),
             ],
             stdout=subprocess.PIPE,
@@ -502,23 +492,15 @@ finally:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("mode", ["slot", "stdlib"])
 def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
-    tmp_path, monkeypatch, mode
+    tmp_path, monkeypatch
 ):
     from molt.default_paths import shared_stdlib_cache_entry
 
     cache = tmp_path / "cache"
-    project = tmp_path / "project"
-    namespace = project / "ns_pkg"
-    namespace.mkdir(parents=True)
-    (project / "main.py").write_text(
-        "import ns_pkg.leaf\nprint(ns_pkg.leaf.VALUE)\n", encoding="utf-8"
-    )
-    (namespace / "leaf.py").write_text("VALUE = 7\n", encoding="utf-8")
-    (project / "pyproject.toml").write_text(
-        '[project]\nname = "active-planner"\nversion = "0.1.0"\n', encoding="utf-8"
-    )
+    # Build slots live in control_state_dir, outside this cache. Their routing
+    # and exclusion are owned by test_manifest_cli_integration; acquiring a
+    # host-wide slot here would contend with unrelated real builds.
     monkeypatch.setenv("MOLT_CACHE", str(cache))
     monkeypatch.delenv("MOLT_HOME", raising=False)
     monkeypatch.delenv("MOLT_BIN", raising=False)
@@ -527,13 +509,13 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"durable owner state")
     snapshots = {path: (path.stat().st_ino, path.read_bytes()) for path in retained}
-    with _active_cache_owner(mode, cache, project) as ready:
+    with _active_cache_owner(cache) as ready:
         lock = Path(ready["lock"])
-        entry = Path(ready["entry"]) if ready["entry"] else None
+        entry = Path(ready["entry"])
         os.utime(lock, (1, 1))
         lock_before = lock.stat()
-        entry_before = _snapshot_tree(entry) if entry else None
-        first_byte = "00" if entry is None or entry.name[:2] != "00" else "ff"
+        entry_before = _snapshot_tree(entry)
+        first_byte = "00" if entry.name[:2] != "00" else "ff"
         inactive, _name = shared_stdlib_cache_entry(cache, first_byte * 32)
         inactive.mkdir(parents=True)
         (inactive / "stale.py").write_bytes(b"old generation")
@@ -546,9 +528,8 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
         assert not inactive.exists() and retired_flat.exists()
         assert (unknown.stat().st_ino, unknown.read_bytes()) == unknown_before
         assert "failed.entries=0" in output
-        if entry is not None:
-            assert "busy.entries=1" in output
-            assert _snapshot_tree(entry) == entry_before
+        assert "busy.entries=1" in output
+        assert _snapshot_tree(entry) == entry_before
         assert (lock.stat().st_dev, lock.stat().st_ino, lock.stat().st_mtime_ns) == (
             lock_before.st_dev,
             lock_before.st_ino,
@@ -563,7 +544,7 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
     _assert_external_lock_availability(lock, True)
     output = _run_pruner(cache)
     assert "busy.entries=0" in output
-    assert entry is None or not entry.exists()
+    assert not entry.exists()
     assert lock.stat().st_ino == lock_before.st_ino
     assert all(
         (path.stat().st_ino, path.read_bytes()) == snapshots[path] for path in retained
@@ -971,7 +952,7 @@ def test_required_backend_output_survives_eviction_after_each_cache_publication(
         backend_cache, "_publish_immutable_backend_cache_artifact", publish_then_evict
     )
     output = tmp_path / "output.rs"
-    error = backend_cache._stage_backend_output_and_caches(
+    staged = backend_cache._stage_backend_output_and_caches(
         tmp_path,
         source,
         output,
@@ -984,7 +965,8 @@ def test_required_backend_output_survives_eviction_after_each_cache_publication(
         state_path=tmp_path / "state.json",
         artifact_contract=contract,
     )
-    assert error is None
+    assert staged.error is None
+    assert staged.emission_origin is None
     assert published == [module, function]
     assert output.read_bytes() == payload
     assert not source.exists()  # Producer cleanup happens only after both transfers.
@@ -1231,11 +1213,10 @@ def test_global_budget_combines_all_source_record_kinds_and_file_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     module = _load_molt_cache_prune()
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
     kinds: tuple[records.RecordKind, ...] = (
@@ -1283,10 +1264,9 @@ def test_source_record_dry_run_and_age_policy_preserve_database_owner(
 ) -> None:
     import sqlite3
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     assert store.put("module-lowering", "old", b"payload", generation="g")
     with sqlite3.connect(store.path) as connection:
         connection.execute(
@@ -1315,10 +1295,9 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, future_timestamp: bool
 ) -> None:
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
     assert store.put("module-analysis", "k", b"observed", generation="g")
@@ -1359,10 +1338,9 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
 
 def test_corrupt_source_database_is_reported_and_never_unlinked(tmp_path: Path) -> None:
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     root = tmp_path / "cache"
-    database = root / SHARED_SOURCE_RECORDS_DIRECTORY / records.STORE_NAME
+    database = root / records.STORE_RELATIVE_PATH
     database.parent.mkdir(parents=True)
     database.write_bytes(b"corrupt optional records")
     before = (database.stat().st_ino, database.read_bytes())
@@ -1379,13 +1357,14 @@ def test_source_record_busy_initialization_is_reported_separately(
     tmp_path: Path,
 ) -> None:
     import sqlite3
-    from molt.cli.source_record_store import STORE_NAME
+    from molt.cli.source_record_store import STORE_RELATIVE_PATH
     from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
     record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
     record_root.mkdir(parents=True)
-    database = record_root / STORE_NAME
+    database = cache / STORE_RELATIVE_PATH
+    database.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(database, isolation_level=None)
     try:
         # A store file awaiting initialization. A peer writer owns its
@@ -1417,17 +1396,24 @@ def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> 
     # store is one to report, not a failed entry. The writing sweep
     # initializes it.
     import sqlite3
-    from molt.cli.source_record_store import STORE_NAME
+    from molt.cli.source_record_store import STORE_RELATIVE_PATH, source_record_store
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
     from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
     record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
     record_root.mkdir(parents=True)
-    connection = sqlite3.connect(record_root / STORE_NAME, isolation_level=None)
+    (cache / STORE_RELATIVE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    lease = _try_acquire_file_lock(
+        source_record_store(cache).lifetime_lock, shared=True
+    )
+    assert lease is not None
+    connection = sqlite3.connect(cache / STORE_RELATIVE_PATH, isolation_level=None)
     try:
         connection.execute("CREATE TABLE sentinel(value BLOB)")
     finally:
         connection.close()
+        _release_file_lock(lease)
     module = _load_molt_cache_prune()
 
     dry = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=True)
@@ -1443,48 +1429,170 @@ def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> 
     assert swept["entries_failed"] == 0
 
 
-def test_superseded_source_record_stores_retire_as_cache_entries(
-    tmp_path: Path,
-) -> None:
-    """Each schema version owns a store file; the pruner retires the files of
-    other versions, and of the unversioned store before them, by last use,
-    and leaves the current store to its row maintenance."""
-    from molt.cli.source_record_store import STORE_NAME, source_record_store
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+def _source_namespace_peer(cache_text, namespace, channel):
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt.default_paths import shared_cache_lock_path
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    cache = Path(cache_text)
+    directory = cache / records.SHARED_SOURCE_RECORDS_DIRECTORY / namespace
+    lock = shared_cache_lock_path(cache, f"source-records.{namespace}")
+    lifetime = _try_acquire_file_lock(lock, shared=True)
+    assert lifetime is not None
+    directory.mkdir(parents=True)
+    database = sqlite3.connect(directory / "records.sqlite", isolation_level=None)
+    try:
+        database.execute("PRAGMA journal_mode=WAL")
+        database.execute("CREATE TABLE witness(value TEXT)")
+        database.execute("INSERT INTO witness VALUES('before')")
+        channel.send("ready")
+        assert channel.recv() == "write"
+        database.execute("INSERT INTO witness VALUES('after')")
+        channel.send(
+            (
+                database.execute("SELECT value FROM witness").fetchall(),
+                database.execute("PRAGMA integrity_check").fetchone(),
+            )
+        )
+        assert channel.recv() == "close"
+    finally:
+        database.close()
+        _release_file_lock(lifetime)
+        channel.close()
+
+
+@pytest.mark.parametrize("namespace", ["v2", "0" * 16])
+def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_versions(
+    tmp_path,
+    namespace,
+):
+    import multiprocessing
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt.default_paths import shared_cache_lock_path
 
     cache = tmp_path / "cache"
-    record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
-    record_root.mkdir(parents=True)
-    store = source_record_store(record_root)
-    assert store.put("import-scan", "k", b"current", generation="g")
-    store.close()
-    current = record_root / STORE_NAME
-    superseded = [
-        record_root / "source_records.sqlite",
-        record_root / "source_records.sqlite-wal",
-        record_root / "source_records.sqlite.initialize.lock",
-        record_root / "source_records.v1.sqlite",
-    ]
-    for path in superseded:
-        path.write_bytes(b"old store bytes")
+    root = cache / records.SHARED_SOURCE_RECORDS_DIRECTORY
+    root.mkdir(parents=True)
+    future = root / "v4"
+    future.mkdir()
+    (future / "records.sqlite").write_bytes(b"future schema")
+    legacy = root / "source_records.sqlite"
+    peer = sqlite3.connect(legacy, isolation_level=None)
+    peer.execute("PRAGMA journal_mode=WAL")
+    peer.execute("CREATE TABLE witness(value TEXT)")
+    peer.execute("INSERT INTO witness VALUES('legacy')")
+    legacy_lock = root / "source_records.sqlite.initialize.lock"
+    legacy_lock.write_bytes(b"legacy control")
+    flat_digest = root / ("source_records." + "f" * 16 + ".sqlite")
+    flat_digest.write_bytes(b"unqualified legacy digest database")
+    legacy_files = {str(path) for path in root.iterdir() if path.is_file()}
+    ctx = multiprocessing.get_context("spawn")
+    parent, channel = ctx.Pipe()
+    child = ctx.Process(
+        target=_source_namespace_peer, args=(str(cache), namespace, channel)
+    )
+    child.start()
+    channel.close()
+    directory = root / namespace
+    lock = shared_cache_lock_path(cache, f"source-records.{namespace}")
     module = _load_molt_cache_prune()
+    try:
+        assert parent.poll(30) and parent.recv() == "ready"
+        observed = {p.name: p.stat().st_ino for p in directory.iterdir()}
+        busy = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+        assert busy["entries_busy"] == 1 and busy["entries_removed"] == 0
+        assert {p.name: p.stat().st_ino for p in directory.iterdir()} == observed
+        assert set(busy["legacy_source_record_state"]) == legacy_files
+        parent.send("write")
+        assert parent.poll(30)
+        assert parent.recv() == ([("before",), ("after",)], ("ok",))
+        parent.send("close")
+        child.join(30)
+        assert child.exitcode == 0
+        retired = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+        assert retired["entries_removed"] == 1 and retired["entries_failed"] == 0
+        assert not directory.exists() and lock.exists()
+        assert not lock.is_relative_to(root), (
+            "lifetime control survives payload retirement"
+        )
+        assert (future / "records.sqlite").read_bytes() == b"future schema"
+        assert all(Path(path).exists() for path in legacy_files)
+        assert peer.execute("SELECT value FROM witness").fetchall() == [("legacy",)]
+        assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        # The already-deployed v2 collector only recognizes flat regular files;
+        # it cannot mistake any version namespace directory for a database.
+        import re
 
-    dry = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=True)
-    assert all(path.exists() for path in superseded)
-    swept = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
-    assert swept["entries_failed"] == 0
-    assert not any(path.exists() for path in superseded)
-    assert dry["entries_removed"] == swept["entries_removed"] >= len(superseded)
-    assert current.is_file(), "the current store is never a retired entry"
+        old_flat = re.compile(
+            r"source_records(?:\.v[0-9]+)?\.sqlite(?:-wal|-shm|\.initialize\.lock)?"
+        )
+        assert not any(
+            old_flat.fullmatch(path.name) for path in root.iterdir() if path.is_dir()
+        )
+    finally:
+        parent.close()
+        peer.close()
+        close_owned_multiprocessing_child(child)
+
+
+def test_source_namespace_reclamation_failure_cannot_mix_wal_generations(
+    tmp_path, monkeypatch
+):
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt import file_publication as publication
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    cache = tmp_path / "cache"
+    root, lock = records.source_record_namespace_paths(cache, "v2")
+    root.mkdir(parents=True)
+    with sqlite3.connect(root / "records.sqlite") as old:
+        old.execute("CREATE TABLE witness(value TEXT)")
+        old.execute("INSERT INTO witness VALUES('old')")
+    # An interrupted physical reclamation after the live name was retired.
+    real_delete = publication.delete_path
+
+    def partial_delete(path):
+        (path / "records.sqlite").unlink()
+        (path / "records.sqlite-wal").write_bytes(b"old incomplete WAL")
+        return False, "fixture sharing violation"
+
+    monkeypatch.setattr(publication, "delete_path", partial_delete)
+    module = _load_molt_cache_prune()
+    first = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+    assert first["entries_failed"] == 1 and not root.exists()
+    residue = [
+        p for p in root.parent.iterdir() if p.name.startswith(".molt-retired-v1-")
+    ]
+    assert len(residue) == 1
+    lease = _try_acquire_file_lock(lock, shared=True)
+    assert lease is not None
+    root.mkdir()
+    fresh = sqlite3.connect(root / "records.sqlite", isolation_level=None)
+    try:
+        fresh.execute("PRAGMA journal_mode=WAL")
+        fresh.execute("CREATE TABLE witness(value TEXT)")
+        fresh.execute("INSERT INTO witness VALUES('new')")
+        monkeypatch.setattr(publication, "delete_path", real_delete)
+        second = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+        assert second["entries_busy"] == 1 and second["entries_failed"] == 0
+        assert not any(p.exists() for p in residue)
+        assert fresh.execute("SELECT value FROM witness").fetchall() == [("new",)]
+        assert fresh.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        fresh.close()
+        _release_file_lock(lease)
 
 
 def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypatch):
     import sqlite3
+    from contextlib import closing
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     for key in ("first", "second", "third"):
         assert store.put("module-lowering", key, key.encode(), generation="g")
     peer = sqlite3.connect(store.path, isolation_level=None)
@@ -1514,6 +1622,10 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
                 observed.append(remaining)
             finally:
                 peer.execute("ROLLBACK")
+            # The sweep is paused in unrelated file work. Its source-record
+            # reader must not pin the committed row deletion in the WAL.
+            with closing(peer.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
+                assert cursor.fetchone() == (0, 0, 0)
             return remove_file(candidate, dry_run)
 
         monkeypatch.setattr(module, "_remove_entry", observe_file)
@@ -1529,10 +1641,9 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
 def test_later_zero_delete_sweep_continues_bounded_physical_reclamation(tmp_path):
     import sqlite3
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     for index in range(256):
         assert store.put("module-lowering", str(index), b"x" * 8192, generation="g")
     peer = sqlite3.connect(store.path)
@@ -1561,3 +1672,97 @@ def test_later_zero_delete_sweep_continues_bounded_physical_reclamation(tmp_path
         assert peer.execute("SELECT count(*) FROM records").fetchone() == (0,)
     finally:
         peer.close()
+
+
+def test_global_row_budget_replaces_generation_count_retirement(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+    from molt.cli import source_record_store as records
+
+    cache = tmp_path / "cache"
+    store = records.source_record_store(cache)
+    clock = [100 * 86400 * 1_000_000_000]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
+    for index in range(8):
+        assert store.put(
+            kinds[index % 4], str(index), b"x" * 100, generation=f"g{index}"
+        )
+        clock[0] += 2 * 3600 * 1_000_000_000
+    refreshed = store.get("import-scan", "0", generation="g0", max_bytes=None)
+    assert refreshed is not None and refreshed.refresh()
+    assert store.save_renewals() == 1
+    module = _load_molt_cache_prune()
+    result = module._prune(cache, max_bytes=400, max_age_days=None, dry_run=False)
+    assert result["source_records_before"] == 8
+    assert result["source_records_removed"] == 4
+    assert result["bytes_remaining"] == 400
+    assert result["entries_failed"] == 0
+    with closing(sqlite3.connect(store.path)) as peer:
+        assert {row[0] for row in peer.execute("SELECT key FROM records")} == {
+            "0",
+            "5",
+            "6",
+            "7",
+        }
+
+
+def test_malformed_source_retirement_preserves_evidence_and_continues_sweep(tmp_path):
+    from molt.cli import source_record_store as records
+
+    cache = tmp_path / "cache"
+    namespace, _ = records.source_record_namespace_paths(cache, "v2")
+    namespace.mkdir(parents=True)
+    (namespace / "records.sqlite").write_bytes(b"idle older namespace")
+    prefix = hashlib.sha256(records.SOURCE_RECORD_RETIREMENT_SCOPE.encode()).hexdigest()
+    malformed = namespace.parent / f".molt-retired-v1-{prefix}-junk"
+    malformed.write_bytes(b"unqualified retirement evidence")
+    artifact = cache / f"{_cache_key('program')}.artifact-{_cache_key('contract')}.o"
+    artifact.write_bytes(b"unrelated evictable object")
+    result = _load_molt_cache_prune()._prune(
+        cache, max_bytes=0, max_age_days=None, dry_run=False
+    )
+    assert result["status"] == "completed" and result["entries_failed"] > 0
+    assert result["source_record_maintenance_failed"] is True
+    assert malformed.read_bytes() == b"unqualified retirement evidence"
+    assert (namespace / "records.sqlite").read_bytes() == b"idle older namespace"
+    assert not artifact.exists(), "one refused retirement cannot abandon unrelated work"
+
+
+@pytest.mark.parametrize("state", ["paired", "orphan", "orphan-replaced"])
+def test_backend_origin_receipt_shares_publication_eviction_lifetime(tmp_path, state):
+    from molt.default_paths import (
+        backend_cache_publication_lock_name,
+        backend_cache_sync_receipt_path,
+    )
+    from molt.file_locks import _shared_cache_lock
+
+    module = _load_molt_cache_prune()
+    root = tmp_path / "cache"
+    root.mkdir()
+    artifact = root / ("a" * 64 + ".artifact-" + "b" * 64 + ".o")
+    receipt = backend_cache_sync_receipt_path(artifact)
+    receipt.write_bytes(b"original receipt")
+    if state == "paired":
+        artifact.write_bytes(b"original object")
+    entries = module._collect_entries(root)
+    selected = [entry for entry in entries if entry.path in (artifact, receipt)]
+    assert len(selected) == 1
+    entry = selected[0]
+    assert entry.size_bytes == len(b"original receipt") + (
+        len(b"original object") if state == "paired" else 0
+    )
+    with _shared_cache_lock(
+        backend_cache_publication_lock_name(artifact), cache_root=root
+    ):
+        assert module._remove_entry(entry, False) == "busy"
+        assert receipt.exists()
+    if state == "orphan-replaced":
+        artifact.write_bytes(b"new generation")
+        assert module._remove_entry(entry, False) == "busy"
+        assert artifact.read_bytes() == b"new generation"
+        assert receipt.read_bytes() == b"original receipt"
+    else:
+        assert module._remove_entry(entry, False) == "removed"
+        assert not artifact.exists()
+        assert not receipt.exists()

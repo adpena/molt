@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from molt.cli.models import _RuntimeArtifactState
     from molt.cli.runtime_wasm_generation import RuntimeWasmGeneration
 from pathlib import Path
 
@@ -21,7 +22,13 @@ from molt._wasm_abi_generated import (
     wasm_runtime_import_name,
 )
 from molt.cli.command_runtime import _run_completed_command
-from molt.tool_releases import run_pinned_tool
+from molt.tool_releases import (
+    ToolDiscovery,
+    ToolReleaseError,
+    require_pinned_tool,
+    run_pinned_tool,
+)
+from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.wasm_artifact import (
     WasmRuntimeFacts,
     _wasm_import_minima,
@@ -35,6 +42,26 @@ from molt.wasm_artifact import (
     WASM_EXTERN_KIND_GLOBAL,
     WASM_VALUE_TYPE_I32,
 )
+
+
+def _require_runtime_wasm_validator(
+    runtime_state: _RuntimeArtifactState, *, project_root: Path
+) -> ToolDiscovery | None:
+    """Capture the prerequisite once for this build, never tool execution custody."""
+    if runtime_state.runtime_wasm_validator is not None:
+        return runtime_state.runtime_wasm_validator
+    try:
+        validator = require_pinned_tool("wasm-tools")
+    except (ToolReleaseError, OSError, ValueError) as exc:
+        record_runtime_wasm_failure(
+            runtime_state,
+            project_root=project_root,
+            stage="validator-readiness",
+            summary=str(exc),
+        )
+        return None
+    runtime_state.runtime_wasm_validator = validator
+    return validator
 
 
 def _validate_wasm_structural(path: Path) -> str | None:

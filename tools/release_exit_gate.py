@@ -45,7 +45,7 @@ from tools import perf_authority as pa  # noqa: E402
 from tools import release_criterion_receipt as rcr  # noqa: E402
 from tools import verified_subset  # noqa: E402
 from tools.release import release_model  # noqa: E402
-from tools.git_identity import is_git_object_id  # noqa: E402
+from tools.git_identity import immutable_git_environment, is_git_object_id  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 
@@ -169,6 +169,7 @@ def _run_git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     try:
         return _COMMANDS.run(
             ["git", "-C", str(repo_root), *args],
+            env=immutable_git_environment(os.environ),
             check=False,
             capture_output=True,
             text=True,
@@ -206,6 +207,7 @@ def _blob_at_source(
     try:
         result = _COMMANDS.run(
             ["git", "-C", str(repo_root), "cat-file", "blob", blob],
+            env=immutable_git_environment(os.environ),
             check=False,
             capture_output=True,
             timeout=30,

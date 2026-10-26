@@ -70,11 +70,11 @@ def test_typed_event_artifact_binds_image_size_and_content(tmp_path: Path) -> No
         "count": 1,
         "sha256": digest,
     }
-    path, images = supervisor_custody._verified_supervisor_event_artifact(
+    observed = supervisor_custody._verified_supervisor_event_artifact(
         receipt_path=receipt, descriptor=descriptor, collect_images=True
     )
-    assert path == event_path.resolve()
-    assert images == [(str(image_path), image_digest, 11)]
+    assert observed.path == event_path.resolve()
+    assert observed.images == ((str(image_path), image_digest, 11),)
     event_path.write_bytes(data.replace(b'"size_bytes": 11', b'"size_bytes": 12'))
     with pytest.raises(ValueError, match="identity changed"):
         supervisor_custody._verified_supervisor_event_artifact(
@@ -889,3 +889,87 @@ def test_policy_publication_counts_real_utf8_escapes_and_refuses_before_encoding
     with pytest.raises(ValueError, match="nonce_utf8_bytes"):
         supervisor_custody.publish_supervisor_policy(target, payload)
     assert target.read_bytes() == prior
+
+
+@pytest.mark.parametrize(
+    "defect", [None, "pid-reuse", "missing-image", "later-exec", "tamper"]
+)
+def test_process_projection_binds_retained_origin_to_unique_kernel_generation(
+    tmp_path: Path, defect: str | None
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    compiler = ("/compiler", "a" * 64, 17)
+    records = [
+        {
+            "sequence": 0,
+            "process_id": 7,
+            "stable_process_id": "linux:7:1",
+            "event": {
+                "kind": "exec",
+                "image": {
+                    "path": compiler[0],
+                    "sha256": compiler[1],
+                    "size_bytes": compiler[2],
+                },
+            },
+        }
+    ]
+    if defect == "pid-reuse":
+        records.append(
+            {
+                "sequence": 1,
+                "process_id": 7,
+                "stable_process_id": "linux:7:2",
+                "event": {"kind": "process-create", "parent_process_id": 1},
+            }
+        )
+    if defect == "missing-image":
+        records[0]["event"] = {"kind": "process-create", "parent_process_id": 1}
+    if defect == "later-exec":
+        records.append(
+            {
+                "sequence": 1,
+                "process_id": 7,
+                "stable_process_id": "linux:7:1",
+                "event": {
+                    "kind": "exec",
+                    "image": {"path": "/other", "sha256": "b" * 64, "size_bytes": 17},
+                },
+            }
+        )
+    data = b"".join(json.dumps(row).encode() + b"\n" for row in records)
+    digest = hashlib.sha256(data).hexdigest()
+    path = receipt.with_name(f"{receipt.name}.events.{digest}.jsonl")
+    path.write_bytes(data)
+    descriptor = {
+        "schema": supervisor_custody.SUPERVISOR_EVENT_LOG_SCHEMA,
+        "file": path.name,
+        "bytes": len(data),
+        "count": len(records),
+        "sha256": digest,
+    }
+    if defect == "tamper":
+        path.write_bytes(data.replace(b"/compiler", b"/forgedxx"))
+        with pytest.raises(ValueError, match="identity changed"):
+            supervisor_custody._verified_supervisor_event_artifact(
+                receipt_path=receipt,
+                descriptor=descriptor,
+                collect_images=True,
+                collect_processes=True,
+            )
+        return
+    observed = supervisor_custody._verified_supervisor_event_artifact(
+        receipt_path=receipt,
+        descriptor=descriptor,
+        collect_images=True,
+        collect_processes=True,
+    )
+    if defect in {"pid-reuse", "missing-image"}:
+        with pytest.raises(ValueError, match="unique observed process generation"):
+            observed.producing_process(7)
+    elif defect == "later-exec":
+        assert observed.producing_process(7) == ("linux:7:1", ("/other", "b" * 64, 17))
+    else:
+        assert observed.producing_process(7) == ("linux:7:1", compiler)
+    with pytest.raises(ValueError, match="unique observed process generation"):
+        observed.producing_process(999)

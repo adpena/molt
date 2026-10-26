@@ -10,6 +10,7 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 
 import contextlib
 import json
+import os
 import shlex
 import shutil
 import sys
@@ -19,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, cast
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 from molt.source_root import compiler_source_root
 from molt.cli import build_inputs as _build_inputs
 from molt.browser_asset_closure import (
@@ -59,7 +61,6 @@ from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _CROSS_MEMORY_GUARD_PREFIX,
     _DIFF_MEMORY_GUARD_PREFIX,
-    _run_completed_command,
 )
 from molt.cli.env_paths import _base_env
 from molt.cli.build_request import BuildProfile
@@ -81,18 +82,23 @@ from molt.cli.project_roots import (
 from molt.target_python import (
     _parse_target_python_version,
     _resolve_target_python_version,
+    resolve_target_python_for_oracle,
 )
 from molt.node_runtime import resolve_node_runtime
 from molt.python_interpreter import (
     PythonInterpreterError,
     format_python_command,
+    probe_python_command,
+    readonly_python_command,
     resolve_python_selector,
+    resolve_target_python,
 )
 from molt.cli.wrapper_build import (
     _build_args_has_python_version_flag,
     _run_wrapper_build,
 )
 from molt.cli.process_execution import (
+    _TimedResult,
     _format_duration,
     _run_command,
     _run_command_timed,
@@ -392,13 +398,15 @@ def _run_script_cross(
                 json_output,
                 command="run",
             )
-        if not json_output:
+        if json_output:
+            data: dict[str, Any] = {"output": str(mlir_artifact), "executed": False}
+            if timing:
+                data["timing"] = {"build_s": t_build, "total_s": t_build}
+            _emit_json(_json_payload("run", "ok", data=data), json_output=True)
+        else:
             _success(f"MLIR output: {mlir_artifact}", file=sys.stderr)
-        if timing and not json_output:
-            print(
-                f"\n--- timing: build {t_build:.3f}s ---",
-                file=sys.stderr,
-            )
+            if timing:
+                print(f"\n--- timing: build {t_build:.3f}s ---", file=sys.stderr)
         return 0
     else:
         return _fail(
@@ -407,28 +415,18 @@ def _run_script_cross(
             command="run",
         )
 
-    if not json_output and verbose:
-        print(f"Running: {shlex.join(run_cmd)}", file=sys.stderr)
-
-    t_run_start = time.monotonic()
-    run_res = _run_completed_command(
+    return _run_program(
         run_cmd,
         env=env,
         cwd=project_root,
-        capture_output=False,
+        json_output=json_output,
+        verbose=verbose,
+        timing=timing,
+        build_duration_s=t_build,
+        start_receipt=None,
         memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
+        wasm_guest_stderr=json_output and target in {TargetKind.WASM, TargetKind.WASI},
     )
-    t_run = getattr(run_res, "elapsed_s", None)
-    if t_run is None:
-        t_run = time.monotonic() - t_run_start
-
-    if timing and not json_output:
-        print(
-            f"\n--- timing: build {t_build:.3f}s | run {t_run:.3f}s | "
-            f"total {t_build + t_run:.3f}s ---",
-            file=sys.stderr,
-        )
-    return run_res.returncode
 
 
 def _deploy(
@@ -809,6 +807,66 @@ def run_script(
 _JIT_BUILD_FAILURE_STATUS = 1
 
 
+def _run_wasm_with_guest_stderr(
+    command: list[str], *, env: ProcessEnvironment, cwd: Path, memory_guard_prefix: str
+) -> tuple[_TimedResult, str]:
+    """Capture the guest stream through the existing runner, after guard closure."""
+    owner = OwnedTemporaryDirectory(prefix="molt-run-wasm-")
+    capture_path = Path(owner.name) / "guest-stderr.bin"
+    launched = False
+    closed = False
+    primary: BaseException | None = None
+    try:
+        # Hold the created inode; never reopen a guest-visible path for reading.
+        with capture_path.open("x+b") as capture:
+            argv = [
+                *command[:2],
+                "--guest-stderr",
+                str(capture_path),
+                "--",
+                *command[2:],
+            ]
+            launched = True
+            result = _run_command_timed(
+                argv,
+                env=env,
+                cwd=cwd,
+                capture_output=True,
+                memory_guard_prefix=memory_guard_prefix,
+            )
+            closed = result.descendants_closed is True
+            if not closed:
+                raise RuntimeError("WASM host returned without process-tree closure")
+            if not os.path.samestat(capture_path.lstat(), os.fstat(capture.fileno())):
+                raise ValueError("WASM guest stderr capture was substituted")
+            capture.seek(0)
+            guest_stderr = capture.read().decode("utf-8", "surrogateescape")
+            return result, guest_stderr
+    except BaseException as error:
+        primary = error
+        guarded = getattr(error, "guarded_result", None)
+        closed = closed or (guarded is not None and guarded.descendants_closed is True)
+        raise
+    finally:
+        if not launched or closed:
+            try:
+                owner.cleanup()
+            except BaseException as error:
+                if primary is None:
+                    raise
+                primary.add_note(
+                    f"WASM capture cleanup failed at {owner.name}: {error!r}"
+                )
+        else:
+            # Unknown/live descendants may still write here. Retain the owned
+            # allocation instead of allowing its GC finalizer to remove it.
+            owner.retain()
+            if primary is not None:
+                primary.add_note(
+                    f"WASM capture retained pending process-tree closure: {owner.name}"
+                )
+
+
 def _run_program(
     program_command: list[str],
     *,
@@ -819,6 +877,8 @@ def _run_program(
     timing: bool,
     build_duration_s: float,
     start_receipt: Path | None,
+    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
+    wasm_guest_stderr: bool = False,
 ) -> int:
     """Run a built program and report it.
 
@@ -826,14 +886,24 @@ def _run_program(
     runner failed to compile it, which ``molt run`` reports as a failed build,
     not as the program's exit status.
     """
-    run_res = _run_command_timed(
-        program_command,
-        env=env,
-        cwd=cwd,
-        verbose=verbose and not json_output,
-        capture_output=json_output,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-    )
+    guest_stderr = None
+    if wasm_guest_stderr:
+        assert json_output and start_receipt is None
+        run_res, guest_stderr = _run_wasm_with_guest_stderr(
+            program_command,
+            env=env,
+            cwd=cwd,
+            memory_guard_prefix=memory_guard_prefix,
+        )
+    else:
+        run_res = _run_command_timed(
+            program_command,
+            env=env,
+            cwd=cwd,
+            verbose=verbose and not json_output,
+            capture_output=json_output,
+            memory_guard_prefix=memory_guard_prefix,
+        )
     if start_receipt is not None and not jit_program_started(start_receipt):
         # As a failed AOT build reports its compiler's stderr (wrapper_build).
         return _fail(
@@ -858,7 +928,12 @@ def _run_program(
             }
         if run_res.stdout:
             data["stdout"] = run_res.stdout
-        if run_res.stderr:
+        if guest_stderr is not None:
+            if guest_stderr:
+                data["stderr"] = guest_stderr
+            if run_res.stderr:
+                data["host_stderr"] = run_res.stderr
+        elif run_res.stderr:
             data["stderr"] = run_res.stderr
         _emit_json(
             _json_payload(
@@ -964,7 +1039,7 @@ def compare(
                 project_root=project_root,
                 env=env,
             )
-            _resolve_target_python_version(
+            effective_target_python = _resolve_target_python_version(
                 explicit=compare_request.python_version,
                 build_config=compare_request.build_config,
                 project_root=project_root,
@@ -978,30 +1053,73 @@ def compare(
                 json_output,
                 command="compare",
             )
-        try:
-            python_command = resolve_python_selector(
-                python_exe,
-                env=env,
-                cwd=project_root,
-            )
-        except (PythonInterpreterError, ValueError) as exc:
-            return _fail(str(exc), json_output, command="compare")
-        if module:
-            cpy_cmd = [*python_command, "-m", module, *script_args]
-        else:
-            cpy_cmd = [*python_command, str(source_path), *script_args]
-        cpy_res = _run_command_timed(
-            cpy_cmd,
-            env=env,
-            cwd=project_root,
-            verbose=verbose,
-            capture_output=True,
-            memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
-        )
+        from molt.python_environment_location import _active_environment_prefix
+        from molt.python_identity_common import PythonEnvironmentIdentityError
 
-        build_python_command = (
-            python_command if requested_target_python is not None else (sys.executable,)
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+        from molt.cli.process_execution import _timed_process_result
+
+        with PythonIdentityVerifier(prefix="molt-compare-reference-") as verifier:
+            try:
+                if python_exe is None:
+                    oracle = resolve_target_python(
+                        effective_target_python,
+                        env=env,
+                        cwd=project_root,
+                        prefer_current=True,
+                        verifier=verifier,
+                    )
+                    python_command = oracle.command
+                else:
+                    python_command = resolve_python_selector(
+                        python_exe,
+                        verifier=verifier,
+                        env=env,
+                        cwd=project_root,
+                    )
+                    oracle = probe_python_command(
+                        python_command,
+                        verifier=verifier,
+                        env=env,
+                        cwd=project_root,
+                    )
+                oracle_major, oracle_minor = map(int, oracle.major_minor.split("."))
+                resolve_target_python_for_oracle(
+                    (oracle_major, oracle_minor),
+                    effective_target_python,
+                )
+                reference_command = readonly_python_command(
+                    python_command, environment_root=verifier.prefix
+                )
+                build_python_command = readonly_python_command(
+                    (sys.executable,), environment_root=_active_environment_prefix()
+                )
+            except (
+                PythonInterpreterError,
+                PythonEnvironmentIdentityError,
+                ValueError,
+                OSError,
+            ) as exc:
+                return _fail(str(exc), json_output, command="compare")
+            if module:
+                cpy_cmd = [*reference_command, "-m", module, *script_args]
+            else:
+                cpy_cmd = [*reference_command, str(source_path), *script_args]
+            if verbose:
+                print(f"Running: {shlex.join(cpy_cmd)}", file=sys.stderr)
+            reference_started = time.perf_counter()
+            cpy_res = _timed_process_result(
+                verifier.run(
+                    cpy_cmd,
+                    env=env,
+                    cwd=project_root,
+                    capture_output=True,
+                    memory_guard_prefix=_DIFF_MEMORY_GUARD_PREFIX,
+                ),
+                started=reference_started,
+            )
+
+        # The selected CPython oracle does not own the compiler frontend.
         build_cmd = [
             *build_python_command,
             "-m",
@@ -1091,6 +1209,11 @@ def compare(
         data = {
             "entry": str(source_path),
             "python": format_python_command(python_command),
+            "python_startup_policy": {
+                "command": list(reference_command),
+                "bytecode_namespace": "fresh-empty-read-only",
+                "timing_scope": "reference-process-with-empty-bytecode-cache",
+            },
             "output": str(output_path),
             "returncodes": {
                 "cpython": cpy_res.returncode,
@@ -1123,7 +1246,7 @@ def compare(
 
     print("Compare (CPython vs Molt):")
     print(
-        f"- CPython run: {_format_duration(cpy_res.duration_s)} "
+        f"- CPython run (fresh read-only bytecode cache): {_format_duration(cpy_res.duration_s)} "
         f"(rc={cpy_res.returncode})"
     )
     print(f"- Molt build: {_format_duration(build_res.duration_s)}")
@@ -1135,7 +1258,7 @@ def compare(
     print(f"- Molt total: {_format_duration(total)}")
     if cpy_res.duration_s > 0 and molt_res.duration_s > 0:
         speedup = cpy_res.duration_s / molt_res.duration_s
-        print(f"- Molt speedup (run): {speedup:.2f}x")
+        print(f"- Diagnostic process-time ratio (cold CPython / Molt): {speedup:.2f}x")
     print(
         "- Output match: "
         f"stdout={'yes' if stdout_match else 'no'}, "
@@ -1218,11 +1341,15 @@ def parity_run(
     env = ProcessEnvironment(env)
 
     try:
-        python_command = resolve_python_selector(
-            python_exe,
-            env=env,
-            cwd=project_root,
-        )
+        from molt.python_environment_identity import PythonIdentityVerifier
+
+        with PythonIdentityVerifier() as verifier:
+            python_command = resolve_python_selector(
+                python_exe,
+                verifier=verifier,
+                env=env,
+                cwd=project_root,
+            )
     except (PythonInterpreterError, ValueError) as exc:
         return _fail(str(exc), json_output, command="parity-run")
     if module:

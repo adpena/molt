@@ -654,7 +654,11 @@ pub(super) unsafe fn readlines(py: &PyToken<'_>, bits: u64, hint: u64) -> u64 {
     let mut total = 0usize;
     loop {
         use crate::object::iterable::SpecialIterationStep;
-        let line = match crate::object::ops_iter::iteration_step(py, iterator.bits()) {
+        let line = match crate::object::ops_iter::iteration_step(
+            py,
+            iterator.bits(),
+            crate::object::iterable::IterationExhaustion::Normalize,
+        ) {
             Ok(SpecialIterationStep::Item(value)) => owned(py, value),
             Ok(SpecialIterationStep::Exhausted(value)) => {
                 dec_ref_bits(py, value);

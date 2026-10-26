@@ -19,7 +19,11 @@ from typing import Literal, Mapping, Sequence, cast
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
-from molt.cargo_execution_policy import cargo_compiler_wrappers, sccache_server_endpoint
+from molt.cargo_execution_policy import (
+    cargo_compiler_wrappers,
+    sccache_auto_selection_allowed,
+    sccache_server_endpoint,
+)
 from molt.disk_capacity import capacity_bytes_from_gib, probe_capacity
 from molt.default_paths import (
     DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
@@ -41,6 +45,30 @@ from molt.path_custody import (
 from molt.source_root import compiler_source_root, installed_distribution_root
 
 GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV = "MOLT_CI_EPHEMERAL_CUSTODY_ROOT"
+# Complete inputs consumed by hosted-checkout verification. A caller projecting
+# a session's custody must carry the provenance with its issued root; projection
+# never supplies missing values or turns these claims into verified authority.
+GITHUB_ACTIONS_CUSTODY_ENV_KEYS = (
+    GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+    "GITHUB_ACTIONS",
+    "CI",
+    "GITHUB_SERVER_URL",
+    "GITHUB_API_URL",
+    "GITHUB_WORKSPACE",
+    "GITHUB_REPOSITORY",
+    "GITHUB_WORKFLOW_REF",
+    "GITHUB_WORKFLOW_SHA",
+    "GITHUB_EVENT_PATH",
+    "GITHUB_SHA",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_ATTEMPT",
+    "GITHUB_JOB",
+    "GITHUB_EVENT_NAME",
+    "GITHUB_REF",
+    "RUNNER_TEMP",
+    "RUNNER_OS",
+    "RUNNER_ARCH",
+)
 # The operator's artifact root. Only this module reads it: every other
 # consumer asks `configured_artifact_root` or `artifact_root`.
 ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
@@ -87,6 +115,7 @@ SCRATCH_ENV_KEYS = (
 )
 CANONICAL_RUN_ENV_KEYS = (
     *CANONICAL_ROOT_ENV_KEYS,
+    "PYTHONDONTWRITEBYTECODE",
     "CARGO_INCREMENTAL",
     "MOLT_SESSION_ID",
     "MOLT_SESSION_ID_GENERATED",
@@ -222,39 +251,27 @@ def checkout_component(source_root: Path) -> str:
     return f"{uv_project_env_component(source.name)[:24]}-{digest}"
 
 
-def stable_uv_project_env_dir(
-    artifact_root: Path,
-    *,
-    purpose: str,
-    python: str,
-    source_root: Path,
-) -> Path:
-    name = (
-        f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
-        f"__src-{checkout_component(source_root)}"
-    )
-    return (artifact_root.expanduser().resolve() / "uv-project-envs" / name).resolve()
-
-
-# The uv project environment (installed deps + editable molt) is a pure function
-# of (project source, purpose, python) — NOT of the session — so it is stable
-# within one checkout and cannot be overwritten by a sibling worktree. It is shared
-# across sessions; only the Cargo target dir may be session-scoped for build
-# isolation. Managed uv environments are durable caches. Callers that need a
-# different environment must set an explicit `UV_PROJECT_ENVIRONMENT`.
+# Interpreter/group intent is declared by the project. Its exact immutable
+# image is selected by checkout_provisioning's bounded Git control projection.
 DEFAULT_UV_PROJECT_PURPOSE = "dx"
-DEFAULT_UV_PROJECT_PYTHON = "3.12"
 
 
-def stable_uv_project_env_from_env(
-    env: Mapping[str, str], artifact_root: Path, source_root: Path
-) -> Path:
-    return stable_uv_project_env_dir(
-        artifact_root,
-        purpose=env.get("MOLT_UV_PROJECT_PURPOSE") or DEFAULT_UV_PROJECT_PURPOSE,
-        python=env.get("MOLT_UV_PROJECT_PYTHON") or DEFAULT_UV_PROJECT_PYTHON,
-        source_root=source_root,
+def selected_uv_project_environment(
+    env: Mapping[str, str], source_root: Path
+) -> Path | None:
+    explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+    if explicit:
+        path = Path(explicit).expanduser()
+        return (path if path.is_absolute() else source_root / path).absolute()
+    from molt.checkout_provisioning import (
+        ProvisioningError,
+        selected_development_environment,
     )
+
+    try:
+        return selected_development_environment(source_root, env)
+    except ProvisioningError as exc:
+        raise DxConfigError(str(exc)) from exc
 
 
 def session_scoped_target_dir(target_root: Path, session_id: str | None) -> Path:
@@ -352,8 +369,8 @@ def _running_under_pytest(env: Mapping[str, str] | None = None) -> bool:
     )
 
 
-def _disk_guard_disabled() -> bool:
-    return os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in {
+def _disk_guard_disabled(env: Mapping[str, str]) -> bool:
+    return env.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -373,28 +390,94 @@ def _source_disk_guard():  # noqa: ANN202 - tools.disk_guard loads lazily
     return disk_guard
 
 
-def _maybe_collect_checkout_state(ext_root: Path, env: Mapping[str, str]) -> None:
-    """Run the disk guard's daily collection of ``ext_root`` (HF-313).
+def prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
+    """The artifact preference shared by guards and maintenance policy."""
+    if development_artifacts_requested(env):
+        return True
+    try:
+        return bool(DxProject(root).load_config().get("prefer_external_artifacts"))
+    except (OSError, ValueError):
+        return False
 
-    Cargo runs its automatic GC from build commands once a day; here the
-    common case is one ``stat`` of the GC stamp. A failed collection never
-    fails the command: it is reported, and the next day retries.
+
+def checkout_state_maintenance_environment(
+    source_root: Path, env: Mapping[str, str]
+) -> ProcessEnvironment | None:
+    """Capture an initial maintenance-policy selection without source tools.
+
+    This uses the guarded child's canonical root policy, including for a
+    cache-hit build that launches none. It does not pin subsequent payload
+    selection: changing external-root availability can make a child choose a
+    different default, whose maintenance waits for its next eligible owner.
+    Installed compilers have no source collector. Selection failures cannot
+    replace the command's result.
     """
-    from molt.checkout_state import checkout_state_gc_due, claim_checkout_state_gc
+    try:
+        if not (compiler_source_root() / "tools" / "disk_guard.py").is_file():
+            return None
+        captured = ProcessEnvironment(env)
+        selected = artifact_root(
+            source_root,
+            captured,
+            prefer_external=(
+                False
+                if captured.get(ARTIFACT_ROOT_ENV, "").strip()
+                else prefers_external_artifacts(source_root, captured)
+            ),
+        )
+        return captured.updated({ARTIFACT_ROOT_ENV: str(selected)})
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"molt: checkout state GC failed: {str(exc)[:512]}", file=sys.stderr)
+        return None
 
-    if _disk_guard_disabled() or _running_under_pytest():
-        return
-    if not checkout_state_gc_due(ext_root):
+
+def collect_checkout_state_after_result(env: Mapping[str, str], *, cwd: Path) -> None:
+    """Schedule source-only daily maintenance after result publication.
+
+    Call only after terminal publication and any source verification. An
+    enclosing guard owns its later completion; never spend its payload budget
+    on global maintenance. Environment resolution alone grants no invocation.
+    The captured selection controls collection. This scheduling event makes
+    no process-closure claim: each candidate still needs its canonical fresh
+    eligibility check and exclusive retirement lock, even alongside live work.
+    """
+    if (
+        _disk_guard_disabled(env)
+        or _running_under_pytest(env)
+        or env.get("MOLT_MEMORY_GUARD_ACTIVE")
+        or env.get("MOLT_MEMORY_GUARD_STARTUP_JSON")
+    ):
         return
     try:
+        ext_root = configured_artifact_root(env, relative_to=cwd)
+        if ext_root is None:
+            return
+        from molt.checkout_state import checkout_state_gc, checkout_state_gc_due
+
+        if not checkout_state_gc_due(ext_root):
+            return
+        if not ext_root.is_dir():
+            return
         disk_guard = _source_disk_guard()
         if disk_guard is None:
             return
-        claim_checkout_state_gc(ext_root)
-        results = disk_guard.collect(root=ext_root, env=env)
-    except (OSError, ValueError) as exc:
-        print(f"molt: checkout state GC of {ext_root} failed: {exc}", file=sys.stderr)
+        with checkout_state_gc(ext_root) as admitted:
+            if not admitted:
+                return
+            results = disk_guard.collect(root=ext_root, env=env)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"molt: checkout state GC failed: {str(exc)[:512]}", file=sys.stderr)
         return
+    error_count = 0
+    for result in results:
+        for error in result.errors:
+            error_count += 1
+            if error_count <= 3:
+                print(f"molt: checkout state GC failed: {error[:512]}", file=sys.stderr)
+    if error_count > 3:
+        print(
+            f"molt: checkout state GC: {error_count - 3} more error(s)", file=sys.stderr
+        )
     reclaimed = sum(len(result.reclaimed) for result in results)
     if reclaimed:
         print(
@@ -615,6 +698,7 @@ def _github_actions_checkout_custody(
     if not contract_raw:
         return None
 
+    env = {key: env[key] for key in GITHUB_ACTIONS_CUSTODY_ENV_KEYS if key in env}
     required_exact = {
         "GITHUB_ACTIONS": "true",
         "CI": "true",
@@ -1402,6 +1486,8 @@ def _ensure_sccache_wrapper(env: MutableMapping[str, str]) -> None:
     lanes) and name the command that provisions it; never download it here.
     Respects every explicit Cargo compiler-wrapper selector."""
     global _sccache_degrade_warned
+    if not sccache_auto_selection_allowed(env):
+        return
     if cargo_compiler_wrappers(env):
         return
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
@@ -1448,7 +1534,7 @@ def _install_dx_defaults(repo_root: Path, env: MutableMapping[str, str]) -> None
     # sccache off-by-default on Windows: measured 0 cache hits + mid-compile
     # crashes (os error 10054) that time builds out. Power users force it with
     # MOLT_USE_SCCACHE=1; cargo_execution also treats "auto" as off-on-Windows.
-    env.setdefault("MOLT_USE_SCCACHE", "0" if os.name == "nt" else "1")
+    env.setdefault("MOLT_USE_SCCACHE", "0" if os.name == "nt" else "auto")
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
@@ -1563,13 +1649,13 @@ class RunContext:
         return path.resolve()
 
     def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
-        explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
-        if explicit:
-            return self._resolve_env_path(explicit)
-        ext_root = artifact_root(
-            self.root, env, prefer_external=self.prefer_external_artifacts
-        )
-        return stable_uv_project_env_from_env(env, ext_root, self.root)
+        selected = selected_uv_project_environment(env, self.root)
+        if selected is None:
+            raise DxConfigError(
+                "development image not selected; run "
+                "`python -m molt.checkout_provisioning ensure uv-environment`"
+            )
+        return selected
 
     def canonical_env(
         self,
@@ -1669,13 +1755,32 @@ class RunContext:
         install_default("MOLT_DIFF_ROOT", run_scratch / "diff")
         install_default("MOLT_DIFF_TMPDIR", run_scratch)
         install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
-        install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
+        selected_environment = selected_uv_project_environment(env, self.root)
+        if selected_environment is not None:
+            install_default("UV_PROJECT_ENVIRONMENT", selected_environment)
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
         install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
         # MOLT_TARGET_ROOT is durable toolchain state, not scratch capacity. The
         # same selector serves direct discovery, provisioning and DX children.
         env["MOLT_TARGET_ROOT"] = str(selected_toolchain_root)
-        install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
+        from molt.checkout_state import checkout_state_kind_of
+
+        managed_python = (
+            selected_environment is not None
+            and not env.get("MOLT_VENV")
+            and checkout_state_kind_of(selected_environment, ext_root)
+            == "python-environment"
+        )
+        if managed_python:
+            assert selected_environment is not None
+            from molt.python_environment_location import environment_bytecode_prefix
+
+            env["PYTHONPYCACHEPREFIX"] = str(
+                environment_bytecode_prefix(selected_environment)
+            )
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+        else:
+            install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
         install_default("TMPDIR", run_scratch)
         install_default("TMP", env["TMPDIR"])
         install_default("TEMP", env["TMPDIR"])
@@ -1683,7 +1788,13 @@ class RunContext:
         for key in root_keys:
             value = env.get(key)
             if value:
-                env[key] = str(self._resolve_env_path(value))
+                if key == "UV_PROJECT_ENVIRONMENT":
+                    # Keep the caller's physical spelling until the image
+                    # loader validates it; resolving first hides aliases.
+                    assert selected_environment is not None
+                    env[key] = str(selected_environment)
+                else:
+                    env[key] = str(self._resolve_env_path(value))
                 value = env[key]
                 if key == "MOLT_TARGET_ROOT":
                     continue  # Toolchain state is independent of artifact placement.
@@ -1696,6 +1807,10 @@ class RunContext:
 
         if create_dirs:
             for key in root_keys:
+                if key == "UV_PROJECT_ENVIRONMENT" or (
+                    key == "PYTHONPYCACHEPREFIX" and managed_python
+                ):
+                    continue  # Only the immutable image publisher creates it.
                 value = env.get(key)
                 if value:
                     from molt.checkout_state import checkout_state_use
@@ -1704,7 +1819,7 @@ class RunContext:
                         Path(value).expanduser().mkdir(parents=True, exist_ok=True)
             # Record this checkout as the owner and a user of its state under
             # a shared root, and a pinned session as a user of the target it
-            # selects, then retire idle state at most once a day (HF-313).
+            # selects. Global collection belongs after result publication.
             from molt.checkout_state import (
                 record_checkout_target_use,
                 stamp_checkout_state,
@@ -1714,8 +1829,7 @@ class RunContext:
                 record_checkout_target_use(
                     Path(env["CARGO_TARGET_DIR"]), checkout=self.root
                 )
-            if stamp_checkout_state(self.root, env):
-                _maybe_collect_checkout_state(Path(ext_root), env)
+            stamp_checkout_state(self.root, env)
         return ProcessEnvironment(env)
 
     def root_env(self, base: Mapping[str, str] | None = None) -> ProcessEnvironment:
@@ -1739,6 +1853,7 @@ class RunContext:
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
     ) -> ProcessEnvironment:
+        sccache_auto_selection_allowed(os.environ if base is None else base)
         env = ProcessEnvironmentBuilder(
             self.canonical_env(
                 base,
@@ -1828,54 +1943,69 @@ class DxProject:
         commands = self.load_config().get("commands", {})
         return cast(dict[str, object], commands) if isinstance(commands, dict) else {}
 
+    def dependency_groups(self) -> tuple[str, ...]:
+        groups = self.load_config().get("dependency_groups", [])
+        if not isinstance(groups, list) or any(
+            not isinstance(group, str) or not group.strip() for group in groups
+        ):
+            raise DxConfigError("[tool.molt.dx].dependency_groups must be group names")
+        return tuple(sorted(set(groups)))
+
     def project_env_dir(self) -> Path:
-        return self.root / ".venv"
+        return self.uv_project_env_dir(os.environ)
 
     def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
-        explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
-        if explicit:
-            path = Path(explicit).expanduser()
-            if not path.is_absolute():
-                path = self.root / path
-            return path.resolve()
-        ext_root = artifact_root(
-            self.root,
-            env,
-            prefer_external=bool(self.load_config().get("prefer_external_artifacts")),
-        )
-        return stable_uv_project_env_from_env(env, ext_root, self.root)
+        return RunContext(self.root).uv_project_env_dir(env)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
-        if env is not None:
-            project_env = self.uv_project_env_dir(env)
-            if os.name == "nt":
-                return project_env / "Scripts" / "python.exe"
-            return project_env / "bin" / "python3"
-        if os.name == "nt":
-            return self.project_env_dir() / "Scripts" / "python.exe"
-        return self.project_env_dir() / "bin" / "python3"
+        from molt.python_environment_location import environment_python_path
+
+        return environment_python_path(
+            self.uv_project_env_dir(os.environ if env is None else env)
+        )
 
     def normalized_uv_run_env(
         self,
         env: Mapping[str, str],
         *,
         python: str | None,
-        project_env_matches_python: bool | None = None,
     ) -> ProcessEnvironment:
+        from molt.source_build_environment import load_development_environment
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+
+        selected = self.uv_project_env_dir(env)
+        try:
+            image = load_development_environment(
+                selected,
+                repo_root=self.root,
+                python=python,
+                groups=self.dependency_groups(),
+            )
+        except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
+            raise DxConfigError(str(exc)) from exc
+        return self.projected_uv_run_env(env, root=image.root)
+
+    def projected_uv_run_env(
+        self, env: Mapping[str, str], *, root: Path
+    ) -> ProcessEnvironment:
+        """Assemble a selection; the consuming operation owns its admission.
+
+        The no-site guardian uses this before its existing selected-image
+        capture. Equipped callers use normalized_uv_run_env for cheap recipe
+        validation. Neither path starts another interpreter here.
+        """
+        from molt.python_environment_location import environment_bytecode_prefix
+
+        root = Path(os.path.abspath(root))
         run_env = ProcessEnvironmentBuilder(env)
         run_env.setdefault("PYTHONUNBUFFERED", "1")
-        run_env["UV_PROJECT_ENVIRONMENT"] = str(self.uv_project_env_dir(run_env))
-        for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
+        run_env["UV_PROJECT_ENVIRONMENT"] = str(root)
+        run_env["VIRTUAL_ENV"] = str(root)
+        run_env["UV_NO_SYNC"] = "1"
+        run_env["PYTHONPYCACHEPREFIX"] = str(environment_bytecode_prefix(root))
+        run_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        for name in ("PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             run_env.pop(name, None)
-        if run_env.get("UV_NO_SYNC") == "1":
-            env_matches = project_env_matches_python
-            if env_matches is None:
-                raise DxConfigError(
-                    "UV_NO_SYNC normalization requires a guarded project "
-                    "Python version probe result"
-                )
-            if not env_matches:
-                run_env.pop("UV_NO_SYNC", None)
         return ProcessEnvironment(run_env)
 
     def canonical_env(
@@ -1925,6 +2055,7 @@ class DxProject:
                 if key in CANONICAL_ROOT_ENV_KEYS or key == "PYTHONPATH":
                     value = str(Path(value).expanduser().resolve())
                 env[key] = value
+        sccache_auto_selection_allowed(env)
         env = ProcessEnvironmentBuilder(
             RunContext(
                 self.root,
@@ -1985,10 +2116,10 @@ class DxProject:
         command: str,
         env: Mapping[str, str] | None = None,
     ) -> str:
-        return command.format(
-            root=str(self.root),
-            project_python=str(self.project_python(env)),
-        )
+        values = {"root": str(self.root)}
+        if "{project_python}" in command:
+            values["project_python"] = str(self.project_python(env))
+        return command.format(**values)
 
     def split_command(
         self,

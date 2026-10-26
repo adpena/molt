@@ -289,12 +289,17 @@ def test_runtime_source_paths_follow_runtime_feature_closure() -> None:
     assert all((ROOT / path).exists() for path in micro_paths | full_paths)
 
 
-def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
+def test_micro_runtime_features_share_native_and_wasm_ladder() -> None:
     features = RUNTIME_FEATURES._runtime_builtin_features_for_profile(
         "micro",
         target_triple="wasm32-wasip1",
     )
+    native_features = RUNTIME_FEATURES._runtime_builtin_features_for_profile(
+        "micro",
+        target_triple="x86_64-unknown-linux-gnu",
+    )
 
+    assert set(features) == set(native_features)
     assert "stdlib_tk" not in features
     assert "stdlib_net" not in features
     assert "stdlib_ast" not in features
@@ -335,9 +340,9 @@ def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
     )
     assert "sqlite" not in features
     assert "stdlib_tk" not in features
-    # WASM links its host-call socket provider under stdlib_net (HF-487).
+    # Both the host-call socket provider and pinned Unicode names are available.
     assert "stdlib_net" in features
-    assert "stdlib_unicode_names" not in features
+    assert "stdlib_unicode_names" in features
     assert "stdlib_crypto" in features
     assert "stdlib_compression" in features
 
@@ -686,7 +691,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
                 object_format=selected_target.object_format,
                 explicit_no_icf_flag=None,
                 # The fake command passes no -final_output flag.
-                signs_as_final_output=False,
+                requests_adhoc_signature=False,
                 strips_local_symbols=True,
             ),
             command=("clang", str(runtime_lib), "-o", str(output_binary)),

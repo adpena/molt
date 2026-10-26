@@ -15,7 +15,7 @@ pub(super) fn emit_native_target(
     output_file: &str,
     target_triple: Option<&str>,
     native_output_kind: super::super::NativeArtifactKind,
-) -> io::Result<()> {
+) -> io::Result<crate::backend_process::origin::EmittedArtifact> {
     let stdlib_archive_path = super::super::shared_stdlib_archive_path_from_env()?;
     let cache_archive_path =
         super::super::native_artifact::shared_stdlib_cache_entry_path_from_env()?;
@@ -45,6 +45,14 @@ pub(super) fn emit_native_target(
         },
     )?;
 
-    compile_native_application_artifact_to_path(ir, Path::new(output_file), compile_options)?;
-    Ok(())
+    let emitted =
+        compile_native_application_artifact_to_path(ir, Path::new(output_file), compile_options)?;
+    let codegen = match emitted.workers {
+        Some(workers) => crate::backend_process::origin::CodegenOrigin::NativeWorkers { workers },
+        None => crate::backend_process::origin::CodegenOrigin::in_process(),
+    };
+    Ok(crate::backend_process::origin::EmittedArtifact {
+        output: emitted.output,
+        codegen,
+    })
 }

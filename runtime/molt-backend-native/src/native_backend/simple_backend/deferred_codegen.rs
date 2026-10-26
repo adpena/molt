@@ -19,6 +19,28 @@ pub(crate) struct DeferredDefine {
     pub(crate) name: String,
 }
 
+/// Complete actual CFG ownership after FunctionBuilder has released SSA custody.
+/// Emission-time reachability cannot authorize keeping a dead block or inventing
+/// a terminator. Cranelift retires the whole unreachable component and its tables.
+#[cfg(feature = "native-backend")]
+pub(super) fn complete_native_control_flow(
+    context: &mut Context,
+    isa: &dyn isa::TargetIsa,
+    name: &str,
+) {
+    context.flowgraph();
+    for block in context.func.layout.blocks() {
+        assert!(
+            !context.domtree.is_reachable(block) || context.func.layout.last_inst(block).is_some(),
+            "native codegen left REACHABLE block {block:?} empty (no terminator) in '{name}'; \
+             fix its producer instead of inventing a trap or fallthrough"
+        );
+    }
+    context
+        .eliminate_unreachable_code(isa)
+        .unwrap_or_else(|error| panic!("native CFG completion failed for '{name}': {error:?}"));
+}
+
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
     /// Compile all deferred function definitions in parallel using rayon,
@@ -74,6 +96,7 @@ impl SimpleBackend {
                             } = item;
                             let isa = compile_isa.clone().0;
                             let mut ctx = Context::for_function(func);
+                            complete_native_control_flow(&mut ctx, &*isa, &name);
                             let mut ctrl = ControlPlane::default();
                             if let Err(err) = ctx.compile(&*isa, &mut ctrl) {
                                 let message =

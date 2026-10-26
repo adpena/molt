@@ -28,7 +28,10 @@ pub(crate) enum DaemonCompiledOutput {
     #[cfg(feature = "wasm-backend")]
     Bytes(Arc<[u8]>),
     #[cfg(feature = "native-backend")]
-    WrittenToPath,
+    WrittenToPath {
+        codegen: crate::backend_process::origin::CodegenOrigin,
+        output: crate::backend_process::input::ContentIdentity,
+    },
 }
 
 /// A job's target with the environment it compiles under resolved. A native
@@ -159,13 +162,22 @@ impl ResolvedJobTarget {
                 )
                 .map_err(|err| err.to_string())?;
 
-                compile_native_application_artifact_to_path(
+                let emitted = compile_native_application_artifact_to_path(
                     ir,
                     Path::new(&output_path),
                     compile_options,
                 )
                 .map_err(|err| format!("failed to compile native application artifact: {err}"))?;
-                Ok(DaemonCompiledOutput::WrittenToPath)
+                let codegen = match emitted.workers {
+                    None => crate::backend_process::origin::CodegenOrigin::in_process(),
+                    Some(workers) => {
+                        crate::backend_process::origin::CodegenOrigin::NativeWorkers { workers }
+                    }
+                };
+                Ok(DaemonCompiledOutput::WrittenToPath {
+                    codegen,
+                    output: emitted.output,
+                })
             }
         }
     }

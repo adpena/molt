@@ -334,8 +334,8 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                     "these requirements into an ambient project interpreter."
                 ),
                 scopes=(
-                    "src/molt/cli/source_build_environment.py",
-                    "src/molt/cli/source_build_environment_schema.py",
+                    "src/molt/source_build_environment.py",
+                    "src/molt/source_build_environment_schema.py",
                     "src/molt/cli/source_extension_producer.py",
                     "pyproject.toml",
                     "uv.lock",
@@ -363,8 +363,8 @@ def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
                 ),
                 scopes=(
                     "src/molt/cli/source_extension_producer.py",
-                    "src/molt/cli/source_build_environment.py",
-                    "src/molt/cli/source_build_environment_schema.py",
+                    "src/molt/source_build_environment.py",
+                    "src/molt/source_build_environment_schema.py",
                     "tests/cli/test_source_extension_producer.py",
                 ),
                 artifacts=(str(row["summary_json"]), str(row["log_path"])),

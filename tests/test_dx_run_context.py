@@ -5,7 +5,11 @@ import os
 import shutil
 from pathlib import Path
 
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import (
+    GuardedProcessRole,
+    resolve_test_process_timeout,
+    run_guarded_test_process,
+)
 from molt.process_environment import NameRule, ProcessEnvironment
 import molt.dx as dx
 from molt import custody_layout
@@ -25,6 +29,7 @@ from molt.path_custody import (
     pure_path_is_within,
 )
 from tools import hosted_ci_env, run_context_env
+from tests.python_environment_test_support import materialize_development_environment
 
 
 @pytest.mark.parametrize(
@@ -109,9 +114,7 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
     assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(tmp_path.resolve() / ".uv-cache")
-    assert env["UV_PROJECT_ENVIRONMENT"].startswith(
-        str(tmp_path.resolve() / "uv-project-envs")
-    )
+    assert "UV_PROJECT_ENVIRONMENT" not in env
     assert env["PIP_CACHE_DIR"] == str(tmp_path.resolve() / ".pip-cache")
     assert env["PYTHONPYCACHEPREFIX"] == str(scratch / "pycache")
     assert env["TMPDIR"] == str(scratch)
@@ -358,17 +361,25 @@ def test_canonical_env_stamps_shared_checkout_state_with_its_owner(
     }
     env = context.canonical_env(base, create_dirs=True)
     target = Path(env["CARGO_TARGET_DIR"])
-    uv_environment = Path(env["UV_PROJECT_ENVIRONMENT"])
     owner = checkout_state.CheckoutOwner(repo_root.resolve(), "cargo-target")
     assert checkout_state.read_checkout_owner(target) == owner
-    # uv has not created the environment yet: a record would precede it.
-    uv_environment.mkdir(parents=True, exist_ok=True)
-    context.canonical_env(base, create_dirs=True)
-    assert checkout_state.read_checkout_owner(uv_environment) is None
-    (uv_environment / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
-    context.canonical_env(base, create_dirs=True)
-    assert checkout_state.read_checkout_owner(uv_environment) == (
-        checkout_state.CheckoutOwner(repo_root.resolve(), "uv-environment")
+    assert "UV_PROJECT_ENVIRONMENT" not in env
+    image = materialize_development_environment(repo_root, external_root)
+    image_env = {
+        **base,
+        "UV_PROJECT_ENVIRONMENT": str(image.root),
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "foreign-cache"),
+    }
+    selected = context.canonical_env(image_env, create_dirs=True)
+    assert selected["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+    assert selected["PYTHONDONTWRITEBYTECODE"] == "1"
+    borrowed = context.canonical_env(
+        {**image_env, "MOLT_VENV": str(tmp_path / "external-borrower")},
+        create_dirs=False,
+    )
+    assert borrowed["PYTHONPYCACHEPREFIX"] == image_env["PYTHONPYCACHEPREFIX"]
+    assert checkout_state.read_checkout_owner(image.root) == (
+        checkout_state.CheckoutOwner(repo_root.resolve(), "python-environment")
     )
     from molt.build_state_layout import build_state_root
 
@@ -693,11 +704,7 @@ def test_run_context_env_dx_uses_stable_uv_project_environment(
     env = payload["env"]
     assert env["MOLT_SESSION_ID"].startswith("run-")
     assert env["MOLT_SESSION_ID_GENERATED"] == "1"
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(
-        dx.stable_uv_project_env_dir(
-            tmp_path, purpose="dx", python="3.12", source_root=tmp_path
-        )
-    )
+    assert "UV_PROJECT_ENVIRONMENT" not in env
     assert env["PYTHONPATH"].split(os.pathsep) == [
         str(tmp_path.resolve() / "src"),
         str(ambient_pythonpath),
@@ -734,11 +741,7 @@ def test_run_context_env_session_id_scopes_cargo_not_uv_project_environment(
     assert env["CARGO_TARGET_DIR"] == str(
         tmp_path.resolve() / "target" / "sessions" / "witness-warm"
     )
-    assert env["UV_PROJECT_ENVIRONMENT"] == str(
-        dx.stable_uv_project_env_dir(
-            tmp_path, purpose="dx", python="3.12", source_root=tmp_path
-        )
-    )
+    assert "UV_PROJECT_ENVIRONMENT" not in env
 
 
 def test_run_context_env_preserves_explicit_uv_project_environment(
@@ -768,6 +771,102 @@ def test_run_context_env_preserves_explicit_uv_project_environment(
     assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit.resolve())
 
 
+@pytest.mark.parametrize("projection", ["canonical", "dx", "cli", "dev", "setup"])
+def test_managed_bytecode_policy_survives_environment_projections(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    projection: str,
+) -> None:
+    import argparse
+    import shlex
+    import sys
+
+    from molt.cli import dx_cli, setup_readiness
+    from tests.process_guard_common import run_custody_subject_process
+    from tools import dev
+
+    _clear_run_context_env(monkeypatch)
+    _without_compiler_wasm_toolchain(monkeypatch)
+    repo = tmp_path / "repo"
+    artifacts = tmp_path / "artifacts"
+    image = materialize_development_environment(repo, artifacts)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "")
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+
+    if projection in {"canonical", "dx"}:
+        args = ["--root", str(repo), "--format", "json"]
+        if projection == "dx":
+            args.append("--dx")
+        assert run_context_env.main(args) == 0
+        exported = json.loads(capsys.readouterr().out)["env"]
+    elif projection == "cli":
+        monkeypatch.setattr(dx_cli, "_dx_project_from_cwd", lambda: DxProject(repo))
+        assert (
+            dx_cli._handle_env(
+                argparse.Namespace(create_dirs=False, json=True, format="json")
+            )
+            == 0
+        )
+        exported = json.loads(capsys.readouterr().out)["env"]
+    elif projection == "setup":
+        exported = setup_readiness._canonical_env_defaults(repo)
+    else:
+        dev._print_canonical_env(DxProject(repo).dx_env(os.environ, create_dirs=False))
+        exported = dict(
+            shlex.split(line)[1].split("=", 1)
+            for line in capsys.readouterr().out.splitlines()
+        )
+
+    assert exported["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+    # Deliberately omit -B: the serialized environment, not the parent's
+    # interpreter flags or the process guard, must establish startup policy.
+    # -S avoids importing the real test image while observing that policy.
+    command = [
+        sys.executable,
+        "-S",
+        "-c",
+        "import sys; print(int(sys.dont_write_bytecode))",
+    ]
+    if projection == "canonical":
+        without_policy = {
+            key: value
+            for key, value in exported.items()
+            if key != "PYTHONDONTWRITEBYTECODE"
+        }
+        control = run_custody_subject_process(
+            command,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "", **without_policy},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert control.stdout == "0\n"
+    completed = run_custody_subject_process(
+        command,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "", **exported},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert completed.stdout == "1\n"
+
+
+@pytest.mark.parametrize(
+    ("format", "expected"),
+    [
+        ("dotenv", "PYTHONDONTWRITEBYTECODE=1"),
+        ("posix", 'export PYTHONDONTWRITEBYTECODE="1"'),
+        ("powershell", "$env:PYTHONDONTWRITEBYTECODE = '1'"),
+        ("cmd", 'set "PYTHONDONTWRITEBYTECODE=1"'),
+    ],
+)
+def test_shell_exports_retain_bytecode_write_policy(format, expected) -> None:
+    assert render_env({"PYTHONDONTWRITEBYTECODE": "1"}, DX_ENV_KEYS, format) == expected
+
+
 def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     tmp_path: Path,
 ) -> None:
@@ -783,7 +882,7 @@ def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     assert env["SCCACHE_CACHE_SIZE"] == "10G"
     # sccache is off-by-default on Windows (0 hits + mid-compile crashes there);
     # auto-on elsewhere. The default is platform-derived, so assert accordingly.
-    assert env["MOLT_USE_SCCACHE"] == ("0" if os.name == "nt" else "1")
+    assert env["MOLT_USE_SCCACHE"] == ("0" if os.name == "nt" else "auto")
     assert env["MOLT_DIFF_ALLOW_RUSTC_WRAPPER"] == "1"
     assert env["MOLT_CACHE_MAX_GB"] == "30"
     assert env["MOLT_CACHE_MAX_AGE_DAYS"] == "30"
@@ -1726,6 +1825,9 @@ def test_explicit_toolchain_root_is_preserved_independent_of_artifact_root(
     elif producer == "development":
         resolved = development_artifact_env(repo, env, create_dirs=False)
     else:
+        image = materialize_development_environment(repo, tmp_path / "images")
+        env = env.updated({"UV_PROJECT_ENVIRONMENT": str(image.root)})
+        original = dict(env)
         resolved = project.normalized_uv_run_env(env, python=None)
     selected_tools = tools if rule is NameRule.EXACT else alias_tools
     assert isinstance(resolved, ProcessEnvironment) and resolved.rule is rule
@@ -1736,7 +1838,7 @@ def test_explicit_toolchain_root_is_preserved_independent_of_artifact_root(
     assert resolved["MOLT_EXT_ROOT"] == str(outputs)
     if producer in {"project", "project_dx", "uv"}:
         assert ("pythonhome" in resolved) is (rule is NameRule.EXACT)
-    if rule is NameRule.WINDOWS and producer != "roots":
+    if rule is NameRule.WINDOWS and producer not in {"roots", "uv"}:
         assert resolved["UV_PROJECT_ENVIRONMENT"] == str(
             tmp_path / "python environment"
         )
@@ -1744,43 +1846,36 @@ def test_explicit_toolchain_root_is_preserved_independent_of_artifact_root(
     assert not tools.exists() and not alias_tools.exists() and not outputs.exists()
 
 
-def test_uv_project_env_is_stable_across_sessions(tmp_path: Path) -> None:
-    """The uv project env authority must be STABLE across sessions.
+def test_uv_project_env_is_stable_across_sessions(tmp_path: Path, monkeypatch) -> None:
+    from molt import source_build_environment
 
-    The DX churn fix: repeated `uv run --active` proofs (each a fresh
-    MOLT_SESSION_ID) reuse ONE uv project environment instead of minting a fresh
-    `.venv` per session. The env is keyed on (source, purpose, python), never the
-    session.
-    """
+    image = materialize_development_environment(tmp_path, tmp_path, select=True)
+
+    def refuse_image_load(*_args, **_kwargs):
+        raise AssertionError("a path getter must not parse/hash the full image")
+
+    monkeypatch.setattr(
+        source_build_environment, "load_development_environment", refuse_image_load
+    )
     ctx = RunContext(tmp_path, session_prefix="proof")
     base = {"MOLT_EXT_ROOT": str(tmp_path)}
     env_a = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-aaa-111"})
     env_b = ctx.uv_project_env_dir({**base, "MOLT_SESSION_ID": "sess-bbb-222"})
-    assert env_a == env_b
-    assert env_a == dx.stable_uv_project_env_dir(
-        tmp_path, purpose="dx", python="3.12", source_root=tmp_path
-    )
+    assert env_a == env_b == image.root
     assert "sess-aaa" not in str(env_a) and "sess-bbb" not in str(env_b)
 
 
 def test_uv_project_env_isolated_by_editable_source_root(tmp_path: Path) -> None:
-    artifact_root = tmp_path / "artifacts"
-    source_a = tmp_path / "worktree-a"
-    source_b = tmp_path / "worktree-b"
-    source_a.mkdir()
-    source_b.mkdir()
-
-    env_a = RunContext(source_a).uv_project_env_dir(
-        {"MOLT_EXT_ROOT": str(artifact_root)}
-    )
-    env_b = RunContext(source_b).uv_project_env_dir(
-        {"MOLT_EXT_ROOT": str(artifact_root)}
-    )
-
-    assert env_a != env_b
-    assert env_a.parent == env_b.parent
-    assert "src-worktree-a-" in env_a.name
-    assert "src-worktree-b-" in env_b.name
+    artifacts = tmp_path / "artifacts"
+    source_a, source_b = tmp_path / "worktree-a", tmp_path / "worktree-b"
+    image_a = materialize_development_environment(source_a, artifacts, select=True)
+    image_b = materialize_development_environment(source_b, artifacts, select=True)
+    env = {"MOLT_EXT_ROOT": str(artifacts)}
+    assert RunContext(source_a).uv_project_env_dir(env) == image_a.root
+    assert RunContext(source_b).uv_project_env_dir(env) == image_b.root
+    assert image_a.root != image_b.root
+    assert image_a.root.parent.name == dx.checkout_component(source_a)
+    assert image_b.root.parent.name == dx.checkout_component(source_b)
 
 
 def test_uv_project_env_explicit_override_is_honored(tmp_path: Path) -> None:
@@ -1793,18 +1888,20 @@ def test_uv_project_env_explicit_override_is_honored(tmp_path: Path) -> None:
 
 
 def test_uv_project_env_custom_purpose_and_python(tmp_path: Path) -> None:
-    ctx = RunContext(tmp_path, session_prefix="proof")
-    env = ctx.uv_project_env_dir(
-        {
-            "MOLT_EXT_ROOT": str(tmp_path),
-            "MOLT_UV_PROJECT_PURPOSE": "witness",
-            "MOLT_UV_PROJECT_PYTHON": "3.13",
-            "MOLT_SESSION_ID": "sess-ignored",
-        }
+    image = materialize_development_environment(
+        tmp_path, tmp_path, python="3.13", select=True, purpose="witness"
     )
-    assert env == dx.stable_uv_project_env_dir(
-        tmp_path, purpose="witness", python="3.13", source_root=tmp_path
-    )
+    env = {
+        "MOLT_EXT_ROOT": str(tmp_path),
+        "MOLT_UV_PROJECT_PURPOSE": "witness",
+        "MOLT_UV_PROJECT_PYTHON": "3.13",
+        "MOLT_SESSION_ID": "sess-ignored",
+    }
+    assert RunContext(tmp_path).uv_project_env_dir(env) == image.root
+    with pytest.raises(dx.DxConfigError, match="development image not selected"):
+        RunContext(tmp_path).uv_project_env_dir(
+            {**env, "MOLT_UV_PROJECT_PYTHON": "3.14"}
+        )
 
 
 @pytest.mark.parametrize("name", ["OneDrive", "OneDrive - Example Org"])
@@ -2182,11 +2279,14 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
 
     def build_and_run(name, expected, *, fresh):
         env = environments[name]
+        cold_timeout = resolve_test_process_timeout(
+            "MOLT_PYTEST", GuardedProcessRole.BUILD, env
+        )
         built = run_guarded_test_process(
             [cargo, "build", "--offline", "--message-format=json"],
             cwd=roots[name],
             env=env,
-            timeout=30,
+            timeout=cold_timeout,
         )
         assert built.returncode == 0, built.stderr
         records = [json.loads(line) for line in built.stdout.splitlines()]
@@ -2201,7 +2301,12 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
             f"Cargo stdout:\n{built.stdout}\nCargo stderr:\n{built.stderr}"
         )
         ran = run_guarded_test_process(
-            [binary["executable"]], cwd=roots[name], env=env, timeout=10
+            [binary["executable"]],
+            cwd=roots[name],
+            env=env,
+            # The preceding assertions establish this fixture's exact sequence:
+            # fresh=False owns a new image; fresh=True already completed here.
+            timeout=10 if fresh else cold_timeout,
         )
         assert (ran.returncode, ran.stdout, ran.stderr) == (0, expected + "\n", "")
 

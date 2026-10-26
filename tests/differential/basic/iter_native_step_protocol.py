@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for the native iterator step (tp_iternext).
 
 Builtin and itertools iterators advance through one native step. These cases
@@ -43,6 +44,40 @@ try:
 except StopIteration as exc:
     print("stop empty", exc.args, exc.value)
 print(next(iter(()), "default"), next(returns(0), "unused"))
+
+
+class StopNow:
+    def __init__(self, error):
+        self.error = error
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise self.error
+
+
+# Direct next must preserve an input's actual exception where the native type
+# propagates it; loops/defaults normalize it. CPython supplies the oracle for
+# the types (such as chain and tee) that consume the inner exception themselves.
+for name, wrap in (
+    ("plain", lambda it: it),
+    ("enumerate", enumerate),
+    ("map", lambda it: map(str, it)),
+    ("filter", lambda it: filter(None, it)),
+    ("zip", lambda it: zip(it)),
+    ("zip-strict", lambda it: zip(it, strict=True)),
+    ("chain", lambda it: itertools.chain(it)),
+    ("tee", lambda it: itertools.tee(it)[0]),
+):
+    original = StopIteration("same")
+    try:
+        next(wrap(StopNow(original)))
+    except StopIteration as exc:
+        print("stop identity", name, exc is original, exc.args, exc.value)
+    print("stop default", name, next(wrap(StopNow(original)), "default"))
+    print("stop loop", name, list(wrap(StopNow(original))))
+
 try:
     next(5)
 except TypeError as exc:

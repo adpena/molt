@@ -519,6 +519,7 @@ class CommandExecutor:
         env, _cargo_policies = harness_memory_guard.cargo_subprocess_environment(
             command,
             env,
+            cwd=cwd,
         )
         process_guard = _process_guard_authority(str(self.repo_root))
         process = subprocess.Popen(
@@ -613,6 +614,7 @@ class CommandExecutor:
         env, _cargo_policies = harness_memory_guard.cargo_subprocess_environment(
             command,
             env,
+            cwd=cwd,
         )
         if harness:
             launch_environment = harness_memory_guard.canonical_harness_env(
@@ -633,6 +635,10 @@ class CommandExecutor:
             / launch_id
         )
         custody.mkdir(parents=True, exist_ok=False)
+        # Persistent command custody outlives failed closure and dropped handles.
+        # Its empty startup namespace must survive for the same lifetime.
+        verifier_bytecode_prefix = custody / "guardian-bytecode"
+        verifier_bytecode_prefix.mkdir()
         cancellation_path = custody / "cancel"
         progress_path = custody / "progress"
         startup_path = custody / "startup.json"
@@ -677,7 +683,9 @@ class CommandExecutor:
             # The harness worker runs the same memory_guard owner in this process;
             # preserve its preflight, profiling and sentinel without a second guard.
             guarded_argv = guardian_argv(
-                sys.executable, self.repo_root / "tools" / "guarded_exec.py"
+                sys.executable,
+                self.repo_root / "tools" / "guarded_exec.py",
+                verifier_bytecode_prefix=verifier_bytecode_prefix,
             ) + [
                 "--prefix",
                 self.prefix,
@@ -694,7 +702,9 @@ class CommandExecutor:
                 guarded_argv.extend(("--timeout", str(timeout)))
         else:
             guarded_argv = guardian_argv(
-                sys.executable, self.repo_root / "tools" / "memory_guard.py"
+                sys.executable,
+                self.repo_root / "tools" / "memory_guard.py",
+                verifier_bytecode_prefix=verifier_bytecode_prefix,
             ) + [
                 "--max-rss-gb",
                 str(limits.max_process_rss_gb),

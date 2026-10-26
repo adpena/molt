@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tomllib
 import urllib.parse
+import hashlib
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -16,7 +18,11 @@ from molt.python_identity_common import (
     _valid_sha256,
 )
 
-UV_LOCK_GROUP_CLOSURE_SCHEMA = "molt.uv-lock-group-closure.v2"
+UV_LOCK_GROUP_CLOSURE_SCHEMA = "molt.uv-lock-group-closure.v4"
+PYTHON_WHEEL_TARGET_SCHEMA = "molt.python-wheel-target.v1"
+# packaging's pure-Python tag implementation and its relative dependencies.
+# Load these exact bound bytes without adding a foreign site directory to sys.path.
+_TAG_SOURCE_MODULES = ("__init__", "_elffile", "_manylinux", "_musllinux", "tags")
 PYTHON_MARKER_ENVIRONMENT_FIELDS = (
     "implementation_name",
     "implementation_version",
@@ -36,14 +42,112 @@ _LOCK_CLOSURE_FIELDS = frozenset(
         "lock_version",
         "lock_revision",
         "requires_python",
-        "dependency_group",
+        "dependency_groups",
         "requirements",
         "project_requirements",
         "marker_environment",
+        "wheel_target",
         "packages",
         "closure_sha256",
     }
 )
+
+
+def packaging_tag_source() -> Path:
+    import packaging
+
+    return Path(packaging.__file__).resolve(strict=True).parent
+
+
+def capture_python_wheel_target(
+    source: Path, runtime: Mapping[str, object], capture_context
+) -> dict[str, object]:
+    """Run packaging's algorithm in this selected interpreter, from bound sources."""
+    import sys
+    from types import ModuleType
+
+    from molt.python_file_node_custody import _FileNodePool
+
+    pool = _FileNodePool(capture_context=capture_context)
+    source = source.resolve(strict=True)
+    bound = {}
+    for name in _TAG_SOURCE_MODULES:
+        path = source / f"{name}.py"
+        node = pool.bind(path, path.lstat(), label="packaging tag algorithm")
+        bound[name] = (path, pool.read_bound(node, label="packaging tag algorithm"))
+    namespace = "_molt_selected_wheel_packaging"
+    if any(key == namespace or key.startswith(namespace + ".") for key in sys.modules):
+        raise PythonEnvironmentIdentityError(
+            "wheel tag source namespace is already loaded"
+        )
+    loaded = []
+    try:
+        for name, (path, contents) in bound.items():
+            fullname = namespace if name == "__init__" else f"{namespace}.{name}"
+            module = ModuleType(fullname)
+            module.__file__ = str(path)
+            module.__package__ = namespace
+            if name == "__init__":
+                module.__path__ = []
+            sys.modules[fullname] = module
+            loaded.append(fullname)
+            exec(compile(contents, str(path), "exec"), module.__dict__)
+            if name != "__init__":
+                setattr(sys.modules[namespace], name, module)
+        tags = [str(tag) for tag in sys.modules[f"{namespace}.tags"].sys_tags()]
+    finally:
+        for fullname in reversed(loaded):
+            sys.modules.pop(fullname, None)
+    source_files = {
+        name + ".py": {
+            "size": len(contents),
+            "sha256": hashlib.sha256(contents).hexdigest(),
+        }
+        for name, (_path, contents) in bound.items()
+    }
+    return validate_python_wheel_target(
+        {
+            "schema": PYTHON_WHEEL_TARGET_SCHEMA,
+            "runtime_closure_sha256": runtime["runtime_closure_sha256"],
+            "packaging_sources": source_files,
+            "tags": tags,
+        }
+    )
+
+
+def validate_python_wheel_target(payload: object) -> dict[str, object]:
+    if (
+        not isinstance(payload, dict)
+        or set(payload)
+        != {"schema", "runtime_closure_sha256", "packaging_sources", "tags"}
+        or payload.get("schema") != PYTHON_WHEEL_TARGET_SCHEMA
+    ):
+        raise PythonEnvironmentIdentityError("Python wheel target shape is invalid")
+    sources = payload["packaging_sources"]
+    tags = payload["tags"]
+    if (
+        not _valid_sha256(payload["runtime_closure_sha256"])
+        or not isinstance(sources, dict)
+        or set(sources) != {name + ".py" for name in _TAG_SOURCE_MODULES}
+        or any(
+            not isinstance(row, dict)
+            or set(row) != {"size", "sha256"}
+            or type(row["size"]) is not int
+            or row["size"] <= 0
+            or not _valid_sha256(row["sha256"])
+            for row in sources.values()
+        )
+        or not isinstance(tags, list)
+        or not tags
+        or any(
+            not isinstance(tag, str)
+            or re.fullmatch(r"[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+", tag) is None
+            for tag in tags
+        )
+        or len(set(tags)) != len(tags)
+    ):
+        raise PythonEnvironmentIdentityError("Python wheel target identity is invalid")
+    return payload
 
 
 def _marker_applies(raw: object, environment: Mapping[str, str]) -> bool:
@@ -83,13 +187,16 @@ def _extras(raw: object) -> set[str]:
     return set(cast(list[str], raw))
 
 
-def _locked_artifact(row: Mapping[str, object]) -> dict[str, object]:
-    from packaging.tags import sys_tags
+def _locked_artifact(
+    row: Mapping[str, object], ordered_tags: Sequence[str]
+) -> dict[str, object]:
     from packaging.utils import parse_wheel_filename
     from packaging.version import InvalidVersion, Version
 
-    rank = {tag: index for index, tag in enumerate(sys_tags())}
-    candidates: list[tuple[int, str, Mapping[str, object]]] = []
+    rank = {tag: index for index, tag in enumerate(ordered_tags)}
+    candidates: list[
+        tuple[int, tuple[()] | tuple[int, str], str, Mapping[str, object]]
+    ] = []
     wheels = row.get("wheels")
     if not isinstance(wheels, list):
         raise PythonEnvironmentIdentityError(
@@ -103,7 +210,7 @@ def _locked_artifact(row: Mapping[str, object]) -> dict[str, object]:
             Path(urllib.parse.urlparse(str(raw["url"])).path).name
         )
         try:
-            parsed_name, parsed_version, _build, tags = parse_wheel_filename(filename)
+            parsed_name, parsed_version, build, tags = parse_wheel_filename(filename)
         except ValueError:
             continue
         try:
@@ -118,21 +225,21 @@ def _locked_artifact(row: Mapping[str, object]) -> dict[str, object]:
             or parsed_version != locked_version
         ):
             continue
-        supported = [rank[tag] for tag in tags if tag in rank]
+        supported = [rank[str(tag)] for tag in tags if str(tag) in rank]
         if supported:
-            candidates.append((min(supported), filename, raw))
+            candidates.append((min(supported), build, filename, raw))
     if not candidates:
         raise PythonEnvironmentIdentityError(
             f"locked package {row.get('name')!r} has no wheel for the active OS/arch/ABI"
         )
-    candidates.sort(key=lambda item: (item[0], item[1]))
-    best_rank = candidates[0][0]
-    best = [item for item in candidates if item[0] == best_rank]
-    if len(best) != 1:
-        raise PythonEnvironmentIdentityError(
-            f"locked package {row.get('name')!r} has ambiguous best-matching wheels"
-        )
-    _rank, filename, artifact = best[0]
+    # Match uv's locked-install Package::find_best_wheel: tag priority, then
+    # greatest build tag, retaining the first lock entry on an exact tie.
+    # Compressed platform tags can give distinct wheels the same best tag;
+    # filename sorting would silently change the artifact uv actually installs.
+    # https://github.com/astral-sh/uv/blob/0.13.5/crates/uv-lock/src/lock/mod.rs
+    _rank, _build, filename, artifact = max(
+        candidates, key=lambda item: (-item[0], item[1])
+    )
     raw_hash = artifact.get("hash")
     size = artifact.get("size")
     if (
@@ -161,14 +268,32 @@ SUPPORTED_UV_LOCK_REVISIONS = frozenset({1, 2, 3, 4, 5})
 @identity_validator("uv.lock group selection")
 def selected_uv_lock_group_closure(
     repo_root: Path,
-    dependency_group: str,
+    dependency_group: str | None,
     requirements: Sequence[str],
     *,
+    wheel_target: Mapping[str, object],
     marker_environment: Mapping[str, str] | None = None,
+    dependency_groups: Sequence[str] | None = None,
 ) -> dict[str, object]:
-    """Match uv sync --group GROUP --no-install-project, including root dependencies."""
+    """Select root dependencies and exactly the requested uv dependency groups."""
 
     from packaging.markers import default_environment
+
+    target = validate_python_wheel_target(dict(wheel_target))
+
+    groups = sorted(
+        set(
+            (() if dependency_group is None else (dependency_group,))
+            if dependency_groups is None
+            else dependency_groups
+        )
+    )
+    if (dependency_group is not None and dependency_group not in groups) or not all(
+        isinstance(group, str) and group for group in groups
+    ):
+        raise PythonEnvironmentIdentityError(
+            "uv.lock dependency group selection is invalid"
+        )
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
     from packaging.version import InvalidVersion, Version
 
@@ -242,8 +367,13 @@ def selected_uv_lock_group_closure(
         for row in rows
         if _canonicalize_name(str(row.get("name", "")))
         == _canonicalize_name(project_name)
-        and isinstance(row.get("dev-dependencies"), Mapping)
-        and dependency_group in row["dev-dependencies"]  # type: ignore[operator]
+        and (
+            not groups
+            or (
+                isinstance(row.get("dev-dependencies"), Mapping)
+                and all(group in row["dev-dependencies"] for group in groups)
+            )
+        )  # type: ignore[operator]
     ]
     if len(project_rows) != 1:
         raise PythonEnvironmentIdentityError(
@@ -257,11 +387,14 @@ def selected_uv_lock_group_closure(
         or not isinstance(project_edges, list)
     ):
         raise PythonEnvironmentIdentityError("uv.lock project dependencies are invalid")
-    group_edges = project_rows[0]["dev-dependencies"][dependency_group]  # type: ignore[index]
-    if not isinstance(group_edges, list):
-        raise PythonEnvironmentIdentityError(
-            f"uv.lock group {dependency_group!r} has no dependency closure"
-        )
+    group_edges = []
+    for group in groups:
+        edges = project_rows[0]["dev-dependencies"][group]  # type: ignore[index]
+        if not isinstance(edges, list):
+            raise PythonEnvironmentIdentityError(
+                f"uv.lock group {group!r} has no dependency closure"
+            )
+        group_edges.extend(edges)
     rows_by_name: dict[str, list[Mapping[str, object]]] = {}
     for row in rows:
         raw_name = row.get("name")
@@ -374,7 +507,7 @@ def selected_uv_lock_group_closure(
                 "name": name,
                 "version": version,
                 "source": dict(source),
-                "artifact": _locked_artifact(row),
+                "artifact": _locked_artifact(row, cast(list[str], target["tags"])),
                 "extras": sorted(activated[name]),
                 "dependencies": [
                     {
@@ -391,10 +524,11 @@ def selected_uv_lock_group_closure(
         "lock_version": lock_version,
         "lock_revision": lock_revision,
         "requires_python": requires_python,
-        "dependency_group": dependency_group,
+        "dependency_groups": groups,
         "requirements": list(requirements),
         "project_requirements": project_requirements,
         "marker_environment": environment,
+        "wheel_target": target,
         "packages": locked_packages,
     }
     return validate_uv_lock_group_closure(
@@ -411,11 +545,21 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
     ):
         raise PythonEnvironmentIdentityError("uv.lock group closure shape is invalid")
     payload = cast(dict[str, object], payload)
+    target = validate_python_wheel_target(payload["wheel_target"])
     material = dict(payload)
     digest = material.pop("closure_sha256", None)
     if not _valid_sha256(digest) or digest != canonical_json_sha256(material):
         raise PythonEnvironmentIdentityError("uv.lock group closure digest is invalid")
     packages = payload.get("packages")
+    groups = payload.get("dependency_groups")
+    if (
+        not isinstance(groups, list)
+        or not all(isinstance(group, str) and group for group in groups)
+        or groups != sorted(set(groups))
+    ):
+        raise PythonEnvironmentIdentityError(
+            "uv.lock dependency group selection is invalid"
+        )
     requirements = payload.get("requirements")
     project_requirements = payload.get("project_requirements")
     raw_marker_environment = payload.get("marker_environment")
@@ -426,10 +570,7 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
         or payload.get("lock_revision") not in SUPPORTED_UV_LOCK_REVISIONS
         or not isinstance(payload.get("requires_python"), str)
         or not payload.get("requires_python")
-        or not isinstance(payload.get("dependency_group"), str)
-        or not payload.get("dependency_group")
         or not isinstance(requirements, list)
-        or not requirements
         or not all(isinstance(item, str) and item for item in requirements)
         or not isinstance(project_requirements, list)
         or not all(isinstance(item, str) and item for item in project_requirements)
@@ -513,7 +654,13 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
             raise PythonEnvironmentIdentityError(
                 "uv.lock package wheel identity is invalid"
             ) from exc
-        if _canonicalize_name(wheel_name) != name or wheel_version != locked_version:
+        if (
+            _canonicalize_name(wheel_name) != name
+            or wheel_version != locked_version
+            or not {str(tag) for tag in _tags}.intersection(
+                cast(list[str], target["tags"])
+            )
+        ):
             raise PythonEnvironmentIdentityError(
                 "uv.lock package wheel identity differs from its package row"
             )
@@ -634,8 +781,53 @@ def environment_matches_lock_closure(
         for row in packages
         if isinstance(row, Mapping)
     )
-    return (
+    if not (
         len(actual) == len(distributions)
         and len(expected) == len(packages)
         and actual == expected
-    )
+    ):
+        return False
+    runtime = environment.get("runtime")
+    target = lock_closure.get("wheel_target")
+    if (
+        not isinstance(runtime, Mapping)
+        or not isinstance(target, Mapping)
+        or runtime.get("runtime_closure_sha256") != target.get("runtime_closure_sha256")
+    ):
+        return False
+    from packaging.utils import parse_wheel_filename
+
+    by_name = {row["name"]: row for row in distributions}
+    for package in packages:
+        wheel = by_name[package["name"]].get("wheel")
+        if not isinstance(wheel, Mapping):
+            return False
+        filename = package["artifact"]["filename"]
+        _name, _version, _build, tags = parse_wheel_filename(filename)
+        installed_build = wheel.get("build")
+        try:
+            parsed_build = (
+                ()
+                if installed_build is None
+                else parse_wheel_filename(
+                    f"molt_build-0-{installed_build}-py3-none-any.whl"
+                )[2]
+            )
+        except ValueError:
+            return False
+        installed_tags = wheel.get("tags")
+        if (
+            not isinstance(installed_tags, list)
+            or not installed_tags
+            or not all(isinstance(tag, str) for tag in installed_tags)
+        ):
+            return False
+        # Real wheels can describe a narrower supported set in WHEEL than the
+        # compressed filename (e.g. py-spy publishes py2.py3 but records py3).
+        if (
+            not set(installed_tags) <= {str(tag) for tag in tags}
+            or not set(installed_tags).intersection(target["tags"])
+            or parsed_build != _build
+        ):
+            return False
+    return True

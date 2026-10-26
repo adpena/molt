@@ -89,7 +89,6 @@ from molt.wasm_artifact import (  # noqa: E402
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
-    ensure_molt_conformance_dirs,
 )
 
 # Default scratch for benchmark builds outside a canonical bench env.
@@ -646,7 +645,6 @@ def _canonical_bench_env(
         }
     )
     if create_dirs:
-        ensure_molt_conformance_dirs(env)
         _bench_tmp_root(env).mkdir(parents=True, exist_ok=True)
     return env
 
@@ -2311,6 +2309,7 @@ def _bench_one(
     molt_ok = False
     molt_batch = SampleBatch([], False)
     molt_failure: MoltFailure | None = None
+    build_observation: dict[str, Any] | None = None
     molt_runner_result = prepare_molt_binary(
         script,
         molt_args,
@@ -2322,6 +2321,7 @@ def _bench_one(
     )
     if isinstance(molt_runner_result, MoltBinary):
         molt_runner = molt_runner_result
+        build_observation = molt_runner.build_observation
         primary = None
         try:
             molt_batch = collect_samples(
@@ -2505,6 +2505,8 @@ def _bench_one(
             "molt_pyodide_ratio": pyodide_ratio_block["direction"],
         },
         "molt_ok": molt_ok,
+        "requested_profile": molt_build_profile,
+        "build_observation": build_observation,
         **molt_failure_fields,
         "molt_output_parity": output_parity,
         "reference_runtime": reference_contract.reference_runtime,
@@ -2757,20 +2759,15 @@ def main():
         load_avg = None
 
     failure_details = _molt_failure_detail_records(results)
-    # bench.py is a NON-CANONICAL lane (daemon batch builder). Stamp every
-    # emitted board so its numbers self-identify and are never cited as the
-    # contract - the only citable perf source is perf_scoreboard.py
-    # --profile release-fast. The actual cargo profile is recorded honestly:
-    # the CLI "release" value maps to the release-fast cargo profile.
-    _measured_profile = (
-        "release-fast" if args.molt_profile == "release" else args.molt_profile
-    )
+    # The logical request is a label, not a physical Cargo profile. Each
+    # benchmark retains the producer's actual selected-profile observation.
+    # This lane remains noncanonical regardless of the observed selections.
     payload = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": _git_rev(),
         "provenance": perf_authority.non_canonical_provenance(
-            profile=_measured_profile,
+            requested_profile=args.molt_profile,
             source="tools/bench.py",
             git_rev=_git_rev(),
         ),

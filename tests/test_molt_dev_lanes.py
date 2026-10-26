@@ -5,6 +5,8 @@ origin, a main checkout at ``<root>/molt-src`` and lanes under
 ``<root>/worktrees``. Git plumbing, the filesystem and the coordination
 records are the oracles. The provisioning table is replaced by fixture inputs
 whose provisioners log each run; `molt.checkout_provisioning` still runs them.
+Only the identical unprovisioned starting history is shared per session;
+each test owns an independent writable origin and a real Git working clone.
 """
 
 from __future__ import annotations
@@ -20,6 +22,11 @@ import pytest
 
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
+from tests.integration_driver_fixture import (
+    clone_tree,
+    isolated_checkout_artifacts as isolated_checkout_artifacts,
+    shared_session_tree,
+)
 from tests.test_molt_dev import _commit_file, _git, _init_repo
 from tools import molt_dev, molt_dev_lanes as lanes
 from tools.molt_dev_change_ids import landing_representation
@@ -56,7 +63,9 @@ installed.write_text("hook\\n", encoding="utf-8")
 """
 
 
-def _fixture_checkout_input(name, checkout, environ=None, *, guard_source_root=None):
+def _fixture_checkout_input(
+    name, checkout, environ=None, *, guard_source_root=None, python=None, groups=None
+):
     """The fixture's checkout inputs: provisioners that log each run. A child
     process of a test installs it as the fixture does."""
     checkout = Path(checkout).resolve()
@@ -90,25 +99,45 @@ def _fixture_checkout_input(name, checkout, environ=None, *, guard_source_root=N
     )
 
 
+@pytest.fixture(scope="session")
+def _family_origin_seed(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str
+) -> Path:
+    """Build the lane family's unprovisioned history once across workers."""
+
+    def build(root: Path) -> None:
+        seed = root / "seed"
+        _init_repo(seed)
+        (seed / "tools").mkdir()
+        for relative, text in (
+            ("provision.py", _PROVISIONER),
+            ("fixture.lock", "v1\n"),
+            # A virtual uv project deliberately installs no editable package.
+            ("pyproject.toml", "[tool.fixture]\n"),
+            ("tools/install_git_hooks.py", _INSTALLER),
+            (".gitignore", "*-tree/\n"),
+        ):
+            (seed / relative).write_text(text, encoding="utf-8")
+        _git(seed, "add", "--", ".")
+        _commit_file(seed, "README.md", "seed\n", "seed")
+        _git(root, "clone", "--bare", "-q", str(seed), str(root / "origin.git"))
+
+    root = shared_session_tree(tmp_path_factory, worker_id, "lane-family-origin", build)
+    return root / "origin.git"
+
+
 @pytest.fixture
-def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """origin.git, <root>/molt-src and an empty <root>/worktrees."""
+def family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_checkout_artifacts: Path,
+    _family_origin_seed: Path,
+) -> Path:
+    """Private origin.git, real <root>/molt-src clone and empty worktrees."""
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
-    seed = tmp_path / "seed"
-    _init_repo(seed)
-    (seed / "tools").mkdir()
-    for relative, text in (
-        ("provision.py", _PROVISIONER),
-        ("fixture.lock", "v1\n"),
-        ("tools/install_git_hooks.py", _INSTALLER),
-        (".gitignore", "*-tree/\n"),
-    ):
-        (seed / relative).write_text(text, encoding="utf-8")
-    _git(seed, "add", "--", ".")
-    _commit_file(seed, "README.md", "seed\n", "seed")
     origin = tmp_path / "origin.git"
-    _git(tmp_path, "clone", "--bare", "-q", str(seed), str(origin))
+    clone_tree(_family_origin_seed, origin)
     root = tmp_path / "family"
     main = root / "molt-src"
     root.mkdir()
@@ -117,10 +146,6 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _git(main, "config", "user.name", "Molt Dev")
 
     monkeypatch.setattr(cp, "checkout_input", _fixture_checkout_input)
-    # Checkout state lives under a private artifact root, never the host's.
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     return root
 
 
@@ -175,6 +200,33 @@ def _assert_released(main: Path, worktree: Path) -> None:
 def _record(root: Path, slug: str) -> dict:
     path = root / "molt-src" / "logs" / "agents" / f"lane-{slug}" / "coordination.json"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_lane_family_origin_does_not_share_mutable_git_state(
+    family: Path, _family_origin_seed: Path, tmp_path: Path
+) -> None:
+    origin = family.parent / "origin.git"
+    sibling = tmp_path / "sibling-origin.git"
+    clone_tree(_family_origin_seed, sibling)
+    initial = _git(_family_origin_seed, "rev-parse", "HEAD").stdout.strip()
+    original_config = (_family_origin_seed / "config").read_bytes()
+    (origin / "config").write_bytes(original_config + b"\n# private mutation\n")
+    (origin / "hooks" / "private-hook").write_bytes(b"private hook\n")
+    tip = _commit_file(family / "molt-src", "private.txt", "private\n", "private")
+    _git(family / "molt-src", "push", "-q", "origin", "HEAD:main")
+    assert _ref(origin, "refs/heads/main") == tip
+    for untouched in (_family_origin_seed, sibling):
+        assert (untouched / "config").read_bytes() == original_config
+        assert not (untouched / "hooks" / "private-hook").exists()
+        assert _ref(untouched, "refs/heads/main") == initial
+        assert _git(untouched, "show", "HEAD:README.md").stdout == "seed\n"
+    # Atomic Git ref replacement alone would miss hardlinked object aliases.
+    relative = Path("objects") / initial[:2] / initial[2:]
+    original_object = (_family_origin_seed / relative).read_bytes()
+    (origin / relative).chmod(0o600)
+    (origin / relative).write_bytes(b"deliberately corrupt private object")
+    assert (_family_origin_seed / relative).read_bytes() == original_object
+    assert (sibling / relative).read_bytes() == original_object
 
 
 def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> None:
@@ -351,7 +403,8 @@ def test_a_second_start_of_a_slug_refuses_while_the_first_runs(
 # process a second holder stops at the in-process mutex (review v5, A-1). It
 # installs the fixture's checkout inputs and skips provisioning. With
 # ``hold``, it writes ``ready`` when it reaches that module function and waits
-# for ``go`` before it calls it.
+# for ``go`` before it calls it. A release_slot hold instead pauses immediately
+# after the real detach, before retirement deletes refs and closes its record.
 _LANE_CHILD = """
 import sys, time
 from pathlib import Path
@@ -363,14 +416,17 @@ from tools.molt_dev_common import DriverError
 cp.checkout_input = _fixture_checkout_input
 lanes.provision_lane = lambda worktree: []
 if {hold!r}:
-    real = getattr(lanes, {hold!r})
+    owner = lanes.molt_dev_retire if {hold!r} == "release_slot" else lanes
+    real = getattr(owner, {hold!r})
     def held(*args, **kwargs):
+        after_release = {hold!r} == "release_slot"
+        result = real(*args, **kwargs) if after_release else None
         Path({ready!r}).write_text("ready")
         deadline = time.monotonic() + 60
         while not Path({go!r}).exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        return real(*args, **kwargs)
-    setattr(lanes, {hold!r}, held)
+        return result if after_release else real(*args, **kwargs)
+    setattr(owner, {hold!r}, held)
 command = lanes.cmd_lane_start if {command!r} == "start" else lanes.cmd_lane_retire
 try:
     print("RESULT ok", command(_args(Path({family!r}), slug={slug!r})), flush=True)
@@ -714,6 +770,210 @@ def test_lanes_take_distinct_slots_and_reuse_a_released_one(family: Path) -> Non
     assert _record(family, "third")["lane"]["slot"] is True
 
 
+@pytest.mark.parametrize("alias", [False, True], ids=["path", "symlink"])
+def test_lane_start_prefers_the_callers_released_slot(
+    family: Path, tmp_path: Path, alias: bool
+) -> None:
+    """Two free slots distinguish caller locality from first-free allocation."""
+    main = family / "molt-src"
+    first = _start(family, "first")
+    preferred = _start(family, "preferred")
+    for slug in ("first", "preferred"):
+        assert lanes.cmd_lane_retire(_args(family, slug=slug)) == molt_dev.EXIT_OK
+    caller = preferred
+    if alias:
+        caller = tmp_path / "caller-alias"
+        try:
+            caller.symlink_to(preferred, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"host cannot create directory symlinks: {exc}")
+    before = _registered(main)
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="local", repo=str(caller)))
+        == molt_dev.EXIT_OK
+    )
+    assert Path(_record(family, "local")["repo_root"]) == preferred
+    assert _registered(main) == before
+    assert (
+        _git(preferred, "symbolic-ref", "HEAD").stdout.strip()
+        == "refs/heads/lane/local"
+    )
+    assert _ref(main, "refs/heads/lane/local") == _ref(main, "refs/remotes/origin/main")
+    _assert_released(main, first)
+    for slot in (first, preferred):
+        for name in ("uv-environment", "browser-acorn"):
+            assert (slot / f"{name}-tree" / "runs").read_text(
+                encoding="utf-8"
+            ) == "run\n"
+
+
+def test_lane_start_does_not_prefer_a_caller_outside_the_selected_slot_root(
+    family: Path,
+) -> None:
+    main = family / "molt-src"
+    caller = _start(family, "caller")
+    assert lanes.cmd_lane_retire(_args(family, slug="caller")) == molt_dev.EXIT_OK
+    selected_root = family / "other-slots"
+    args = _args(family, slug="elsewhere", repo=str(caller))
+    args.root = str(selected_root)
+    assert lanes.cmd_lane_start(args) == molt_dev.EXIT_OK
+    assert Path(_record(family, "elsewhere")["repo_root"]) == selected_root / "slot-01"
+    _assert_released(main, caller)
+    assert (caller / "uv-environment-tree" / "runs").read_text(
+        encoding="utf-8"
+    ) == "run\n"
+
+
+@pytest.mark.parametrize("state", ["active", "dirty"])
+def test_lane_start_leaves_an_unavailable_caller_untouched(
+    family: Path, state: str
+) -> None:
+    main = family / "molt-src"
+    first = _start(family, "first")
+    caller = _start(family, "caller")
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == molt_dev.EXIT_OK
+    if state == "dirty":
+        assert lanes.cmd_lane_retire(_args(family, slug="caller")) == molt_dev.EXIT_OK
+        (caller / "README.md").write_bytes(b"owner's tracked change\n")
+        (caller / "notes.txt").write_bytes(b"owner's untracked change\n")
+    before_record = _record(family, "caller")
+    before_head = _git(caller, "rev-parse", "HEAD").stdout
+    before_branch = _git(caller, "symbolic-ref", "-q", "HEAD", check=False).stdout
+    before_readme = (caller / "README.md").read_bytes()
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="fallback", repo=str(caller)))
+        == molt_dev.EXIT_OK
+    )
+    assert Path(_record(family, "fallback")["repo_root"]) == first
+    assert _git(caller, "rev-parse", "HEAD").stdout == before_head
+    assert (
+        _git(caller, "symbolic-ref", "-q", "HEAD", check=False).stdout == before_branch
+    )
+    assert _record(family, "caller") == before_record
+    assert (caller / "README.md").read_bytes() == before_readme
+    if state == "dirty":
+        assert (caller / "notes.txt").read_bytes() == b"owner's untracked change\n"
+    assert len(_registered(main)) == 3
+
+
+@pytest.mark.parametrize(
+    ("protection", "prefer"),
+    [("locked", False), ("locked", True), ("prunable", False)],
+)
+def test_lane_start_reserves_protected_slot_numbers(
+    family: Path, monkeypatch: pytest.MonkeyPatch, protection: str, prefer: bool
+) -> None:
+    """Both preferred and ordinary choice use the same protected-row boundary."""
+    main = family / "molt-src"
+    held = _start(family, "held")
+    assert lanes.cmd_lane_retire(_args(family, slug="held")) == molt_dev.EXIT_OK
+    if protection == "locked":
+        _git(main, "worktree", "lock", "--reason", "owner custody", str(held))
+        saved = held
+    else:
+        # Preserve the directory while making its real Git registration stale.
+        saved = family / "held-checkout"
+        held.rename(saved)
+    row = next(
+        row for row in lanes._worktrees(molt_dev.Git(main)) if Path(row["path"]) == held
+    )
+    assert row[protection] is True
+    before_readme = (saved / "README.md").read_bytes()
+    before_record = _record(family, "held")
+    caller = held if prefer else main
+    monkeypatch.setattr(lanes, "LANE_SLOT_LIMIT", 1)
+    with pytest.raises(DriverError, match=f"{protection} registration"):
+        lanes.cmd_lane_start(_args(family, slug="blocked", repo=str(caller)))
+    assert _ref(main, "refs/heads/lane/blocked") is None
+    monkeypatch.setattr(lanes, "LANE_SLOT_LIMIT", 2)
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="fallback", repo=str(caller)))
+        == molt_dev.EXIT_OK
+    )
+    assert (
+        Path(_record(family, "fallback")["repo_root"])
+        == family / "worktrees" / "slot-02"
+    )
+    assert (saved / "README.md").read_bytes() == before_readme
+    assert _record(family, "held") == before_record
+    row = next(
+        row for row in lanes._worktrees(molt_dev.Git(main)) if Path(row["path"]) == held
+    )
+    assert row[protection] is True
+    if protection == "locked":
+        _assert_released(main, held)
+    else:
+        assert not held.exists()
+
+
+def test_lane_start_reuses_a_slot_while_its_old_retirement_finishes(
+    family: Path, tmp_path: Path
+) -> None:
+    """Detach admits a new owner before the old process deletes refs/record."""
+    from tests.process_guard_common import close_owned_test_process
+
+    main = family / "molt-src"
+    first = _start(family, "first")
+    released = _start(family, "retiring")
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == molt_dev.EXIT_OK
+    signals = (tmp_path / "ready", tmp_path / "go")
+    retiring = _lane_child(
+        family, signals, command="retire", slug="retiring", hold="release_slot"
+    )
+    try:
+        _await_hold(retiring, signals[0], "its completed detach")
+        _assert_released(main, released)
+        assert _ref(main, "refs/heads/lane/retiring") is not None
+        assert _record(family, "retiring")["status"] == "running"
+        assert (
+            lanes.cmd_lane_start(_args(family, slug="next", repo=str(released)))
+            == molt_dev.EXIT_OK
+        )
+        assert Path(_record(family, "next")["repo_root"]) == released
+        (released / "new-owner.txt").write_bytes(b"new lane custody\n")
+        signals[1].write_text("go", encoding="utf-8")
+        out, err = retiring.communicate(timeout=120)
+    finally:
+        signals[1].write_text("go", encoding="utf-8")
+        close_owned_test_process(retiring)
+    assert "RESULT ok 0" in out, out + err
+    assert _ref(main, "refs/heads/lane/retiring") is None
+    assert _record(family, "retiring")["status"] == "landed"
+    assert _record(family, "next")["status"] == "running"
+    assert (
+        _git(released, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/lane/next"
+    )
+    assert (released / "new-owner.txt").read_bytes() == b"new lane custody\n"
+    _assert_released(main, first)
+
+
+def test_lane_start_from_released_slot_uses_family_work_in_progress_count(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools import drift_harvest
+
+    main = family / "molt-src"
+    slot = _start(family, "first")
+    assert lanes.cmd_lane_retire(_args(family, slug="first")) == molt_dev.EXIT_OK
+    before = _registered(main)
+    # Two registered checkouts, but only main is active WIP. Activating the
+    # released slot consumes the second WIP position without another checkout.
+    assert len(before) == 2
+    monkeypatch.setattr(drift_harvest, "MAX_LIVE_WORKTREES", 2)
+    assert (
+        lanes.cmd_lane_start(_args(family, slug="reused", repo=str(slot)))
+        == molt_dev.EXIT_OK
+    )
+    assert Path(_record(family, "reused")["repo_root"]) == slot
+    assert _registered(main) == before
+    assert _git(slot, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/lane/reused"
+    # The same entrypoint must still refuse a third active lane at the cap.
+    with pytest.raises(DriverError, match="2 live worktrees: .* limit of 2"):
+        lanes.cmd_lane_start(_args(family, slug="excess", repo=str(slot)))
+    assert _ref(main, "refs/heads/lane/excess") is None
+    assert _registered(main) == before
+
+
 def test_a_free_slot_with_changes_is_skipped_untouched(family: Path) -> None:
     """A detached slot with changes is residue someone must reconcile: a start
     neither resets nor takes it."""
@@ -806,6 +1066,7 @@ def test_lane_retire_abandon_bundles_the_commits_before_removal(
 
 def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     family: Path,
+    isolated_checkout_artifacts: Path,
 ) -> None:
     from molt import dx
 
@@ -813,9 +1074,13 @@ def test_lane_retire_releases_a_landed_lane_and_keeps_its_slot_warm(
     worktree = _start(family, "landed")
     tip = _commit_file(worktree, "landed.txt", "landed\n", "landed work")
     _git(worktree, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/lane/landed")
-    artifacts = family.parent / "artifacts"  # the fixture's MOLT_EXT_ROOT
-    state = dx.stable_uv_project_env_dir(
-        artifacts, purpose="dx", python="3.12", source_root=worktree
+    artifacts = isolated_checkout_artifacts
+    state = (
+        artifacts
+        / "build-environments"
+        / "development"
+        / dx.checkout_component(worktree)
+        / ("a" * 64)
     )
     state.mkdir(parents=True)
     (state / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
@@ -1024,11 +1289,36 @@ def test_lane_list_reports_each_lane(
     assert payload["repository_inputs"] == {"git-hooks": "current"}
 
 
-def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) -> None:
+@pytest.mark.parametrize("selected_input", [False, True])
+def test_queue_provisions_selected_sandbox_inputs_and_retires_a_landed_lane(
+    family: Path, selected_input: bool
+) -> None:
     from tools import molt_dev_queue as queue
 
     main = family / "molt-src"
-    _commit_file(main, "tools/proof_plan.toml", 'always = ["true"]\n', "policy")
+    policy = 'always = ["true"]\n'
+    if selected_input:
+        # Real non-Python tool admission reads the exact tree that the fixture
+        # provisioner produced. The command's own toolchain closure is the only
+        # grant; default uv/Acorn enumeration would fail the empty case below.
+        tool = "cmd.exe" if os.name == "nt" else "cat"
+        args = (
+            ["/d", "/c", "type", "browser-acorn-tree\\ready"]
+            if os.name == "nt"
+            else ["browser-acorn-tree/ready"]
+        )
+        policy += (
+            'always_toolchains = ["fixture-tree"]\n'
+            '[[toolchain_policy]]\nname = "fixture-tree"\n'
+            + "executable = "
+            + json.dumps(tool)
+            + "\n"
+            + "version_args = "
+            + json.dumps(args)
+            + "\n"
+            + "version_pattern = '^v1$'\ncheckout_input = 'browser-acorn'\n"
+        )
+    _commit_file(main, "tools/proof_plan.toml", policy, "policy")
     _git(main, "push", "-q", "origin", "HEAD:main")
     worktree = _start(family, "queued")
     tip = _commit_file(worktree, "queued.txt", "queued\n", "queued work")
@@ -1042,9 +1332,17 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
 
     landed = queue.read_result(paths, request.id)
     assert landed is not None and landed["status"] == "landed"
-    # The sandbox's declared inputs were built before its gates ran.
-    assert (paths.sandbox / "uv-environment-tree" / "ready").is_file()
-    assert (paths.sandbox / "browser-acorn-tree" / "ready").is_file()
+    # Lane start still provisioned its editing environment. The sandbox owns
+    # only selected inputs; its real admission probe proved their contents.
+    assert not (paths.sandbox / "uv-environment-tree").exists()
+    assert (paths.sandbox / "browser-acorn-tree" / "ready").is_file() is selected_input
+    if selected_input:
+        assert (paths.sandbox / "browser-acorn-tree" / "ready").read_text(
+            encoding="utf-8"
+        ) == "v1\n"
+        assert (paths.sandbox / "browser-acorn-tree" / "runs").read_text(
+            encoding="utf-8"
+        ) == "run\n"
     assert not (paths.sandbox / "edgebox-typescript-tree").exists()
     _git(main, "fetch", "-q", "origin")
     assert "queued.txt" in _git(main, "ls-tree", "--name-only", "origin/main").stdout

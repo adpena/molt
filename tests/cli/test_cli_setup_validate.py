@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import admit_target
+from molt.compilation_target import TargetKind, admit_target
 
 from molt.cli import wasm_link_inputs
 from molt.tool_releases import run_command
@@ -445,14 +445,17 @@ def test_cli_run_command_uses_memory_guard_prefix(
     assert calls[1]["capture_output"] is False
 
 
+@pytest.mark.parametrize("closed", [False, True])
 def test_cli_timed_command_uses_memory_guard_elapsed(
     monkeypatch: pytest.MonkeyPatch,
+    closed: bool,
 ) -> None:
 
     calls: list[dict[str, object]] = []
 
     def result_factory(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         result = subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
+        result.descendants_closed = closed
         result.elapsed_s = 0.125  # type: ignore[attr-defined]
         return result
 
@@ -477,6 +480,7 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
         memory_guard_prefix="MOLT_CLI",
     )
 
+    assert result.descendants_closed is closed
     assert result.returncode == 0
     assert result.stdout == "stdout\n"
     assert result.stderr == "stderr\n"
@@ -796,6 +800,79 @@ def test_runtime_wasm_structural_validation_fails_loud_without_wasm_tools(
     )
 
 
+@pytest.mark.parametrize("available", [False, True])
+@pytest.mark.parametrize("installed", [False, True], ids=["source", "installed"])
+def test_raw_wasm_readiness_requires_attested_validator(
+    monkeypatch, available, installed
+):
+    from types import SimpleNamespace
+    from molt.release_lanes import ReleaseLane
+    from molt.tool_releases import ToolReleaseError
+
+    distribution = (
+        SimpleNamespace(
+            verify_runtime=lambda: None,
+            runtime={"cells": []},
+            runtime_root=ROOT,
+        )
+        if installed
+        else None
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS, "installed_compiler", lambda _root: distribution
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "installed_runtime_profile_readiness",
+        lambda _installed: {
+            ReleaseLane("wasm", "wasm", "dev", "dev-fast", "dev-fast"): True
+        },
+    )
+    install_module_view(
+        monkeypatch, "shutil", shutil, SETUP_READINESS, which=lambda name: name
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "_run_completed_command",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd, 0, "rustc 1.99.1\n", ""
+        ),
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS, "_detect_llvm_backend_toolchain", lambda _root: (None, None)
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS.wasm_toolchain,
+        "rust_target_readiness_error",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS.wasm_toolchain,
+        "resolve_wasm_linker",
+        lambda: SimpleNamespace(diagnostic="admitted linker"),
+    )
+
+    def require(name):
+        assert name == "wasm-tools"
+        if not available:
+            raise ToolReleaseError("missing attested validator; provision wasm-tools")
+        return SimpleNamespace(
+            executable=Path("validator"),
+            release=SimpleNamespace(version="test-release"),
+            executable_sha256="a" * 64,
+        )
+
+    monkeypatch.setattr(SETUP_READINESS, "require_pinned_tool", require)
+    report = SETUP_READINESS._build_toolchain_report(ROOT)
+    check = next(check for check in report.checks if check["name"] == "wasm-tools")
+    assert check["ok"] is available
+    assert report.backends["wasm"] is available
+    assert report.backends["linked-wasm"] is available
+    if not available:
+        assert "missing attested validator" in check["detail"]
+        assert check["advice"]
+
+
 def test_cli_diff_command_uses_diff_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -838,15 +915,20 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         prefixes.append(kwargs.get("memory_guard_prefix"))
         commands.append(list(cmd))
         if len(prefixes) == 1:
-            return process_execution._TimedResult(0, "ok\n", "", 0.01)
+            return process_execution._TimedResult(
+                0, "ok\n", "", 0.01, descendants_closed=True
+            )
         if len(prefixes) == 2:
             return process_execution._TimedResult(
                 0,
                 json.dumps({"data": {"output": str(built_binary)}}),
                 "",
                 0.02,
+                descendants_closed=True,
             )
-        return process_execution._TimedResult(0, "ok\n", "", 0.01)
+        return process_execution._TimedResult(
+            0, "ok\n", "", 0.01, descendants_closed=True
+        )
 
     monkeypatch.setattr(
         script_commands, "_find_project_root", lambda start: project, raising=True
@@ -863,6 +945,16 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         lambda exe, **_kwargs: ("py", "-3.14"),
         raising=True,
     )
+    from molt.python_interpreter import PythonInterpreter
+    from molt.python_environment_location import _active_environment_prefix
+
+    monkeypatch.setattr(
+        script_commands,
+        "probe_python_command",
+        lambda command, **kwargs: PythonInterpreter(
+            tuple(command), "oracle-python", "3.14.9", "CPython"
+        ),
+    )
     monkeypatch.setattr(
         script_commands,
         "_resolve_binary_output",
@@ -875,18 +967,50 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
         fake_run_command_timed,
         raising=True,
     )
+    from molt import process_guard
+
+    monkeypatch.setattr(process_guard, "run_completed_command", fake_run_command_timed)
 
     rc = script_commands.compare(str(entry), None, "3.14", [])
 
     assert rc == 0
     assert prefixes == ["MOLT_DIFF", "MOLT_DIFF", "MOLT_DIFF"]
-    assert commands[0] == ["py", "-3.14", str(entry)]
-    assert commands[1][:5] == ["py", "-3.14", "-m", "molt.cli", "build"]
+    assert commands[0][:4] == ["py", "-3.14", "-B", "-X"]
+    assert commands[0][4].startswith("pycache_prefix=")
+    assert not Path(commands[0][4].split("=", 1)[1]).parent.exists()
+    assert commands[0][5:] == [str(entry)]
+    assert commands[1][:7] == [
+        sys.executable,
+        "-B",
+        "-X",
+        f"pycache_prefix={_active_environment_prefix() / 'bytecode'}",
+        "-m",
+        "molt.cli",
+        "build",
+    ]
 
 
+@pytest.mark.parametrize(
+    "target", [TargetKind.WASM, TargetKind.WASI, TargetKind.LUAU, TargetKind.MLIR]
+)
+@pytest.mark.parametrize(
+    "json_output,timing,returncode",
+    [
+        (False, False, 0),
+        (False, True, 7),
+        (True, False, 0),
+        (True, True, 0),
+        (True, True, 7),
+    ],
+)
 def test_cli_cross_run_uses_cross_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: TargetKind,
+    json_output: bool,
+    timing: bool,
+    returncode: int,
 ) -> None:
     from molt.cli import build_inputs as cli_build_inputs
 
@@ -894,7 +1018,13 @@ def test_cli_cross_run_uses_cross_memory_guard(
     project.mkdir()
     entry = project / "main.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
-    artifact = project / "out.wasm"
+    artifact = project / (
+        "out.mlir"
+        if target is TargetKind.MLIR
+        else "out.luau"
+        if target is TargetKind.LUAU
+        else "out.wasm"
+    )
     artifact.write_text("", encoding="utf-8")
     manifest = project / "manifest.json"
     manifest.write_text("{}", encoding="utf-8")
@@ -920,8 +1050,20 @@ def test_cli_cross_run_uses_cross_memory_guard(
 
     def fake_run_completed_command(cmd: list[str], **kwargs: object):
         run_calls.append({"cmd": cmd, **kwargs})
-        result = subprocess.CompletedProcess(cmd, 0, "", "")
+        host_stderr = "guest stderr\n"
+        if "--guest-stderr" in cmd:
+            capture = Path(cmd[cmd.index("--guest-stderr") + 1])
+            assert capture.read_bytes() == b""
+            capture.write_bytes(b"guest stderr\n")
+            host_stderr = "ExperimentalWarning: host\n"
+        result = subprocess.CompletedProcess(
+            cmd,
+            returncode,
+            "guest output ☃\n" if kwargs["capture_output"] else None,
+            host_stderr if kwargs["capture_output"] else None,
+        )
         result.elapsed_s = 0.02  # type: ignore[attr-defined]
+        result.descendants_closed = True
         return result
 
     monkeypatch.setattr(
@@ -943,7 +1085,7 @@ def test_cli_cross_run_uses_cross_memory_guard(
         script_commands, "_run_wrapper_build", fake_run_wrapper_build, raising=True
     )
     monkeypatch.setattr(
-        script_commands,
+        process_execution,
         "_run_completed_command",
         fake_run_completed_command,
         raising=True,
@@ -955,24 +1097,67 @@ def test_cli_cross_run_uses_cross_memory_guard(
         raising=True,
     )
 
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        script_commands,
+        which=lambda name: "/usr/bin/lune" if name == "lune" else None,
+    )
     rc = script_commands._run_script_cross(
-        admit_target("wasm"),
+        target,
         str(entry),
         None,
         [],
-        build_args=["--target", "wasm"],
+        build_args=["--target", target.value],
+        json_output=json_output,
+        timing=timing,
+        verbose=True,
     )
 
-    assert rc == 0
-    assert build_calls[0]["build_args"] == [
-        "--target",
-        "wasm",
-        "--linked",
-        "--require-linked",
-    ]
+    assert rc == (0 if target is TargetKind.MLIR else returncode)
+    expected_build_args = ["--target", target.value]
+    if target in {TargetKind.WASM, TargetKind.WASI}:
+        expected_build_args += ["--linked", "--require-linked"]
+    assert build_calls[0]["build_args"] == expected_build_args
     assert build_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
-    assert run_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
-    assert run_calls[0]["capture_output"] is False
+    captured = capsys.readouterr()
+    if target is TargetKind.MLIR:
+        assert run_calls == []
+    else:
+        assert len(run_calls) == 1
+        assert run_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
+        assert run_calls[0]["capture_output"] is json_output
+    if json_output:
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["command"] == "run"
+        assert payload["status"] == ("ok" if rc == 0 else "error")
+        if target is TargetKind.MLIR:
+            expected: dict[str, object] = {"output": str(artifact), "executed": False}
+            if timing:
+                expected["timing"] = {"build_s": 0.01, "total_s": 0.01}
+        else:
+            expected = {
+                "returncode": returncode,
+                "stdout": "guest output ☃\n",
+                "stderr": "guest stderr\n",
+            }
+            if target in {TargetKind.WASM, TargetKind.WASI}:
+                expected["host_stderr"] = "ExperimentalWarning: host\n"
+                command = run_calls[0]["cmd"]
+                assert not Path(
+                    command[command.index("--guest-stderr") + 1]
+                ).parent.exists()
+            if timing:
+                expected["timing"] = {"build_s": 0.01, "run_s": 0.02, "total_s": 0.03}
+        assert payload["data"] == expected
+    else:
+        assert captured.out == ""
+        if timing:
+            assert (
+                "timing: build" if target is TargetKind.MLIR else "Timing (compiled):"
+            ) in captured.err
 
 
 def test_cli_bench_outer_process_uses_bench_memory_guard(
@@ -996,30 +1181,42 @@ def test_cli_bench_outer_process_uses_bench_memory_guard(
 
 
 def test_cli_pytest_uses_shared_uv_project_python_authority(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from molt.dx import DxProject
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    image = materialize_development_environment(
+        ROOT,
+        tmp_path / "artifacts",
+        groups=DxProject(ROOT).dependency_groups(),
+        runnable=True,
+    )
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
     calls: list[dict[str, object]] = []
 
     def fake_run_command(cmd: list[str], **kwargs: object) -> int:
         calls.append({"cmd": cmd, **kwargs})
         return 0
 
-    monkeypatch.setattr(
-        quality_commands, "compiler_source_root", lambda: ROOT, raising=True
-    )
-    monkeypatch.setattr(
-        quality_commands, "_run_command", fake_run_command, raising=True
-    )
-
+    monkeypatch.setattr(quality_commands, "compiler_source_root", lambda: ROOT)
+    monkeypatch.setattr(quality_commands, "_run_command", fake_run_command)
     assert quality_commands.test("pytest", None, None, []) == 0
     assert calls[0]["cmd"] == [
-        "uv",
-        "run",
-        "--python",
-        quality_commands.DEFAULT_UV_PROJECT_PYTHON,
+        str(image.python_executable),
+        "-B",
+        "-X",
+        f"pycache_prefix={image.root / 'bytecode'}",
+        "-m",
         "pytest",
         "-q",
     ]
+    assert calls[0]["env"]["UV_PROJECT_ENVIRONMENT"] == str(image.root)
+    assert calls[0]["env"]["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
     assert calls[0]["memory_guard_prefix"] == "MOLT_TEST_SUITE"
 
 
@@ -1193,56 +1390,70 @@ def test_cli_validate_defaults_execution_summary_to_logs(
 def test_tools_dev_validate_delegates_to_canonical_cli(
     checkout_run_context: dict[str, str],
 ) -> None:
-    res = _run_dev(["validate", "--check"], checkout_run_context)
+    # Exercise the real externally provisioned bootstrap role on every host,
+    # including local runs whose outer context selected a managed image.
+    borrowed_context = {**checkout_run_context, "MOLT_VENV": sys.prefix}
+    res = _run_dev(["validate", "--check"], borrowed_context)
     assert res.returncode == 0, res.stderr
     assert "validate" in res.stdout.lower() or "validate" in res.stderr.lower()
 
 
-def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_lint_uses_shared_dx_planner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from molt.dx import DxProject
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    image = materialize_development_environment(
+        ROOT,
+        tmp_path / "artifacts",
+        groups=DxProject(ROOT).dependency_groups(),
+        runnable=True,
+    )
+    monkeypatch.delenv("MOLT_VENV", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(image.root))
+    # This module clears hosted custody. Artifact placement does not select
+    # durable tools, so give this real DX writer its own toolchain root too.
+    toolchain_root = tmp_path / "toolchain-root"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
+    # Command data is this test's input; DX parsing, image loading and launch
+    # assembly retain their real owners.
+    monkeypatch.setattr(
+        DxProject,
+        "commands",
+        lambda self: {"lint": "{project_python} -I -m ruff check ."},
+    )
     calls: list[list[str]] = []
-
-    class FakeDxProject:
-        def __init__(self, root: Path) -> None:
-            self.root = root
-
-        def canonical_env(self) -> dict[str, str]:
-            return {"PATH": "", "PYTHONPATH": str(ROOT / "src")}
-
-        def require_project_python(self, context: str, env: dict[str, str]) -> Path:
-            assert context == "lint"
-            assert env["PYTHONPATH"] == str(ROOT / "src")
-            return ROOT / ".venv" / "bin" / "python3"
-
-        def commands(self) -> dict[str, object]:
-            return {"lint": "python3 -m ruff check ."}
-
-        def split_command_sequence(
-            self,
-            command: object,
-            name: str,
-            *,
-            env: dict[str, str],
-        ) -> list[list[str]]:
-            assert command == "python3 -m ruff check ."
-            assert name == "lint"
-            assert env["PYTHONPATH"] == str(ROOT / "src")
-            return [["python3", "-m", "ruff", "check", "."]]
 
     def fake_run_completed(cmd, **kwargs):
         calls.append(list(cmd))
-        assert cmd != [sys.executable, "tools/dev.py", "lint"]
         assert kwargs["cwd"] == ROOT
         assert kwargs["capture_output"] is False
         assert kwargs["memory_guard_prefix"] == "MOLT_CLI"
+        assert kwargs["env"]["PYTHONPYCACHEPREFIX"] == str(image.root / "bytecode")
+        assert kwargs["env"]["MOLT_TARGET_ROOT"] == str(toolchain_root)
+        assert toolchain_root.is_dir()
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr(quality_commands, "DxProject", FakeDxProject, raising=True)
-    monkeypatch.setattr(
-        quality_commands, "_run_completed_command", fake_run_completed, raising=True
-    )
-
+    monkeypatch.setattr(quality_commands, "compiler_source_root", lambda: ROOT)
+    monkeypatch.setattr(quality_commands, "_run_completed_command", fake_run_completed)
     assert quality_commands.lint(json_output=False, verbose=False) == 0
-    assert calls == [["python3", "-m", "ruff", "check", "."]]
+    assert calls == [
+        [
+            str(image.python_executable),
+            "-B",
+            "-X",
+            f"pycache_prefix={image.root / 'bytecode'}",
+            "-I",
+            "-m",
+            "ruff",
+            "check",
+            ".",
+        ]
+    ]
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -1873,3 +2084,82 @@ def test_update_provisions_managed_validator_even_with_ambient_tool(monkeypatch)
         str(ROOT),
     ]
     assert all(step.name != "cargo-install-wasm-tools" for step in steps)
+
+
+@pytest.mark.parametrize("closure", [True, False, None])
+def test_wasm_json_capture_failure_retains_only_unclosed_allocation(
+    tmp_path, monkeypatch, closure
+):
+    from types import SimpleNamespace
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from molt.process_environment import ProcessEnvironment
+
+    owners = []
+
+    def allocate(**kwargs):
+        owner = OwnedTemporaryDirectory(dir=tmp_path, **kwargs)
+        owners.append(owner)
+        return owner
+
+    failure = RuntimeError("guard failure")
+    if closure is not None:
+        failure.guarded_result = SimpleNamespace(descendants_closed=closure)
+
+    def fail(command, **kwargs):
+        path = Path(command[command.index("--guest-stderr") + 1])
+        path.write_bytes(b"still-writing")
+        raise failure
+
+    monkeypatch.setattr(script_commands, "OwnedTemporaryDirectory", allocate)
+    monkeypatch.setattr(script_commands, "_run_command_timed", fail)
+    with pytest.raises(RuntimeError, match="guard failure") as caught:
+        script_commands._run_program(
+            ["node", "runner", "manifest"],
+            env=ProcessEnvironment({}),
+            cwd=tmp_path,
+            json_output=True,
+            verbose=False,
+            timing=False,
+            build_duration_s=0,
+            start_receipt=None,
+            wasm_guest_stderr=True,
+        )
+    path = Path(owners[0].name)
+    assert path.exists() is (closure is not True)
+    if closure is not True:
+        assert any(str(path) in note for note in caught.value.__notes__)
+        assert (path / "guest-stderr.bin").read_bytes() == b"still-writing"
+        owners[0].cleanup()  # synthetic test has no live child
+
+
+def test_wasm_json_capture_refuses_unclosed_normal_result(tmp_path, monkeypatch):
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from molt.process_environment import ProcessEnvironment
+
+    owners = []
+
+    def allocate(**kwargs):
+        owner = OwnedTemporaryDirectory(dir=tmp_path, **kwargs)
+        owners.append(owner)
+        return owner
+
+    monkeypatch.setattr(script_commands, "OwnedTemporaryDirectory", allocate)
+    monkeypatch.setattr(
+        script_commands,
+        "_run_command_timed",
+        lambda *args, **kwargs: process_execution._TimedResult(0, "guest", "host", 0.1),
+    )
+    with pytest.raises(RuntimeError, match="process-tree closure"):
+        script_commands._run_program(
+            ["node", "runner", "manifest"],
+            env=ProcessEnvironment({}),
+            cwd=tmp_path,
+            json_output=True,
+            verbose=False,
+            timing=False,
+            build_duration_s=0,
+            start_receipt=None,
+            wasm_guest_stderr=True,
+        )
+    assert Path(owners[0].name).exists()
+    owners[0].cleanup()

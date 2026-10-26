@@ -37,11 +37,12 @@ fn string_strip_impl(
             };
             let chars_bytes =
                 std::slice::from_raw_parts(string_bytes(chars_ptr), string_len(chars_ptr));
-            Some(molt_runtime_core::text_storage::code_points(chars_bytes).collect())
+            Some(molt_obj_model::text_storage::code_points(chars_bytes).collect())
         };
+        let data = crate::object::ops::unicode_data_for_bytes(_py, hay_bytes);
         let contains = |code| match &strip_chars {
             Some(chars) => chars.contains(&code),
-            None => unicode_space_table::is_space(code),
+            None => data.is_space(code),
         };
         let mut start = 0;
         let mut end = hay_bytes.len();
@@ -1031,7 +1032,9 @@ mod whitespace_contract_tests {
                 let data = vec![code; len];
                 assert_eq!(
                     simd_is_all_ascii_text_whitespace(&data),
-                    unicode_space_table::is_space(u32::from(code)),
+                    molt_obj_model::unicode::UnicodeData::for_version((3, 12))
+                        .unwrap()
+                        .is_space(u32::from(code)),
                     "text code={code} len={len}"
                 );
                 assert_eq!(

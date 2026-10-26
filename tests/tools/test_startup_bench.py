@@ -92,7 +92,7 @@ def test_baseline_identity_uses_captured_environment_not_ambient_override(
 
 def test_invalid_baseline_override_never_substitutes_running_python(tmp_path) -> None:
     env = {**os.environ, "MOLT_STARTUP_PYTHON": str(tmp_path / "absent-python")}
-    with pytest.raises(PythonInterpreterError, match="identity probe failed"):
+    with pytest.raises(PythonInterpreterError, match="Python interpreter not found"):
         startup_bench._baseline_python(env)
 
 
@@ -110,7 +110,7 @@ def test_invalid_baseline_fails_before_measurement_or_output_creation(
         "_measure",
         lambda *args, **kwargs: pytest.fail("measurement before baseline admission"),
     )
-    with pytest.raises(PythonInterpreterError, match="identity probe failed"):
+    with pytest.raises(PythonInterpreterError, match="Python interpreter not found"):
         startup_bench.main()
     assert not scratch.exists()
     assert not results.exists()

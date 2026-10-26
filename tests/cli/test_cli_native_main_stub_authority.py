@@ -168,7 +168,6 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
         [
             tools.clang,
             "-std=c11",
-            "-D_POSIX_C_SOURCE=200809L",
             str(source),
             "-o",
             str(binary),

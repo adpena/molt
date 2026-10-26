@@ -106,3 +106,93 @@ class Registry:
 print(Registry.Entry.bump())
 print(Registry.Entry.bump())
 print(Registry.Entry.label())
+
+
+# Compound statements publish to the same mapping as straight-line classes.
+def conditional_classes(flag, count):
+    class Owner:
+        if flag:
+            class Conditional:
+                marker = "conditional"
+        for index in range(count):
+            class Repeated:
+                marker = "repeated"
+        try:
+            class Protected:
+                marker = "protected"
+        finally:
+            finished = True
+    return Owner
+
+
+for flag, count in ((False, 0), (True, 2)):
+    owner = conditional_classes(flag, count)
+    print("conditional-classes", flag, hasattr(owner, "Conditional"), hasattr(owner, "Repeated"), owner.Protected.marker, owner.finished)
+
+
+# A custom __prepare__ mapping sees only final transformed classes once.
+from dataclasses import dataclass
+
+publication_events = []
+prepared_namespaces = []
+
+
+class RecordingNamespace(dict):
+    def __setitem__(self, key, value):
+        if key in ("Plain", "Decorated", "Slotted"):
+            publication_events.append(("store", key))
+        dict.__setitem__(self, key, value)
+
+
+class RecordingMeta(type):
+    @classmethod
+    def __prepare__(metacls, name, bases):
+        namespace = RecordingNamespace()
+        prepared_namespaces.append(namespace)
+        return namespace
+
+
+def observe_decoration(cls):
+    publication_events.append(("decorate", "Decorated" in prepared_namespaces[-1]))
+    return ("replacement", cls.__name__)
+
+
+class PublicationOwner(metaclass=RecordingMeta):
+    class Plain:
+        pass
+
+    @observe_decoration
+    class Decorated:
+        pass
+
+    @dataclass(slots=True)
+    class Slotted:
+        value: int
+
+
+print("publication-events", publication_events)
+print("decorated-result", PublicationOwner.Decorated)
+print("slotted-result", PublicationOwner.Slotted(7).value)
+
+
+# Explicit directives choose their declared storage, not class attributes.
+GlobalClass = "before"
+
+
+class DirectiveOwner:
+    global GlobalClass
+    class GlobalClass:
+        marker = "global"
+
+
+def nonlocal_class():
+    Nested = "before"
+    class Owner:
+        nonlocal Nested
+        class Nested:
+            marker = "nonlocal"
+    return Nested.marker, hasattr(Owner, "Nested")
+
+
+print("global-class", GlobalClass.marker, hasattr(DirectiveOwner, "GlobalClass"))
+print("nonlocal-class", nonlocal_class())

@@ -345,13 +345,13 @@ def collect_diff_scripts(filter_pat: Optional[str] = None) -> list:
 # ---------------------------------------------------------------------------
 
 
-def detect_regressions(results: list, baseline_path: Path, threshold: float = 0.20):
+def detect_regressions(results: list, baseline_path: Path):
     """
     Compare benchmark results against baseline.
     Returns list of regression dicts.
-    A regression is flagged when:
-      - A previously passing test now fails/errors
-      - A benchmark slows down by more than `threshold` (20%)
+    Retain status regressions independently of performance evidence.
+    This legacy `molt run` lane does not retain a build observation, so a
+    timing comparison is an explicit incompatibility, never a measured change.
     """
     if not baseline_path.exists():
         return []
@@ -380,19 +380,20 @@ def detect_regressions(results: list, baseline_path: Path, threshold: float = 0.
             )
             continue
 
-        # Performance regression (benchmarks only)
+        # Raw timings remain available, but this lane has no producer-bound
+        # physical compiler/runtime identity. A request label (including a
+        # historical release-fast stamp) cannot authorize a timing comparison.
         if r.suite == "bench" and r.molt_time_s and bl.get("molt_time_s"):
-            bl_time = bl["molt_time_s"]
-            if bl_time > 0:
-                slowdown = perf_authority.relative_time_delta(r.molt_time_s, bl_time)
-                if slowdown is not None and slowdown > threshold:
-                    regressions.append(
-                        {
-                            "name": r.name,
-                            "type": "performance",
-                            "detail": f"{slowdown:+.0%} slower ({bl_time:.4f}s -> {r.molt_time_s:.4f}s)",
-                        }
-                    )
+            regressions.append(
+                {
+                    "name": r.name,
+                    "type": "incompatible_timing",
+                    "detail": (
+                        "timing comparison refused: current selected build profiles "
+                        "unbound; use tools/bench.py with retained build observations"
+                    ),
+                }
+            )
 
     return regressions
 
@@ -462,7 +463,7 @@ def print_summary_table(c: Colors, summaries: list, regressions: list):
 
     if regressions:
         print()
-        print(f"  {c.RED}{c.BOLD}REGRESSIONS DETECTED ({len(regressions)}):{c.RESET}")
+        print(f"  {c.RED}{c.BOLD}BASELINE FINDINGS ({len(regressions)}):{c.RESET}")
         for reg in regressions:
             print(
                 f"    {c.RED}- {reg['name']}: {reg['type']} -- {reg['detail']}{c.RESET}"
@@ -489,7 +490,7 @@ def build_json_report(
     report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "provenance": perf_authority.non_canonical_provenance(
-            profile=molt_profile,
+            requested_profile=molt_profile,
             source="bench/harness.py",
         ),
         "summaries": {},
@@ -530,6 +531,8 @@ def build_json_report(
                 direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
             )
             bench_baseline[r.name] = {
+                "requested_profile": molt_profile,
+                "build_observation": None,
                 "molt_ok": r.status == "pass",
                 "build_ok": r.status != "error"
                 or "not found" not in (r.error_msg or ""),

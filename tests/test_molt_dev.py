@@ -53,11 +53,13 @@ import os
 import sys
 import sysconfig
 import subprocess
+import textwrap
 import time
 import venv
 from pathlib import Path
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
+    guard_custody_env,
     install_module_os_view,
     install_thread_module_view,
     hung_child_marker,
@@ -74,8 +76,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
+from tools import harness_memory_guard, memory_guard, molt_dev_gates  # noqa: E402
 from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402
-from tools.molt_dev_policy import GateConfig, SelectedGate  # noqa: E402
+from tools.molt_dev_policy import (  # noqa: E402
+    GateConfig,
+    GateEnvironment,
+    PreparedGates,
+    SelectedGate,
+)
 from tools.molt_dev_common import (  # noqa: E402
     CandidateFailure,
     GateFailure,
@@ -84,6 +92,7 @@ from tools.molt_dev_common import (  # noqa: E402
 from tests.integration_driver_fixture import (  # noqa: E402
     clone_tree,
     copy_driver_trees,
+    isolated_checkout_artifacts as isolated_checkout_artifacts,
 )
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
@@ -91,13 +100,34 @@ RUNTIME_GENERATION_MANIFEST = "wasm/molt_runtime.generation.json"
 CUSTOM_IGNORED_PATH = "tmp/operator-scratch.txt"
 
 
+def _gate_outcome(rc, stdout, stderr, peak=None, **guard_kwargs):
+    """Supply the real guard boundary, including explicit terminal closure."""
+    fields = {
+        "args": ["synthetic-gate"],
+        "returncode": rc,
+        "stdout": stdout,
+        "stderr": stderr,
+        "elapsed_s": 0.1,
+        "child_stderr": stderr,
+        "descendants_closed": True,
+        "peak_total": (
+            None
+            if peak is None
+            else memory_guard.RssViolation(0, peak // 1024, "synthetic-gate", "tree")
+        ),
+    }
+    fields.update(guard_kwargs)
+    return molt_dev_gates.GateOutcome(
+        harness_memory_guard.GuardedCompletedProcess(**fields)
+    )
+
+
 def _captured_gate(fake):
     """Adapt an exit-code gate fake to the captured runner every gate uses."""
-    from tools.molt_dev_gates import GateOutcome
 
     def run(command, repo, env, cancelled, streams=None):
         del cancelled, streams
-        return GateOutcome(fake(command, repo, env), "", "", None)
+        return _gate_outcome(fake(command, repo, env), "", "")
 
     return run
 
@@ -119,6 +149,118 @@ def _writing_gate(outcomes):
 @pytest.fixture
 def drv():
     return molt_dev
+
+
+@pytest.mark.parametrize("command", ["fix", "difftest", "probe", "detached-run"])
+def test_driver_dispatcher_leaves_maintenance_to_selection_owner(
+    drv, monkeypatch, command
+):
+    from types import SimpleNamespace
+    from molt import dx
+
+    events = []
+
+    def completed(_args):
+        events.append("returned")
+        return 7
+
+    args = SimpleNamespace(command=command, func=completed, dry_run=False)
+    parser = SimpleNamespace(parse_args=lambda _argv: args)
+    monkeypatch.setattr(drv, "build_parser", lambda: parser)
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "resume_controller_cwd", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "runs_from_pinned_controller", lambda _a: False
+    )
+
+    def collect(_env, *, cwd):
+        pytest.fail("the dispatcher has no captured command selection")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    assert drv.main([]) == 7
+    assert events == ["returned"]
+
+
+def test_completed_driver_failure_publishes_before_selected_maintenance(
+    drv, monkeypatch, tmp_path, capsys
+):
+    from types import SimpleNamespace
+    from molt import dx
+
+    selected = ProcessEnvironment({"MOLT_EXT_ROOT": str(tmp_path / "selected")})
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "ambient"))
+
+    def completed(_args):
+        raise drv.DriverError(
+            "published failed differential",
+            code=7,
+            maintenance_selection=(tmp_path, selected),
+        )
+
+    args = SimpleNamespace(command="difftest", func=completed)
+    monkeypatch.setattr(
+        drv, "build_parser", lambda: SimpleNamespace(parse_args=lambda _argv: args)
+    )
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "resume_controller_cwd", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "runs_from_pinned_controller", lambda _a: False
+    )
+    observed = []
+
+    def collect(env, *, cwd):
+        assert "published failed differential" in capsys.readouterr().err
+        assert env is selected and cwd == tmp_path
+        observed.append("published")
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    assert drv.main([]) == 7
+    assert observed == ["published"]
+
+
+def test_integrate_maintenance_retains_cwd_before_command_changes_it(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from molt import dx
+
+    _, work = origin_and_clone
+    selected = ProcessEnvironment({"MOLT_EXT_ROOT": "selected"})
+    duplicate = ProcessEnvironment({"MOLT_EXT_ROOT": str(work / "selected")})
+    other = ProcessEnvironment({"MOLT_EXT_ROOT": "other"})
+    monkeypatch.chdir(work.parent)
+    monkeypatch.setattr(
+        drv.molt_dev_controller, "integration_controller", lambda _a: "fixture"
+    )
+
+    def exclusive(_args, *, progress):
+        progress.environments = {
+            (): GateEnvironment(selected, None, False),
+            ("duplicate",): GateEnvironment(duplicate, None, False),
+            ("other",): GateEnvironment(other, None, False),
+        }
+        monkeypatch.chdir(tmp_path)
+        return 7
+
+    monkeypatch.setattr(drv, "_integrate_exclusive", exclusive)
+    observed = []
+
+    def collect(env, *, cwd):
+        output = capsys.readouterr().out
+        if not observed:
+            terminal = json.loads(output.splitlines()[-1])
+            assert terminal["event"] == "integration_finished"
+            assert terminal["returncode"] == 7
+        else:
+            assert output == ""
+        assert cwd == work and Path.cwd() == tmp_path
+        observed.append(env)
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
+    args = _integrate_ns(drv, repo=work.name)
+    assert drv.cmd_integrate(args) == 7
+    assert observed == [selected, other]
 
 
 # --------------------------------------------------------------------------
@@ -223,7 +365,13 @@ def _origin_seed(tmp_path_factory):
 def _clone_origin(tmp_path, seed: Path, monkeypatch) -> tuple[Path, Path]:
     # These repositories exercise generic shell gates, not the caller's venv.
     # Interpreter-selection tests construct and select their own environments.
-    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+    for key in (
+        "MOLT_VENV",
+        "UV_PROJECT_ENVIRONMENT",
+        "VIRTUAL_ENV",
+        "MOLT_UV_PROJECT_PYTHON",
+        "MOLT_UV_PROJECT_PURPOSE",
+    ):
         monkeypatch.delenv(key, raising=False)
     origin = tmp_path / "origin.git"
     clone_tree(seed, origin)
@@ -243,13 +391,19 @@ def _clone_origin(tmp_path, seed: Path, monkeypatch) -> tuple[Path, Path]:
 
 
 @pytest.fixture
-def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
+def origin_and_clone(tmp_path, _origin_seed, monkeypatch, isolated_checkout_artifacts):
     """Independent real bare origin and working clone for each integration.
 
     Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
     Subject fetch/rebase/push operations and clone creation still use real Git.
     """
     return _clone_origin(tmp_path, _origin_seed, monkeypatch)
+
+
+@pytest.fixture
+def borrowed_gate_python(origin_and_clone, monkeypatch):
+    """Host-tool gates explicitly borrow the interpreter named in their argv."""
+    monkeypatch.setenv("MOLT_VENV", sys.prefix)
 
 
 def _build_driver_origin(root: Path, driver: Path) -> None:
@@ -287,17 +441,78 @@ def _driver_origin_seed(tmp_path_factory, worker_id, driver_seed):
 
 
 @pytest.fixture
-def driver_origin_and_clone(tmp_path, _driver_origin_seed, monkeypatch):
+def driver_origin_and_clone(
+    tmp_path, _driver_origin_seed, monkeypatch, isolated_checkout_artifacts
+):
     """`origin_and_clone` whose main already carries this checkout's driver."""
     return _clone_origin(tmp_path, _driver_origin_seed, monkeypatch)
 
 
 def test_origin_fixture_copies_history_without_mutable_aliases(
-    drv, tmp_path, _origin_seed, monkeypatch
+    drv, tmp_path, _origin_seed, monkeypatch, request
 ):
+    from molt import checkout_state, dx
+    from molt.build_state_layout import build_state_root
+    from tools import disk_guard
+
+    foreign_source = tmp_path / "foreign-source"
+    foreign_source.mkdir()
+    foreign_artifacts = tmp_path / "foreign-artifacts"
+    foreign_artifacts.mkdir()
+    foreign_env = dx.RunContext(foreign_source).canonical_env(
+        {dx.ARTIFACT_ROOT_ENV: str(foreign_artifacts)}, create_dirs=False
+    )
+    target, uv_environment = _shared_checkout_state(foreign_artifacts, foreign_source)
+    control = build_state_root(
+        project_root=foreign_source, cargo_target=target, environment=foreign_env
+    )
+    control.mkdir(parents=True)
+    (control / "sentinel").write_bytes(b"foreign build control")
+    with checkout_state.checkout_state_use(
+        (
+            (target, checkout_state.CheckoutOwner(foreign_source, "cargo-target")),
+            (
+                uv_environment,
+                checkout_state.CheckoutOwner(foreign_source, "python-environment"),
+            ),
+            (control, checkout_state.CheckoutOwner(target, "build-control")),
+        )
+    ):
+        pass
+    foreign_files = {
+        path.relative_to(foreign_artifacts): path.read_bytes()
+        for path in foreign_artifacts.rglob("*")
+        if path.is_file()
+    }
+    caches = {
+        key: os.environ[key]
+        for key in dx.CANONICAL_ROOT_ENV_KEYS
+        if key in os.environ
+        and key not in dx.MOLT_ROOT_ENV_KEYS
+        and key != "UV_PROJECT_ENVIRONMENT"
+    }
+    custody = guard_custody_env()
+    for key in dx.MOLT_ROOT_ENV_KEYS:
+        monkeypatch.setenv(key, foreign_env[key])
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(control))
+    monkeypatch.setenv(
+        "MOLT_BACKEND_DAEMON_SOCKET_DIR", str(foreign_artifacts / "sockets")
+    )
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.setenv(key, str(tmp_path / "missing-caller-environment"))
-    origin, work = origin_and_clone.__wrapped__(tmp_path, _origin_seed, monkeypatch)
+    # Request after poisoning the caller: fixture admission must reset it, not
+    # merely assume that the enclosing pytest session selected suitable roots.
+    origin, work = request.getfixturevalue("origin_and_clone")
+
+    foreign_reads = []
+    read_owner = disk_guard.read_checkout_owner
+
+    def observed_owner(path):
+        if path.is_relative_to(foreign_artifacts):
+            foreign_reads.append(path)
+        return read_owner(path)
+
+    monkeypatch.setattr(disk_guard, "read_checkout_owner", observed_owner)
     initial = _git(_origin_seed, "rev-parse", "HEAD").stdout.strip()
     original_config = (_origin_seed / "config").read_bytes()
     (origin / "config").write_bytes(original_config + b"\n# private test mutation\n")
@@ -308,12 +523,31 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
     assert _git(origin, "rev-parse", "HEAD").stdout.strip() == new_tip
     assert _git(_origin_seed, "rev-parse", "HEAD").stdout.strip() == initial
+    wt = _worktree_off(work, "wt_isolated_artifacts")
+    assert (
+        molt_dev_retire.cleanup_worktree(
+            drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+        )
+        == drv.EXIT_OK
+    )
+    assert not wt.exists()
     relative = Path("objects") / initial[:2] / initial[2:]
     original_object = (_origin_seed / relative).read_bytes()
     (origin / relative).chmod(0o600)
     (origin / relative).write_bytes(b"deliberately corrupt private copy")
     assert (_origin_seed / relative).read_bytes() == original_object
     assert _git(_origin_seed, "show", "HEAD:README.md").stdout == "seed\n"
+    assert not foreign_reads, "synthetic retirement consulted foreign host artifacts"
+    assert {
+        path.relative_to(foreign_artifacts): path.read_bytes()
+        for path in foreign_artifacts.rglob("*")
+        if path.is_file()
+    } == foreign_files
+    assert dx.artifact_root(work, os.environ) == tmp_path / "artifacts"
+    assert all(os.environ.get(key) == value for key, value in caches.items())
+    assert guard_custody_env() == custody
+    assert "MOLT_BUILD_STATE_DIR" not in os.environ
+    assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in os.environ
 
 
 def _make_gate_venv(path: Path, token: str | None) -> Path:
@@ -348,7 +582,13 @@ def _gate_shell_command(*argv: str) -> str:
 
 def _gate_caller_env(hostile: Path) -> ProcessEnvironmentBuilder:
     env = ProcessEnvironmentBuilder(os.environ)
-    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+    for key in (
+        "MOLT_VENV",
+        "UV_PROJECT_ENVIRONMENT",
+        "VIRTUAL_ENV",
+        "MOLT_UV_PROJECT_PYTHON",
+        "MOLT_UV_PROJECT_PURPOSE",
+    ):
         env.pop(key, None)
     env.update(
         PATH=str(hostile / ("Scripts" if os.name == "nt" else "bin"))
@@ -373,43 +613,55 @@ def _gate_caller_env(hostile: Path) -> ProcessEnvironmentBuilder:
     ],
 )
 def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
     repo = tmp_path / "main"
     repo.mkdir()
     main_repo = repo
     if selection.startswith("worktree-"):
         _init_repo(repo)
         _commit_file(repo, "README.md", "fixture\n", "fixture")
-        main_repo = repo
         repo = tmp_path / "worktree"
         _git(main_repo, "worktree", "add", "-q", "-b", "gate-test", str(repo))
-    selected = (
-        main_repo / ".venv"
-        if selection == "worktree-main"
-        else tmp_path / "explicit environment"
-        if selection in {"MOLT_VENV", "UV_PROJECT_ENVIRONMENT"}
-        else repo / ".venv"
-    )
     hostile = tmp_path / "hostile"
-    _make_gate_venv(selected, "selected λ")
     _make_gate_venv(hostile, None)
-    if selection == "worktree-own":
-        _make_gate_venv(main_repo / ".venv", None)
     env = _gate_caller_env(hostile)
-    if selection in {"MOLT_VENV", "UV_PROJECT_ENVIRONMENT"}:
-        env[selection] = os.path.relpath(selected, repo)
-    if selection == "MOLT_VENV":
-        # The canonical explicit selector outranks both uv and checkout defaults.
+    if selection == "worktree-main":
+        _make_gate_venv(main_repo / ".venv", "main must not run")
+        with pytest.raises(drv.DriverError, match="development image not selected"):
+            drv.run_gate(
+                "python -c 'raise SystemExit(0)'",
+                repo,
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
+            )
+        return
+    managed = selection != "MOLT_VENV"
+    if managed:
+        image = materialize_development_environment(
+            repo, tmp_path / "artifacts", runnable=True, select=True
+        )
+        selected = image.root
+        env["MOLT_EXT_ROOT"] = str(tmp_path / "artifacts")
+        if selection == "UV_PROJECT_ENVIRONMENT":
+            env["UV_PROJECT_ENVIRONMENT"] = os.path.relpath(selected, repo)
+    else:
+        selected = tmp_path / "explicit environment"
+        _make_gate_venv(selected, "selected λ")
+        env["MOLT_VENV"] = str(selected)
         env["UV_PROJECT_ENVIRONMENT"] = str(hostile)
-        _make_gate_venv(repo / ".venv", None)
     script = tmp_path / "observe.py"
     script.write_text(
-        "import json, os, sys\n"
-        "from pathlib import Path\n"
-        "from molt_gate_selection_marker import TOKEN\n"
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "TOKEN = None\n"
+        "if os.environ.get('MOLT_VENV'):\n from molt_gate_selection_marker import TOKEN\n"
         "Path(sys.argv[1]).write_text(json.dumps({\n"
         " 'token': TOKEN, 'prefix': sys.prefix,\n"
         " 'virtual_env': os.environ['VIRTUAL_ENV'],\n"
-        " 'molt_venv': os.environ['MOLT_VENV'],\n"
+        " 'molt_venv': os.environ.get('MOLT_VENV'),\n"
         " 'caller': os.environ['MOLT_GATE_CALLER_VALUE'],\n"
         " 'utf8': sys.flags.utf8_mode, 'encoding': sys.stdout.encoding,\n"
         "}), encoding='utf-8')\n",
@@ -420,13 +672,22 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         _gate_shell_command("python", str(script), str(output)) for output in outputs
     )
     before = dict(env)
-    assert drv.run_gate(command, repo, ProcessEnvironment(env)) == 0
+    assert (
+        drv.run_gate(
+            command,
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
+        )
+        == 0
+    )
     assert dict(env) == before
     expected = {
-        "token": "selected λ",
-        "prefix": str(selected.resolve()),
-        "virtual_env": str(selected.resolve()),
-        "molt_venv": str(selected.resolve()),
+        "token": None if managed else "selected λ",
+        "prefix": str(selected),
+        "virtual_env": str(selected),
+        "molt_venv": None if managed else str(selected),
         "caller": "retained λ",
         "utf8": 1,
         "encoding": "utf-8",
@@ -436,9 +697,56 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         expected,
     ]
     assert (
-        drv.run_gate('python -c "raise SystemExit(23)"', repo, ProcessEnvironment(env))
+        drv.run_gate(
+            'python -c "raise SystemExit(23)"',
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
+        )
         == 23
     )
+    if managed:
+        assert (
+            drv.run_gate(
+                (
+                    "python",
+                    "-I",
+                    "-E",
+                    "-c",
+                    "import sys; assert sys.pycache_prefix == sys.argv[1]; assert sys.dont_write_bytecode",
+                    str(selected / "bytecode"),
+                ),
+                repo,
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
+            )
+            == 0
+        )
+        with pytest.raises(drv.DriverError, match="requires structured argv"):
+            drv._gate_environment(
+                "echo before && " + _gate_shell_command("python", "-I", "-c", "pass"),
+                repo,
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
+            )
+        with pytest.raises(drv.DriverError, match="cache prefix conflicts"):
+            drv._gate_environment(
+                "echo before && "
+                + _gate_shell_command(
+                    "python",
+                    "-X",
+                    f"pycache_prefix={tmp_path / 'foreign-cache'}",
+                    "-c",
+                    "pass",
+                ),
+                repo,
+                drv.prepare_gate_environment(
+                    repo, ProcessEnvironment(env), requires_python=True
+                ),
+            )
 
 
 @pytest.mark.parametrize(
@@ -453,10 +761,17 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
 def test_run_gate_compound_shell_preserves_durable_cargo_environment(
     drv, tmp_path, wrapper
 ):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
     repo = tmp_path / "source"
     repo.mkdir()
-    _make_gate_venv(repo / ".venv", None)
+    image = materialize_development_environment(
+        repo, tmp_path / "artifacts", runnable=True, select=True
+    )
     env = _gate_caller_env(tmp_path / "hostile")
+    env["MOLT_EXT_ROOT"] = str(tmp_path / "artifacts")
     for key in (
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
@@ -482,8 +797,10 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
         "from pathlib import Path\n"
         "keys = ('TMPDIR', 'TMP', 'TEMP', 'CARGO_INCREMENTAL', "
         "'SCCACHE_SERVER_PORT', sys.argv[2])\n"
-        "Path(sys.argv[1]).write_text(json.dumps({key: os.environ.get(key) "
-        "for key in keys}), encoding='utf-8')\n",
+        "observed = {key: os.environ.get(key) for key in keys}\n"
+        "observed.update(prefix=sys.prefix, cache=sys.pycache_prefix, "
+        "no_write=sys.dont_write_bytecode)\n"
+        "Path(sys.argv[1]).write_text(json.dumps(observed), encoding='utf-8')\n",
         encoding="utf-8",
     )
     outputs = [tmp_path / "first.json", tmp_path / "second.json"]
@@ -492,10 +809,22 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
         for output in outputs
     )
     before = dict(env)
-    assert drv.run_gate(command, repo, ProcessEnvironment(env)) == 0
+    assert (
+        drv.run_gate(
+            command,
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
+        )
+        == 0
+    )
     assert dict(env) == before
     first, second = [json.loads(path.read_text(encoding="utf-8")) for path in outputs]
     assert first == second
+    assert first["prefix"] == str(image.root)
+    assert first["cache"] == str(image.root / "bytecode")
+    assert first["no_write"] is True
     assert first[wrapper] == env[wrapper]
     assert first["SCCACHE_SERVER_PORT"] == "49971"
     # sccache refuses an explicit nonzero CARGO_INCREMENTAL; the profile decides.
@@ -517,9 +846,18 @@ def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, sele
     if selector == "MOLT_VENV":
         env["UV_PROJECT_ENVIRONMENT"] = str(repo / ".venv")
     before = dict(env)
-    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+    message = (
+        "virtualenv Python not found"
+        if selector == "MOLT_VENV"
+        else "managed development image refused"
+    )
+    with pytest.raises(drv.DriverError, match=message):
         drv.run_gate(
-            "echo should-not-run > launched.txt", repo, ProcessEnvironment(env)
+            "echo should-not-run > launched.txt",
+            repo,
+            drv.prepare_gate_environment(
+                repo, ProcessEnvironment(env), requires_python=True
+            ),
         )
     assert not (repo / "launched.txt").exists()
     assert dict(env) == before
@@ -533,11 +871,15 @@ def test_run_gate_invalid_worktree_venv_does_not_fall_back_to_main(drv, tmp_path
     work = tmp_path / "work"
     _git(main, "worktree", "add", "-q", "-b", "gate-test", str(work))
     (work / ".venv").mkdir()
-    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+    with pytest.raises(drv.DriverError, match="development image not selected"):
         drv.run_gate(
-            "echo should-not-run > launched.txt",
+            ("python", "-c", "raise SystemExit(0)"),
             work,
-            ProcessEnvironment(_gate_caller_env(main / ".venv")),
+            drv.prepare_gate_environment(
+                work,
+                ProcessEnvironment(_gate_caller_env(main / ".venv")),
+                requires_python=True,
+            ),
         )
     assert not (work / "launched.txt").exists()
 
@@ -546,19 +888,36 @@ def test_run_gate_missing_project_venv_refuses_python_but_allows_generic_shell(
     drv, tmp_path
 ):
     env = _gate_caller_env(tmp_path / "absent")
-    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+    with pytest.raises(drv.DriverError, match="development image not selected"):
         drv.run_gate(
-            'python -c "raise SystemExit(0)"', tmp_path, ProcessEnvironment(env)
+            'python -c "raise SystemExit(0)"',
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path, ProcessEnvironment(env), requires_python=True
+            ),
         )
     assert (
-        drv.run_gate("echo generic > observed.txt", tmp_path, ProcessEnvironment(env))
+        drv.run_gate(
+            "echo generic > observed.txt",
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path, ProcessEnvironment(env), requires_python=False
+            ),
+        )
         == 0
     )
     assert (tmp_path / "observed.txt").read_text(encoding="utf-8").strip() == "generic"
     if os.name != "nt":
         # POSIX sh reports unmatched quotes; cmd.exe accepts that spelling.
         assert (
-            drv.run_gate('echo "unterminated', tmp_path, ProcessEnvironment(env)) != 0
+            drv.run_gate(
+                'echo "unterminated',
+                tmp_path,
+                drv.prepare_gate_environment(
+                    tmp_path, ProcessEnvironment(env), requires_python=False
+                ),
+            )
+            != 0
         )
 
 
@@ -568,11 +927,16 @@ def test_run_gate_missing_selected_python_alias_never_uses_host_path(drv, tmp_pa
     alias = selected / ("Scripts/python3.exe" if os.name == "nt" else "bin/python3")
     alias.unlink(missing_ok=True)
     env = _gate_caller_env(tmp_path / "unused")
+    env["MOLT_VENV"] = str(selected)
     with pytest.raises(
         drv.DriverError, match="virtualenv command 'python3' not executable"
     ):
         drv.run_gate(
-            'python3 -c "raise SystemExit(0)"', tmp_path, ProcessEnvironment(env)
+            'python3 -c "raise SystemExit(0)"',
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path, ProcessEnvironment(env), requires_python=True
+            ),
         )
 
 
@@ -586,11 +950,15 @@ def test_run_gate_quoted_windows_python_requires_project_environment(
         "_run_live_gate",
         lambda *args, **kwargs: pytest.fail("host shell launched"),
     )
-    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+    with pytest.raises(drv.DriverError, match="development image not selected"):
         drv.run_gate(
             f'{head} -c "raise SystemExit(0)"',
             tmp_path,
-            ProcessEnvironment(_gate_caller_env(tmp_path / "absent")),
+            drv.prepare_gate_environment(
+                tmp_path,
+                ProcessEnvironment(_gate_caller_env(tmp_path / "absent")),
+                requires_python=True,
+            ),
         )
 
 
@@ -630,7 +998,9 @@ def test_cmd_fix_uses_the_selected_environment_without_per_command_wrappers(
 # --------------------------------------------------------------------------
 
 
-def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv, tmp_path):
+def test_selected_rules_share_one_pytest_invocation_for_equal_requirements(
+    drv, tmp_path
+):
     source = """
 always = ["python tools/check_a.py"]
 [[rule]]
@@ -655,11 +1025,11 @@ toolchains = ["python"]
     (tmp_path / "tests").mkdir()
     for name in ("a", "b", "c", "shared"):
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
-    cfg = GateConfig.parse(source, "merged pytest fixture", root=tmp_path)
+    cfg = GateConfig.parse(source, "equal-requirement pytest fixture", root=tmp_path)
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
     gates = [gate.command for gate in gates]
     assert [rule.name for rule in matched] == ["first", "second"]
-    # Explicit gates precede the merged consumer run, each target once.
+    # Equal envelopes and tools share one run after the explicit gates.
     assert gates == [
         "python tools/check_a.py",
         "python tools/check_first.py",
@@ -677,6 +1047,105 @@ toolchains = ["python"]
             "tests/test_b.py::test_one",
         ),
     ]
+
+
+@pytest.mark.parametrize("duplicate_explicit", [False, True])
+def test_landing_cohorts_join_overlaps_and_all_target_owners(
+    drv, tmp_path, monkeypatch, duplicate_explicit
+):
+    from tools import proof_plan
+
+    (tmp_path / "tests").mkdir()
+    for name in ("light", "also", "shared", "heavy", "nodes", "parameter"):
+        (tmp_path / "tests" / f"{name}.py").touch()
+    # Raw explicit commands reserve template braces; the structured-only case
+    # independently keeps the full opaque payload, including {value}.
+    payload = (
+        "x::y / & 'quotes' [nested]"
+        if duplicate_explicit
+        else "x::y / & 'quotes' {value} [nested]"
+    )
+    parameter = f"tests/parameter.py::test_literal[{payload}]"
+    prefix = ("python", "-m", "pytest", "-q", "-n", "auto")
+    compiled = (
+        *prefix,
+        "--molt-worker-memory-gb=6.25",
+        "tests/shared.py",
+        "tests/nodes.py",
+        "tests/heavy.py",
+        "tests/nodes.py::test_heavy",
+        parameter,
+    )
+    policy = """
+always = []
+[[command]]
+pytest = ["tests/light.py", "tests/also.py", "tests/shared.py", "tests/nodes.py", "tests/parameter.py"]
+pytest_worker_memory_gb = 0.5
+[[command]]
+pytest = ["tests/heavy.py", "tests/nodes.py::test_heavy"]
+pytest_worker_memory_gb = 6.25
+[[rule]]
+name = "pure"
+globs = ["src/**"]
+gates = []
+pytest = ["tests/light.py", "tests/shared.py", "tests/nodes.py", "tests/also.py"]
+toolchains = ["python"]
+[[rule]]
+name = "compiled"
+globs = ["src/**"]
+gates = []
+pytest = ["tests/heavy.py", "tests/shared.py", "tests/nodes.py::test_heavy", PARAMETER]
+toolchains = ["python", "cargo"]
+""".replace("PARAMETER", json.dumps(parameter))
+    if duplicate_explicit:
+        # Later deduplication must still address the existing explicit command
+        # after earlier new cohorts have been selected for insertion.
+        policy += (
+            '\n[[rule]]\nname = "explicit"\nglobs = ["src/**"]\n'
+            f"gates = [{json.dumps(shlex.join(compiled))}]\n"
+            'toolchains = ["python", "sdk"]\n'
+        )
+    config = GateConfig.parse(policy, "target-owned resource cohorts", root=tmp_path)
+
+    def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("cohort selection probed the filesystem after admission")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(proof_plan.os, "listdir", unexpected_probe)
+        patch.setattr(Path, "stat", unexpected_probe)
+        patch.setattr(Path, "lstat", unexpected_probe)
+        gates, matched = config.select(["src/changed.py"])
+    assert [rule.name for rule in matched] == ["pure", "compiled"] + (
+        ["explicit"] if duplicate_explicit else []
+    )
+    assert [(gate.command, gate.toolchains) for gate in gates] == [
+        (
+            (*prefix, "--molt-worker-memory-gb=0.5", "tests/light.py", "tests/also.py"),
+            ("python",),
+        ),
+        (
+            shlex.join(compiled) if duplicate_explicit else compiled,
+            ("python", "sdk", "cargo") if duplicate_explicit else ("python", "cargo"),
+        ),
+    ]
+    assert all(gate.pytest for gate in gates)
+    targets = [
+        arg
+        for gate in gates
+        for arg in (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+        if arg.startswith("tests/")
+    ]
+    assert len(targets) == len(set(targets)) == 7
+    assert gates[0].collection_command is None
+    assert gates[1].collection_command[-3:] == (
+        "tests/nodes.py::test_heavy",
+        parameter,
+        "--collect-only",
+    )
+    assert "tests/nodes.py" not in gates[1].collection_command
+    assert "tests/shared.py" not in gates[1].collection_command
 
 
 def test_selected_rules_run_each_pytest_selection_on_its_own(drv, tmp_path):
@@ -763,7 +1232,9 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
     )
     from tools.proof_plan import PytestMemoryUnits, local_pytest_argv
 
-    command = local_pytest_argv(targets, memory_units=PytestMemoryUnits(()))
+    command = local_pytest_argv(
+        targets, memory_units=PytestMemoryUnits((), root=tmp_path)
+    )
     observed = []
 
     def guarded(argv, **kwargs):
@@ -821,7 +1292,15 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
     command = ("python", "-c", script, str(observed), literal)
     assert (
         drv.run_gate(
-            command, repo, ProcessEnvironment(_gate_caller_env(tmp_path / "absent"))
+            command,
+            repo,
+            drv.prepare_gate_environment(
+                repo,
+                ProcessEnvironment(_gate_caller_env(tmp_path / "absent")).updated(
+                    {"MOLT_VENV": str(selected)}
+                ),
+                requires_python=True,
+            ),
         )
         == 0
     )
@@ -830,9 +1309,15 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
         str(selected),
         literal,
     ]
-    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+    with pytest.raises(drv.DriverError, match="development image not selected"):
         drv.run_gate(
-            command, tmp_path, ProcessEnvironment(_gate_caller_env(tmp_path / "absent"))
+            command,
+            tmp_path,
+            drv.prepare_gate_environment(
+                tmp_path,
+                ProcessEnvironment(_gate_caller_env(tmp_path / "absent")),
+                requires_python=True,
+            ),
         )
 
 
@@ -1034,26 +1519,22 @@ def test_patch_id_stable_across_rebase(drv, origin_and_clone):
 # --------------------------------------------------------------------------
 
 
-def _worktree_off(origin: Path, base: Path, name: str) -> Path:
-    """Add a linked worktree off origin/main so cleanup can `worktree remove` it."""
-    main_clone = base / "mainclone"
-    if not main_clone.exists():
-        _git(base, "clone", "-q", str(origin), str(main_clone))
-        _git(main_clone, "config", "user.email", "d@molt.test")
-        _git(main_clone, "config", "user.name", "D")
-    wt = base / name
+def _worktree_off(main_clone: Path, name: str) -> Path:
+    """Link a disposable worktree to the fixture's already isolated main clone.
+
+    Its Git configuration is shared with the linked worktree; each test's
+    origin, main clone and configuration remain private to that test.
+    """
+    wt = main_clone.parent / name
     _git(main_clone, "worktree", "add", "-q", "--detach", str(wt), "origin/main")
-    _git(wt, "config", "user.email", "d@molt.test")
-    _git(wt, "config", "user.name", "D")
     return wt
 
 
 def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path, monkeypatch):
     from tools import molt_dev_common
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_clean")
-    main = tmp_path / "mainclone"
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_clean")
     original_readme = (main / "README.md").read_bytes()
     # Model a driver loaded from the disposable checkout. The actual launch
     # boundary must leave it before removal, even on POSIX where Git may allow
@@ -1094,8 +1575,8 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
 ):
     from molt.cli import backend_execution
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_daemons")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_daemons")
     retired: list[tuple[Path, bool]] = []
 
     def retire(project_root, env, **kwargs):
@@ -1112,12 +1593,16 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
 
 
 def _shared_checkout_state(ext: Path, checkout: Path) -> tuple[Path, Path]:
-    """A checkout's Cargo target and uv environment under a shared root."""
+    """A checkout's Cargo target and Python generation state under a shared root."""
     from molt import dx
 
     target = dx.cargo_target_dir_for_artifact_root(ext, None, source_root=checkout)
-    uv_environment = dx.stable_uv_project_env_dir(
-        ext, purpose="dx", python="3.12", source_root=checkout
+    uv_environment = (
+        ext
+        / "build-environments"
+        / "development"
+        / dx.checkout_component(checkout)
+        / ("a" * 64)
     )
     for root in (target, uv_environment):
         root.mkdir(parents=True)
@@ -1127,15 +1612,13 @@ def _shared_checkout_state(ext: Path, checkout: Path) -> tuple[Path, Path]:
 
 
 def test_cleanup_retires_the_checkouts_state_with_it(
-    drv, origin_and_clone, tmp_path, monkeypatch
+    drv, origin_and_clone, tmp_path, monkeypatch, isolated_checkout_artifacts
 ):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_state")
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_state")
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
-    sibling_target, sibling_uv = _shared_checkout_state(ext, tmp_path / "mainclone")
+    sibling_target, sibling_uv = _shared_checkout_state(ext, main)
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
@@ -1147,17 +1630,16 @@ def test_cleanup_retires_the_checkouts_state_with_it(
 
 @pytest.mark.parametrize("cwd", ["outside", "inside"])
 def test_cleanup_imports_nothing_after_it_removes_the_worktree(
-    origin_and_clone, tmp_path, cwd
+    origin_and_clone, tmp_path, cwd, isolated_checkout_artifacts
 ):
     """Integration runs from the checkout it removes, so retirement must import
     every module it needs before `git worktree remove`: afterwards a lazy import
     finds no source. A fresh process with an import guard models that. A
     landing runs `integrate --repo .` with the checkout as its working
     directory, which the removal deletes; the "inside" case runs that way."""
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_import_order")
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_import_order")
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
     code = f"""
 import os
@@ -1212,20 +1694,22 @@ sys.exit(molt_dev_retire.cleanup_worktree(
     assert not target.exists() and not uv_environment.exists()
 
 
+@pytest.mark.parametrize("release_timing", ["before", "omitted", "after"])
 def test_cleanup_makes_a_running_vm_release_its_pins_of_the_worktree_first(
-    origin_and_clone, tmp_path
+    origin_and_clone, tmp_path, release_timing
 ):
     """A Linux VM that pins files of the retiring checkout releases them first.
 
     The landing runs inside the checkout it removes, with every later import
-    refused, as in the test above. Fake `limactl` and `lsof` executables model
-    one running vz VM that mounts the checkout's parent and whose process
-    holds a file of the checkout until its guest runs the release; the release
-    must come before the removal, while the checkout's sources can still
-    guard a command.
+    refused, as in the test above. A strict Host command boundary models one
+    running vz VM that mounts the checkout's parent and holds a file until
+    release. Real release planning, lsof parsing and Git removal run in the
+    fresh guarded child; fake commands need no nested guards or interpreters.
+    LocalHost process execution belongs to test_linux_vm.py. Omitted and late
+    releases must fail this same filesystem oracle.
     """
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_vm_pins")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_vm_pins")
     lima_home = tmp_path / "lima"
     instance = lima_home / "vm"
     instance.mkdir(parents=True)
@@ -1251,43 +1735,60 @@ def test_cleanup_makes_a_running_vm_release_its_pins_of_the_worktree_first(
             ]
         },
     }
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "limactl").write_text(
-        f"""#!{sys.executable}
-import sys
-from pathlib import Path
-args = sys.argv[1:]
-if args == ["list", "--json"]:
-    print({json.dumps(json.dumps(row))})
-elif (args[:8] == ["shell", "--workdir", "/", "vm", "sudo", "-n", "sh", "-c"]
-      and args[8].startswith("echo 2 > /proc/sys/vm/drop_caches && stat -- ")):
-    Path({str(dropped)!r}).write_text(str(Path({str(wt)!r}).exists()))
-else:
-    sys.exit(f"unexpected limactl {{args}}")
-""",
-        encoding="utf-8",
-    )
-    (bin_dir / "lsof").write_text(
-        f"""#!{sys.executable}
-from pathlib import Path
-lines = ["p77", "ccom.apple.Virtualization.VirtualMachine",
-         "f3", "tREG", "s1", "k1", "n{instance / "disk"}"]
-if not Path({str(dropped)!r}).exists():
-    lines += ["f9", "tREG", "s4096", "k1", "n{wt / "README.md"}"]
-print("\\n".join(lines))
-""",
-        encoding="utf-8",
-    )
-    for tool in ("limactl", "lsof"):
-        (bin_dir / tool).chmod(0o755)
     code = f"""
+import json
 import os
 import sys
 from pathlib import Path
 sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
 from tools import molt_dev as drv
 from tools import molt_dev_retire
+from tools import linux_vm
+
+wt = Path(sys.argv[1])
+dropped = Path({str(dropped)!r})
+
+
+class Host(linux_vm.LocalHost):
+    calls = []
+
+    def which(self, name):
+        assert name == "limactl", name
+        return "/fixture/limactl"
+
+    def start_service(self, argv, **kwargs):
+        raise AssertionError(f"retirement must never start a service: {{argv}}")
+
+    def run(self, argv, *, timeout, env_overrides=None):
+        args = list(argv)
+        assert timeout > 0 and env_overrides is None
+        self.calls.append(args)
+        if args == ["limactl", "list", "--json"]:
+            assert len(self.calls) == 1
+            return linux_vm.Completed(0, json.dumps({row!r}), "")
+        if args == list(linux_vm.LSOF_VZ_FILES):
+            assert len(self.calls) in (2, 4)
+            lines = ["p77", "ccom.apple.Virtualization.VirtualMachine",
+                     "f3", "tREG", "s1", "k1", "n{instance / "disk"}"]
+            if not dropped.exists():
+                lines += ["f9", "tREG", "s4096", "k1", "n{wt / "README.md"}"]
+            return linux_vm.Completed(0, "\\n".join(lines), "")
+        assert len(self.calls) == 3
+        assert args[:9] == ["limactl", "shell", "--workdir", "/", "vm",
+                           "sudo", "-n", "sh", "-c"], args
+        assert len(args) == 10 and args[9].startswith(
+            "echo 2 > /proc/sys/vm/drop_caches && stat -- "), args
+        dropped.write_text(str(wt.exists()), encoding="utf-8")
+        return linux_vm.Completed(0, "", "")
+
+
+linux_vm.LocalHost = Host
+release = molt_dev_retire._release_guest_caches
+pending = []
+if {release_timing!r} == "omitted":
+    molt_dev_retire._release_guest_caches = lambda *args: None
+elif {release_timing!r} == "after":
+    molt_dev_retire._release_guest_caches = lambda *args: pending.append(args)
 
 
 class RefuseAfterRemoval:
@@ -1312,22 +1813,29 @@ def run(command, **kwargs):
 
 
 molt_dev_retire._run_fast_captured_command = run
-wt = Path(sys.argv[1])
 os.chdir(wt)
-sys.exit(molt_dev_retire.cleanup_worktree(
+rc = molt_dev_retire.cleanup_worktree(
     drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
-))
+)
+assert rc == 0 and not wt.exists()
+for args in pending:
+    release(*args)
+assert dropped.exists() and dropped.read_text(encoding="utf-8") == "True", \
+    "VM release must precede worktree removal"
+assert len(Host.calls) == 4
 """
     completed = run_guarded_test_process(
         [sys.executable, "-c", code, str(wt)],
         cwd=tmp_path,
-        env={
-            **os.environ,
-            "LIMA_HOME": str(lima_home),
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        },
+        env={**os.environ, "LIMA_HOME": str(lima_home)},
         timeout=180,
     )
+    if release_timing != "before":
+        assert completed.returncode != 0
+        assert "AssertionError: VM release must precede worktree removal" in (
+            completed.stderr
+        ), completed.stderr
+        return
     assert completed.returncode == 0, completed.stderr
     assert not wt.exists()
     assert f"vm released its pins of {wt}: 1 host files released" in (
@@ -1355,8 +1863,8 @@ def test_the_guest_release_never_aborts_a_cleanup(
     """B5: whatever the release raises, the checkout is still removed."""
     from tools import linux_vm
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_release_raises")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_release_raises")
 
     def fail(*_args, **_kwargs):
         raise error
@@ -1378,15 +1886,13 @@ def test_the_guest_release_never_aborts_a_cleanup(
 
 
 def test_failed_worktree_removal_keeps_the_checkouts_state(
-    drv, origin_and_clone, tmp_path, monkeypatch
+    drv, origin_and_clone, tmp_path, monkeypatch, isolated_checkout_artifacts
 ):
     from molt import checkout_state
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_state_kept")
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_state_kept")
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
     real = molt_dev_retire._run_fast_captured_command
 
@@ -1417,13 +1923,14 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     retirement,
     selection,
     removal_succeeds,
+    isolated_checkout_artifacts,
 ):
     from molt import checkout_state
     from molt.build_state_layout import build_state_root
     from tools import drift_harvest, linux_vm
 
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_retirement_inventory")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_retirement_inventory")
     guest_releases: list[tuple[tuple[Path, ...], bool]] = []
 
     def release_guests(paths, *, environment, host):
@@ -1431,9 +1938,7 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
         return ()
 
     monkeypatch.setattr(linux_vm, "release_for_paths", release_guests)
-    main = tmp_path / "mainclone"
-    ext = tmp_path / "artifacts"
-    ext.mkdir()
+    ext = isolated_checkout_artifacts
     target, uv_environment = _shared_checkout_state(ext, wt)
     session = target / "sessions" / "idle-session"
     session.mkdir(parents=True)
@@ -1459,7 +1964,7 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     with checkout_state.checkout_state_use(
         (
             (foreign_target, checkout_state.CheckoutOwner(main, "cargo-target")),
-            (foreign_uv, checkout_state.CheckoutOwner(main, "uv-environment")),
+            (foreign_uv, checkout_state.CheckoutOwner(main, "python-environment")),
             (
                 foreign_control,
                 checkout_state.CheckoutOwner(foreign_target, "build-control"),
@@ -1549,20 +2054,26 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     roots = {
         target: (str(wt.resolve()), "cargo-target"),
         session: (str(wt.resolve()), "cargo-target"),
-        uv_environment: (str(wt.resolve()), "uv-environment"),
+        uv_environment: (str(wt.resolve()), "python-environment"),
         target_control: (str(target.resolve()), "build-control"),
         session_control: (str(session.resolve()), "build-control"),
     }
     for root, (owner, kind) in roots.items():
         assert root.exists() is not removal_succeeds
         if not removal_succeeds:
-            assert json.loads(
-                (root / ".molt-state-owner.json").read_text(encoding="utf-8")
-            ) == {
-                "schema": "molt.state-root-owner.v1",
-                "owner": owner,
-                "kind": kind,
-            }
+            if kind == "python-environment":
+                assert checkout_state.read_checkout_owner(root) == (
+                    checkout_state.CheckoutOwner(Path(owner), kind)
+                )
+                assert not (root / checkout_state.OWNER_RECORD).exists()
+            else:
+                assert json.loads(
+                    (root / checkout_state.OWNER_RECORD).read_text(encoding="utf-8")
+                ) == {
+                    "schema": "molt.state-root-owner.v1",
+                    "owner": owner,
+                    "kind": kind,
+                }
     assert foreign_bytes() == before
     # Linux VMs release their pins of the checkout and its state roots once,
     # just before the removal, while they still exist (HF-463).
@@ -1573,8 +2084,8 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
 
 
 def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_unpushed")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_unpushed")
     _commit_file(wt, "local.py", "n = 1\n", "feat: unpushed local")
     git = drv.Git(wt)
     rc = molt_dev_retire.cleanup_worktree(
@@ -1585,8 +2096,8 @@ def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
 
 
 def test_cleanup_refuses_dirty_tracked(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_dirty")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_dirty")
     # Modify a TRACKED file without committing -> dirty -> refuse.
     (wt / "README.md").write_text("seed\nlocal edit\n", encoding="utf-8")
     rc = molt_dev_retire.cleanup_worktree(
@@ -1601,8 +2112,8 @@ def test_molt_dev_default_ignore_globs_use_dirty_tree_policy_authority(drv):
 
 
 def test_cleanup_refuses_runtime_generation_churn(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_wasm")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_wasm")
     generation = wt / RUNTIME_GENERATION_MANIFEST
     generation.parent.mkdir(parents=True, exist_ok=True)
     generation.write_text("{}\n", encoding="utf-8")
@@ -1615,8 +2126,8 @@ def test_cleanup_refuses_runtime_generation_churn(drv, origin_and_clone, tmp_pat
 
 
 def test_cleanup_force_requires_matching_sha(drv, origin_and_clone, tmp_path):
-    origin, _work = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_force")
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_force")
     _commit_file(wt, "local.py", "n = 1\n", "feat: unpushed")
     git = drv.Git(wt)
     head = git.head_sha()
@@ -1636,11 +2147,7 @@ def test_cleanup_force_requires_matching_sha(drv, origin_and_clone, tmp_path):
 
 def test_cleanup_refuses_main_worktree(drv, origin_and_clone, tmp_path):
     # Targeting the MAIN worktree must be refused (this is for disposable ones).
-    origin, _work = origin_and_clone
-    main_clone = tmp_path / "main_only"
-    _git(tmp_path, "clone", "-q", str(origin), str(main_clone))
-    _git(main_clone, "config", "user.email", "d@molt.test")
-    _git(main_clone, "config", "user.name", "D")
+    _origin, main_clone = origin_and_clone
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(main_clone),
         main_clone,
@@ -1787,10 +2294,16 @@ def test_secure_wip_clean_tree_is_noop(drv, origin_and_clone):
 def test_python_oracle_pins_current_version(drv):
     # The running interpreter's own version must resolve+verify successfully.
     mm = "%d.%d" % sys.version_info[:2]
-    target = drv.python_interpreter.parse_target_python_version(mm)
-    resolved = drv.python_interpreter.resolve_target_python(
-        target, prefer_uv=False, prefer_current=True
-    )
+    request = drv.python_interpreter.PythonInterpreterRequest(*sys.version_info[:2])
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    with PythonIdentityVerifier() as verifier:
+        resolved = drv.python_interpreter.resolve_python_interpreter(
+            request,
+            prefer_uv=False,
+            prefer_current=True,
+            verifier=verifier,
+        )
     assert resolved.major_minor == mm
     assert resolved.executable
 
@@ -1808,7 +2321,12 @@ def test_python_oracle_rejects_bad_format(drv):
 
 def test_python_interpreter_identity_excludes_wrong_minor(drv):
     # The current interpreter does NOT report a wrong version.
-    resolved = drv.python_interpreter.probe_python_command([sys.executable])
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    with PythonIdentityVerifier() as verifier:
+        resolved = drv.python_interpreter.probe_python_command(
+            [sys.executable], verifier=verifier
+        )
     assert resolved.major_minor != "9.99"
 
 
@@ -2080,7 +2598,7 @@ def test_probe_requires_target(drv):
 
 
 def test_integrate_runs_selected_gate_and_halts_on_failure(
-    drv, origin_and_clone, tmp_path
+    drv, origin_and_clone, tmp_path, capsys
 ):
     # A selected source check must stop the real driver before a later build
     # gate can execute or integration can push. The sentinel uses no compiler.
@@ -2104,11 +2622,10 @@ gates = ["echo build-started > build-started.txt"]
 """,
         "failing source check before build consumer",
     )
-    ns = _integrate_ns(
-        drv,
-        repo=str(work),
-        no_push=True,
+    ns = drv.build_parser().parse_args(
+        ["integrate", "--repo", str(work), "--candidate-controller", "--no-push"]
     )
+    assert not drv.molt_dev_controller.runs_from_pinned_controller(ns)
     # A failing gate halts integrate BEFORE push, as a candidate failure.
     with pytest.raises(GateFailure) as exc:
         drv.cmd_integrate(ns)
@@ -2120,6 +2637,12 @@ gates = ["echo build-started > build-started.txt"]
     origin_main = _git(work, "rev-parse", "origin/main").stdout.strip()
     seed = _git(work, "rev-list", "--max-parents=0", "origin/main").stdout.strip()
     assert origin_main == seed  # still just the seed commit
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema": "molt.integration-progress.v1"')
+    ]
+    assert events and {event["controller"] for event in events} == {"candidate"}
 
 
 def _wait_for(marker: str, *, then: str) -> str:
@@ -2148,7 +2671,7 @@ def kept_gate_stdout(out: str) -> list[str]:
 
 
 def test_integrate_always_gates_run_together_and_report_in_declared_order(
-    drv, origin_and_clone, monkeypatch, capfd
+    drv, origin_and_clone, monkeypatch, capfd, borrowed_gate_python
 ):
     _, work = origin_and_clone
     marker = str(work.parent / "second-ran")
@@ -2188,46 +2711,87 @@ def test_integrate_always_gates_run_together_and_report_in_declared_order(
     assert all(row["duration_seconds"] > 0 for row in receipt["commands"])
 
 
-def test_integrate_reports_the_first_failure_in_declared_order(
-    drv, origin_and_clone, monkeypatch, capfd
+@pytest.mark.parametrize("failure_ordinal", [1, 2], ids=["earlier", "later"])
+def test_integrate_failure_cancels_live_sibling_and_skips_pending_gate(
+    drv, origin_and_clone, monkeypatch, capfd, borrowed_gate_python, failure_ordinal
 ):
     _, work = origin_and_clone
-    third = work.parent / "third-started"
-    # The first gate fails only after the executor recorded the second gate's
-    # failure and the third gate's skip: neither may cancel it.
-    first = _integration_python(
-        "import json, pathlib, subprocess, sys, time\n"
-        "git = lambda *a: subprocess.run(['git', *a], capture_output=True, "
-        "text=True, check=True).stdout.strip()\n"
-        "receipt = pathlib.Path(git('rev-parse', '--path-format=absolute', "
-        "'--git-common-dir')) / 'molt-integrate' / 'receipts' / "
-        "(git('rev-parse', 'HEAD') + '.gates.json')\n"
-        "while True:\n"
-        "    try:\n"
-        "        rows = json.loads(receipt.read_text())['commands']\n"
-        "    except (OSError, ValueError, KeyError):\n"
-        "        rows = []\n"
-        "    if any(r['id'] == 'local.always.3' for r in rows): sys.exit(5)\n"
-        "    time.sleep(0.05)\n"
+    ready = work.parent / "sibling-ready"
+    grandchild_ready = work.parent / "grandchild-ready"
+    forbidden = work.parent / "third-started"
+    marker = hung_child_marker()
+    grandchild = (
+        "from pathlib import Path\n"
+        f"Path({str(grandchild_ready)!r}).touch()\n" + HUNG_CHILD_SOURCE
     )
-    gates = [
-        first,
-        _integration_python("import sys; sys.exit(6)"),
-        _integration_python(f"import pathlib; pathlib.Path({str(third)!r}).touch()"),
-    ]
-    _commit_integration_policy(work, gates)
+    # Neither process exits naturally. The failing sibling waits until both
+    # exist, so returning requires the actual guard's cancellation and closure.
+    hung = shlex.join(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib, subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, '-c', {grandchild!r}, {marker!r}])\n"
+            f"while not pathlib.Path({str(grandchild_ready)!r}).exists():\n"
+            "    time.sleep(0.01)\n"
+            f"pathlib.Path({str(ready)!r}).touch()\n" + HUNG_CHILD_SOURCE,
+            marker,
+        ]
+    )
+    failure = _wait_for(
+        str(ready), then="print('independent exit six', flush=True); sys.exit(6)"
+    )
+    first_two = [failure, hung] if failure_ordinal == 1 else [hung, failure]
+    _commit_integration_policy(
+        work,
+        [
+            *first_two,
+            _integration_python(
+                f"import pathlib; pathlib.Path({str(forbidden)!r}).touch()"
+            ),
+        ],
+    )
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
-    with pytest.raises(GateFailure, match=r"gate failed \(exit 5\)") as exc:
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
-    # The second gate failed first in time; the first gate is reported, and the
-    # third gate, after both failures, never starts.
-    assert "exit 6" not in str(exc.value)
-    assert not third.exists()
-    assert 'gate_ordinal": 3' not in capfd.readouterr().out
+    try:
+        with pytest.raises(GateFailure, match=r"gate failed \(exit 6\)"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+        still_running = processes_carrying(marker)
+    finally:
+        stop_test_processes_carrying(marker)
+    assert ready.exists() and grandchild_ready.exists()
+    assert still_running == [], "the cancelled gate or grandchild still runs"
+    assert not forbidden.exists()
+    common = Path(
+        _git(
+            work, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        ).stdout.strip()
+    )
+    head = _git(work, "rev-parse", "HEAD").stdout.strip()
+    receipt = json.loads(
+        (common / "molt-integrate/receipts" / f"{head}.gates.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["execution"]["failure_policy"] == "cancel_remaining"
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": f"local.always.{failure_ordinal}",
+        "failure_scope": "partition",
+        "reason": "exit 6",
+    }
+    records = {row["id"]: row for row in receipt["commands"]}
+    failed = records[f"local.always.{failure_ordinal}"]
+    cancelled = records[f"local.always.{3 - failure_ordinal}"]
+    assert (failed["status"], failed["returncode"]) == ("failure", 6)
+    assert (cancelled["status"], cancelled["returncode"]) == ("cancelled", 137)
+    assert records["local.always.3"]["status"] == "skipped"
+    assert Path(failed["stdout_path"]).read_text(encoding="utf-8") == (
+        "independent exit six\n"
+    )
+    assert "independent exit six" in capfd.readouterr().err
 
 
 def test_integrate_cancels_later_gates_after_an_earlier_failure(
-    drv, origin_and_clone, monkeypatch
+    drv, origin_and_clone, monkeypatch, borrowed_gate_python
 ):
     _, work = origin_and_clone
     started = str(work.parent / "second-started")
@@ -2257,7 +2821,6 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     # The landing queue bisects on CandidateFailure. A gate's nonzero exit is
     # one; a runner stop (here the executor sees an outside writer dirty the
     # source and stops scheduling) must stay a plain DriverError.
-    from tools import molt_dev_gates
 
     changes: list[tuple[str, ...]] = [()]
     ran: list[object] = []
@@ -2266,8 +2829,8 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
         ran.append(command)
         if cause == "outside writer":
             changes[0] = ("?? stray.txt",)
-            return molt_dev_gates.GateOutcome(0, "", "", None)
-        return molt_dev_gates.GateOutcome(3, "", "", None)
+            return _gate_outcome(0, "", "", None)
+        return _gate_outcome(3, "", "", None)
 
     class Progress:
         def emit(self, event, **details):
@@ -2276,7 +2839,7 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     environment = ProcessEnvironment(os.environ)
     runtime = molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={("python",): environment},
+        environments={("python",): GateEnvironment(environment, None, False)},
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2319,12 +2882,11 @@ def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
     # A failure must say why, and a passing gate must cost the caller nothing:
     # every stream is kept beside the receipt, which names it, and the
     # terminal gets the failed gate's bounded tail and the file's path.
-    from tools import molt_dev_gates
 
     huge = "x" * 34_000
     streams = {
-        ("gate", "1"): molt_dev_gates.GateOutcome(0, "chatty\n" * 1000, "", None),
-        ("gate", "2"): molt_dev_gates.GateOutcome(
+        ("gate", "1"): _gate_outcome(0, "chatty\n" * 1000, "", None),
+        ("gate", "2"): _gate_outcome(
             1, "", f"{huge}\nruff format failed: timed out after 60 s\n", None
         ),
     }
@@ -2336,7 +2898,9 @@ def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
     receipt = tmp_path / "receipt.json"
     runtime = molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={("python",): ProcessEnvironment(os.environ)},
+        environments={
+            ("python",): GateEnvironment(ProcessEnvironment(os.environ), None, False)
+        },
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2386,7 +2950,9 @@ def _gate_runtime_fixture(molt_dev_gates, tmp_path, outcomes, *, output_dir):
 
     return molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={("python",): ProcessEnvironment(os.environ)},
+        environments={
+            ("python",): GateEnvironment(ProcessEnvironment(os.environ), None, False)
+        },
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2406,19 +2972,326 @@ def _gate_runtime_fixture(molt_dev_gates, tmp_path, outcomes, *, output_dir):
     )
 
 
+def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+    import threading
+
+    # Use the real executor, with all four runners admitted before one fails.
+    # Observe its actual shared event so no sleep/order guess supplies the race.
+    entered = threading.Barrier(4)
+    events = {}
+    execute = molt_dev_gates.proof_executor.execute_commands
+
+    def observe_executor(*args, **kwargs):
+        run = kwargs["_run_command"]
+
+        def observe(plan, command, cancel):
+            events[command.gate.command] = cancel
+            return run(plan, command, cancel)
+
+        return execute(*args, **{**kwargs, "_run_command": observe})
+
+    monkeypatch.setattr(
+        molt_dev_gates.proof_executor, "execute_commands", observe_executor
+    )
+    outcomes = {
+        ("race", "1"): _gate_outcome(7, "independent seven\n", ""),
+        ("race", "2"): _gate_outcome(6, "trigger six\n", ""),
+        ("race", "3"): _gate_outcome(137, "", "closed cancellation\n", cancelled=True),
+        ("race", "4"): _gate_outcome(0, "completed successfully\n", ""),
+    }
+
+    def run(command, repo, environment, cancelled, streams=None):
+        entered.wait(timeout=30)
+        if command != ("race", "2"):
+            assert events[command].wait(timeout=30), "executor did not cancel siblings"
+            assert cancelled()
+        outcome = outcomes[command]
+        if streams is not None:
+            streams[0].write_text(outcome.stdout, encoding="utf-8")
+            streams[1].write_text(outcome.stderr, encoding="utf-8")
+        return outcome
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "gate-output"
+        ),
+        run_captured_gate=run,
+    )
+    gates = [
+        SelectedGate(command=command, toolchains=("python",), concurrent=True)
+        for command in outcomes
+    ]
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 6\)"):
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 4)
+    receipt = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["execution"]["failure_trigger"] == {
+        "command_id": "local.always.2",
+        "failure_scope": "partition",
+        "reason": "exit 6",
+    }
+    assert [row["status"] for row in receipt["commands"]] == [
+        "failure",
+        "failure",
+        "cancelled",
+        "success",
+    ]
+    assert [row["returncode"] for row in receipt["commands"]] == [7, 6, 137, 0]
+    assert [row["guard_outcome"]["cancelled"] for row in receipt["commands"]] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert all(
+        row["guard_outcome"]["descendants_closed"] is True
+        for row in receipt["commands"]
+    )
+    for row in receipt["commands"]:
+        expected = outcomes[tuple(row["argv"])]
+        assert Path(row["stdout_path"]).read_text(encoding="utf-8") == expected.stdout
+        assert Path(row["stderr_path"]).read_text(encoding="utf-8") == expected.stderr
+    assert outcomes[("race", "1")].guard_result.cancelled is False
+    assert outcomes[("race", "2")].guard_result.cancelled is False
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing",
+        "wrong-type",
+        "unclosed",
+        "infrastructure",
+        "invalid-cancel",
+        "cancelled-success",
+    ],
+)
+@pytest.mark.parametrize("concurrent", [True, False], ids=["executor", "serial"])
+def test_gate_adapter_refuses_unsafe_or_missing_guard_outcomes(
+    tmp_path, defect, concurrent
+):
+    from dataclasses import replace
+
+    progress = []
+
+    class Progress:
+        def emit(self, event, **details):
+            progress.append((event, details))
+
+    if defect == "missing":
+        outcome = None
+    elif defect == "wrong-type":
+        outcome = molt_dev_gates.GateOutcome(
+            subprocess.CompletedProcess(["synthetic-gate"], 7, "", "")
+        )
+    elif defect == "unclosed":
+        outcome = _gate_outcome(137, "", "", cancelled=True, descendants_closed=False)
+    elif defect == "infrastructure":
+        outcome = _gate_outcome(
+            137,
+            "",
+            "",
+            cancelled=True,
+            infrastructure_failure=memory_guard.GuardInfrastructureFailure(
+                "temporary_artifact_custody", ("independent custody refusal",)
+            ),
+        )
+    else:
+        outcome = _gate_outcome(
+            0 if defect == "cancelled-success" else 7, "", "", cancelled=True
+        )
+
+    def run(command, repo, environment, cancelled, streams=None):
+        assert command == ("gate", "1"), "unsafe outcome scheduled pending gate"
+        # Keep the stream writer from dereferencing the deliberately malformed
+        # outcome: the production adapter must own its boundary refusal.
+        if streams is not None:
+            streams[0].write_text("", encoding="utf-8")
+            streams[1].write_text("", encoding="utf-8")
+        return outcome
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "gate-output"
+        ),
+        run_captured_gate=run,
+        progress=Progress(),
+    )
+    gates = [
+        SelectedGate(
+            command=("gate", "1"), toolchains=("python",), concurrent=concurrent
+        )
+    ]
+    if concurrent:
+        # A single concurrent gate takes the serial path. Two selected gates
+        # enter the executor; host=1 keeps the second pending after refusal.
+        gates.append(
+            SelectedGate(command=("gate", "2"), toolchains=("python",), concurrent=True)
+        )
+    with pytest.raises(molt_dev.DriverError) as caught:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+    assert not isinstance(caught.value, CandidateFailure)
+    if concurrent:
+        receipt = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+        record, skipped = receipt["commands"]
+        assert skipped["id"] == "local.always.2" and skipped["status"] == "skipped"
+        assert record["status"] == "failure"
+        assert record["failure_scope"] == "global"
+        assert receipt["execution"]["failure_trigger"]["failure_scope"] == "global"
+    else:
+        finished = [details for event, details in progress if event == "gate_finished"]
+        (record,) = finished
+    if defect not in {"missing", "wrong-type"}:
+        assert record["status"] == "failure"
+        assert record["failure_scope"] == "global"
+        guard = record["guard_outcome"]
+        assert guard["command"] == ["synthetic-gate"]
+        assert guard["cancelled"] is True
+        assert guard["descendants_closed"] is (defect != "unclosed")
+        assert (
+            guard["returncode"]
+            == {
+                "unclosed": 137,
+                "infrastructure": 137,
+                "invalid-cancel": 7,
+                "cancelled-success": 0,
+            }[defect]
+        )
+        assert guard["infrastructure_failure"] == (
+            {
+                "phase": "temporary_artifact_custody",
+                "details": ["independent custody refusal"],
+            }
+            if defect == "infrastructure"
+            else None
+        )
+
+
+@pytest.mark.parametrize("concurrent", [True, False], ids=["executor", "serial"])
+@pytest.mark.parametrize(
+    ("declared", "sibling_linker"),
+    [(True, True), (False, True), (True, False)],
+    ids=["declared-beside-linker", "undeclared", "missing-linker"],
+)
+def test_gate_adapter_admits_windows_helper_only_from_selected_policy(
+    tmp_path, concurrent, declared, sibling_linker
+):
+    from dataclasses import replace
+    from tools import proof_plan, win_job
+
+    image = tmp_path / "MSVC" / "bin" / "vctip.exe"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"")
+    if sibling_linker:
+        image.with_name("link.exe").write_bytes(b"")
+    # Real canonical payload types: no platform switch or classifier mock.
+    accounting = win_job.WindowsJobAccounting(1, 0, 1, 4096, 0, 0, 0)
+    resources = win_job.WindowsSystemResources(1, 1, 1, 1, 1, 2, 1, 2, 1)
+    cleanup = win_job.WindowsJobCleanup(
+        before=replace(accounting, active_processes=1),
+        after=accounting,
+        system_before=resources,
+        system_after=resources,
+        terminated_remaining_processes=True,
+        remaining_processes=((720, str(image)),),
+        elapsed_s=0.01,
+        initial_process_ids=(720,),
+        escalation_process_ids=(),
+        natural_exit_wait_s=0.0,
+    )
+    policy = proof_plan.ToolchainPolicy(
+        "rustc",
+        {"linker_process_helpers": {"link.exe": ["vctip.exe"]}},
+        tmp_path,
+    )
+    outcomes = {
+        ("gate", "1"): _gate_outcome(0, "", "", windows_job_cleanup=cleanup),
+        ("gate", "2"): _gate_outcome(0, "", ""),
+    }
+    progress = []
+
+    class Progress:
+        def emit(self, event, **details):
+            progress.append((event, details))
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, outcomes, output_dir=tmp_path / "gate-output"
+        ),
+        progress=Progress(),
+        toolchain_policies=(policy,) if declared else (),
+    )
+    gates = [
+        SelectedGate(
+            command=("gate", "1"), toolchains=("python",), concurrent=concurrent
+        )
+    ]
+    if concurrent:
+        gates.append(
+            SelectedGate(command=("gate", "2"), toolchains=("python",), concurrent=True)
+        )
+    admitted = declared and sibling_linker
+    if admitted:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+    else:
+        with pytest.raises(molt_dev.DriverError) as caught:
+            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        assert not isinstance(caught.value, CandidateFailure)
+    if concurrent:
+        receipt = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+        record, following = receipt["commands"]
+        assert following["status"] == ("success" if admitted else "skipped")
+    else:
+        (record,) = [details for event, details in progress if event == "gate_finished"]
+    assert record["status"] == ("success" if admitted else "failure")
+    assert record["failure_scope"] == ("none" if admitted else "global")
+    evidence = record["guard_outcome"]["windows_job_cleanup"]
+    assert evidence["completed"] is True
+    assert evidence["remaining_processes"] == [{"pid": 720, "image": str(image)}]
+    assert evidence["initial_process_ids"] == [720]
+
+
+@pytest.mark.parametrize("defect", ["missing", "wrong-type", "wrong-argv"])
+def test_captured_gate_refuses_missing_or_mismatched_guard_result(
+    tmp_path, monkeypatch, defect
+):
+    from tools import molt_dev_common
+
+    if defect == "missing":
+        result = None
+    elif defect == "wrong-type":
+        result = subprocess.CompletedProcess(["synthetic-gate"], 0, "", "")
+    else:
+        result = _gate_outcome(0, "", "", args=["a-different-launch"]).guard_result
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: result,
+    )
+    with pytest.raises(molt_dev.DriverError) as caught:
+        molt_dev_common._run_captured_gate(
+            ("synthetic-gate",),
+            repo=tmp_path,
+            env=ProcessEnvironment(os.environ),
+            cancelled=lambda: False,
+        )
+    assert not isinstance(caught.value, CandidateFailure)
+
+
 @pytest.mark.parametrize("concurrent", [True, False])
 def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
     drv, tmp_path, capsys, concurrent
 ):
     # A log that cannot be written must not turn a pass into a runner fault
     # or a failure into silence: the failed gate's streams print whole.
-    from tools import molt_dev_gates
 
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding="utf-8")
     outcomes = {
-        ("gate", "1"): molt_dev_gates.GateOutcome(0, "fine\n", "", None),
-        ("gate", "2"): molt_dev_gates.GateOutcome(2, "", "the real reason\n", None),
+        ("gate", "1"): _gate_outcome(0, "fine\n", "", None),
+        ("gate", "2"): _gate_outcome(2, "", "the real reason\n", None),
     }
     runtime = _gate_runtime_fixture(
         molt_dev_gates, tmp_path, outcomes, output_dir=blocked / "run"
@@ -2438,12 +3311,9 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
 def test_serial_gate_keeps_its_streams_and_names_them_in_the_failure(
     drv, tmp_path, capsys
 ):
-    from tools import molt_dev_gates
 
     outcomes = {
-        ("gate", "1"): molt_dev_gates.GateOutcome(
-            1, "", "x" * 5000 + "\nserial reason\n", None
-        )
+        ("gate", "1"): _gate_outcome(1, "", "x" * 5000 + "\nserial reason\n", None)
     }
     output_dir = tmp_path / "receipt.d" / "run"
     runtime = _gate_runtime_fixture(
@@ -2464,7 +3334,8 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
     # only the bounded end, and the files hold everything.
     from tools import molt_dev_common
 
-    streams = (tmp_path / "gate.stdout.log", tmp_path / "gate.stderr.log")
+    streams, stream_error = molt_dev_gates.prepare_gate_streams(tmp_path, 1)
+    assert streams is not None and stream_error is None
     lines = 20_000
     script = (
         f"import sys\nfor i in range({lines}): print('line', i)\n"
@@ -2473,7 +3344,11 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
     outcome = drv.run_captured_gate(
         (sys.executable, "-c", script),
         tmp_path,
-        ProcessEnvironment(os.environ),
+        drv.prepare_gate_environment(
+            tmp_path,
+            ProcessEnvironment(os.environ).updated({"MOLT_VENV": sys.prefix}),
+            requires_python=True,
+        ),
         lambda: False,
         streams,
     )
@@ -2486,7 +3361,6 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
 
 
 def test_idle_gate_runs_retire_and_recent_ones_stay(tmp_path):
-    from tools import molt_dev_gates
 
     now = 10_000_000.0
     window = molt_dev_gates.NAMED_RECORD_MIN_AGE_S
@@ -2506,7 +3380,6 @@ def test_idle_gate_runs_retire_and_recent_ones_stay(tmp_path):
 
 
 def test_a_gate_log_that_cannot_retire_says_so(tmp_path, monkeypatch, capsys):
-    from tools import molt_dev_gates
 
     now = 10_000_000.0
     run = tmp_path / "abc.gates.d" / "old"
@@ -2531,14 +3404,24 @@ def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monke
 
     def fake(cmd, **kwargs):
         seen.append(kwargs["label"])
-        return 0, "", "", None
+        return _gate_outcome(0, "", "").guard_result
 
     monkeypatch.setattr(drv, "_run_captured_gate", fake)
-    monkeypatch.setattr(drv, "_gate_environment", lambda cmd, repo, env: (cmd, env))
-    drv.run_captured_gate(
-        "python tools/a.py --one --two --three", Path("."), None, lambda: False
+    monkeypatch.setattr(
+        drv, "_gate_environment", lambda cmd, repo, context: (cmd, context.environment)
     )
-    drv.run_captured_gate(("cargo", "test"), Path("."), None, lambda: False)
+    drv.run_captured_gate(
+        "python tools/a.py --one --two --three",
+        Path("."),
+        GateEnvironment(ProcessEnvironment(os.environ), None, False),
+        lambda: False,
+    )
+    drv.run_captured_gate(
+        ("cargo", "test"),
+        Path("."),
+        GateEnvironment(ProcessEnvironment(os.environ), None, False),
+        lambda: False,
+    )
     assert seen == ["gate python tools/a.py --one --two ...", "gate cargo test"]
 
 
@@ -2550,7 +3433,6 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
     import threading
 
     from molt import host_capacity
-    from tools import molt_dev_gates
 
     lock = threading.Lock()
     active: dict[str, int] = {}
@@ -2559,17 +3441,19 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
     slices: list[str | None] = []
 
     def run_captured_gate(command, repo, environment, cancelled, streams=None):
+        assert environment.python_root == tmp_path / "planned-image"
+        assert environment.managed is True
         name = command[0]
         with lock:
             active[name] = active.get(name, 0) + 1
             peak[name] = max(peak.get(name, 0), active[name])
             if active.get("cargo", 0) and active.get("pytest", 0):
                 overlap["cargo_and_pytest"] = True
-            slices.append(environment.get(host_capacity.MEMORY_SLICE_ENV))
+            slices.append(environment.environment.get(host_capacity.MEMORY_SLICE_ENV))
         time.sleep(0.3)
         with lock:
             active[name] -= 1
-        return molt_dev_gates.GateOutcome(0, "", "", None)
+        return _gate_outcome(0, "", "", None)
 
     class Progress:
         def emit(self, event, **details):
@@ -2590,7 +3474,12 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
     ]
     runtime = molt_dev_gates.GateRuntime(
         repo=tmp_path,
-        environments={gate.toolchains: environment for gate in gates},
+        environments={
+            gate.toolchains: GateEnvironment(
+                environment, tmp_path / "planned-image", True
+            )
+            for gate in gates
+        },
         cargo_outputs={},
         capacity_requirements={},
         progress=Progress(),
@@ -2648,7 +3537,10 @@ def _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate):
     return molt_dev_gates.GateRuntime(
         repo=tmp_path,
         environments={
-            gate.toolchains: ProcessEnvironment(os.environ) for gate in gates
+            gate.toolchains: GateEnvironment(
+                ProcessEnvironment(os.environ), None, False
+            )
+            for gate in gates
         },
         cargo_outputs={},
         capacity_requirements={},
@@ -2680,8 +3572,6 @@ def test_a_building_pytest_session_counts_as_a_session_and_waits_its_cargo_turn(
     # (at most two at once), and it never overlaps another gate that builds.
     import threading
 
-    from tools import molt_dev_gates
-
     lock = threading.Lock()
     active: set[tuple[str, ...]] = set()
     peak = {"pytest": 0, "cargo": 0}
@@ -2694,7 +3584,7 @@ def test_a_building_pytest_session_counts_as_a_session_and_waits_its_cargo_turn(
         time.sleep(0.2)
         with lock:
             active.discard(command)
-        return molt_dev_gates.GateOutcome(0, "", "", None)
+        return _gate_outcome(0, "", "", None)
 
     # The building session comes first, so it starts at once: admitted outside
     # the session class it would run beside both other sessions.
@@ -2712,13 +3602,12 @@ def test_a_building_pytest_session_counts_as_a_session_and_waits_its_cargo_turn(
 
 
 def test_a_gate_runner_error_keeps_its_streams_in_the_receipt(drv, tmp_path):
-    from tools import molt_dev_gates
 
     def run_captured_gate(command, repo, environment, cancelled, streams=None):
         if command[1] == "raises":
             streams[0].write_text("partial\n", encoding="utf-8")
             raise drv.DriverError("the runner lost its child")
-        return molt_dev_gates.GateOutcome(0, "", "", None)
+        return _gate_outcome(0, "", "", None)
 
     gates = [
         SelectedGate(command=("pytest", "raises"), toolchains=("python",), pytest=True),
@@ -2736,7 +3625,6 @@ def test_a_gate_runner_error_keeps_its_streams_in_the_receipt(drv, tmp_path):
 
 def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
     from molt import host_capacity
-    from tools import molt_dev_gates
 
     calls = []
 
@@ -3022,6 +3910,9 @@ def _publish_controller_stub(work: Path, role: str) -> str:
     # Every controller path exists on main (molt_dev_controller.CONTROLLER_PATHS).
     _commit_file(work, "config/tool_releases.toml", "", "config")
     _commit_file(work, "src/molt/__init__.py", "", "molt package")
+    # This stand-in has an empty package and no startup behavior; real driver
+    # origins copy the genuine startup source through the shared file owner.
+    _commit_file(work, "src/sitecustomize.py", "", "fixture Python startup")
     tip = _commit_file(
         work, "tools/molt_dev.py", _CONTROLLER_STUB.format(role=role), "main driver"
     )
@@ -3119,6 +4010,15 @@ def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
     assert second != first.resolve() and second.parent == controllers.resolve()
     assert (second / "tools" / "helper.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert not (second / "tools" / "planted.txt").exists()
+
+    # Startup code is executable controller input even outside the package tree.
+    startup = "# changed startup authority\n"
+    _commit_file(work, "src/sitecustomize.py", startup, "Python startup change")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _, report = _land_through_real_driver(work, tmp_path / "fourth.json")
+    third = Path(report["file"]).parents[1]
+    assert third != second and third.parent == controllers.resolve()
+    assert (third / "src" / "sitecustomize.py").read_text(encoding="utf-8") == startup
 
 
 def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
@@ -3373,6 +4273,117 @@ def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
     assert queue.pending(paths) == [] and not paths.plan.exists()
 
 
+def test_queue_retry_preserves_unchanged_inputs_and_ignored_products(
+    drv, origin_and_clone
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    first = _lane(work, "incremental", {"runtime.rs": "pub fn runtime() {}\n"})
+    paths, requests = _enqueue(drv, work, first)
+    git = drv.Git(work)
+
+    def run(arguments):
+        result = git._run(list(arguments), check=False)
+        return queue.GitResult(result.returncode, result.stdout, result.stderr)
+
+    assert queue.build_candidate(run, upstream, requests).included == tuple(requests)
+    prior_candidate = git.head_sha()
+    source = work / "runtime.rs"
+    before = source.stat()
+    (work / ".git/info/exclude").write_text("target/\n", encoding="utf-8")
+    product = work / "target/retained"
+    product.parent.mkdir()
+    product.write_bytes(b"unchanged build output")
+    second = _commit_file(
+        work.parent / "lane-incremental",
+        "fixture.py",
+        "assert True\n",
+        "repair only a test fixture",
+    )
+    _, retry = _enqueue(drv, work, second)
+
+    assert queue.build_candidate(run, upstream, retry).included == tuple(retry)
+
+    after = source.stat()
+    assert (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mtime_ns,
+        before.st_size,
+    )
+    assert source.read_text(encoding="utf-8") == "pub fn runtime() {}\n"
+    assert product.read_bytes() == b"unchanged build output"
+    assert git.head_sha() != second
+    assert run(["merge-base", "--is-ancestor", second, "HEAD"]).returncode == 0
+    assert run(["merge-base", "--is-ancestor", upstream, "HEAD"]).returncode == 0
+    assert run(["merge-base", "--is-ancestor", prior_candidate, "HEAD"]).returncode == 1
+    assert not run(["status", "--porcelain"]).stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "hook", ["reject", "stage-unrequested", "ancestry-error", "extra-parent"]
+)
+def test_queue_direct_materialization_keeps_hooks_and_enrolled_tree(
+    drv, origin_and_clone, hook
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    upstream = _git(work, "rev-parse", "origin/main").stdout.strip()
+    source = _lane(work, "hooked", {"feature.py": "value = 1\n"})
+    _, requests = _enqueue(drv, work, source)
+    foreign = None
+    if hook == "extra-parent":
+        foreign = _lane(work, "foreign", {"foreign.py": "unrequested = True\n"})
+        commit_hook = work / ".git/hooks/post-commit"
+        body = (
+            "set -eu\n"
+            "original=$(git rev-parse HEAD)\n"
+            "parent=$(git rev-parse HEAD^)\n"
+            "tree=$(git rev-parse 'HEAD^{tree}')\n"
+            f'rewritten=$(printf \'unrequested parent\\n\' | git commit-tree "$tree" -p "$parent" -p {foreign})\n'
+            'git update-ref HEAD "$rewritten" "$original"\n'
+        )
+    else:
+        commit_hook = work / ".git/hooks/pre-commit"
+        body = (
+            "exit 31\n"
+            if hook == "reject"
+            else "printf 'unexpected\\n' > unrequested.py\ngit add -- unrequested.py\n"
+        )
+    commit_hook.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    commit_hook.chmod(0o755)
+    git = drv.Git(work)
+
+    def run(arguments):
+        if hook == "ancestry-error" and list(arguments[:2]) == [
+            "merge-base",
+            "--is-ancestor",
+        ]:
+            return queue.GitResult(2, "", "cannot read commit graph")
+        result = git._run(list(arguments), check=False)
+        return queue.GitResult(result.returncode, result.stdout, result.stderr)
+
+    diagnostic = {
+        "reject": "git commit .*failed",
+        "stage-unrequested": "enrolled source tree",
+        "ancestry-error": "cannot establish enrolled lane's upstream ancestry",
+        "extra-parent": "enrolled source tree",
+    }[hook]
+    with pytest.raises(drv.DriverError, match=diagnostic):
+        queue.build_candidate(run, upstream, requests)
+    if hook == "extra-parent":
+        assert _git(work, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[
+            1:
+        ] == [source, foreign]
+        assert (
+            _git(work, "rev-parse", "HEAD^{tree}").stdout
+            == _git(work, "rev-parse", f"{source}^{{tree}}").stdout
+        )
+
+
 @pytest.mark.parametrize("advance_before_integrate", [False, True])
 def test_queue_preserves_source_merges_and_resolves_their_citations(
     drv, origin_and_clone, tmp_path, monkeypatch, advance_before_integrate
@@ -3407,14 +4418,11 @@ def test_queue_preserves_source_merges_and_resolves_their_citations(
         )
     paths, requests = _enqueue(drv, work, merged)
     if advance_before_integrate:
-        from tools import molt_dev_queue as queue
-
-        provision = queue._provision_landing_sandbox
+        integrate = drv.cmd_integrate
         moved = False
 
-        def advance_after_provision(sandbox):
+        def advance_before_integration(args):
             nonlocal moved
-            provision(sandbox)
             if not moved:
                 moved = True
                 _commit_file(
@@ -3424,10 +4432,9 @@ def test_queue_preserves_source_merges_and_resolves_their_citations(
                     "late main",
                 )
                 _git(work, "push", "-q", "origin", "HEAD:main")
+            return integrate(args)
 
-        monkeypatch.setattr(
-            queue, "_provision_landing_sandbox", advance_after_provision
-        )
+        monkeypatch.setattr(drv, "cmd_integrate", advance_before_integration)
     commands = _record_driver_git_commands(drv, monkeypatch)
 
     assert _run_queue(drv, work) == drv.EXIT_OK
@@ -3571,13 +4578,13 @@ def test_land_runs_static_gates_in_the_lane_before_queueing(
     # The precheck admits under the gates' baseline, which alone sets this key.
     monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
     admitted = []
-    admit_gates = GateConfig.admit_gates
+    prepare = GateConfig.prepare
 
-    def recorded_admission(self, gates, *, environ):
-        admitted.append(environ)
-        return admit_gates(self, gates, environ=environ)
+    def recorded_admission(self, gates, *, baseline, prepare_python):
+        admitted.append(baseline)
+        return prepare(self, gates, baseline=baseline, prepare_python=prepare_python)
 
-    monkeypatch.setattr(GateConfig, "admit_gates", recorded_admission)
+    monkeypatch.setattr(GateConfig, "prepare", recorded_admission)
 
     assert _land_without_runner(drv, monkeypatch, lane) == drv.EXIT_OK
     assert admitted and all("PYTHONPYCACHEPREFIX" in env for env in admitted)
@@ -3668,6 +4675,13 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
     landed = _git(work, "show", "origin/main:queued.txt").stdout
     assert landed == "queued\n"
     assert _git(work, "rev-parse", "origin/main").stdout.strip() != tip, "replayed"
+    from molt.checkout_provisioning import selected_development_environment
+
+    # Both checkouts declare the real driver project, but the selected echo
+    # policy grants no source-Python environment. Observe persistent selection
+    # state after the real child protocol, not a mocked provisioner call count.
+    for checkout in (lane, work / ".git/molt/landing-sandbox"):
+        assert selected_development_environment(checkout, os.environ) is None
 
 
 def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeypatch):
@@ -4241,7 +5255,7 @@ def test_integrate_gates_build_into_the_checkouts_cargo_target(
     targets = []
 
     def gate(command, repo, env):
-        targets.append((env["CARGO_TARGET_DIR"], dict(env)))
+        targets.append((env.environment["CARGO_TARGET_DIR"], dict(env.environment)))
         return 0
 
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
@@ -4275,9 +5289,11 @@ def test_integration_progress_preserves_gate_outcomes(
     selected = [SelectedGate(command, ()) for command in commands]
     monkeypatch.setattr(GateConfig, "select", lambda *a, **kw: (selected, []))
     seen = []
+    selected_environments = []
 
     def run_gate(command, repo, environment):
         seen.append(command)
+        selected_environments.append(environment.environment)
         if command == argv:
             if outcome == "interrupt":
                 raise KeyboardInterrupt("independent interrupted child")
@@ -4289,6 +5305,19 @@ def test_integration_progress_preserves_gate_outcomes(
 
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(run_gate))
     monkeypatch.setenv("MOLT_EVENT_SECRET_CONTROL", "must-not-appear-in-events")
+    from molt import dx
+
+    published = []
+
+    def collect(env, *, cwd):
+        output = capsys.readouterr().out
+        terminal = json.loads(output.splitlines()[-1])
+        assert terminal["event"] == "integration_finished"
+        assert env is selected_environments[-1]
+        assert cwd == work
+        published.append(output)
+
+    monkeypatch.setattr(dx, "collect_checkout_state_after_result", collect)
     args = _integrate_ns(drv, repo=str(work), no_push=True)
     if outcome == "interrupt":
         with pytest.raises(KeyboardInterrupt, match="independent interrupted child"):
@@ -4301,7 +5330,8 @@ def test_integration_progress_preserves_gate_outcomes(
             raise LookupError("unrelated caller exception")
         except LookupError:
             assert drv.cmd_integrate(args) == 0
-    output = capsys.readouterr().out
+    assert len(published) == 1
+    output = "".join(published) + capsys.readouterr().out
     events = [json.loads(line) for line in output.splitlines()]
     expected_commands = commands if outcome == "success" else commands[:2]
     assert seen == expected_commands
@@ -4601,26 +5631,148 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     assert verdict["status"] == "done" and verdict["rc"] == 0
 
 
+@pytest.mark.parametrize(
+    "explicit_root", [False, True], ids=["default-root", "explicit-root"]
+)
 def test_detached_run_prints_a_verify_command_that_finds_its_state(
-    drv, tmp_path, capsys
+    drv, tmp_path, capsys, monkeypatch, explicit_root
 ):
-    # The landing queue starts its runners under --state-dir; the printed
-    # next step once omitted it and looked in the system temp directory.
-    state_root = tmp_path / "runners"
-    command = [sys.executable, "-c", "pass"]
-    assert drv.cmd_detached_run(_dr_ns(drv, "hinted", state_root, command)) == 0
-    printed = capsys.readouterr().err  # status lines go to stderr
-    from tools.molt_dev_detached import verify_command
+    import tempfile
 
-    argv = verify_command("hinted", str(state_root), 0)
-    assert (
-        "      " + shlex.join(verify_command("hinted", str(state_root), 30)) in printed
+    from tools import molt_dev_detached as detached
+
+    launch_temp = tmp_path / "launch temporary é"
+    verify_temp = tmp_path / "later temporary é"
+    unrelated_cwd = tmp_path / "unrelated cwd"
+    for directory in (launch_temp, verify_temp, unrelated_cwd):
+        directory.mkdir()
+    launch_temp = launch_temp.resolve()
+    verify_temp = verify_temp.resolve()
+    # Observe a different default only in this test's detached module. Do not
+    # change process-wide tempfile state used by guard/sentinel threads.
+    install_thread_module_view(
+        monkeypatch,
+        "tempfile",
+        tempfile,
+        detached,
+        gettempdir=lambda: str(launch_temp),
     )
-    _wait_done(drv, capsys, "hinted", state_root)
-    # Run exactly what a person would paste, from an unrelated directory.
-    completed = run_guarded_test_process(argv, cwd=tmp_path, timeout=120)
-    assert completed.returncode == drv.EXIT_OK, completed.stderr
-    assert "no state" not in completed.stderr
+    state_root = launch_temp / (
+        "explicit runners" if explicit_root else "molt_dev_detached"
+    )
+    marker = tmp_path / "payload ran once"
+    command = [
+        sys.executable,
+        "-c",
+        "from pathlib import Path\n"
+        f"with Path({str(marker)!r}).open('x', encoding='utf-8') as stream:\n"
+        "    stream.write('ran once\\n')\n",
+    ]
+    options = [
+        "detached-run",
+        "--name",
+        "hinted",
+        "--json",
+        "--verify-min-age-hint",
+        "0",
+    ]
+    if explicit_root:
+        options.extend(("--state-dir", str(state_root)))
+    args = drv.build_parser().parse_args([*options, "--", *command])
+    assert drv.cmd_detached_run(args) == 0
+    printed = capsys.readouterr()
+    launched = json.loads(printed.out)
+    state = state_root / "hinted"
+    argv = launched["verify_argv"]
+    expected_prefix = [
+        sys.executable,
+        *(["-I"] if sys.flags.isolated else []),
+        str(SCRIPT_PATH),
+    ]
+    assert argv == [
+        *expected_prefix,
+        "detached-verify",
+        "--name",
+        "hinted",
+        "--state-dir",
+        str(state_root),
+        "--min-age-s",
+        "0",
+    ]
+    assert Path(argv[0]).is_absolute() and SCRIPT_PATH.is_absolute()
+    assert launched["name"] == "hinted" and launched["state_dir"] == str(state)
+    assert type(launched["pid"]) is int and launched["pid"] > 0
+    # The human projection and machine handoff carry the same coordinates.
+    if os.name == "nt":
+        assert "JSON argument array; launch without a shell" in printed.err
+        assert "      " + json.dumps(argv) in printed.err
+    else:
+        assert "POSIX shell command:" in printed.err
+        assert "      " + shlex.join(argv) in printed.err
+    assert _wait_done(drv, capsys, "hinted", state_root)["rc"] == 0
+    pid_before = (state / "pid").read_bytes()
+    command_before = (state / "cmd.json").read_bytes()
+    assert int(pid_before) == launched["pid"]
+    assert marker.read_text(encoding="utf-8") == "ran once\n"
+    verify_env = dict(os.environ)
+    verify_env.update(
+        TMPDIR=str(verify_temp),
+        TMP=str(verify_temp),
+        TEMP=str(verify_temp),
+        MOLT_PRESERVE_AMBIENT_TMPDIR="1",
+    )
+    # A fresh verifier with the default lookup cannot see the first process's
+    # state. This independent negative proves the different environment is real.
+    root_index = argv.index("--state-dir")
+    missing_root = run_guarded_test_process(
+        [*argv[:root_index], *argv[root_index + 2 :]],
+        cwd=unrelated_cwd,
+        env=verify_env,
+        timeout=120,
+    )
+    assert missing_root.returncode != drv.EXIT_OK
+    assert "no state" in missing_root.stderr
+    assert str(verify_temp / "molt_dev_detached" / "hinted") in missing_root.stderr
+    # Execute the actual returned argv unchanged, from the other environment
+    # and cwd. Verification observes the original run; it must never relaunch it.
+    completed = run_guarded_test_process(
+        argv, cwd=unrelated_cwd, env=verify_env, timeout=120
+    )
+    assert completed.returncode == drv.EXIT_OK, completed.stdout + completed.stderr
+    assert "DONE rc=0" in completed.stderr
+    assert (state / "pid").read_bytes() == pid_before
+    assert (state / "cmd.json").read_bytes() == command_before
+    assert marker.read_text(encoding="utf-8") == "ran once\n"
+
+
+@pytest.mark.parametrize(("isolated", "expected_flags"), [(0, []), (1, ["-I"])])
+def test_detached_verify_argv_preserves_interpreter_isolation(
+    tmp_path, monkeypatch, isolated, expected_flags
+):
+    from types import SimpleNamespace
+
+    from tools import molt_dev_detached as detached
+
+    install_thread_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        detached,
+        flags=SimpleNamespace(isolated=isolated),
+    )
+    state_root = tmp_path / "state root"
+    assert detached.verify_command("retained", state_root, 31) == [
+        sys.executable,
+        *expected_flags,
+        str(SCRIPT_PATH),
+        "detached-verify",
+        "--name",
+        "retained",
+        "--state-dir",
+        str(state_root),
+        "--min-age-s",
+        "31",
+    ]
 
 
 def test_detached_runner_never_forks_the_live_python_process(drv):
@@ -4946,7 +6098,7 @@ def _integration_python(source: str) -> str:
 @pytest.mark.parametrize("remote", ["origin", "publication"])
 @pytest.mark.parametrize("attributed", [False, True], ids=["clean", "rejected"])
 def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
-    drv, origin_and_clone, remote, attributed, capfd
+    drv, origin_and_clone, remote, attributed, capfd, borrowed_gate_python
 ):
     """Real gates consume one full SHA despite unrelated and moving refs."""
     origin, work = origin_and_clone
@@ -4981,7 +6133,7 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             + "assert set(clippy.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "
             + "assert rustfmt._changed_rust_paths(sys.argv[1]) == (Path('feature.rs'),); "
             + f"assert sys.argv[1] == {expected!r}; "
-            + "print('selected-upstream-path' + '-gates-passed')"
+            + "print('selected-upstream-path' + '-gates-passed', flush=True)"
         )
         + f" {upstream}"
     )
@@ -4990,6 +6142,15 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             imports
             + "from tools import check_commit_attribution as attribution; "
             + "assert attribution.check_revisions(['origin/main..HEAD'], cwd=Path.cwd()) == []; "
+            # This fixture proves both consumers. Wait for the scheduler's
+            # closed, successful selection outcome before attribution may fail.
+            + "import json, time\n"
+            + "head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\n"
+            + "receipt = Path('.git/molt-integrate/receipts') / (head + '.gates.json')\n"
+            + "while True:\n"
+            + "    rows = json.loads(receipt.read_text(encoding='utf-8'))['commands']\n"
+            + "    if any(r['id'] == 'local.always.1' and r['status'] == 'success' for r in rows): break\n"
+            + "    time.sleep(0.01)\n"
             + "raise SystemExit(attribution.main(['--range', sys.argv[1]]))"
         )
         + f" {upstream}..HEAD"
@@ -5023,7 +6184,7 @@ def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
     _commit_integration_policy(work, ["echo {integration_upstream_ref}"])
     monkeypatch.setattr(
         GateConfig,
-        "admit",
+        "prepare",
         lambda *args, **kwargs: pytest.fail("invalid policy admitted"),
     )
     monkeypatch.setattr(
@@ -5068,7 +6229,9 @@ def test_integrate_refuses_dirty_selected_source(drv, origin_and_clone, kind):
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell quoting for adversarial gate")
 @pytest.mark.parametrize("mutation", ["source", "head", "policy"])
-def test_integrate_refuses_gate_source_or_head_drift(drv, origin_and_clone, mutation):
+def test_integrate_refuses_gate_source_or_head_drift(
+    drv, origin_and_clone, mutation, borrowed_gate_python
+):
     _, work = origin_and_clone
     if mutation == "head":
         command = "git -c user.name=Test -c user.email=test@example.test commit --allow-empty -qm changed"
@@ -5089,7 +6252,7 @@ def test_integrate_refuses_gate_source_or_head_drift(drv, origin_and_clone, muta
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell quoting for adversarial gate")
 def test_integrate_block_refuses_a_gate_that_dirties_the_source(
-    drv, origin_and_clone, monkeypatch
+    drv, origin_and_clone, monkeypatch, borrowed_gate_python
 ):
     _, work = origin_and_clone
     dirty = _integration_python(
@@ -5529,7 +6692,7 @@ version_pattern = '^ok$'
 """
     _commit_file(work, "tools/proof_plan.toml", policy, "selected prerequisites")
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         if policy.name == "one":
             raise OSError("first probe raised")
         return None
@@ -5567,13 +6730,18 @@ version_pattern = '.*'
     )
     # Tool installation/version projection is outside the capacity contract.
     # Selection, explicit capability, output resolution, and admission stay real.
-    monkeypatch.setattr(GateConfig, "admit", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         GateConfig,
-        "environments",
-        lambda self, gates, *, baseline: {
-            gate.toolchains: ProcessEnvironment(baseline) for gate in gates
-        },
+        "prepare",
+        lambda self, gates, *, baseline, prepare_python: PreparedGates(
+            {
+                gate.toolchains: GateEnvironment(
+                    ProcessEnvironment(baseline), None, False
+                )
+                for gate in gates
+            },
+            {},
+        ),
     )
 
 
@@ -5827,9 +6995,17 @@ toolchains = ["unrelated"]
         lambda _, **_kw: pytest.fail("unrelated probe ran"),
     )
     # No selected gate declares a toolchain, so nothing is fingerprinted.
-    assert cfg.admit(["src/one.py"], matched, [], environ=os.environ) == {}
+    selected, _ = cfg.select(["src/one.py"])
+    prepared = cfg.prepare(
+        selected,
+        baseline=_gate_caller_env(tmp_path / "host"),
+        prepare_python=lambda env, needed: drv.prepare_gate_environment(
+            tmp_path, env, requires_python=needed
+        ),
+    )
+    assert prepared.fingerprints == {}
     with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
-        cfg.admit(["src/one.py"], matched, ["unknown executable"], environ=os.environ)
+        cfg.select(["src/one.py"], extra=["unknown executable"])
 
 
 def test_integrate_missing_committer_refuses_before_rebase(
@@ -5897,7 +7073,7 @@ def test_selected_catalog_admission_preserves_imports_after_proof_plan_collectio
 def test_integrate_uses_selected_committed_target_catalog_without_import_rebinding(
     drv, origin_and_clone, monkeypatch
 ):
-    from molt import target_python
+    from molt import target_python_policy
     from tools import proof_plan
 
     _, work = origin_and_clone
@@ -5910,7 +7086,7 @@ def test_integrate_uses_selected_committed_target_catalog_without_import_rebindi
     )
     _commit_file(
         work,
-        "src/molt/target_python.py",
+        "src/molt/target_python_policy.py",
         "from molt._selected_test_catalog import VERSIONS\nSUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = VERSIONS\n",
         "selected target catalog",
     )
@@ -5931,10 +7107,10 @@ python_versions = "supported-targets"
         "selected target prerequisites",
     )
     before_path = list(sys.path)
-    before_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    before_catalog = target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     observed = []
 
-    def probe(policy, *, environment):
+    def probe(policy, *, environment, python_executable):
         observed.append(policy.name)
         if policy.name == "uv":
             return {
@@ -5958,8 +7134,8 @@ python_versions = "supported-targets"
     assert "local.always.0" in str(caught.value)
     assert "3.15" in str(caught.value) and "executed=0" in str(caught.value)
     assert sys.path == before_path
-    assert sys.modules["molt.target_python"] is target_python
-    assert target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is before_catalog
+    assert sys.modules["molt.target_python_policy"] is target_python_policy
+    assert target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is before_catalog
 
 
 def test_gate_selection_preserves_tools_across_batching_dedup_and_extras(drv, tmp_path):
@@ -6025,10 +7201,11 @@ toolchains = ["extra"]
         "python tools/check_changed_clippy.py",
         "python tools/perf_methodology.py --check",
         "explicit-extra",
-        (*prefix, "tests/test_a.py", "tests/test_b.py"),
+        (*prefix, "tests/test_a.py"),
+        (*prefix, "tests/test_b.py"),
         (*prefix, "-k", "chosen", "tests/test_b.py"),
     ]
-    assert len(gates) == len({gate.command for gate in gates}) == 8
+    assert len(gates) == len({gate.command for gate in gates}) == 9
     assert [rule.name for rule in matched] == [
         "first",
         "second",
@@ -6045,12 +7222,15 @@ toolchains = ["extra"]
     assert next(
         gate.toolchains for gate in gates if gate.command == "explicit-extra"
     ) == ("extra",)
-    batched = next(
+    cohorts = [
         gate
         for gate in gates
         if isinstance(gate.command, tuple) and "-k" not in gate.command
-    )
-    assert batched.toolchains == ("first", "second")
+    ]
+    assert [(gate.command[-1], gate.toolchains) for gate in cohorts] == [
+        ("tests/test_a.py", ("first",)),
+        ("tests/test_b.py", ("second",)),
+    ]
     selected = next(
         gate
         for gate in gates
@@ -6063,7 +7243,12 @@ toolchains = ["extra"]
 
 @pytest.mark.parametrize("explicit_sdk_flags", [False, True])
 def test_integrate_isolates_selected_toolchains_in_real_children(
-    drv, origin_and_clone, tmp_path, monkeypatch, explicit_sdk_flags
+    drv,
+    origin_and_clone,
+    tmp_path,
+    monkeypatch,
+    explicit_sdk_flags,
+    borrowed_gate_python,
 ):
     from tools import proof_plan
 
@@ -6501,32 +7686,37 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
 
 @pytest.mark.parametrize("outcome", [0, 1])
 def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_cwd(
-    origin_and_clone, tmp_path, outcome
+    origin_and_clone, tmp_path, driver_seed, outcome
 ):
     """The actual new pinned consumer resumes context; supervisors stay outside."""
-    origin, _main = origin_and_clone
-    wt = _worktree_off(origin, tmp_path, "wt_controller_cwd")
-    main = tmp_path / "mainclone"
+    from tools import molt_dev_controller
+    from tools.venv_exec import venv_python
+
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_controller_cwd")
     (wt / "relative-tmp").mkdir()
     if outcome:
         (wt / "README.md").write_text("independent tracked edit\n", encoding="utf-8")
     key = "c" * 32
     cache = main / ".git" / "molt" / "controllers" / key
-    (cache / "tools").mkdir(parents=True)
+    copy_driver_trees(cache, seed=driver_seed)
+    # Use the controller's interpreter, without the proof environment's
+    # editable-install startup hooks binding Molt to a different source tree.
+    molt_dev_controller._sync_environment(cache)
     (cache / ".molt-controller.json").write_text("{}\n", encoding="utf-8")
     report = tmp_path / "controller-context.json"
     state = tmp_path / "preserved-state"
     state.write_bytes(b"independent state")
     driver = cache / "tools" / "molt_dev.py"
-    driver.write_text(
-        f"""
+    probe = f"""
 import json, os, sys, tempfile
 from pathlib import Path
-sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
 from tools import molt_dev as actual
 from tools import molt_dev_controller as controller
 from tools import molt_dev_retire
 
+assert Path(actual.__file__).resolve() == Path(__file__).resolve()
 args = actual.build_parser().parse_args(sys.argv[1:])
 physical_cwd = Path.cwd()
 controller.resume_controller_cwd(args, driver_file=__file__)
@@ -6541,6 +7731,13 @@ assert os.environ["TMP"] == "relative-tmp"
 assert os.environ["TEMP"] == "relative-tmp"
 selected_temp = Path(tempfile.gettempdir())
 assert selected_temp == repo / "relative-tmp"
+assert not (Path(__file__).resolve().parents[1] / "relative-tmp").exists()
+temporary_fd = os.open(Path(os.environ["TMPDIR"]) / "selected-child", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+try:
+    os.write(temporary_fd, b"logical temporary output")
+finally:
+    os.close(temporary_fd)
+temporary_bytes = (selected_temp / "selected-child").read_bytes()
 # Check repository association only after the original environment context is
 # restored; this is the same existing identity owner used by command dispatch.
 common = actual._git_common_directory(repo)
@@ -6550,11 +7747,19 @@ result = molt_dev_retire.cleanup_worktree(actual.Git(repo), repo, "origin/main",
 Path({str(report)!r}).write_text(json.dumps({{
     "physical_cwd": str(physical_cwd), "logical_cwd": str(repo),
     "argv": sys.argv[1:], "remaining_context": args.controller_cwd,
-    "selected_temp": str(selected_temp),
+    "selected_temp": str(selected_temp), "temporary_bytes": temporary_bytes.decode("ascii"),
     "result": result, "repo_exists": repo.exists(),
 }}), encoding="utf-8")
 raise SystemExit(result)
-""",
+"""
+    # Give every imported consumer the same fixture-owned pinned source tree.
+    # Replace only the script entrypoint; tools.molt_dev still imports its real
+    # implementation, and all source-derived launch directories remain local.
+    original_driver = driver.read_text(encoding="utf-8")
+    entrypoint = "    raise SystemExit(main(sys.argv[1:]))"
+    assert original_driver.count(entrypoint) == 1
+    driver.write_text(
+        original_driver.replace(entrypoint, textwrap.indent(probe, "    ")),
         encoding="utf-8",
     )
     # Isolate the process-wide cwd transition from pytest's guard threads.
@@ -6562,14 +7767,12 @@ raise SystemExit(result)
 import os, sys
 from pathlib import Path
 from types import SimpleNamespace
-sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
 from tools import molt_dev_controller as controller
 os.chdir({str(wt)!r})
 assert Path.cwd() == Path({str(wt)!r})
 os.environ.update(CARGO_TARGET_DIR="relative-target", CARGO_HOME="relative-cargo-home", TMPDIR="relative-tmp", TMP="relative-tmp", TEMP="relative-tmp")
-os.environ["MOLT_SOURCE_ROOT"] = os.path.relpath({str(REPO_ROOT)!r}, Path.cwd())
-# Retain the actual selected environment; do not create a second controller venv.
-controller.venv_python = lambda _: Path(sys.executable)
+os.environ["MOLT_SOURCE_ROOT"] = os.path.relpath({str(cache)!r}, Path.cwd())
 real_os = controller.os
 controller.os = SimpleNamespace(name="nt", chdir=real_os.chdir, environ=real_os.environ)
 rc = controller.run_controller(controller.Controller({key!r}, Path({str(cache)!r})),
@@ -6579,7 +7782,7 @@ assert rc == {outcome}
 raise SystemExit(0)
 """
     completed = run_guarded_test_process(
-        [sys.executable, "-I", "-c", code],
+        [str(venv_python(cache / ".venv")), "-I", "-c", code],
         cwd=tmp_path,
         env=ProcessEnvironment(os.environ),
         timeout=120,
@@ -6590,10 +7793,14 @@ raise SystemExit(0)
     assert Path(observed["logical_cwd"]) == wt
     assert observed["remaining_context"] is None
     assert Path(observed["selected_temp"]) == wt / "relative-tmp"
+    assert observed["temporary_bytes"] == "logical temporary output"
     assert observed["result"] == outcome
     assert observed["repo_exists"] is (outcome != 0)
     assert wt.exists() is (outcome != 0)
     assert state.read_bytes() == b"independent state"
+    # Imported implementation sources supply code, not this fixture's output
+    # cwd. Relative selections must never materialize in the proof checkout.
+    assert not (REPO_ROOT / "relative-tmp").exists()
 
 
 @pytest.mark.parametrize("command", [["integrate"], ["queue", "run"]])
@@ -6869,3 +8076,363 @@ def test_land_has_no_optional_retirement_flag(drv):
     with pytest.raises(SystemExit) as error:
         drv.build_parser().parse_args(["land", "--retire"])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "missing_parameter",
+        "import_error",
+        "named",
+        "parameter",
+        "body_failure",
+    ],
+)
+def test_selected_pytest_nodes_collect_before_build_and_still_execute(
+    drv,
+    tmp_path,
+    case,
+):
+    from dataclasses import replace
+
+    (tmp_path / "tests").mkdir()
+    # This is a real isolated checkout: admit the same repository custody and
+    # memory-capacity plugins, rather than faking the canonical pytest option.
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\naddopts = -p molt.pytest_memory_guard_config_plugin "
+        "-p molt.pytest_capacity_plugin\nmarkers = excluded: selector control\n",
+        encoding="utf-8",
+    )
+    test_file = tmp_path / "tests/test_selected.py"
+    executed = tmp_path / "executed.txt"
+    if case == "import_error":
+        source = "raise RuntimeError('independent collection import failure')\n"
+    else:
+        source = (
+            "import pytest\nfrom pathlib import Path\n"
+            "@pytest.mark.parametrize('value', [1], ids=['space & quote'])\n"
+            "def test_one(value):\n"
+            f"    Path({str(executed)!r}).write_text('executed', encoding='utf-8')\n"
+            f"    assert {case != 'body_failure'!r}\n"
+        )
+    test_file.write_text(source, encoding="utf-8")
+    suffix = {
+        "missing": "test_missing",
+        "missing_parameter": "test_one[missing]",
+        "parameter": "test_one[space & quote]",
+    }.get(case, "test_one")
+    target = "tests/test_selected.py::" + suffix
+    selection = 'm = "not excluded"' if case == "named" else 'k = "one or missing"'
+    policy = (
+        'always = []\n[[rule]]\nname = "selected"\nglobs = ["source.py"]\n'
+        'gates = ["mock-rust-build"]\ntoolchains = ["python"]\n'
+        + "pytest_select = [{targets = ["
+        + json.dumps(target)
+        + "], "
+        + selection
+        + "}]\n"
+    )
+    config = GateConfig.parse(policy, "real collection boundary", root=tmp_path)
+    gates, _ = config.select(["source.py"])
+    assert gates[0].command == "mock-rust-build"
+    cohort = next(gate for gate in gates if gate.pytest)
+    assert cohort.collection_command is not None
+    expected = list(cohort.command)
+    expected[expected.index("-n") + 1] = "0"
+    expected.append("--collect-only")
+    assert list(cohort.collection_command) == expected
+
+    observed = []
+    progress = []
+
+    class Progress:
+        def emit(self, event, **details):
+            progress.append((event, details))
+
+    def execute(command, repo, env, cancelled, streams=None):
+        observed.append(command)
+        if command == "mock-rust-build":
+            assert not executed.exists(), "collection executed test bodies"
+            return _gate_outcome(0, "mock Rust completed", "", None)
+        # Use real selected Python, pytest and canonical guard. No fake collector
+        # verdict, shell parsing, host env mutation, or actual Rust compilation.
+        return drv.run_captured_gate(command, repo, env, cancelled, streams)
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "logs"
+        ),
+        environments={
+            ("python",): GateEnvironment(
+                ProcessEnvironment(os.environ).updated(
+                    {
+                        "MOLT_VENV": sys.prefix,
+                        "PYTEST_XDIST_AUTO_NUM_WORKERS": "1",
+                    }
+                ),
+                Path(sys.prefix),
+                False,
+            )
+        },
+        run_captured_gate=execute,
+        progress=Progress(),
+    )
+    timings = []
+    succeeds = case in {"named", "parameter"}
+    if succeeds:
+        molt_dev_gates.run_selected_gates(gates, runtime, timings, host_limit=lambda: 1)
+    else:
+        with pytest.raises(GateFailure):
+            molt_dev_gates.run_selected_gates(
+                gates, runtime, timings, host_limit=lambda: 1
+            )
+    assert observed[0] == cohort.collection_command
+    collection_failure = case in {"missing", "missing_parameter", "import_error"}
+    if collection_failure:
+        assert observed == [cohort.collection_command]
+        assert not executed.exists() and not timings
+        output = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (tmp_path / "logs/collection").glob("*.log")
+        )
+        assert (
+            "independent collection import failure"
+            if case == "import_error"
+            else "not found"
+        ) in output
+    else:
+        assert observed == [
+            cohort.collection_command,
+            "mock-rust-build",
+            cohort.command,
+        ]
+        assert executed.read_text(encoding="utf-8") == "executed"
+        assert len(timings) == len(gates)
+        assert any(event == "collection_finished" for event, _ in progress)
+        assert any(event == "gate_finished" for event, _ in progress)
+    # A passing collection cannot conceal the later real assertion failure.
+    if case == "body_failure":
+        assert progress[-1][1]["returncode"] != 0
+
+
+def test_file_only_pytest_cohort_keeps_single_execution_without_collection(
+    drv, tmp_path
+):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_file.py").write_text(
+        "def test_one(): pass\n", encoding="utf-8"
+    )
+    config = GateConfig.parse(
+        'always=[]\n[[rule]]\nname="file"\nglobs=["source.py"]\ngates=[]\n'
+        'pytest=["tests/test_file.py"]\ntoolchains=["python"]\n',
+        "file-only",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    assert len(gates) == 1 and gates[0].pytest
+    assert gates[0].collection_command is None
+
+
+def test_merged_pytest_collection_admits_only_explicit_nodes(drv, tmp_path):
+    # Synthetic 52-target cohort: 47 whole files and five nodes across two files.
+    # Whole-file imports can be expensive or have side effects; they belong only
+    # to the later mandatory run, not to named-node admission.
+    (tmp_path / "tests").mkdir()
+    files = [f"tests/test_file_{index}.py" for index in range(47)]
+    nodes = [
+        f"tests/test_nodes_{index % 2}.py::test_case_{index}" for index in range(5)
+    ]
+    for target in [*files, *nodes]:
+        (tmp_path / target.split("::", 1)[0]).touch()
+    policy = (
+        'always=[]\n[[rule]]\nname="merged"\nglobs=["source.py"]\ngates=[]\n'
+        + "pytest="
+        + json.dumps([*files, *nodes])
+        + '\ntoolchains=["python"]\n'
+    )
+    config = GateConfig.parse(policy, "synthetic mixed cohort", root=tmp_path)
+    gates, _ = config.select(["source.py"])
+    assert len(gates) == 1
+    gate = gates[0]
+    assert gate.pytest and gate.toolchains == ("python",)
+    assert isinstance(gate.command, tuple)
+    assert gate.command[-52:] == tuple([*files, *nodes])
+    assert gate.command[:6] == ("python", "-m", "pytest", "-q", "-n", "auto")
+    admission = gate.collection_command
+    assert admission is not None
+    assert admission[:6] == ("python", "-m", "pytest", "-q", "-n", "0")
+    assert admission[-6:] == (*nodes, "--collect-only")
+    assert not set(files).intersection(admission)
+    assert len(admission) == len(gate.command) - len(files) + 1
+
+
+def test_filtered_pytest_collection_retains_whole_selected_envelope(drv, tmp_path):
+    # A selector applies to its whole cohort. Keep this declared envelope intact
+    # rather than silently narrowing -k/-m to just its explicit-node members.
+    (tmp_path / "tests").mkdir()
+    for name in ("tests/test_file.py", "tests/test_nodes.py"):
+        (tmp_path / name).touch()
+    config = GateConfig.parse(
+        'always=[]\n[[rule]]\nname="filtered"\nglobs=["source.py"]\ngates=[]\n'
+        'pytest_select=[{targets=["tests/test_file.py", "tests/test_nodes.py::test_one"], '
+        'k="one or another"}]\ntoolchains=["python"]\n',
+        "filtered mixed cohort",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    assert len(gates) == 1
+    gate = gates[0]
+    expected = list(gate.command)
+    expected[expected.index("-n") + 1] = "0"
+    expected.append("--collect-only")
+    assert gate.collection_command == tuple(expected)
+    assert tuple(expected[-5:]) == (
+        "-k",
+        "one or another",
+        "tests/test_file.py",
+        "tests/test_nodes.py::test_one",
+        "--collect-only",
+    )
+
+
+@pytest.mark.parametrize("selector", ["MOLT_VENV", "UV_PROJECT_ENVIRONMENT"])
+def test_empty_gate_demand_preserves_explicit_selection_refusal(
+    drv, tmp_path, selector
+):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    marker = repo / "launched.txt"
+    config = GateConfig.parse(
+        'always = ["echo forbidden > launched.txt"]\n', "empty demand", root=repo
+    )
+    gates, _ = config.select(["source.py"])
+    environment = _gate_caller_env(tmp_path / "host")
+    environment[selector] = str(tmp_path / "missing explicit image")
+    with pytest.raises(drv.DriverError):
+        config.prepare(
+            gates,
+            baseline=environment,
+            prepare_python=lambda env, needed: drv.prepare_gate_environment(
+                repo, env, requires_python=needed
+            ),
+        )
+    assert not marker.exists()
+    assert not (repo / ".venv").exists()
+
+
+def test_transitive_gate_environment_binds_fingerprint_and_rechecks_image(
+    drv, tmp_path
+):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    repo = tmp_path / "source"
+    repo.mkdir()
+    artifacts = tmp_path / "artifacts"
+    image = materialize_development_environment(
+        repo, artifacts, runnable=True, select=True
+    )
+    environment = _gate_caller_env(tmp_path / "host")
+    environment["MOLT_EXT_ROOT"] = str(artifacts)
+    policy = """
+always = ["python -c pass"]
+always_toolchains = ["transitive"]
+[[toolchain_policy]]
+name = "transitive"
+members = ["source-interpreter"]
+[[toolchain_policy]]
+name = "source-interpreter"
+executable = "{python}"
+version_args = ["--version"]
+version_pattern = '^Python 3\\.'
+"""
+    config = GateConfig.parse(policy, "transitive environment", root=repo)
+    gates, _ = config.select(["source.py"])
+    prepared = config.prepare(
+        gates,
+        baseline=environment,
+        prepare_python=lambda env, needed: drv.prepare_gate_environment(
+            repo, env, requires_python=needed
+        ),
+    )
+    context = prepared.environments[("transitive",)]
+    assert context.python_root == image.root and context.managed is True
+    expected = image.root / ("Scripts/python.exe" if os.name == "nt" else "bin/python3")
+    assert prepared.fingerprints["source-interpreter"]["path"] == str(expected)
+    assert prepared.fingerprints["source-interpreter"]["path"] != str(
+        Path(sys.executable)
+    )
+    output = tmp_path / "observed.json"
+    command = (
+        "python",
+        "-c",
+        "import json,sys;from pathlib import Path;Path(sys.argv[1]).write_text(json.dumps([sys.prefix,sys.pycache_prefix]),encoding='utf-8')",
+        str(output),
+    )
+    assert drv.run_gate(command, repo, context) == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        str(image.root),
+        str(image.root / "bytecode"),
+    ]
+    # The context is a plan, not reusable physical admission. A changed recipe
+    # after preparation must refuse before the next child can overwrite output.
+    image.manifest_path.write_text("{}\n", encoding="utf-8")
+    output.write_text("must survive", encoding="utf-8")
+    with pytest.raises(drv.DriverError, match="managed development image refused"):
+        drv.run_gate(command, repo, context)
+    assert output.read_text(encoding="utf-8") == "must survive"
+
+
+def test_runtime_only_gate_demand_keeps_target_failure_without_source_image(
+    drv, tmp_path, monkeypatch
+):
+    from tools import proof_plan
+
+    # The target catalog/capture itself has separate real runtime controls.
+    # Keep its role literal here so this oracle challenges source-image demand,
+    # including a runtime whose name looks like the default Python tool.
+    runtime = proof_plan.ToolchainPolicy(
+        "python",
+        {
+            "name": "python",
+            "executable": "target-python",
+            "python_identity_role": "runtime",
+            "version_args": ["--version"],
+            "version_pattern": "^ok$",
+        },
+        tmp_path,
+    )
+    config = GateConfig.parse(
+        'always = ["echo runtime-only"]\nalways_toolchains = ["python"]\n',
+        "runtime demand",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    monkeypatch.setattr(
+        proof_plan, "load_toolchain_policies", lambda *args, **kwargs: (runtime,)
+    )
+
+    def probe(policy, *, environment, python_executable):
+        assert policy.python_identity_role == "runtime"
+        assert python_executable is None
+        raise OSError("independent target runtime probe failure")
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    monkeypatch.setattr(
+        drv,
+        "_resolve_repo_venv",
+        lambda *args: pytest.fail("source image selected for target runtime"),
+    )
+    with pytest.raises(
+        drv.DriverError, match="independent target runtime probe failure"
+    ):
+        config.prepare(
+            gates,
+            baseline=_gate_caller_env(tmp_path / "host"),
+            prepare_python=lambda env, needed: drv.prepare_gate_environment(
+                tmp_path, env, requires_python=needed
+            ),
+        )
+    assert not (tmp_path / ".venv").exists()

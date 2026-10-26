@@ -2,9 +2,11 @@ use super::*;
 use crate::backend_process::io_limits::RequestBoundedRead;
 use std::io::{BufReader, Cursor};
 
-// Literal wire bytes, independent of Molt's encoders: map {"functions": []}.
+// Literal wire bytes, independent of Molt's encoders: the empty program. JSON
+// and CBOR carry a `functions` array; the MessagePack lease carries an empty
+// body array and an empty `bin` digest list (protocol 4).
 const JSON: &[u8] = br#"{"functions":[]}"#;
-const MSGPACK: &[u8] = b"\x81\xa9functions\x90";
+const MSGPACK: &[u8] = b"\x82\xaffunction_bodies\x90\xb0function_digests\xc4\x00";
 #[cfg(feature = "cbor")]
 const CBOR: &[u8] = b"\xa1\x69functions\x80";
 const NDJSON: &[u8] = b"{\"kind\":\"ir_stream_start\"}\n{\"kind\":\"ir_stream_end\"}";
@@ -286,10 +288,18 @@ fn messagepack_file_receiver_preserves_literal_float_payload_bits() {
         1,
         0x8000_0000_0000_0001,
     ] {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"\x81\xa9functions\x91\x84\xaareturn_abi\xa4void\xa4name\xa5float\xa6params\x90\xa3ops\x92\x83\xa4kind\xabconst_float\xa7f_value\xcb");
-        bytes.extend_from_slice(&bits.to_be_bytes());
-        bytes.extend_from_slice(b"\xa3out\xa1v\x81\xa4kind\xa8ret_void");
+        let mut body = Vec::new();
+        body.extend_from_slice(b"\x84\xaareturn_abi\xa4void\xa4name\xa5float\xa6params\x90\xa3ops\x92\x83\xa4kind\xabconst_float\xa7f_value\xcb");
+        body.extend_from_slice(&bits.to_be_bytes());
+        body.extend_from_slice(b"\xa3out\xa1v\x81\xa4kind\xa8ret_void");
+        // One-body lease: {function_bodies: [bin(body)], function_digests: bin(digest)}.
+        let mut bytes = b"\x82\xaffunction_bodies\x91\xc4".to_vec();
+        bytes.push(u8::try_from(body.len()).unwrap());
+        bytes.extend_from_slice(&body);
+        bytes.extend_from_slice(b"\xb0function_digests\xc4\x20");
+        bytes.extend_from_slice(
+            molt_ir::addressed_program::FunctionDigest::of_body(&body).as_bytes(),
+        );
         let input = InputFile::new(&bytes);
         let document = read_backend_ir_document(IrFormat::MessagePack, Some(input.path())).unwrap();
         assert_eq!(
@@ -297,4 +307,30 @@ fn messagepack_file_receiver_preserves_literal_float_payload_bits() {
             bits
         );
     }
+}
+
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[test]
+fn captured_one_shot_observes_exact_frame_and_refuses_suffix() {
+    let valid = InputFile::new(MSGPACK);
+    let (document, identity) = read_captured_msgpack(Some(valid.path())).unwrap();
+    assert!(document.ir.functions.is_empty());
+    assert!(identity.function_digests.is_empty());
+    assert_eq!(identity.lease.size, 37);
+    assert_eq!(
+        identity.lease.sha256,
+        "34b6abb7d6c673da2c027b4727588df7e32b41cdcd938914e023bed019ef686a"
+    );
+    for suffix in [0, b' ', 0xc1] {
+        let mut bytes = MSGPACK.to_vec();
+        bytes.push(suffix);
+        let invalid = InputFile::new(&bytes);
+        assert!(read_captured_msgpack(Some(invalid.path())).is_err());
+    }
+    // One digest with no body cannot borrow another process's resident state.
+    let mut missing = MSGPACK[..MSGPACK.len() - 1].to_vec();
+    missing.push(32);
+    missing.extend([1; 32]);
+    let missing = InputFile::new(&missing);
+    assert!(read_captured_msgpack(Some(missing.path())).is_err());
 }

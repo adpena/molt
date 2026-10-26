@@ -256,6 +256,9 @@ jobs:
           uv run --no-sync python -m tools.release.verify_consumer
           --candidate dist/candidate
           --receipt dist/candidate/consumer-verification.json
+          --compile-memory-max-bytes 8589934592
+          --compile-workspace-max-bytes 1073741824
+          --compile-runtime-max-seconds 2700
           --execution-archive-cache "${{ runner.temp }}/molt-release-execution-archives"
 
       - name: Upload verified immutable candidate

@@ -12,8 +12,8 @@ import importlib.machinery
 import json
 import os
 from pathlib import Path
+import py_compile
 import stat
-import shutil
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -27,7 +27,11 @@ from molt import python_environment_location as location
 from molt import python_file_node_custody as files
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
-from tests.python_environment_test_support import runtime_identity_manifest
+from tests.python_environment_test_support import (
+    copy_python_capture_authority,
+    environment_location_manifest,
+    runtime_identity_manifest,
+)
 from tests.process_guard_common import install_module_view
 from tests.module_isolation import forget_module
 
@@ -40,6 +44,224 @@ _PORTABLE_PATH_ALIASES = [
     pytest.param("caf\u00e9", "cafe\u0301", id="unicode-normalization"),
     pytest.param("stra\u00dfe", "STRASSE", id="unicode-casefold"),
 ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--capture-runtime"],
+        ["--runtime-selection"],
+        ["--locate-active-environment"],
+        ["--editable-project", "environment", "project"],
+        ["--capture-environment", "environment", "--publish-bytecode"],
+    ],
+)
+def test_published_admission_requires_read_only_environment_capture(
+    monkeypatch, capsys, arguments
+):
+    monkeypatch.setattr(
+        sys, "argv", ["identity", *arguments, "--admit-published-environment"]
+    )
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+    assert "published admission requires a read-only environment capture" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--development-checkout", "checkout"],
+        ["--admit-published-environment", "--development-python", "3.12"],
+        ["--admit-published-environment", "--development-group", "dev"],
+    ],
+)
+def test_development_admission_requires_complete_operation_intent(
+    monkeypatch, capsys, arguments
+):
+    monkeypatch.setattr(
+        sys, "argv", ["identity", "--capture-active-environment", *arguments]
+    )
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+    assert "development intent requires published admission and a checkout" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("development", [False, True])
+@pytest.mark.parametrize("with_custody", [False, True])
+@pytest.mark.parametrize("verification_fails", [False, True])
+def test_published_admission_keeps_capture_context_until_final_verification(
+    tmp_path, monkeypatch, capsys, with_custody, verification_fails, development
+):
+    from molt import source_build_environment
+    from molt import input_report
+
+    events = []
+    realized = {"environment": "independent captured bytes"}
+    payload = {"identity": realized} if with_custody else realized
+
+    class Context:
+        def __init__(self, *, hash_workers):
+            assert hash_workers == 1
+
+        def __enter__(self):
+            events.append("context-open")
+            return self
+
+        def __exit__(self, *args):
+            events.append("context-closed")
+
+        def verify(self):
+            events.append("verified")
+            if verification_fails:
+                raise PythonEnvironmentIdentityError("captured input changed")
+
+    def capture(root, *, capture_context, **_kwargs):
+        assert root == tmp_path and isinstance(capture_context, Context)
+        events.append("captured")
+        return payload
+
+    def admit(root, observed):
+        assert root == tmp_path and observed is realized
+        assert events == [
+            "context-open",
+            "captured",
+            *(["intent"] if development else []),
+        ]
+        events.append("admitted")
+
+    def load(root, *, repo_root, python, groups):
+        assert root == tmp_path and repo_root == tmp_path / "checkout"
+        assert python == "3.14" and groups == ("bench", "dev")
+        assert events == ["context-open", "captured"]
+        events.append("intent")
+
+    arguments = [
+        "identity",
+        "--capture-environment",
+        str(tmp_path),
+        "--admit-published-environment",
+        *(["--with-custody"] if with_custody else []),
+        *(
+            [
+                "--development-checkout",
+                str(tmp_path / "checkout"),
+                "--development-python",
+                "3.14",
+                "--development-group",
+                "bench",
+                "--development-group",
+                "dev",
+            ]
+            if development
+            else []
+        ),
+    ]
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
+    monkeypatch.setattr(input_report, "worker_initializer", lambda _: None)
+    monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
+    monkeypatch.setattr(identity, "capture_current_python_environment", capture)
+    monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
+    monkeypatch.setattr(source_build_environment, "load_development_environment", load)
+    if verification_fails:
+        with pytest.raises(
+            PythonEnvironmentIdentityError, match="captured input changed"
+        ):
+            identity._main()
+        assert not capsys.readouterr().out
+    else:
+        identity._main()
+        assert json.loads(capsys.readouterr().out) == payload
+    assert events == [
+        "context-open",
+        "captured",
+        *(["intent"] if development else []),
+        "admitted",
+        "verified",
+        "context-closed",
+    ]
+
+
+@pytest.mark.parametrize("fault", ["missing", "populated", "symlink"])
+def test_identity_probe_refuses_unowned_cache_namespace(tmp_path, fault):
+    prefix = tmp_path / "verifier"
+    if fault == "populated":
+        prefix.mkdir()
+        (prefix / "cache.pyc").write_bytes(b"unadmitted")
+    elif fault == "symlink":
+        target = tmp_path / "target"
+        target.mkdir()
+        try:
+            prefix.symlink_to(target, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable")
+    with pytest.raises(PythonEnvironmentIdentityError, match="fresh empty owned"):
+        identity.python_identity_probe_arguments(
+            ("--capture-runtime",), verifier_bytecode_prefix=prefix
+        )
+
+
+def test_image_cache_mapping_refuses_absent_verifier_prefix(tmp_path, monkeypatch):
+    install_module_view(monkeypatch, "sys", sys, environment, pycache_prefix=None)
+    with pytest.raises(PythonEnvironmentIdentityError, match="pre-start"):
+        environment._image_cache_from_source(
+            tmp_path / "demo.py", tmp_path / "image", 0
+        )
+
+
+@pytest.mark.parametrize("body_fails", [False, True])
+def test_verifier_prefix_cleanup_keeps_primary_failure(
+    tmp_path, monkeypatch, body_fails
+):
+    from molt import temporary_artifacts
+
+    owners = []
+    original_owner = temporary_artifacts.OwnedTemporaryDirectory
+    original_delete = temporary_artifacts.delete_path
+
+    class TrackedDirectory(original_owner):
+        def __init__(self, *, prefix):
+            super().__init__(prefix=prefix, dir=tmp_path)
+            owners.append(self)
+
+    def refuse_owned_cleanup(path):
+        if owners and Path(path) == Path(owners[0].name):
+            return False, "injected deletion refusal"
+        return original_delete(path)
+
+    primary = RuntimeError("original probe failure")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                temporary_artifacts, "OwnedTemporaryDirectory", TrackedDirectory
+            )
+            patch.setattr(temporary_artifacts, "delete_path", refuse_owned_cleanup)
+            with pytest.raises(RuntimeError if body_fails else OSError) as raised:
+                with identity.PythonIdentityVerifier() as verifier:
+                    prefix = verifier.prefix
+                    assert prefix.is_dir()
+                    if body_fails:
+                        raise primary
+            assert prefix.is_dir()
+            if body_fails:
+                assert raised.value is primary
+                notes = "\n".join(primary.__notes__)
+                assert str(prefix) in notes
+                assert "OSError" in notes
+                assert "injected deletion refusal" in notes
+            else:
+                assert "injected deletion refusal" in str(raised.value)
+    finally:
+        # Retry through the same allocation owner after restoring deletion;
+        # the test never reconstructs ownership from the retained path.
+        for owner in owners:
+            owner.cleanup()
 
 
 @pytest.mark.parametrize("authority", ["", "localhost", "LOCALHOST", "LoCaLhOsT"])
@@ -118,12 +340,8 @@ def test_editable_file_uri_rejects_nonlocal_authority(url):
 @pytest.mark.slow
 def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkeypatch):
     """Exercise real imports without relying on isolation-ignored environment flags."""
-    source_root = Path(identity.__file__).resolve().parents[2]
     disposable = tmp_path / "source"
-    for source in identity.python_capture_authority_paths():
-        destination = disposable / source.relative_to(source_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+    copy_python_capture_authority(disposable)
     copied_authority = disposable / "src" / "molt" / "python_environment_identity.py"
     monkeypatch.setattr(identity, "__file__", str(copied_authority))
 
@@ -139,21 +357,29 @@ def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkey
 
     before = snapshot()
     assert not list(disposable.rglob("__pycache__"))
-    command = [
-        str(getattr(sys, "_base_executable", sys.executable)),
-        *identity.python_identity_probe_arguments(("--capture-runtime",), no_site=True),
-    ]
     for _ in range(2):
-        completed = _COMMANDS.run(
-            command,
-            cwd=disposable,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "0"},
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=60,
-            check=False,
-        )
+        with identity.PythonIdentityVerifier() as verifier:
+            verifier_prefix = verifier.prefix
+            command = [
+                str(getattr(sys, "_base_executable", sys.executable)),
+                *identity.python_identity_probe_arguments(
+                    ("--capture-runtime",),
+                    no_site=True,
+                    verifier_bytecode_prefix=verifier_prefix,
+                ),
+            ]
+            completed = verifier.run(
+                command,
+                cwd=disposable,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "0"},
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=60,
+                check=False,
+                memory_guard_prefix=_COMMANDS.prefix,
+            )
+            assert not list(verifier_prefix.iterdir())
         assert completed.returncode == 0, completed.stderr
         identity.validate_python_runtime_identity(json.loads(completed.stdout))
         assert not list(disposable.rglob("__pycache__"))
@@ -986,7 +1212,7 @@ def test_synthetic_environment_preserves_declared_empty_import_roots(packages):
     assert [row["name"] for row in environment["distributions"]] == sorted(
         name for name, _version in packages
     )
-    assert environment["tree"]["file_count"] == 2 + len(packages)
+    assert environment["tree"]["file_count"] == 2 + 2 * len(packages)
 
 
 @pytest.mark.parametrize(
@@ -1056,12 +1282,75 @@ def test_environment_projects_only_captured_interpreter_aliases(
     base = tmp_path / "base.exe"
     base.write_bytes(b"synthetic base image; content is owned by the manifest")
     projected = identity.python_environment_executable_files(
-        payload, tmp_path, base_executable=base
+        payload, tmp_path, base_executable=base, base_executable_selector=base
     )
     paths = {row["path"] for row in projected}
     assert (str(tmp_path / relative) in paths) is admitted
     assert str(tmp_path / selected["path"]) in paths
     assert str(base.resolve()) in paths
+
+
+@pytest.mark.parametrize("target", ["captured", "foreign-samebytes", "wrong-node"])
+def test_base_selector_projection_binds_the_exact_captured_target(tmp_path, target):
+    from tests.python_environment_test_support import realized_environment_manifest
+
+    data = b"captured base interpreter"
+    physical = tmp_path / "physical" / "python.exe"
+    foreign = tmp_path / "foreign" / "python.exe"
+    for path in (physical, foreign):
+        path.parent.mkdir()
+        path.write_bytes(data)
+    alias = tmp_path / "base-selector"
+    try:
+        alias.symlink_to(
+            foreign.parent if target == "foreign-samebytes" else physical.parent,
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows host lacks symbolic-link creation privilege")
+        raise
+    selector = alias / "python.exe"
+    assert selector.read_bytes() == physical.read_bytes() == foreign.read_bytes()
+    runtime = runtime_identity_manifest()
+    runtime["file_nodes"][0].update(
+        size=len(data),
+        sha256=hashlib.sha256(data if target != "wrong-node" else b"other").hexdigest(),
+    )
+    runtime["runtime_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in runtime.items()
+            if key != "runtime_closure_sha256"
+        }
+    )
+    payload = realized_environment_manifest(runtime, [])
+
+    def project():
+        return environment.python_environment_executable_files(
+            payload,
+            tmp_path,
+            base_executable=physical,
+            base_executable_selector=selector,
+        )
+
+    if target == "captured":
+        rows = {row["role"]: row for row in project()}
+        assert rows["base-interpreter"]["path"] == str(physical)
+        assert rows["interpreter-alias:base-selector"] == {
+            "role": "interpreter-alias:base-selector",
+            "path": str(selector),
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    else:
+        with pytest.raises(
+            PythonEnvironmentIdentityError,
+            match="captured physical base"
+            if target == "foreign-samebytes"
+            else "runtime node",
+        ):
+            project()
 
 
 def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_path):
@@ -1083,13 +1372,29 @@ def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_pat
         }
     )
     environment = realized_environment_manifest(runtime, [("example", "1.0")])
+    wheel = environment["distributions"][0]["wheel"]
+    wheel_node = next(
+        row["node"]
+        for row in environment["tree"]["entries"]
+        if row["path"] == wheel["path"]
+    )
     environment_pool = files._FileNodePool(capture_context=context)
     for index in range(len(environment["tree"]["file_nodes"])):
         path = tmp_path / f"file-{index}"
         if index:
-            path.write_bytes(f"environment-{index}".encode())
+            path.write_bytes(
+                b"Wheel-Version: 1.0\nTag: py3-none-any\n"
+                if environment["tree"]["file_nodes"][index]["id"] == wheel_node
+                else f"environment-{index}".encode()
+            )
         environment_pool.bind(path, path.stat(), label="environment")
     environment["tree"]["file_nodes"] = environment_pool.nodes
+    wheel["sha256"] = next(
+        row["sha256"] for row in environment_pool.nodes if row["id"] == wheel_node
+    )
+    environment["distribution_inventory_sha256"] = canonical_json_sha256(
+        environment["distributions"]
+    )
     environment["environment_closure_sha256"] = canonical_json_sha256(
         {
             key: value
@@ -1102,6 +1407,11 @@ def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_pat
     assert bindings["/runtime/file_nodes/0"] == bindings["/tree/file_nodes/0"]
     assert len(envelope["node_custody"]) == len(envelope["file_custody"]) + 1
     assert context.inventory_profile()["hashed_files"] == len(envelope["file_custody"])
+    assert capture.captured_file_for_node(envelope, runtime["file_nodes"][0])[
+        "path"
+    ] == str(shared)
+    with pytest.raises(PythonEnvironmentIdentityError, match="unique capture custody"):
+        capture.captured_file_for_node(envelope, dict(runtime["file_nodes"][0]))
     with pytest.raises(
         PythonEnvironmentIdentityError, match="producer custody binding"
     ):
@@ -1461,29 +1771,112 @@ def test_location_exact_native_files_do_not_broaden_watch_roots(tmp_path):
     executable.write_bytes(b"python")
     native = tmp_path / "system.dll"
     native.write_bytes(b"native")
-    material = {
-        "schema": location.PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-        "prefix": str(prefix),
-        "selected_executable": str(executable),
-        "base_executable": str(executable),
-        "roots": [str(prefix)],
-        "external_roots": [],
-        "file_paths": [str(native)],
-    }
-    payload = {**material, "identity_sha256": canonical_json_sha256(material)}
+    payload = environment_location_manifest(
+        prefix=prefix,
+        selected_executable=executable,
+        base_executable=executable,
+        base_executable_selector=executable,
+        roots=[prefix],
+        external_roots=[],
+        file_paths=[native],
+    )
     assert location.validate_python_environment_location(payload) == payload
-    material["file_paths"] = [str(tmp_path)]
-    with pytest.raises(PythonEnvironmentIdentityError, match="file kind"):
+    from tools.proof_queue_pkg import execution_custody
+
+    source = tmp_path / "source"
+    source.mkdir()
+    specs = execution_custody.watch_specs(
+        source_root=source,
+        tracked_paths=[],
+        identities=[payload],
+        broad_roots=[prefix],
+    )
+    exact = next(spec for spec in specs if spec.root == tmp_path)
+    assert exact.owns(native)
+    assert not exact.owns(tmp_path / "unrelated.dll")
+    material = {
+        key: value for key, value in payload.items() if key != "identity_sha256"
+    }
+    material["file_paths"] = ["relative-native.dll"]
+    with pytest.raises(PythonEnvironmentIdentityError, match="canonical absolute"):
         location.validate_python_environment_location(
             {**material, "identity_sha256": canonical_json_sha256(material)}
         )
 
 
-def test_environment_locator_keeps_import_archive_as_exact_input(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "fault", ["missing", "v1", "relative", "parent", "nul", "extra"]
+)
+def test_location_v2_requires_an_explicit_absolute_base_selector(tmp_path, fault):
+    prefix = tmp_path / "environment"
+    executable = prefix / "python.exe"
+    payload = environment_location_manifest(
+        prefix=prefix,
+        selected_executable=executable,
+        base_executable=executable,
+        base_executable_selector=executable,
+        roots=[prefix],
+        external_roots=[],
+        file_paths=[executable],
+    )
+    payload.pop("identity_sha256")
+    if fault == "missing":
+        payload.pop("base_executable_selector")
+    elif fault == "v1":
+        payload["schema"] = "molt.python-environment-location.v1"
+    elif fault == "relative":
+        payload["base_executable_selector"] = "python.exe"
+    elif fault == "parent":
+        payload["base_executable_selector"] = str(prefix / ".." / "python.exe")
+    elif fault == "nul":
+        payload["base_executable_selector"] = str(executable) + "\x00"
+    else:
+        payload["implicit_base_selector"] = str(executable)
+    payload["identity_sha256"] = canonical_json_sha256(payload)
+    with pytest.raises(PythonEnvironmentIdentityError):
+        location.validate_python_environment_location(payload)
+
+
+def test_location_validation_never_resolves_a_declared_selector(tmp_path, monkeypatch):
+    prefix = tmp_path / "absent-environment"
+    executable = prefix / "python.exe"
+    payload = environment_location_manifest(
+        prefix=prefix,
+        selected_executable=executable,
+        base_executable=executable,
+        base_executable_selector=tmp_path / "absent-base-selector" / "python.exe",
+        roots=[prefix],
+        external_roots=[],
+        file_paths=[executable],
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("pure locator validation consulted the filesystem")
+
+    with monkeypatch.context() as patch:
+        for name in ("resolve", "stat", "lstat"):
+            patch.setattr(Path, name, forbidden)
+        assert location.validate_python_environment_location(payload) == payload
+
+
+@pytest.mark.parametrize("base_alias", [False, True])
+def test_environment_locator_keeps_import_archive_as_exact_input(
+    tmp_path, monkeypatch, base_alias
+):
     prefix = tmp_path / "environment"
     prefix.mkdir()
     executable = prefix / "python.exe"
     executable.write_bytes(b"selected interpreter")
+    base_selector = executable
+    if base_alias:
+        base_directory = tmp_path / "base-selector"
+        try:
+            base_directory.symlink_to(prefix, target_is_directory=True)
+        except OSError as exc:
+            if os.name == "nt" and exc.winerror == 1314:
+                pytest.skip("Windows host lacks symbolic-link creation privilege")
+            raise
+        base_selector = base_directory / executable.name
     stdlib = prefix / "stdlib"
     stdlib.mkdir()
     archive = tmp_path / "system" / "python312.zip"
@@ -1497,7 +1890,7 @@ def test_environment_locator_keeps_import_archive_as_exact_input(tmp_path, monke
         sys,
         location,
         executable=str(executable),
-        _base_executable=str(executable),
+        _base_executable=str(base_selector),
         base_prefix=str(prefix),
         exec_prefix=str(prefix),
         base_exec_prefix=str(prefix),
@@ -1525,15 +1918,17 @@ def test_environment_locator_keeps_import_archive_as_exact_input(tmp_path, monke
 
     assert located["roots"] == [str(prefix), str(stdlib)]
     assert located["file_paths"] == sorted([str(native), str(archive)])
+    assert located["base_executable"] == str(executable.resolve(strict=True))
+    assert located["base_executable_selector"] == str(base_selector)
     assert location.validate_python_environment_location(located) == located
 
 
-def _installed_fixture(root: Path):
+def _installed_fixture(root: Path, source_bytes: bytes = b"VALUE = 1\n"):
     site = root / "site"
     metadata = site / "demo-1.0.dist-info"
     metadata.mkdir(parents=True)
     module = site / "demo.py"
-    module.write_bytes(b"VALUE = 1\n")
+    module.write_bytes(source_bytes)
     meta = metadata / "METADATA"
     meta.write_text(
         "Metadata-Version: 2.1\nName: Demo\nVersion: 1.0\n", encoding="utf-8"
@@ -1574,6 +1969,289 @@ def test_distribution_metadata_is_parsed_from_attested_file_nodes(tmp_path, muta
         ]
         assert "site/demo.py" in owned
         assert scripts == {}
+
+
+@pytest.mark.parametrize("mutate", [False, True])
+def test_installed_wheel_projection_uses_record_bound_bytes(tmp_path, mutate):
+    _installed_fixture(tmp_path)
+    wheel = tmp_path / "site/demo-1.0.dist-info/WHEEL"
+    data = b"Wheel-Version: 1.0\nTag: cp313-cp313t-win_arm64\nBuild: 10a\n"
+    wheel.write_bytes(data)
+    record = wheel.with_name("RECORD")
+    digest = (
+        base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+    )
+    with record.open("a") as stream:
+        stream.write(f"demo-1.0.dist-info/WHEEL,sha256={digest},{len(data)}\n")
+    tree, pool = _tree(tmp_path, files.PythonFileCaptureContext())
+    if mutate:
+        wheel.write_bytes(data.replace(b"cp313t", b"cp313d"))
+    args = (
+        ["site"],
+        "scripts",
+        {row["path"]: row for row in tree["entries"]},
+        {row["id"]: row for row in pool.nodes},
+        pool,
+    )
+    if mutate:
+        with pytest.raises(PythonEnvironmentIdentityError):
+            environment._installed_distributions(*args)
+    else:
+        distributions, owned, _scripts = environment._installed_distributions(*args)
+        assert distributions[0]["wheel"] == {
+            "path": "site/demo-1.0.dist-info/WHEEL",
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "tags": ["cp313-cp313t-win_arm64"],
+            "build": "10a",
+        }
+        assert "site/demo-1.0.dist-info/WHEEL" in owned
+
+
+@pytest.mark.parametrize(
+    "layout", ["normal", "pytest", "foreign-tag", "adjacent", "source", "unknown"]
+)
+def test_generated_cache_custody_matches_real_importability(tmp_path, layout):
+    site = tmp_path / "site"
+    site.mkdir()
+    source = site / "retired.py"
+    source.write_text("VALUE = 41\n", encoding="utf-8")
+    tag = str(sys.implementation.cache_tag)
+    filename = {
+        "normal": f"retired.{tag}.pyc",
+        "pytest": f"retired.{tag}-pytest-9.1.1.pyc",
+        "foreign-tag": "retired.foreign-interpreter.pyc",
+        "adjacent": "retired.pyc",
+        "source": f"retired.{tag}.pyc",
+        "unknown": "retired.pyc",
+    }[layout]
+    bytecode = (site if layout == "adjacent" else site / "__pycache__") / filename
+    bytecode.parent.mkdir(exist_ok=True)
+    py_compile.compile(str(source), cfile=str(bytecode), doraise=True)
+    if layout != "source":
+        source.unlink()
+
+    # CPython is the independent oracle: orphan cache-directory bytecode is
+    # ignored, whereas a legacy adjacent .pyc is importable without source.
+    probe = _COMMANDS.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            "import importlib.util,json,sys;sys.path.insert(0,sys.argv[1]);"
+            "spec=importlib.util.find_spec('retired');"
+            "print(json.dumps({'found':spec is not None,"
+            "'value':__import__('retired').VALUE if spec else None}))",
+            str(site),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    importable = layout in {"adjacent", "source"}
+    assert json.loads(probe.stdout) == {
+        "found": importable,
+        "value": 41 if importable else None,
+    }
+
+    context = files.PythonFileCaptureContext()
+    pool = files._FileNodePool(capture_context=context)
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    relative = bytecode.relative_to(tmp_path).as_posix()
+    result = environment._bytecode_disposition(
+        relative,
+        tmp_path,
+        set(),
+        entries,
+        metadata,
+        pool,
+        pytest_version=None,
+        source_paths_by_key={
+            files._portable_path_key(p): p
+            for p in entries
+            if p.casefold().endswith(".py")
+        },
+        excluded_path_keys=frozenset(),
+    )
+    inert = layout in {"normal", "pytest", "foreign-tag"}
+    assert result is (
+        environment._BytecodeDisposition.INERT
+        if inert
+        else environment._BytecodeDisposition.UNOWNED
+    )
+    if inert:
+        # Inert is still exact input, never an exclusion from file custody.
+        node = next(row for row in pool.nodes if row["id"] == entries[relative]["node"])
+        assert node["sha256"] == hashlib.sha256(bytecode.read_bytes()).hexdigest()
+        context.verify()
+        bytecode.write_bytes(bytecode.read_bytes() + b"changed inert bytes")
+        with pytest.raises(ValueError, match="changed"):
+            context.verify()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["none", "header", "code", "source", "pytest-none", "pytest-other", "pytest"],
+)
+def test_owned_active_bytecode_keeps_source_and_tool_guards(tmp_path, fault):
+    source = _installed_fixture(tmp_path)
+    rewrite = fault.startswith("pytest")
+    suffix = "-pytest-9.1.1" if rewrite else ""
+    bytecode = (
+        source.parent
+        / "__pycache__"
+        / f"demo.{sys.implementation.cache_tag}{suffix}.pyc"
+    )
+    bytecode.parent.mkdir()
+    py_compile.compile(str(source), cfile=str(bytecode), doraise=True)
+    if fault == "header":
+        bytecode.write_bytes(b"BAD!" + bytecode.read_bytes()[4:])
+    elif fault == "code":
+        bytecode.write_bytes(bytecode.read_bytes()[:-1] + b"!")
+    elif fault == "source":
+        stamp = source.stat()
+        os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
+    pool = files._FileNodePool(capture_context=files.PythonFileCaptureContext())
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    # The independent installed RECORD owns source, never generated caches.
+    _, owned, _ = environment._installed_distributions(
+        ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
+    )
+    version = (
+        None
+        if fault == "pytest-none"
+        else "different"
+        if fault == "pytest-other"
+        else "9.1.1"
+    )
+
+    def classify():
+        return environment._bytecode_disposition(
+            bytecode.relative_to(tmp_path).as_posix(),
+            tmp_path,
+            owned,
+            entries,
+            metadata,
+            pool,
+            pytest_version=version,
+            source_paths_by_key={
+                files._portable_path_key(p): p
+                for p in entries
+                if p.casefold().endswith(".py")
+            },
+            excluded_path_keys=frozenset(),
+        )
+
+    if fault == "none":
+        assert classify() is environment._BytecodeDisposition.OWNED
+    else:
+        with pytest.raises(PythonEnvironmentIdentityError):
+            classify()
+
+
+@pytest.mark.parametrize("guard", ["code", "rewrite-tool"])
+def test_active_cache_case_alias_is_not_inert(tmp_path, guard):
+    source = _installed_fixture(tmp_path)
+    original = source.read_bytes()
+    stamp = source.stat()
+    suffix = "-pytest-9.1.1" if guard == "rewrite-tool" else ""
+    cache = (
+        source.parent
+        / "__pycache__"
+        / f"DEMO.{sys.implementation.cache_tag}{suffix}.pyc"
+    )
+    cache.parent.mkdir()
+    # Preserve source metadata but give the cache distinct observable behavior.
+    source.write_bytes(b"VALUE = 2\n")
+    os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    py_compile.compile(str(source), cfile=str(cache), doraise=True)
+    source.write_bytes(original)
+    os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    if guard == "code":
+        aliases = cache.with_name(cache.name.replace("DEMO.", "demo.", 1)).exists()
+        probe = _COMMANDS.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                "import sys;sys.path.insert(0,sys.argv[1]);import demo;print(demo.VALUE)",
+                str(source.parent),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert probe.stdout.strip() == ("2" if aliases else "1")
+    pool = files._FileNodePool(capture_context=files.PythonFileCaptureContext())
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    _, owned, _ = environment._installed_distributions(
+        ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
+    )
+    with pytest.raises(PythonEnvironmentIdentityError):
+        environment._bytecode_disposition(
+            cache.relative_to(tmp_path).as_posix(),
+            tmp_path,
+            owned,
+            entries,
+            metadata,
+            pool,
+            pytest_version=None,
+            source_paths_by_key={
+                files._portable_path_key(p): p
+                for p in entries
+                if p.casefold().endswith(".py")
+            },
+            excluded_path_keys=frozenset(),
+        )
+
+
+def test_explicitly_excluded_importable_source_is_not_an_orphan(tmp_path):
+    source = tmp_path / "site" / "demo.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 41\n", encoding="utf-8")
+    cache = source.parent / "__pycache__" / f"demo.{sys.implementation.cache_tag}.pyc"
+    cache.parent.mkdir()
+    py_compile.compile(str(source), cfile=str(cache), doraise=True)
+    excluded = frozenset({"site/demo.py"})
+    pool = files._FileNodePool(capture_context=files.PythonFileCaptureContext())
+    tree, _, metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool, excluded=excluded
+    )
+    entries = {row["path"]: row for row in tree["entries"]}
+    assert "site/demo.py" not in entries
+    assert source.is_file()
+    assert (
+        environment._bytecode_disposition(
+            cache.relative_to(tmp_path).as_posix(),
+            tmp_path,
+            set(),
+            entries,
+            metadata,
+            pool,
+            pytest_version=None,
+            source_paths_by_key={},
+            excluded_path_keys=frozenset(files._portable_path_key(p) for p in excluded),
+        )
+        is environment._BytecodeDisposition.UNOWNED
+    )
 
 
 def test_runtime_startup_projection_preserves_actual_native_selection(
@@ -1720,6 +2398,89 @@ def test_standalone_probe_admits_selected_package_without_repository_tools(
         assert namespace.__spec__ is prior_spec
 
 
+@pytest.mark.parametrize("encoding", ["ascii", "cp1252"])
+def test_standalone_package_refusal_preserves_unicode_on_diagnostic_wire(
+    standalone_probe_source, tmp_path, monkeypatch, encoding
+):
+    foreign = tmp_path / "foreign-λ" / "molt"
+    foreign.mkdir(parents=True)
+    package = ModuleType("molt")
+    package.__file__ = str(foreign / "__init__.py")
+    package.__path__ = [str(foreign)]
+    monkeypatch.setitem(sys.modules, "molt", package)
+    imports = []
+    output = io.BytesIO()
+    stdout = sys.stdout
+    with io.TextIOWrapper(output, encoding=encoding, errors="backslashreplace") as wire:
+        with monkeypatch.context() as streams:
+            streams.setattr(sys, "stderr", wire)
+            with pytest.raises(SystemExit) as caught:
+                _execute_probe_to_package_import(standalone_probe_source, imports)
+            wire.flush()
+            diagnostic = output.getvalue().decode("utf-8", errors="strict")
+        assert caught.value.code == 2
+        assert str(foreign) in diagnostic
+        assert str(standalone_probe_source.parent) in diagnostic
+        assert "\\u03bb" not in diagnostic
+        assert imports == []
+        assert sys.stdout is stdout
+
+
+@pytest.mark.parametrize("failure", ["arguments", "package"])
+def test_standalone_refusal_uses_utf8_after_ascii_child_pipe_startup(tmp_path, failure):
+    selected = tmp_path / "selected-λ"
+    copy_python_capture_authority(selected)
+    foreign = tmp_path / "foreign-λ" / "molt"
+    foreign.mkdir(parents=True)
+    (foreign / "__init__.py").write_bytes(
+        (selected / "src/molt/__init__.py").read_bytes()
+    )
+    invalid_argument = "--unknown-λ"
+    startup = (
+        "sys.argv = [sys.argv[1], '--runtime-selection', sys.argv[2]]; "
+        if failure == "arguments"
+        else "sys.path.insert(0, sys.argv[2]); import molt; "
+        "sys.argv = [sys.argv[1], '--runtime-selection']; "
+    )
+    script = (
+        "import runpy, sys; "
+        "sys.stderr.reconfigure(encoding='ascii', errors='backslashreplace'); "
+        + startup
+        + "runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
+    with identity.PythonIdentityVerifier() as verifier:
+        prefix = verifier.prefix
+        completed = verifier.run(
+            [
+                str(getattr(sys, "_base_executable", sys.executable)),
+                *identity.python_identity_verifier_arguments(prefix),
+                "-S",
+                "-c",
+                script,
+                str(selected / "src/molt/python_environment_identity.py"),
+                invalid_argument if failure == "arguments" else str(foreign.parent),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=30,
+            check=False,
+            memory_guard_prefix=_COMMANDS.prefix,
+        )
+        assert not list(prefix.iterdir())
+    assert completed.returncode == 2
+    if failure == "arguments":
+        assert invalid_argument in completed.stderr
+    else:
+        assert "package source admission failed" in completed.stderr
+        assert str(selected / "src/molt") in completed.stderr
+        assert str(foreign) in completed.stderr
+    assert "\\u03bb" not in completed.stderr
+    assert completed.stdout == ""
+
+
 @pytest.mark.parametrize("foreign_kind", ["root", "descendant", "namespace"])
 @pytest.mark.parametrize("authority_preloaded", [False, True])
 def test_standalone_probe_refuses_foreign_package_before_custody_imports(
@@ -1840,7 +2601,36 @@ def test_capture_authority_preserves_installed_package_and_explicit_source_owner
     assert installed / "package_import_custody.py" not in projected
 
 
-@pytest.mark.parametrize("name", ["default_paths", "windows_process_api"])
+def test_probe_reader_selection_uses_explicit_source_without_ambient_fallback(
+    tmp_path, monkeypatch
+):
+    selected = tmp_path / "selected"
+    script = selected / "src/molt/python_environment_identity.py"
+    script.parent.mkdir(parents=True)
+    script.write_bytes(Path(identity.__file__).read_bytes())
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path / "unrelated"))
+    with identity.PythonIdentityVerifier() as verifier:
+        prefix = verifier.prefix
+        arguments = identity.python_identity_probe_arguments(
+            ("--capture-runtime",),
+            verifier_bytecode_prefix=prefix,
+            source_root=selected,
+        )
+        assert str(script.resolve()) in arguments
+        assert str(Path(identity.__file__).resolve()) not in arguments
+        assert script in identity.python_capture_authority_paths(source_root=selected)
+        script.unlink()
+        with pytest.raises(FileNotFoundError):
+            identity.python_identity_probe_arguments(
+                ("--capture-runtime",),
+                verifier_bytecode_prefix=prefix,
+                source_root=selected,
+            )
+
+
+@pytest.mark.parametrize(
+    "name", ["default_paths", "windows_process_api", "flag_strings"]
+)
 def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     tmp_path,
     name,
@@ -1851,3 +2641,448 @@ def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     assert tmp_path / f"src/molt/{name}.py" in identity.python_capture_authority_paths(
         source_root=tmp_path
     )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "grouped",
+        "mutated-source",
+        "forged-code",
+        "rewrite",
+        "image-prefix",
+        "populated-prefix",
+    ],
+)
+def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(tmp_path, fault):
+    # Interpreter-wide cache policy belongs only to spawned children, never the
+    # pytest process with concurrently active guard and sentinel threads.
+    with identity.PythonIdentityVerifier() as verifier:
+        verifier_prefix = verifier.prefix
+        command = [
+            sys.executable,
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={verifier_prefix}",
+            "-c",
+            "import sys; from pathlib import Path; "
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
+            "from tests.test_python_environment_identity import _sealed_ordinary_prefix_control; "
+            "_sealed_ordinary_prefix_control(Path(sys.argv[1]), sys.argv[2])",
+            str(tmp_path),
+            fault,
+        ]
+        result = verifier.run(
+            command,
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+            memory_guard_prefix=_COMMANDS.prefix,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str):
+    """py_compile and real pytest rewriting are independent producer controls."""
+    import ast
+    import importlib.util
+    import marshal
+    import struct
+    from _pytest.assertion.rewrite import rewrite_asserts
+
+    root = tmp_path / "image"
+    source = _installed_fixture(
+        root, b'"module docstring"\nVALUE = 1\nassert VALUE == 1\nDEBUG = __debug__\n'
+    )
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    runtime_source = runtime_root / "runtime.py"
+    runtime_source.write_bytes(b'"runtime docstring"\nassert __debug__\n')
+    runtime_alias = runtime_root / "alias.py"
+    os.link(runtime_source, runtime_alias)
+    sources = [source, runtime_source, runtime_alias]
+    prefix = location.environment_bytecode_prefix(root)
+    prefix.mkdir()
+    verifier_prefix = sys.pycache_prefix
+    assert verifier_prefix is not None
+    assert Path(verifier_prefix) != prefix
+
+    def capture_tree(directory, first, context):
+        captured_pool = files._FileNodePool(capture_context=context)
+        # Distinct pools deliberately reuse file-node-0; runtime aliases share
+        # that node but require different code.co_filename values.
+        assert captured_pool.bind(first, first.stat(), label="fixture") == "file-node-0"
+        captured_tree, _, _ = files._stable_tree_inventory(
+            directory, root_id="fixture", label="fixture", pool=captured_pool
+        )
+        return captured_tree, captured_pool
+
+    context = files.PythonFileCaptureContext()
+    tree, pool = capture_tree(root, source, context)
+    runtime_tree, runtime_pool = capture_tree(runtime_root, runtime_source, context)
+    entries = {row["path"]: row for row in tree["entries"]}
+    _, owned, _ = environment._installed_distributions(
+        ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
+    )
+
+    def project(entries, pool, runtime_tree, runtime_pool, *, publish):
+        reads, attempts = [], []
+        read_bound = files._FileNodePool.read_bound
+        derive = environment._ordinary_cache_bytes
+
+        def read(owner, node, *, label):
+            data = read_bound(owner, node, label=label)
+            if label.endswith(" source"):
+                reads.append((owner, node))
+                if not publish and fault == "mutated-source" and len(reads) == 1:
+                    source.write_bytes(b"VALUE = 2\n")
+            return data
+
+        def compile_cache(data, filename, optimization):
+            attempts.append((filename, optimization))
+            return derive(data, filename, optimization)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(files._FileNodePool, "read_bound", read)
+            patch.setattr(environment, "_ordinary_cache_bytes", compile_cache)
+            environment._ordinary_bytecode_projection(
+                root,
+                entries,
+                owned,
+                pool,
+                {"runtime_roots": [runtime_tree]},
+                (("fixture", runtime_root),),
+                runtime_pool,
+                {"trees": []},
+                (),
+                publish=publish,
+            )
+        return reads, attempts
+
+    reads, attempts = project(entries, pool, runtime_tree, runtime_pool, publish=True)
+    assert reads.count((pool, "file-node-0")) == 1
+    assert reads.count((runtime_pool, "file-node-0")) == 2
+    assert sorted(attempts) == sorted(
+        (str(path), opt) for path in sources for opt in (0, 1, 2)
+    )
+    assert sys.pycache_prefix == verifier_prefix
+    assert not list(Path(verifier_prefix).iterdir())
+    # Ask a separate interpreter selecting the image namespace for its native
+    # paths; expected names do not use the receiver's suffix-rebasing helper.
+    mapped = _COMMANDS.run(
+        [
+            sys.executable,
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-c",
+            "import importlib.util,json,sys; "
+            "print(json.dumps([[importlib.util.cache_from_source(source, "
+            "optimization=o) for o in ('',1,2)] for source in sys.argv[1:]]))",
+            *map(str, sources),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert mapped.returncode == 0, mapped.stderr
+    all_caches = [
+        [Path(value) for value in values] for values in json.loads(mapped.stdout)
+    ]
+    for module, caches in zip(sources, all_caches, strict=True):
+        for optimization, cache in enumerate(caches):
+            oracle = tmp_path / f"oracle-{module.stem}-{optimization}.pyc"
+            py_compile.compile(
+                str(module),
+                cfile=str(oracle),
+                doraise=True,
+                invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+                optimize=optimization,
+            )
+            assert cache.read_bytes() == oracle.read_bytes()
+        assert len({cache.read_bytes() for cache in caches}) == 3
+    cache_paths = all_caches[0]
+    cache = cache_paths[0]
+    if fault == "forged-code":
+        # Keep the complete valid checked-hash header. A filename/header waiver
+        # would accept executable bytes that have never derived from this source.
+        cache.write_bytes(
+            cache.read_bytes()[:16]
+            + marshal.dumps(compile("VALUE = 99\n", str(source), "exec"))
+        )
+    elif fault == "rewrite":
+        tree = ast.parse("assert 1 == 2\n", filename=str(source))
+        rewrite_asserts(tree, b"assert 1 == 2\n", str(source))
+        rewritten = compile(tree, str(source), "exec", dont_inherit=True)
+        rewrite_cache = cache.with_name(
+            cache.stem + f"-pytest-{pytest.__version__}.pyc"
+        )
+        stamp = source.stat()
+        rewrite_cache.write_bytes(
+            importlib.util.MAGIC_NUMBER
+            + struct.pack("<III", 0, int(stamp.st_mtime), stamp.st_size)
+            + marshal.dumps(rewritten)
+        )
+    elif fault == "image-prefix":
+        sys.pycache_prefix = str(prefix)
+    elif fault == "populated-prefix":
+        (Path(verifier_prefix) / "unadmitted.pyc").write_bytes(b"foreign cache")
+    present = [(path, opt) for path in sources for opt in (0, 1, 2)]
+    if fault == "grouped":
+        # Sparse opt-1/opt-2 sets and interleaved hardlink rows defeat both an
+        # opt-0 assumption and a last-source-only reuse implementation.
+        present = [
+            (runtime_alias, 0),
+            (source, 1),
+            (runtime_source, 2),
+            (runtime_alias, 2),
+        ]
+        for module, caches in zip(sources, all_caches, strict=True):
+            for opt, cache in enumerate(caches):
+                if (module, opt) not in present:
+                    cache.unlink()
+    captured_context = files.PythonFileCaptureContext()
+    captured, captured_pool = capture_tree(root, source, captured_context)
+    captured_runtime, captured_runtime_pool = capture_tree(
+        runtime_root, runtime_source, captured_context
+    )
+    captured_entries = {row["path"]: row for row in captured["entries"]}
+    for module, opt in present:
+        relative = all_caches[sources.index(module)][opt].relative_to(root).as_posix()
+        captured_entries[relative] = captured_entries.pop(relative)
+
+    def admit():
+        reads, attempts = project(
+            captured_entries,
+            captured_pool,
+            captured_runtime,
+            captured_runtime_pool,
+            publish=False,
+        )
+        # The public capture boundary retains this fence after projection.
+        captured_context.verify()
+        assert reads.count((captured_pool, "file-node-0")) == 1
+        assert reads.count((captured_runtime_pool, "file-node-0")) == 2
+        assert sorted(attempts) == sorted((str(path), opt) for path, opt in present)
+
+    if fault in {"none", "grouped"}:
+        admit()
+        assert sys.pycache_prefix == verifier_prefix
+        assert not list(Path(verifier_prefix).iterdir())
+    if fault == "none":
+        # A cache hit must remain usable under the mandatory pre-start policy.
+        # Making source compilation fail distinguishes an actual hit from a
+        # source execution that happens to return the same value.
+        command = [
+            sys.executable,
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={prefix}",
+            "-c",
+            "import importlib.machinery,sys; "
+            "importlib.machinery.SourceFileLoader.source_to_code = lambda *a,**k: (_ for _ in ()).throw(AssertionError('cache miss')); "
+            f"sys.path.insert(0, {str(source.parent)!r}); import demo; print(demo.VALUE)",
+        ]
+        result = _COMMANDS.run(
+            command,
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "1"
+    elif fault == "mutated-source":
+        with pytest.raises(ValueError) as error:
+            admit()
+        assert str(error.value) == (
+            f"Python capture custody changed since identity capture: {source}"
+        )
+    elif fault != "grouped":
+        with pytest.raises(PythonEnvironmentIdentityError):
+            admit()
+
+
+def test_immutable_image_excludes_only_mutable_editable_source_bytes():
+    from tests.python_environment_test_support import realized_environment_manifest
+
+    payload = realized_environment_manifest(runtime_identity_manifest(), [])
+    payload["external_import_custody"]["trees"] = [
+        {
+            "id": "external-tree-0",
+            "source_root": "source-0",
+            "source_path": "src",
+            "roles": [{"role": "sys-path", "path": "."}],
+            "entries": [{"path": "demo.py", "node": "old"}],
+            "file_nodes": [{"id": "old"}],
+            "manifest_sha256": "old",
+            "file_count": 1,
+        }
+    ]
+    original = environment.immutable_environment_image(payload)
+    changed = copy.deepcopy(payload)
+    changed["external_import_custody"]["trees"][0]["entries"][0]["node"] = "new"
+    changed["environment_closure_sha256"] = "new"
+    assert environment.immutable_environment_image(changed) == original
+    changed["external_import_custody"]["trees"][0]["source_path"] = "other"
+    assert environment.immutable_environment_image(changed) != original
+
+
+@pytest.mark.parametrize(
+    "failure_kind", ["timeout", "guard", "interrupt", "receiptless"]
+)
+@pytest.mark.parametrize("closed", [False, True])
+def test_verifier_owner_preserves_guard_fact_and_poisoned_namespace(
+    tmp_path, monkeypatch, failure_kind, closed
+):
+    import gc
+    import subprocess
+    import weakref
+    from types import SimpleNamespace
+    from molt import process_guard, temporary_artifacts
+    from tests.process_guard_common import guard_result_for_test
+
+    # Receiptless exceptions cannot authorize cleanup, even if a test labels
+    # the other branch closed. The producer must prove closure explicitly.
+    proven_closed = closed and failure_kind != "receiptless"
+    receipt = SimpleNamespace(
+        descendants_closed=closed,
+        child_returncode=None,
+        infrastructure_failure=SimpleNamespace(
+            phase="drain", details=("independent failure",)
+        ),
+    )
+    if failure_kind == "timeout":
+        failure = subprocess.TimeoutExpired(["identity"], 1, output=b"preserved")
+    elif failure_kind == "guard":
+        failure = process_guard.GuardInfrastructureError(["identity"], receipt)
+    elif failure_kind == "interrupt":
+        failure = KeyboardInterrupt()
+    else:
+        failure = FileNotFoundError("spawn raced with executable retirement")
+    if failure_kind != "receiptless":
+        failure.guarded_result = receipt
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["memory_guard_prefix"] == "MOLT_PYTHON_IDENTITY"
+        if len(calls) == 1:
+            raise failure
+        return guard_result_for_test(command, 0, "", "", descendants_closed=True)
+
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
+
+    def exercise():
+        nonlocal path, allocation_identity, allocation_ref
+        with identity.PythonIdentityVerifier() as owner:
+            path = owner.prefix
+            allocation_identity = temporary_artifacts._identity(path)
+            allocation_ref = weakref.ref(owner._allocation)
+            with pytest.raises(type(failure)) as caught:
+                owner.run(
+                    ["identity", "--help"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                )
+            assert caught.value is failure
+            if failure_kind != "receiptless":
+                assert caught.value.guarded_result is receipt
+            assert path.is_dir()
+            if proven_closed:
+                owner.run(
+                    ["second-identity"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                )
+            else:
+                with pytest.raises(type(failure)) as repeated:
+                    owner.run(
+                        ["second-identity"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                    )
+                assert repeated.value is failure
+
+    path = allocation_identity = allocation_ref = None
+    if proven_closed:
+        exercise()
+    else:
+        with pytest.raises(type(failure)) as terminal:
+            exercise()
+        assert terminal.value is failure
+        del terminal
+    assert len(calls) == (2 if proven_closed else 1)
+    assert path.exists() is (not proven_closed)
+    failure.__traceback__ = None
+    gc.collect()
+    assert allocation_ref() is None
+    if not proven_closed:
+        assert path.is_dir()
+        temporary_artifacts._cleanup_temporary_directory(path, allocation_identity)
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "unclosed", "absent-closure"])
+def test_verifier_owner_unknown_result_retains_after_swallowed_error_and_gc(
+    monkeypatch, outcome
+):
+    import gc
+    import subprocess
+    import weakref
+    from types import SimpleNamespace
+    from molt import process_guard, temporary_artifacts
+    from tests.process_guard_common import guard_result_for_test
+
+    if outcome == "timeout":
+        receipt = SimpleNamespace(descendants_closed=False)
+        failure = subprocess.TimeoutExpired(["first"], 1)
+        failure.guarded_result = receipt
+    elif outcome == "unclosed":
+        receipt = guard_result_for_test(
+            ["first"], 0, "apparent success", "", descendants_closed=False
+        )
+        failure = None
+    else:
+        receipt = SimpleNamespace(returncode=0, stdout="apparent success", stderr="")
+        failure = None
+    error_type = subprocess.TimeoutExpired if outcome == "timeout" else RuntimeError
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if failure is not None:
+            raise failure
+        return receipt
+
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
+    with pytest.raises(error_type) as outer:
+        with identity.PythonIdentityVerifier() as owner:
+            path = owner.prefix
+            allocation_identity = temporary_artifacts._identity(path)
+            allocation_ref = weakref.ref(owner._allocation)
+            with pytest.raises(error_type) as inner:
+                owner.run(["first"], memory_guard_prefix="MOLT_PYTHON_IDENTITY")
+            original = inner.value
+            if failure is not None:
+                assert original is failure
+            assert original.guarded_result is receipt
+            del inner
+            with pytest.raises(error_type) as repeated:
+                owner.run(
+                    ["would-mask-first"], memory_guard_prefix="MOLT_PYTHON_IDENTITY"
+                )
+            assert repeated.value is original
+            del repeated
+    assert outer.value is original and outer.value.guarded_result is receipt
+    assert len(calls) == 1 and path.is_dir()
+    original.__traceback__ = None
+    del outer, owner
+    gc.collect()
+    assert allocation_ref() is None and path.is_dir()
+    temporary_artifacts._cleanup_temporary_directory(path, allocation_identity)

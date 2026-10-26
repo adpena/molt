@@ -36,15 +36,12 @@ def stage_release_lane_authorities(root: Path) -> None:
         "Cargo.toml",
     }
     paths.update(row["authority"] for row in declarations["lane"])
-    paths.update(
-        (
-            "config/llvm_toolchain_arches.toml",
-            "config/llvm_toolchain_releases.toml",
-            "runtime/molt-backend-native/Cargo.toml",
-            "runtime/molt-backend/Cargo.toml",
-            "vendor/llvm/LICENSE.TXT",
-        )
-    )
+    # Inputs come from the actual producer authority. Expected lane and receipt
+    # assertions above/in owning tests remain independent of this materializer.
+    from tools.release.native_build import LLVM_POLICY_PATHS
+
+    paths.update(LLVM_POLICY_PATHS)
+    paths.add("vendor/llvm/LICENSE.TXT")
     for name in sorted(paths):
         dest = root / name
         dest.parent.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,11 @@ from dataclasses import asdict, dataclass
 from collections.abc import Mapping, MutableMapping
 from typing import Any, Literal
 
+from molt.llvm_link_plan import (
+    LLVM_NATIVE_LINK_PLAN_ENV,
+    LlvmNativeLinkPlan,
+    select_native_llvm_link_plan,
+)
 from molt.default_paths import expand_user_path
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.flag_strings import FlagStringRule
@@ -186,6 +191,7 @@ class LlvmPrefixVerification:
     prefix: Path
     llvm_config: Path
     version: str
+    host_target: str
     targets: tuple[str, ...]
     assets: tuple[str, ...]
     tool_versions: tuple["LlvmToolVersionFact", ...]
@@ -1181,9 +1187,11 @@ def llvm_toolchain_environment_name(name: str) -> bool:
     Names are case-sensitive; callers with case-insensitive environments must
     normalize them before using this predicate.
     """
-    return name in {"MOLT_LLVM_PREFIX", "LLVM_CONFIG_PATH"} or (
-        _LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME.fullmatch(name) is not None
-    )
+    return name in {
+        "MOLT_LLVM_PREFIX",
+        "LLVM_CONFIG_PATH",
+        LLVM_NATIVE_LINK_PLAN_ENV,
+    } or (_LLVM_TOOLCHAIN_PREFIX_ENVIRONMENT_NAME.fullmatch(name) is not None)
 
 
 def managed_llvm_prefix(
@@ -1555,8 +1563,8 @@ def _llvm_link_closure(
     resolved_local: list[Path] = []
     rendered: list[str] = []
     for token in _llvm_config_tokens(local_output):
-        # Match llvm-sys's --libnames contract. Never fall back to a shared
-        # library when the force-static compiler feature requires an archive.
+        # The SDK usability probe requires its declared static LLVM archives.
+        # Compiler system linkage is selected separately by llvm_link_plan.
         candidate = Path(token)
         if token.startswith("-") or candidate.suffix.lower() not in {".a", ".lib"}:
             raise LlvmToolchainConfigError(
@@ -2052,6 +2060,11 @@ def verify_llvm_toolchain_prefix(
             "LLVM/MLIR toolchain version does not match the manifest authority: "
             f"expected exactly {expected_version}, found {actual_version} at {llvm_config}"
         )
+    host_target = _run_llvm_config(
+        llvm_config, "--host-target", probe_timeout=probe_timeout
+    )
+    if re.fullmatch(r"[A-Za-z0-9_+.-]+", host_target) is None or "-" not in host_target:
+        raise LlvmToolchainConfigError(f"invalid LLVM SDK host target: {host_target!r}")
     built_targets = tuple(
         sorted(
             _run_llvm_config(
@@ -2277,6 +2290,7 @@ def verify_llvm_toolchain_prefix(
         prefix=resolved,
         llvm_config=llvm_config,
         version=actual_version,
+        host_target=host_target,
         targets=built_targets,
         assets=assets,
         tool_versions=tool_versions,
@@ -2901,6 +2915,7 @@ def project_llvm_toolchain_environment(
     verification: LlvmPrefixVerification,
     *,
     environ: Mapping[str, str] | None = None,
+    native_link_plan: LlvmNativeLinkPlan | None = None,
 ) -> ProcessEnvironment:
     """Project an already verified result without rescanning the SDK.
 
@@ -2931,6 +2946,24 @@ def project_llvm_toolchain_environment(
     result[mlir_sys_prefix_env_var(pin.major)] = prefix_text
     result[tablegen_prefix_env_var(pin.major)] = prefix_text
     result["LLVM_CONFIG_PATH"] = str(llvm_config)
+    try:
+        selected_plan = (
+            select_native_llvm_link_plan(root, verification, environ=result)
+            if native_link_plan is None
+            else native_link_plan
+        )
+    except (OSError, ValueError) as exc:
+        raise LlvmToolchainConfigError(
+            f"native LLVM dependency selection: {exc}"
+        ) from exc
+    if (
+        selected_plan.llvm_config != llvm_config
+        or selected_plan.llvm_version != verification.version
+    ):
+        raise LlvmToolchainConfigError(
+            "native LLVM link plan differs from selected SDK"
+        )
+    result[LLVM_NATIVE_LINK_PLAN_ENV] = selected_plan.environment_value()
 
     # The managed bin goes first even when PATH already lists it later: a
     # Homebrew LLD or clang ahead of it would otherwise win (HF-231).
@@ -2979,6 +3012,7 @@ def llvm_toolchain_environment_delta(
         mlir_sys_prefix_env_var(pin.major),
         tablegen_prefix_env_var(pin.major),
         "LLVM_CONFIG_PATH",
+        LLVM_NATIVE_LINK_PLAN_ENV,
         "PATH",
         *(DARWIN_SDK_ENV_KEYS if sys.platform == "darwin" else ()),
     )

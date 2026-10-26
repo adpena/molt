@@ -1,8 +1,10 @@
 from __future__ import annotations
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
+
+from tests.llvm_sdk_test_support import native_link_selection_fixture
 import json
 import hashlib
 import os
@@ -92,6 +94,29 @@ def test_link_probe_preserves_role_alias_and_rejects_generic_lld(
     )
     with pytest.raises(LlvmToolchainConfigError, match="generic lld"):
         llvm_toolchain._link_probe_identity(prefix, driver, ())
+
+
+def _projection_plan(verification):
+    """Typed transport fixture; SDK file selection has independent controls below."""
+    from molt.llvm_link_plan import LlvmLinkLibrary, LlvmNativeLinkPlan
+
+    archive = verification.prefix / "lib" / "libLLVMProjection.a"
+    return LlvmNativeLinkPlan(
+        "linux",
+        ("x86_64",),
+        "x86_64-unknown-linux-gnu",
+        {
+            "architecture": "x86_64",
+            "pointer_bits": 64,
+            "header_bits": 64,
+            "byte_order": "little",
+        },
+        verification.llvm_config,
+        verification.version,
+        verification.prefix / "bin" / "clang++",
+        (LlvmLinkLibrary("static", "LLVMProjection", archive, "sdk", None),),
+        None,
+    )
 
 
 def _write(path: Path, text: str) -> None:
@@ -214,6 +239,11 @@ def test_mlir_environment_projects_one_prefix_to_every_binding(
 ) -> None:
     # Prefix mapping only; the darwin SDK projection has its own test.
     install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "select_native_llvm_link_plan",
+        lambda _root, verification, **_kwargs: _projection_plan(verification),
+    )
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
     _write(
@@ -501,6 +531,8 @@ def _mock_llvm_config(
     def run(_executable: Path, *arguments: str, probe_timeout=None) -> str:
         if arguments == ("--version",):
             return version
+        if arguments == ("--host-target",):
+            return "x86_64-unknown-linux-gnu"
         if arguments == ("--targets-built",):
             return targets
         if arguments == ("--libdir",):
@@ -656,7 +688,10 @@ def test_prefix_verifier_preserves_external_llvm_config_identity(
     assert fact.path == f"external:{llvm_config.resolve()}"
     assert f"external:{llvm_config.resolve()}" in verification.assets
     projected = llvm_toolchain.project_llvm_toolchain_environment(
-        ROOT, verification, environ={"PATH": str(llvm_config.parent)}
+        ROOT,
+        verification,
+        environ={"PATH": str(llvm_config.parent)},
+        native_link_plan=_projection_plan(verification),
     )
     assert projected["LLVM_SYS_221_PREFIX"] == str(llvm_config.parent.parent)
     assert projected["MLIR_SYS_220_PREFIX"] == str(prefix)
@@ -668,6 +703,7 @@ def test_prefix_verifier_preserves_external_llvm_config_identity(
         ROOT,
         verification,
         environ={"PATH": os.pathsep.join([decoy, managed_bin, "/usr/bin"])},
+        native_link_plan=_projection_plan(verification),
     )
     assert reordered["PATH"].split(os.pathsep) == [managed_bin, decoy, "/usr/bin"]
 
@@ -1269,7 +1305,10 @@ def test_native_sdk_projection_preserves_alias_and_path_precedence(
         {"PATH": "canonical path", "Path": "alias path"}, rule=name_rule
     )
     projected = llvm_toolchain.project_llvm_toolchain_environment(
-        ROOT, verification, environ=environment
+        ROOT,
+        verification,
+        environ=environment,
+        native_link_plan=_projection_plan(verification),
     )
     assert projected.rule is name_rule
     assert projected["PATH"].split(os.pathsep) == [
@@ -1534,12 +1573,18 @@ def test_cli_projects_verified_sdk_identity_to_github_environment(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "select_native_llvm_link_plan",
+        lambda _root, verification, **_kwargs: _projection_plan(verification),
+    )
     prefix = tmp_path / "llvm-22"
     llvm_config = tmp_path / "bin" / "llvm-config-22"
     verification = llvm_toolchain.LlvmPrefixVerification(
         prefix=prefix,
         llvm_config=llvm_config,
         version="22.1.8",
+        host_target="x86_64-unknown-linux-gnu",
         targets=("WebAssembly", "X86"),
         assets=(),
         tool_versions=(),
@@ -2228,6 +2273,7 @@ def test_projection_hands_bindgen_the_selected_macos_sdk_only_on_darwin(
         prefix=prefix,
         llvm_config=prefix / "bin" / "llvm-config",
         version="22.1.8",
+        host_target="x86_64-unknown-linux-gnu",
         targets=("AArch64", "WebAssembly"),
         assets=(),
         tool_versions=(),
@@ -2240,7 +2286,10 @@ def test_projection_hands_bindgen_the_selected_macos_sdk_only_on_darwin(
     )
 
     projected = llvm_toolchain.project_llvm_toolchain_environment(
-        ROOT, verification, environ={"PATH": "/usr/bin"}
+        ROOT,
+        verification,
+        environ={"PATH": "/usr/bin"},
+        native_link_plan=_projection_plan(verification),
     )
 
     if platform == "darwin":
@@ -2483,7 +2532,7 @@ def test_projected_sdk_target_flags_have_complete_ordered_search_context(
     assert ProcessEnvironment(applied) == projected
 
 
-def test_production_llvm_feature_keeps_pin_and_forces_static():
+def test_production_llvm_feature_keeps_pin_and_has_one_link_owner():
     import tomllib
     from molt.compiler_distribution import PRODUCTION_COMPILER_FEATURES
 
@@ -2491,7 +2540,9 @@ def test_production_llvm_feature_keeps_pin_and_forces_static():
         (ROOT / "runtime/molt-backend-native/Cargo.toml").read_text("utf-8")
     )
     assert "llvm22-1" in manifest["dependencies"]["inkwell"]["features"]
-    assert "inkwell/llvm22-1-force-static" in manifest["features"]["llvm"]
+    assert "inkwell/llvm22-1-no-llvm-linking" in manifest["features"]["llvm"]
+    assert "dep:molt-llvm-link" in manifest["features"]["llvm"]
+    assert not any("force-static" in item for item in manifest["features"]["llvm"])
     assert required_llvm_backend_pin(ROOT).default_release == "22.1.8"
     assert PRODUCTION_COMPILER_FEATURES == (
         "llvm",
@@ -2854,3 +2905,169 @@ def test_backend_pin_reads_its_release_from_the_pinning_checkout(
         pin.default_release == llvm_toolchain.load_llvm_releases(source).default_release
     )
     assert read[0] == (tmp_path / "config" / "llvm_toolchain_releases.toml").resolve()
+
+
+@pytest.mark.parametrize(
+    "mode", ["default", "portable", "unavailable", "explicit-static"]
+)
+def test_native_llvm_plan_selects_real_per_library_linkage(tmp_path, monkeypatch, mode):
+    owner, verification, system, capability = native_link_selection_fixture(
+        tmp_path, monkeypatch
+    )
+    if mode == "unavailable":
+        (system / "libcompression.a").unlink()
+    elif mode == "explicit-static":
+        verification = replace(
+            verification,
+            link_closure=(
+                "lib/libLLVMCore.a",
+                f"system:{system / 'libcompression.a'}",
+                "system:-lm",
+            ),
+        )
+    selected = owner.select_native_llvm_link_plan(
+        ROOT,
+        verification,
+        environ={"CXXSTDLIB": ""},
+        shared_capability=capability if mode in {"portable", "unavailable"} else None,
+    )
+    compression, math = selected.libraries[1:]
+    assert (compression.kind, compression.path, compression.policy_admitted) == (
+        ("static", system / "libcompression.a", True)
+        if mode == "portable"
+        else ("dylib", system / "libcompression.so", False)
+        if mode == "unavailable"
+        else ("static", system / "libcompression.a", None)
+        if mode == "explicit-static"
+        else ("dylib", system / "libcompression.so", None)
+    )
+    assert math.kind == "dylib" and math.path == system / "libm.so"
+    assert math.policy_admitted is (
+        True if mode in {"portable", "unavailable"} else None
+    )
+    assert selected.libraries[0].kind == "static"
+    assert selected.system_paths == (compression.path, math.path)
+    payload = json.loads(selected.environment_value())
+    assert payload["libraries"][1]["path"] == str(compression.path)
+    assert payload["libraries"][1]["kind"] == compression.kind
+    # Shared paths are observations, not an exact-file Rust dylib selector.
+    assert payload["libraries"][2]["name"] == "m"
+    if mode in {"portable", "unavailable"}:
+        assert payload["policy"]["shared_libraries"] == ["libm.so.6"]
+        assert capability[0]["shared_libraries"] == ("libm.so.6",)
+    assert payload["host_abi"] == {
+        "architecture": "aarch64",
+        "header_bits": 64,
+        "pointer_bits": 64,
+        "byte_order": "little",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation", ["non-tuple", "non-string", "duplicate", "identity", "membership"]
+)
+def test_native_llvm_plan_refuses_malformed_policy_before_driver_probe(
+    tmp_path, monkeypatch, mutation
+):
+    owner, verification, _, capability = native_link_selection_fixture(
+        tmp_path, monkeypatch
+    )
+    identity, allowed = capability
+    if mutation == "non-tuple":
+        identity["shared_libraries"] = "libm.so.6"
+    elif mutation == "non-string":
+        identity["shared_libraries"] = (object(),)
+    elif mutation == "duplicate":
+        identity["shared_libraries"] = ("libm.so.6", "libm.so.6")
+    elif mutation == "identity":
+        identity["policy_sha256"] = "unverified"
+    else:
+        allowed = frozenset({"libunrequested.so.1"})
+
+    def unexpected_probe(*_args):
+        pytest.fail("invalid policy must be refused before the driver query")
+
+    monkeypatch.setattr(owner, "_driver_library_directories", unexpected_probe)
+    with pytest.raises(ValueError, match="capability"):
+        owner.select_native_llvm_link_plan(
+            ROOT,
+            verification,
+            environ={"CXXSTDLIB": ""},
+            shared_capability=(identity, allowed),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["driver", "missing", "duplicate", "selector", "search"]
+)
+def test_native_llvm_plan_refuses_unbound_dependency_inputs(
+    tmp_path, monkeypatch, mutation
+):
+    owner, verification, system, _ = native_link_selection_fixture(
+        tmp_path, monkeypatch
+    )
+    if mutation == "driver":
+        (verification.prefix / "bin/clang++").write_bytes(b"replacement driver")
+    elif mutation == "missing":
+        (system / "libcompression.a").unlink()
+        (system / "libcompression.so").unlink()
+    elif mutation == "duplicate":
+        verification = replace(
+            verification, link_closure=(*verification.link_closure, "system:-lm")
+        )
+    elif mutation == "selector":
+        verification = replace(
+            verification,
+            link_closure=(*verification.link_closure, "system:-Wl,--as-needed"),
+        )
+    else:
+
+        def fail_search(*_args):
+            raise subprocess.CalledProcessError(
+                1, [str(verification.prefix / "bin/clang++")]
+            )
+
+        monkeypatch.setattr(owner, "_driver_library_directories", fail_search)
+    with pytest.raises(ValueError):
+        owner.select_native_llvm_link_plan(
+            ROOT, verification, environ={"CXXSTDLIB": ""}
+        )
+    with pytest.raises(
+        LlvmToolchainConfigError, match="native LLVM dependency selection"
+    ):
+        llvm_toolchain.project_llvm_toolchain_environment(
+            ROOT, verification, environ={"CXXSTDLIB": ""}
+        )
+
+
+@pytest.mark.parametrize("mode", ["Release", "Debug", "unknown"])
+def test_native_llvm_plan_preserves_windows_runtime_selection(monkeypatch, mode):
+    from molt.llvm_link_plan import _abi_libraries
+
+    monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", lambda _config, *args: mode)
+    verification = SimpleNamespace(
+        version="22.1.8", llvm_config=Path("/SDK/llvm-config")
+    )
+    if mode == "unknown":
+        with pytest.raises(ValueError, match="build mode"):
+            _abi_libraries(verification, {}, "windows")
+    else:
+        assert _abi_libraries(verification, {}, "windows") == (
+            ("msvcrtd",) if mode == "Debug" else ()
+        )
+        assert _abi_libraries(
+            verification, {"LLVM_SYS_221_USE_DEBUG_MSVCRT": "1"}, "windows"
+        ) == ("msvcrtd",)
+
+
+def test_native_llvm_plan_projects_every_declared_rust_architecture():
+    from molt.llvm_link_plan import _rust_target_arches
+
+    rows = llvm_toolchain.load_llvm_architecture_contract(ROOT).architectures
+    for row in rows:
+        assert _rust_target_arches(row.rust_cfg)
+    assert _rust_target_arches(
+        'any(target_arch = "powerpc", target_arch = "powerpc64")'
+    ) == ("powerpc", "powerpc64")
+    with pytest.raises(ValueError, match="architecture contract"):
+        _rust_target_arches('any(target_arch = "x86_64", target_os = "linux")')

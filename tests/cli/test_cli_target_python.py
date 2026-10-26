@@ -183,6 +183,22 @@ def test_target_python_micro_release_selects_minor_line() -> None:
     assert target.short == "3.14"
 
 
+def test_project_patch_requirement_uses_the_selected_source_release() -> None:
+    target = molt_target_python._parse_target_python_version("3.12")
+    assert (
+        molt_target_python._target_python_from_requires_python(
+            f">={target.short}.{target.micro}"
+        )
+        == target
+    )
+    assert (
+        molt_target_python._target_python_from_requires_python(
+            f">{target.short}.{target.micro}"
+        ).feature_version
+        > target.feature_version
+    )
+
+
 def test_target_python_rejects_unsupported_project_floor(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "sample"\nrequires-python = ">=3.15"\n', encoding="utf-8"

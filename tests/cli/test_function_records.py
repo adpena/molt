@@ -38,7 +38,7 @@ def test_backend_transports_have_canonical_bytes_after_record_hydration() -> Non
     import msgpack
 
     from molt.cli import cache_keys
-    from molt.cli.backend_ir_transport import write_backend_ir
+    from molt.cli.backend_ir_transport import BackendIrProgram
 
     cold = _function()
     encoded, _seeds = records.encode_lowering_record(b"header", [cold])
@@ -49,8 +49,17 @@ def test_backend_transports_have_canonical_bytes_after_record_hydration() -> Non
         '{"functions":[{"name":"molt_init_fixture","ops":[{"kind":"ret_void"}],'
         '"params":[],"return_abi":"void"}],"profile":"dev"}'
     )
-    # A separately implemented codec receives an independently ordered literal.
-    expected_binary = msgpack.packb(json.loads(expected_text))
+    # A separately implemented codec receives an independently ordered literal:
+    # the lease ships the exact body and names it by its digest.
+    expected_body = msgpack.packb(json.loads(expected_text)["functions"][0])
+    expected_binary = msgpack.packb(
+        {
+            "function_bodies": [expected_body],
+            "function_digests": _digest(expected_body),
+            "profile": "dev",
+        },
+        use_bin_type=True,
+    )
     for function in (cold, hydrated[0], dict(reversed(cold.items()))):
         for ir in (
             {"profile": "dev", "functions": [function]},
@@ -61,8 +70,19 @@ def test_backend_transports_have_canonical_bytes_after_record_hydration() -> Non
             cache_keys._write_backend_ir_text(streamed, ir)
             assert streamed.getvalue() == expected_text
             binary = io.BytesIO()
-            write_backend_ir(binary, ir)
+            BackendIrProgram(ir, cache_keys.FunctionDigests()).write(binary)
             assert binary.getvalue() == expected_binary
+
+
+def test_body_digest_domain_matches_the_backend_receiver() -> None:
+    # runtime/molt-ir/src/addressed_program_tests.rs pins the same literals,
+    # each computed by CPython's hashlib over the domain tag and the body.
+    assert records.function_body_digest(b"").hex() == (
+        "46cfe5b141fcf8a66c1b639d1f1efba63937ab8eee486e4ea0e917a05d1d0703"
+    )
+    assert records.function_body_digest(b"\x80").hex() == (
+        "1b33b063cec4aa779ba4e30be9dec72b994a45727639f5f1bb35caa322a19f96"
+    )
 
 
 def test_record_roundtrip_preserves_rich_opaque_metadata_and_exact_body() -> None:

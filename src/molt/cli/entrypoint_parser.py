@@ -116,7 +116,7 @@ def _add_build_parser(
         "--python-version",
         default=None,
         help=(
-            "Target Python semantics (3.12, 3.13, or 3.14). Defaults from "
+            "Target Python major.minor semantics. Defaults from "
             "[tool.molt.build] or project.requires-python."
         ),
     )
@@ -366,6 +366,12 @@ def _add_build_parser(
         choices=["real", "virtual", "callback"],
         default=None,
         help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
+    )
+    build_parser.add_argument(
+        "--capture-link-inputs",
+        action="store_true",
+        default=False,
+        help="Retain linker input buffers for installed admission (writes a full reproducer).",
     )
     build_parser.add_argument(
         "--diagnostics",
@@ -1222,7 +1228,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--python-version",
         default=None,
-        help=("Target Python semantics for the build side (3.12, 3.13, or 3.14)."),
+        help="Target Python major.minor semantics for the build side.",
     )
     run_parser.add_argument(
         "--profile",

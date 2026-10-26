@@ -5,7 +5,7 @@
 //! `extern "C"` imports and they are resolved at link time.
 
 use crate::*;
-use molt_cpython_abi::native_custody::{BufferAcquireError, ByteInput};
+use molt_runtime_capi::{BufferAcquireError, ByteInput};
 
 #[cfg(feature = "stdlib_regex")]
 crate::object::native_handle::native_handle_bridge!(
@@ -115,10 +115,7 @@ pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
             return subject_bits;
         }
         let Some(lease) = regex_subject_buffer(_py, subject_bits, unsafe {
-            molt_cpython_abi::native_custody::acquire_buffer(
-                subject_bits,
-                molt_cpython_abi::native_custody::PyBUF_SIMPLE,
-            )
+            molt_runtime_capi::acquire_buffer(subject_bits, molt_runtime_capi::PyBUF_SIMPLE)
         }) else {
             return MoltObject::none().bits();
         };

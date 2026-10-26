@@ -26,7 +26,7 @@ asserts equality, failing on any mismatch. The bound tables are:
                                      both vs CPython 3.12 moduleobject.h)
 
 Authority: the Rust runtime owns #1/#2, and the object-model schema owns #3; the CLI
-`TargetPythonVersion` tuple is the single source for #4; CPython 3.12
+`target_python_policy` module is the single source for #4; CPython 3.12
 `Include/moduleobject.h` is the authority for #5. This gate binds the mirrors to
 those authorities.
 
@@ -60,6 +60,7 @@ bind_repository_imports(__file__)
 ROOT = Path(__file__).resolve().parents[1]
 
 
+from molt import target_python_policy  # noqa: E402
 from molt.rust_source_scan import (  # noqa: E402
     mask_rust_comments_and_strings,
     rust_delimiter_end,
@@ -71,7 +72,6 @@ from molt.rust_source_scan import (  # noqa: E402
 
 # --- Source paths ---------------------------------------------------------
 FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
-TARGET_PYTHON_PY = ROOT / "src" / "molt" / "target_python.py"
 TYPE_IDS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "object" / "type_ids.rs"
 EXCEPTIONS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "builtins" / "exceptions.rs"
 EXCEPTION_SCHEMA_RS = (
@@ -614,43 +614,22 @@ def check_target_python_versions() -> CategoryResult:
         "target-python",
         "#4 supported target-Python versions (cli authority <-> stdlib-union baseline <-> generator)",
     )
-    cli_text = _read(TARGET_PYTHON_PY)
     union_text = _read(STDLIB_UNION_PY)
     gen_text = _read(GEN_STDLIB_UNION_PY)
-    if not cli_text or not union_text or not gen_text:
+    if not union_text or not gen_text:
         result.items.append(
-            CheckItem("source", False, "missing one of the three sources")
+            CheckItem("source", False, "missing baseline or generator source")
         )
         return result
 
-    # Authority: parse the TargetPythonVersion(major, minor, ...) tuple from the
-    # CLI so we do not depend on importing packaging in the gate env.
-    authority: list[str] = []
-    for m in re.finditer(
-        r"TargetPythonVersion\(\s*(\d+)\s*,\s*(\d+)\s*,",
-        cli_text,
-    ):
-        authority.append(f"{m.group(1)}.{m.group(2)}")
-    # De-dup preserving order (the tuple is the authoritative sequence).
-    seen: dict[str, None] = {}
-    for v in authority:
-        seen.setdefault(v, None)
-    authority_versions = tuple(seen)
-
-    if not authority_versions:
-        result.items.append(
-            CheckItem(
-                "authority",
-                False,
-                "could not parse _SUPPORTED_TARGET_PYTHON_VERSIONS tuple",
-            )
-        )
-        return result
+    # Import the pure admission authority directly. Release metadata and its
+    # generated source projection are not prerequisites for this policy check.
+    authority_versions = target_python_policy.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     result.items.append(
         CheckItem(
             "authority",
             True,
-            f"cli target_python authority: {authority_versions}",
+            f"target_python_policy authority: {authority_versions}",
         )
     )
 
@@ -667,20 +646,23 @@ def check_target_python_versions() -> CategoryResult:
         )
     )
 
-    width_text = _read(
-        ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
-    )
+    width_text = _read(ROOT / "runtime/molt-obj-model/src/unicode_generated.rs")
     width_versions = tuple(
         f"{major}.{minor}"
         for major, minor in re.findall(
-            r'^\s*\((\d+),\s*(\d+)\) => Some\(\("', width_text, re.MULTILINE
+            r"^\s*\((\d+),\s*(\d+)\) => Some\(&DATA_", width_text, re.MULTILINE
         )
+    )
+    from tools.cpython_regrtest import load_cpython_sources
+
+    source_versions = tuple(
+        load_cpython_sources(ROOT / "config/cpython_regrtest_sources.toml")
     )
     result.items.append(
         CheckItem(
-            "unicode-width-target-versions",
-            width_versions == authority_versions,
-            f"Unicode width targets={width_versions} vs authority {authority_versions}; regenerate with tools/gen_unicode_width.py",
+            "unicode-facts-source-versions",
+            width_versions == source_versions,
+            f"Unicode facts sources={width_versions} vs pinned cohort {source_versions}; regenerate with tools/gen_unicode_width.py",
         )
     )
 

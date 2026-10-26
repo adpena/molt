@@ -178,7 +178,11 @@ The production compiler includes LLVM through the source-pinned static SDK build
 path. Installed builds select those admitted compiler bytes and do not discover,
 provision or execute `llvm-config`; the ordinary native C/link tool requirements
 still apply. The LLVM notice is retained under `share/molt/LLVM-LICENSE.TXT` and
-in the platform wheel. Actual platform/backend qualification remains governed
+in the platform wheel. Statically embedded system dependencies have separate
+package evidence in `share/molt/system-dependencies.json` and full copyright
+and referenced common-license notices under `share/molt/system-dependencies/`.
+These files travel in both bundle and wheel; installed users run no package
+ownership queries. Actual platform/backend qualification remains governed
 by the release's verified support matrix.
 
 The bundle owns `source/`; do not edit it or place build outputs there.

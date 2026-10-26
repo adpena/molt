@@ -670,234 +670,276 @@ metrics = "none"
 # Immutable OBJECT subshape ABI. Selected before publication and used directly
 # for visit/clear/terminal-drop dispatch; poll functions and class identities are
 # construction inputs only and are never lifecycle rediscovery authorities.
+# class_fields admits the shared physical field/dictionary tail, independently
+# of logical Python class membership or whether Python permits __dict__ access.
+# Typed payloads without that tail must explicitly opt out; missing policy fails
+# generation. Raw BOXED_FIELDS owns every word through its separate field ABI.
 
 [[object_shape]]
 name = "PLAIN"
 id = 0
 family = "plain"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "PROMISE"
 id = 1
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNC_SLEEP"
 id = 2
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNC_GENERATOR_FUTURE"
 id = 3
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ANEXT_DEFAULT"
 id = 4
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_FD_WATCHER"
 id = 9
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SERVER_ACCEPT_LOOP"
 id = 10
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "CONTEXTLIB_ASYNCGEN_ENTER"
 id = 12
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "CONTEXTLIB_ASYNCGEN_EXIT"
 id = 13
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "CONTEXTLIB_ASYNC_EXITSTACK_ENTER"
 id = 14
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "CONTEXTLIB_ASYNC_EXITSTACK_EXIT"
 id = 15
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCKET_READER_READ"
 id = 16
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCKET_READER_READLINE"
 id = 17
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_STREAM_READER_READ"
 id = 18
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_STREAM_READER_READLINE"
 id = 19
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_STREAM_SEND_ALL"
 id = 20
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_RECV"
 id = 21
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_CONNECT"
 id = 22
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_ACCEPT"
 id = 23
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_RECV_INTO"
 id = 24
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_SEND_ALL"
 id = 25
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_RECV_FROM"
 id = 26
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_RECV_FROM_INTO"
 id = 27
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ASYNCIO_SOCK_SEND_TO"
 id = 28
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "THREAD_TASK"
 id = 29
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "PROCESS_TASK"
 id = 30
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "IO_WAIT"
 id = 31
 family = "task"
 resource_slot0 = "io_socket"
+class_fields = false
 
 [[object_shape]]
 name = "WEBSOCKET_WAIT"
 id = 32
 family = "task"
 resource_slot0 = "websocket"
+class_fields = false
 
 [[object_shape]]
 name = "GENERIC_TASK_PAYLOAD"
 id = 33
 family = "task"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "BOXED_FIELDS"
 id = 34
 family = "boxed_fields"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "DICT_SUBCLASS"
 id = 64
 family = "dict_subclass"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "OPERATOR_ITEM_GETTER"
 id = 65
 family = "operator"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "OPERATOR_ATTR_GETTER"
 id = 66
 family = "operator"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "OPERATOR_METHOD_CALLER"
 id = 67
 family = "operator"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "FUNCTOOLS_PARTIAL"
 id = 68
 family = "functools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "FUNCTOOLS_CMP_KEY"
 id = 69
 family = "functools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "FUNCTOOLS_LRU_WRAPPER"
 id = 70
 family = "functools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "TYPES_MAPPING_PROXY"
 id = 73
 family = "types"
 resource_slot0 = "none"
+class_fields = true
 
 # A frame object's typed binding source precedes its managed __dict__
 # (builtins/frames/locals_proxy.rs).
@@ -906,6 +948,7 @@ name = "TYPES_FRAME"
 id = 74
 family = "types"
 resource_slot0 = "none"
+class_fields = true
 
 # PEP 667 frame.f_locals over the same binding source (3.13 onward).
 [[object_shape]]
@@ -913,132 +956,161 @@ name = "TYPES_FRAME_LOCALS_PROXY"
 id = 75
 family = "types"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_CHAIN"
 id = 96
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_ISLICE"
 id = 97
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_REPEAT"
 id = 98
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COUNT"
 id = 99
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_CYCLE"
 id = 100
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_ACCUMULATE"
 id = 101
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_BATCHED"
 id = 102
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COMBINATIONS"
 id = 103
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COMBINATIONS_WITH_REPLACEMENT"
 id = 104
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COMPRESS"
 id = 105
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_DROPWHILE"
 id = 106
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_FILTERFALSE"
 id = 107
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_PAIRWISE"
 id = 108
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_GROUPBY"
 id = 109
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_GROUPBY_ITER"
 id = 110
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_PRODUCT"
 id = 111
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_PERMUTATIONS"
 id = 112
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_STARMAP"
 id = 113
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_TAKEWHILE"
 id = 114
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_TEE"
 id = 115
 family = "itertools"
 resource_slot0 = "none"
+class_fields = false
 
 [[object_shape]]
 name = "ITERTOOLS_ZIP_LONGEST"
 id = 116
 family = "itertools"
 resource_slot0 = "none"
+class_fields = true
+
+[[object_shape]]
+name = "ITERTOOLS_TEE_BLOCK"
+id = 117
+family = "itertools"
+resource_slot0 = "none"
+class_fields = false
 
 [[kind]]
 name = "CONTEXT_BITMAP_NODE"
@@ -1067,21 +1139,25 @@ name = "CONTEXT"
 id = 76
 family = "contextvars"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "CONTEXT_VAR"
 id = 77
 family = "contextvars"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "CONTEXT_TOKEN"
 id = 78
 family = "contextvars"
 resource_slot0 = "none"
+class_fields = true
 
 [[object_shape]]
 name = "CONTEXT_ITERATOR"
 id = 79
 family = "contextvars"
 resource_slot0 = "none"
+class_fields = true

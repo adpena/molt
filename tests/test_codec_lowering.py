@@ -1027,30 +1027,62 @@ def test_for_split_dict_increment_declines_unsound_shapes(src, func):
     assert "string_split_sep_dict_inc" not in kinds
 
 
-def test_statistics_slice_preserves_live_imported_callable():
-    src = """
-from statistics import mean, stdev
+@pytest.mark.parametrize("local_import", [False, True])
+@pytest.mark.parametrize("replace_attribute", [False, True])
+def test_statistics_slice_preserves_live_imported_callable(
+    local_import, replace_attribute
+):
+    setup = ""
+    if replace_attribute:
+        setup = """import statistics
+statistics.mean = lambda data: ("mean replacement", len(data))
+statistics.stdev = lambda data: ("stdev replacement", len(data))
+"""
+    body = """from statistics import mean, stdev
 values = [1.0, 2.0, 3.0, 4.0]
 m = mean(values[1:3])
 s = stdev(values[1:4])
 """
+    if local_import:
+        body = "def f():\n" + "".join(
+            "    " + line + "\n" for line in body.splitlines()
+        )
+    src = setup + body
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "statistics_mean_slice" not in kinds
-    assert "statistics_stdev_slice" not in kinds
-    ops = _all_ops(ir)
+    ops = _ops_by_func_suffix(ir, "f") if local_import else _all_ops(ir)
     definitions = {op["out"]: op for op in ops if "out" in op}
-    for line, name in [(4, "mean"), (5, "stdev")]:
+    call_lines = {
+        node.func.id: node.lineno
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"mean", "stdev"}
+    }
+    for name, line in call_lines.items():
         calls = [
             op
             for op in ops
-            if op["kind"] == "call_func" and op.get("source_line") == line
+            if op["kind"] == ("call_bind" if local_import else "call_func")
+            and op.get("source_line") == line
         ]
         assert len(calls) == 1
         callee, argument = (definitions[value] for value in calls[0]["args"])
-        assert callee["kind"] == "module_get_global"
-        assert definitions[callee["args"][1]]["s_value"] == name
+        if local_import:
+            assert argument["kind"] == "callargs_new"
+            pushes = [
+                op
+                for op in ops
+                if op["kind"] == "callargs_push_pos"
+                and op["args"][0] == argument["out"]
+            ]
+            assert len(pushes) == 1
+            argument = definitions[pushes[0]["args"][1]]
+            assert callee["var"] == name
+        assert callee["kind"] == ("load_var" if local_import else "module_get_global")
+        if not local_import:
+            assert definitions[callee["args"][1]]["s_value"] == name
         assert argument["kind"] == "slice"
+        assert ops.index(callee) < ops.index(argument) < ops.index(calls[0])
 
 
 def test_dict_setdefault_empty_list_lowering():

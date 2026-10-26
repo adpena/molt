@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Record where a pytest run spends its wall clock, and report it.
 
-Record a run (the plugin costs one rusage read and two clock reads per phase)::
+Record a run (phase measurements plus opt-in atomic checkpoints)::
 
     python -m pytest -p tools.pytest_profile --molt-profile=run.json -n 4 tests/x
 
@@ -9,6 +9,15 @@ Read the record::
 
     python tools/pytest_profile.py report run.json [--top 20]
     python tools/pytest_profile.py compare before.json after.json [--top 20]
+
+The controller publishes an initial snapshot, its first completed phase, then
+at most one checkpoint per ten seconds on report callbacks. A long phase can
+leave the snapshot older than ten seconds; no timer or worker writes its phase
+history. Normal session/exit publication remains final. Interrupted snapshots
+retain only observed phases and cannot be compared as completed runs. A
+session_finish records completed pytest phases; process exit can remain unknown.
+Neither is proof acceptance. Use a fresh output path per run, including its
+worker metadata siblings, so final reports cannot mix metadata from older runs.
 
 A test's wall time splits three ways: its own CPU (``cpu``), the CPU of the
 children it started and reaped (``child_cpu``), and the rest (``waiting``):
@@ -50,6 +59,7 @@ except ImportError:  # Windows has no rusage; child CPU stays unknown there.
 SCHEMA = "molt.pytest-profile.v1"
 OPTION = "--molt-profile"
 PLUGIN_NAME = "molt-pytest-profile"
+_CHECKPOINT_INTERVAL_SECONDS = 10.0
 _PHASES = ("setup", "call", "teardown")
 
 
@@ -102,6 +112,8 @@ class Profiler:
         self.session_finish: float | None = None
         self.numprocesses: int | None = None
         self.argv = list(sys.argv)
+        self._last_checkpoint: float | None = None
+        self._first_phase_checkpointed = False
 
     # -- measuring, where the test runs --
 
@@ -169,11 +181,25 @@ class Profiler:
                 "spawns": measured.get("spawns"),
             }
         )
+        now = time.monotonic()
+        if (
+            not self._first_phase_checkpointed
+            or self._last_checkpoint is None
+            or now - self._last_checkpoint >= _CHECKPOINT_INTERVAL_SECONDS
+        ):
+            # Callback-driven: a long phase can leave this snapshot older than
+            # ten seconds. Only completed reports are measured, never guessed.
+            self.write(exit_at=None)
+            self._last_checkpoint = time.monotonic()
+            self._first_phase_checkpointed = True
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_sessionstart(self, session: Any) -> None:
         self.session_start = _now()
         self.numprocesses = getattr(session.config.option, "numprocesses", None)
+        if self.worker is None:
+            self.write(exit_at=None)
+            self._last_checkpoint = time.monotonic()
 
     def pytest_runtest_logstart(self, nodeid: str, location: Any) -> None:
         # The first test starts once every worker has collected: xdist's
@@ -243,7 +269,14 @@ def load(path: Path) -> dict[str, Any]:
     if profile.get("schema") != SCHEMA:
         raise ValueError(f"{path} is not a {SCHEMA} record")
     workers = {}
-    for sibling in sorted(path.parent.glob(f"{path.name}.worker-*.json")):
+    # An interrupted snapshot has no exit-tail evidence; old siblings from a
+    # prior use of the output path must not supply it.
+    siblings = (
+        sorted(path.parent.glob(f"{path.name}.worker-*.json"))
+        if profile.get("session_finish") is not None
+        else ()
+    )
+    for sibling in siblings:
         record = json.loads(sibling.read_text(encoding="utf-8"))
         workers[record["worker"]] = record
     profile["worker_records"] = workers
@@ -261,6 +294,7 @@ def tests_of(profile: dict[str, Any]) -> list[dict[str, Any]]:
                 "file": phase["nodeid"].split("::", 1)[0],
                 "worker": phase["worker"],
                 "outcome": "passed",
+                "complete": False,
                 "setup": 0.0,
                 "call": 0.0,
                 "teardown": 0.0,
@@ -272,6 +306,8 @@ def tests_of(profile: dict[str, Any]) -> list[dict[str, Any]]:
             },
         )
         row[phase["when"]] += phase["duration"]
+        if phase["when"] == "teardown":
+            row["complete"] = True
         row["start"] = min(row["start"], phase["start"])
         row["stop"] = max(row["stop"], phase["stop"])
         if phase["outcome"] != "passed":
@@ -280,6 +316,8 @@ def tests_of(profile: dict[str, Any]) -> list[dict[str, Any]]:
         row["child_cpu"] += phase.get("child_cpu") or 0.0
         row["spawns"] += phase.get("spawns") or 0
     for row in rows.values():
+        if not row["complete"] and row["outcome"] == "passed":
+            row["outcome"] = "incomplete"
         row["total"] = row["setup"] + row["call"] + row["teardown"]
         row["waiting"] = max(0.0, row["total"] - row["cpu"] - row["child_cpu"])
     return sorted(rows.values(), key=lambda row: row["stop"])
@@ -307,7 +345,7 @@ def summarize(profile: dict[str, Any]) -> dict[str, Any]:
     exits = [
         record["exit_at"] - record["session_finish"]
         for record in profile.get("worker_records", {}).values()
-        if record.get("exit_at") and record.get("session_finish")
+        if finish is not None and record.get("exit_at") and record.get("session_finish")
     ]
     files: dict[str, dict[str, Any]] = {}
     for row in tests:
@@ -321,6 +359,8 @@ def summarize(profile: dict[str, Any]) -> dict[str, Any]:
     collection = profile.get("collection_finish")
     exit_at = profile.get("exit_at")
     return {
+        "complete": finish is not None,
+        "incomplete_tests": sum(not row["complete"] for row in tests),
         "wall": finish - start if start and finish else None,
         "collection": collection - start if start and collection else None,
         "exit_tail": exit_at - finish if finish and exit_at else None,
@@ -378,6 +418,15 @@ def report_lines(profile: dict[str, Any], *, top: int = 20) -> list[str]:
         f" {summary['mean_worker']:.1f}s (+{summary['imbalance'] * 100:.1f}%);"
         f" wall / (test time / workers) = {(wall / floor) if wall and floor else 0:.2f}",
     ]
+    if not summary["complete"]:
+        lines.insert(
+            0,
+            "INCOMPLETE pytest profile: last published completed phases only; "
+            "observed phase-duration totals are lower bounds; "
+            "derived waiting and imbalance are provisional; "
+            "not a completed run or proof result "
+            f"({summary['incomplete_tests']} tests have unfinished phase coverage).",
+        )
     for worker, entry in sorted(summary["per_worker"].items()):
         lines.append(
             f"    {worker}: busy {entry['busy']:.1f}s over a span of"
@@ -418,6 +467,8 @@ def compare_lines(
     before: dict[str, Any], after: dict[str, Any], *, top: int = 20
 ) -> list[str]:
     first, second = summarize(before), summarize(after)
+    if not first["complete"] or not second["complete"]:
+        raise ValueError("cannot compare incomplete pytest profiles as completed runs")
 
     def delta(key: str) -> str:
         a, b = first.get(key), second.get(key)
@@ -478,7 +529,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "report":
         lines = report_lines(load(args.profile), top=args.top)
     else:
-        lines = compare_lines(load(args.before), load(args.after), top=args.top)
+        try:
+            lines = compare_lines(load(args.before), load(args.after), top=args.top)
+        except ValueError as exc:
+            parser.error(str(exc))
     print("\n".join(lines))
     return 0
 

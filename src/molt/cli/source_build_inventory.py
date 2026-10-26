@@ -26,7 +26,7 @@ from molt.python_uv_lock_identity import (
     environment_matches_lock_closure,
     validate_uv_lock_group_closure,
 )
-from molt.cli.source_build_requirements import (
+from molt.source_build_requirements import (
     ResolvedBuildRequirement,
     realized_build_requirement,
 )

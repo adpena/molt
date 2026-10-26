@@ -19,6 +19,7 @@ from typing import Mapping, TextIO, TypeGuard
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from molt import disk_capacity
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+from molt.temporary_artifacts import new_temporary_directory
 from molt.exact_json import (
     ExactJsonError,
     capture_exact,
@@ -1135,6 +1136,34 @@ def _wait_for_guard_completion_or_stale(
             return status, rc, elapsed
 
 
+def _submission_output_error(
+    *, command: list[str], repo_root: Path, logs_root: Path
+) -> str | None:
+    envelope = command_admission.admission_envelope(command)
+    if envelope["kind"] == "rejected":
+        # Preserve the existing persisted policy-refusal path for invalid argv.
+        return None
+    try:
+        effective_source = command_admission._execution_source_paths(
+            envelope, cwd=repo_root
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"proof submission refused: invalid effective source selection: {exc}"
+    try:
+        command_admission._require_external_execution_outputs(
+            result_path=logs_root / "submission.execution.json",
+            effective_source=effective_source,
+            require_existing_parent=False,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return (
+            f"proof submission refused: {exc}; pass the global --logs-root option "
+            "with an absolute evidence directory outside the effective source "
+            "tree (before the subcommand)"
+        )
+    return None
+
+
 def _queue_one(
     args: argparse.Namespace,
     *,
@@ -1180,6 +1209,12 @@ def _queue_one(
     db = state._db_path(args)
     logs_root = state._logs_root(args)
     repo_root = state._repo_root(args)
+    output_error = _submission_output_error(
+        command=command, repo_root=repo_root, logs_root=logs_root
+    )
+    if output_error is not None:
+        print(output_error, file=sys.stderr)
+        return 2, None
     with closing(state._connect(db)) as conn:
         for parent_run_id in depends_on or []:
             if state._edge_kind_requires_local_parent(
@@ -1538,6 +1573,13 @@ def _run_one(
     db = state._db_path(args)
     logs_root = state._logs_root(args)
     repo_root = state._repo_root(args)
+    if existing_run_id is None:
+        output_error = _submission_output_error(
+            command=command, repo_root=repo_root, logs_root=logs_root
+        )
+        if output_error is not None:
+            print(output_error, file=sys.stderr)
+            return 2
     with closing(state._connect(db)) as conn:
         if edge_kind not in state.EDGE_KINDS:
             allowed = ", ".join(sorted(state.EDGE_KINDS))
@@ -1721,7 +1763,6 @@ def _run_one(
             env.update(
                 {
                     "MOLT_MEMORY_GUARD_STATE_ROOT": str(proof_tmp / "memory_guard"),
-                    "PYTHONPYCACHEPREFIX": str(payload_tmp / "pycache"),
                     "TEMP": str(payload_tmp),
                     "TMP": str(payload_tmp),
                     "TMPDIR": str(payload_tmp),
@@ -1760,9 +1801,16 @@ def _run_one(
             memory_limits = custody._proof_queue_memory_limits(env_overrides)
             poll_interval = str(memory_limits.poll_interval)
             env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
+            # The nonce's existing run-retention owner keeps both namespaces
+            # through detached execution, cancellation and failed closure.
+            startup_root = output_layout.scratch(execution_nonce).parent
+            startup_root.mkdir(parents=True, exist_ok=True)
             guarded_command = guardian_argv(
                 sys.executable,
                 state.ROOT / "tools" / "proof_queue_pkg" / "guarded_execution.py",
+                verifier_bytecode_prefix=new_temporary_directory(
+                    startup_root, prefix="execution-bytecode-"
+                ),
             ) + [
                 "--request",
                 str(request_path),
@@ -1772,6 +1820,9 @@ def _run_one(
                 summary_json=summary_json,
                 timeout=timeout,
                 limits=memory_limits,
+                verifier_bytecode_prefix=new_temporary_directory(
+                    startup_root, prefix="guardian-bytecode-"
+                ),
             )
         except Exception as exc:
             return evidence._fail_preexecution_run(
@@ -1999,15 +2050,29 @@ def _run_one(
                 log_path=log_path,
                 phase="completion projection",
             )
-        rc_text = "?" if rc is None else str(rc)
-        print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
-        print(f"log: {log_path}")
+        _publish_terminal_result(status, run_id, rc, elapsed, log_path)
         _apply_automatic_retention(db=db, logs_root=logs_root)
+        if env is not None and process_cleanup_safe and execution_error is None:
+            from molt.dx import collect_checkout_state_after_result
+
+            # The existing proof qualification and publication are complete.
+            # Use the actual payload selection, including a failed payload's
+            # roots, instead of rebuilding it from the runner's environment.
+            collect_checkout_state_after_result(env, cwd=repo_root)
         return (
             2
             if disposition_failed
             else (rc if rc is not None else custody.PROOF_QUEUE_STALE_EXIT_CODE)
         )
+
+
+def _publish_terminal_result(
+    status: str, run_id: str, returncode: int | None, elapsed: float, log_path: Path
+) -> None:
+    """Flush the terminal status before synchronous post-result maintenance."""
+    rc_text = "?" if returncode is None else str(returncode)
+    print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
+    print(f"log: {log_path}", flush=True)
 
 
 def _apply_automatic_retention(*, db: Path, logs_root: Path) -> None:

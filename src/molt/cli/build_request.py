@@ -64,6 +64,7 @@ class BuildRequest:
     respect_pythonpath: bool = False
     module: str | None = None
     diagnostics: bool | None = None
+    capture_link_inputs: bool = False
     diagnostics_file: str | None = None
     diagnostics_verbosity: str | None = None
     portable: bool = False

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,12 +44,23 @@ def test_cleanup_cannot_silently_replace_invalid_admission_policy(raw: str) -> N
 
 
 def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    output_root = tmp_path
+    if os.name == "nt":
+        from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+        # Path admission precedes disk admission. Keep the real Windows Cargo
+        # descendant budget while giving this disk test its own short output.
+        temporary = OwnedTemporaryDirectory(prefix="q")
+        request.addfinalizer(temporary.cleanup)
+        output_root = Path(temporary.name)
     args = argparse.Namespace(
-        db=str(tmp_path / "queue.sqlite3"),
-        logs_root=str(tmp_path / "runs"),
-        repo_root=str(tmp_path),
+        db=str(output_root / "queue.sqlite3"),
+        logs_root=str(output_root / "runs"),
+        repo_root=str(source),
     )
     envelope = {"toolchains": ["cargo"]}
     monkeypatch.setattr(
@@ -85,7 +97,7 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
         logical_id="capacity-unit",
         reason="unit-test capacity admission",
         command=command,
-        cwd=tmp_path,
+        cwd=source,
         resource_family="cargo",
         contention_key="compiler-build",
         scopes=[],
@@ -113,6 +125,7 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
     assert row["guard_pid"] is None
     context = json.loads(row["receipt_context_json"])
     assert context["status"] == "not-executed"
+    assert "disk_capacity_admission" in context, context
     admission = context["disk_capacity_admission"]
     assert admission["status"] == "rejected"
     assert admission["probes"][0]["requested_path"] == str(
@@ -285,12 +298,14 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
     assert derived["MOLT_TARGET_ROOT"] == str(requested_tools)
     assert derived["MOLT_SESSION_ID"] == session_id
     assert "RUSTC_WRAPPER" not in derived
+    # Cargo owns no Python selection. DX's ordinary scratch policy must reach
+    # launch without inventing an immutable Python image for this command.
+    assert "UV_PROJECT_ENVIRONMENT" not in derived
     output_names = (
         "CARGO_TARGET_DIR",
         "MOLT_DIFF_CARGO_TARGET_DIR",
         "MOLT_CACHE",
         "UV_CACHE_DIR",
-        "UV_PROJECT_ENVIRONMENT",
         "PIP_CACHE_DIR",
         "RUFF_CACHE_DIR",
         "SCCACHE_DIR",
@@ -317,6 +332,8 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
     assert launch_env["MOLT_SESSION_ID"] == session_id
     assert launch_env["MOLT_USE_SCCACHE"] == "0"
     assert "RUSTC_WRAPPER" not in launch_env
+    assert "UV_PROJECT_ENVIRONMENT" not in launch_env
+    assert launch_env["PYTHONPYCACHEPREFIX"] == derived["PYTHONPYCACHEPREFIX"]
     for name in output_names:
         assert Path(launch_env[name]).is_relative_to(requested_root), (
             name,
@@ -325,6 +342,58 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
     row = state._row_by_run_id(conn, "requested-env-unit")
     assert row is not None and row["status"] == "failed" and row["guard_pid"] is None
     conn.close()
+
+
+def test_typed_python_policy_uses_captured_prefix_without_uv_selection(
+    tmp_path,
+) -> None:
+    selected = tmp_path / "managed-image" / ("a" * 64)
+    environment = {
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "foreign-cache"),
+        "PYTHONDONTWRITEBYTECODE": "0",
+    }
+    command, updates = command_admission._supervised_execution_command(
+        {"python": {"kind": "direct"}},
+        [sys.executable, "-I", "-c", "pass"],
+        {
+            "python": {
+                "location": {"prefix": str(selected)},
+                "executable": sys.executable,
+                "base_executable": sys.executable,
+            }
+        },
+        environment=environment,
+        cwd=tmp_path,
+    )
+    assert command[1:5] == [
+        "-B",
+        "-X",
+        f"pycache_prefix={selected / 'bytecode'}",
+        "-I",
+    ]
+    assert updates["PYTHONPYCACHEPREFIX"] == str(selected / "bytecode")
+    assert updates["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "UV_PROJECT_ENVIRONMENT" not in updates
+    assert environment["PYTHONPYCACHEPREFIX"] == str(tmp_path / "foreign-cache")
+
+
+@pytest.mark.parametrize(
+    "located",
+    [{}, {"python": {}}, {"python": {"location": {"prefix": "relative-image"}}}],
+)
+def test_typed_python_policy_refuses_missing_captured_selection(
+    tmp_path, located
+) -> None:
+    with pytest.raises(
+        ValueError, match="no (located runtime|captured environment prefix)"
+    ):
+        command_admission._supervised_execution_command(
+            {"python": {"kind": "direct"}},
+            [sys.executable, "-c", "pass"],
+            located,
+            environment={"PYTHONPYCACHEPREFIX": str(tmp_path / "scratch")},
+            cwd=tmp_path,
+        )
 
 
 @pytest.mark.parametrize(

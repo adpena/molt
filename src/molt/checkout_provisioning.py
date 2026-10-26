@@ -1,83 +1,15 @@
 """A checkout's lock-declared inputs, provisioned on demand.
 
-``uv run`` syncs the environment from ``uv.lock`` before it runs, rustup
-installs the toolchain that ``rust-toolchain.toml`` names on first use, and
-``npm ci`` installs exactly its lock file. This module gives a checkout the
-same contract for every input it declares (docs/design/landing_queue.md,
-"Declarative checkout provisioning"). `CheckoutInputName` is the closed table:
+Managed development Python is published by the existing exact-address
+source-build environment owner. The checkout's existing Git control directory
+keeps a bounded selection projection, keyed by interpreter/group intent. That
+projection selects an immutable generation; it never certifies its live bytes
+or authorizes mutation of a published image. A lock or editable binding change
+selects a new generation at the explicit ``ensure`` boundary.
 
-- ``uv-environment``: the project environment that ``uv sync --frozen``
-  builds from ``uv.lock``. ``--frozen`` installs the lock as written and
-  resolves nothing, so the environment is a function of the lock; uv reads
-  every package from its cache and uses the network only for a package the
-  cache lacks. ``--locked`` would also re-resolve to check the lock against
-  ``pyproject.toml``, which can need the index; that check belongs to the
-  lock gate, not to provisioning. The sync is exact, as CI's setup is: it
-  removes packages the lock does not declare, so a gate cannot pass on an
-  undeclared import. ``uv run`` keeps owning its own (inexact) sync; this
-  input exists so that ``lane start`` provisions a new worktree at once and
-  ``integrate`` builds the environment its gates select.
-- ``browser-acorn``: the Acorn parser tree under
-  ``tools/browser_asset_graph``, from its ``package-lock.json``. ``npm ci``
-  installs the lock exactly; ``--ignore-scripts`` runs no package code,
-  ``--prefer-offline`` reads the npm cache first, and ``--no-audit
-  --no-fund`` skip two registry round trips (0.19 s instead of 0.37 s to
-  0.55 s from a warm cache, measured 2026-10-20).
-- ``edgebox-typescript``: the Edgebox Worker's locked development tree,
-  under the same guarded, script-free ``npm ci`` and stamp contract as Acorn.
-  It is selected explicitly by its proof, rather than installed for every lane.
-
-Both npm trees run the npm that ``config/tool_releases.toml`` pins, on the
-pinned Node (``molt.tool_releases.pinned_command``), provisioned on first use;
-nothing finds npm, Node or Corepack on PATH. Each project's ``packageManager``
-must name that pin, or provisioning refuses it.
-- ``git-hooks``: Molt's managed Git hooks in the Git common directory.
-  ``tools/install_git_hooks.py`` owns their content and its own
-  current/stale comparison (``--check``); this module only runs it. The
-  hooks serve every worktree, so this input is repository-scoped: ``ensure``
-  installs the sources of the checkout it is given. ``lane start`` runs it
-  from a new lane at main's tip, so the installed hooks follow main.
-
-Stamps
-------
-A locked tree keeps its stamp inside the tree it describes
-(``node_modules/.molt-provisioned.json``, ``<environment>/.molt-provisioned.json``),
-as Cargo keeps fingerprints inside ``target`` and npm keeps its hidden
-lockfile in ``node_modules``. The stamp records the action digest (the input,
-its provisioner arguments and the digest of each lock file) and the tool and
-version that built the tree. A stamp in checkout scratch state could outlive
-its tree; here, deleting the tree deletes the stamp. ``npm ci`` empties
-``node_modules`` and ``uv`` recreates an environment it replaces, so either
-tool removes a stale stamp itself. ``ensure`` deletes the stamp before it runs
-the provisioner and writes it atomically after success, so a failed or
-interrupted run leaves no stamp, and the next ``ensure`` runs the provisioner
-again.
-
-The stamp is keyed on the lock, not on the tool binary. npm installs
-integrity-pinned bytes and uv installs the exact locked wheels, so the tree
-is a function of the lock. A key on the tool's path would re-run ``npm ci``
-whenever the toolchain root moves and empty ``node_modules`` under a
-concurrent reader. The tool's command and version stay in the stamp as
-provenance.
-
-Each provisioner runs under the memory guard, which fills unset variables
-with dx defaults: a managed ``UV_PROJECT_ENVIRONMENT`` and a ``UV_CACHE_DIR``
-on the artifact volume. The uv command therefore names its target tree and
-the caller's uv cache explicitly (``uv cache dir`` when the caller sets
-none). The tree is then the one ``uv run`` in that checkout selects, built by
-a same-volume clone (1.0 s) instead of a 136 MB copy (14 s to 37 s). A
-caller's cache on another volume cannot be cloned or hardlinked from, so a
-tree there would copy; when dx's artifact-volume cache shares the tree's
-filesystem, the command names that cache instead (2026-10-21, loaded USB
-volume: a 137 MB environment took 1.85 s as a clone and 81.5 s as a copy).
-
-Cost: a current input costs one read of the stamp, one read of each lock
-file and one ``stat`` of the tree's sentinel file (0.07 ms for Acorn, 0.3 ms
-for the 0.5 MB ``uv.lock``, measured 2026-10-20). A stale input takes a lock
-in the checkout's Git directory, checks the stamp again under it, then runs
-one guarded provisioner command. There is no retry, no offline-then-online
-sequence and no fallback: a failure raises `ProvisioningError` with the
-command and its output.
+Browser/Edgebox npm trees retain their pinned, script-free exact-install and
+in-tree stamp contract. Repository Git hooks retain their owning check/install
+protocol. Tool caches and process custody remain with their existing owners.
 """
 
 from __future__ import annotations
@@ -95,13 +27,19 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Literal, assert_never, get_args
+from typing import Literal, assert_never, cast, get_args
 
 from molt import process_guard
 from molt.custody_layout import git_directories
-from molt.exact_json import ExactJsonError, read_exact, write_exact
+from molt.exact_json import (
+    ExactJsonError,
+    canonical_json_sha256,
+    read_exact,
+    write_exact,
+)
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.process_environment import ProcessEnvironment
+from molt.toolchain_identity import StableRegularFileError
 
 SCHEMA = "molt.checkout-provisioning.v1"
 STAMP_NAME = ".molt-provisioned.json"
@@ -148,7 +86,7 @@ class LockedTree:
 
     Lock paths are relative to ``checkout``; command arguments are relative
     to its ``command_cwd``. Both stay checkout-relative, so the action digest
-    does not depend on where the checkout lives.
+    does not depend on where the checkout lives, except an editable uv project.
     """
 
     name: str
@@ -237,7 +175,21 @@ class OwnedInstallation:
         _require_guard_source_owner(self.guard_source_root)
 
 
-CheckoutInput = LockedTree | OwnedInstallation
+@dataclass(frozen=True, slots=True)
+class DevelopmentEnvironment:
+    """One immutable development image selected by the shared publisher."""
+
+    name: str
+    checkout: Path
+    environment: ProcessEnvironment
+    python: str | None = None
+    groups: tuple[str, ...] | None = None
+    scope: InputScope = "checkout"
+    guard_source_root: Path | None = None
+    lock_files: tuple[str, ...] = ("uv.lock", "pyproject.toml", ".python-version")
+
+
+CheckoutInput = LockedTree | OwnedInstallation | DevelopmentEnvironment
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,15 +197,7 @@ class Ensured:
     name: str
     provisioned: bool
     seconds: float
-
-
-def _uv_environment_path(checkout: Path, environ: Mapping[str, str]) -> Path:
-    """The environment ``uv`` selects in ``checkout``: uv's own rule."""
-    explicit = environ.get("UV_PROJECT_ENVIRONMENT", "").strip()
-    if not explicit:
-        return checkout / ".venv"
-    path = Path(explicit).expanduser()
-    return path if path.is_absolute() else checkout / path
+    environment_root: Path | None = None
 
 
 def checkout_input(
@@ -262,6 +206,8 @@ def checkout_input(
     environ: Mapping[str, str] | None = None,
     *,
     guard_source_root: Path | None = None,
+    python: str | None = None,
+    groups: tuple[str, ...] | None = None,
 ) -> CheckoutInput:
     """The declared input ``name`` of ``checkout`` under ``environ``."""
     _require_guard_source_owner(guard_source_root)
@@ -269,27 +215,13 @@ def checkout_input(
     environment = ProcessEnvironment(os.environ if environ is None else environ)
     match name:
         case "uv-environment":
-            tree = _uv_environment_path(checkout, environment)
-            return LockedTree(
+            return DevelopmentEnvironment(
                 name=name,
-                guard_source_root=guard_source_root,
                 checkout=checkout,
-                lock_files=("uv.lock", "pyproject.toml", ".python-version"),
-                tree=tree,
-                sentinel="pyvenv.cfg",
-                tool="uv",
-                arguments=("sync", "--frozen"),
-                # The guarded child would otherwise inherit dx's default
-                # UV_PROJECT_ENVIRONMENT and sync a tree this stamp does not
-                # describe. uv ignores a foreign VIRTUAL_ENV with a warning.
-                environment=environment.without(("VIRTUAL_ENV",)).updated(
-                    {"UV_PROJECT_ENVIRONMENT": str(tree)}
-                ),
-                # The lane's own `uv run` reads the caller's cache (see the
-                # module docstring for the measured cost of dx's default).
-                caller_choices=(("UV_CACHE_DIR", ("cache", "dir")),),
-                same_volume_choices=("UV_CACHE_DIR",),
-                tool_variable="UV",
+                environment=environment,
+                guard_source_root=guard_source_root,
+                python=python,
+                groups=groups,
             )
         case "browser-acorn":
             return LockedTree(
@@ -356,10 +288,10 @@ def checkout_input(
 def declares(spec: CheckoutInput) -> bool:
     """Whether the checkout declares ``spec``: its primary lock file exists.
 
-    ``uv run`` syncs only a project it finds. A declared input whose other
-    lock files are missing still fails loud in ``ensure``.
+    A declared input whose other lock files are missing still fails loudly
+    at the explicit ``ensure`` boundary.
     """
-    if isinstance(spec, LockedTree):
+    if isinstance(spec, (LockedTree, DevelopmentEnvironment)):
         return (spec.checkout / spec.lock_files[0]).is_file()
     return (spec.checkout / spec.owner).is_file()
 
@@ -367,7 +299,11 @@ def declares(spec: CheckoutInput) -> bool:
 def locked_input_files(name: CheckoutInputName) -> tuple[str, ...]:
     """The checkout-relative lock files of a locked input; empty otherwise."""
     spec = checkout_input(name, Path(os.curdir), {})
-    return spec.lock_files if isinstance(spec, LockedTree) else ()
+    return (
+        spec.lock_files
+        if isinstance(spec, (LockedTree, DevelopmentEnvironment))
+        else ()
+    )
 
 
 def _command_text(argv: Sequence[str]) -> str:
@@ -420,9 +356,20 @@ def _run(
         ) from exc
 
 
-def _lock_digests(spec: LockedTree) -> dict[str, str]:
+def _lock_digests(spec: LockedTree | DevelopmentEnvironment) -> dict[str, str]:
     digests: dict[str, str] = {}
+    if isinstance(spec, DevelopmentEnvironment):
+        from molt.source_build_environment import _editable_binding
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+
+        try:
+            binding = _editable_binding(spec.checkout)
+            digests.update(cast(Mapping[str, str], binding["metadata_inputs"]))
+        except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
+            raise ProvisioningError(f"uv-environment: {exc}") from exc
     for relative in spec.lock_files:
+        if relative in digests:
+            continue
         path = spec.checkout / relative
         try:
             digests[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -447,7 +394,7 @@ def _action_digest(spec: LockedTree, locks: Mapping[str, str]) -> str:
     return digest.hexdigest()
 
 
-def _stamp_digest(spec: LockedTree) -> str | None:
+def _stamp_record(spec: LockedTree) -> dict | None:
     try:
         value = read_exact(
             spec.stamp, max_bytes=_MAX_STAMP_BYTES, label=f"{spec.name} stamp"
@@ -461,16 +408,16 @@ def _stamp_digest(spec: LockedTree) -> str | None:
         or not isinstance(value.get("digest"), str)
     ):
         return None
-    return value["digest"]
+    return value
 
 
 def _locked_state(spec: LockedTree, digest: str | None = None) -> InputState:
-    recorded = _stamp_digest(spec)
-    if recorded is None:
+    record = _stamp_record(spec)
+    if record is None:
         return "absent"
     if digest is None:
         digest = _action_digest(spec, _lock_digests(spec))
-    if recorded != digest:
+    if record["digest"] != digest:
         return "stale"
     return "current" if (spec.tree / spec.sentinel).is_file() else "stale"
 
@@ -488,6 +435,132 @@ def _lock_path(spec: CheckoutInput) -> Path:
     git_dir, common_dir = directories
     base = git_dir if spec.scope == "checkout" else common_dir
     return base / "molt" / "checkout-provisioning" / f"{spec.name}.lock"
+
+
+def _development_intent(spec: DevelopmentEnvironment) -> dict:
+    from molt.source_build_environment_schema import (
+        source_build_environment_contract,
+    )
+
+    try:
+        groups = spec.groups
+        if groups is None:
+            from molt.dx import DxConfigError, DxProject
+
+            try:
+                groups = DxProject(spec.checkout).dependency_groups()
+            except DxConfigError as exc:
+                raise ProvisioningError(str(exc)) from exc
+        python = (
+            spec.python or spec.environment.get("MOLT_UV_PROJECT_PYTHON", "").strip()
+        )
+        if not python:
+            python = (
+                (spec.checkout / ".python-version").read_text(encoding="utf-8").strip()
+            )
+        if not python:
+            raise ProvisioningError("uv-environment: empty Python selection")
+        from molt.dx import DEFAULT_UV_PROJECT_PURPOSE, artifact_root
+
+        return {
+            "producer_contract": source_build_environment_contract(),
+            "python": python,
+            "groups": sorted(set(groups)),
+            "purpose": spec.environment.get(
+                "MOLT_UV_PROJECT_PURPOSE", DEFAULT_UV_PROJECT_PURPOSE
+            ),
+            "artifact_root": str(artifact_root(spec.checkout, spec.environment)),
+        }
+    except (OSError, ValueError) as exc:
+        raise ProvisioningError(
+            f"uv-environment: cannot read selection inputs: {exc}"
+        ) from exc
+
+
+def _development_selection_path(spec: DevelopmentEnvironment, intent: Mapping) -> Path:
+    control = _lock_path(spec).parent
+    return control / f"uv-environment.{canonical_json_sha256(intent)}.{STAMP_NAME}"
+
+
+def selected_development_environment(
+    checkout: Path,
+    environ: Mapping[str, str],
+    *,
+    python: str | None = None,
+    groups: tuple[str, ...] | None = None,
+) -> Path | None:
+    """Read a bounded generation projection, never an admitted image or bytes.
+
+    Path getters use this coordinate only. Operation boundaries load the real
+    published recipe before calling an input current or launching its Python.
+    """
+    checkout = checkout.expanduser().resolve()
+    spec = DevelopmentEnvironment(
+        "uv-environment", checkout, ProcessEnvironment(environ), python, groups
+    )
+    if not declares(spec):
+        return None
+    intent = _development_intent(spec)
+    explicit = environ.get("UV_PROJECT_ENVIRONMENT", "").strip()
+    if explicit:
+        selected = Path(explicit).expanduser()
+        if not selected.is_absolute():
+            selected = checkout / selected
+        return selected.absolute()
+    if git_directories(checkout) is None:
+        return None
+    path = _development_selection_path(spec, intent)
+    try:
+        record = read_exact(
+            path, max_bytes=_MAX_STAMP_BYTES, label="development selection"
+        )
+    except (OSError, ExactJsonError, ValueError) as exc:
+        # The stable reader wraps an absent opening path. A changed or
+        # malformed existing record remains a refusal, never fresh intent.
+        if type(exc) is StableRegularFileError and isinstance(
+            exc.__cause__, FileNotFoundError
+        ):
+            return None
+        raise ProvisioningError(
+            f"uv-environment: invalid selection {path}: {exc}"
+        ) from exc
+    if (
+        not isinstance(record, dict)
+        or set(record)
+        != {"schema", "input", "checkout", "intent", "locks", "generation"}
+        or record["schema"] != SCHEMA
+        or record["input"] != spec.name
+        or record["checkout"] != str(checkout)
+        or record["intent"] != intent
+        or not isinstance(record["generation"], str)
+        or not Path(record["generation"]).is_absolute()
+    ):
+        raise ProvisioningError(f"uv-environment: invalid selection {path}")
+    if record["locks"] != _lock_digests(spec):
+        return None
+    return Path(record["generation"])
+
+
+def _current_development_environment(spec: DevelopmentEnvironment) -> Path | None:
+    """Validate a selection's published recipe at an operation boundary."""
+    from molt.source_build_environment import load_development_environment
+    from molt.source_build_environment_schema import SourceBuildEnvironmentError
+
+    selected = selected_development_environment(
+        spec.checkout, spec.environment, python=spec.python, groups=spec.groups
+    )
+    if selected is None:
+        return None
+    intent = _development_intent(spec)
+    try:
+        return load_development_environment(
+            selected,
+            repo_root=spec.checkout,
+            python=intent["python"],
+            groups=tuple(intent["groups"]),
+        ).root
+    except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
+        raise ProvisioningError(f"uv-environment: {exc}") from exc
 
 
 class _ProvisioningLock:
@@ -769,6 +842,12 @@ def _provision_owned(spec: OwnedInstallation) -> bool:
 
 def input_state(spec: CheckoutInput) -> InputState:
     """Whether ``spec`` is current, without provisioning it."""
+    if isinstance(spec, DevelopmentEnvironment):
+        return (
+            "current"
+            if _current_development_environment(spec) is not None
+            else "absent"
+        )
     if isinstance(spec, LockedTree):
         return _locked_state(spec)
     return _owned_state(spec)
@@ -777,6 +856,54 @@ def input_state(spec: CheckoutInput) -> InputState:
 def ensure_input(spec: CheckoutInput) -> Ensured:
     """Make ``spec`` current; raise `ProvisioningError` when it cannot be."""
     started = time.monotonic()
+    if isinstance(spec, DevelopmentEnvironment):
+        from molt.python_interpreter import is_python_version_selector
+        from molt.source_build_environment import development_environment
+        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+
+        try:
+            # Current selection is a cheap recipe projection, not a claim that
+            # published executable bytes have passed operation admission.
+            intent = _development_intent(spec)
+            # A command/path selector needs the publisher's one exact runtime
+            # probe; bounded metadata alone cannot certify that executable.
+            selected = (
+                _current_development_environment(spec)
+                if is_python_version_selector(intent["python"])
+                else None
+            )
+            if selected is not None:
+                return Ensured(spec.name, False, time.monotonic() - started, selected)
+            with _ProvisioningLock(spec):
+                intent = _development_intent(spec)
+                locks = _lock_digests(spec)
+                image = development_environment(
+                    spec.checkout,
+                    python=intent["python"],
+                    groups=tuple(intent["groups"]),
+                    environ=spec.environment,
+                    provision=True,
+                )
+                if _lock_digests(spec) != locks:
+                    raise ProvisioningError(
+                        "uv-environment: declared inputs changed during publication"
+                    )
+                write_exact(
+                    _development_selection_path(spec, intent),
+                    {
+                        "schema": SCHEMA,
+                        "input": spec.name,
+                        "checkout": str(spec.checkout),
+                        "intent": intent,
+                        "locks": locks,
+                        "generation": str(image.root),
+                    },
+                )
+            return Ensured(
+                spec.name, image.provisioned, time.monotonic() - started, image.root
+            )
+        except (SourceBuildEnvironmentError, OSError, ValueError) as exc:
+            raise ProvisioningError(f"uv-environment: {exc}") from exc
     if isinstance(spec, LockedTree):
         provisioned = _provision_locked(spec)
     else:
@@ -790,10 +917,19 @@ def ensure(
     environ: Mapping[str, str] | None = None,
     *,
     guard_source_root: Path | None = None,
+    python: str | None = None,
+    groups: tuple[str, ...] | None = None,
 ) -> Ensured:
-    """Make checkout input ``name`` current, as ``uv run`` syncs first."""
+    """Publish/select the declared input through its existing owner."""
     return ensure_input(
-        checkout_input(name, checkout, environ, guard_source_root=guard_source_root)
+        checkout_input(
+            name,
+            checkout,
+            environ,
+            guard_source_root=guard_source_root,
+            python=python,
+            groups=groups,
+        )
     )
 
 

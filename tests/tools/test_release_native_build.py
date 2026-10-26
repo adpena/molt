@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import asdict
 import copy
 import hashlib
@@ -23,13 +22,32 @@ from molt.process_environment import (
 )
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
 from tests.native_artifact_fixtures import elf_header, macho_header, pe_header
-from tests.runtime_build_identity_helper import build_python_identity_fixture
 from tests.process_guard_common import install_module_view
 from tools.release import native_build
 from tools.release.git_source_snapshot import GitSourceFile, GitSourceSnapshot
 
 # Cargo runs in this file are fakes; build capacity is not under test.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
+
+@pytest.mark.parametrize("platform", ["linux", "macos", "windows"])
+def test_native_release_rust_remap_keeps_one_encoded_token(tmp_path, platform):
+    work = tmp_path / "work = with spaces"
+    paths = dict.fromkeys(native_build._TOOL_ROLES, tmp_path / "tool")
+    paths["linker_backend"] = tmp_path / "linker-backend"
+    environment = {"SYSTEMROOT": str(tmp_path)}
+    native_build._select_build_tools(
+        environment,
+        paths,
+        work=work,
+        triple="x86_64-pc-windows-msvc" if platform == "windows" else "test-target",
+        platform=platform,
+    )
+    flags = native_build.FlagStringRule.CARGO_ENCODED.decode(
+        environment["CARGO_ENCODED_RUSTFLAGS"]
+    )
+    assert flags[0] == f"--remap-path-prefix={work}=/molt"
+    assert flags[1:3] == ("-C", f"linker={paths['linker']}")
 
 
 def native_image(platform="linux", arch="x86_64"):
@@ -44,26 +62,18 @@ def _policy_files():
     root = Path(__file__).resolve().parents[2]
     return {
         "rust-toolchain.toml": b'[toolchain]\nchannel="1.96.1"\n',
-        **{
-            name: (root / name).read_bytes()
-            for name in (
-                "config/llvm_toolchain_arches.toml",
-                "config/llvm_toolchain_releases.toml",
-                "runtime/molt-backend-native/Cargo.toml",
-                "runtime/molt-backend/Cargo.toml",
-            )
-        },
+        **{name: (root / name).read_bytes() for name in native_build.LLVM_POLICY_PATHS},
     }
 
 
-def llvm_input_fixture(snapshot, *, arch):
+def llvm_input_fixture(snapshot, *, arch, platform):
     """Independent transport facts; this is not an executable LLVM build proof."""
     from molt.llvm_toolchain import llvm_release
 
     release = llvm_release("22.1.8", Path(__file__).resolve().parents[2])
     assert release is not None
     return {
-        "linkage": "force-static",
+        "linkage": "static-llvm-explicit-system",
         "version": "22.1.8",
         "upstream_release": asdict(release),
         "policy_sha256": native_build.llvm_policy_sha256(
@@ -72,18 +82,49 @@ def llvm_input_fixture(snapshot, *, arch):
         "targets": ["AArch64", "WebAssembly"]
         if arch in {"aarch64", "arm64"}
         else ["WebAssembly", "X86"],
-        "link_closure": ["lib/libLLVMCore.a"],
+        "link_plan": {
+            "schema": "molt.llvm-native-link.v1",
+            "target_os": platform,
+            "target_arches": ["aarch64" if arch == "arm64" else arch],
+            "host_target": RUST_TARGET_BY_COORDINATE[(platform, arch)],
+            "host_abi": {
+                "architecture": "aarch64" if arch == "arm64" else arch,
+                "pointer_bits": 64,
+                "header_bits": 64,
+                "byte_order": "little",
+            },
+            "llvm_config": "${compiler/llvm-config}",
+            "driver": "${compiler/llvm-driver}",
+            "llvm_version": "22.1.8",
+            "policy": None,
+            "libraries": [
+                {
+                    "kind": "static",
+                    "name": "LLVMCore",
+                    "source": "sdk",
+                    "path": "${compiler/llvm-sdk/lib/libLLVMCore.a}",
+                    "size": 10,
+                    "sha256": hashlib.sha256(b"LLVM bytes").hexdigest(),
+                    "policy_admitted": None,
+                }
+            ],
+        },
         "llvm_config": {
             "sha256": hashlib.sha256(b"configuration").hexdigest(),
             "size": 13,
         },
+        "system_static_dependencies": [],
         "resources": {
             "digest": hashlib.sha256(
                 b"independent SDK transport inventory"
             ).hexdigest(),
-            "file_count": 2,
-            "total_size": 23,
-            "roots": ["compiler/llvm-config", "compiler/llvm-sdk/lib/libLLVMCore.a"],
+            "file_count": 3,
+            "total_size": 29,
+            "roots": [
+                "compiler/llvm-config",
+                "compiler/llvm-driver",
+                "compiler/llvm-sdk/lib/libLLVMCore.a",
+            ],
             "missing": [],
         },
     }
@@ -95,7 +136,6 @@ def native_build_fixture(
     """Transport fixture with real schema/header admission and no host tools."""
     triple = RUST_TARGET_BY_COORDINATE[(platform, arch)]
     plans = native_build.component_plan(platform, arch)
-    python = build_python_identity_fixture()
     tools = {
         role: {
             "entrypoint": role,
@@ -113,7 +153,6 @@ def native_build_fixture(
             "ranlib",
             "linker",
             "linker_backend",
-            "python",
             "cmake",
             "ninja",
             *(("nasm",) if (platform, arch) == ("windows", "x86_64") else ()),
@@ -121,7 +160,6 @@ def native_build_fixture(
     }
     tools["cargo"]["version"] = "cargo 1.96.1 (fixture 2026-01-01)"
     tools["rustc"]["version"] = f"rustc 1.96.1 (fixture 2026-01-01)\nhost: {triple}"
-    tools["python"] = {**python["selected_executable"], "version": ""}
     receipt = {
         "schema": native_build.SCHEMA,
         "source": native_build.source_record(snapshot),
@@ -146,8 +184,7 @@ def native_build_fixture(
             "components": plans,
         },
         "tools": tools,
-        "build_python": python,
-        "llvm": llvm_input_fixture(snapshot, arch=arch),
+        "llvm": llvm_input_fixture(snapshot, arch=arch, platform=platform),
         "artifacts": {},
     }
     for role, plan in plans.items():
@@ -276,7 +313,7 @@ def test_receipt_binds_complete_source_identity(tmp_path, snapshot, field, value
         "tool",
         "path",
         "host",
-        "python",
+        "obsolete-generator",
         "legacy",
     ],
 )
@@ -298,8 +335,8 @@ def test_receipt_rejects_policy_and_identity_drift(tmp_path, snapshot, mutation)
         receipt["tools"]["rustc"]["version"] = (
             "rustc 1.96.1 (fixture)\nhost: aarch64-unknown-linux-gnu"
         )
-    elif mutation == "python":
-        receipt["tools"]["python"]["sha256"] = "d" * 64
+    elif mutation == "obsolete-generator":
+        receipt["build_python"] = {"identity_sha256": "d" * 64}
     else:
         receipt["schema"] = "molt.release-worker-build.v1"
     with pytest.raises(ValueError):
@@ -313,8 +350,17 @@ def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
         '[toolchain]\nchannel="1.96.1"\n', encoding="utf-8"
     )
     inherited = {
+        "MOLT_USE_SCCACHE": "1",
+        "RUSTC_WRAPPER": "sccache",
+        "RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
+        "CARGO_BUILD_RUSTC_WRAPPER": "sccache",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
         "PATH": "tools",
         "CARGO_HOME": "ambient",
+        "CARGO_INCREMENTAL": "1",
+        "SOURCE_DATE_EPOCH": "17",
+        "TZ": "Pacific/Honolulu",
+        "LC_ALL": "ambient-locale",
         "CARGO_PROFILE_RELEASE_OPT_LEVEL": "0",
         "RUSTFLAGS": "-Ctarget-cpu=native",
         "RUSTC": "fake",
@@ -335,6 +381,17 @@ def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
     assert inherited == original
     assert env["CARGO_HOME"] == str(tmp_path / "work" / "cargo-home")
     assert env["CARGO_INCREMENTAL"] == "0" and env["SOURCE_DATE_EPOCH"] == "123"
+    assert env["LC_ALL"] == "C" and env["TZ"] == "UTC"
+    assert env["MOLT_USE_SCCACHE"] == "0"
+    assert all(
+        env[name] == ""
+        for name in (
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        )
+    )
     assert env["RUSTUP_TOOLCHAIN"] == "1.96.1"
     assert env["VCINSTALLDIR"] == "activated-vc"
     assert env["VSINSTALLDIR"] == "activated-vs"
@@ -538,14 +595,13 @@ def test_receipt_rejects_self_consistent_rust_channel_not_selected_by_source(
         )
 
 
-def test_python_tool_cross_check_reaches_cross_check_after_valid_runtime(
+def test_native_build_receipt_rejects_the_retired_python_bound_schema(
     tmp_path, snapshot
 ):
     receipt = native_build_fixture(tmp_path, snapshot)
-    receipt["tools"]["python"]["sha256"] = "d" * 64
-    with pytest.raises(
-        ValueError, match="Python closure differs from selected executable"
-    ):
+    assert "python" not in receipt["tools"] and "build_python" not in receipt
+    receipt["schema"] = "molt.release-native-build.v4"
+    with pytest.raises(ValueError, match="schema"):
         native_build.validate_receipt(receipt)
 
 
@@ -570,7 +626,7 @@ def test_dependency_tools_fail_by_name_before_build(
         native_build._tool_paths(tmp_path, {}, platform=platform, arch=arch)
 
 
-@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "python", "llvm"])
+@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "llvm", "binary"])
 def test_producer_publishes_only_complete_verified_generation(
     tmp_path, snapshot, monkeypatch, failure
 ):
@@ -599,9 +655,10 @@ def test_producer_publishes_only_complete_verified_generation(
         "_tool_paths",
         lambda *_args, **_kwargs: {role: tmp_path / role for role in template["tools"]},
     )
-    from molt import llvm_toolchain
+    from molt import llvm_toolchain, llvm_link_plan
+    from tools.release import binary_compatibility
 
-    # Fake only the SDK's external verifier. Retained file custody, projection,
+    # Fake only external tools, policy provider and the SDK verifier. Retained file custody, projection,
     # native receipt admission and failure-atomic publication remain real.
     sdk = tmp_path / "sdk"
     config = sdk / "bin" / "llvm-config"
@@ -610,10 +667,46 @@ def test_producer_publishes_only_complete_verified_generation(
     archive.parent.mkdir(parents=True)
     config.write_bytes(b"configuration")
     archive.write_bytes(b"LLVMarchive")
+    driver = sdk / "bin/clang++"
+    driver.write_bytes(b"driver")
+    (sdk / "lib/libstdc++.so").write_bytes(b"C++ ABI")
+    monkeypatch.setattr(
+        llvm_link_plan, "_driver_library_directories", lambda *_args: (sdk / "lib",)
+    )
+    install_module_view(monkeypatch, "sys", sys, llvm_link_plan, platform="linux")
+    monkeypatch.setattr(
+        binary_compatibility,
+        "linux_shared_library_capability",
+        lambda _arch: (
+            {
+                "tool": "auditwheel",
+                "version": "6.8.2",
+                "platform": "linux",
+                "arch": "x86_64",
+                "policy_name": "manylinux_2_39_x86_64",
+                "policy_sha256": "a" * 64,
+                "shared_libraries": ("libstdc++.so.6",),
+            },
+            frozenset({"libstdc++.so.6"}),
+        ),
+    )
+    audit_observations = []
+
+    def audit(root, **coordinate):
+        audit_observations.append((root, coordinate))
+        assert not (tmp_path / "published").exists()
+        if failure == "binary":
+            raise ValueError("independent final binary audit refusal")
+        return SimpleNamespace(tag="manylinux_2_39_x86_64")
+
+    monkeypatch.setattr(
+        binary_compatibility, "derive_bundle_wheel_compatibility", audit
+    )
     verification = SimpleNamespace(
         prefix=sdk,
         llvm_config=config,
         version="22.1.8",
+        host_target="x86_64-unknown-linux-gnu",
         targets=("WebAssembly", "X86"),
         release=llvm_toolchain.llvm_release(
             "22.1.8", Path(__file__).resolve().parents[2]
@@ -626,6 +719,13 @@ def test_producer_publishes_only_complete_verified_generation(
             ),
         ),
         tool_versions=(
+            llvm_toolchain.LlvmToolVersionFact(
+                "clang++",
+                "bin/clang++",
+                "22.1.8",
+                6,
+                hashlib.sha256(b"driver").hexdigest(),
+            ),
             llvm_toolchain.LlvmToolVersionFact(
                 "llvm-config",
                 "bin/llvm-config",
@@ -652,18 +752,6 @@ def test_producer_publishes_only_complete_verified_generation(
         return result
 
     monkeypatch.setattr(native_build, "_tool_identities", identities)
-
-    @contextmanager
-    def python_scope(_state):
-        def capture(_env):
-            result = copy.deepcopy(template["build_python"])
-            if observations and failure == "python":
-                result["identity_sha256"] = "d" * 64
-            return result
-
-        yield SimpleNamespace(capture=capture)
-
-    monkeypatch.setattr(native_build, "build_python_scope", python_scope)
 
     def cargo(argv, *, cwd, env, check):
         observations.append((argv, cwd, env))
@@ -727,6 +815,8 @@ def test_producer_publishes_only_complete_verified_generation(
             build_root=tmp_path / "isolated-builds",
         )
         assert len(observations) == 4
+        assert len(audit_observations) == 1
+        assert audit_observations[0][1] == {"platform": "linux", "arch": "x86_64"}
         assert set(receipt["artifacts"]) == {
             "compiler",
             "launcher",
@@ -822,9 +912,13 @@ def test_native_receipt_requires_complete_static_llvm_inputs(
     elif mutation == "source":
         inputs["upstream_release"]["source_sha256"] = "f" * 64
     elif mutation == "archive":
-        inputs["link_closure"] = ["lib/libLLVM.so"]
+        inputs["link_plan"]["libraries"][0]["path"] = (
+            "${compiler/llvm-sdk/lib/libLLVM.so}"
+        )
     elif mutation == "system":
-        inputs["link_closure"].append("system:${compiler/llvm-system/1}")
+        row = copy.deepcopy(inputs["link_plan"]["libraries"][0])
+        row.update(source="system", path="${compiler/llvm-system/1}")
+        inputs["link_plan"]["libraries"].append(row)
     elif mutation == "config":
         inputs["resources"]["roots"].remove("compiler/llvm-config")
     elif mutation == "host":
@@ -913,7 +1007,17 @@ def test_native_producer_removes_sdk_names_with_child_rule(tmp_path, monkeypatch
         output.mkdir()
         return output
 
-    def admit_llvm(_source, inherited):
+    from tools.release import binary_compatibility
+
+    capability = ({"shared_libraries": ()}, frozenset())
+    monkeypatch.setattr(
+        binary_compatibility,
+        "linux_shared_library_capability",
+        lambda _arch: capability,
+    )
+
+    def admit_llvm(_source, inherited, *, shared_capability):
+        assert shared_capability is capability
         assert dict(inherited) == (
             {} if rule is NameRule.WINDOWS else {"SdkRoot": "mixed"}
         )
@@ -933,3 +1037,14 @@ def test_native_producer_removes_sdk_names_with_child_rule(tmp_path, monkeypatch
             build_root=tmp_path / "builds",
         )
     assert not output.exists()
+
+
+def test_native_receipt_rejects_consistent_foreign_sdk_pointer_abi(tmp_path, snapshot):
+    # Architecture-family membership and an internally consistent SDK shape are
+    # insufficient: this candidate's actual Rust target has 64-bit pointers.
+    receipt = native_build_fixture(tmp_path, snapshot)
+    plan = receipt["llvm"]["link_plan"]
+    plan["host_target"] = "x86_64-unknown-linux-gnux32"
+    plan["host_abi"].update(pointer_bits=32, header_bits=32)
+    with pytest.raises(ValueError, match="LLVM.*ABI"):
+        native_build.validate_receipt(receipt)

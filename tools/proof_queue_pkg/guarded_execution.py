@@ -43,6 +43,7 @@ from molt import disk_capacity  # noqa: E402
 from molt.exact_json import read_exact  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
+from molt.python_interpreter import parse_python_invocation  # noqa: E402
 from tools import proof_command_argv, proof_plan, proof_receipts  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
     command_admission as admission,
@@ -158,8 +159,6 @@ def _supervisor_build_environment(
         custody_cas._canonical_root(temporary, create=True)
         for name in ("TMPDIR", "TMP", "TEMP"):
             build_env[name] = str(temporary)
-        if "PYTHONPYCACHEPREFIX" in build_env:
-            build_env["PYTHONPYCACHEPREFIX"] = str(temporary / "pycache")
     if os.name != "nt" and external_placement:
         wrappers = (
             build_env.get(name, "")
@@ -381,9 +380,6 @@ def execute_guarded_request(request_path: Path) -> int:
                 )
             for name in cargo_output_environment.TEMPORARY_VARIABLE_NAMES:
                 inherited_env[name] = str(output_layout.temporary)
-            inherited_env["PYTHONPYCACHEPREFIX"] = str(
-                output_layout.temporary / "pycache"
-            )
         requested_cargo_target = inherited_env.get("CARGO_TARGET_DIR")
         applied_cargo_policies: tuple[str, ...] = ()
         if "cargo" in envelope.get("toolchains", []):
@@ -397,7 +393,7 @@ def execute_guarded_request(request_path: Path) -> int:
             if output_layout.declaration is not None:
                 custody_cas._durable_makedirs(output_layout.temporary)
             normalized_env, applied_cargo_policies = normalize_cargo_environment(
-                inherited_env
+                inherited_env, cwd=cwd
             )
             inherited_env = ProcessEnvironmentBuilder(normalized_env)
             # A stable selection-only path avoids putting this run's nonce in
@@ -562,7 +558,7 @@ def execute_guarded_request(request_path: Path) -> int:
             output_layout.validate(protected_roots=located_roots)
         python_authority = envelope.get("python")
         python_has_payload = isinstance(python_authority, Mapping) and (
-            proof_command_argv.parse_python_invocation(
+            parse_python_invocation(
                 admission._python_invocation_argv(
                     [str(value) for value in envelope["argv"]], python_authority
                 )
@@ -774,25 +770,6 @@ def execute_guarded_request(request_path: Path) -> int:
             assert isinstance(identity, Mapping)
             command_identity._validate_toolchain_identity(
                 plan, name, identity, full_capture=True, envelope=envelope
-            )
-        if "build-python" in toolchains_full:
-            policy = next(
-                policy
-                for policy in plan.toolchain_policies
-                if policy.name == "build-python"
-            )
-            invocation = admission.cargo_invocation_for_envelope(envelope)
-            execution_env = toolchain_capture.bind_build_python_environment(
-                toolchains_full["build-python"],
-                policy=policy,
-                env=execution_env,
-                cwd=cwd,
-                cargo_command=(admission._nested_command(exact) or exact)
-                if invocation is not None
-                else ("cargo",),
-            )
-            environment_contract["passed_names"] = sorted(
-                execution_env, key=str.casefold
             )
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full

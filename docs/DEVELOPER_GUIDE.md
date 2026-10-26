@@ -2,6 +2,62 @@
 
 Welcome to the Molt codebase. This guide is designed to help you understand the architecture, navigation, and philosophy of the project.
 
+## Follow a change through CI
+
+Before designing or repairing a subsystem, find its canonical owner, relevant
+history, handoffs and preserved work. Reuse or reconcile an existing solution
+before adding another one. Research the relevant compiler/runtime prior art
+before changing the design, and keep the measured reason for a deviation in
+the owning design document.
+
+The [integration driver](ops/INTEGRATION.md) owns landing and retirement;
+`tools/proof_plan.toml` owns proof selection. To inspect a hosted run:
+
+```bash
+uv run --python 3.12 python tools/ci_triage.py RUN_ID
+```
+
+The report includes the source, CI lifecycle, failures, comparison with main,
+and matching open findings. A known failure still exits unsuccessfully. Exit
+codes are `0` for completed successful CI, `1` for failures, `2` for unavailable
+verification, and `3` for unfinished CI. Ordinary triage does not establish
+proof coverage.
+
+From the exact clean committed checkout that CI tested, retrieve and verify
+the complete selected proof coverage:
+
+```bash
+uv run --python 3.12 python tools/ci_triage.py RUN_ID --verify
+```
+
+This downloads the classifier's source-bound selection and executable receipt
+artifacts, checks their GitHub digests with the shared strict archive reader,
+and invokes the canonical receipt verifier. Missing, ambiguous, failed or
+incomplete evidence cannot pass. The command retains the downloads and prints
+their location; it never changes the checkout or starts another CI run. Pull
+requests require the tested merge checkout recorded by the classifier.
+
+Coverage can reuse unique successful receipts from earlier attempts with the
+same source, authority, commands and admitted toolchains. It is not a claim
+that every proof ran afresh in this attempt. A current-attempt selection is
+required: older runs and partial reruns that retained an older classifier
+report verification unavailable. CI's existing aggregate verdict remains
+unchanged. Coverage is a source proof, not installed-release acceptance; the
+release matrix retains its own requirements.
+
+Every proof job exports the existing guard incidents and current-test records
+through the shared diagnostics action. Use those records to attribute a
+timeout before rerunning it. Per-test profiling remains available through
+`tools/pytest_profile.py`; its opt-in atomic checkpoints preserve completed
+phase observations across abrupt termination. Callback-driven checkpoints can
+be older than ten seconds during a long phase. Incomplete reports label observed
+phase-duration totals as lower bounds; derived waiting and imbalance remain
+provisional. They cannot establish a completed-run comparison. Use a fresh output
+path per run, including its worker metadata siblings. Session completion records
+pytest phases even if process exit is still unknown; it does not imply proof
+acceptance. See [performance authority](../tools/PERF_AUTHORITY.md) for
+performance claims and [operations](OPERATIONS.md) for build diagnostics.
+
 ## What is Molt?
 
 Molt is a research-grade project to compile a **verified per-application subset of Python** into **small, fast native binaries**. It is not just a compiler; it is a systems engineering platform that treats Python as a specification for high-performance native code.
@@ -23,9 +79,22 @@ For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/a
   explicitly guarded and documented in the specs.
 
 ## Version Policy
-- Molt targets **Python 3.12+** semantics only.
-- Do not add compatibility for <=3.11.
-- When 3.12/3.13/3.14 diverge, document the target in specs/tests.
+- The repository development host is the exact CPython patch in `.python-version`
+  (currently 3.12.15). Host selection verifies an explicit patch through discovery,
+  captured runtime/marker agreement and image reuse; it does not grant compiled
+  guest support.
+- `src/molt/target_python_policy.py` admits guest semantics for 3.12, 3.13 and
+  3.14. Pending 3.15 sources and a 3.15 compiler host do not admit a 3.15 guest.
+- A comparison uses an independently verified CPython oracle matching the
+  effective guest minor. Its compiler frontend remains the invoking host.
+  Interpreter discovery, source-image capture and dependency-marker probes use
+  one typed verifier owner per operation and an explicit core process guard per
+  child. Unknown descendant closure aborts the operation and retains its owned
+  cache namespace; only proven-closed candidate failures may advance discovery.
+  This adds guard startup to existing metadata launches, not identity probes.
+  Pure argv projections acquire no lifetime: queue leases and long-lived runtime
+  guardians keep their existing namespace owners through terminal closure.
+- Do not add compatibility for <=3.11; document differences among admitted targets.
 
 ## Work Granularity
 
@@ -504,9 +573,10 @@ Key controls:
   unproven conditional imports conservatively, including type-only declarations.
   Declaration and validation consumers import their owning contract or schema;
   any remaining producer dependencies stay in that conservative scope. Source-build
-  validation belongs to `source_build_environment_schema`; provisioning belongs
-  to `source_build_environment`. Atomic text/JSON writes depend only on file
-  publication; staged artifact copying loads
+  validation belongs to `molt.source_build_environment_schema`; provisioning belongs
+  to `molt.source_build_environment`. These core authorities serve DX, proofs, and
+  CLI producers without importing the CLI facade. Atomic text/JSON writes depend
+  only on file publication; staged artifact copying loads
   its transactional producer when the copy is requested.
 - Native binary builds transport compiler output and shared stdlib batches as
   deterministic static archives, with explicit archive identity through daemon
@@ -900,7 +970,7 @@ Ready to contribute code? Please read [CONTRIBUTING.md](../CONTRIBUTING.md). Not
 ### Adding a CPython version
 
 Keep source discovery, target admission and execution qualification separate.
-`src/molt/target_python.py` owns the admitted language catalog;
+`src/molt/target_python_policy.py` owns the admitted language catalog;
 `config/cpython_regrtest_sources.toml` owns exact upstream tags and commits;
 `config/verified_subset.toml` owns configured executable references. A pending
 source row does not admit that version or prove an execution coordinate.
@@ -919,6 +989,15 @@ The snapshot retains unmodified upstream text under the existing
    all pinned releases atomically, checks tag identity and unchanged receipts,
    and retains stdlib membership, ASDL, grammar, startup/import sources, Stable ABI,
    public-header identities and release notes in the existing source snapshot.
+   To observe numeric errors for a pinned pending release, run
+   `python3 tools/gen_python_numeric_errors.py --capture-observations 3.15 --python-executable /absolute/path/to/python3.15 --report logs/numeric-observations.json`.
+   This validates the exact interpreter release and source snapshot, captures the
+   closed arithmetic family, and writes evidence without editing policy or target
+   admission. Review observations into `config/python_numeric_errors.toml` under
+   `observed_targets`; regenerate its consumers normally. Only the canonical
+   admitted catalog is emitted into guest backends, so pending observations alone
+   leave those generated bytes unchanged. Observation keys are source-pinned
+   major/minor coordinates, including future majors, not minor-number offsets.
 3. Run `python3 tools/gen_stdlib_module_union.py --compare-sources 3.14 3.15 --report logs/cpython-source-comparison.json`.
    This offline, deterministic report names added/removed modules, source hashes
    and configured-reference patch mismatches. Changed sources have one linear

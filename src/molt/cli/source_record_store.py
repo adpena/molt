@@ -3,8 +3,9 @@
 All four source record families share the existing WAL database. Raw reads
 never renew retention: consumers admit the returned bytes, then refresh the
 immutable observation. Its random revision and observed use fence replacement
-and concurrent reuse. Generation retirement remains independent of the global
-cache byte/age policy, whose metadata-only maintenance uses bounded pages.
+and concurrent reuse. Generation is provenance, not a separate retention clock.
+The global cache byte/age policy owns row retirement through bounded metadata
+observations.
 
 Corrupt stores are unavailable to this process. Their files are never unlinked:
 SQLite peers may still own the database and WAL. Busy/full/read-only stores
@@ -19,6 +20,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import deque
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
@@ -27,6 +29,7 @@ from typing import Any, Literal
 from weakref import WeakValueDictionary, finalize
 
 from molt.file_locks import (
+    _FileLockHandle,
     _acquire_file_lock,
     _release_file_lock,
     _try_acquire_file_lock,
@@ -35,6 +38,7 @@ from molt.default_paths import (
     CACHE_MAINTENANCE_INTERVAL_SECONDS,
     SHARED_SOURCE_RECORDS_DIRECTORY,
     _default_molt_cache,
+    shared_cache_lock_path,
 )
 
 RecordKind = Literal[
@@ -43,6 +47,9 @@ RecordKind = Literal[
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
+# DDL identity does not encode the write protocol. Users sharing a namespace
+# must retain the stamp CAS and lifetime-lease protocol; incompatible changes
+# require a distinct namespace grammar or identity even when DDL is unchanged.
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS records (
         kind TEXT NOT NULL,
@@ -52,7 +59,6 @@ _SCHEMA = (
         revision BLOB NOT NULL,
         PRIMARY KEY (kind, key)
     )""",
-    "CREATE INDEX IF NOT EXISTS records_generation ON records (generation)",
     # Last use lives apart from the payload. SQLite rewrites a whole row on
     # UPDATE, so a stamp in `records` rewrote every payload it renewed, with
     # 47 times the WAL bytes of this narrow table.
@@ -69,14 +75,6 @@ _SCHEMA = (
     BEGIN
         DELETE FROM recency WHERE kind = old.kind AND key = old.key;
     END""",
-    """CREATE TABLE IF NOT EXISTS generations (
-        generation TEXT PRIMARY KEY,
-        used_ns INTEGER NOT NULL
-    ) WITHOUT ROWID""",
-    """CREATE TABLE IF NOT EXISTS trims (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 0),
-        trimmed_ns INTEGER NOT NULL
-    )""",
 )
 
 
@@ -84,39 +82,64 @@ def _schema_identity(schema: Sequence[str]) -> str:
     return hashlib.sha256("\0".join(schema).encode("utf-8")).hexdigest()[:16]
 
 
-# The schema's own text names its store file. One file shared by checkouts of
-# different code cannot migrate in place: a newer checkout's migration made the
-# whole cache unavailable to every older one (HF-513). A hand-numbered version
-# cannot keep two schemas apart either: two changes that both bump to the next
-# number merge without a conflict. As rustc keys incremental state by compiler
-# identity, a different schema starts an empty store, and the cache pruner
-# retires superseded store files by last use.
+# Schema text names the whole lifetime-protected namespace. Distinct schemas
+# never migrate a peer's database or collide through independent version bumps.
 _SCHEMA_DIGEST = _schema_identity(_SCHEMA)
-# PRAGMA user_version is a signed 32-bit integer, and zero means uninitialized.
+# PRAGMA user_version is signed 32-bit; zero means uninitialized.
 _SCHEMA_VERSION = int(_SCHEMA_DIGEST[:7], 16) | 1
-STORE_NAME = f"source_records.{_SCHEMA_DIGEST}.sqlite"
-# Earlier stores were named `source_records.v<n>.sqlite` and, before those,
-# `source_records.sqlite`.
-_STORE_FILE = re.compile(
-    r"source_records(?:\.(?P<identity>v[0-9]+|[0-9a-f]{16}))?\.sqlite"
+_STORE_NAMESPACE = _SCHEMA_DIGEST
+STORE_RELATIVE_PATH = (
+    Path(SHARED_SOURCE_RECORDS_DIRECTORY) / _STORE_NAMESPACE / "records.sqlite"
+)
+SOURCE_RECORD_RETIREMENT_SCOPE = "source-records"
+_NAMESPACE = re.compile(r"(?:v(?P<version>0|[1-9][0-9]*)|(?P<digest>[0-9a-f]{16}))")
+_LEGACY_FILE = re.compile(
+    r"source_records(?:\.(?:v[0-9]+|[0-9a-f]{16}))?\.sqlite"
     r"(?:-wal|-shm|\.initialize\.lock)?"
 )
 
 
-def superseded_store_file(name: str) -> bool:
-    """Whether ``name`` belongs to a store of another schema: a cache entry to
-    retire."""
-    match = _STORE_FILE.fullmatch(name)
-    return match is not None and match["identity"] != _SCHEMA_DIGEST
+def source_record_namespace_paths(
+    cache_root: Path, namespace: str
+) -> tuple[Path, Path]:
+    """One namespace and its persistent lifetime lock outside its payload."""
+    if _NAMESPACE.fullmatch(namespace) is None:
+        raise ValueError("invalid source-record namespace")
+    return (
+        cache_root / SHARED_SOURCE_RECORDS_DIRECTORY / namespace,
+        shared_cache_lock_path(cache_root, f"source-records.{namespace}"),
+    )
 
 
-_HOUR_NS = 3600 * 1_000_000_000
-_UNUSED_LIMIT_NS = 7 * 24 * _HOUR_NS
-_REFRESH_INTERVAL_NS = _HOUR_NS
+def superseded_store_namespace(name: str) -> bool:
+    """Recognize a retirement candidate, never permission to unlink it.
+
+    Retirement still requires its exclusive lifetime lease and atomic namespace
+    retirement. Only known version namespaces (v1-v3) predate digest naming;
+    unknown future numbered namespaces remain outside our deletion authority.
+    Digest namespaces share this lifetime protocol regardless of schema order.
+    """
+    match = _NAMESPACE.fullmatch(name)
+    if match is None:
+        return False
+    if match["digest"] is not None:
+        return match["digest"] != _SCHEMA_DIGEST
+    return 1 <= int(match["version"]) <= 3
+
+
+def legacy_source_record_file(name: str) -> bool:
+    """Flat stores have no lifetime protocol; inventory without unlinking."""
+    return _LEGACY_FILE.fullmatch(name) is not None
+
+
 _RECORD_REFRESH_NS = int(CACHE_MAINTENANCE_INTERVAL_SECONDS * 1_000_000_000)
-_RETAINED_GENERATIONS = 4
 _BUSY_TIMEOUT_SECONDS = 60.0
 _PAGE_SIZE = 256
+_RECORD_OBSERVATION_PREDICATE = (
+    "kind = ? AND key = ? AND revision = ? AND EXISTS ("
+    "SELECT 1 FROM recency AS u WHERE u.kind = records.kind"
+    " AND u.key = records.key AND u.used_ns = ?)"
+)
 # Queued renewals held before one transaction writes them: about 150 bytes each.
 _RENEWAL_BATCH_LIMIT = 4096
 _RENEW_RECORD = (
@@ -134,6 +157,51 @@ _Renewals = dict[tuple[str, str, str, bytes, int], int]
 # PID-fenced callback must retain its argument: dropping it could invoke the
 # SQLite connection's C finalizer in that child.
 _INHERITED_CONNECTIONS: list[sqlite3.Connection] = []
+_ConnectionResources = tuple[sqlite3.Connection, _FileLockHandle]
+_DEFERRED_LIFETIME_RELEASES: deque[_FileLockHandle] = deque()
+
+
+def _finalize_connection(resources: _ConnectionResources, pid: int) -> None:
+    # GC can run while either file-lock mutex is already held on this thread.
+    # SQLite may close here; Python file-lock bookkeeping must wait for normal
+    # context. deque append takes no Python mutex and retains the exact lease.
+    connection, lifetime = resources
+    _close_connection(connection, pid, None)
+    _defer_lifetime_release(lifetime)
+
+
+def _defer_lifetime_release(lifetime: _FileLockHandle) -> None:
+    if lifetime.owner_process_id == os.getpid():
+        _DEFERRED_LIFETIME_RELEASES.append(lifetime)
+
+
+def _release_deferred_lifetimes() -> None:
+    # Bound one cold admission to the work observed here; concurrent GC may
+    # append more owners, which a later cold admission will release.
+    pending = len(_DEFERRED_LIFETIME_RELEASES)
+    if not pending:
+        return
+    for _ in range(pending):
+        try:
+            lifetime = _DEFERRED_LIFETIME_RELEASES.popleft()
+        except IndexError:
+            break
+        try:
+            _release_file_lock(lifetime)
+        except BaseException:
+            _DEFERRED_LIFETIME_RELEASES.appendleft(lifetime)
+            raise
+
+
+def _close_connection(
+    connection: sqlite3.Connection, pid: int, lifetime: _FileLockHandle | None
+) -> None:
+    if pid != os.getpid():
+        _INHERITED_CONNECTIONS.append(connection)
+    else:
+        connection.close()
+        if lifetime is not None:
+            _release_file_lock(lifetime)
 
 
 def _save_renewals(connection: sqlite3.Connection, renewals: _Renewals) -> int:
@@ -158,30 +226,15 @@ def _save_renewals(connection: sqlite3.Connection, renewals: _Renewals) -> int:
         for (kind, key, generation, revision, used_ns), now in renewals.items()
     ]
     renewals.clear()
-    connection.execute("BEGIN IMMEDIATE")
+    connection.execute("BEGIN IMMEDIATE").close()
     try:
         renewed = connection.executemany(_RENEW_RECORD, rows).rowcount
-        connection.execute("COMMIT")
+        connection.execute("COMMIT").close()
     except BaseException:
         if connection.in_transaction:
-            connection.execute("ROLLBACK")
+            connection.execute("ROLLBACK").close()
         raise
     return renewed
-
-
-def _close_connection(
-    connection: sqlite3.Connection, pid: int, renewals: _Renewals | None = None
-) -> None:
-    if pid != os.getpid():
-        _INHERITED_CONNECTIONS.append(connection)
-        return
-    if renewals:
-        try:
-            _save_renewals(connection, renewals)
-        except sqlite3.Error:
-            # Renewal is advisory; the connection still closes.
-            renewals.clear()
-    connection.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +248,12 @@ class SourceRecord:
     _store: SourceRecordStore = field(repr=False, compare=False)
 
     def refresh(self) -> bool:
-        """Renew an admitted observation if due and still the same record."""
+        """Queue a due observation once without waiting or reopening the store.
+
+        True means queued, not persisted: the eventual batch can be dropped on
+        contention, or its revision/recency fence can reject a stale observation.
+        GC drops pending stamps; explicit close attempts one nonwaiting save.
+        """
         return self._store._refresh_record(self)
 
 
@@ -225,7 +283,7 @@ class SourceRecordBusy(SourceRecordUnavailable):
 
 
 class SourceRecordUnmigrated(SourceRecordUnavailable):
-    """A dry run met a legacy schema that only a writing sweep may migrate."""
+    """A read-only sweep found a store before its first committed bootstrap."""
 
 
 def _maintenance_error(error: sqlite3.Error) -> SourceRecordUnavailable:
@@ -240,9 +298,11 @@ def _maintenance_error(error: sqlite3.Error) -> SourceRecordUnavailable:
 class SourceRecordMaintenance:
     """One nonwaiting connection for the existing global prune owner.
 
-    Bounded metadata pages share one read snapshot; a separate connection does
-    current-state CAS deletes. No cursor is live while deleting. The snapshot
-    pins WAL pages through this cold sweep, so it closes before reclamation.
+    Each metadata query owns one short read snapshot; a separate connection
+    does current-state CAS deletes. Pages carry a fixed upper observation fence
+    and an advancing key, never a read transaction across yields or file work.
+    Inventory is approximate under concurrent writes; deletion always rechecks
+    the observed revision and recency.
     """
 
     def __init__(
@@ -269,7 +329,15 @@ class SourceRecordMaintenance:
                 "source record maintenance belongs to another process"
             )
         cursor = None
+        read_transaction = False
         try:
+            if not current:
+                self._connection.execute("BEGIN").close()
+                read_transaction = True
+                if not SourceRecordStore._schema_ready(self._connection):
+                    raise SourceRecordUnavailable(
+                        "source record schema is not initialized"
+                    )
             cursor = (self._current if current else self._connection).execute(
                 query, parameters
             )
@@ -279,6 +347,11 @@ class SourceRecordMaintenance:
         finally:
             if cursor is not None:
                 cursor.close()
+            if read_transaction and self._connection.in_transaction:
+                try:
+                    self._connection.execute("ROLLBACK").close()
+                except sqlite3.Error as exc:
+                    raise _maintenance_error(exc) from exc
 
     def inventory(self) -> SourceRecordInventory:
         with self._cursor(
@@ -287,25 +360,43 @@ class SourceRecordMaintenance:
             count, size = cursor.fetchone()
         return SourceRecordInventory(count, size)
 
-    def iter_lru(self) -> Iterator[SourceRecordMetadata]:
+    def iter_lru(
+        self, inventory: SourceRecordInventory
+    ) -> Iterator[SourceRecordMetadata]:
+        # The inventory count bounds examined observations even if a producer
+        # inserts below the upper key or wall time moves backward. A refreshed
+        # row may appear again; it consumes this same finite budget, and every
+        # deletion still requires the exact revision/recency observation.
+        remaining = inventory.entries
+        if remaining <= 0:
+            return
+        with self._cursor(
+            "SELECT used_ns, kind, key FROM recency"
+            " ORDER BY used_ns DESC, kind DESC, key DESC LIMIT 1"
+        ) as cursor:
+            upper = cursor.fetchone()
+        if upper is None:
+            return
         after: tuple[int, str, str] | None = None
-        while True:
-            parameters: tuple[Any, ...] = ()
+        while remaining > 0:
+            parameters: tuple[Any, ...] = tuple(upper)
             query = (
                 "SELECT u.kind, u.key, r.revision, u.used_ns, length(r.payload)"
                 " FROM recency AS u JOIN records AS r"
                 " ON r.kind = u.kind AND r.key = u.key"
+                " WHERE (u.used_ns, u.kind, u.key) <= (?, ?, ?)"
             )
             if after is not None:
-                query += " WHERE (u.used_ns, u.kind, u.key) > (?, ?, ?)"
+                query += " AND (u.used_ns, u.kind, u.key) > (?, ?, ?)"
                 parameters += after
             with self._cursor(
                 query + " ORDER BY u.used_ns, u.kind, u.key LIMIT ?",
-                (*parameters, _PAGE_SIZE),
+                (*parameters, min(_PAGE_SIZE, remaining)),
             ) as cursor:
                 rows = cursor.fetchall()
             if not rows:
                 return
+            remaining -= len(rows)
             for kind, key, revision, used_ns, size in rows:
                 if (
                     not isinstance(kind, str)
@@ -344,11 +435,7 @@ class SourceRecordMaintenance:
             and sum(row.size_bytes for row in batch) > SOURCE_RECORD_BATCH_MAX_BYTES
         ):
             raise ValueError("source record eviction batch exceeds payload bound")
-        predicate = (
-            "kind = ? AND key = ? AND revision = ? AND EXISTS ("
-            "SELECT 1 FROM recency AS u WHERE u.kind = records.kind"
-            " AND u.key = records.key AND u.used_ns = ?)"
-        )
+        predicate = _RECORD_OBSERVATION_PREDICATE
         query = (
             "SELECT 1 FROM records WHERE "
             if self._dry_run
@@ -385,7 +472,7 @@ class SourceRecordMaintenance:
                         pass
                 except BaseException:
                     # A failed rollback cannot leave an admitted write owner.
-                    _close_connection(self._current, self._pid)
+                    _close_connection(self._current, self._pid, None)
                     raise
             if isinstance(error, SourceRecordBusy):
                 return ("busy",) * len(batch)
@@ -393,7 +480,7 @@ class SourceRecordMaintenance:
 
     def close_snapshot(self) -> None:
         if not self._snapshot_closed:
-            _close_connection(self._connection, self._pid)
+            _close_connection(self._connection, self._pid, None)
             self._snapshot_closed = True
 
     def reclaim(self) -> None:
@@ -420,14 +507,16 @@ class SourceRecordMaintenance:
 class SourceRecordStore:
     """This process's connection to one shared record table."""
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, cache_root: Path) -> None:
+        self.cache_root = cache_root
+        self.namespace, self.lifetime_lock = source_record_namespace_paths(
+            cache_root, _STORE_NAMESPACE
+        )
+        self.path = cache_root / STORE_RELATIVE_PATH
         self._pid = os.getpid()
         self._lock = threading.Lock()
-        self._connection: sqlite3.Connection | None = None
+        self._connection_resources: _ConnectionResources | None = None
         self._connection_finalizer: finalize | None = None
-        self._refreshed: dict[str, int] = {}
-        # Shared with each connection's finalizer, which saves them on close.
         self._renewals: _Renewals = {}
         self._unavailable = False
 
@@ -436,14 +525,19 @@ class SourceRecordStore:
         if self._pid != os.getpid():
             return
         with self._lock:
-            self._release_connection()
-            self._refreshed.clear()
+            try:
+                self._save_renewals_locked()
+            finally:
+                self._release_connection()
+        _release_deferred_lifetimes()
 
     def _release_connection(self) -> None:
+        self._renewals.clear()
         finalizer, self._connection_finalizer = self._connection_finalizer, None
-        self._connection = None
-        if finalizer is not None:
-            finalizer()
+        resources, self._connection_resources = self._connection_resources, None
+        if finalizer is not None and finalizer.detach() is not None:
+            assert resources is not None
+            _close_connection(resources[0], self._pid, resources[1])
 
     def get(
         self, kind: RecordKind, key: str, *, generation: str, max_bytes: int | None
@@ -461,12 +555,12 @@ class SourceRecordStore:
             "SELECT r.payload, r.revision, u.used_ns FROM records AS r"
             " JOIN recency AS u ON u.kind = r.kind AND u.key = r.key"
             " WHERE r.kind = ? AND r.key = ? AND r.generation = ?"
-            " AND typeof(r.payload) = 'blob' AND typeof(r.revision) = 'blob'"
-            " AND length(r.revision) = 16 AND typeof(u.used_ns) = 'integer'"
+            " AND typeof(payload) = 'blob' AND typeof(revision) = 'blob'"
+            " AND length(revision) = 16 AND typeof(used_ns) = 'integer'"
         )
         parameters: tuple[Any, ...] = (kind, key, generation)
         if max_bytes is not None:
-            query += " AND length(r.payload) <= ?"
+            query += " AND length(payload) <= ?"
             parameters += (max_bytes,)
 
         def read(connection: sqlite3.Connection):
@@ -492,7 +586,7 @@ class SourceRecordStore:
         now = time.time_ns()
 
         def store(connection: sqlite3.Connection) -> None:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("BEGIN IMMEDIATE").close()
             try:
                 connection.execute(
                     "INSERT OR REPLACE INTO records"
@@ -505,72 +599,92 @@ class SourceRecordStore:
                     " VALUES (?, ?, ?)",
                     (kind, key, now),
                 )
-                connection.execute("COMMIT")
+                connection.execute("COMMIT").close()
             except BaseException:
                 if connection.in_transaction:
-                    connection.execute("ROLLBACK")
+                    connection.execute("ROLLBACK").close()
                 raise
 
         with self._lock:
-            stored, _result = self._run(store, generation=generation, now=now)
+            stored, _result = self._run(store)
         return stored
 
     def _refresh_record(self, record: SourceRecord) -> bool:
-        """Queue a due renewal of this observation; ``save_renewals`` writes it."""
         if self._pid != os.getpid():
             return False
         now = time.time_ns()
         if now - record.used_ns < _RECORD_REFRESH_NS:
             return False
-        observation = (
-            record.kind,
-            record.key,
-            record.generation,
-            record.revision,
-            record.used_ns,
-        )
-        with self._lock:
-            if observation in self._renewals:
+        # Admitted bytes are already in reader custody. Advisory recency must
+        # not wait behind this process's work or another SQLite writer.
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            # An old observation must not reopen/bootstrap a closed store only
+            # to renew optional metadata. Ordinary get/put retain reopening.
+            if self._connection_resources is None:
                 return False
-            # The generation stays live while its records are read; this is
-            # one write per generation per hour.
-            ok, _ = self._run(
-                lambda _connection: None, generation=record.generation, now=now
+
+            observation = (
+                record.kind,
+                record.key,
+                record.generation,
+                record.revision,
+                record.used_ns,
             )
-            if not ok:
+            if observation in self._renewals:
                 return False
             self._renewals[observation] = now
             if len(self._renewals) >= _RENEWAL_BATCH_LIMIT:
                 self._save_renewals_locked()
-        return True
+            return True
+        finally:
+            self._lock.release()
 
     def save_renewals(self) -> int:
-        """Write the queued renewals now; closing the store also writes them."""
-        if self._pid != os.getpid():
+        """Attempt one nonwaiting batch; return rows actually renewed by CAS.
+
+        Busy owners, closed stores and failed saves return zero. Failed saves
+        drop advisory observations; they never reopen or bootstrap a store.
+        """
+        if self._pid != os.getpid() or not self._lock.acquire(blocking=False):
             return 0
-        with self._lock:
+        try:
             return self._save_renewals_locked()
+        finally:
+            self._lock.release()
 
     def _save_renewals_locked(self) -> int:
-        ok, renewed = self._run(
-            lambda connection: _save_renewals(connection, self._renewals)
-        )
-        if not ok:
+        if not self._renewals or self._connection_resources is None:
+            return 0
+        connection = self._connection_resources[0]
+        try:
+            with closing(connection.execute("PRAGMA busy_timeout")) as cursor:
+                previous_timeout = cursor.fetchone()[0]
+            connection.execute("PRAGMA busy_timeout = 0").close()
+            try:
+                return _save_renewals(connection, self._renewals)
+            finally:
+                try:
+                    connection.execute(
+                        f"PRAGMA busy_timeout = {previous_timeout}"
+                    ).close()
+                except sqlite3.Error:
+                    # Never reuse a connection with an unqualified policy.
+                    self._disable()
+                    raise
+        except sqlite3.OperationalError:
             self._renewals.clear()
             return 0
-        return renewed
+        except sqlite3.DatabaseError:
+            self._disable()
+            return 0
 
-    def _run(
-        self, operation: Any, *, generation: str | None = None, now: int | None = None
-    ) -> tuple[bool, Any]:
+    def _run(self, operation: Any) -> tuple[bool, Any]:
         connection = self._connect()
         if connection is None:
             return False, None
         try:
-            if generation is not None:
-                self._refresh_generation(
-                    connection, generation, time.time_ns() if now is None else now
-                )
             return True, operation(connection)
         except sqlite3.OperationalError:
             return False, None
@@ -581,47 +695,42 @@ class SourceRecordStore:
     def _connect(self) -> sqlite3.Connection | None:
         if self._pid != os.getpid() or self._unavailable:
             return None
-        if self._connection is not None:
-            return self._connection
+        if self._connection_resources is not None:
+            return self._connection_resources[0]
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            _release_deferred_lifetimes()
+            lifetime = _try_acquire_file_lock(self.lifetime_lock, shared=True)
+        except OSError:
+            return None
+        if lifetime is None:
+            return None
+        connection = None
+        admitted = False
+        try:
+            self.namespace.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(
                 self.path,
                 timeout=_BUSY_TIMEOUT_SECONDS,
                 isolation_level=None,
                 check_same_thread=False,
             )
-        except (OSError, sqlite3.Error):
-            return None
-        try:
             self._initialize(connection)
+            resources = (connection, lifetime)
+            finalizer = finalize(self, _finalize_connection, resources, self._pid)
+            self._connection_resources = resources
+            self._connection_finalizer = finalizer
+            admitted = True
+            return connection
         except (SourceRecordBusy, OSError, sqlite3.OperationalError):
-            # Another owner is initializing or the file is briefly locked: a
-            # later operation may succeed.
-            connection.close()
             return None
-        except SourceRecordUnavailable:
-            # An unsupported schema or an unavailable WAL does not change
-            # within a process: stop here instead of reconnecting for every
-            # record operation.
-            connection.close()
+        except (SourceRecordUnavailable, sqlite3.DatabaseError):
             self._disable()
             return None
-        except sqlite3.DatabaseError:
-            connection.close()
-            self._disable()
-            return None
-        except BaseException:
-            connection.close()
-            raise
-        self._connection = connection
-        # The callback owns no reference to this store. Weak references have
-        # already cleared when it runs, so a concurrent factory lookup cannot
-        # resurrect a store while SQLite releases the GIL during close.
-        self._connection_finalizer = finalize(
-            self, _close_connection, connection, self._pid, self._renewals
-        )
-        return connection
+        finally:
+            if not admitted:
+                if connection is not None:
+                    connection.close()
+                _release_file_lock(lifetime)
 
     def _initialize(self, connection: sqlite3.Connection, *, wait: bool = True) -> None:
         connection.execute("PRAGMA synchronous = NORMAL").close()
@@ -675,54 +784,8 @@ class SourceRecordStore:
             raise SourceRecordUnavailable("source record schema version is unsupported")
         return version == _SCHEMA_VERSION
 
-    def _refresh_generation(
-        self, connection: sqlite3.Connection, generation: str, now: int
-    ) -> None:
-        checked = self._refreshed.get(generation)
-        if checked is not None and 0 <= now - checked < _REFRESH_INTERVAL_NS:
-            return
-        row = connection.execute(
-            "SELECT used_ns FROM generations WHERE generation = ?", (generation,)
-        ).fetchone()
-        if row is None or now - row[0] >= _REFRESH_INTERVAL_NS:
-            connection.execute(
-                "INSERT OR REPLACE INTO generations VALUES (?, ?)", (generation, now)
-            )
-            self._trim_if_due(connection, now)
-        self._refreshed[generation] = now
-
-    def _trim_if_due(self, connection: sqlite3.Connection, now: int) -> None:
-        row = connection.execute("SELECT trimmed_ns FROM trims").fetchone()
-        if row is not None and now - row[0] < _REFRESH_INTERVAL_NS:
-            return
-        connection.execute("BEGIN IMMEDIATE")
-        try:
-            row = connection.execute("SELECT trimmed_ns FROM trims").fetchone()
-            if row is not None and now - row[0] < _REFRESH_INTERVAL_NS:
-                connection.execute("COMMIT")
-                return
-            connection.execute(
-                "DELETE FROM generations WHERE used_ns < ? OR generation NOT IN"
-                " (SELECT generation FROM generations ORDER BY used_ns DESC LIMIT ?)",
-                (now - _UNUSED_LIMIT_NS, _RETAINED_GENERATIONS),
-            )
-            connection.execute(
-                "DELETE FROM records WHERE generation NOT IN (SELECT generation FROM generations)"
-            )
-            connection.execute("INSERT OR REPLACE INTO trims VALUES (0, ?)", (now,))
-            connection.execute("COMMIT")
-        except BaseException:
-            connection.execute("ROLLBACK")
-            raise
-        with closing(
-            connection.execute(f"PRAGMA incremental_vacuum({_PAGE_SIZE})")
-        ) as cursor:
-            for _ in cursor:
-                pass
-
     def _disable(self) -> None:
         self._unavailable = True
-        self._refreshed.clear()
         try:
             self._release_connection()
         except sqlite3.Error:
@@ -735,7 +798,15 @@ class SourceRecordStore:
         snapshot: sqlite3.Connection | None = None
         current: sqlite3.Connection | None = None
         maintenance: SourceRecordMaintenance | None = None
+        lifetime = None
+        implicit_close = False
         try:
+            _release_deferred_lifetimes()
+            lifetime = _try_acquire_file_lock(
+                self.lifetime_lock, create=not dry_run, shared=True
+            )
+            if lifetime is None:
+                raise SourceRecordBusy("source record namespace is retiring")
             current = sqlite3.connect(
                 self.path.absolute().as_uri() + ("?mode=ro" if dry_run else "?mode=rw"),
                 uri=True,
@@ -755,11 +826,15 @@ class SourceRecordStore:
                 timeout=0,
                 isolation_level=None,
             )
-            snapshot.execute("BEGIN").close()
             if not self._schema_ready(snapshot):
                 raise SourceRecordUnavailable("source record schema is not initialized")
             maintenance = SourceRecordMaintenance(snapshot, current, dry_run=dry_run)
             yield maintenance
+        except GeneratorExit:
+            # Abandoned generator contexts finalize inside arbitrary GC sites,
+            # just like weakref finalizers; SQLite closes before the lease parks.
+            implicit_close = True
+            raise
         except SourceRecordUnavailable as exc:
             cause = exc.__cause__
             if isinstance(cause, sqlite3.DatabaseError) and not isinstance(
@@ -782,9 +857,14 @@ class SourceRecordStore:
             if maintenance is not None:
                 maintenance.close_snapshot()
             elif snapshot is not None:
-                _close_connection(snapshot, self._pid)
+                _close_connection(snapshot, self._pid, None)
             if current is not None:
-                _close_connection(current, self._pid)
+                _close_connection(current, self._pid, None)
+            if lifetime is not None:
+                if implicit_close:
+                    _defer_lifetime_release(lifetime)
+                elif self._pid == os.getpid():
+                    _release_file_lock(lifetime)
 
     def physical_bytes(self) -> dict[str, int | None]:
         sizes: dict[str, int | None] = {}
@@ -812,21 +892,23 @@ _STORES_LOCK = threading.Lock()
 
 
 def _after_fork() -> None:
-    global _STORES_LOCK
+    global _STORES_LOCK, _DEFERRED_LIFETIME_RELEASES
     _STORES_LOCK = threading.Lock()
+    # File-lock fork custody already closed the inherited descriptor copies.
+    _DEFERRED_LIFETIME_RELEASES = deque()
 
 
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_after_fork)
 
 
-def source_record_store(state_root: Path) -> SourceRecordStore:
+def source_record_store(cache_root: Path) -> SourceRecordStore:
     """Share a process-owned store only while a caller still owns it."""
-    key = (os.fspath(state_root), os.getpid())
+    key = (os.fspath(cache_root), os.getpid())
     with _STORES_LOCK:
         store = _STORES.get(key)
         if store is None:
-            store = _STORES[key] = SourceRecordStore(state_root / STORE_NAME)
+            store = _STORES[key] = SourceRecordStore(cache_root)
     return store
 
 
@@ -837,9 +919,7 @@ def shared_source_records() -> SourceRecordStore:
     store = transaction.source_records if transaction is not None else None
     if store is None or store._pid != os.getpid():
         root = (
-            store.path.parent
-            if store is not None
-            else (_default_molt_cache() / SHARED_SOURCE_RECORDS_DIRECTORY).resolve()
+            store.cache_root if store is not None else _default_molt_cache().resolve()
         )
         store = source_record_store(root)
         if transaction is not None:

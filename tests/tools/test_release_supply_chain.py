@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import io
 from dataclasses import replace
 import copy
 import json
@@ -27,12 +29,20 @@ from tools.release import release_model
 from tools.release import release_evidence
 from tools import release_exit_gate
 from tools.command_execution import CommandExecutor
-from tools.git_identity import clean_checkout_status_arguments
+from tools.git_identity import (
+    clean_checkout_status_arguments,
+    immutable_git_environment,
+    read_git_blob_batch,
+)
 from tools.release import update_manifests
 from tools.release import verify_consumer
 from tools.release import compiler_payload
+from tools.release import native_dependencies
 from tools.release import git_source_snapshot
-from tests.tools.test_release_native_build import native_build_fixture
+from tests.tools.test_release_native_build import (
+    native_build_fixture,
+    llvm_input_fixture,
+)
 from tests.process_guard_common import install_module_view
 
 
@@ -44,6 +54,287 @@ from tests.release_lane_fixtures import (
 
 ROOT = Path(__file__).resolve().parents[2]
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+
+def _static_dependency_fixture():
+    payloads = {
+        "usr/share/doc/libsample-dev/copyright": b"Full package notice. See /usr/share/common-licenses/MIT\n",
+        "usr/share/common-licenses/MIT": b"Full common license fixture\n",
+    }
+    return {
+        "package": {
+            "manager": "dpkg",
+            "name": "libsample-dev",
+            "version": "1.2-3",
+            "architecture": "amd64",
+        },
+        "archives": [
+            {
+                "path": "${compiler/llvm-system/0}",
+                "name": "sample",
+                "sha256": hashlib.sha256(b"archive bytes").hexdigest(),
+                "size": len(b"archive bytes"),
+            }
+        ],
+        "notices": [
+            {
+                "path": path,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+                "content_base64": base64.b64encode(data).decode("ascii"),
+            }
+            for path, data in sorted(payloads.items())
+        ],
+    }
+
+
+def _with_static_dependency(inputs):
+    dependency = _static_dependency_fixture()
+    inputs["link_plan"]["libraries"].append(
+        {
+            **dependency["archives"][0],
+            "source": "system",
+            "kind": "static",
+            "policy_admitted": None,
+        }
+    )
+    inputs["resources"]["roots"].append("compiler/llvm-system/0")
+    inputs["resources"]["file_count"] += 1
+    inputs["resources"]["total_size"] += dependency["archives"][0]["size"]
+    inputs["system_static_dependencies"] = [dependency]
+    return inputs
+
+
+def test_static_dependency_capture_reuses_package_notices(tmp_path, monkeypatch):
+    from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
+
+    paths = [tmp_path / "libone.a", tmp_path / "libtwo.a"]
+    for index, path in enumerate(paths):
+        path.write_bytes(b"actual archive " + bytes([index]))
+    resources = CargoResourceCustody.capture(
+        tuple(
+            CargoResourceRoot(f"compiler/llvm-system/{i}", p)
+            for i, p in enumerate(paths)
+        )
+    )
+    plan = SimpleNamespace(
+        target_os="linux",
+        libraries=tuple(
+            SimpleNamespace(source="system", kind="static", name=p.stem, path=p)
+            for p in paths
+        ),
+    )
+    commands = []
+
+    def query(argv, **kwargs):
+        commands.append(argv)
+        assert "--admindir=/var/lib/dpkg" in argv
+        if "--search" in argv:
+            return "libsample-dev:amd64: " + argv[-1] + "\n"
+        assert "--show" in argv and argv[-1] == "libsample-dev:amd64"
+        return "libsample-dev\t1.2-3\tamd64\tinstalled\n"
+
+    monkeypatch.setattr(
+        native_dependencies, "_COMMANDS", SimpleNamespace(check_output=query)
+    )
+    monkeypatch.setattr(
+        native_dependencies, "resolve_executable", lambda *_a, **_k: Path("/dpkg-query")
+    )
+    captures = []
+    actual_capture = native_dependencies.capture_stable_regular_file
+    for notice in _static_dependency_fixture()["notices"]:
+        path = tmp_path / notice["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(base64.b64decode(notice["content_base64"]))
+
+    def capture(path, **kwargs):
+        captures.append(path)
+        return actual_capture(tmp_path / path.relative_to("/"), **kwargs)
+
+    monkeypatch.setattr(native_dependencies, "capture_stable_regular_file", capture)
+    # Resolve notice paths in this synthetic Debian filesystem only.
+    original_resolve = Path.resolve
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda p, **kw: (
+            p if str(p).startswith("/usr/share/") else original_resolve(p, **kw)
+        ),
+    )
+    result = native_dependencies.capture_system_static_dependencies(plan, resources)
+    assert len(commands) == 3  # two archive owners, one package metadata query
+    assert len(captures) == 2  # copyright and its referenced common license once
+    assert result[0]["package"] == _static_dependency_fixture()["package"]
+    assert result[0]["notices"] == _static_dependency_fixture()["notices"]
+    assert [row["sha256"] for row in result[0]["archives"]] == [
+        hashlib.sha256(p.read_bytes()).hexdigest() for p in paths
+    ]
+    assert (
+        native_dependencies.capture_system_static_dependencies(
+            SimpleNamespace(libraries=()), None
+        )
+        == []
+    )
+    assert len(commands) == 3
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["archive", "notice", "missing-notice", "missing-archive", "extra", "duplicate"],
+)
+def test_static_dependency_provenance_rejects_tampering(mutation):
+    dependency = _static_dependency_fixture()
+    plan = {
+        "libraries": [
+            {**dependency["archives"][0], "source": "system", "kind": "static"}
+        ]
+    }
+    assert native_dependencies.validate_system_static_dependencies(
+        [dependency], plan
+    ) == [dependency]
+    altered = copy.deepcopy(dependency)
+    if mutation == "archive":
+        altered["archives"][0]["sha256"] = "f" * 64
+    elif mutation == "notice":
+        altered["notices"][0]["content_base64"] = base64.b64encode(b"changed").decode(
+            "ascii"
+        )
+    elif mutation == "missing-notice":
+        altered["notices"].pop(0)
+    elif mutation == "missing-archive":
+        altered["archives"] = []
+    elif mutation == "extra":
+        altered["package"]["license"] = "MIT"
+    else:
+        altered["notices"].append(altered["notices"][0])
+    with pytest.raises(ValueError):
+        native_dependencies.validate_system_static_dependencies([altered], plan)
+
+
+def test_static_system_spdx_is_distinct_and_observed(release_source):
+    inputs = {
+        target.id: llvm_input_fixture(
+            release_source, platform=target.platform, arch=target.arch
+        )
+        for target in release_model.release_targets()
+    }
+    _with_static_dependency(inputs["linux-x86_64"])
+    packages = release_model._llvm_spdx_packages(inputs)
+    system = [p for p in packages if p["SPDXID"].startswith("SPDXRef-SystemStatic-")]
+    assert len(system) == 1
+    assert (
+        system[0]["licenseDeclared"] == system[0]["licenseConcluded"] == "NOASSERTION"
+    )
+    assert json.loads(system[0]["sourceInfo"]) == _static_dependency_fixture()
+    release_model.validate_spdx_llvm_inputs({"packages": packages})
+    with pytest.raises(ValueError, match="projection differs"):
+        release_model.validate_spdx_llvm_inputs(
+            {"packages": [p for p in packages if p not in system]}
+        )
+    system[0]["sourceInfo"] = "{}"
+    with pytest.raises(ValueError, match="projection differs"):
+        release_model.validate_spdx_llvm_inputs({"packages": packages})
+
+
+def test_static_system_spdx_preserves_distinct_package_spellings(release_source):
+    inputs = {
+        target.id: llvm_input_fixture(
+            release_source, platform=target.platform, arch=target.arch
+        )
+        for target in release_model.release_targets()
+    }
+    llvm = inputs["linux-x86_64"]
+    for index, name in enumerate(("libfoo+bar-dev", "libfoo-bar-dev")):
+        dependency = _static_dependency_fixture()
+        dependency["package"]["name"] = name
+        archive = dependency["archives"][0]
+        archive["path"] = f"${{compiler/llvm-system/{index}}}"
+        for notice in dependency["notices"]:
+            notice["path"] = notice["path"].replace("/libsample-dev/", f"/{name}/")
+        llvm["system_static_dependencies"].append(dependency)
+        llvm["link_plan"]["libraries"].append(
+            {**archive, "source": "system", "kind": "static", "policy_admitted": None}
+        )
+        llvm["resources"]["roots"].append(f"compiler/llvm-system/{index}")
+        llvm["resources"]["file_count"] += 1
+        llvm["resources"]["total_size"] += archive["size"]
+    packages = release_model._llvm_spdx_packages(inputs)
+    ids = [p["SPDXID"] for p in packages]
+    assert len(ids) == len(set(ids))
+    system = [p for p in packages if p["SPDXID"].startswith("SPDXRef-SystemStatic-")]
+    assert {json.loads(p["sourceInfo"])["package"]["name"] for p in system} == {
+        "libfoo+bar-dev",
+        "libfoo-bar-dev",
+    }
+    release_model.validate_spdx_llvm_inputs({"packages": packages})
+    system[1]["SPDXID"] = system[0]["SPDXID"]
+    with pytest.raises(ValueError, match="projection differs"):
+        release_model.validate_spdx_llvm_inputs({"packages": packages})
+
+
+def test_static_dependency_capture_refuses_missing_package_manager(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise ValueError(
+            "static system release package manager is unavailable: dpkg-query"
+        )
+
+    monkeypatch.setattr(native_dependencies, "resolve_executable", unavailable)
+    plan = SimpleNamespace(
+        target_os="linux", libraries=(SimpleNamespace(source="system", kind="static"),)
+    )
+    with pytest.raises(ValueError, match="package manager is unavailable"):
+        native_dependencies.capture_system_static_dependencies(plan, None)
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "compiler", "policy", "inventory"])
+def test_bundle_cli_requires_receipt_bound_compiler_bytes(
+    tmp_path, monkeypatch, release_source, mismatch, capsys
+):
+    root = tmp_path / "native"
+    receipt = native_build_fixture(root, release_source)
+    compiler = root / receipt["artifacts"]["compiler"]["path"]
+    monkeypatch.setattr(
+        compiler_payload, "source_snapshot", lambda *_args: release_source
+    )
+    if mismatch == "compiler":
+        compiler = tmp_path / "substitute-compiler"
+        compiler.write_bytes(b"unrelated binary")
+    elif mismatch in {"policy", "inventory"}:
+        if mismatch == "policy":
+            receipt["llvm"]["policy_sha256"] = "f" * 64
+        else:
+            receipt["source"]["files_sha256"] = "f" * 64
+        (root / "native-build.json").write_text(json.dumps(receipt), encoding="utf-8")
+    argv = [
+        "build_bundle",
+        "--version",
+        "0.0.1",
+        "--platform",
+        "linux",
+        "--arch",
+        "x86_64",
+        "--output",
+        str(tmp_path / "bundle.tar.gz"),
+        "--source-sha",
+        release_source.source_sha,
+        "--source-date-epoch",
+        "1700000000",
+        "--compiler",
+        str(compiler),
+    ]
+    if mismatch != "missing":
+        argv.extend(["--native-build", str(root / "native-build.json")])
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as error:
+        build_bundle.main()
+    assert error.value.code == 2
+    assert {
+        "missing": "--native-build is required",
+        "compiler": "compiler bytes differ from native-build receipt",
+        "policy": "native LLVM policy differs from source snapshot",
+        "inventory": "native build receipt differs from candidate source",
+    }[mismatch] in capsys.readouterr().err
+    assert not (tmp_path / "bundle.tar.gz").exists()
 
 
 @pytest.mark.parametrize("rule", list(NameRule))
@@ -71,6 +362,10 @@ def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
         "GIT_OPTIONAL_LOCKS": "0",
         "LC_ALL": "C",
         "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_GRAFT_FILE": os.devnull,
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "advice.graftFileDeprecated",
+        "GIT_CONFIG_VALUE_0": "false",
     }
     assert env.rule is rule
 
@@ -78,18 +373,144 @@ def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
 @pytest.mark.parametrize("rule", list(NameRule))
 def test_immutable_git_environment_preserves_distinct_posix_names(rule):
     original = ProcessEnvironment(
-        {"Git_No_Replace_Objects": "ambient", "GIT_NO_REPLACE_OBJECTS": "0"},
+        {
+            "Git_No_Replace_Objects": "ambient",
+            "GIT_NO_REPLACE_OBJECTS": "0",
+            "Git_Graft_File": "ambient",
+            "GIT_GRAFT_FILE": "alternate",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "user.name",
+            "GIT_CONFIG_VALUE_0": "Inherited name",
+        },
         rule=rule,
     )
-    env = git_source_snapshot.immutable_git_environment(original)
-    assert dict(env) == (
-        {"Git_No_Replace_Objects": "1"}
+    env = immutable_git_environment(original)
+    expected = (
+        {"Git_No_Replace_Objects": "1", "Git_Graft_File": os.devnull}
         if rule is NameRule.WINDOWS
-        else {"Git_No_Replace_Objects": "ambient", "GIT_NO_REPLACE_OBJECTS": "1"}
+        else {
+            "Git_No_Replace_Objects": "ambient",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "Git_Graft_File": "ambient",
+            "GIT_GRAFT_FILE": os.devnull,
+        }
     )
+    expected.update(
+        {
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "user.name",
+            "GIT_CONFIG_VALUE_0": "Inherited name",
+            "GIT_CONFIG_KEY_1": "advice.graftFileDeprecated",
+            "GIT_CONFIG_VALUE_1": "false",
+        }
+    )
+    assert dict(env) == expected
+    assert original["GIT_CONFIG_COUNT"] == "1"
     assert original["Git_No_Replace_Objects"] == (
         "0" if rule is NameRule.WINDOWS else "ambient"
     )
+    assert original["Git_Graft_File"] == (
+        "alternate" if rule is NameRule.WINDOWS else "ambient"
+    )
+
+
+def test_release_epoch_uses_exact_original_commit_not_head_or_replacement(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "GIT_NO_REPLACE_OBJECTS"
+    }
+    _COMMANDS.run(
+        ["git", "init", str(repo)], check=True, capture_output=True, timeout=30
+    )
+    tree = (
+        _COMMANDS.check_output(["git", "mktree"], cwd=repo, input=b"", timeout=30)
+        .decode()
+        .strip()
+    )
+
+    def commit(epoch):
+        env = {
+            **environment,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            "GIT_AUTHOR_DATE": f"{epoch} +0000",
+            "GIT_COMMITTER_DATE": f"{epoch} +0000",
+        }
+        return (
+            _COMMANDS.check_output(
+                ["git", "commit-tree", tree, "-m", "epoch control"],
+                cwd=repo,
+                env=env,
+                timeout=30,
+            )
+            .decode()
+            .strip()
+        )
+
+    original = commit(1700000000)
+    decoy = commit(1800000000)
+    for arguments in (("update-ref", "HEAD", decoy), ("replace", original, decoy)):
+        _COMMANDS.run(
+            ["git", *arguments],
+            cwd=repo,
+            env=environment,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    # Establish that an ordinary Git lookup really sees the poisoned timestamp.
+    assert (
+        _COMMANDS.check_output(
+            ["git", "show", "-s", "--format=%ct", original],
+            cwd=repo,
+            env=environment,
+            timeout=30,
+        ).strip()
+        == b"1800000000"
+    )
+    git = Path(shutil.which("git"))
+    assert (
+        git_source_snapshot.read_git_commit_epoch(
+            repo, original, git=git, environment=environment
+        )
+        == 1700000000
+    )
+    assert compiler_payload.source_commit_epoch(repo, original) == 1700000000
+    assert compiler_payload.source_commit_epoch(repo, decoy) == 1800000000
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "b" * 40 + "\n1700000000",
+        "a" * 40 + "\n0",
+        "a" * 40 + "\n-1",
+        "a" * 40 + "\n+1",
+        "a" * 40 + "\n01",
+        "a" * 40 + "\n1\n2",
+        "a" * 40 + "\n１",
+        "a" * 40,
+    ],
+)
+def test_release_epoch_refuses_inexact_or_nonpositive_commit_record(
+    tmp_path, monkeypatch, record
+):
+    monkeypatch.setattr(git_source_snapshot, "_run_git_text", lambda *_: record)
+    with pytest.raises(ValueError, match="exact commit and positive timestamp"):
+        git_source_snapshot.read_git_commit_epoch(
+            tmp_path, "a" * 40, git=tmp_path / "git", environment={}
+        )
+
+
+@pytest.mark.parametrize("epoch", [True, False, 0, -1, "1700000000", None])
+def test_release_build_environment_refuses_invalid_epoch(epoch):
+    with pytest.raises(ValueError, match="positive integer"):
+        compiler_payload.reproducible_build_environment(epoch)
 
 
 @pytest.mark.parametrize("rule", list(NameRule))
@@ -366,8 +787,6 @@ def test_release_plan_requires_exact_project_tag_and_source(
             return "a" * 40
         if args == ("tag", "--points-at", "HEAD", "--list", "v0.0.001"):
             return "v0.0.001"
-        if args == ("show", "-s", "--format=%ct", "HEAD"):
-            return "1700000000"
         if args == clean_checkout_status_arguments() or args == (
             "merge-base",
             "--is-ancestor",
@@ -377,9 +796,18 @@ def test_release_plan_requires_exact_project_tag_and_source(
             return ""
         raise AssertionError(args)
 
+    epoch_queries = []
+
+    def epoch(root, commit):
+        epoch_queries.append((root, commit))
+        return 1700000000
+
+    monkeypatch.setattr(release_authority, "source_commit_epoch", epoch)
     monkeypatch.setattr(release_authority, "_git", exact_git)
     plan = release_authority.resolve_source("v0.0.001", "a" * 40)
     assert plan["version"] == "0.0.001"
+    assert plan["source_date_epoch"] == "1700000000"
+    assert epoch_queries == [(release_authority.ROOT, "a" * 40)]
     assert plan["release_exit_archive"] == release_model.release_exit_archive_filename(
         "a" * 40
     )
@@ -399,8 +827,6 @@ def _stable_git(*args: str) -> str:
         return "a" * 40
     if args == ("tag", "--points-at", "HEAD", "--list", "v1.0.0"):
         return "v1.0.0"
-    if args == ("show", "-s", "--format=%ct", "HEAD"):
-        return "1700000000"
     if args == clean_checkout_status_arguments() or args == (
         "merge-base",
         "--is-ancestor",
@@ -615,6 +1041,64 @@ def test_compiler_snapshot_excludes_only_development_evidence_before_blob_reads(
     full_files = {entry.relative.as_posix(): entry for entry in complete.files}
     assert full_files[omitted].sha256 == hashlib.sha256(evidence).hexdigest()
     assert full_files.keys() == files.keys() | {omitted}
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        None,
+        "header",
+        "missing",
+        "type",
+        "size",
+        "separator",
+        "truncated",
+        "hash",
+        "extra",
+    ],
+)
+def test_git_blob_batch_keeps_exact_framing(corruption):
+    # Binary body delimiters are not framing; declared byte lengths are.
+    bodies = [b"first\x00\r\nlast", b""]
+    objects = [
+        (hashlib.sha1(f"blob {len(body)}\0".encode() + body).hexdigest(), len(body))
+        for body in bodies
+    ]
+    header = f"{objects[0][0]} blob {objects[0][1]}\n".encode()
+    stream = b"".join(
+        f"{oid} blob {size}\n".encode() + body + b"\n"
+        for (oid, size), body in zip(objects, bodies, strict=True)
+    )
+    if corruption == "header":
+        stream = stream.replace(header, header.replace(b" ", b"\t", 1), 1)
+    elif corruption == "missing":
+        stream = f"{objects[0][0]} missing\n".encode()
+    elif corruption == "type":
+        stream = stream.replace(b" blob ", b" tree ", 1)
+    elif corruption == "size":
+        stream = stream.replace(header, f"{objects[0][0]} blob 999\n".encode(), 1)
+    elif corruption == "separator":
+        end = len(header) + len(bodies[0])
+        stream = stream[:end] + b"!" + stream[end + 1 :]
+    elif corruption == "truncated":
+        stream = stream[:-1]
+    elif corruption == "hash":
+        stream = stream.replace(b"first", b"other", 1)
+    elif corruption == "extra":
+        stream += b"unexpected\n"
+
+    class BoundedHeaderStream(io.BytesIO):
+        def readline(self, size=-1):
+            assert 0 < size <= len(header) + 1, "batch headers need bounded reads"
+            return super().readline(size)
+
+    if corruption is None:
+        assert list(read_git_blob_batch(BoundedHeaderStream(stream), objects)) == [
+            (body, hashlib.sha256(body).hexdigest()) for body in bodies
+        ]
+    else:
+        with pytest.raises(ValueError, match="Git source snapshot"):
+            list(read_git_blob_batch(BoundedHeaderStream(stream), objects))
 
 
 def test_guarded_git_snapshot_preserves_binary_blobs_beyond_capture_tail(tmp_path):
@@ -921,6 +1405,9 @@ def test_bundle_archives_are_byte_reproducible(
         arch="x86_64",
         snapshot=release_source,
     )
+    llvm_inputs = llvm_input_fixture(release_source, platform=platform, arch="x86_64")
+    if platform == "linux":
+        _with_static_dependency(llvm_inputs)
     for output in (first, second):
         wheel = build_bundle.build_bundle(
             version="0.0.1",
@@ -937,6 +1424,7 @@ def test_bundle_archives_are_byte_reproducible(
             runtime_cells=cells,
             pure_wheel=pure_wheel,
             wheel_output_dir=tmp_path / f"wheel-{output.stem}",
+            llvm_inputs=llvm_inputs,
         )
         assert wheel is not None
         wheels.append(wheel)
@@ -945,6 +1433,24 @@ def test_bundle_archives_are_byte_reproducible(
     extracted = tmp_path / "extracted"
     verify_consumer._extract(first, extracted)
     bundle = extracted / "molt-0.0.1"
+    assert (
+        json.loads((bundle / "share/molt/system-dependencies.json").read_bytes())
+        == llvm_inputs["system_static_dependencies"]
+    )
+    for dependency in llvm_inputs["system_static_dependencies"]:
+        for notice in dependency["notices"]:
+            relative = (
+                "share/molt/system-dependencies/libsample-dev/amd64/" + notice["path"]
+            )
+            expected_notice = base64.b64decode(notice["content_base64"])
+            assert (bundle / relative).read_bytes() == expected_notice
+            with zipfile.ZipFile(wheels[0]) as archive:
+                assert (
+                    archive.read(
+                        "molt-0.0.1.data/data/share/molt/distribution/" + relative
+                    )
+                    == expected_notice
+                )
     assert not (bundle / "lib/molt/bootstrap.py").exists()
     assert not (bundle / "share/molt/wheels").exists()
     assert not (bundle / "source" / omitted).exists()
@@ -978,6 +1484,7 @@ def release_evidence_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
+    monkeypatch.setattr(release_authority, "source_commit_epoch", lambda *_: 1700000000)
     # Transport/admission unit fixture: semantic producers are tested by their
     # owning gate suite. No fixture is release acceptance evidence.
     monkeypatch.setattr(release_authority, "_project_version", lambda: "0.0.001")
@@ -987,7 +1494,6 @@ def release_evidence_inputs(
         lambda *args: {
             ("rev-parse", "HEAD"): "a" * 40,
             ("tag", "--points-at", "HEAD", "--list", "v0.0.001"): "v0.0.001",
-            ("show", "-s", "--format=%ct", "HEAD"): "1700000000",
             clean_checkout_status_arguments(): "",
             ("merge-base", "--is-ancestor", "a" * 40, "origin/main"): "",
         }[args],
@@ -1071,6 +1577,23 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
         evidence = output / "consumer-evidence"
         evidence.mkdir()
         (evidence / "replay.json").write_bytes(_transport_replay_bytes(candidate))
+        for owner, proof in [
+            *(
+                ("bundle", row)
+                for row in _consumer_transport_receipt(candidate)["python_proofs"]
+            ),
+            ("pip", _consumer_transport_receipt(candidate)["pip_proof"]),
+        ]:
+            record = (
+                output
+                / _transport_compilation_reference(candidate, owner, proof["python"])[
+                    "path"
+                ]
+            )
+            record.parent.mkdir(parents=True)
+            record.write_bytes(
+                _transport_compilation_bytes(candidate, owner, proof["python"])
+            )
         consumer_replay.publish_archive(
             candidate_dir=output,
             receipt=output / "consumer-verification.json",
@@ -1101,6 +1624,43 @@ def consumer_transport_boundary(monkeypatch):
         consumer_replay, "provision_verifier", lambda: (Path("/fixture-supervisor"), {})
     )
     monkeypatch.setattr(consumer_replay, "validate", validate)
+
+    def validate_compilation(reference, **kwargs):
+        candidate, owner, minor = (
+            kwargs["candidate"],
+            kwargs["owner"],
+            kwargs["proof"]["python"],
+        )
+        if reference != _transport_compilation_reference(candidate, owner, minor) or (
+            kwargs["evidence_root"] / reference["path"]
+        ).read_bytes() != _transport_compilation_bytes(candidate, owner, minor):
+            raise ValueError("compilation transport fixture reference differs")
+
+    monkeypatch.setattr(
+        consumer_replay, "validate_installed_compilation", validate_compilation
+    )
+
+
+def _transport_compilation_bytes(candidate, owner, minor):
+    return json.dumps(
+        {
+            "boundary": "fixture, no kernel admission",
+            "candidate": canonical_json_sha256(candidate),
+            "owner": owner,
+            "python": minor,
+        },
+        sort_keys=True,
+    ).encode()
+
+
+def _transport_compilation_reference(candidate, owner, minor):
+    content = _transport_compilation_bytes(candidate, owner, minor)
+    return {
+        "path": f"compilation-evidence/{owner}-{minor}/compilation.json",
+        "filename": "compilation.json",
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
 
 
 def _transport_replay_reference(candidate):
@@ -1160,7 +1720,9 @@ def release_inputs(
     )
 
 
-def _consumer_transport_receipt(candidate):
+def _consumer_transport_receipt(
+    candidate, *, python_minor=None, lane_values=EXPECTED_LANES
+):
     """Independent literal command oracle; never compiler execution evidence."""
     windows = candidate["target"]["platform"] == "windows"
     root = "C:/consumer" if windows else "/consumer"
@@ -1171,6 +1733,11 @@ def _consumer_transport_receipt(candidate):
     suffix = ".exe" if windows else ""
     policy_bytes = (ROOT / "config/verified_subset.toml").read_bytes()
     references = tomllib.loads(policy_bytes.decode("utf-8"))["reference_cpython"]
+
+    if python_minor is not None:
+        references = [
+            r for r in references if ".".join(r.split(".")[:2]) == python_minor
+        ]
 
     def command(role, argv, stdout=""):
         return {
@@ -1216,7 +1783,7 @@ def _consumer_transport_receipt(candidate):
             command("worker_help", [f"{worker_bin}/{worker}", "--help"]),
         ]
         cells = []
-        for values in EXPECTED_LANES:
+        for values in lane_values:
             backend, target, profile, _runtime, _compiler = values
             lane_id = "-".join(values)
             cell = f"{project}/{lane_id}"
@@ -1238,10 +1805,11 @@ def _consumer_transport_receipt(candidate):
                             "--python-version",
                             minor,
                             "--diagnostics-file",
-                            diagnostics,
+                            "/work/output/diagnostics.json",
                             "--output",
-                            output,
-                            source,
+                            "/work/output/program",
+                            "--capture-link-inputs",
+                            "/app/source.py",
                         ],
                     )
                 )
@@ -1263,9 +1831,10 @@ def _consumer_transport_receipt(candidate):
                             profile,
                             "--python-version",
                             minor,
-                            f"--build-arg=--diagnostics-file={diagnostics}",
-                            f"--build-arg=--output={output}",
-                            source,
+                            "--build-arg=--diagnostics-file=/work/output/diagnostics.json",
+                            "--build-arg=--output=/work/output/program.wasm",
+                            "--build-arg=--capture-link-inputs",
+                            "/app/source.py",
                             "--",
                             *guest_argv,
                         ],
@@ -1290,6 +1859,14 @@ def _consumer_transport_receipt(candidate):
                     else None,
                 }
             )
+        # Independently authored capture argv above is required once cold and
+        # once after retaining that generation; roles are exact and ordered.
+        cold_commands = [
+            {**copy.deepcopy(row), "role": "cold_" + row["role"]}
+            for row in commands[4:]
+            if row["role"].startswith(("build_", "run_wasm-"))
+        ]
+        commands[4:4] = cold_commands
         python_proofs.append(
             {
                 "python": minor,
@@ -1313,6 +1890,9 @@ def _consumer_transport_receipt(candidate):
                 "source_sha256": hashlib.sha256(guest_source.encode()).hexdigest(),
                 "commands": commands,
                 "cells": cells,
+                "compilation": _transport_compilation_reference(
+                    candidate, "bundle", minor
+                ),
             }
         )
     wheel_record = next(
@@ -1361,9 +1941,9 @@ def _consumer_transport_receipt(candidate):
             "pip_uninstall", ["uv", "pip", "uninstall", "--python", pip_python, "molt"]
         ),
     ]
-    count = (len(references) + 1) * 11
+    count = (len(references) + 1) * len(lane_values)
     return {
-        "schema": release_authority.CONSUMER_SCHEMA,
+        "schema": "molt.release-consumer-proof.v11",
         "candidate": "candidate.json",
         "candidate_sha256": canonical_json_sha256(candidate),
         "target": candidate["target"],
@@ -1382,15 +1962,22 @@ def _consumer_transport_receipt(candidate):
             "wheel": {key: wheel_record[key] for key in ("filename", "sha256", "size")},
             "python": first_minor,
             "reference_python": first_reference,
+            "execution": {
+                **copy.deepcopy(first["execution"]),
+                "python": {**first["execution"]["python"], "executable": pip_python},
+            },
             "commands": pip_commands,
             "source": pip_products["source"],
             "source_sha256": first["source_sha256"],
             "cells": pip_products["cells"],
+            "compilation": _transport_compilation_reference(
+                candidate, "pip", first_minor
+            ),
             "compiler_sha256": candidate["compiler"]["sha256"],
             "wasm_facts_sha256": candidate["wasm_facts"]["sha256"],
         },
         "guest_cells": [
-            dict(zip(LANE_FIELDS, values, strict=True)) for values in EXPECTED_LANES
+            dict(zip(LANE_FIELDS, values, strict=True)) for values in lane_values
         ],
         "expected_stdout": guest_stdout,
         "python_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
@@ -1505,7 +2092,7 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
             if corruption == "shared":
                 inputs["linkage"] = "prefer-static"
             else:
-                inputs["link_closure"] = ["lib/libLLVM.so"]
+                inputs["link_plan"]["libraries"][0]["kind"] = "dylib"
             entry["sourceInfo"] = json.dumps(inputs)
         with pytest.raises(ValueError):
             release_model.validate_spdx_llvm_inputs(invalid_sbom)
@@ -1712,6 +2299,7 @@ def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkey
         wasm_facts=facts,
         snapshot=snapshot,
         runtime_cells=cells,
+        llvm_inputs=llvm_input_fixture(snapshot, platform=platform, arch=arch),
     )
     extracted = tmp_path / "extracted"
     verify_consumer._extract(archive, extracted)
@@ -1872,6 +2460,7 @@ def test_evidence_cli_rejects_epoch_different_from_commit(
         "_git",
         lambda *args: "a" * 40 if args == ("rev-parse", "HEAD") else "1700000000",
     )
+    monkeypatch.setattr(release_authority, "source_commit_epoch", lambda *_: 1700000000)
     output = tmp_path / "output"
     monkeypatch.setattr(
         sys,
@@ -2057,8 +2646,17 @@ def test_installed_consumer_rejects_extracted_native_receipt_substitution(
         )
     ).unlink()
     shutil.rmtree(candidate_dir / "consumer-evidence")
+    shutil.rmtree(candidate_dir / "compilation-evidence")
     with pytest.raises(ValueError, match=message):
-        verify_consumer.verify(candidate_dir, receipt)
+        verify_consumer.verify(
+            candidate_dir,
+            receipt,
+            compilation_projection=verify_consumer.SealedExecutionProjection.compilation(
+                memory_max_bytes=2**30,
+                workspace_max_bytes=2**28,
+                runtime_max_seconds=60,
+            ),
+        )
     assert not receipt.exists()
 
 
@@ -2274,6 +2872,7 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         "reference_python",
         "source",
         "source_sha256",
+        "compilation",
     ):
         payload = copy.deepcopy(valid)
         del payload["python_proofs"][0][field]
@@ -2290,6 +2889,19 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         payload["python_proofs"][0]["commands"][-1][key] = value
         variants.append(payload)
     for mutate in (
+        # Missing or rebound cold evidence cannot be replaced by warm success.
+        lambda p: p["commands"].remove(
+            role(p, "cold_build_native-native-dev-dev-fast-release")
+        ),
+        lambda p: role(p, "cold_build_native-native-dev-dev-fast-release")[
+            "argv"
+        ].__setitem__(9, "3.11"),
+        lambda p: role(p, "cold_run_wasm-wasm-dev-dev-fast-release")[
+            "argv"
+        ].__setitem__(0, "/consumer/other-molt"),
+        lambda p: role(p, "cold_run_wasm-wasm-dev-dev-fast-release").update(
+            role="run_wasm-wasm-dev-dev-fast-release"
+        ),
         # Missing installed commands and unbound native/WASM inputs.
         lambda p: p["commands"].pop(),
         lambda p: p["commands"].__delitem__(slice(-2, None)),
@@ -2646,3 +3258,121 @@ def test_consumer_archive_candidate_is_the_admitted_object(release_inputs):
             candidate=different,
             supervisor=Path("/fixture-supervisor"),
         )
+
+
+@pytest.mark.parametrize("indices", [(0,), (8,), (0, 8)])
+def test_component_scope_retains_transport_closure_but_never_release_acceptance(
+    release_inputs, indices
+):
+    # Reuse the independent literal command oracle and retained transport bytes.
+    # Native supervisor execution remains the explicitly mocked fixture boundary.
+    candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
+    candidate = release_authority._load_candidate(candidate_dir / "candidate.json")
+    lane_values = tuple(EXPECTED_LANES[index] for index in indices)
+    lanes = tuple(release_authority.consumer_lanes()[index] for index in indices)
+    component = release_authority.ConsumerComponent("3.12", lanes, "micro")
+    payload = _consumer_transport_receipt(
+        candidate, python_minor="3.12", lane_values=lane_values
+    )
+    payload.update(
+        schema="molt.release-consumer-component-proof.v1",
+        scope={
+            "python": "3.12",
+            "lanes": [dict(zip(LANE_FIELDS, row, strict=True)) for row in lane_values],
+            "stdlib_profile": "micro",
+        },
+    )
+    kwargs = dict(evidence_root=candidate_dir, supervisor=Path("/fixture-supervisor"))
+    release_authority.validate_component_consumer_proof(
+        payload, candidate, component=component, **kwargs
+    )
+    # Exercise the actual candidate release consumer, not only the helper.
+    release_model.write_json(candidate_dir / "consumer-verification.json", payload)
+    with pytest.raises(ValueError, match="release consumer proof header is invalid"):
+        release_authority._admit_candidate(
+            candidate,
+            candidate_dir,
+            version=release_inputs["version"],
+            source_sha=release_inputs["source_sha"],
+            source_date_epoch=release_inputs["source_date_epoch"],
+            wheel_record=candidate["wheel"],
+            supervisor=kwargs["supervisor"],
+        )
+    # A genuine focused receipt cannot grant full acceptance, even if relabelled.
+    for promote in (False, True):
+        invalid = copy.deepcopy(payload)
+        if promote:
+            invalid["schema"] = "molt.release-consumer-proof.v11"
+            invalid.pop("scope")
+        with pytest.raises(ValueError):
+            release_authority.validate_consumer_proof(invalid, candidate, **kwargs)
+    for mutate in (
+        lambda p: p["scope"].update(python="3.13"),
+        lambda p: p["scope"].update(stdlib_profile="full"),
+        lambda p: p["python_proofs"].clear(),
+        lambda p: p["python_proofs"][0]["cells"].clear(),
+        lambda p: p["pip_proof"]["commands"].pop(2),
+        lambda p: p["python_proofs"][0]["commands"].__setitem__(
+            4, p["python_proofs"][0]["commands"][-1]
+        ),
+    ):
+        invalid = copy.deepcopy(payload)
+        mutate(invalid)
+        with pytest.raises(ValueError):
+            release_authority.validate_component_consumer_proof(
+                invalid, candidate, component=component, **kwargs
+            )
+
+
+@pytest.mark.parametrize(
+    "selection", ["native", "wasm", "duplicate", "partial", "unknown-python"]
+)
+def test_component_consumer_cli_dispatch_is_explicit_and_source_derived(
+    monkeypatch, tmp_path, selection
+):
+    import sys
+
+    lanes = release_authority.consumer_lanes()
+    lane = (
+        next(lane for lane in lanes if lane.backend == selection)
+        if selection in {"native", "wasm"}
+        else lanes[0]
+    )
+    args = [
+        "verify_consumer",
+        "--candidate",
+        str(tmp_path),
+        "--receipt",
+        str(tmp_path / "consumer-component-verification.json"),
+        "--execution-archive-cache",
+        str(tmp_path / "archives"),
+        "--compile-memory-max-bytes",
+        "1073741824",
+        "--compile-workspace-max-bytes",
+        "1073741824",
+        "--compile-runtime-max-seconds",
+        "60",
+        "--component-python",
+        "9.9" if selection == "unknown-python" else "3.12",
+        "--component-lane",
+        lane.id,
+    ]
+    if selection != "partial":
+        args += ["--component-stdlib-profile", "micro"]
+    if selection == "duplicate":
+        args += ["--component-lane", lane.id]
+    monkeypatch.setattr(sys, "argv", args)
+    calls = []
+    monkeypatch.setattr(
+        verify_consumer, "verify", lambda *a, **kw: calls.append((a, kw)) or {}
+    )
+    if selection in {"native", "wasm"}:
+        verify_consumer.main()
+        assert len(calls) == 1
+        assert calls[0][1]["component"] == release_authority.ConsumerComponent(
+            "3.12", (lane,), "micro"
+        )
+    else:
+        with pytest.raises(SystemExit) as error:
+            verify_consumer.main()
+        assert error.value.code == 2 and calls == []

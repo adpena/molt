@@ -1,21 +1,6 @@
 {
-  "baseline_total": 68,
+  "baseline_total": 60,
   "entries": [
-    {
-      "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "build-support source included by the molt-runtime and molt-cpython-abi build scripts through #[path]; each script uses a subset"
-    },
-    {
-      "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::emitted-by:write_unicode_range_module",
-      "owner": "runtime-authority-closure",
-      "waiver": "build-support source included by the molt-runtime and molt-cpython-abi build scripts through #[path]; each script uses a subset"
-    },
-    {
-      "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::emitted-by:write_unicode_titlecase_module",
-      "owner": "runtime-authority-closure",
-      "waiver": "build-support source included by the molt-runtime and molt-cpython-abi build scripts through #[path]; each script uses a subset"
-    },
     {
       "id": "runtime/build_support/variadic_exports.rs::allow_dead_code::fn:render_rust_anchors",
       "owner": "runtime-authority-closure",
@@ -63,31 +48,6 @@
     },
     {
       "id": "runtime/molt-cpython-abi/src/api/datetime.rs::allow_dead_code::const:_",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_digit_table",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_decimal_table",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_numeric_table",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_space_table",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_printable_table",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },

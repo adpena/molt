@@ -1,13 +1,16 @@
 use std::{io, path::Path};
 
 use super::cleanup::remove_shared_stdlib_derived_sidecars;
+use super::read::{MAX_ORIGIN_BYTES, StdlibArchiveOrigin};
+use crate::backend_process::input::ContentIdentity;
+use crate::backend_process::native_batch::NativeWorkerOrigin;
 use molt_artifact_publish::write_text_atomically;
 
 use super::super::files::sha256_file_hex;
 use super::super::paths::{
     stdlib_cache_archive_digest_sidecar_path, stdlib_cache_count_sidecar_path,
     stdlib_cache_key_sidecar_path, stdlib_cache_manifest_sidecar_path,
-    stdlib_cache_partition_manifest_sidecar_path,
+    stdlib_cache_origin_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
 };
 
 /// Write the sidecars of the archive generation at `stdlib_path` and return
@@ -20,6 +23,7 @@ pub(crate) fn write_shared_stdlib_cache_sidecars(
     cache_manifest: Option<&str>,
     partition_manifest: &str,
     archive_digest: Option<&str>,
+    origins: Option<&[NativeWorkerOrigin]>,
 ) -> io::Result<String> {
     // No projection of the replaced generation retains custody. Regeneration
     // is lazy; deletion failures abort publication through the owning caller.
@@ -45,6 +49,27 @@ pub(crate) fn write_shared_stdlib_cache_sidecars(
         &stdlib_cache_archive_digest_sidecar_path(stdlib_path),
         &archive_digest,
     )?;
+    let origin_path = stdlib_cache_origin_sidecar_path(stdlib_path);
+    let encoded = origins
+        .map(|workers| {
+            let record = StdlibArchiveOrigin::new(
+                ContentIdentity {
+                    sha256: archive_digest.clone(),
+                    size: std::fs::metadata(stdlib_path)?.len(),
+                },
+                workers,
+            )?;
+            let encoded = serde_json::to_string(&record).map_err(io::Error::other)?;
+            if encoded.len() as u64 > MAX_ORIGIN_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stdlib archive origin exceeds its bound",
+                ));
+            }
+            Ok(encoded)
+        })
+        .transpose()?;
+    write_optional_sidecar(&origin_path, encoded.as_deref())?;
     Ok(archive_digest)
 }
 

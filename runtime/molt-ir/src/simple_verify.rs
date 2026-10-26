@@ -107,27 +107,79 @@ struct OpFlow {
 
 impl OpFlow {
     fn executable_reachable(&self) -> Vec<bool> {
-        let mut reachable = vec![false; self.edges.len()];
-        let mut pending: Vec<_> = (!self.edges.is_empty()).then_some(0).into_iter().collect();
-        while let Some(index) = pending.pop() {
-            if std::mem::replace(&mut reachable[index], true) {
-                continue;
-            }
-            pending.extend(
-                self.edges[index]
-                    .iter()
-                    .filter(|edge| edge.executable)
-                    .map(|edge| edge.target),
-            );
-        }
-        reachable
+        executable_reachable_from_entry(&self.edges)
     }
+}
+
+fn executable_reachable_from_entry(edges: &[Vec<LogicalEdge>]) -> Vec<bool> {
+    let mut reachable = vec![false; edges.len()];
+    let mut pending: Vec<_> = (!edges.is_empty()).then_some(0).into_iter().collect();
+    while let Some(index) = pending.pop() {
+        if std::mem::replace(&mut reachable[index], true) {
+            continue;
+        }
+        pending.extend(
+            edges[index]
+                .iter()
+                .filter(|edge| edge.executable)
+                .map(|edge| edge.target),
+        );
+    }
+    reachable
 }
 
 #[derive(Debug, Clone)]
 struct BasicBlocks {
     ranges: Vec<(usize, usize)>,
     op_to_block: Vec<usize>,
+}
+
+/// Executable operation-level transfers, without block reconstruction or
+/// cross-block liveness. Targets retain source operation indices, and each
+/// edge's `role` is its execution polarity rather than PHI predecessor order.
+pub struct SimpleIrExecutableFlow {
+    pub edges: Vec<Vec<LogicalEdge>>,
+    /// Sources of executable transfers past the operation slice. These exits
+    /// have no target vertex and must not be lost when consuming real edges.
+    pub implicit_exits: BTreeSet<usize>,
+}
+
+impl SimpleIrExecutableFlow {
+    /// Mark operations reachable from invocation entry at operation zero.
+    /// An empty slice has no entry. Implicit exits are not vertices or roots;
+    /// external saved-state roots are outside this entry-only projection.
+    pub fn executable_reachable(&self) -> Vec<bool> {
+        executable_reachable_from_entry(&self.edges)
+    }
+}
+
+/// Project the canonical control flow after [`validate_simple_ir_control_flow`]
+/// has admitted the function's label namespace and structured regions.
+///
+/// This constructs operation edges and index metadata only; it does not build
+/// basic blocks, name def/use sets, or a liveness fixed point. Verifier-only
+/// reachability is excluded, while real self edges and implicit exits remain.
+/// Every operation keeps its input position, including unreachable operations;
+/// this projection does not prune reachability or renumber surviving edges.
+/// Retained storage is proportional to operation and edge counts.
+pub fn simple_ir_executable_flow(ops: &[OpIR]) -> SimpleIrExecutableFlow {
+    let OpFlow {
+        mut edges,
+        implicit_exits,
+    } = op_flow(ops);
+    for outgoing in &mut edges {
+        outgoing.retain_mut(|edge| {
+            if !edge.executable {
+                return false;
+            }
+            edge.role = edge.execution_role;
+            true
+        });
+    }
+    SimpleIrExecutableFlow {
+        edges,
+        implicit_exits,
+    }
 }
 
 /// The executable projection of the verifier's operation-level control flow, shared with
@@ -144,28 +196,15 @@ pub struct SimpleIrLogicalFlow {
 /// Project operations after [`validate_simple_ir_control_flow`] has admitted
 /// their function's label namespace and structured regions.
 pub fn simple_ir_logical_flow(ops: &[OpIR]) -> SimpleIrLogicalFlow {
+    let edges = simple_ir_executable_flow(ops).edges;
     if ops.is_empty() {
         return SimpleIrLogicalFlow {
-            edges: Vec::new(),
+            edges,
             blocks: Vec::new(),
             op_to_block: Vec::new(),
             cross_block_values: BTreeSet::new(),
         };
     }
-    let edges: Vec<Vec<_>> = op_flow(ops)
-        .edges
-        .into_iter()
-        .map(|edges| {
-            edges
-                .into_iter()
-                .filter(|edge| edge.executable)
-                .map(|mut edge| {
-                    edge.role = edge.execution_role;
-                    edge
-                })
-                .collect()
-        })
-        .collect();
     let blocks = basic_blocks(ops, &edges);
     let count = blocks.ranges.len();
     let mut definitions = vec![BTreeSet::new(); count];
@@ -316,7 +355,7 @@ fn verify_completion(function: &FunctionIR, flow: &OpFlow, errors: &mut Vec<Simp
 }
 
 fn verify_control_flow(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
-    verify_block_structure(function, errors);
+    verify_simple_ir_structure(&function.name, &function.ops, errors);
     verify_labels(function, errors);
     if let Err(message) = crate::ir_schema::validate_state_dispatch(&function.ops) {
         errors.push(diagnostic(
@@ -366,16 +405,28 @@ fn verify_function_references(
     }
 }
 
-fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
+/// Check lexical control regions without copying a function or its operations.
+///
+/// Shared lowering and the complete verifier use the same generated region
+/// roles. Path-local TRY custody is deliberately not a lexical region.
+pub fn verify_simple_ir_structure(
+    function_name: &str,
+    ops: &[OpIR],
+    errors: &mut Vec<SimpleIrDiagnostic>,
+) {
     let mut stack: Vec<(&str, usize, bool)> = Vec::new();
-    for (index, op) in function.ops.iter().enumerate() {
+    let mut open_loops = 0usize;
+    for (index, op) in ops.iter().enumerate() {
         if let Some((region, role)) = simpleir_verifier_region_role(&op.kind) {
             match role {
-                SimpleIrVerifierRegionRole::Start => stack.push((region, index, false)),
+                SimpleIrVerifierRegionRole::Start => {
+                    stack.push((region, index, false));
+                    open_loops += usize::from(region == "loop");
+                }
                 SimpleIrVerifierRegionRole::Alternate => match stack.last_mut() {
                     Some((active, _, seen)) if *active == region && !*seen => *seen = true,
                     Some((active, _, true)) if *active == region => errors.push(diagnostic(
-                        &function.name,
+                        function_name,
                         index as isize,
                         "duplicate-control-alternate",
                         format!(
@@ -384,7 +435,7 @@ fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagno
                         ),
                     )),
                     _ => errors.push(diagnostic(
-                        &function.name,
+                        function_name,
                         index as isize,
                         "unbalanced-control-flow",
                         format!("{:?} has no active {:?} region", op.kind, region),
@@ -393,20 +444,19 @@ fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagno
                 SimpleIrVerifierRegionRole::End => match stack.last() {
                     Some((active, _, _)) if *active == region => {
                         stack.pop();
+                        open_loops -= usize::from(region == "loop");
                     }
                     _ => errors.push(diagnostic(
-                        &function.name,
+                        function_name,
                         index as isize,
                         "unbalanced-control-flow",
                         format!("{:?} has no active {:?} region", op.kind, region),
                     )),
                 },
             }
-        } else if simpleir_kind_is_verifier_loop_scoped(&op.kind)
-            && !stack.iter().any(|(region, _, _)| *region == "loop")
-        {
+        } else if simpleir_kind_is_verifier_loop_scoped(&op.kind) && open_loops == 0 {
             errors.push(diagnostic(
-                &function.name,
+                function_name,
                 index as isize,
                 "break-outside-loop",
                 format!("{:?} appears outside a loop region", op.kind),
@@ -415,7 +465,7 @@ fn verify_block_structure(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagno
     }
     for (region, index, _) in stack {
         errors.push(diagnostic(
-            &function.name,
+            function_name,
             index as isize,
             "unbalanced-control-flow",
             format!("region {:?} has no matching end", region),
@@ -1159,10 +1209,14 @@ fn verify_definite_definitions(
 }
 
 #[cfg(test)]
+#[path = "simple_verify/executable_flow_tests.rs"]
+mod executable_flow_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn op(kind: &str) -> OpIR {
+    pub(super) fn op(kind: &str) -> OpIR {
         OpIR {
             kind: kind.to_string(),
             ..OpIR::default()

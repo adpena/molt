@@ -186,12 +186,16 @@ def _worktree_exists(path: str) -> bool:
     return Path(path).is_dir()
 
 
-def _free_slot(wt: dict, root: Path) -> bool:
+def _slot_root(worktrees: list[dict]) -> Path | None:
+    # Git lists the main checkout first, independently of the invoking checkout.
+    # Resolve the family once per listing, not once per row or from the caller.
+    return family_worktrees_root(worktrees[0]["path"]) if worktrees else None
+
+
+def _free_slot(wt: dict, slots_root: Path | None) -> bool:
     """A lane slot between lanes: detached, at a slot path (HF-491). It is a
     warm cache, not work in progress, so it is neither live nor prunable."""
-    return "branch" not in wt and (
-        lane_slot_index(wt["path"], family_worktrees_root(root)) is not None
-    )
+    return "branch" not in wt and (lane_slot_index(wt["path"], slots_root) is not None)
 
 
 def live_worktree_count(root: Path) -> int:
@@ -202,17 +206,21 @@ def live_worktree_count(root: Path) -> int:
     patch-id probes that ``classify`` needs, so a session-start digest can
     afford it.
     """
+    worktrees = _worktrees(root)
+    slots_root = _slot_root(worktrees)
     return sum(
         1
-        for wt in _worktrees(root)
-        if _worktree_exists(wt["path"]) and not _free_slot(wt, root)
+        for wt in worktrees
+        if _worktree_exists(wt["path"]) and not _free_slot(wt, slots_root)
     )
 
 
 def classify(fresh_hours: float, now: float, *, root: Path) -> list[dict]:
     cutoff = now - fresh_hours * 3600
     rows = []
-    for wt in _worktrees(root):
+    worktrees = _worktrees(root)
+    slots_root = _slot_root(worktrees)
+    for wt in worktrees:
         path = wt["path"]
         head = wt.get("head", "")
         ref = wt.get("branch") or head
@@ -237,7 +245,7 @@ def classify(fresh_hours: float, now: float, *, root: Path) -> list[dict]:
         # so compute it lazily only for the SUPERSEDED-vs-SIGNAL decision. This keeps
         # the pre-push gate fast on a checkout of mostly-fresh worktrees without
         # changing any state assignment or prune/bundle behaviour.
-        if _free_slot(wt, root) and dirty == 0:
+        if _free_slot(wt, slots_root) and dirty == 0:
             state, uniq = "SLOT", 0
         elif _protected(path, root):
             state, uniq = "PROTECTED", 0

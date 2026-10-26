@@ -26,6 +26,8 @@ from tools.proof_queue_pkg import state
 from molt import process_model
 from molt.windows_process_api import process_query_api
 from molt.process_environment import ProcessEnvironment
+from molt.memory_guard_paths import memory_guard_state_root
+from molt.temporary_artifacts import new_temporary_directory
 
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 
@@ -106,8 +108,13 @@ def _memory_guard_command(
     summary_json: Path,
     timeout: float,
     limits: harness_memory_guard.HarnessMemoryLimits,
+    verifier_bytecode_prefix: Path,
 ) -> list[str]:
-    result = guardian_argv(sys.executable, state.ROOT / "tools" / "memory_guard.py") + [
+    result = guardian_argv(
+        sys.executable,
+        state.ROOT / "tools" / "memory_guard.py",
+        verifier_bytecode_prefix=verifier_bytecode_prefix,
+    ) + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -171,8 +178,17 @@ def _launch_detached_runner(
     handoff = DetachedStateHandoff(state.ROOT, environment, cwd, ready_path)
     try:
         with handoff:
+            # Readiness transfers state custody but does not close the detached
+            # worker. Keep startup scratch with its durable control evidence.
+            startup_root = memory_guard_state_root(state.ROOT, environment)
+            startup_root.mkdir(parents=True, exist_ok=True)
+            verifier_bytecode_prefix = new_temporary_directory(
+                startup_root, prefix="queue-runner-bytecode-"
+            )
             command = guardian_argv(
-                sys.executable, state.ROOT / "tools" / "proof_queue.py"
+                sys.executable,
+                state.ROOT / "tools" / "proof_queue.py",
+                verifier_bytecode_prefix=verifier_bytecode_prefix,
             ) + [
                 "--detached-state-use",
                 str(ready_path),

@@ -23,6 +23,43 @@ The goal is highest expected signal per machine hour:
 
 ## Serialized integration
 
+### Release outcome graph
+
+The canonical `context` command joins the committed findings ledger and proof
+catalog with explicit `release_outcomes` in active coordination records. It reports
+published and selected commit identities separately; dirty working-tree prose
+cannot change either count. Every finding remains visible. An open finding without
+a binding is `UNPLANNED`; a binding is `PLANNED`, which does not attest review,
+semantic proof, landing eligibility or completion. Historical fixed rows keep their
+recorded status without invented phase evidence.
+
+An outcome names a complete invariant or migration family and may own several
+finding IDs. Declare only real prerequisite edges. Independent outcomes need no
+edge merely because they share a release milestone. One active record owns each
+binding; duplicate finding/outcome ownership, unknown findings or proof families,
+escaping input paths and dependency cycles make the projection unavailable with a
+structured diagnostic.
+
+For example, an active record can contain:
+
+```json
+"release_outcomes": [{
+  "id": "execution-evidence",
+  "findings": ["HF-334", "HF-190", "HF-35"],
+  "depends_on": [],
+  "proof_families": ["repository_policy"],
+  "inputs": ["tools/proof_*.py", "tools/molt_dev*.py"]
+}]
+```
+
+These declarations live in existing coordination custody, outside compiler source
+and the proof-policy digest. Updating an assignment or dependency therefore does
+not invalidate unchanged proof receipts. Proof commands, dependencies and resource
+admission remain owned by the proof plan/executor; publication and retirement remain
+owned by the landing queue. This graph projection does not yet connect phase
+evidence to either queue or direct-integration admission. Keep that limitation
+explicit until one shared, source-bound predicate serves both paths.
+
 A live `tools/molt_dev.py integrate` owns one OS file lock in Git's resolved
 common directory, shared by the primary checkout and every linked worktree.
 The handle covers fetch, source selection, gates, push confirmation and cleanup.
@@ -127,6 +164,25 @@ benchmarks, or long validation must do this before the first heavy command:
 If another active log already owns the same files or broad proof lane, switch to
 a non-colliding task, coordinate explicitly in the log, or wait only when the
 existing owner has a bounded finish condition.
+
+### Interpreter environments are mutable proof inputs
+
+Versioned CPython oracles use the existing interpreter and pinned-source
+authorities. Resolve the installed command and verify its complete version with
+`molt.python_interpreter.probe_python_command`; retain the interpreter identity
+separately from the guest target. Do not run project-scoped `uv run --python` for
+another minor in an active checkout: uv correctly replaces that checkout's
+environment, including packages another proof may still be importing.
+
+When dependencies require another environment, provision an explicitly owned
+`UV_PROJECT_ENVIRONMENT` and bind the consuming command to that environment.
+Reconcile live readers before a sync or replacement; a checkout being clean does
+not make its environment idle. If mutation occurs, preserve the command and
+identity evidence, classify the exact overlapping intervals, and requalify the
+affected claims. A completed proof before the mutation remains useful; a later
+proof on another verified interpreter must name that interpreter. Do not discard
+unchanged evidence or relabel interpreter versions. This is development custody
+and adds no work to compiled programs.
 
 ## Machine-Readable Discovery
 
@@ -308,6 +364,18 @@ marks them usable. Prefer:
 ```powershell
 uv run --python 3.12 python tools/agent_coordination.py <command>
 ```
+
+Environment reporting uses the canonical executable search over its captured
+PATH, PATHEXT and current-directory policy. An absent or empty PATH disables
+implicit search; empty components of a nonempty PATH name the current directory.
+Windows environment names and executable suffix ordering follow the same rules
+as toolchain selection, including `NoDefaultCurrentDirectoryInExePath`. An
+untraversable candidate (permission denial or Windows error 448) is unavailable;
+other I/O errors still propagate. Fixed Git Bash locations use the same candidate
+predicate without extending those exact paths with further suffixes. Discovery
+does not verify interpreter identity or authorize a launch: selected commands
+still pass their normal executable and process-custody admission. An explicit
+`PYTHON` remains a user recommendation, not verified capability evidence.
 
 When a POSIX wrapper is useful on Windows, use the `usable_bash` reported by
 `tools/agent_coordination.py env` rather than the first `bash` on `PATH`.

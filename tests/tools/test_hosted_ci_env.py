@@ -88,3 +88,40 @@ def test_powershell_quoting_doubles_single_quotes() -> None:
     rendered = hosted_ci_env.render({"RUNNER_TEMP": "C:\\it's"}, "powershell")
 
     assert rendered == "$env:RUNNER_TEMP = 'C:\\it''s'\n"
+
+
+def test_checkout_run_context_preserves_verified_hosted_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    from tests import conftest as test_context
+
+    runner_temp = tmp_path / "runner"
+    env = hosted_ci_env.hosted_job_env(
+        ROOT, runner_temp, sha=dx.git_checkout_head(ROOT) or ""
+    )
+    monkeypatch.setattr(
+        test_context, "_SESSION_ENVIRONMENT", {**env, "UNRELATED_SECRET": "excluded"}
+    )
+
+    projected = request.getfixturevalue("checkout_run_context")
+    custody = dx.checkout_custody(ROOT, projected)
+
+    assert custody.kind == "github-actions-ephemeral"
+    assert custody.source_root == ROOT.resolve()
+    assert custody.custody_root == (runner_temp / "molt-custody").resolve()
+    assert "UNRELATED_SECRET" not in projected
+    # Projection carries claims, never trust: the real checkout identity still
+    # rejects a changed commit, and a root without provenance remains invalid.
+    with pytest.raises(dx.DxConfigError, match="checkout HEAD mismatch"):
+        dx.checkout_custody(ROOT, {**projected, "GITHUB_SHA": "0" * 40})
+    with pytest.raises(dx.DxConfigError, match="requires verified GITHUB_ACTIONS"):
+        dx.checkout_custody(
+            ROOT,
+            {
+                dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV: env[
+                    dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
+                ]
+            },
+        )

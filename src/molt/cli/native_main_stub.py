@@ -184,6 +184,11 @@ static void molt_set_runtime_module_roots() {{
 """
         module_roots_call = "    molt_set_runtime_module_roots();\n"
     main_c_content = """
+/* This translation unit uses POSIX setenv on non-Windows targets. Feature
+ * selection must precede every system header, including under strict C11. */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -61,6 +61,20 @@ withdrawn first. A release that fixes a published advisory moves at once. The
 [release-age rule](DEVELOPER_GUIDE.md#release-age-rule) describes the resolver
 settings and tools that enforce it.
 
+The Python tooling floor for virtualenv is 21.14.13, the first fix for
+[GHSA-cx6f-vjhg-g3cc](https://github.com/pypa/virtualenv/security/advisories/GHSA-cx6f-vjhg-g3cc).
+Its bash activation script escapes prompt text even when prompt expansion is
+initially disabled. The existing exact release-age record admits that fix until
+it ages out on 2026-10-29; the persistent minimum remains after canonical pruning.
+`tools/pin_freshness.py --audit` checks the realized lock graph against advisories.
+An installed environment requires its own admission against that lock.
+
+The Rust lock graphs use ctutils 0.4.4 or later for the constant-time primitives
+affected by [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385.html).
+`tools/cargo_lock_audit.py` prepares every locked workspace before checking them
+offline against one shared advisory snapshot. Failed checks retain advisory IDs,
+upgrade guidance and command diagnostics in their existing report.
+
 The [packaging contract](../packaging/PACKAGING.md) owns immutable
 candidate assembly and provenance. The release workflow builds independent native
 and runtime generations and passes them to candidate assembly. Reproducibility

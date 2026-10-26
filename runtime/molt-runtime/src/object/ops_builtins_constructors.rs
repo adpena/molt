@@ -331,14 +331,15 @@ pub extern "C" fn molt_aiter_builtin(obj_bits: u64) -> u64 {
     molt_aiter(obj_bits)
 }
 
-/// `iter(object[, sentinel])`. A sentinel selects the callable iterator, as
-/// CPython's `builtin_iter` does by argument count.
+/// Public `iter(object[, sentinel])`; omission is distinct from Python None.
+/// Both overloads reuse the canonical protocol constructors.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_builtin(obj_bits: u64, sentinel_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if sentinel_bits == missing_bits(_py) {
-            return molt_iter_checked(obj_bits);
+    crate::with_gil_entry_nopanic!(py, {
+        if sentinel_bits == missing_bits(py) {
+            crate::object::ops_iter::iter_checked(py, obj_bits)
+        } else {
+            crate::object::ops_iter::iter_sentinel(py, obj_bits, sentinel_bits)
         }
-        molt_iter_sentinel(obj_bits, sentinel_bits)
     })
 }

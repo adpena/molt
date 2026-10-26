@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shlex
 import tomllib
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -69,11 +69,37 @@ class SelectedGate:
     concurrent: bool = False
     # The merged pytest session or one pytest_select cohort.
     pytest: bool = False
+    # Named-node admission never replaces mandatory execution.
+    collection_command: tuple[str, ...] | None = None
 
     @property
     def precheck(self) -> bool:
         """Whether `land` runs this gate in the lane before queueing it."""
         return not self.pytest and frozenset(self.toolchains) <= PRECHECK_TOOLCHAINS
+
+
+@dataclass(frozen=True)
+class GateEnvironment:
+    """One operation's selection, not permission to reuse physical admission."""
+
+    environment: ProcessEnvironment
+    python_root: Path | None
+    managed: bool
+
+    def __post_init__(self) -> None:
+        if self.python_root is None and self.managed:
+            raise ValueError("an absent gate image cannot be managed")
+        if self.python_root is not None and not self.python_root.is_absolute():
+            raise ValueError("a prepared gate image must be absolute")
+
+    def overlay(self, values: Mapping[str, str]) -> "GateEnvironment":
+        return replace(self, environment=self.environment.updated(values))
+
+
+@dataclass(frozen=True)
+class PreparedGates:
+    environments: dict[tuple[str, ...], GateEnvironment]
+    fingerprints: dict[str, dict]
 
 
 @dataclass
@@ -162,7 +188,7 @@ class GateConfig:
         if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
             raise DriverError("gate manifest `always` must be a list of str")
         try:
-            memory_units = PytestMemoryUnits(data.get("command", ()))
+            memory_units = PytestMemoryUnits(data.get("command", ()), root=root)
             commands = local_gate_commands(data, memory_units=memory_units)
         except ValueError as exc:
             raise DriverError(f"invalid local gate policy: {exc}") from exc
@@ -184,80 +210,92 @@ class GateConfig:
             resource_limits=resource_limits,
         )
 
-    def admit(
+    def prepare(
         self,
-        touched: list[str],
-        matched: list[GateRule],
-        extra: list[str],
+        gates: list[SelectedGate],
         *,
-        environ: Mapping[str, str],
-    ) -> dict[str, dict]:
-        """Admit the union once under ``environ``, the gates' baseline;
-        execution projects each gate from that same baseline.
+        baseline: Mapping[str, str],
+        prepare_python: Callable[[ProcessEnvironment, bool], GateEnvironment],
+    ) -> PreparedGates:
+        """Prepare selected closures once, then identify the tools they execute.
 
-        Returns the admitted toolchain fingerprints the gate receipt records.
+        No command spelling grants a source environment. Explicit selectors
+        remain obligations even for an empty closure. Aggregate admission never
+        supplies a child's compiler projection.
         """
-        selected_owners = {f"local.{rule.name}" for rule in matched}
-        if touched:
-            selected_owners.add("local.always")
-        unknown = sorted(
-            set(extra) - {command for command, _ in self.prerequisites.values()}
-        )
-        if unknown:
-            raise DriverError(
-                "extra gates lack declared prerequisite custody; declare them in "
-                "proof_plan.toml before selection: " + ", ".join(unknown)
-            )
-        return self._admit_owned(
-            {
-                identifier: tools
-                for identifier, (command, tools) in self.prerequisites.items()
-                if identifier.rsplit(".", 1)[0] in selected_owners or command in extra
-            },
-            environ=environ,
-        )
-
-    def admit_gates(
-        self, gates: list[SelectedGate], *, environ: Mapping[str, str]
-    ) -> dict[str, dict]:
-        """Admit exactly the toolchains these gates declare (a landing precheck)."""
-        owned: dict[str, tuple[str, ...]] = {}
-        for gate in gates:
-            owned[
-                shlex.join(gate.command)
-                if isinstance(gate.command, tuple)
-                else gate.command
-            ] = gate.toolchains
-        return self._admit_owned(owned, environ=environ)
-
-    def _admit_owned(
-        self, selected: Mapping[str, tuple[str, ...]], *, environ: Mapping[str, str]
-    ) -> dict[str, dict]:
-        """Admit the union of each owner's toolchain closure once."""
         from tools.proof_plan import (
             admit_toolchains,
             load_toolchain_policies,
+            project_toolchains,
             toolchain_closure,
         )
+        from tools.venv_exec import venv_python
 
         try:
             names = tuple(
-                dict.fromkeys(name for tools in selected.values() for name in tools)
+                dict.fromkeys(name for gate in gates for name in gate.toolchains)
             )
             policies = load_toolchain_policies(
                 self.prerequisite_policy, root=self.root, names=names
             )
+            by_name = {policy.name: policy for policy in policies}
+            closures = {
+                tools: toolchain_closure(policies, tools)
+                for tools in dict.fromkeys(gate.toolchains for gate in gates)
+            }
+            needs_python = {
+                tools: any(
+                    by_name[name].python_identity_role == "environment"
+                    for name in closure
+                )
+                for tools, closure in closures.items()
+            }
+            selected = prepare_python(
+                ProcessEnvironment(baseline), any(needs_python.values())
+            )
+            explicit = bool(
+                baseline.get("MOLT_VENV")
+                or baseline.get("UV_PROJECT_ENVIRONMENT", "").strip()
+            )
             owners: dict[str, list[str]] = {}
-            for identifier, tools in selected.items():
-                for name in toolchain_closure(policies, tools):
-                    owners.setdefault(name, []).append(identifier)
-            return admit_toolchains(
+            for gate in gates:
+                identifiers = [
+                    identifier
+                    for identifier, (command, _tools) in self.prerequisites.items()
+                    if command == gate.command
+                ]
+                if not identifiers:
+                    identifiers = [
+                        shlex.join(gate.command)
+                        if isinstance(gate.command, tuple)
+                        else gate.command
+                    ]
+                for name in closures[gate.toolchains]:
+                    owners.setdefault(name, []).extend(identifiers)
+            admitted = admit_toolchains(
                 policies,
                 tuple(owners),
-                environ=environ,
+                environ=selected.environment,
                 owners=owners,
+                python_executable=(
+                    venv_python(selected.python_root)
+                    if selected.python_root is not None
+                    else None
+                ),
                 root=self.root,
-            ).fingerprints
+            )
+            environments = {}
+            for tools, closure in closures.items():
+                context = (
+                    selected
+                    if needs_python[tools] or explicit
+                    else GateEnvironment(ProcessEnvironment(baseline), None, False)
+                )
+                projection = project_toolchains(
+                    policies, closure, environ=context.environment, root=self.root
+                )
+                environments[tools] = context.overlay(projection.delta)
+            return PreparedGates(environments, admitted.fingerprints)
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
                 f"selected gate prerequisites failed; executed=0: {exc}"
@@ -279,7 +317,12 @@ class GateConfig:
         to the merged pytest invocation supply its tools; each selector cohort
         keeps its own. Command binding happens after this policy selection.
         """
-        from tools.proof_plan import PLAN_PATH, local_pytest_argv, plan_claim_matches
+        from tools.proof_plan import (
+            PLAN_PATH,
+            local_pytest_argv,
+            local_pytest_collection_argv,
+            plan_claim_matches,
+        )
 
         plan_touched = PLAN_PATH in touched
         if plan_touched and plan_changes is None:
@@ -293,7 +336,7 @@ class GateConfig:
         seen_pytest: set[str] = set()
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
-        pytest_tools: dict[str, None] = {}
+        pytest_tools: dict[str, dict[str, None]] = {}
         pytest_index: int | None = None
         pytest_commands: set[str] = set()
 
@@ -306,6 +349,7 @@ class GateConfig:
             *,
             concurrent: bool = False,
             pytest: bool = False,
+            collection_command: tuple[str, ...] | None = None,
         ) -> None:
             key = command_key(command)
             if key in indices:
@@ -315,10 +359,13 @@ class GateConfig:
                     prior,
                     toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools))),
                     pytest=prior.pytest or pytest,
+                    collection_command=prior.collection_command or collection_command,
                 )
             else:
                 indices[key] = len(selected)
-                selected.append(SelectedGate(command, tools, concurrent, pytest))
+                selected.append(
+                    SelectedGate(command, tools, concurrent, pytest, collection_command)
+                )
 
         def tools(identifier: str) -> tuple[str, ...]:
             return self.prerequisites[identifier][1]
@@ -347,7 +394,10 @@ class GateConfig:
             if rule.pytest:
                 if pytest_index is None:
                     pytest_index = len(selected)
-                pytest_tools.update(dict.fromkeys(tools(f"{owner}.pytest")))
+                for target in rule.pytest:
+                    pytest_tools.setdefault(target, {}).update(
+                        dict.fromkeys(tools(f"{owner}.pytest"))
+                    )
             for index, (select, targets) in enumerate(rule.pytest_select):
                 command = local_pytest_argv(
                     targets, select, memory_units=self.pytest_memory_units
@@ -357,6 +407,11 @@ class GateConfig:
                     command,
                     tools(f"{owner}.pytest-select-{index}"),
                     pytest=True,
+                    collection_command=(
+                        local_pytest_collection_argv(command)
+                        if any("::" in target for target in targets)
+                        else None
+                    ),
                 )
             for target in rule.pytest:
                 if target not in seen_pytest:
@@ -379,14 +434,44 @@ class GateConfig:
                 tuple(dict.fromkeys(name for owner in owners for name in owner)),
             )
         if pytest_index is not None:
-            command = local_pytest_argv(
-                pytest_targets, memory_units=self.pytest_memory_units
-            )
-            pytest_commands.add(command_key(command))
-            size = len(selected)
-            add(command, tuple(pytest_tools), pytest=True)
-            if len(selected) != size:
-                selected.insert(pytest_index, selected.pop())
+            assignments: dict[str, tuple[str, ...]] = {}
+            for group in self.pytest_memory_units.overlapping_requests(pytest_targets):
+                group_tools = tuple(
+                    dict.fromkeys(
+                        tool for target in group for tool in pytest_tools[target]
+                    )
+                )
+                assignments.update(dict.fromkeys(group, group_tools))
+            cohorts: dict[tuple[str, ...], list[str]] = {}
+            for target in pytest_targets:
+                cohorts.setdefault(assignments[target], []).append(target)
+            # Keep add()'s command indices valid until every deduplication and
+            # prerequisite union is complete. Only newly appended cohorts move.
+            before_cohorts = len(selected)
+            for cohort_tools, targets in cohorts.items():
+                command = local_pytest_argv(
+                    targets, memory_units=self.pytest_memory_units
+                )
+                pytest_commands.add(command_key(command))
+                # Preserve each literal request; only explicit nodes collect early.
+                named_targets = tuple(target for target in targets if "::" in target)
+                add(
+                    command,
+                    cohort_tools,
+                    pytest=True,
+                    collection_command=(
+                        local_pytest_collection_argv(
+                            local_pytest_argv(
+                                named_targets, memory_units=self.pytest_memory_units
+                            )
+                        )
+                        if named_targets
+                        else None
+                    ),
+                )
+            appended = selected[before_cohorts:]
+            del selected[before_cohorts:]
+            selected[pytest_index:pytest_index] = appended
         # Run declared source/metadata and compilation controls before Python
         # consumers. This also moves already-required Cargo gates earlier; it
         # adds no commands or builds and preserves each phase's relative order.
@@ -400,45 +485,9 @@ class GateConfig:
         selected = explicit + consumers
         return selected, matched_rules
 
-    def environments(
-        self, gates: list[SelectedGate], *, baseline: Mapping[str, str]
-    ) -> dict[tuple[str, ...], ProcessEnvironment]:
-        """Project once per declared tool selection, never from aggregate admission."""
-        from tools.proof_plan import (
-            load_toolchain_policies,
-            project_toolchains,
-            toolchain_closure,
-        )
-
-        try:
-            names = tuple(
-                dict.fromkeys(name for gate in gates for name in gate.toolchains)
-            )
-            policies = load_toolchain_policies(
-                self.prerequisite_policy, root=self.root, names=names
-            )
-            environments = {}
-            for gate in gates:
-                if gate.toolchains in environments:
-                    continue
-                projection = project_toolchains(
-                    policies,
-                    toolchain_closure(policies, gate.toolchains),
-                    environ=baseline,
-                    root=self.root,
-                )
-                environments[gate.toolchains] = ProcessEnvironment(baseline).updated(
-                    projection.delta
-                )
-            return environments
-        except (ValueError, OSError, KeyError) as exc:
-            raise DriverError(
-                f"selected gate environment failed; executed=0: {exc}"
-            ) from exc
-
     def cargo_outputs(
         self,
-        environments: dict[tuple[str, ...], ProcessEnvironment],
+        environments: dict[tuple[str, ...], GateEnvironment],
     ) -> dict[tuple[str, ...], tuple[Path, ...]]:
         """Outputs of gate owners explicitly declaring Cargo capability.
 
@@ -450,9 +499,11 @@ class GateConfig:
         from molt.cargo_execution_policy import cargo_output_paths
 
         outputs = {}
-        for tools, environment in environments.items():
+        for tools, context in environments.items():
             if "cargo" in tools:
-                outputs[tools] = cargo_output_paths((), cwd=self.root, env=environment)
+                outputs[tools] = cargo_output_paths(
+                    (), cwd=self.root, env=context.environment
+                )
         return outputs
 
 
@@ -498,6 +549,13 @@ def select_landing_gates(
             replace(
                 gate,
                 command=bind_local_gate_command(gate.command, upstream_commit=upstream),
+                collection_command=(
+                    bind_local_gate_command(
+                        gate.collection_command, upstream_commit=upstream
+                    )
+                    if gate.collection_command is not None
+                    else None
+                ),
             )
             for gate in gates
         ]

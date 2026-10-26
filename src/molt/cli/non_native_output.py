@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from molt.backend_protocol import BackendEmissionOrigin
+from molt.cli.link_input_observation import (
+    compilation_input_observation,
+)
+from molt.exact_json import read_exact
+
 import contextlib
 import datetime as dt
 import hashlib
@@ -752,6 +758,9 @@ def _prepare_non_native_build_result(
     wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
+    capture_link_inputs: bool = False,
+    emission_origin: BackendEmissionOrigin | None = None,
+    compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
     json_output: bool,
@@ -786,6 +795,9 @@ def _prepare_non_native_build_result(
             wasm_table_base=wasm_table_base,
             linked=linked,
             require_linked=require_linked,
+            capture_link_inputs=capture_link_inputs,
+            emission_origin=emission_origin,
+            compiler_cache_path=compiler_cache_path,
             linked_output_path=linked_output_path,
             output_artifact=output_artifact,
             json_output=json_output,
@@ -820,6 +832,9 @@ def _prepare_non_native_build_result_in_generation(
     wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
+    capture_link_inputs: bool = False,
+    emission_origin: BackendEmissionOrigin | None = None,
+    compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
     json_output: bool,
@@ -843,6 +858,12 @@ def _prepare_non_native_build_result_in_generation(
     app_export_contract_path: Path | None = None,
     validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
+    if capture_link_inputs and (not is_wasm or not linked or emission_origin is None):
+        return None, _fail(
+            "Link input capture requires linked WASM with retained compiler emission origin.",
+            json_output,
+            command="build",
+        )
     if is_rust_transpile:
         return _PreparedNonNativeResult(
             primary_output=output_artifact,
@@ -1031,10 +1052,16 @@ def _prepare_non_native_build_result_in_generation(
             if ensure_runtime_wasm_both is None or not ensure_runtime_wasm_both(
                 required_runtime_exports
             ):
+                failure = runtime_state.runtime_wasm_build_failure
                 return None, _fail(
-                    "Atomic runtime WASM pair build failed",
+                    "Atomic runtime WASM pair build failed"
+                    if failure is None
+                    else failure.summary,
                     json_output,
                     command="build",
+                    data=None
+                    if failure is None
+                    else {"runtime_wasm_failure": failure.json_payload()},
                 )
             runtime_wasm = runtime_state.runtime_wasm_selected
             runtime_reloc_wasm = runtime_state.runtime_reloc_wasm_selected
@@ -1053,6 +1080,7 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
+                    capture_inputs=capture_link_inputs,
                     external_selection=bool(wasm_link_requirements.items),
                     optimize=wasm_opt_level is not None,
                     split_output_dir=output_wasm.parent if _split_runtime else None,
@@ -1120,6 +1148,8 @@ def _prepare_non_native_build_result_in_generation(
                 str(wasm_facts_scanner),
             ]
             link_cmd.extend(["--app-export-contract", str(app_export_contract_path)])
+            if capture_link_inputs:
+                link_cmd.append("--capture-link-inputs")
             native_link_plan_bytes = canonical_json_bytes(
                 {
                     "link_requirements": wasm_link_requirements.manifest_payload(),
@@ -1345,6 +1375,8 @@ def _prepare_non_native_build_result_in_generation(
                 fingerprint=link_fingerprint,
                 receipt_path=link_fingerprint_path,
             )
+            if capture_link_inputs:
+                link_skipped = False
             if link_skipped and wasm_opt_level is not None:
                 try:
                     assert optimizer_cache_fact is not None
@@ -1441,8 +1473,11 @@ def _prepare_non_native_build_result_in_generation(
                             ),
                         )
                     )
-                    link_result_reused = restore_final_link_result(
-                        link_result_entry, link_result_outputs
+                    link_result_reused = (
+                        not capture_link_inputs
+                        and restore_final_link_result(
+                            link_result_entry, link_result_outputs
+                        )
                     )
                     if stage_timings_ms is not None:
                         stage_timings_ms["wasm_link_result_cache_hits"] = float(
@@ -1492,7 +1527,7 @@ def _prepare_non_native_build_result_in_generation(
                             split=_split_runtime,
                             preserve_debug=profile == "dev",
                         )
-                    if not link_result_reused:
+                    if not link_result_reused and not capture_link_inputs:
                         # Only an admitted result (selection and optimizer
                         # publication checked above) is recorded for reuse.
                         try:
@@ -2036,7 +2071,36 @@ def _prepare_non_native_build_result_in_generation(
                 artifacts["runtime_cwasm"] = runtime_cwasm_path
             success_messages.append(f"Precompiled {cwasm_path}")
 
+        link_input_observation = None
+        if capture_link_inputs:
+            assert deployment is not None and emission_origin is not None
+            try:
+                link_input_observation = compilation_input_observation(
+                    emission_origin.payload(),
+                    read_exact(
+                        deployment.outputs["input_observation"],
+                        max_bytes=16 * 1024 * 1024,
+                        label="WASM linker input observation",
+                    ),
+                    stdlib=None,
+                    cache={
+                        "compiler": str(compiler_cache_path)
+                        if compiler_cache_path
+                        else None,
+                        "stdlib": None,
+                    },
+                )
+                deployment.outputs["input_observation"].write_text(
+                    json.dumps(
+                        link_input_observation, sort_keys=True, separators=(",", ":")
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except (OSError, ValueError) as exc:
+                return None, _fail(str(exc), json_output, command="build")
         prepared = _PreparedNonNativeResult(
+            link_input_observation=link_input_observation,
             primary_output=primary_output,
             consumer_output=consumer_output,
             bundle_root=bundle_root,

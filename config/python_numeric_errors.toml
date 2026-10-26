@@ -1,6 +1,6 @@
 # Exact CPython numeric exception policy. Consumer dispatch follows operand semantics, not value integrality.
-schema_version = 1
-supported_targets = ["3.12", "3.13", "3.14"]
+schema_version = 2
+observed_targets = ["3.12", "3.13", "3.14", "3.15"]
 
 [[context]]
 name = "IntegerTrueDivision"
@@ -10,6 +10,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "division by zero"
 python_3_13 = "division by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "FloatTrueDivision"
@@ -19,6 +20,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "float division by zero"
 python_3_13 = "float division by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "ComplexTrueDivision"
@@ -28,6 +30,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "complex division by zero"
 python_3_13 = "complex division by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "IntegerFloorDivision"
@@ -37,6 +40,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "integer division or modulo by zero"
 python_3_13 = "integer division or modulo by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "FloatFloorDivision"
@@ -46,6 +50,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "float floor division by zero"
 python_3_13 = "float floor division by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "IntegerModulo"
@@ -55,6 +60,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "integer modulo by zero"
 python_3_13 = "integer modulo by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "FloatModulo"
@@ -64,6 +70,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "float modulo"
 python_3_13 = "float modulo by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "IntegerDivmod"
@@ -73,6 +80,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "integer division or modulo by zero"
 python_3_13 = "integer division or modulo by zero"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "FloatDivmod"
@@ -82,6 +90,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "float divmod()"
 python_3_13 = "float divmod()"
 python_3_14 = "division by zero"
+python_3_15 = "division by zero"
 
 [[context]]
 name = "NegativePower"
@@ -91,6 +100,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "0.0 cannot be raised to a negative power"
 python_3_13 = "0.0 cannot be raised to a negative power"
 python_3_14 = "zero to a negative power"
+python_3_15 = "zero to a negative power"
 
 [[context]]
 name = "ComplexNegativePower"
@@ -100,6 +110,7 @@ error_class = "ZeroDivisionError"
 python_3_12 = "0.0 to a negative or complex power"
 python_3_13 = "0.0 to a negative or complex power"
 python_3_14 = "zero to a negative or complex power"
+python_3_15 = "zero to a negative or complex power"
 
 [[context]]
 name = "ModularPowerZero"
@@ -109,3 +120,4 @@ error_class = "ValueError"
 python_3_12 = "pow() 3rd argument cannot be 0"
 python_3_13 = "pow() 3rd argument cannot be 0"
 python_3_14 = "pow() 3rd argument cannot be 0"
+python_3_15 = "pow() 3rd argument cannot be 0"

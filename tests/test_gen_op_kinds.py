@@ -452,8 +452,17 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         assert "matches!" not in body
         assert "loop_start" not in body
 
-    pre_ssa_body = _rust_fn_body(lower_from_simple, "fn is_pre_ssa_rewritten_kind(")
-    assert "simpleir_kind_is_pre_ssa_rewritten(kind)" in pre_ssa_body
+    pre_ssa_body = _rust_fn_body(lower_from_simple, "pub fn normalize_loop_indices(")
+    assert "simpleir_kind_is_pre_ssa_rewritten(op.kind.as_str())" in pre_ssa_body
+    assert "validate_normalized_simple_ir_ops(function_name, &result)" in pre_ssa_body
+    normalized_schema = _read_rs_module_cluster(
+        ROOT / "runtime/molt-ir/src/ir_schema.rs"
+    )
+    normalized_body = _rust_fn_body(
+        normalized_schema, "pub fn validate_normalized_simple_ir_ops("
+    )
+    assert "simpleir_kind_is_pre_ssa_rewritten(&op.kind)" in normalized_body
+    assert "matches!" not in normalized_body
     assert "PRE_SSA_REWRITTEN_KINDS" not in lower_from_simple
 
     assert "structural_kinds_from_registry(registry)" in audit
@@ -819,7 +828,7 @@ def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
     assert "fn is_repoll_op" not in cfg
     assert "simpleir_kind_is_suspend" in cfg
     assert "simpleir_kind_is_repoll" in cfg
-    assert "simpleir_kind_is_pre_ssa_rewritten(kind)" in lower_from_simple
+    assert "simpleir_kind_is_pre_ssa_rewritten(op.kind.as_str())" in lower_from_simple
     assert "PRE_SSA_REWRITTEN_KINDS" not in lower_from_simple
     assert "structural_kinds_from_registry(registry)" in audit_source
     assert "derive_structural_kinds" not in audit_source
@@ -1013,11 +1022,6 @@ def test_audit_native_single_kind_handlers_may_be_matchless() -> None:
 def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
     audit = _audit()
     res = audit.run_audit()
-
-    for kind in ("statistics_mean_slice", "statistics_stdev_slice"):
-        row = res.rows[kind]
-        assert row.llvm_runtime_fallback_eligible
-        assert row.llvm_covered
 
     for kind in ("vec_sum", "vec_prod", "vec_min", "vec_max"):
         row = res.rows[kind]

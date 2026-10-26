@@ -37,7 +37,7 @@ impl Drop for RestoreEnvironment {
     }
 }
 
-fn publish(py: &PyToken<'_>, major: i64, minor: i64, release: &str) {
+fn publish(py: &PyToken<'_>, major: i64, minor: i64, micro: i64, release: &str, serial: i64) {
     let release = ExceptionValue::adopt(
         py,
         MoltObject::from_ptr(alloc_string(py, release.as_bytes())).bits(),
@@ -46,9 +46,9 @@ fn publish(py: &PyToken<'_>, major: i64, minor: i64, release: &str) {
     let result = molt_sys_set_version_info(
         MoltObject::from_int(major).bits(),
         MoltObject::from_int(minor).bits(),
-        MoltObject::from_int(0).bits(),
+        MoltObject::from_int(micro).bits(),
         release.bits(),
-        MoltObject::from_int(0).bits(),
+        MoltObject::from_int(serial).bits(),
     );
     dec_ref_bits(py, result);
 }
@@ -83,9 +83,9 @@ fn compiled_target_ignores_retired_environment_before_and_after_publication() {
                 let state = runtime_state(py);
                 assert!(state.sys_version_info.lock().unwrap().is_none());
                 assert_eq!(runtime_target_minor(py), 12);
-                assert_display(py, "3.12.0 (molt)");
+                assert_display(py, &format_sys_version(default_sys_version_info()));
                 assert!(state.sys_version_info.lock().unwrap().is_none());
-                publish(py, 3, minor, "final");
+                publish(py, 3, minor, 0, "final", 0);
                 assert!(!exception_pending(py));
 
                 // Replay absent, conflicting, malformed and unsupported selectors
@@ -117,7 +117,7 @@ fn compiled_target_ignores_retired_environment_before_and_after_publication() {
                         sys_cache_tag(sys_implementation_name(), &info),
                         format!("molt-3{minor}")
                     );
-                    publish(py, 3, minor, "final");
+                    publish(py, 3, minor, 0, "final", 0);
                     assert!(!exception_pending(py));
                 }
             });
@@ -136,16 +136,24 @@ fn first_default_target_publication_is_final_before_sys_import() {
             // Reads do not seal the bootstrap default.
             assert_eq!(runtime_target_minor(py), 12);
             assert!(runtime_target_at_least(py, 3, 12));
-            assert_display(py, "3.12.0 (molt)");
+            assert_display(py, &format_sys_version(default_sys_version_info()));
             assert!(state.sys_version_info.lock().unwrap().is_none());
-            publish(py, 3, 12, "final");
+            let default = default_sys_version_info();
+            publish(
+                py,
+                default.major,
+                default.minor,
+                default.micro,
+                &default.releaselevel,
+                default.serial,
+            );
             assert!(!exception_pending(py));
             assert!(state.sys_version_info.lock().unwrap().is_some());
-            publish(py, 3, 13, "final");
+            publish(py, 3, 13, 0, "final", 0);
             assert!(exception_pending(py));
             clear_exception(py);
             assert_eq!(runtime_target_minor(py), 12);
-            assert_display(py, "3.12.0 (molt)");
+            assert_display(py, &format_sys_version(default));
         });
     });
 }
@@ -163,13 +171,13 @@ fn rejected_target_or_release_never_commits_bootstrap_state() {
                 (3, 12, "unknown"),
                 (-1, 12, "final"),
             ] {
-                publish(py, major, minor, release);
+                publish(py, major, minor, 0, release, 0);
                 assert!(exception_pending(py));
                 clear_exception(py);
                 assert!(state.sys_version_info.lock().unwrap().is_none());
-                assert_display(py, "3.12.0 (molt)");
+                assert_display(py, &format_sys_version(default_sys_version_info()));
             }
-            publish(py, 3, 14, "final");
+            publish(py, 3, 14, 0, "final", 0);
             assert!(!exception_pending(py));
             assert_eq!(runtime_target_minor(py), 14);
         });

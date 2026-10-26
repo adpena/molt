@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.target_python import _parse_target_python_version
+
 import importlib.util
 import os
 import sys
@@ -1034,7 +1036,9 @@ def test_sentinel_publishes_live_request_ancestry_before_termination(
     victim = samples[22]
     marker = tmp_path / "trip.json"
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", raising=False)
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(
+        module.memory_guard, "sample_processes_custody", lambda _interest: samples
+    )
     install_thread_module_view(
         monkeypatch,
         "time",
@@ -1402,7 +1406,7 @@ def test_native_resource_evidence_survives_build_and_run(
         lambda command, **k: result("build" if "molt.cli" in command else "run"),
     )
     context = module.compat_backends.BackendExecutionContext(
-        target_python=module.TargetPythonVersion(3, 12, 0),
+        target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
         environment={},

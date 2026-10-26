@@ -74,7 +74,7 @@ def test_source_record_json_admission_belongs_to_graph_cache(
 ) -> None:
     from molt.cli.source_record_store import SourceRecordStore
 
-    store = SourceRecordStore(tmp_path / "records.sqlite")
+    store = SourceRecordStore(tmp_path)
     monkeypatch.setattr(module_graph_cache, "shared_source_records", lambda: store)
     monkeypatch.setattr(
         module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "g"
@@ -100,7 +100,7 @@ def test_json_record_producers_preserve_compact_ascii_blob_encoding(
     from molt.cli.source_record_store import SourceRecordStore
     from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
-    store = SourceRecordStore(tmp_path / "records.sqlite")
+    store = SourceRecordStore(tmp_path)
     monkeypatch.setattr(module_graph_cache, "shared_source_records", lambda: store)
     monkeypatch.setattr(
         module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "g"

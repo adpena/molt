@@ -119,13 +119,17 @@ def _resolve_target_python(
 def _target_python_command(
     target_python: molt_target_python.TargetPythonVersion,
 ) -> list[str]:
-    return list(
-        python_interpreter.resolve_target_python_command(
-            target_python,
-            override=os.environ.get("MOLT_TV_PYTHON", "").strip() or None,
-            cwd=_REPO_ROOT,
+    from molt.python_environment_identity import PythonIdentityVerifier
+
+    with PythonIdentityVerifier() as verifier:
+        return list(
+            python_interpreter.resolve_target_python_command(
+                target_python,
+                verifier=verifier,
+                override=os.environ.get("MOLT_TV_PYTHON", "").strip() or None,
+                cwd=_REPO_ROOT,
+            )
         )
-    )
 
 
 # ---------------------------------------------------------------------------

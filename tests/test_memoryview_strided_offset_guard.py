@@ -156,9 +156,17 @@ def test_memoryview_contains_streams_shared_iterator_and_scalar_access() -> None
     assert "OwnedIterator::new(_py, container_bits)" in search_body
     assert "match iter.next()" in search_body
     assert "compare_object_eq_bool(_py, obj_from_bits(value), item)" in search_body
-    # molt_iter_next projects the one shared iteration step onto its pair ABI.
-    assert "iteration_step(_py, iter_bits)" in _rust_function_body(
-        iter_source, "molt_iter_next"
+    # The status ABI normalizes exhaustion; public next() without a default
+    # preserves it. ops_iter_generic_tests independently checks exception
+    # identity and completion-payload ownership for both behaviors.
+    pair_body = _rust_function_body(iter_source, "molt_iter_next")
+    assert (
+        rust_token_range(
+            pair_body,
+            "pair_from_step(_py, iter_bits, "
+            "iteration_step(_py, iter_bits, IterationExhaustion::Normalize),)",
+        )
+        is not None
     )
     step_body = _rust_block_body(
         _rust_function_body(iter_source, "sequence_iterator_next"),

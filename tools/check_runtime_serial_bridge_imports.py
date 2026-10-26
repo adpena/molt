@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Fail closed on direct runtime/host imports in molt-runtime-serial.
 
-`molt-runtime-serial` is the RuntimeVtable pilot: runtime-owned services enter
+`molt-runtime-serial` is the RuntimeVtable pilot: satellite-specific runtime services enter
 the satellite through `__molt_serial_get_vtable`, then through function pointers.
 This guard prevents new direct host imports from silently splitting that
-authority again.
+authority again. Common core value ownership and owned iteration use the
+existing molt-runtime-core ABI rather than satellite-specific extern imports.
 """
 
 from __future__ import annotations

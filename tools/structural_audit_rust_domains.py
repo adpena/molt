@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
+import tomllib
 
 from molt.rust_source_scan import (
     scan_memo,
@@ -142,6 +143,7 @@ def _validation_dominates(admission: str, ir: str, schema: str) -> bool:
     target = _body(admission, "validate_target_contract_with_representation_plan") or ""
     validate = _body(ir, "validate_simple_ir") or ""
     transport = _body(ir, "validate_simple_ir_transport_contract") or ""
+    function_body = _body(ir, "validate_function_transport_contract") or ""
     required = _body(schema, "validate_required_fields") or ""
     if not _compact(target).startswith(
         _compact("""
@@ -150,14 +152,22 @@ def _validation_dominates(admission: str, ir: str, schema: str) -> bool:
     """)
     ) or not _starts(validate, "validate_simple_ir_transport_contract(ir)?;"):
         return False
-    functions = _block(transport, "for func in &ir.functions", depth=0)
-    if functions is None or not _no_success_bypass(transport):
+    # Whole-program admission runs every function's own contract first and
+    # propagates its error (HF-516 split the per-function part out so a
+    # content-addressed store can run it once per body).
+    if not _starts(
+        transport,
+        "ir.functions.iter().try_for_each(validate_function_transport_contract)?;",
+    ) or not _no_success_bypass(transport):
         return False
-    function_body = transport[slice(*functions)]
     operations = _block(
         function_body, "for (op_index, op) in func.ops.iter().enumerate()", depth=0
     )
-    if operations is None or not _unshadowed(transport, ("ir", "func", "op")):
+    if (
+        operations is None
+        or not _no_success_bypass(function_body)
+        or not _unshadowed(function_body, ("func", "op"))
+    ):
         return False
     operation_body = function_body[slice(*operations)]
     if not _compact(operation_body).startswith(
@@ -183,8 +193,44 @@ def _validation_dominates(admission: str, ir: str, schema: str) -> bool:
     )
 
 
+def _normalized_flow_contract(
+    schema: str, generated: str, normalized_kinds: frozenset[str]
+) -> bool:
+    # This only checks continuity with the canonical producer. It does not
+    # grant any additional admitted wire kinds or tail-flow exclusions.
+    if _bool_table(generated, "simpleir_kind_is_pre_ssa_rewritten") != normalized_kinds:
+        return False
+    if not _same(
+        _body(schema, "validate_normalized_simple_ir_ops"),
+        """
+        for (op_index, op) in ops.iter().enumerate() {
+            if simpleir_kind_is_pre_ssa_rewritten(&op.kind) {
+                return Err(FunctionOpShapeDiagnostic {
+                    function: function.into(),
+                    op_index,
+                    shape: OpShapeDiagnostic {
+                        family: "normalization",
+                        kind: op.kind.clone(),
+                        violation: OpShapeViolation::Unnormalized {
+                            source_op_idx: op.source_op_idx,
+                        },
+                    },
+                });
+            }
+        }
+        Ok(())
+        """,
+    ):
+        return False
+    return True
+
+
 def _flow_exclusion(
-    methods: dict[str, str], generated: str, domain: AdmittedWireDomain
+    methods: dict[str, str],
+    generated: str,
+    schema: str,
+    normalized_kinds: frozenset[str],
+    domain: AdmittedWireDomain,
 ) -> tuple[int, int] | None:
     references = _bool_table(generated, "simpleir_kind_is_verifier_label_reference")
     definitions = _bool_table(generated, "simpleir_kind_is_verifier_label_definition")
@@ -215,9 +261,17 @@ def _flow_exclusion(
     after_normalization = body[normalized[1] + 1 :]
     if not _starts(after_normalization, "else { func.ops.clone() };"):
         return None
+    if not _normalized_flow_contract(schema, generated, normalized_kinds):
+        return None
     flow = _locate(
         body,
-        "let flow = dispatch.then(|| molt_ir::simple_verify::simple_ir_logical_flow(&ops));",
+        """
+        let flow = dispatch.then(|| {
+            molt_ir::ir_schema::validate_normalized_simple_ir_ops(&func.name, &ops)
+                .unwrap_or_else(|error| panic!("Rust normalized flow admission failed: {error}"));
+            molt_ir::simple_verify::simple_ir_logical_flow(&ops)
+        });
+        """,
     )
     if (
         flow is None
@@ -736,9 +790,19 @@ def proven_branch_projection(
             key: mask_rust_test_items((root / path).read_text(encoding="utf-8"))
             for key, path in paths.items()
         }
-    except (OSError, ValueError, RuntimeError):
+        registry = tomllib.loads(
+            (root / "runtime/molt-ir/src/tir/op_kinds.toml").read_text(encoding="utf-8")
+        )
+        normalized_kinds = frozenset(
+            row["kind"]
+            for row in registry["simpleir_control_kind"]
+            if row["pre_ssa_rewritten"]
+        )
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
         return projection
-    flow = _flow_exclusion(methods, source["generated"], domain)
+    flow = _flow_exclusion(
+        methods, source["generated"], source["schema"], normalized_kinds, domain
+    )
     if not _immutable_emission(methods, flow):
         return projection
     projection.add("emit_function", flow)

@@ -15,8 +15,8 @@ older tool imports keep one implementation authority instead of each consumer
 re-implementing the math:
 
   1. :func:`non_canonical_provenance` - the stamp every non-canonical JSON
-     carries: ``authoritative=False``, ``source=non-canonical``, the ACTUAL
-     profile, and a pointer to the canonical gate. It reuses the field
+     carries: ``authoritative=False``, ``source=non-canonical``, the requested
+     profile label, and a pointer to the canonical gate. It reuses the field
      vocabulary of ``perf_scoreboard.gather_provenance`` so a reader sees the
      same keys (``authoritative`` / ``authoritative_reason``) on every board.
   2. :func:`safe_speedup`, :func:`signed_ratio`, and
@@ -34,8 +34,9 @@ is the only lane permitted to emit ``authoritative=true``. See
 
 from __future__ import annotations
 
+import os
+
 import datetime as dt
-import functools
 import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -57,7 +58,7 @@ from molt.metric_ratios import (  # noqa: E402
 )
 from tools import perf_schema as perf_schema  # noqa: E402
 from tools import bench_suites as bench_suites  # noqa: E402
-from tools.git_identity import is_git_object_id  # noqa: E402
+from tools.git_identity import immutable_git_environment, is_git_object_id  # noqa: E402
 
 __all__ = [
     "CANONICAL_GATE",
@@ -106,7 +107,7 @@ CANONICAL_GATE = (
 # The release-fast cargo profile is the daily perf contract. A board is only
 # *eligible* for authoritative=true when it is the canonical gate at this
 # profile; the non-canonical lanes are never authoritative regardless of
-# profile, but we record the actual profile so the stamp is honest.
+# profile. Request labels remain separate from observed physical profiles.
 CONTRACT_PROFILE = "release-fast"
 CANONICAL_PERF_SET = "core"
 CANONICAL_PERF_BENCHMARKS = tuple(bench_suites.BENCHMARKS)
@@ -203,6 +204,7 @@ def _git_output(args: list[str]) -> str | None:
     try:
         res = subprocess.run(
             ["git", *args],
+            env=immutable_git_environment(os.environ),
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
@@ -218,19 +220,14 @@ def _git_output(args: list[str]) -> str | None:
     return out or None
 
 
-@functools.lru_cache(maxsize=1)
-def _origin_main_rev() -> str | None:
-    return _git_output(["rev-parse", "origin/main"])
-
-
 def current_origin_main_rev() -> str | None:
     """Return the current ``origin/main`` SHA known to this checkout, if any."""
-    return _origin_main_rev()
+    return _git_output(["rev-parse", "origin/main"])
 
 
 def non_canonical_provenance(
     *,
-    profile: str,
+    requested_profile: str,
     source: str,
     git_rev: str | None = None,
 ) -> dict[str, object]:
@@ -238,8 +235,9 @@ def non_canonical_provenance(
 
     Every lane that is not ``perf_scoreboard.py --profile release-fast`` emits
     this block so the numbers self-identify. ``authoritative`` is always False;
-    ``authoritative_reason`` names why; ``source`` and ``profile`` let a reader
-    see exactly which non-canonical lane and profile produced the file.
+    ``authoritative_reason`` names why; ``source`` and ``requested_profile`` name the lane and its request label.
+    They do not identify physical compiler/runtime profiles. Those facts must
+    come from the build producer's selected-profile observation.
 
     Reuses the ``authoritative`` / ``authoritative_reason`` field names from
     ``perf_scoreboard.gather_provenance`` so boards share one vocabulary.
@@ -252,7 +250,7 @@ def non_canonical_provenance(
         ),
         "source": "non-canonical",
         "lane": source,
-        "profile": profile,
+        "requested_profile": requested_profile,
         "canonical_gate": CANONICAL_GATE,
         "git_rev": git_rev
         if git_rev is not None
@@ -271,8 +269,9 @@ def is_non_canonical_provenance(value: object) -> bool:
         and CANONICAL_GATE in value["authoritative_reason"]
         and isinstance(value.get("lane"), str)
         and bool(value["lane"])
-        and isinstance(value.get("profile"), str)
-        and bool(value["profile"])
+        and "profile" not in value
+        and isinstance(value.get("requested_profile"), str)
+        and bool(value["requested_profile"])
         and isinstance(value.get("git_rev"), str)
         and bool(value["git_rev"])
         and value.get("canonical_gate") == CANONICAL_GATE
@@ -847,7 +846,6 @@ def release_scoreboard_problems(
     return problems
 
 
-@functools.lru_cache(maxsize=512)
 def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
     """Is ``git_rev`` an ancestor of (or equal to) ``origin/main``?
 
@@ -858,14 +856,13 @@ def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
     """
     if not git_rev or git_rev == "unknown":
         return None
-    origin = _origin_main_rev()
-    if origin is None:
-        return None
     # `git merge-base --is-ancestor A B` exits 0 iff A is an ancestor of B
-    # (or A == B). Run it directly so we get the exit code, not stdout.
+    # (or A == B). Resolve the current ref in that same Git invocation; a
+    # separate rev-parse would add a process and a stale-ref interval.
     try:
         res = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", git_rev, origin],
+            ["git", "merge-base", "--is-ancestor", git_rev, "origin/main"],
+            env=immutable_git_environment(os.environ),
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,

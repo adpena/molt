@@ -41,3 +41,18 @@ def runtime_source_paths(
             ),
         )
     )
+
+
+def wasm_cpython_abi_source_paths(project_root: Path) -> tuple[Path, ...]:
+    """The standalone CAPI Cargo producer's declared file closure."""
+    return tuple(
+        _cargo_crate_source_closure(
+            project_root=project_root,
+            crate_root=project_root / "runtime" / "molt-cpython-abi",
+            crate_features=(),
+            extra_source_paths=(
+                project_root / "Cargo.toml",
+                project_root / "Cargo.lock",
+            ),
+        )
+    )

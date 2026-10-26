@@ -234,6 +234,7 @@ def _run_wasm_ld(
     runtime_identity: StableRegularFileIdentity | None = None,
     deploy_runtime_identity: StableRegularFileIdentity | None = None,
     link_receipt: FinalLinkReceiptRequest | None = None,
+    capture_link_inputs: bool = False,
     expected_inputs: Mapping[Path, str] | None = None,
     additional_inputs: Sequence[Path] = (),
 ) -> int:
@@ -300,6 +301,7 @@ def _run_wasm_ld(
         )
         publication_outputs = wasm_link_output_paths(
             linked,
+            capture_inputs=capture_link_inputs,
             optimize=optimize,
             external_selection=bool(native_link_requirements.items),
             split_output_dir=(split_output_dir or linked.parent)
@@ -479,6 +481,7 @@ def _run_wasm_ld(
                 facts_provider=facts_provider,
                 app_export_contract_path=app_export_contract_snapshot,
                 link_receipt=link_receipt,
+                capture_link_inputs=capture_link_inputs,
             )
             if tool_identity is not None:
                 verify_stable_regular_file_identity(
@@ -573,6 +576,7 @@ def main() -> int:
         help="Producer-bound input bytes; repeat for each admitted input",
     )
     parser.add_argument("--app-export-contract", type=Path, required=True)
+    parser.add_argument("--capture-link-inputs", action="store_true")
     parser.add_argument(
         "--link-receipt-request",
         type=Path,
@@ -699,6 +703,7 @@ def main() -> int:
             app_export_contract_path=args.app_export_contract,
             runtime_identity=generation.reloc_member_identity,
             link_receipt=link_receipt,
+            capture_link_inputs=args.capture_link_inputs,
             deploy_runtime_identity=(
                 generation.shared_member_identity if args.split_runtime else None
             ),

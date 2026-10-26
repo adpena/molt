@@ -77,7 +77,7 @@ not raw measurement. Authoritative inventory (verified against the tree, 2026-06
 | Methodology doctrine | `docs/perf/SCOREBOARD.md` (≈650 ln) | The 5 PERMANENT RULES, 5-state classification table, contamination asymmetry, the authoritative quiet board, the #68/#76 cycle attributions | Describes ONE board; must generalize to the plane + document the gate wiring |
 | Build harness | `tools/bench.py` (2349 ln) | Daemon batch build (`_BenchBatchBuildServer`), `harness_memory_guard`, binary-size + compile-time capture | Reused as-is (perf_scoreboard already imports it) |
 | Curated suite | `tools/bench_suites.py` (112 ln) | `BENCHMARKS` (56 core), `SMOKE_BENCHMARKS`, `MOLT_ARGS_BY_BENCH`, `canonical_benchmark_key` | Add suite *tiering* + per-benchmark *reference-class tags* (see §4.2) |
-| Evidence policy | `tools/bench_evidence.py` (≈110+ ln) | `METRIC_OK_GATES` (incl. `molt_pypy_ratio`, `molt_codon_ratio`, `molt_nuitka_ratio`, `molt_pyodide_ratio`), `comparable_run_metadata_errors`, `validated_runtime_samples` | The shared *fail-closed comparator gate* the plane keys on — already has the PyPy/Codon/Nuitka/Pyodide ok-gates |
+| Evidence policy | `tools/bench_evidence.py` (≈110+ ln) | `METRIC_POLICIES` (incl. `molt_pypy_ratio`, `molt_codon_ratio`, `molt_nuitka_ratio`, `molt_pyodide_ratio`), `comparable_run_metadata_errors`, `validated_runtime_samples` | The shared *fail-closed comparator gate* the plane keys on — already has the PyPy/Codon/Nuitka/Pyodide ok-gates |
 | Regression-vs-self | `tools/perf_regression.py` | Bootstrap CI, Mann-Whitney U, Cohen's d, min-detectable-effect, linear trend; thresholds per metric category | The statistical core for the **board-level history gate** (§Phase 4) — currently file-vs-file, must become board-vs-board-history |
 | Safe execution | `tools/safe_run.py` | RSS-cap + wall-timeout watchdog; `--json` returns `peak_rss_mib`+`elapsed_s` | Reused (mandatory per CLAUDE.md Safe Execution) |
 | Inner-repeat transform | `tools/perf_inner_repeat.py` | AST-based semantics-preserving `for _ in range(N): main()` wrap; refuses non-canonical shapes | Reused by `--sample-hot-only`; extended to be the warm-attribution substrate for ALL backends |
@@ -249,7 +249,7 @@ PerfCell:
 
 **Validation contract (fail-closed):** `perf_schema.validate_cell(cell)` rejects any cell
 that (a) is GREEN/RED without both cold AND warm, (b) claims a comparator ratio whose
-`*_ok` gate (`bench_evidence.METRIC_OK_GATES`) is false, (c) claims `RED_STABLE` without
+`*_ok` gate (`bench_evidence.METRIC_POLICIES`) is false, (c) claims `RED_STABLE` without
 `quiescent=true` and a `repeat_ci` clearing below 1.0 (Rule 1+3 made structural), or (d)
 omits `log_artifact`. **The class retired:** "a perf claim that skipped the methodology"
 — it cannot be serialized.
@@ -581,7 +581,7 @@ The plane's *own* tests must obey the same discipline the plane enforces on the 
   must NOT trip the regression gate (a flaky gate that blocks good PRs is the Rule-3
   measurement-system bug). Tested with synthetic within-threshold deltas.
 - **No-fake-number gate (Phase 6):** with `--pypy`/`--codon` off, no `pypy_ratio`/
-  `codon_ratio` is ever written (the `bench_evidence.METRIC_OK_GATES` already enforce the
+  `codon_ratio` is ever written (the `bench_evidence.METRIC_POLICIES` already enforce the
   `*_ok` precondition; a test asserts the absence).
 - **Ratchet gate (Phase 1/7):** `tools/structural_audit.py --check` —
   `max_god_file_lines` and `god_files` strictly decrease as `perf_scoreboard.py` is split.
@@ -683,7 +683,7 @@ construction. The regression delta is robust because both sides ran in the *same
 
 ### Risk 2: PyPy/Codon are not installed on the dev/CI host → the boards are vapor
 **Band-aid (rejected):** invent ratios / skip silently.
-**Structural fix:** `ADVISORY` board state + `bench_evidence.METRIC_OK_GATES` fail-closed
+**Structural fix:** `ADVISORY` board state + `bench_evidence.METRIC_POLICIES` fail-closed
 (no `*_ratio` without `*_ok`). The board *exists and is recorded as host-absent*, so when a
 PyPy/Codon-equipped runner (self-hosted or a dedicated nightly image) appears, the lane
 lights up with zero code change. The pyperformance bridge (Phase 6) means molt's numbers
@@ -764,7 +764,7 @@ becomes a release-gating correctness property in fact, not just in the constitut
 - Board JSON `kind` tags + writers (Phase 1/2): lines ~1626 (`hot_only_cycle_profile`),
   ~3233 (`cpython_floor_scoreboard`), ~4042/4128/4634/4805 (board writers).
 - Comparator ok-gates the plane keys on (Phase 2/6): `tools/bench_evidence.py`
-  `METRIC_OK_GATES` (already has `molt_pypy_ratio`, `molt_codon_ratio`,
+  `METRIC_POLICIES` (already has `molt_pypy_ratio`, `molt_codon_ratio`,
   `molt_nuitka_ratio`, `molt_pyodide_ratio`).
 - Statistics to reuse for the history gate (Phase 4): `tools/perf_regression.py`
   `DEFAULT_THRESHOLDS` (lines ~66–71), bootstrap/Mann-Whitney/Cohen's-d machinery.

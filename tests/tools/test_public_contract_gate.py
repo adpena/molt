@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def immutable_matrix_projection(monkeypatch: pytest.MonkeyPatch, matrix_digest: 
 
 def test_every_cli_command_carries_a_declared_tier() -> None:
     declaration = pcg.load_declaration()
-    commands = pcg.cli_surface()
+    commands = pcg.cli_surface()["subcommands"]
     assert pcg.declaration_problems(declaration, commands) == []
     assert set(declaration["tiers"]) == set(commands)
     assert set(declaration["tiers"].values()) <= pcg.TIERS
@@ -67,7 +68,7 @@ def test_surface_drift_names_the_command_and_tier(tmp_path: Path) -> None:
     assert pcg.surface_problems(snapshot, surface) == []
 
     drifted = json.loads(json.dumps(surface))
-    drifted["commands"]["build"]["arguments"].append(
+    drifted["cli"]["subcommands"]["build"]["arguments"].append(
         {
             "dest": "turbo",
             "flags": ["--turbo"],
@@ -85,7 +86,7 @@ def test_surface_drift_names_the_command_and_tier(tmp_path: Path) -> None:
 
 def test_undeclared_and_phantom_commands_are_problems() -> None:
     declaration = pcg.load_declaration()
-    commands = dict(pcg.cli_surface())
+    commands = dict(pcg.cli_surface()["subcommands"])
     commands["shiny"] = {"arguments": []}
     problems = pcg.declaration_problems(declaration, commands)
     assert problems == [
@@ -110,7 +111,7 @@ def test_producer_schema_drift_cannot_be_blessed_by_snapshot_update(
     surface = pcg.live_surface(declaration)
     assert changed in surface["public_schemas"]
     assert previous not in surface["public_schemas"]
-    assert pcg.declaration_problems(declaration, surface["commands"]) == [
+    assert pcg.declaration_problems(declaration, surface["cli"]["subcommands"]) == [
         f"public schema {changed!r} has no reviewed declaration",
         f"declared public schema {previous!r} has no matching producer",
     ]
@@ -171,6 +172,84 @@ def test_positional_requiredness_is_derived_from_nargs_not_argparse_version() ->
     assert pcg._action_record(flag)["required"] is True
 
 
+@pytest.mark.parametrize("change", ["global", "converter", "constant", "subcommand"])
+def test_snapshot_detects_changes_to_actual_cli_parsing(
+    change: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = pcg._build_entrypoint_parser()
+    monkeypatch.setattr(pcg, "_build_entrypoint_parser", lambda: parser)
+    declaration = pcg.load_declaration()
+    snapshot = tmp_path / "surface.json"
+    pcg.write_surface(snapshot, pcg.live_surface(declaration))
+    commands = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ).choices
+
+    if change == "global":
+        with pytest.raises(SystemExit) as before:
+            parser.parse_args(["--version"])
+        assert before.value.code == 0
+        action = parser._option_string_actions.pop("--version")
+        parser._actions.remove(action)
+        with pytest.raises(SystemExit) as after:
+            parser.parse_args(["--version"])
+        assert after.value.code == 2
+    elif change == "converter":
+        args = ["publish", "package.tar.gz", "--registry-timeout", "bogus"]
+        with pytest.raises(SystemExit) as before:
+            parser.parse_args(args)
+        assert before.value.code == 2
+        commands["publish"]._option_string_actions["--registry-timeout"].type = str
+        assert parser.parse_args(args).registry_timeout == "bogus"
+    elif change == "constant":
+        args = ["build", "app.py", "--release"]
+        assert parser.parse_args(args).release is True
+        commands["build"]._option_string_actions["--release"].const = False
+        assert parser.parse_args(args).release is False
+    else:
+        with pytest.raises(SystemExit) as before:
+            parser.parse_args(["extension"])
+        assert before.value.code == 2
+        action = next(
+            action
+            for action in commands["extension"]._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        action.required = False
+        assert parser.parse_args(["extension"]).extension_command is None
+
+    assert pcg.surface_problems(snapshot, pcg.live_surface(declaration))
+    capsys.readouterr()
+
+
+def test_parser_projection_preserves_positional_order_and_exclusion() -> None:
+    parser = argparse.ArgumentParser()
+    left = parser.add_argument("left")
+    right = parser.add_argument("right")
+    before = pcg._parser_record(parser)
+    assert vars(parser.parse_args(["a", "b"])) == {"left": "a", "right": "b"}
+    left_index, right_index = parser._actions.index(left), parser._actions.index(right)
+    parser._actions[left_index], parser._actions[right_index] = right, left
+    assert vars(parser.parse_args(["a", "b"])) == {"left": "b", "right": "a"}
+    assert pcg._parser_record(parser) != before
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--first", action="store_true")
+    group.add_argument("--second", action="store_true")
+    before = pcg._parser_record(parser)
+    with pytest.raises(SystemExit) as rejected:
+        parser.parse_args(["a", "b", "--first", "--second"])
+    assert rejected.value.code == 2
+    parser._mutually_exclusive_groups.remove(group)
+    assert parser.parse_args(["a", "b", "--first", "--second"]).first is True
+    assert pcg._parser_record(parser) != before
+
+
 @pytest.mark.parametrize(
     "flags,expected",
     [
@@ -200,7 +279,7 @@ def test_parser_omission_markers_preserve_effective_public_defaults(
     )
     request = resolve_build_request(args, build_cfg={}, cfg_capabilities=None, env={})
     assert (request.precompile, request.wasm_profile) == expected
-    surface = pcg.cli_surface()["build"]["arguments"]
+    surface = pcg.cli_surface()["subcommands"]["build"]["arguments"]
     assert {
         row["dest"]: row["default"]
         for row in surface

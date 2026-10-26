@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
+import os
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyPath:
+    """The compiler spelling and its selected regular-file content coordinate."""
+
+    lexical: Path
+    resolved: Path
 
 
 def _rule_separator(text: str) -> int | None:
@@ -38,13 +48,15 @@ def parse_make_depfile(
     *,
     cwd: Path,
     producer: str,
-) -> tuple[tuple[Path, ...] | None, str | None]:
+) -> tuple[tuple[DependencyPath, ...] | None, str | None]:
     """Parse one Make depfile without a shell and validate every dependency.
 
     The parser deliberately accepts only the single-rule shape emitted by the
-    compiler/Cython commands Molt owns. It resolves and deduplicates paths while
-    preserving their first declaration order, then fails closed if the producer
-    named a dependency that is no longer present.
+    compiler/Cython commands Molt owns. It retains each lexical spelling and
+    resolved content coordinate, deduplicating lexical paths in declaration
+    order. Content-closure consumers explicitly project resolved coordinates;
+    namespace consumers preserve aliases without walking ambient directories.
+    Missing producer-declared regular files fail closed.
     """
     try:
         text = depfile.read_text(encoding="utf-8", errors="surrogateescape")
@@ -79,17 +91,18 @@ def parse_make_depfile(
     if not tokens:
         return None, f"{producer} dependency file is empty: {depfile}"
 
-    paths: list[Path] = []
+    paths: list[DependencyPath] = []
     seen: set[Path] = set()
     for token in tokens:
         path = Path(token).expanduser()
         if not path.is_absolute():
             path = cwd / path
-        resolved = path.resolve()
-        if resolved in seen:
+        lexical = Path(os.path.abspath(path))
+        if lexical in seen:
             continue
-        seen.add(resolved)
+        seen.add(lexical)
+        resolved = lexical.resolve()
         if not resolved.is_file():
             return None, f"{producer}-declared dependency is missing: {resolved}"
-        paths.append(resolved)
+        paths.append(DependencyPath(lexical, resolved))
     return tuple(paths), None

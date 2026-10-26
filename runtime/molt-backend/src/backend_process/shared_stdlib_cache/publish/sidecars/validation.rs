@@ -69,3 +69,67 @@ pub(in super::super) fn shared_stdlib_cache_matches_unlocked(
     )
     .is_some_and(|digest| shared_stdlib_archive_payload_matches(stdlib_path, &digest))
 }
+
+/// Bind ordered original worker outputs to the actual archive member payloads.
+#[cfg(test)]
+fn origin_error(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+pub(super) fn validate_stdlib_archive_origins(
+    bytes: &[u8],
+    workers: &[crate::backend_process::native_batch::NativeWorkerOrigin],
+) -> std::io::Result<()> {
+    use crate::backend_process::input::ContentIdentity;
+    let archive = object::read::archive::ArchiveFile::parse(bytes)
+        .map_err(|error| origin_error(&error.to_string()))?;
+    if archive.is_thin() {
+        return Err(origin_error("stdlib origin cannot bind a thin archive"));
+    }
+    let mut members = archive.members();
+    for (index, worker) in workers.iter().enumerate() {
+        worker.validate()?;
+        let member = members
+            .next()
+            .ok_or_else(|| origin_error("stdlib origin has extra workers"))?
+            .map_err(|error| origin_error(&error.to_string()))?;
+        if member.name() != format!("molt_{index:08}.o").as_bytes() {
+            return Err(origin_error("stdlib origin member order differs"));
+        }
+        let data = member
+            .data(bytes)
+            .map_err(|error| origin_error(&error.to_string()))?;
+        let size = usize::try_from(worker.output.size)
+            .map_err(|_| origin_error("stdlib worker output is too large"))?;
+        let original = data
+            .get(..size)
+            .ok_or_else(|| origin_error("stdlib origin member is shorter than emitted output"))?;
+        if ContentIdentity::of_bytes(original) != worker.output {
+            return Err(origin_error("stdlib origin names different member bytes"));
+        }
+        if data.len() != size {
+            let object =
+                object::File::parse(original).map_err(|error| origin_error(&error.to_string()))?;
+            // ar_archive_writer's Darwin transport aligns members to eight
+            // bytes using newline padding; no other extra bytes are admitted.
+            if object.format() != object::BinaryFormat::MachO
+                || !matches!(
+                    archive.kind(),
+                    object::read::archive::ArchiveKind::Bsd
+                        | object::read::archive::ArchiveKind::Bsd64
+                )
+                || data.len() - size != (8 - size % 8) % 8
+                || data[size..].iter().any(|byte| *byte != b'\n')
+            {
+                return Err(origin_error(
+                    "stdlib member has bytes outside its emitted output",
+                ));
+            }
+        }
+    }
+    if members.next().is_some() {
+        return Err(origin_error("stdlib origin omits archive members"));
+    }
+    Ok(())
+}

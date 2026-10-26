@@ -18,10 +18,12 @@ pub(crate) struct NativeApplicationArtifactOptions<'a> {
     pub(crate) module_context: Option<NativeBackendModuleContext>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeApplicationArtifactResult {
     pub(crate) function_count: usize,
     pub(crate) batch_count: usize,
+    pub(crate) output: crate::backend_process::input::ContentIdentity,
+    pub(crate) workers: Option<Vec<super::super::worker::NativeWorkerOrigin>>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]

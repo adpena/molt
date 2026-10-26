@@ -38,15 +38,23 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
 ```
 
 0. **controller** — a live `integrate` fetches, then runs the driver of main's
-   tip, never the candidate's. It extracts `tools/`, `src/molt`, `config/`,
+   tip by default. It extracts `tools/`, `src/molt`, `src/sitecustomize.py`, `config/`,
    `pyproject.toml`, `uv.lock` and `.python-version` from that commit into
    `<git-common-dir>/molt/controllers/<key>` (the key is the digest of those
    trees, so a landing that changes none of them reuses the extraction), runs
    `uv sync --frozen --no-dev` from main's lock there, and execs the driver as
    `python -I` with `--pinned-controller <key>`. The candidate still supplies
    its gate policy and its tests; a change to the driver takes effect once it
-   lands. `--candidate-controller` runs the checkout's own driver to repair a
-   broken controller on main, and `--dry-run` always runs in-process. Every
+   lands. `--candidate-controller` runs the checkout's own driver for a reviewed
+   controller repair or controller-owned input-contract transition that main's
+   controller cannot prepare. For example, a new native receiver may require
+   linkage metadata that main's older SDK projection does not emit. Pin and
+   review that coherent source and its controller projection first. Adoption
+   runs the same complete selected gates and records `controller: candidate`;
+   it grants no missing capability, skipped gate or failed-proof waiver. There
+   is no automatic retry through candidate code. After the change lands,
+   ordinary invocations again use main's pinned controller, whose tree identity
+   now includes the new projection. `--dry-run` always runs in-process. Every
    progress event names its `controller`. The four most recently used
    controllers stay; an older one retires after a day without use.
 
@@ -109,13 +117,35 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    the rules that claim an entry it changed (`plan_entities`) and every rule it
    changed ([design](../design/landing_queue.md#selecting-by-plan-entry-not-by-the-plan-file-hf-457)).
    A non-zero gate or source/HEAD drift halts
-   the run **before push**. `--extra-gate` only adds arc-specific gates. There is
+   the run **before push**. `--extra-gate` selects an exact command already declared in this plan with
+   prerequisite custody; it does not admit arbitrary commands. There is
    no gate-skipping or alternate-manifest landing route.
    Prerequisite failures are reported together. Content-resolver and version-query
    failures retain the probe command, directory, actual cause and bounded output; they do not
    fabricate an unavailable image path. Relative interpreter aliases preserve the
    selected entrypoint and canonicalize against the declared probe directory
    without changing the validated executable image.
+   Before these gates, selected explicit pytest nodes are admitted with
+   [pytest's own collection](https://docs.pytest.org/en/stable/how-to/usage.html#specifying-which-tests-to-run)
+   under the cohort's interpreter, configuration and guard. Each unfiltered
+   cohort collects only its explicit nodes; file-only targets add no
+   collection process. Filtered cohorts retain their declared selection.
+   Collection failure stops the candidate before compilation. Successful
+   collection never replaces test execution or contributes a passing gate.
+   Unfiltered requests first join overlapping directory/file/node selections,
+   then group independent requests with the same prerequisites, taking the
+   largest declared memory envelope in each cohort. Every contributing owner
+   retains its requirements; a Cargo
+   requirement on one request does not serialize unrelated Python-only work.
+   Literal targets and parameter IDs retain their order within a cohort.
+   Canonical repository-entry admission happens once when the policy loads;
+   cohort selection uses tries without collection or filesystem probing.
+   These remain ordinary gates in the existing executor: its session ceiling,
+   delegated memory and single shared Cargo writer still apply. Extra process
+   startup is an explicit cost to measure against worker utilization.
+   This adds one guarded import pass for the selected modules, with workers
+   disabled, separate collection logs and progress events. Emitted programs
+   perform none of this development validation.
    Declared source, metadata and compilation gates run before the selected
    Python consumer cohorts. A stable linear partition preserves each phase's
    prior order, exact commands, prerequisite unions and de-duplication. This
@@ -124,7 +154,7 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    no gate, build, scheduler or result cache is added. A stale methodology lock
    therefore refuses before a multi-minute Python cohort. Review measurement
    changes and update their existing lock before freezing a candidate.
-   The always gates run first, as one block through the proof executor
+   After node admission, the always gates run as one block through the proof executor
    (`tools/molt_dev_gates.py`). The plan's `executor_max_workers`, its
    `repository-policy` resource class and `molt.host_capacity` at one GiB per
    gate bound the block. Each gate reports in declared order, and the first
@@ -133,15 +163,18 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    `GateFailure` (a `CandidateFailure`); a source refusal or a stop of the
    executor itself stays a plain `DriverError`. The block leaves an executor receipt with
    each gate's duration, peak RSS and outcome at
-   `<git common dir>/molt-integrate/receipts/<commit>.gates.json`. Rule, pytest
-   and Cargo gates then run one at a time. Every gate writes its stdout and stderr to
+   `<git common dir>/molt-integrate/receipts/<commit>.gates.json`. Remaining
+   read-only rule checks run in declared order before the heavy gate block.
+   Cargo and pytest gates then share the executor under the plan's resource
+   limits and delegated memory; Cargo writers stay serialized. Every gate writes its stdout and stderr to
    `<receipt>.d/<run>/gate-<ordinal>.{stdout,stderr}.log` while it runs, and the guard's
    keepalive line shows progress. A passing gate prints one line, and its
    `gate_finished` progress event names both files; a failed gate prints the file
    paths and each stream's bounded end.
-   Gates keep the canonical execution environment, except that bytecode goes
-   to the DX pycache prefix outside the checkout (`molt.dx.scratch_dir`,
-   `"pycache"`). A prefix inside the checkout is refused. No gate result is
+   Managed Python gates select the admitted image's read-only ordinary bytecode
+   namespace before startup and disable bytecode writes. Verifiers use a
+   separate fresh empty namespace; see [checkout provisioning](#checkout-provisioning).
+   No gate result is
    reused: the receipt is evidence, not a cache.
 7. **push** — `git push origin <captured-commit>:refs/heads/main`. Foreign Git
    hooks remain active and both rejection streams are retained. Git identity
@@ -211,11 +244,11 @@ integration speedup.
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
 | `python-oracle` | Resolve + PIN + verify a CPython version before use. `--python-version`, `--no-uv`, `--json`. |
-| `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
+| `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call using the published recovery command or JSON `verify_argv`. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
-| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
-| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
+| `lane start <slug>` | Create `lane/<slug>` at the fetched base in an admissible slot, preferring the checkout selected by `--repo`; write its coordination record and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
+| `lane retire <slug>` | Retire a landed lane's local and remote branches and close its record. Detach a managed slot and retain its checkout state; remove a legacy non-slot lane's worktree and checkout state. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
 | `lane list` | Each lane's tip, base, commits ahead and behind, landed, dirty and provisioned state. `--json`, `--no-fetch`. |
 
 ### Lanes (`lane start | retire | list`)
@@ -258,17 +291,27 @@ out in a slot worktree. A slug is 1 to 64 lower-case letters, digits, `.`,
 `_` or `-`.
 
 - **`lane start <slug>`** fetches `origin/main` (or `--base <ref>`), then
-  takes the first clean, detached slot `<root>/worktrees/slot-NN` beside the
-  main checkout `<root>/molt-src` and runs `git switch --no-track -c
+  prefers the checkout selected by `--repo` when it is a registered, clean,
+  detached, unlocked and non-prunable slot under the selected worktree root.
+  Otherwise it takes the first such slot in path order. It runs `git switch --no-track -c
   lane/<slug>` in it, or adds the next slot with `git worktree add`
   (`molt.custody_layout`: twelve slots, the live worktree limit; another
   layout must pass `--root`). A slot outlives its lanes, so its path-keyed
   Cargo target, sccache keys and checkout inputs stay warm for the next lane
   (HF-491). A detached slot with changes, or a slot path that is no
-  registered worktree, is skipped untouched. It writes the record `logs/agents/lane-<slug>/coordination.json`
+  registered worktree, is skipped untouched. Locked and prunable registrations
+  keep their slot numbers reserved. An active caller is not switched; ordinary
+  slot selection applies. The default family is `<root>/worktrees` beside
+  `<root>/molt-src`; a symlink spelling of `--repo` denotes its resolved checkout.
+  This preference retains the checkout's artifact namespace, not a promise of
+  cache validity: provisioning and each build still validate their inputs.
+  Activating a released slot consumes one active WIP position even though it
+  adds no worktree registration. Detach makes a slot available; the old lane's
+  ref deletion and record completion can finish after a new lane claims it.
+  It writes the record `logs/agents/lane-<slug>/coordination.json`
   in the main checkout through `tools/agent_coordination.py`, with the lane
   worktree as its source checkout. Then it provisions every checkout input
-  (`molt.checkout_provisioning`): the uv environment `<lane>/.venv`, the Acorn
+  (`molt.checkout_provisioning`): the lane's immutable development image, the Acorn
   tree, and the managed Git hooks. An inherited `UV_PROJECT_ENVIRONMENT`
   names the caller's environment, so provisioning drops it. It refuses an
   existing branch, an existing path and an active record. For a branch with
@@ -340,21 +383,77 @@ main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 
 ### Checkout provisioning
 
-`molt.checkout_provisioning` owns a checkout's lock-declared inputs, as
-`uv run` syncs before it runs. `ensure(<input>)` with a current stamp reads
-the stamp and the lock files; otherwise it runs one guarded command under a
-lock in the checkout's Git directory and writes the stamp only after success.
+`molt.checkout_provisioning` owns a checkout's lock-declared inputs.
 `python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
-hand. The memory guard fills unset variables with dx defaults, so the uv
-command names its target environment and the caller's uv cache explicitly;
-otherwise it would sync a managed environment instead, or copy 136 MB from
-the artifact volume where a clone costs 1 s. Toolchain admission ensures a selected tool's `checkout_input` (the
-Acorn tree), so `tools/generators.py`, the proof executor and `integrate`
-provision it on demand. Gate environment selection ensures the checkout's own
-uv environment (`UV_PROJECT_ENVIRONMENT`, else `.venv`) before it validates
-it: a missing environment is built with `uv sync --frozen`, and an unstamped
-one is confirmed by the same command. An explicit `MOLT_VENV` and a borrowed
-main-worktree environment are used as they are.
+hand from an existing bootstrap interpreter. Managed Python uses the existing
+source-build publisher and schema 7 recipe at
+`<artifact_root>/build-environments/development/<checkout_component>/<recipe_sha>`.
+The recipe binds the selected interpreter, lock closure, dependency groups and
+editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`
+currently selects `dev` and `bench`, together with root dependencies.
+
+Selection metadata lives in the checkout's Git control directory, outside the
+image, keyed by interpreter/group intent and the canonical producer contract.
+A producer contract upgrade selects a new record and image without opening or
+repairing a retired generation. An explicit image remains an exact selection
+and must satisfy the current contract. Reading that bounded projection does
+not admit executable bytes. `ensure uv-environment` publishes a missing
+generation under the existing address lock and records the selection only after
+success. Changed declared inputs select a new recipe; published images are never
+synced or repaired in place. Explicit `UV_PROJECT_ENVIRONMENT` must identify a
+matching published image at managed operation boundaries. `MOLT_VENV` (or
+`venv_exec --venv`) explicitly borrows an external environment without converting
+it to managed ownership. There is no implicit checkout `.venv`, active-venv or
+main-worktree fallback. Ordinary source bootstrap `uv sync` remains separate.
+The `tools/dev.py` maintenance commands (`doctor`, `setup`, `update`, and
+`validate`) honor an explicit borrowed environment without selecting or syncing
+a managed image. Installation, the Python version matrix, and managed repository
+gates continue to require managed ownership.
+
+Publication derives ordinary checked-hash caches at optimization levels 0, 1 and
+2 into the image's `bytecode` directory. Admission verifies those bytes against
+captured source and runtime inputs; pytest rewriting remains in memory. The
+verifier starts with `-B -I -X pycache_prefix=<fresh-empty-owned-prefix>` through
+the shared `python_identity_verifier_arguments` authority and retains that
+scratch owner through child closure. It validates the image namespace by
+explicit path without changing `sys.pycache_prefix`. After admission, payloads
+select `-B -X pycache_prefix=<image>/bytecode` before interpreter startup;
+environment variables alone cannot establish this policy under `-I` or `-E`.
+RunContext's serialized environments retain `PYTHONDONTWRITEBYTECODE` alongside
+the selected cache prefix: this includes CLI and developer exports, setup
+defaults, and coordination JSON, shell and PowerShell records. Ordinary Python
+children consume that no-write policy at startup; isolated children still require
+the explicit argv policy above.
+Existing process-state leases retain the selected generation until observed
+process closure, even when a newer generation is selected. Owner/use metadata
+stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
+retirement. Selection or publication alone is not release qualification.
+The selected capture child performs published-manifest admission before final
+input verification; the guardian remains isolated from site packages. Guardian
+startup and prefix lifetime follow the same fresh-namespace rule through
+[existing command and run custody](../agent/PROOF_QUEUE.md).
+Standalone capture probes emit UTF-8 diagnostics before package admission,
+including through redirected Windows streams. Importing the facade leaves the
+caller's streams unchanged.
+
+The core `molt.source_build_environment` authority serves DX, proof capture and
+CLI producers; its schema and requirement owners also live under `molt`.
+Image publication uses the existing durable exact-JSON writer with literal
+UTF-8. Recipe identities and admission compare decoded canonical objects, and
+existing published manifests retain their original bytes.
+
+When a controller provisions another editable checkout, publication selects
+that checkout's reader and binds its source files before launch. The
+existing input custody verifies their generations through publication, and the
+selected process proves that its loaded package belongs to the same checkout.
+The additional cost is one hash pass over the reader's source files, followed
+by metadata checks.
+
+Other checkout inputs keep their existing protocols: current stamps read the
+declared locks; stale inputs run a guarded provisioner under the checkout lock
+and publish a stamp only after success. Toolchain admission ensures a selected
+tool's `checkout_input` (the Acorn tree), so `tools/generators.py`, the proof
+executor and `integrate` provision it on demand.
 
 ### The landing queue (`land`, `queue run`)
 
@@ -377,16 +476,26 @@ process table, decides which runner works.
 The runner always runs main's pinned controller. Each batch takes the
 bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
 
-1. Reset the queue's own sandbox worktree
-   (`<git-common-dir>/molt/landing-sandbox`) to main's tip and merge each
-   requested tip in queue order with `--no-ff`. This preserves source history and
+1. Materialize the candidate in the queue's own sandbox worktree
+   (`<git-common-dir>/molt/landing-sandbox`). If the first requested tip already
+   contains captured main, check it out directly and create a dedicated candidate
+   commit with the same tree and that tip as its parent. This preserves unchanged
+   source files and ignored build products between retries, while citation amendment
+   changes only the candidate commit. Ordinary commit hooks run; an unexpected tree
+   or parent stops the runner. Otherwise start at main. Merge the remaining
+   requested tips in queue order with `--no-ff`. This preserves source history and
    manual merge resolutions, including through the final citation amendment.
    A conflicting lane is aborted back to the preceding candidate and leaves the
    batch with result `conflict`; inability to restore that candidate stops the runner.
-2. Provision the sandbox's declared checkout-scoped inputs (its uv
-   environment and the Acorn tree) through `molt.checkout_provisioning`.
-   Run `integrate` on the sandbox, waiting for the repository integration lock
-   held by any other integrator. The union of the batch's selected gates runs
+2. Run `integrate` on the sandbox, waiting for the repository integration lock
+   held by any other integrator. Its selected toolchain closures prepare only
+   the inputs they require from the candidate's locks. A source-Python
+   environment role selects the sandbox's development image before tool
+   fingerprinting; selected non-Python checkout inputs use the same canonical
+   provisioning authority. Gates without that role and without an explicit
+   environment selector do not create an image. Explicit selectors still
+   validate before any gate. Each launch revalidates its prepared image; the
+   plan is not permission to reuse stale physical admission. The union of the batch's selected gates runs
    once; change citations resolve across the batch.
 3. On publication the runner refreshes shared hooks from published main and
    retires each managed lane. Only completed retirement records `landed` with
@@ -474,21 +583,33 @@ guard.
 
 ```bash
 # Tool call 1 (UNSANDBOXED — the sandbox is precisely what kills daemons):
-python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip \
+python3 tools/molt_dev.py detached-run --name flip_sweep --cwd /tmp/wt_flip --json \
   -- python3 tests/molt_diff.py tests/differential/basic --jobs 4 \
      --json-output /tmp/sweep.json
 
 # Tool call 2+ (any later call; --min-age-s proves it survived teardown):
-python3 tools/molt_dev.py detached-verify --name flip_sweep --min-age-s 30 --json
+# Run the published POSIX command, or pass the returned verify_argv directly
+# to the process launcher without a shell. Do not reconstruct its state root.
 # → running        keep waiting (poll again later)
 # → done, rc=N     read the artifacts; rc≠0 exits 1
 # → died-silent    the hazard-11 group-kill class, reported LOUDLY
 ```
 
-`detached-run` prints the exact verify command to run next: its own
-interpreter and the driver by absolute path, with the `--state-dir` it ran
-under (the landing queue's runners live under
-`.git/molt/landing-queue/runners`).
+`detached-run --json` returns `name`, `pid`, the per-run `state_dir`, and
+`verify_argv`: the argument array for the required later observation. It pins
+this interpreter, its isolation flag, the absolute driver, and the selected
+state root through `--state-dir`, including when launch used the default.
+A later call can therefore use a different temporary environment or working
+directory. The landing queue's runners still live under
+`.git/molt/landing-queue/runners`; state placement and lookup defaults are
+unchanged. Observation does not restart the payload.
+
+The human hint displays the same argv as a POSIX shell command on POSIX hosts
+and a labeled JSON argument array on Windows. Pass the array directly to a
+process launcher; POSIX quoting is not a Windows shell command. The JSON
+`state_dir` names the run's directory, while the argv's `--state-dir` names its
+parent, as required by the verifier. Preserve the returned handoff instead of
+reconstructing either path in a new environment.
 
 Discovered 2026-06-06 (twice in one session): a backgrounded 807-test sweep
 died at harness detach with an **empty log** — block buffering ate every line —
@@ -681,10 +802,10 @@ with `probe`/python rather than `ls`/`stat`.
 # Plan an integration without mutating (dry-run the whole pipeline):
 python3 tools/molt_dev.py integrate --dry-run
 
-# Integrate with a declared content marker and an arc-specific extra gate:
+# Integrate with a content marker and an extra gate already declared by the plan:
 python3 tools/molt_dev.py integrate \
     --marker "contains:runtime/molt-runtime/src/object/ops.rs::SETATTR" \
-    --extra-gate "python3 -m pytest -q tests/test_some_arc.py"
+    --extra-gate "python tools/perf_methodology.py --check"
 
 # Salvage a split staged/unstaged WIP into one recovery commit:
 python3 tools/molt_dev.py secure-wip -m "in-progress alias-root drop fix"

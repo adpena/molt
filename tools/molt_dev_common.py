@@ -48,9 +48,18 @@ def _warn(msg: str) -> None:
 class DriverError(Exception):
     """A loud, fatal driver condition. Carries an exit code (default FAIL)."""
 
-    def __init__(self, message: str, code: int = EXIT_FAIL):
+    def __init__(
+        self,
+        message: str,
+        code: int = EXIT_FAIL,
+        *,
+        maintenance_selection: tuple[Path, ProcessEnvironment] | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        # Only a completed command attaches its captured selection. The CLI
+        # publishes this failure before scheduling its independent maintenance.
+        self.maintenance_selection = maintenance_selection
 
 
 # The landing queue attributes a failure to a candidate only when the
@@ -165,12 +174,12 @@ def _run_fast_captured_bytes(
 
 
 def _gate_launch(
-    cmd: str | tuple[str, ...], env: ProcessEnvironment
+    cmd: str | tuple[str, ...], env: ProcessEnvironment, *, cwd: Path
 ) -> tuple[list[str], ProcessEnvironment]:
     # A compound shell gate can launch Cargo in any arm. Its opaque shell argv
     # cannot trigger direct-Cargo admission, so normalize the inherited wrapper
     # environment before launching it, without parsing shell syntax.
-    env, _policies = normalize_cargo_environment(env)
+    env, _policies = normalize_cargo_environment(env, cwd=cwd)
     if not isinstance(cmd, str):
         return list(cmd), env
     if os.name == "nt":
@@ -183,7 +192,7 @@ def _run_live_gate(
     cmd: str | tuple[str, ...], *, repo: Path, env: ProcessEnvironment
 ) -> int:
     """Run shell syntax or structured argv live through memory custody."""
-    argv, env = _gate_launch(cmd, env)
+    argv, env = _gate_launch(cmd, env, cwd=repo)
     proc = harness_memory_guard.guarded_completed_process(
         argv,
         prefix="MOLT_TEST_SUITE",
@@ -208,7 +217,7 @@ def _run_captured_gate(
     cancelled: Callable[[], bool],
     streams: tuple[Path, Path] | None = None,
     label: str | None = None,
-) -> tuple[int, str, str, int | None]:
+) -> harness_memory_guard.GuardedCompletedProcess[str]:
     """Run one gate: capture its streams, honor cancellation.
 
     The guard owns the child tree; ``cancelled`` lets the scheduler stop a gate
@@ -217,7 +226,7 @@ def _run_captured_gate(
     the outcome holds only each stream's bounded end. ``label`` keeps the
     guard's keepalive line, which a captured run otherwise drops.
     """
-    argv, env = _gate_launch(cmd, env)
+    argv, env = _gate_launch(cmd, env, cwd=repo)
     files: dict[str, object] = {}
     if streams is not None:
         files = {
@@ -237,6 +246,8 @@ def _run_captured_gate(
         progress_label=label,
         **files,
     )
-    peak = proc.peak_total or proc.peak
-    peak_bytes = None if peak is None else peak.rss_kb * 1024
-    return proc.returncode, proc.stdout or "", proc.stderr or "", peak_bytes
+    if not isinstance(proc, harness_memory_guard.GuardedCompletedProcess) or tuple(
+        proc.args
+    ) != tuple(argv):
+        raise DriverError("gate guard returned an unavailable or mismatched outcome")
+    return proc

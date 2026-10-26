@@ -6,7 +6,6 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory
 
 from dataclasses import dataclass
 from contextlib import contextmanager
-import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -21,10 +20,11 @@ from molt.file_publication import (
     resolve_owned_path,
 )
 from molt.portable_paths import portable_path_identity, portable_relative_path
-from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+from molt.process_environment import ProcessEnvironment
 from molt.compiler_distribution import verify_source_inventory
 from molt.toolchain_identity import capture_stable_regular_file
-from tools.git_identity import require_git_object_id
+from tools import git_identity
+from tools.git_identity import read_git_blob_batch, require_git_object_id
 from tools.command_execution import CommandExecutor
 
 
@@ -100,15 +100,6 @@ def run_git_source_python(
         encoding="utf-8",
         timeout=timeout,
     )
-
-
-def immutable_git_environment(
-    environment: Mapping[str, str],
-) -> ProcessEnvironmentBuilder:
-    """A recorded object ID always denotes its original immutable Git object."""
-    env = ProcessEnvironmentBuilder(environment)
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
-    return env
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,7 +202,7 @@ def _run_git_text(
         completed = _COMMANDS.run(
             [str(git), *arguments],
             cwd=repo_root,
-            env=ProcessEnvironment(immutable_git_environment(environment)),
+            env=ProcessEnvironment(git_identity.immutable_git_environment(environment)),
             check=True,
             capture_output=True,
             timeout=_CAPTURE_TIMEOUT_SECONDS,
@@ -225,6 +216,32 @@ def _run_git_text(
     if not output.endswith(b"\n"):
         raise ValueError("Git source snapshot query has invalid framing")
     return output[:-1].decode("utf-8", errors="strict")
+
+
+def read_git_commit_epoch(
+    repo_root: Path,
+    source_sha: str,
+    *,
+    git: Path,
+    environment: Mapping[str, str],
+) -> int:
+    """Read the original exact commit's positive timestamp, never HEAD's clock."""
+    source_sha = require_git_object_id(source_sha, label="release epoch source")
+    record = _run_git_text(
+        git, repo_root, environment, "show", "-s", "--format=%H%n%ct", source_sha, "--"
+    )
+    commit, separator, timestamp = record.partition("\n")
+    if (
+        commit != source_sha
+        or not separator
+        or not timestamp.isascii()
+        or not timestamp.isdecimal()
+        or timestamp.startswith("0")
+    ):
+        raise ValueError(
+            "release epoch requires an exact commit and positive timestamp"
+        )
+    return int(timestamp)
 
 
 def _map_git_blobs(
@@ -242,7 +259,7 @@ def _map_git_blobs(
         _COMMANDS.run(
             [str(git), "cat-file", "--batch"],
             cwd=repo_root,
-            env=ProcessEnvironment(immutable_git_environment(environment)),
+            env=ProcessEnvironment(git_identity.immutable_git_environment(environment)),
             input=request,
             capture_output=True,
             stdout_capture_path=spool,
@@ -252,42 +269,16 @@ def _map_git_blobs(
             timeout=_CAPTURE_TIMEOUT_SECONDS,
         )
         with spool.open("rb") as output:
-            results: list[_BlobResult] = []
-            for relative, mode, blob_oid, declared_size in rows:
-                header = output.readline().rstrip(b"\n").split()
-                if header != [
-                    blob_oid.encode("ascii"),
-                    b"blob",
-                    str(declared_size).encode("ascii"),
-                ]:
-                    raise ValueError(
-                        f"Git source snapshot blob header is invalid: {relative}"
-                    )
-                data = output.read(declared_size)
-                if len(data) != declared_size or output.read(1) != b"\n":
-                    raise ValueError(
-                        f"Git source snapshot blob framing is invalid: {relative}"
-                    )
-                algorithm = {40: "sha1", 64: "sha256"}.get(len(blob_oid))
-                if algorithm is None:
-                    raise ValueError(
-                        f"Git source snapshot blob ID is invalid: {relative}"
-                    )
-                object_hash = hashlib.new(algorithm)
-                object_hash.update(f"blob {declared_size}\0".encode("ascii"))
-                object_hash.update(data)
-                if object_hash.hexdigest() != blob_oid:
-                    raise ValueError(
-                        f"Git source snapshot blob content does not match its object ID: {relative}"
-                    )
-                results.append(
-                    consume(
-                        relative, mode, blob_oid, data, hashlib.sha256(data).hexdigest()
-                    )
+            # strict zip exhausts the shared parser, including its EOF check.
+            blobs = read_git_blob_batch(
+                output, [(blob_oid, size) for _, _, blob_oid, size in rows]
+            )
+            return tuple(
+                consume(relative, mode, blob_oid, data, digest)
+                for (relative, mode, blob_oid, _), (data, digest) in zip(
+                    rows, blobs, strict=True
                 )
-            if output.read(1):
-                raise ValueError("Git source snapshot has trailing blob data")
-            return tuple(results)
+            )
 
 
 def _hash_git_blobs(
@@ -459,7 +450,7 @@ def _capture_git_tree_files(
         listing = _COMMANDS.run(
             command,
             cwd=repo_root,
-            env=ProcessEnvironment(immutable_git_environment(environment)),
+            env=ProcessEnvironment(git_identity.immutable_git_environment(environment)),
             check=True,
             capture_output=True,
             timeout=_CAPTURE_TIMEOUT_SECONDS,

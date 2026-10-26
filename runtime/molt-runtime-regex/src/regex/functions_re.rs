@@ -214,7 +214,7 @@ pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementErro
         ReplacementError::InvalidGroupName { name, position } => {
             let mut encoded_name = Vec::with_capacity(name.len().saturating_mul(3));
             for unit in name {
-                molt_runtime_core::text_storage::push_code_point(&mut encoded_name, unit);
+                molt_obj_model::text_storage::push_code_point(&mut encoded_name, unit);
             }
             let name_ptr = alloc_string(py, &encoded_name);
             if name_ptr.is_null() {
@@ -487,7 +487,7 @@ pub extern "C" fn molt_re_expand_replacement(
         } else {
             let mut bytes = Vec::with_capacity(expanded.len().saturating_mul(2));
             for unit in expanded {
-                molt_runtime_core::text_storage::push_code_point(&mut bytes, unit);
+                molt_obj_model::text_storage::push_code_point(&mut bytes, unit);
             }
             alloc_string(_py, &bytes)
         };

@@ -15,12 +15,15 @@ from molt.compilation_target import target_name
 from molt.compilation_target import admit_target
 from molt.exact_json import canonical_json_bytes
 from molt.rust_toolchain import rust_flag_spans
+from molt.python_interpreter import (
+    PYTHON_LAUNCHER_NAMES,
+    PYTHON_LAUNCHER_SELECTOR,
+    PythonInvocation,
+    parse_python_invocation,
+)
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
 from tools.proof_command_argv import (
-    PythonInvocation,
-    _PY_LAUNCHERS,
-    _PY_SELECTOR,
     _PYTHON_COMMAND,
     _PYTHON_CONSOLE_MODULES,
     _PYTHON_CONSOLE_SCRIPTS,
@@ -31,7 +34,7 @@ from tools.proof_command_argv import (
     _normalized_entrypoint_target,
     _uv_option_values,
     _uv_prefix_and_payload,
-    parse_python_invocation,
+    python_environment_command,
     pytest_run_selections,
 )
 from tools.proof_queue_pkg import cargo_output_layout
@@ -120,7 +123,6 @@ def _proof_command_registry() -> dict[str, object]:
             "id": lane.id,
             "toolchains": tuple(lane.toolchains),
             "cargo_native_units": proof_plan.cargo_native_units(lane.data),
-            "cargo_build_python": proof_plan.cargo_build_python(lane.data),
         }
         entrypoint = _command_entrypoint(argv, root=root)
         if entrypoint is not None:
@@ -150,16 +152,11 @@ def _proof_command_registry() -> dict[str, object]:
                 "ids": [command.id],
                 "toolchains": declared,
                 "cargo_native_units": proof_plan.cargo_native_units(command.data),
-                "cargo_build_python": proof_plan.cargo_build_python(command.data),
             }
         else:
-            if (
-                existing["toolchains"] != declared
-                or existing["cargo_native_units"]
-                != proof_plan.cargo_native_units(command.data)
-                or existing["cargo_build_python"]
-                != proof_plan.cargo_build_python(command.data)
-            ):
+            if existing["toolchains"] != declared or existing[
+                "cargo_native_units"
+            ] != proof_plan.cargo_native_units(command.data):
                 raise ValueError(
                     "identical proof-plan argv has conflicting toolchain authorities: "
                     f"{existing['ids']!r}, {command.id!r}"
@@ -176,10 +173,6 @@ def _proof_command_registry() -> dict[str, object]:
             for name, toolchains in sorted(console_tools.items())
         },
         "policy_executables": policy_executables,
-        "cargo_build_python": {
-            row.id: proof_plan.cargo_build_python(row.data)
-            for row in (*plan.commands, *plan.named_lanes)
-        },
         "plan": plan,
         "entrypoints": entrypoints,
     }
@@ -929,63 +922,6 @@ def cargo_invocation_for_envelope(
     raise ValueError("Cargo policy requires a Cargo payload or declared Python driver")
 
 
-def cargo_build_python_required(envelope: Mapping[str, object]) -> bool:
-    """A build generator is a command-context prerequisite, not a Cargo binary."""
-    requested = envelope.get("toolchains")
-    if not isinstance(requested, list):
-        raise ValueError("Cargo generator selection requires declared toolchains")
-    if "cargo" not in requested:
-        return False
-    owner = envelope.get("delegated")
-    if isinstance(owner, Mapping):
-        return cargo_build_python_required(owner)
-    declarations = []
-    ids = envelope.get("proof_plan_command_ids", [])
-    if not isinstance(ids, list):
-        raise ValueError("Cargo generator selection requires command registration IDs")
-    typed = envelope.get("typed_command")
-    if ids:
-        owners = _proof_command_registry()["cargo_build_python"]
-        assert isinstance(owners, dict)
-        declarations = [owners[str(name)] for name in ids]
-        if len(set(declarations)) != 1:
-            raise ValueError("registered Cargo commands disagree on build Python")
-    elif isinstance(typed, Mapping) and typed.get("family") == "focused-pytest":
-        # Admission carries the one declaration of the proof's Cargo owners
-        # and refuses owners that disagree (HF-179).
-        carried = typed.get("cargo_build_python")
-        if carried is not None and type(carried) is not bool:
-            raise ValueError("focused pytest build Python declaration is malformed")
-        declarations = [carried]
-    declared = declarations[0] if declarations else None
-    closure = envelope.get("process_closure")
-    if isinstance(closure, Mapping) and closure.get("descendants") == "forbidden":
-        if declared is True:
-            raise ValueError(
-                "noncompiling Cargo command declares a build Python generator"
-            )
-        return False
-    invocation = cargo_invocation_for_envelope(envelope)
-    compiling = invocation is None or (
-        not invocation.is_cargo_query
-        and invocation.subcommand
-        in {
-            "build",
-            "check",
-            "clippy",
-            "test",
-            "bench",
-            "run",
-            "doc",
-            "rustdoc",
-            "rustc",
-        }
-    )
-    if declared is True and not compiling:
-        raise ValueError("noncompiling Cargo command declares a build Python generator")
-    return compiling and declared is not False
-
-
 def runtime_gate_arguments(
     envelope: Mapping[str, object],
 ) -> argparse.Namespace | None:
@@ -1166,20 +1102,23 @@ def _execution_source_paths(envelope: Mapping[str, object], *, cwd: Path) -> Pat
 
 
 def _require_external_execution_outputs(
-    *, result_path: Path, effective_source: Path
+    *,
+    result_path: Path,
+    effective_source: Path,
+    require_existing_parent: bool = True,
 ) -> None:
     """Reject proof output authorities that overlap the consumed source tree."""
     if not result_path.is_absolute():
         raise ValueError("proof execution result path must be absolute")
     source = effective_source.resolve(strict=True)
-    output_parent = result_path.parent.resolve(strict=True)
+    output_parent = result_path.parent.resolve(strict=require_existing_parent)
     if output_parent == source or output_parent.is_relative_to(source):
         raise ValueError("proof execution outputs must be outside effective source")
-    cas_root = output_parent / "custody-cas"
-    if cas_root.exists():
-        resolved_cas = cas_root.resolve(strict=True)
-        if resolved_cas == source or resolved_cas.is_relative_to(source):
-            raise ValueError("proof custody CAS must be outside effective source")
+    # Resolve existing symlink prefixes even when the destination is not created.
+    # Submission checks must not create output paths in order to reject them.
+    resolved_cas = (output_parent / "custody-cas").resolve(strict=False)
+    if resolved_cas == source or resolved_cas.is_relative_to(source):
+        raise ValueError("proof custody CAS must be outside effective source")
 
 
 def _canonical_uv_prefix(
@@ -1226,11 +1165,11 @@ def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
         return None
     first = _basename(payload[0])
     selector = (
-        first in _PY_LAUNCHERS
+        first in PYTHON_LAUNCHER_NAMES
         and len(payload) > 1
-        and _PY_SELECTOR.fullmatch(payload[1]) is not None
+        and PYTHON_LAUNCHER_SELECTOR.fullmatch(payload[1]) is not None
     )
-    if not (_PYTHON_COMMAND.fullmatch(first) or first in _PY_LAUNCHERS):
+    if not (_PYTHON_COMMAND.fullmatch(first) or first in PYTHON_LAUNCHER_NAMES):
         return None
     invocation = parse_python_invocation(
         [payload[0], *payload[2:]] if selector else payload
@@ -1408,10 +1347,10 @@ def prepared_named_lane_command(
 
 
 def _locked_python_environment_root(executable: str) -> Path:
-    from molt.cli.source_build_environment_schema import (
+    from molt.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
-    from molt.cli.source_build_environment import _source_build_custody_root
+    from molt.source_build_environment import _source_build_custody_root
 
     selected = Path(executable)
     if not selected.is_absolute() or not selected.is_file():
@@ -1451,8 +1390,7 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
     or declares a node in it: authority is declared per row, so a node row owns
     its file here (the CI coverage gate keeps its own rule). The run executes everything inside a selected
     directory, so it admits the toolchains and native units of every row whose
-    targets lie on, above or inside a selection, and the one Cargo build-Python
-    role those rows declare. Its receipt never stands in for an owner's proof
+    targets lie on, above or inside a selection. Its receipt never stands in for an owner's proof
     (HF-179).
     """
     plan = _proof_command_registry()["plan"]
@@ -1493,23 +1431,10 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
         )
     toolchains: dict[str, None] = {}
     native_units: dict[str, dict[str, None]] = {}
-    build_python: dict[bool | None, list[str]] = {}
     for row in owners:
         toolchains.update(dict.fromkeys(row.toolchains))
         for unit, languages in proof_plan.cargo_native_units(row.data).items():
             native_units.setdefault(unit, {}).update(dict.fromkeys(languages))
-        if "cargo" in row.toolchains:
-            build_python.setdefault(proof_plan.cargo_build_python(row.data), []).append(
-                row.id
-            )
-    if len(build_python) > 1:
-        declared = "; ".join(
-            f"{value} by {', '.join(ids)}" for value, ids in build_python.items()
-        )
-        raise ValueError(
-            "the owners of a focused pytest proof disagree on the Cargo build "
-            f"Python ({declared}); prove their paths separately"
-        )
     return {
         "family": "focused-pytest",
         "selections": list(selections),
@@ -1519,7 +1444,6 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
             unit: [language for language in ("c", "c++") if language in languages]
             for unit, languages in native_units.items()
         },
-        "cargo_build_python": next(iter(build_python), None),
     }
 
 
@@ -1688,6 +1612,7 @@ def _python_bootstrap_command(
     envelope: Mapping[str, object],
     exact: Sequence[str],
     *,
+    environment_root: Path,
     supervised_executable: str | None = None,
 ) -> list[str]:
     """Route Python payload execution through the absolute custody authority."""
@@ -1721,21 +1646,19 @@ def _python_bootstrap_command(
         return exact_values
     bootstrap = _PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True)
     skip_first_line = _interpreter_flag_present(invocation.interpreter_options, "x")
-    # PYTHONDONTWRITEBYTECODE is a queue-owned canonical input, but -E and -I
-    # make the interpreter ignore it while site still imports the repository
-    # startup adapter from custody-inventoried source. -B is the same policy
-    # as an interpreter option, so no admitted payload can drop it.
     interpreter_options = list(invocation.interpreter_options)
-    if not _interpreter_flag_present(interpreter_options, "B"):
-        interpreter_options.insert(0, "-B")
     arguments = list(invocation.arguments)
     payload = [str(bootstrap), invocation.mode, "1" if skip_first_line else "0"]
     if invocation.target is not None:
         payload.append(invocation.target)
     payload.extend(arguments)
-    if supervised_executable is not None:
-        return [supervised_executable, *interpreter_options, *payload]
-    return [*outer, *interpreter_options, *payload]
+    controlled = python_environment_command(
+        [supervised_executable or invocation_argv[0], *interpreter_options, *payload],
+        environment_root=environment_root,
+    )
+    return (
+        controlled if supervised_executable is not None else [*outer, *controlled[1:]]
+    )
 
 
 def _interpreter_flag_present(options: Sequence[str], flag: str) -> bool:
@@ -1776,38 +1699,26 @@ def _supervised_execution_command(
     ``sys.executable`` and ordinary venv discovery while making the kernel root
     the process that actually executes user code.
     """
-    if (
-        cargo_build_python_required(envelope)
-        and cargo_invocation_for_envelope(envelope) is not None
-    ):
-        from molt.cli import cargo_command as cargo_argv
-        from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
-
-        cargo_command = _nested_command(exact) or list(exact)
-        forced = capture_cargo_configuration_inputs(
-            cwd, env=environment, cargo_command=cargo_command
-        )[8]
-        pins = cargo_argv.cargo_environment_force_overrides(
-            [
-                name
-                for name in forced
-                if name in {"MOLT_BUILD_PYTHON", "MOLT_BUILD_PYTHON_SIGNATURE"}
-            ]
-        )
-        separator = (
-            cargo_command.index("--") if "--" in cargo_command else len(cargo_command)
-        )
-        offset = len(exact) - len(cargo_command) + separator
-        exact = [
-            *exact[:offset],
-            *(arg for pin in pins for arg in ("--config", pin)),
-            *exact[offset:],
-        ]
-    if os.name != "nt" or not isinstance(envelope.get("python"), Mapping):
-        return _python_bootstrap_command(envelope, exact), {}
+    if not isinstance(envelope.get("python"), Mapping):
+        return [str(value) for value in exact], {}
     python = located_toolchains.get("python")
     if not isinstance(python, Mapping):
         raise ValueError("proof Python execution has no located runtime")
+    location = python.get("location")
+    root_raw = location.get("prefix") if isinstance(location, Mapping) else None
+    if not isinstance(root_raw, str) or not Path(root_raw).is_absolute():
+        raise ValueError("proof Python execution has no captured environment prefix")
+    environment_root = Path(root_raw)
+    from molt.python_environment_location import environment_bytecode_prefix
+
+    selected_environment = {
+        "PYTHONPYCACHEPREFIX": str(environment_bytecode_prefix(environment_root)),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if os.name != "nt":
+        return _python_bootstrap_command(
+            envelope, exact, environment_root=environment_root
+        ), selected_environment
     selected_raw = python.get("executable")
     base_raw = python.get("base_executable")
     if not isinstance(selected_raw, str) or not isinstance(base_raw, str):
@@ -1816,11 +1727,17 @@ def _supervised_execution_command(
     base = Path(base_raw).resolve(strict=True)
     if os.path.normcase(str(selected)) == os.path.normcase(str(base)):
         return _python_bootstrap_command(
-            envelope, exact, supervised_executable=str(base)
-        ), {}
+            envelope,
+            exact,
+            environment_root=environment_root,
+            supervised_executable=str(base),
+        ), selected_environment
     return _python_bootstrap_command(
-        envelope, exact, supervised_executable=str(base)
-    ), {"__PYVENV_LAUNCHER__": str(selected)}
+        envelope,
+        exact,
+        environment_root=environment_root,
+        supervised_executable=str(base),
+    ), {**selected_environment, "__PYVENV_LAUNCHER__": str(selected)}
 
 
 def _envelope_for_command(
@@ -1874,9 +1791,9 @@ def _envelope_for_command(
             )
     elif _PYTHON_COMMAND.fullmatch(first):
         python = {"kind": "direct", "executable": argv[0]}
-    elif first in _PY_LAUNCHERS:
+    elif first in PYTHON_LAUNCHER_NAMES:
         selector: str | None = None
-        if len(argv) > 1 and _PY_SELECTOR.fullmatch(argv[1]):
+        if len(argv) > 1 and PYTHON_LAUNCHER_SELECTOR.fullmatch(argv[1]):
             selector = argv[1]
         python = {"kind": "py-launcher", "launcher": argv[0], "selector": selector}
     elif first in _PYTHON_CONSOLE_SCRIPTS:
@@ -1903,6 +1820,11 @@ def _envelope_for_command(
             execution_argv=argv if wrapper is not None else None,
         )
     )
+    if wrapper is not None:
+        # A wrapper selects a Python image even when its payload is native.
+        # Declare that dependency in the existing envelope/toolchain closure;
+        # the guardian locates and captures it once before launching argv.
+        toolchains = _toolchain_dependency_closure([*toolchains, "python"])
     guarded_exec = _guarded_exec_invocation(argv)
     nested_command = (
         [str(value) for value in guarded_exec["nested"]]
@@ -1989,11 +1911,6 @@ def _envelope_for_command(
         "typed_command": typed_python,
         "process_closure": process_closure,
     }
-    if cargo_build_python_required(envelope):
-        for name in _toolchain_dependency_closure(["build-python"]):
-            if name not in toolchains:
-                toolchains.append(name)
-        process_closure["toolchains"] = list(toolchains)
     return envelope
 
 

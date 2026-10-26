@@ -263,7 +263,7 @@ fn json_encode_basestring_impl(value: &str, ensure_ascii: bool) -> String {
 fn json_string_line_col(text: &[u8], pos: usize) -> (usize, usize) {
     let mut lineno = 1;
     let mut last_newline = None;
-    for (idx, code) in molt_runtime_core::text_storage::code_points(text).enumerate() {
+    for (idx, code) in molt_obj_model::text_storage::code_points(text).enumerate() {
         if idx >= pos {
             break;
         }
@@ -403,13 +403,13 @@ fn json_scanstring_decode_bytes<'a>(
                             && (0xDC00..=0xDFFF).contains(&low)
                         {
                             let combined = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                            molt_runtime_core::text_storage::push_code_point(decoded, combined);
+                            molt_obj_model::text_storage::push_code_point(decoded, combined);
                             idx += 6;
                             segment_start = idx;
                             continue;
                         }
 
-                        molt_runtime_core::text_storage::push_code_point(decoded, code);
+                        molt_obj_model::text_storage::push_code_point(decoded, code);
                         segment_start = idx;
                         continue;
                     }

@@ -522,13 +522,20 @@ def test_frontend_dormancy_retains_typed_activation_operations(
     d10_audit_result,
 ) -> None:
     res = d10_audit_result
-    for kind in ("is_pending", "state_set", "task_wait"):
+    for kind in ("is_pending", "task_wait"):
         row = res.rows[kind]
         assert row.mapper_maps
         assert not row.frontend_emits
         # D5 observes the frontend only. A typed pass producer is neither an
         # exemption nor evidence that the frontend emitted this spelling.
         assert kind in res.dangerous()["mapped_never_emitted"]
+
+    # Generator completion now emits STATE_SET in the frontend, before its
+    # return terminator. The runtime/frame tests exercise that real producer;
+    # the census must distinguish it from pass-only activation operations.
+    state = res.rows["state_set"]
+    assert state.mapper_maps and state.frontend_emits
+    assert "state_set" not in res.dangerous()["mapped_never_emitted"]
 
 
 @pytest.mark.parametrize(
@@ -537,7 +544,7 @@ def test_frontend_dormancy_retains_typed_activation_operations(
         (
             "mapped_never_emitted",
             "state_set",
-            {},
+            {"frontend_emits": False},
             "This category does not prove dead operations or missing mappings",
         ),
         (

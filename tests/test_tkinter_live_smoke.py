@@ -633,8 +633,11 @@ def test_tcl_headless_value_conversion_matches_cpython() -> None:
         pytest.skip("set MOLT_TK_LIVE_SMOKE=1 to run native Tcl conformance")
 
     from tests.process_guard_common import guarded_temporary_directory
-    from molt.python_interpreter import resolve_target_python_command
-    from molt.target_python import TargetPythonVersion
+    from molt.python_interpreter import (
+        PythonInterpreterRequest,
+        resolve_python_interpreter,
+    )
+    from molt.python_environment_identity import PythonIdentityVerifier
 
     script = textwrap.dedent(
         r"""
@@ -700,13 +703,15 @@ def test_tcl_headless_value_conversion_matches_cpython() -> None:
     # CPython 3.15 AsObj snapshots mutable lists with PyList_AsTuple. Earlier
     # minors traverse the mutable list directly; destructive reentry is not a
     # safe oracle there. Reuse the existing exact interpreter custody owner.
-    reference_python = resolve_target_python_command(
-        TargetPythonVersion(3, 15, 0),
-        override=os.environ.get("MOLT_DIFF_PYTHON"),
-        env=env,
-        cwd=ROOT,
-        prefer_current=True,
-    )
+    with PythonIdentityVerifier() as verifier:
+        reference_python = resolve_python_interpreter(
+            PythonInterpreterRequest(3, 15),
+            verifier=verifier,
+            override=os.environ.get("MOLT_DIFF_PYTHON"),
+            env=env,
+            cwd=ROOT,
+            prefer_current=True,
+        ).command
     reference = run_native_test_process(
         [*reference_python, "-c", script],
         cwd=ROOT,

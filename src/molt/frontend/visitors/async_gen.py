@@ -33,6 +33,7 @@ from molt.frontend._types import (
     AsyncContextExit,
     MoltOp,
     MoltValue,
+    FunctionDefinitionValues,
     ScratchCell,
     TryScope,
     TypeHint,
@@ -45,7 +46,6 @@ from molt.frontend.sema import (
     StatefulLocalsLayout,
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
-    signature_contains_yield,
     stateful_function_frame_plan,
 )
 from molt.compiler_analysis.python_function_kind import FunctionKind
@@ -155,6 +155,15 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         if self._class_ns_stack and self._class_ns_stack[-1].class_node is not None:
             self._emit_class_function_definition(self._class_ns_stack[-1], node)
             return None
+        if self._has_typing_overload_decorator(node):
+            return None
+        definition = self._prepare_function_definition(node)
+        with self._type_parameter_scope(definition.type_parameter_bindings):
+            self._emit_async_function_definition(node, definition)
+
+    def _emit_async_function_definition(
+        self, node: ast.AsyncFunctionDef, definition: FunctionDefinitionValues
+    ) -> None:
         if self.current_func_name == "molt_main":
             new_globals = self._collect_global_decls(node.body)
             self.module_global_mutations.update(new_globals)
@@ -175,7 +184,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 self._record_func_default_specs(poll_func_name, node.args)
             else:
                 return None
-            prev_func = self.current_func_name
             has_return = self._function_contains_return(node)
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
                 node.args
@@ -217,71 +225,75 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     type_hint=frame_plan.function_type_hint(closure_size),
                 )
 
-            prev_state = self._capture_function_state()
-            prev_first_param = self.current_method_first_param
-            self.start_function(
-                poll_func_name,
-                stateful_frame_plan=frame_plan,
-                python_first_arg=self._python_first_positional_arg(node.args),
-                params=["self"],
-                compiler_params={"self"},
-                type_facts_name=func_name,
-                needs_return_slot=has_return,
-            )
-            self._inherit_free_var_import_resolution(free_vars, prev_state)
-            self.current_method_first_param = params[0] if params else None
-            self.global_decls = self._collect_global_decls(node.body)
-            self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
-            assigned = self._collect_assigned_names(node.body)
-            self.del_targets = self._collect_deleted_names(node.body)
-            self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
-            self.unbound_check_names = set(self.scope_assigned)
-            self.in_generator = True
-            self.async_locals_base = frame_plan.async_locals_base
-            if has_closure:
-                self.async_closure_offset = frame_plan.async_closure_offset
-                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
-                self.free_var_hints = free_var_hints
-            for i, arg in enumerate(arg_nodes):
-                self._async_local_offset(arg.arg)
-                if self._hints_enabled():
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is None:
-                        hint = self._annotation_to_hint(arg.annotation)
+            with self._function_state_scope() as prev_state:
+                self.start_function(
+                    poll_func_name,
+                    stateful_frame_plan=frame_plan,
+                    python_first_arg=self._python_first_positional_arg(node.args),
+                    params=["self"],
+                    compiler_params={"self"},
+                    type_facts_name=func_name,
+                    needs_return_slot=has_return,
+                )
+                self._inherit_free_var_import_resolution(free_vars, prev_state)
+                self.current_method_first_param = params[0] if params else None
+                self.global_decls = self._collect_global_decls(node.body)
+                self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
+                assigned = self._collect_assigned_names(node.body)
+                self.del_targets = self._collect_deleted_names(node.body)
+                self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
+                self.unbound_check_names = set(self.scope_assigned)
+                self.in_generator = True
+                self.async_locals_base = frame_plan.async_locals_base
+                if has_closure:
+                    self.async_closure_offset = frame_plan.async_closure_offset
+                    self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                    self.free_var_hints = free_var_hints
+                for i, arg in enumerate(arg_nodes):
+                    self._async_local_offset(arg.arg)
+                    if self._hints_enabled():
+                        hint = self.explicit_type_hints.get(arg.arg)
+                        if hint is None:
+                            hint = self._annotation_to_hint(arg.annotation)
+                            if hint is not None:
+                                self.explicit_type_hints[arg.arg] = hint
                         if hint is not None:
-                            self.explicit_type_hints[arg.arg] = hint
-                    if hint is not None:
-                        self.async_public_hints[arg.arg] = hint
-            self._store_return_slot_for_stateful()
-            self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-            self._init_scope_async_locals(arg_nodes)
-            self._prebox_scope_cell_vars(
-                cell_plan.captured, private_cells=cell_plan.private
-            )
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
-            self._publish_python_frame_context()
-            self._push_qualname(python_definition_name(node), True, qualname=qualname)
-            try:
-                for item in node.body:
-                    self.visit(item)
-                    if isinstance(item, (ast.Return, ast.Raise)):
-                        break
-            finally:
-                self._pop_qualname()
-            self._emit_generator_falloff()
-            self._spill_async_temporaries()
-            closure_size = self._task_closure_size(
-                frame_plan.payload_slots,
-                include_gen_control=frame_plan.include_gen_control,
-            )
-            locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
-            self.resume_function(prev_func)
-            self._restore_function_state(prev_state)
-            self.current_method_first_param = prev_first_param
+                            self.async_public_hints[arg.arg] = hint
+                self._store_return_slot_for_stateful()
+                self.emit(
+                    MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none"))
+                )
+                self._init_scope_async_locals(arg_nodes)
+                self._prebox_scope_cell_vars(
+                    cell_plan.captured, private_cells=cell_plan.private
+                )
+                if self.type_hint_policy == "check":
+                    for arg in arg_nodes:
+                        hint = self.explicit_type_hints.get(arg.arg)
+                        if hint is not None:
+                            self._emit_guard_type(
+                                MoltValue(arg.arg, type_hint=hint), hint
+                            )
+                self._publish_python_frame_context()
+                self._push_qualname(
+                    python_definition_name(node), True, qualname=qualname
+                )
+                try:
+                    for item in node.body:
+                        self.visit(item)
+                        if isinstance(item, (ast.Return, ast.Raise)):
+                            break
+                finally:
+                    self._pop_qualname()
+                self._emit_generator_falloff()
+                self._spill_async_temporaries()
+                closure_size = self._task_closure_size(
+                    frame_plan.payload_slots,
+                    include_gen_control=frame_plan.include_gen_control,
+                )
+                locals_layout = self._stateful_locals_layout(
+                    frame_plan, params, free_vars
+                )
 
             func_hint = frame_plan.function_type_hint(closure_size)
             func_val = MoltValue(self.next_var(), type_hint=func_hint)
@@ -300,13 +312,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 metadata=frame_plan.callable_task_metadata(closure_size),
             )
             self.emit(function_def)
-            func_spill = None
-            if self.in_generator and signature_contains_yield(
-                decorators=node.decorator_list,
-                args=node.args,
-                returns=node.returns,
-            ):
-                func_spill = self._spill_async_value(func_val)
             name_layout = self._collect_callable_name_layout(
                 posonly_params=posonly_names,
                 pos_or_kw_params=pos_or_kw_names,
@@ -328,8 +333,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 kwonly_params=kwonly_names,
                 vararg=vararg,
                 varkw=varkw,
-                default_exprs=node.args.defaults,
-                kw_default_exprs=node.args.kw_defaults,
+                defaults=definition.defaults,
                 docstring=ast.get_docstring(node, clean=False),
                 execution_kind=FunctionKind.ASYNC_GENERATOR,
                 varnames=list(name_layout.varnames),
@@ -338,34 +342,15 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 cellvars=cell_vars,
             )
             self._emit_stateful_locals_register(locals_layout, poll_func_name)
-            if func_spill is not None:
-                func_val = self._reload_async_value(func_spill, func_val.type_hint)
-            self._emit_function_annotate(func_val, node)
+            self._emit_function_annotate(func_val, node, definition.type_params)
+            func_val = self._apply_function_decorators(func_val, definition)
             self._publish_definition_binding(func_name, func_val)
-            if node.decorator_list:
-                decorated = func_val
-                for deco in reversed(node.decorator_list):
-                    decorator_val = self.visit(deco)
-                    if decorator_val is None:
-                        raise FrontendRejection(
-                            Diagnostic.SYNTAX_FORM, "Unsupported decorator"
-                        )
-                    res_val = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_FUNC",
-                            args=[decorator_val, decorated],
-                            result=res_val,
-                        )
-                    )
-                    decorated = res_val
-                func_val = decorated
-                self._publish_definition_binding(func_name, func_val)
             self._record_source_app_callable(
                 func_name,
                 kind=FunctionKind.ASYNC_GENERATOR,
                 symbol=poll_func_name,
                 decorated=bool(node.decorator_list),
+                has_closure=has_closure,
             )
             return None
         func_name = node.name
@@ -378,7 +363,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             self._record_func_default_specs(poll_func_name, node.args)
         else:
             return None
-        prev_func = self.current_func_name
         has_return = self._function_contains_return(node)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
         posonly_names = [arg.arg for arg in posonly]
@@ -419,77 +403,73 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 type_hint=frame_plan.function_type_hint(closure_size),
             )
 
-        prev_state = self._capture_function_state()
-        prev_first_param = self.current_method_first_param
-        self.start_function(
-            poll_func_name,
-            stateful_frame_plan=frame_plan,
-            python_first_arg=self._python_first_positional_arg(node.args),
-            params=["self"],
-            compiler_params={"self"},
-            type_facts_name=func_name,
-            needs_return_slot=has_return,
-        )
-        self._inherit_free_var_import_resolution(free_vars, prev_state)
-        self.current_method_first_param = params[0] if params else None
-        self.global_decls = self._collect_global_decls(node.body)
-        self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
-        assigned = self._collect_assigned_names(node.body)
-        self.del_targets = self._collect_deleted_names(node.body)
-        self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
-        self.unbound_check_names = set(self.scope_assigned)
-        self.async_locals_base = frame_plan.async_locals_base
-        if has_closure:
-            self.async_closure_offset = frame_plan.async_closure_offset
-            self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
-            self.free_var_hints = free_var_hints
-        for i, arg in enumerate(arg_nodes):
-            self._async_local_offset(arg.arg)
-            if self._hints_enabled():
-                hint = self.explicit_type_hints.get(arg.arg)
-                if hint is None:
-                    hint = self._annotation_to_hint(arg.annotation)
+        with self._function_state_scope() as prev_state:
+            self.start_function(
+                poll_func_name,
+                stateful_frame_plan=frame_plan,
+                python_first_arg=self._python_first_positional_arg(node.args),
+                params=["self"],
+                compiler_params={"self"},
+                type_facts_name=func_name,
+                needs_return_slot=has_return,
+            )
+            self._inherit_free_var_import_resolution(free_vars, prev_state)
+            self.current_method_first_param = params[0] if params else None
+            self.global_decls = self._collect_global_decls(node.body)
+            self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
+            assigned = self._collect_assigned_names(node.body)
+            self.del_targets = self._collect_deleted_names(node.body)
+            self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
+            self.unbound_check_names = set(self.scope_assigned)
+            self.async_locals_base = frame_plan.async_locals_base
+            if has_closure:
+                self.async_closure_offset = frame_plan.async_closure_offset
+                self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
+                self.free_var_hints = free_var_hints
+            for i, arg in enumerate(arg_nodes):
+                self._async_local_offset(arg.arg)
+                if self._hints_enabled():
+                    hint = self.explicit_type_hints.get(arg.arg)
+                    if hint is None:
+                        hint = self._annotation_to_hint(arg.annotation)
+                        if hint is not None:
+                            self.explicit_type_hints[arg.arg] = hint
                     if hint is not None:
-                        self.explicit_type_hints[arg.arg] = hint
-                if hint is not None:
-                    self.async_public_hints[arg.arg] = hint
-        self._store_return_slot_for_stateful()
-        self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-        self._init_scope_async_locals(arg_nodes)
-        self._prebox_scope_cell_vars(
-            cell_plan.captured, private_cells=cell_plan.private
-        )
-        if self.type_hint_policy == "check":
-            for arg in arg_nodes:
-                hint = self.explicit_type_hints.get(arg.arg)
-                if hint is not None:
-                    self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
-        self._publish_python_frame_context()
-        self._push_qualname(python_definition_name(node), True, qualname=qualname)
-        try:
-            for item in node.body:
-                self.visit(item)
-        finally:
-            self._pop_qualname()
-        if self.return_label is not None:
-            if not self._ends_with_return_jump():
+                        self.async_public_hints[arg.arg] = hint
+            self._store_return_slot_for_stateful()
+            self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
+            self._init_scope_async_locals(arg_nodes)
+            self._prebox_scope_cell_vars(
+                cell_plan.captured, private_cells=cell_plan.private
+            )
+            if self.type_hint_policy == "check":
+                for arg in arg_nodes:
+                    hint = self.explicit_type_hints.get(arg.arg)
+                    if hint is not None:
+                        self._emit_guard_type(MoltValue(arg.arg, type_hint=hint), hint)
+            self._publish_python_frame_context()
+            self._push_qualname(python_definition_name(node), True, qualname=qualname)
+            try:
+                for item in node.body:
+                    self.visit(item)
+            finally:
+                self._pop_qualname()
+            if self.return_label is not None:
+                if not self._ends_with_return_jump():
+                    res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
+                    self._emit_return_value(res)
+                self._emit_return_label()
+            else:
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_return_value(res)
-            self._emit_return_label()
-        else:
-            res = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-            self._emit_normal_return_terminator(res)
-        self._spill_async_temporaries()
-        locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
-        closure_size = self._task_closure_size(
-            frame_plan.payload_slots,
-            include_gen_control=frame_plan.include_gen_control,
-        )
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
-        self.current_method_first_param = prev_first_param
+                self._emit_normal_return_terminator(res)
+            self._spill_async_temporaries()
+            locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
+            closure_size = self._task_closure_size(
+                frame_plan.payload_slots,
+                include_gen_control=frame_plan.include_gen_control,
+            )
         func_hint = frame_plan.function_type_hint(closure_size)
         func_val = MoltValue(self.next_var(), type_hint=func_hint)
         function_def = MoltOp(
@@ -507,13 +487,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             metadata=frame_plan.callable_task_metadata(closure_size),
         )
         self.emit(function_def)
-        func_spill = None
-        if self.in_generator and signature_contains_yield(
-            decorators=node.decorator_list,
-            args=node.args,
-            returns=node.returns,
-        ):
-            func_spill = self._spill_async_value(func_val)
         name_layout = self._collect_callable_name_layout(
             posonly_params=posonly_names,
             pos_or_kw_params=pos_or_kw_names,
@@ -535,8 +508,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             kwonly_params=kwonly_names,
             vararg=vararg,
             varkw=varkw,
-            default_exprs=node.args.defaults,
-            kw_default_exprs=node.args.kw_defaults,
+            defaults=definition.defaults,
             docstring=ast.get_docstring(node, clean=False),
             execution_kind=FunctionKind.ASYNC,
             varnames=list(name_layout.varnames),
@@ -545,32 +517,15 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             cellvars=cell_vars,
         )
         self._emit_stateful_locals_register(locals_layout, poll_func_name)
-        if func_spill is not None:
-            func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        self._emit_function_annotate(func_val, node)
+        self._emit_function_annotate(func_val, node, definition.type_params)
+        func_val = self._apply_function_decorators(func_val, definition)
         self._publish_definition_binding(func_name, func_val)
-        if node.decorator_list:
-            decorated = func_val
-            for deco in reversed(node.decorator_list):
-                decorator_val = self.visit(deco)
-                if decorator_val is None:
-                    raise FrontendRejection(
-                        Diagnostic.SYNTAX_FORM, "Unsupported decorator"
-                    )
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC", args=[decorator_val, decorated], result=res
-                    )
-                )
-                decorated = res
-            func_val = decorated
-            self._publish_definition_binding(func_name, func_val)
         self._record_source_app_callable(
             func_name,
             kind=FunctionKind.ASYNC,
             symbol=poll_func_name,
             decorated=bool(node.decorator_list),
+            has_closure=has_closure,
         )
         return None
 

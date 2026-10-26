@@ -5,6 +5,7 @@ from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
 import datetime as dt
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from tests.integration_driver_fixture import (
     clone_tree,
     copy_driver_trees,
+    isolated_checkout_artifacts as isolated_checkout_artifacts,
     shared_session_tree,
 )
 
@@ -104,11 +106,15 @@ def _integration_seed(
 
 
 def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    # These repositories run generic shell gates, not the caller's venv: the
-    # session's dx environment names this checkout's managed env, which may
-    # not exist, and integrate refuses an explicit selection that is broken.
+    # These temporary repositories borrow the test runner's environment. Merely
+    # deleting UV_PROJECT_ENVIRONMENT is insufficient: the outer guard supplies
+    # its own checkout's managed default before launching the temporary driver.
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
+    # The guard reintroduces DX defaults. These shell-policy fixtures borrow
+    # their already-running interpreter; they must never sync a temporary
+    # editable checkout into the parent test environment.
+    monkeypatch.setenv("MOLT_VENV", sys.prefix)
     # Clone (copy-on-write), never hardlink: each test mutates refs and objects.
     clone_tree(seed / "remote.git", tmp_path / "remote.git")
     clone_tree(seed / "work", tmp_path / "work")
@@ -120,13 +126,21 @@ def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 
 @pytest.fixture()
-def repo(tmp_path: Path, _seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def repo(
+    tmp_path: Path,
+    _seed: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_checkout_artifacts: Path,
+) -> Path:
     return _copy_repo(tmp_path, _seed, monkeypatch)
 
 
 @pytest.fixture()
 def driver_repo(
-    tmp_path: Path, _integration_seed: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    _integration_seed: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_checkout_artifacts: Path,
 ) -> Path:
     return _copy_repo(tmp_path, _integration_seed, monkeypatch)
 
@@ -162,7 +176,37 @@ def test_check_stale_claim_is_reclaimable(repo: Path) -> None:
     assert res.returncode == 0 and "STALE" in res.stdout
 
 
-def test_claim_free_lane_lands(driver_repo: Path) -> None:
+def test_claim_free_lane_lands(
+    tmp_path: Path,
+    _integration_seed: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    from molt import dx
+    from tests.process_guard_common import guard_custody_env
+
+    foreign_source = tmp_path / "foreign-source"
+    foreign_source.mkdir()
+    foreign_artifacts = tmp_path / "foreign-artifacts"
+    foreign_artifacts.mkdir()
+    sentinel = foreign_artifacts / "sentinel"
+    sentinel.write_bytes(b"foreign checkout state")
+    foreign_env = dx.RunContext(foreign_source).canonical_env(
+        {dx.ARTIFACT_ROOT_ENV: str(foreign_artifacts)}, create_dirs=False
+    )
+    custody = guard_custody_env()
+    for key in dx.MOLT_ROOT_ENV_KEYS:
+        monkeypatch.setenv(key, foreign_env[key])
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(foreign_artifacts / "build"))
+    monkeypatch.setenv(
+        "MOLT_BACKEND_DAEMON_SOCKET_DIR", str(foreign_artifacts / "sockets")
+    )
+    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+        monkeypatch.setenv(key, str(tmp_path / "missing-parent-interpreter"))
+    # Admission must isolate mutable state while borrowing the running Python.
+    # Build the immutable seed first, then request the mutable clone only after
+    # poisoning the parent selectors; the actual claim still uses main's driver.
+    driver_repo = request.getfixturevalue("driver_repo")
     res = _run(driver_repo, "L1", "--claim", "--agent", "me", "--note", "go")
     assert res.returncode == 0, res.stdout
     assert "CLAIMED L1 as me" in res.stdout
@@ -170,6 +214,13 @@ def test_claim_free_lane_lands(driver_repo: Path) -> None:
     assert "| L1 | me |" in _git(
         driver_repo, "show", "origin/main:docs/agent/CLAIMS.md"
     )
+    assert dx.artifact_root(driver_repo, os.environ) == tmp_path / "artifacts"
+    assert sentinel.read_bytes() == b"foreign checkout state"
+    assert sorted(path.name for path in foreign_artifacts.iterdir()) == ["sentinel"]
+    assert os.environ["MOLT_VENV"] == sys.prefix
+    assert "MOLT_BUILD_STATE_DIR" not in os.environ
+    assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in os.environ
+    assert guard_custody_env() == custody
 
 
 def test_claim_held_lane_refused(repo: Path) -> None:

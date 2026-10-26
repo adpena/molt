@@ -1,6 +1,6 @@
 """Release-lane source and projection oracles; no target execution claims."""
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -155,3 +155,22 @@ def test_lane_codegen_selection_is_explicit(backend, profile, selected):
         if backend == "wasm"
         else ("native-backend",)
     )
+
+
+def test_explicit_lane_selection_is_policy_ordered_and_never_an_implicit_full_matrix():
+    inventory = capture_release_lanes(ROOT)
+    assert inventory.require_selection() == inventory.lanes
+    chosen = (inventory.lanes[-1], inventory.lanes[0])
+    assert inventory.require_selection(chosen) == (
+        inventory.lanes[0],
+        inventory.lanes[-1],
+    )
+    for invalid in (
+        (),
+        list(chosen),
+        (chosen[0], chosen[0]),
+        ("native",),
+        (replace(chosen[0], runtime_profile="not-declared"),),
+    ):
+        with pytest.raises(ValueError, match="nonempty, unique and declared"):
+            inventory.require_selection(invalid)

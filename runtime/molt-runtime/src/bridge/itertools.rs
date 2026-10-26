@@ -99,3 +99,11 @@ pub fn alloc_itertools_class(
 pub fn alloc_kwd_mark(_py: &CoreGilToken) -> u64 {
     crate::with_gil_entry_nopanic!(py, { crate::state::cache::alloc_kwd_mark(py) })
 }
+
+/// Read an iterator's declaring class while the caller owns it under the GIL.
+///
+/// # Safety
+/// `ptr` must be a live runtime object.
+pub unsafe fn object_class_bits(ptr: *mut u8) -> u64 {
+    unsafe { crate::object::object_class_bits(ptr) }
+}

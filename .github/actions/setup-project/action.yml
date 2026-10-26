@@ -42,8 +42,8 @@ inputs:
     default: "false"
   target-pythons:
     description: >-
-      Install every supported target CPython line (molt.target_python) during
-      setup; requires sync, because the authority imports project dependencies
+      Install every supported target CPython line (molt.target_python_policy)
+      during setup; requires the synchronized repository environment
     default: "false"
   sync:
     description: Synchronize project dependencies with uv
@@ -53,6 +53,9 @@ inputs:
     default: "false"
   sync-dev:
     description: Include uv's development dependency group
+    default: "false"
+  sync-project-groups:
+    description: Select exactly the canonical DxProject development groups after Python bootstrap
     default: "false"
   sync-groups:
     description: Optional comma-separated dependency groups
@@ -77,7 +80,8 @@ runs:
     # guard's scratch and every child's TMPDIR here. Without it a checkout not
     # named molt-src is its own custody root and test temp lands inside the
     # source tree, where runtime fixtures reject it. It runs first so uv sync
-    # below uses this venv.
+    # below uses this venv. It is an externally provisioned CI bootstrap,
+    # explicitly borrowed by launch wrappers, not a managed development image.
     - name: Configure verified ephemeral custody
       shell: pwsh
       run: |
@@ -99,6 +103,7 @@ runs:
         New-Item -ItemType Directory -Force -Path $custodyRoot | Out-Null
         "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "MOLT_VENV=$(Join-Path $custodyRoot 'venv')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         "RUSTUP_AUTO_INSTALL=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
     - name: Normalize and validate bootstrap inputs
@@ -122,6 +127,7 @@ runs:
         INPUT_SYNC_FROZEN: ${{ inputs.sync-frozen }}
         INPUT_SYNC_DEV: ${{ inputs.sync-dev }}
         INPUT_SYNC_GROUPS: ${{ inputs.sync-groups }}
+        INPUT_SYNC_PROJECT_GROUPS: ${{ inputs.sync-project-groups }}
       run: bash .github/actions/setup-project/normalize-inputs.sh "$GITHUB_OUTPUT"
 
     # Only main saves caches. Branches, pull requests and dispatches restore
@@ -270,11 +276,21 @@ runs:
         SYNC_FROZEN: ${{ steps.inputs.outputs.sync-frozen }}
         SYNC_DEV: ${{ steps.inputs.outputs.sync-dev }}
         SYNC_GROUPS: ${{ steps.inputs.outputs.sync-groups }}
+        SYNC_PROJECT_GROUPS: ${{ steps.inputs.outputs.sync-project-groups }}
       run: |
         set -euo pipefail
         args=(sync)
         [[ "$SYNC_FROZEN" != "true" ]] || args+=(--frozen)
         [[ "$SYNC_DEV" != "true" ]] || args+=(--dev)
+        if [[ "$SYNC_PROJECT_GROUPS" == "true" ]]; then
+          # python3 is the exact alias verified by provision-python.sh above.
+          # No site or installed dependencies are needed to read this authority.
+          project_groups=$(python3 -I -S -B -c 'import sys; from pathlib import Path; root = Path.cwd(); sys.path.insert(0, str(root / "src")); from molt.dx import DxProject; groups = DxProject(root).dependency_groups(); assert all("\n" not in group and "\r" not in group for group in groups), "project dependency group contains a line break"; sys.stdout.buffer.write(("\n".join(groups) + "\n").encode("utf-8"))') || exit "$?"
+          args+=(--no-default-groups)
+          while IFS= read -r group; do
+            [[ -z "$group" ]] || args+=(--group "$group")
+          done <<< "$project_groups"
+        fi
         if [[ -n "$SYNC_GROUPS" ]]; then
           IFS=',' read -r -a groups <<< "$SYNC_GROUPS"
           for group in "${groups[@]}"; do
@@ -298,5 +314,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        read -r -a versions <<< "$(uv run --no-sync python3 -c 'from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; print(" ".join(versions))')"
+        catalog=$(uv run --no-sync python3 -c 'import sys; from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; sys.stdout.buffer.write((" ".join(versions) + "\n").encode("utf-8"))') || exit "$?"
+        if [[ -z "$catalog" ]]; then
+          echo "supported target CPython catalog is empty" >&2
+          exit 2
+        fi
+        read -r -a versions <<< "$catalog"
         UV_PYTHON_DOWNLOADS=manual uv python install "${versions[@]}"

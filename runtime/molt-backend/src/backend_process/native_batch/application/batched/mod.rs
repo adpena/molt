@@ -30,7 +30,7 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
     }
 
     let tmp_dir = super::super::create_native_batch_temp_dir()?;
-    let compile_result = (|| -> io::Result<()> {
+    let compile_result = (|| -> io::Result<(crate::backend_process::input::ContentIdentity, Vec<super::super::NativeWorkerOrigin>)> {
         let batch_specs = jobs::materialize_native_application_batch_jobs(
             &tmp_dir,
             plan,
@@ -40,7 +40,7 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
         run::run_native_application_batches(output_path, &batch_specs, options.log_prefix)
     })();
 
-    super::super::finish_native_batch_temp_dir(
+    let (output, workers) = super::super::finish_native_batch_temp_dir(
         &tmp_dir,
         "native application batch temp dir",
         compile_result,
@@ -55,5 +55,7 @@ pub(crate) fn compile_batched_native_application_archive_to_path(
     Ok(NativeApplicationArtifactResult {
         function_count,
         batch_count: total_batches,
+        workers: Some(workers),
+        output,
     })
 }

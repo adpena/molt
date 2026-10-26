@@ -6,7 +6,8 @@ use std::{
 use super::super::paths::{
     stdlib_cache_archive_digest_sidecar_path, stdlib_cache_count_sidecar_path,
     stdlib_cache_derived_sidecar_paths, stdlib_cache_key_sidecar_path,
-    stdlib_cache_manifest_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
+    stdlib_cache_manifest_sidecar_path, stdlib_cache_origin_sidecar_path,
+    stdlib_cache_partition_manifest_sidecar_path,
 };
 
 /// Only a publisher or a locked admission decision owns invalidation.
@@ -18,6 +19,7 @@ pub(in super::super) fn remove_shared_stdlib_cache_artifacts(stdlib_path: &Path)
         stdlib_cache_manifest_sidecar_path(stdlib_path),
         stdlib_cache_partition_manifest_sidecar_path(stdlib_path),
         stdlib_cache_archive_digest_sidecar_path(stdlib_path),
+        stdlib_cache_origin_sidecar_path(stdlib_path),
     ];
     remove_generation_paths(
         paths
@@ -81,6 +83,7 @@ mod tests {
                     Some("key"),
                     Some("manifest"),
                     "partition",
+                    None,
                     None,
                 )
                 .expect("publish replacement metadata");

@@ -140,20 +140,24 @@ pub(crate) fn next_format_markup<'a>(
     }))
 }
 
-fn format_name_index(text: &[u8]) -> Result<Option<usize>, &'static str> {
-    let mut codes = molt_runtime_core::text_storage::code_points(text).peekable();
+fn format_name_index(
+    data: &molt_obj_model::unicode::UnicodeData,
+    text: &[u8],
+) -> Result<Option<usize>, &'static str> {
+    let mut codes = molt_obj_model::text_storage::code_points(text).peekable();
     // Consume the decimal prefix before deciding whether this is a name:
     // overflow is an error even when a nondecimal suffix follows it.
-    let index = parse_format_integer(&mut codes).map_err(|error| match error {
+    let index = parse_format_integer(data, &mut codes).map_err(|error| match error {
         FormatParseError::Diagnostic(message) => message,
         FormatParseError::InvalidSpecifier => unreachable!("decimal parser diagnostic"),
     })?;
     Ok(if codes.next().is_none() { index } else { None })
 }
 
-pub(crate) fn split_format_field_name(
-    text: &[u8],
-) -> Result<(FormatName<'_>, usize), &'static str> {
+pub(crate) fn split_format_field_name<'text>(
+    data: &molt_obj_model::unicode::UnicodeData,
+    text: &'text [u8],
+) -> Result<(FormatName<'text>, usize), &'static str> {
     let mut offset = 0;
     while offset < text.len() && !matches!(text[offset], b'.' | b'[') {
         next_format_code(text, &mut offset);
@@ -162,13 +166,14 @@ pub(crate) fn split_format_field_name(
     Ok((
         FormatName {
             text: first,
-            index: format_name_index(first)?,
+            index: format_name_index(data, first)?,
         },
         offset,
     ))
 }
 
 pub(crate) fn next_format_lookup<'a>(
+    data: &molt_obj_model::unicode::UnicodeData,
     text: &'a [u8],
     offset: &mut usize,
 ) -> Result<Option<FormatLookup<'a>>, &'static str> {
@@ -201,7 +206,7 @@ pub(crate) fn next_format_lookup<'a>(
     let index = if is_attribute {
         None
     } else {
-        format_name_index(name)?
+        format_name_index(data, name)?
     };
     if name.is_empty() {
         return Err("Empty attribute in format string");
@@ -271,7 +276,8 @@ fn resolve_format_field(
     kwargs_bits: u64,
     state: &mut FormatState,
 ) -> Option<u64> {
-    let (first, mut offset) = match split_format_field_name(field_name) {
+    let data = unicode_data(py);
+    let (first, mut offset) = match split_format_field_name(data, field_name) {
         Ok(first) => first,
         Err(message) => return raise_exception(py, "ValueError", message),
     };
@@ -349,7 +355,7 @@ fn resolve_format_field(
             .unwrap_or(std::ptr::null_mut()),
     );
     loop {
-        let lookup = match next_format_lookup(field_name, &mut offset) {
+        let lookup = match next_format_lookup(data, field_name, &mut offset) {
             Ok(Some(lookup)) => lookup,
             Ok(None) => break,
             Err(message) => return raise_exception(py, "ValueError", message),
@@ -611,6 +617,7 @@ pub extern "C" fn molt_string_format(val_bits: u64, spec_bits: u64) -> u64 {
                 return molt_str_from_obj(val_bits);
             }
             let spec = match parse_format_spec(
+                unicode_data(_py),
                 spec_bytes,
                 crate::object::ops_sys::runtime_target_at_least(_py, 3, 14),
             ) {

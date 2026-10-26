@@ -1398,7 +1398,6 @@ def test_push_sends_the_resolved_commit_over_limas_ssh_and_checks_it_out(
         "-C",
         str(tmp_path / "repo"),
         "push",
-        "--force",
         "--no-verify",
         "--quiet",
         "lima-molt-linux:molt-main",
@@ -1467,7 +1466,7 @@ def test_push_reports_a_refused_checkout_with_the_exact_commit(
 def test_push_confines_every_ref_to_the_host_namespace(
     ref: str, full: str | None
 ) -> None:
-    """A-3: a forced push can move only a branch the host owns."""
+    """A-3: transport refs cannot name a guest branch."""
     assert linux_vm.push_ref(ref) == full
 
 
@@ -1691,6 +1690,37 @@ def test_push_moves_a_commit_into_the_guest_clone_through_real_git(
     )
     assert run_git("-C", str(clone), "rev-parse", "refs/heads/host/main") == head
     assert run_git("-C", str(clone), "rev-parse", "refs/heads/main") == guest_main
+
+
+def test_push_preserves_divergent_guest_commits_before_checkout(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    host, repo, clone, head = git_guest(definitions, tmp_path)
+    common = dict(
+        rev="HEAD",
+        ref=linux_vm.DEFAULT_PUSH_REF,
+        definitions=definitions,
+        host=host,
+        repo=repo,
+    )
+    assert linux_vm.push("molt-linux", checkout=False, **common) == 0
+    receive_ref = linux_vm.push_ref(linux_vm.DEFAULT_PUSH_REF)
+    assert receive_ref is not None
+    run_git("-C", str(clone), "checkout", "-q", "host/head")
+    (clone / "guest.txt").write_text("guest work\n", encoding="utf-8")
+    run_git("-C", str(clone), "add", "guest.txt")
+    run_git("-C", str(clone), "commit", "-qm", "guest work")
+    guest_head = run_git("-C", str(clone), "rev-parse", "HEAD")
+    run_git("-C", str(clone), "checkout", "--detach", "-q")
+    (repo / "host.txt").write_text("host work\n", encoding="utf-8")
+    run_git("-C", str(repo), "add", "host.txt")
+    run_git("-C", str(repo), "commit", "-qm", "host work")
+    host.calls.clear()
+    assert linux_vm.push("molt-linux", checkout=True, **common) == linux_vm.EXIT_FAIL
+    assert run_git("-C", str(clone), "rev-parse", receive_ref) == guest_head
+    assert run_git("-C", str(clone), "rev-parse", "HEAD") == guest_head
+    assert (clone / "guest.txt").read_text(encoding="utf-8") == "guest work\n"
+    assert not [call for call in host.calls if call[0] == "limactl" and "shell" in call]
 
 
 @pytest.mark.parametrize(
@@ -2372,27 +2402,40 @@ def test_the_local_host_sees_no_guard_where_none_runs(
 
 
 def test_the_local_host_sees_the_real_memory_guard_around_it() -> None:
-    """The guard authority against the real guard (tools/memory_guard.py).
+    """The real Host adapter transports a guarded child's result and environment.
 
-    A child under the guard asks `LocalHost(os.environ).enclosing_guard()`.
-    The oracle is the guard itself: it marks its child with its own pid (the
-    test helper runs the guard in this process), and the answer names that
-    live pid.
+    No Lima installation is needed. The child checks its guard's kernel
+    liveness while it runs; exact streams and a nonzero status prove execution.
+    Retirement-order tests can model Host commands without paying for another
+    real guard per simulated Lima/lsof response.
     """
     code = (
-        "import os, sys\n"
+        "import json, os, sys\n"
         f"sys.path.insert(0, {str(ROOT)!r})\n"
         "from tools import linux_vm\n"
-        "print(linux_vm.LocalHost(os.environ).enclosing_guard())\n"
-        "print(os.environ['MOLT_MEMORY_GUARD_PID'])\n"
+        "from molt.process_model import pid_alive\n"
+        "pid = os.environ['MOLT_MEMORY_GUARD_PID']\n"
+        "print(json.dumps({'guard': linux_vm.LocalHost(os.environ).enclosing_guard(),\n"
+        "                  'pid': pid, 'live': pid_alive(int(pid)),\n"
+        "                  'value': os.environ['RETIREMENT_ADAPTER_PROBE']}))\n"
+        "print('adapter stderr', file=sys.stderr)\n"
+        "sys.exit(7)\n"
     )
-    completed = run_guarded_test_process(
-        [sys.executable, "-B", "-c", code], cwd=ROOT, timeout=120.0
+    environment = {**os.environ, "RETIREMENT_ADAPTER_PROBE": "original"}
+    host = linux_vm.LocalHost(environment)
+    completed = host.run(
+        [sys.executable, "-B", "-c", code],
+        timeout=120.0,
+        env_overrides={"RETIREMENT_ADAPTER_PROBE": "selected"},
     )
-    assert completed.returncode == 0, completed.stderr
-    answer, pid = completed.stdout.strip().splitlines()[-2:]
-    assert pid_alive(int(pid)), "the guard that marked the child runs"
-    assert answer == f"a Molt memory guard (pid {pid})"
+    assert completed.returncode == 7, completed.stderr
+    assert completed.stderr == "adapter stderr\n"
+    observed = json.loads(completed.stdout)
+    assert observed["live"] is True, "the guard that marked the child runs"
+    assert observed["guard"] == f"a Molt memory guard (pid {observed['pid']})"
+    assert observed["value"] == "selected"
+    assert environment["RETIREMENT_ADAPTER_PROBE"] == "original"
+    assert host.environment["RETIREMENT_ADAPTER_PROBE"] == "original"
 
 
 # Prints the repository files `tools.memory_guard` loads from `root` to run

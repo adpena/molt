@@ -1479,17 +1479,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BUILD_PYTHON",
       "output_neutral": false,
       "owner": "src/molt/python_runtime_admission.py",
-      "summary": "Python interpreter for the runtime build identity probe and Cargo's stdlib table generators; unset falls back to PYTHON, then python3 (python on Windows), and molt sets it to its own interpreter for nested Cargo builds.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_BUILD_PYTHON_SIGNATURE",
-      "output_neutral": false,
-      "owner": "src/molt/cli/runtime_build_python.py",
-      "summary": "Derived content digest from the admitted runtime build Python identity, bound to the runtime Cargo producer after initial identity capture; the shared build-script Python helper watches it so same-path interpreter or library changes regenerate tables. It is validated against fresh Python custody and is not an independent semantic input or an end-user runtime cost.",
+      "summary": "Python interpreter selected by explicit development runtime-admission tools and compiler timing commands; unset falls back to PYTHON, then python3 (python on Windows). Rust compiler/runtime artifacts use pinned generated facts and do not select or depend on a build Python.",
       "values": []
     },
     {
@@ -3859,6 +3849,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_EMISSION_SCOPE",
+      "output_neutral": false,
+      "owner": "src/molt/cli/backend_compile.py",
+      "summary": "Closed-supervisor policy nonce correlated with optional compiler emission capture; a hint, never admission. Forwarded only for capture and excluded from semantic code-cache keys and emitted runtimes.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "0",
       "kind": "bool",
@@ -4438,6 +4438,16 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
       "summary": "Exactly 1 (after trim) makes the LLVM backend write the module's pre-optimization IR to llvm/before_opt.ll under the debug artifact root, and the molt CLI then streams backend stderr; any other value writes nothing.",
+      "values": []
+    },
+    {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_LLVM_LINK_PLAN",
+      "output_neutral": false,
+      "owner": "src/molt/llvm_link_plan.py",
+      "summary": "Canonical native LLVM dependency plan projected from the admitted SDK into Cargo; records target, ordered exact library files and individual linkage kinds, and the native receiver refuses an absent or mismatched plan rather than rediscovering SDK dependencies.",
       "values": []
     },
     {
@@ -5140,7 +5150,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_PROOF_CHILD_CUSTODY_JSON",
       "output_neutral": false,
       "owner": "tools/proof_queue_pkg/python_child_custody.py",
-      "summary": "JSON policy (schema molt.proof-child-custody.v1) that names the toolchain closure a proof child may execute; the guarded proof runner sets it, and the Python child custody bootstrap installs its audit hook only when the value is present.",
+      "summary": "JSON policy (schema molt.proof-child-custody.v2) that names the toolchain closure a proof child may execute; the guarded proof runner sets it, and the Python child custody bootstrap installs its audit hook only when the value is present.",
       "values": []
     },
     {
@@ -7523,8 +7533,8 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_UV_PROJECT_PURPOSE",
       "output_neutral": false,
-      "owner": "src/molt/dx.py",
-      "summary": "Purpose label that, with MOLT_UV_PROJECT_PYTHON, names the durable managed uv project environment under the artifact root when UV_PROJECT_ENVIRONMENT is unset; tools/run_context_env.py --dx and tools/uv_project_env.py set it; default dx.",
+      "owner": "src/molt/checkout_provisioning.py",
+      "summary": "Purpose label for immutable managed development-image selection; tools/uv_project_env.py sets it; default dx.",
       "values": []
     },
     {
@@ -7533,8 +7543,8 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_UV_PROJECT_PYTHON",
       "output_neutral": false,
-      "owner": "src/molt/dx.py",
-      "summary": "Python version label that, with MOLT_UV_PROJECT_PURPOSE, names the durable managed uv project environment under the artifact root when UV_PROJECT_ENVIRONMENT is unset; tools/run_context_env.py --dx and tools/uv_project_env.py set it; default 3.12.",
+      "owner": "src/molt/checkout_provisioning.py",
+      "summary": "Python version selection for the immutable managed development image, unless the caller supplies an explicit Python selection; tools/uv_project_env.py sets it; unset uses the checkout .python-version pin.",
       "values": []
     },
     {
@@ -7564,7 +7574,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_VENV",
       "output_neutral": false,
       "owner": "tools/venv_exec.py",
-      "summary": "Path to the repository virtualenv that tools/venv_exec.py runs pinned tools from, resolved against the repo root when relative; tools/molt_dev.py injects it for gates (own .venv, then the main worktree .venv) and the proof-queue CLI reads it as the last fallback for a warm project environment; unset means <repo>/.venv.",
+      "summary": "Explicit borrowed external virtual environment for tools/venv_exec.py and proof-tool execution; relative paths resolve against the repository root. Without this override, wrappers use UV_PROJECT_ENVIRONMENT or the selected immutable development image.",
       "values": []
     },
     {

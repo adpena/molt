@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 import functools
 import os
 import re
 
 from molt.cli.build_request import BuildProfile
-from molt.cli.runtime_paths import _cargo_profile_dir
 
 _CARGO_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -125,7 +126,7 @@ def _active_artifact_profile_dirs() -> tuple[str, ...]:
     seen: set[str] = set()
     profile_dirs: list[str] = []
     for profile in profiles:
-        profile_dir = _cargo_profile_dir(profile)
+        profile_dir = cargo_profile_directory(profile)
         if profile_dir in seen:
             continue
         seen.add(profile_dir)

@@ -12,7 +12,12 @@ from typing import Any, Generator, Mapping
 import zipfile
 
 from molt import file_publication
-from molt.toolchain_identity import StableRegularFileIdentity
+from molt.toolchain_identity import (
+    StableRegularFileError,
+    StableRegularFileIdentity,
+    iter_stable_regular_file_chunks,
+    open_stable_regular_file,
+)
 
 
 def _atomic_write_text(
@@ -20,20 +25,40 @@ def _atomic_write_text(
     text: str,
     *,
     durability: file_publication.PublicationDurability = file_publication.PublicationDurability.DURABLE,
+    skip_if_unchanged: bool = False,
 ) -> None:
-    file_publication.atomic_write_bytes(
-        path, text.encode("utf-8"), durability=durability
-    )
+    data = text.encode("utf-8")
+    if skip_if_unchanged:
+        file_publication._require_durability(durability)
+        destination = file_publication.canonical_file_leaf(path, create_parent=True)
+        # Equality is a complete stable direct-file observation, not a decoded
+        # text comparison. An unreadable or changing leaf still needs publication.
+        try:
+            matches = False
+            with open_stable_regular_file(
+                destination, label="unchanged publication destination"
+            ) as opened:
+                if opened.stat.st_size == len(data):
+                    desired = memoryview(data)
+                    offset = 0
+                    for chunk in iter_stable_regular_file_chunks(opened):
+                        if chunk != desired[offset : offset + len(chunk)]:
+                            break
+                        offset += len(chunk)
+                        del chunk
+                    else:
+                        matches = True
+            # The context's closing pathname/handle/change-time fences must run
+            # before equality can suppress a publication.
+            if matches:
+                return
+        except (OSError, StableRegularFileError):
+            pass
+    file_publication.atomic_write_bytes(path, data, durability=durability)
 
 
 def _write_text_if_changed(path: Path, content: str) -> None:
-    try:
-        existing = path.read_text(encoding="utf-8")
-    except OSError:
-        existing = None
-    if existing == content:
-        return
-    _atomic_write_text(path, content)
+    _atomic_write_text(path, content, skip_if_unchanged=True)
 
 
 def _remove_file_or_tree(path: Path) -> None:
@@ -55,6 +80,7 @@ def _atomic_write_json(
     sort_keys: bool = False,
     default: Any | None = None,
     durability: file_publication.PublicationDurability = file_publication.PublicationDurability.DURABLE,
+    skip_if_unchanged: bool = False,
 ) -> None:
     _atomic_write_text(
         path,
@@ -67,6 +93,7 @@ def _atomic_write_json(
         )
         + "\n",
         durability=durability,
+        skip_if_unchanged=skip_if_unchanged,
     )
 
 

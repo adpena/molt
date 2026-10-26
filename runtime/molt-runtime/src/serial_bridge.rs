@@ -716,29 +716,6 @@ extern "C" fn bridge_molt_iter(bits: u64) -> u64 {
     crate::object::ops_iter::molt_iter(bits)
 }
 
-extern "C" fn bridge_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
-    let result = crate::object::ops_iter::molt_iter_next(iter_bits);
-    let none_bits = MoltObject::none().bits();
-    if result == none_bits {
-        crate::with_gil_entry_nopanic!(_py, {
-            if exception_pending(_py) {
-                0 // StopIteration or error
-            } else {
-                // Actual None value — return it.
-                unsafe {
-                    *out = result;
-                }
-                1
-            }
-        })
-    } else {
-        unsafe {
-            *out = result;
-        }
-        1
-    }
-}
-
 extern "C" fn bridge_raise_not_iterable(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { raise_not_iterable::<u64>(_py, bits) })
 }
@@ -947,7 +924,6 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     seq_snapshot: bridge_seq_snapshot,
     dict_snapshot: bridge_dict_snapshot,
     molt_iter: bridge_molt_iter,
-    molt_iter_next: bridge_molt_iter_next,
     raise_not_iterable: bridge_raise_not_iterable,
     molt_sorted_builtin: bridge_molt_sorted_builtin,
     molt_mul: bridge_molt_mul,

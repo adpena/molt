@@ -42,7 +42,7 @@ def test_registry_entries_name_owner_and_waiver() -> None:
 
 def test_passes_at_registered_baseline() -> None:
     proc = _run()
-    assert proc.returncode == 0, proc.stdout
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
     assert "PASS" in proc.stdout
 
 

@@ -6,6 +6,8 @@ source, semantic context and typed body ownership remain independently qualified
 
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import os
 import sqlite3
 import json
@@ -111,17 +113,81 @@ def test_lowering_records_separate_context_digests(tmp_path):
             path,
             source_lease=_ModuleSourceLease.path_backed(path),
             context_digest=digest,
-            result={"function_metadata": {}, "functions": [], "answer": value},
+            result={
+                "body_selection": {"kind": "complete_source", "roots": []},
+                "function_metadata": {},
+                "functions": [],
+                "answer": value,
+            },
         )
     for digest, value in (("ab" * 32, 41), ("cd" * 32, 42)):
         loaded = MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             context_digest=digest,
         )
         assert loaded is not None and loaded["answer"] == value
     assert set(source_records("module-lowering")) == {"ab" * 32, "cd" * 32}
+
+
+@pytest.mark.parametrize(
+    "stored_selection", [None, {"kind": "native_support", "roots": ["f"]}]
+)
+def test_lowering_rejects_missing_or_different_selection_before_body_decode(
+    tmp_path, monkeypatch, stored_selection
+):
+    path = _write_module(tmp_path, "m", "def f(): return 1\ndef g(): return 2\n")
+    digest = "de" * 32
+    lease = _ModuleSourceLease.path_backed(path)
+    MC._write_persisted_module_lowering(
+        path,
+        source_lease=lease,
+        context_digest=digest,
+        result={
+            "body_selection": {"kind": "complete_source", "roots": []},
+            "function_metadata": {},
+            "functions": [],
+        },
+    )
+    payload = source_records("module-lowering")[digest]
+    if stored_selection is None:
+        del payload["result"]["body_selection"]
+        payload["result"]["native_support_function_roots"] = []
+    else:
+        payload["result"]["body_selection"] = stored_selection
+    replace_source_record("module-lowering", digest, payload)
+    before = _age_record("module-lowering", digest)
+
+    def forbidden_decode(_view):
+        raise AssertionError("unadmitted producer body was decoded")
+
+    monkeypatch.setattr(MC, "decode_function_records", forbidden_decode)
+    assert (
+        MC._read_persisted_module_lowering(
+            path,
+            source_lease=lease,
+            module_name="m",
+            context_digest=digest,
+            body_selection=ModuleBodySelection("complete_source"),
+        )
+        is None
+    )
+    after = _record("module-lowering", digest)
+    assert (after.revision, after.used_ns) == (before.revision, before.used_ns)
+
+
+def test_lowering_writer_refuses_missing_producer_selection(tmp_path):
+    path = _write_module(tmp_path, "m", "pass\n")
+    with pytest.raises(ValueError, match="module body selection"):
+        MC._write_persisted_module_lowering(
+            path,
+            source_lease=_ModuleSourceLease.path_backed(path),
+            context_digest="ef" * 32,
+            result={"functions": [], "function_metadata": {}},
+        )
+    assert not source_records("module-lowering")
 
 
 # --------------------------------------------------------------------------
@@ -170,7 +236,8 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
     assert result is not None
     defaults, kinds = result
     assert kinds == {"f": "sync"} and defaults["f"]["defaults"] == [2]
-    assert shared_source_records().save_renewals() == 1
+    # The owning operation already flushed its partial advisory batch.
+    assert shared_source_records().save_renewals() == 0
     after = _record("module-analysis", key)
     assert after.revision == before.revision and after.payload == before.payload
     assert after.used_ns > before.used_ns
@@ -180,7 +247,12 @@ def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
     path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
     digest = "ab" * 32
     function = {"name": "m__g", "params": [], "return_abi": "value"}
-    result = {"function_metadata": {}, "functions": [function], "profile": "release"}
+    result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
+        "function_metadata": {},
+        "functions": [function],
+        "profile": "release",
+    }
     _use_session(monkeypatch, "A")
     writer_seeds = MC._write_persisted_module_lowering(
         path,
@@ -204,6 +276,7 @@ def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
     )
     loaded = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=digest,
@@ -240,6 +313,7 @@ def test_lowering_reuse_across_projects_and_working_directories(
         source_lease=_ModuleSourceLease.path_backed(path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
         },
@@ -249,6 +323,7 @@ def test_lowering_reuse_across_projects_and_working_directories(
     monkeypatch.chdir(second)
     reused = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=context_digest,
@@ -265,6 +340,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
     ir_result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "function_metadata": {},
         "functions": [
             {
@@ -288,6 +364,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 
     first = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=context_digest,
@@ -299,6 +376,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 
     second = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=context_digest,
@@ -363,6 +441,7 @@ def test_retired_policy_context_cannot_reuse_a_persisted_lowering(
     assert current_digest is not None and retired_digest is not None
     assert current_digest != retired_digest
     poison = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "functions": [],
         "function_metadata": {},
         "retired_policy_result": retired_policy,
@@ -374,12 +453,20 @@ def test_retired_policy_context_cannot_reuse_a_persisted_lowering(
     )
     assert (
         MC._read_persisted_module_lowering(
-            path, source_lease=lease, module_name="m", context_digest=current_digest
+            path,
+            body_selection=ModuleBodySelection("complete_source"),
+            source_lease=lease,
+            module_name="m",
+            context_digest=current_digest,
         )
         is None
     )
     retained = MC._read_persisted_module_lowering(
-        path, source_lease=lease, module_name="m", context_digest=retired_digest
+        path,
+        body_selection=ModuleBodySelection("complete_source"),
+        source_lease=lease,
+        module_name="m",
+        context_digest=retired_digest,
     )
     assert retained is not None
     assert retained["retired_policy_result"] == retired_policy
@@ -433,6 +520,7 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
     ir_result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "function_metadata": {},
         "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
         "profile": "release",
@@ -458,6 +546,7 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
 
     reused = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=context_digest,
@@ -529,6 +618,7 @@ def test_same_size_different_content_is_not_reused(
         source_lease=_ModuleSourceLease.path_backed(path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [
                 {
@@ -544,6 +634,7 @@ def test_same_size_different_content_is_not_reused(
     assert (
         MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             context_digest=context_digest,
@@ -562,6 +653,7 @@ def test_same_size_different_content_is_not_reused(
 
     reused = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=context_digest,
@@ -588,6 +680,7 @@ def test_changed_source_content_is_not_reused_from_shared(
         source_lease=_ModuleSourceLease.path_backed(path),
         context_digest=context_digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [
                 {
@@ -605,6 +698,7 @@ def test_changed_source_content_is_not_reused_from_shared(
     assert (
         MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             context_digest=context_digest,
@@ -618,6 +712,7 @@ def test_changed_source_content_is_not_reused_from_shared(
 
     reused = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=context_digest,
@@ -695,6 +790,7 @@ def test_changed_target_python_is_not_reused_from_shared(tmp_path, monkeypatch):
         source_lease=_ModuleSourceLease.path_backed(path),
         context_digest=first,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
         },
@@ -703,6 +799,7 @@ def test_changed_target_python_is_not_reused_from_shared(tmp_path, monkeypatch):
     assert (
         MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             context_digest=second,
@@ -739,7 +836,11 @@ def test_module_cache_publishes_once_without_file_hydration(tmp_path, monkeypatc
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         context_digest="ab" * 32,
-        result={"function_metadata": {}, "functions": []},
+        result={
+            "body_selection": {"kind": "complete_source", "roots": []},
+            "function_metadata": {},
+            "functions": [],
+        },
     )
     assert [kind for kind, _ in calls] == ["module-analysis", "module-lowering"]
     before = list(calls)
@@ -749,6 +850,7 @@ def test_module_cache_publishes_once_without_file_hydration(tmp_path, monkeypatc
     assert (
         MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             context_digest="ab" * 32,
@@ -772,13 +874,18 @@ def test_env_optout_forces_cold_lowering_miss(tmp_path, monkeypatch):
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         context_digest=digest,
-        result={"function_metadata": {}, "functions": []},
+        result={
+            "body_selection": {"kind": "complete_source", "roots": []},
+            "function_metadata": {},
+            "functions": [],
+        },
     )
     before = _record("module-lowering", digest)
     monkeypatch.setenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", "1")
     assert (
         MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             context_digest=digest,
@@ -790,6 +897,7 @@ def test_env_optout_forces_cold_lowering_miss(tmp_path, monkeypatch):
     assert (
         MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             context_digest=digest,
@@ -806,7 +914,11 @@ def test_env_optout_skips_shared_publish(tmp_path, monkeypatch):
             path,
             source_lease=_ModuleSourceLease.path_backed(path),
             context_digest="ab" * 32,
-            result={"function_metadata": {}, "functions": []},
+            result={
+                "body_selection": {"kind": "complete_source", "roots": []},
+                "function_metadata": {},
+                "functions": [],
+            },
         )
         == ()
     )
@@ -876,6 +988,7 @@ def test_refused_shared_lowering_does_not_refresh_recency(tmp_path, monkeypatch)
         source_lease=_ModuleSourceLease.path_backed(source),
         context_digest=digest,
         result={
+            "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
             "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
         },
@@ -888,6 +1001,7 @@ def test_refused_shared_lowering_does_not_refresh_recency(tmp_path, monkeypatch)
     assert (
         MC._read_persisted_module_lowering(
             source,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=_ModuleSourceLease.path_backed(source),
             module_name="m",
             context_digest=digest,
@@ -914,6 +1028,7 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
     gen.visit(ast.parse(path.read_text(encoding="utf-8")))
     document = gen.to_json(scope="module")
     result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
         "functions": document["functions"],
         "function_metadata": document["function_metadata"],
     }
@@ -930,6 +1045,7 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
     _use_session(monkeypatch, "B")
     loaded = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=lease,
         module_name="m",
         context_digest=context_digest,
@@ -981,6 +1097,7 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
     assert (
         MC._read_persisted_module_lowering(
             path,
+            body_selection=ModuleBodySelection("complete_source"),
             source_lease=lease,
             module_name="m",
             context_digest=context_digest,
@@ -1008,10 +1125,15 @@ def test_valid_lowering_record_exceeds_analysis_allocation_limit(tmp_path):
         path,
         source_lease=_ModuleSourceLease.path_backed(path),
         context_digest=digest,
-        result={"function_metadata": {}, "functions": [function]},
+        result={
+            "body_selection": {"kind": "complete_source", "roots": []},
+            "function_metadata": {},
+            "functions": [function],
+        },
     )
     loaded = MC._read_persisted_module_lowering(
         path,
+        body_selection=ModuleBodySelection("complete_source"),
         source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         context_digest=digest,
@@ -1035,7 +1157,11 @@ def test_nonobject_rich_metadata_refuses_without_refresh(tmp_path, metadata_resu
         path,
         source_lease=lease,
         context_digest=digest,
-        result={"function_metadata": {}, "functions": []},
+        result={
+            "body_selection": {"kind": "complete_source", "roots": []},
+            "function_metadata": {},
+            "functions": [],
+        },
     )
     original = _record("module-lowering", digest)
     # Keep the real frame, source and body identity intact. Only the rich
@@ -1053,7 +1179,11 @@ def test_nonobject_rich_metadata_refuses_without_refresh(tmp_path, metadata_resu
     before = _age_record("module-lowering", digest)
     assert (
         MC._read_persisted_module_lowering(
-            path, source_lease=lease, module_name="m", context_digest=digest
+            path,
+            body_selection=ModuleBodySelection("complete_source"),
+            source_lease=lease,
+            module_name="m",
+            context_digest=digest,
         )
         is None
     )

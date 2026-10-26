@@ -29,7 +29,7 @@ REMOVED_MODULES = (
 # Keep output deterministic when running under warning-heavy configurations.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-version = tuple(sys.version_info[:3])
+version = tuple(sys.version_info[:2])
 is_313_plus = sys.version_info >= (3, 13)
 print("version", version)
 print("is_313_plus", is_313_plus)

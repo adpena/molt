@@ -15,7 +15,8 @@ pub(in crate::wasm) enum WasmFrameAnonymousLocal {
     ConstNoneBits,
     ConstQnanTagMask,
     ConstQnanTagPtr,
-    ConstLiteralAnchor,
+    ConstAnchorRegionBase,
+    ConstAnchorTemporary,
 }
 
 impl WasmFrameAnonymousLocal {
@@ -57,7 +58,7 @@ mod tests {
 
         let const_cache = locals.allocate_constant_cache(3, &mut local_types, &mut local_count);
         let dispatch = locals
-            .allocate_dispatch_locals(true, false, &mut local_types, &mut local_count)
+            .allocate_dispatch_locals(true, true, &mut local_types, &mut local_count)
             .expect("stateful dispatch locals should be allocated");
 
         assert_eq!(const_cache.int_shift, Some(0));

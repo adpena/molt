@@ -7,6 +7,7 @@ rust-version.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+molt-llvm-link = { path = "../molt-llvm-link", optional = true }
 molt-ir = { path = "../molt-ir" }
 molt-tir = { path = "../molt-tir" }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
@@ -84,5 +85,5 @@ native-backend = [
 ]
 # Emit Cranelift code into process memory instead of an object (molt-jit).
 jit = ["native-backend", "dep:cranelift-jit"]
-llvm = ["dep:inkwell", "inkwell/llvm22-1-force-static", "molt-ir/llvm", "molt-tir/llvm"]
+llvm = ["dep:inkwell", "inkwell/llvm22-1-no-llvm-linking", "dep:molt-llvm-link", "molt-llvm-link/native-link", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm", "dep:llvm-sys"]

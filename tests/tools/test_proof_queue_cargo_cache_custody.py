@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -251,7 +252,11 @@ def test_queue_environment_preserves_scratch_custody_without_admitting_secrets(
         assert authority["variables"]["MOLT_MEMORY_GUARD_TOKEN"]["redacted"] is True
     finally:
         scratch.finish_guard_scratch(
-            lease, closed=True, success=True, evidence={"authority": "fixture"}
+            lease,
+            closed=True,
+            success=True,
+            evidence={"authority": "fixture"},
+            timings=scratch.ScratchFinalizationTimings(),
         )
 
 
@@ -425,7 +430,7 @@ def test_admitted_delegated_outputs_survive_python_custody_rewriting(tmp_path):
     envelope = command_admission.envelope_for_command(admitted_argv)
     outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
     execution_command = command_admission._python_bootstrap_command(
-        envelope, admitted_argv
+        envelope, admitted_argv, environment_root=Path(sys.prefix)
     )
     assert command_admission._nested_command(execution_command) is None
     with pytest.raises(ValueError):
@@ -2311,7 +2316,9 @@ def test_python_driver_output_roles_survive_acquisition_and_parent_validation(
     )
     envelope = command_admission.envelope_for_command(argv)
     outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
-    inputs["command"] = command_admission._python_bootstrap_command(envelope, argv)
+    inputs["command"] = command_admission._python_bootstrap_command(
+        envelope, argv, environment_root=Path(sys.prefix)
+    )
     inputs["outputs"] = outputs
     scratch = (tmp_path / "proof-scratch").resolve()
     scratch.mkdir()
