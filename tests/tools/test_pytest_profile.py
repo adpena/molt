@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sys
 
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import current_thread_only, run_guarded_test_process
 from tools import pytest_profile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -278,3 +278,261 @@ def test_plugin_records_every_workers_phases_spawns_waits_and_exit_tails(
         json.loads(record.read_text(encoding="utf-8"))["schema"]
         == pytest_profile.SCHEMA
     )
+
+
+def _reported_phase(nodeid: str, when: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        nodeid=nodeid,
+        when=when,
+        outcome="passed",
+        duration=0.25,
+        start=1000.0,
+        stop=1000.25,
+        molt_profile={"cpu": 0.05, "child_cpu": 0.0, "spawns": 0},
+    )
+
+
+def _checkpoint_profiler(monkeypatch, path: Path):
+    from types import SimpleNamespace
+
+    # Replace the profiler's module binding, never time's process-wide methods.
+    real_time = pytest_profile.time
+    clock = [0.0]
+    monkeypatch.setattr(
+        pytest_profile,
+        "time",
+        SimpleNamespace(
+            time=real_time.time,
+            process_time=real_time.process_time,
+            monotonic=lambda: clock[0],
+        ),
+    )
+    monkeypatch.setattr(pytest_profile.SpawnCounter, "install", lambda self: None)
+    profiler = pytest_profile.Profiler(path, worker=None)
+    session = SimpleNamespace(
+        config=SimpleNamespace(option=SimpleNamespace(numprocesses=0))
+    )
+    return profiler, session, clock
+
+
+def test_checkpoints_bound_publications_and_preserve_the_report_prefix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from molt import artifact_publication
+
+    path = tmp_path / "profile.json"
+    profiler, session, clock = _checkpoint_profiler(monkeypatch, path)
+    real_write = artifact_publication.atomic_write_json
+    writes = []
+
+    def observe_write(destination, payload):
+        real_write(destination, payload)
+        raw = destination.read_bytes()
+        writes.append((len(json.loads(raw)["phases"]), len(raw)))
+
+    monkeypatch.setattr(
+        artifact_publication,
+        "atomic_write_json",
+        current_thread_only(observe_write, real_write),
+    )
+    profiler.pytest_sessionstart(session)
+    profiler.pytest_runtest_logreport(_reported_phase("test_first", "setup"))
+    clock[0] = 9.0
+    for index in range(100):
+        profiler.pytest_runtest_logreport(_reported_phase(f"test_fast_{index}", "call"))
+    assert [count for count, _ in writes] == [0, 1]
+    clock[0] = 10.0
+    profiler.pytest_runtest_logreport(_reported_phase("test_first", "teardown"))
+    assert [count for count, _ in writes] == [0, 1, 102]
+    assert sum(size for _, size in writes) < 100_000
+    assert max(size for _, size in writes) > 10_000
+    partial = json.loads(path.read_text(encoding="utf-8"))
+    assert [(row["nodeid"], row["when"]) for row in partial["phases"]] == [
+        ("test_first", "setup"),
+        *((f"test_fast_{index}", "call") for index in range(100)),
+        ("test_first", "teardown"),
+    ]
+    assert partial["session_finish"] is None and partial["exit_at"] is None
+
+    from types import SimpleNamespace
+
+    exits = []
+    monkeypatch.setattr(
+        pytest_profile, "atexit", SimpleNamespace(register=exits.append)
+    )
+    profiler.pytest_sessionfinish(session, 0)
+    assert len(writes) == 4
+    finished = pytest_profile.load(path)
+    assert finished["session_finish"] is not None
+    assert finished["exit_at"] is None
+    finished_summary = pytest_profile.summarize(finished)
+    assert finished_summary["complete"] is True
+    assert finished_summary["exit_tail"] is None
+    assert len(exits) == 1
+    exits[0]()
+    assert len(writes) == 5
+    assert json.loads(path.read_text(encoding="utf-8"))["exit_at"] is not None
+
+
+def test_checkpoint_publication_failure_preserves_prior_valid_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import pytest
+    from molt import artifact_publication
+
+    path = tmp_path / "profile.json"
+    profiler, session, clock = _checkpoint_profiler(monkeypatch, path)
+    profiler.pytest_sessionstart(session)
+    profiler.pytest_runtest_logreport(_reported_phase("test_one", "setup"))
+    before = path.read_bytes()
+    failure = OSError("independent publication refusal")
+
+    def refuse_publish(*args, **kwargs):
+        raise failure
+
+    # Exercise actual serialization/staging; fail at the owning replace boundary.
+    monkeypatch.setattr(
+        artifact_publication,
+        "_durable_replace",
+        current_thread_only(refuse_publish, artifact_publication._durable_replace),
+    )
+    clock[0] = 12.0
+    with pytest.raises(OSError) as caught:
+        profiler.pytest_runtest_logreport(_reported_phase("test_one", "call"))
+    assert caught.value is failure
+    assert path.read_bytes() == before
+    retained = pytest_profile.load(path)
+    assert [(row["nodeid"], row["when"]) for row in retained["phases"]] == [
+        ("test_one", "setup")
+    ]
+    assert retained["session_finish"] is None
+
+
+def test_incomplete_snapshot_reports_observations_without_claiming_completion(
+    tmp_path: Path,
+) -> None:
+    import pytest
+
+    profile = _profile()
+    profile["session_finish"] = None
+    profile["exit_at"] = None
+    profile["phases"] = profile["phases"][:2]
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    # An unrelated old worker file must not invent an exit tail for this run.
+    path.with_name("profile.json.worker-gw9.json").write_text(
+        "not JSON", encoding="utf-8"
+    )
+    loaded = pytest_profile.load(path)
+    summary = pytest_profile.summarize(loaded)
+    assert summary["complete"] is False
+    assert summary["wall"] is None and summary["exit_tail"] is None
+    assert summary["worker_exit_tail_max"] is None
+    assert summary["incomplete_tests"] == 1
+    assert summary["test_rows"][0]["outcome"] == "incomplete"
+    assert summary["sum_setup"] == 4.0 and summary["sum_call"] == 6.0
+    text = "\n".join(pytest_profile.report_lines(loaded))
+    assert text.startswith("INCOMPLETE pytest profile:")
+    assert "observed phase-duration totals are lower bounds" in text
+    assert "derived waiting and imbalance are provisional" in text
+    assert "tests/a.py::t1" in text
+    with pytest.raises(ValueError, match="cannot compare incomplete"):
+        pytest_profile.compare_lines(loaded, _profile())
+    with pytest.raises(ValueError, match="cannot compare incomplete"):
+        pytest_profile.compare_lines(_profile(), loaded)
+    with pytest.raises(SystemExit) as exit_error:
+        pytest_profile.main(["compare", str(path), str(path)])
+    assert exit_error.value.code == 2
+
+
+def test_abrupt_pytest_exit_retains_completed_phase_checkpoint(tmp_path: Path) -> None:
+    project = tmp_path / "interrupted-project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ""\n', encoding="utf-8"
+    )
+    (project / "conftest.py").write_text(
+        "import os, pytest\n"
+        "@pytest.hookimpl(tryfirst=True)\n"
+        "def pytest_runtest_logreport(report):\n"
+        "    if report.when == 'call':\n"
+        "        os._exit(23)\n",
+        encoding="utf-8",
+    )
+    marker = project / "must-not-run"
+    (project / "test_interrupted.py").write_text(
+        "from pathlib import Path\n"
+        "def test_first():\n"
+        "    assert 7 * 9 == 63\n"
+        "def test_second():\n"
+        f"    Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    record = tmp_path / "interrupted.json"
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
+    for key in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        environment.pop(key, None)
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tools.pytest_profile",
+            "-p",
+            "no:cacheprovider",
+            f"--molt-profile={record}",
+            "-n",
+            "0",
+            str(project / "test_interrupted.py"),
+        ],
+        cwd=project,
+        env=environment,
+        timeout=120.0,
+    )
+    assert result.returncode == 23, result.stdout + result.stderr
+    assert not marker.exists()
+    profile = pytest_profile.load(record)
+    assert profile["session_finish"] is None and profile["exit_at"] is None
+    assert [
+        (row["nodeid"], row["when"], row["outcome"]) for row in profile["phases"]
+    ] == [("test_interrupted.py::test_first", "setup", "passed")]
+    assert pytest_profile.summarize(profile)["complete"] is False
+    assert "INCOMPLETE pytest profile:" in "\n".join(
+        pytest_profile.report_lines(profile)
+    )
+
+
+def test_xdist_worker_does_not_publish_controller_phase_checkpoints(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    path = tmp_path / "profile.json"
+    profiler, session, clock = _checkpoint_profiler(monkeypatch, path)
+    profiler.worker = "gw2"
+    monkeypatch.setattr(
+        pytest_profile, "atexit", SimpleNamespace(register=lambda fn: None)
+    )
+    profiler.pytest_sessionstart(session)
+    clock[0] = 30.0
+    profiler.pytest_runtest_logreport(_reported_phase("test_worker", "call"))
+    assert not path.exists()
+    assert not path.with_name("profile.json.worker-gw2.json").exists()
+    profiler.pytest_sessionfinish(session, 0)
+    assert not path.exists()
+    worker = json.loads(
+        path.with_name("profile.json.worker-gw2.json").read_text(encoding="utf-8")
+    )
+    assert worker["worker"] == "gw2"
+    assert worker["session_finish"] is not None
+    assert "phases" not in worker

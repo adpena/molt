@@ -48,8 +48,14 @@ release matrix retains its own requirements.
 Every proof job exports the existing guard incidents and current-test records
 through the shared diagnostics action. Use those records to attribute a
 timeout before rerunning it. Per-test profiling remains available through
-`tools/pytest_profile.py`; session-end profiles alone cannot diagnose abrupt
-termination. See [performance authority](../tools/PERF_AUTHORITY.md) for
+`tools/pytest_profile.py`; its opt-in atomic checkpoints preserve completed
+phase observations across abrupt termination. Callback-driven checkpoints can
+be older than ten seconds during a long phase. Incomplete reports label observed
+phase-duration totals as lower bounds; derived waiting and imbalance remain
+provisional. They cannot establish a completed-run comparison. Use a fresh output
+path per run, including its worker metadata siblings. Session completion records
+pytest phases even if process exit is still unknown; it does not imply proof
+acceptance. See [performance authority](../tools/PERF_AUTHORITY.md) for
 performance claims and [operations](OPERATIONS.md) for build diagnostics.
 
 ## What is Molt?
