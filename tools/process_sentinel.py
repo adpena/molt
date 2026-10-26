@@ -51,20 +51,20 @@ DEFAULT_STALE_PYTEST_SEC = 15.0 * 60.0
 def guarded_entrypoint_tokens() -> tuple[str, ...]:
     """Repository scripts that run under the guard.
 
-    The scan reads about 1,100 sources, so it runs when a sentinel first
-    classifies a process, not when a build imports the guard to launch one.
+    Discovery is needed only when classification reaches a possible source
+    entrypoint. Known artifacts and excluded commands do not read sources.
     """
     return guarded_entrypoints.guarded_entrypoint_tokens(_REPO_ROOT)
 
 
 @functools.cache
 def molt_process_tokens() -> tuple[str, ...]:
+    """Fixed process signatures; source entrypoints are discovered on demand."""
     return tuple(
         dict.fromkeys(
             (
                 "/tools/memory_guard.py",
                 "/tests/molt_diff.py",
-                *guarded_entrypoint_tokens(),
                 "python -m molt",
                 "molt.cli",
                 *(product.value for product in HostToolProduct),
@@ -551,6 +551,24 @@ def _group_is_fully_owned(
 
 
 @functools.lru_cache(maxsize=2048)
+def _molt_command_is_eligible(
+    command: str,
+    root: Path,
+    windows_model: bool,
+    inspection_tokens: tuple[str, ...],
+) -> bool:
+    normalized = _normalized_path_text(command)
+    text = normalized.casefold() if windows_model else normalized
+
+    def contains(token: str) -> bool:
+        return (token.casefold() if windows_model else token) in text
+
+    return not any(
+        contains(token) for token in _normalized_token_tuple(inspection_tokens)
+    ) and any(contains(token) for token in _normalized_repo_tokens(root))
+
+
+@functools.lru_cache(maxsize=2048)
 def _cached_molt_command_classification(
     command: str,
     root: Path,
@@ -571,6 +589,8 @@ def _cached_molt_command_classification(
     only the computation of the classification rules, never the rules
     themselves.
     """
+    if not _molt_command_is_eligible(command, root, windows_model, inspection_tokens):
+        return False
     normalized_command = _normalized_path_text(command)
     normalized_command_cf = normalized_command.casefold()
 
@@ -579,8 +599,6 @@ def _cached_molt_command_classification(
             return token.casefold() in normalized_command_cf
         return token in normalized_command
 
-    if any(contains(token) for token in _normalized_token_tuple(inspection_tokens)):
-        return False
     if _repo_scoped_normalized_match(
         normalized_command,
         normalized_command_cf,
@@ -591,9 +609,7 @@ def _cached_molt_command_classification(
         artifact_identity_tokens=artifact_identity_tokens,
     ):
         return True
-    return any(
-        contains(repo_token) for repo_token in _normalized_repo_tokens(root)
-    ) and any(contains(token) for token in molt_tokens)
+    return any(contains(token) for token in molt_tokens)
 
 
 def is_molt_process(
@@ -606,15 +622,36 @@ def is_molt_process(
         return False
     if is_host_control_plane_process(sample):
         return False
+    windows_model = _process_model.is_windows_process_model()
+    if not _molt_command_is_eligible(
+        sample.command, root, windows_model, INSPECTION_COMMAND_TOKENS
+    ):
+        return False
+    fixed_tokens = molt_process_tokens()
+    if _cached_molt_command_classification(
+        sample.command,
+        root,
+        windows_model,
+        INSPECTION_COMMAND_TOKENS,
+        (),
+        REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS,
+        REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS,
+        fixed_tokens,
+    ):
+        return True
+    if not guarded_entrypoints.may_reference_guarded_entrypoint(
+        _normalized_path_text(sample.command), windows_model=windows_model
+    ):
+        return False
     return _cached_molt_command_classification(
         sample.command,
         root,
-        _process_model.is_windows_process_model(),
+        windows_model,
         INSPECTION_COMMAND_TOKENS,
         repo_scoped_molt_entrypoint_tokens(),
         REPO_SCOPED_MOLT_ARTIFACT_ROOT_TOKENS,
         REPO_SCOPED_MOLT_ARTIFACT_IDENTITY_TOKENS,
-        molt_process_tokens(),
+        (*fixed_tokens, *guarded_entrypoint_tokens()),
     )
 
 

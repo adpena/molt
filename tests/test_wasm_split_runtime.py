@@ -32,7 +32,11 @@ import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
 from tools.wasm_size_audit import DEFAULT_TOTAL_BUDGET_MB
-from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tests.wasm_linked_runner import (
+    WasmTestBuildCommand,
+    _run_wasm_test_process,
+    wasm_test_build_env,
+)
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
 from molt._runtime_profile_schema import validate_process_profile
@@ -234,13 +238,13 @@ def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
     assert _isolate_import_module_order(["sys"], set()) == []
 
 
-def _build_split(
+def wasm_split_build_command(
     source_file: Path,
     output_dir: Path,
     *,
     extra_args: list[str] | None = None,
-) -> subprocess.CompletedProcess:
-    """Run ``molt build --target wasm --split-runtime`` and return the result."""
+) -> WasmTestBuildCommand:
+    """Select the actual split test command without executing it."""
     env = _split_runtime_build_env()
 
     cmd = [
@@ -259,10 +263,21 @@ def _build_split(
     ]
     if extra_args:
         cmd.extend(extra_args)
+    return WasmTestBuildCommand(tuple(cmd), ROOT, env, output_dir / "manifest.json")
+
+
+def _build_split(
+    source_file: Path,
+    output_dir: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Run ``molt build --target wasm --split-runtime`` and return the result."""
+    command = wasm_split_build_command(source_file, output_dir, extra_args=extra_args)
     return _run_wasm_test_process(
-        cmd,
-        env=env,
-        cwd=ROOT,
+        list(command.argv),
+        env=command.environment,
+        cwd=command.cwd,
     )
 
 

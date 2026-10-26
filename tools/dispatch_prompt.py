@@ -1,42 +1,16 @@
 #!/usr/bin/env python3
-"""Compose a molt subagent spawn prompt from the canonical contract (APPARATUS A7).
+"""Compose bounded subagent assignments under the canonical AGENTS.md policy.
 
-The orchestrator composes spawn prompts from ``tools/subagent_contract.py`` GOING
-FORWARD -- it does not hand-type the standing directives per dispatch (hand-typed
-prompts drift; a drifted prompt silently drops a clause such as "verify the FULL
-test surface", which is the exact miss that motivated this apparatus). This tool
-makes composing the path of least resistance: a task body plus the named contract
-blocks you select by short section key.
-
-Import of the real contract module is REQUIRED -- if it cannot be imported this
-tool fails LOUD rather than emitting a fallback prompt, because a silent fallback
-would reintroduce the drift class the contract exists to extinguish.
-
-Section keys (map to the named constants in subagent_contract):
-
-    grounded    -> GROUNDED_PROGRESS
-    promises    -> NO_ENDING_ON_PROMISES
-    verify      -> VERIFY_FULL_SUITE + FRESH_CONTEXT_VERIFIER
-    web         -> WEB_AUTHORITY
-    landing     -> LANDING_CONTRACT
-    fakes       -> NO_FAKES
-    git         -> GIT_CUSTODY
-    build       -> BUILD_ENV
-    distill     -> DISTILL
-    model-tier  -> MODEL_TIER
-    triality    -> TRIALITY_WIRING
-    preflight   -> PREMISE_VERIFICATION
-    all         -> every block, in canonical order (the default)
-
-Usage:
-    python tools/dispatch_prompt.py --task-file task.md --sections landing,web,git,verify
-    python tools/dispatch_prompt.py --task-text "Build X ..."           # all sections
-    echo "Build X ..." | python tools/dispatch_prompt.py --sections git,build,verify
+Use --task-file or --task-text with --bounds bounds.json. Every DispatchBounds
+field is required; empty owned_paths means read only and empty proof_commands
+means no command launches. --list-sections lists optional routing blocks.
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+import json
 import sys
 from pathlib import Path
 
@@ -47,6 +21,69 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+
+@dataclass(frozen=True)
+class DispatchBounds:
+    outcome: str
+    deliverable: str
+    integration_owner: str
+    proof_owner: str
+    owned_paths: tuple[str, ...]
+    proof_commands: tuple[str, ...]
+    budget_minutes: int
+    stop_when: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "outcome",
+            "deliverable",
+            "integration_owner",
+            "proof_owner",
+            "stop_when",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be explicit and nonempty")
+        if type(self.budget_minutes) is not int or self.budget_minutes <= 0:
+            raise ValueError("budget_minutes must be a positive integer")
+        for name in ("owned_paths", "proof_commands"):
+            value = getattr(self, name)
+            if not isinstance(value, tuple) or any(
+                not isinstance(item, str) or not item.strip() for item in value
+            ):
+                raise ValueError(
+                    f"{name} must be an explicit tuple of nonempty strings"
+                )
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> DispatchBounds:
+        if not isinstance(payload, dict):
+            raise ValueError("dispatch bounds must be a JSON object")
+        fields = dict(payload)
+        for name in ("owned_paths", "proof_commands"):
+            if not isinstance(fields.get(name), list):
+                raise ValueError(f"{name} must be an explicit JSON array")
+            fields[name] = tuple(fields[name])
+        return cls(**fields)
+
+    def render(self) -> str:
+        return "\n".join(
+            (
+                "Read the assigned checkout's AGENTS.md; it owns standing project policy.",
+                f"User outcome: {self.outcome}",
+                f"Assigned deliverable: {self.deliverable}",
+                f"Integration owner: {self.integration_owner}",
+                f"Proof owner: {self.proof_owner}",
+                f"Write scope: {json.dumps(self.owned_paths) if self.owned_paths else 'read only'}",
+                f"Permitted proof commands: {json.dumps(self.proof_commands) if self.proof_commands else 'none; inspect retained evidence only'}",
+                "Only the named proof owner may launch proof commands; other workers inspect receipts.",
+                f"Work budget: {self.budget_minutes} minutes",
+                f"Stop condition: {self.stop_when}",
+                "Return at the deliverable or budget, whichever comes first. Close any owned commands canonically.",
+                "Return new scope, hypotheses, proof needs or budget needs to the parent before expanding work.",
+            )
+        )
 
 
 def _import_contract():
@@ -60,7 +97,7 @@ def _import_contract():
 SECTIONS: dict[str, tuple[str, ...]] = {
     "grounded": ("GROUNDED_PROGRESS",),
     "promises": ("NO_ENDING_ON_PROMISES",),
-    "verify": ("VERIFY_FULL_SUITE", "FRESH_CONTEXT_VERIFIER"),
+    "verify": ("VERIFY_CHANGED_CONTRACT", "EVIDENCE_REVIEW"),
     "web": ("WEB_AUTHORITY",),
     "landing": ("LANDING_CONTRACT",),
     "fakes": ("NO_FAKES",),
@@ -97,21 +134,28 @@ def _resolve_sections(sections: list[str] | None, sc) -> tuple[str, ...]:
     return tuple(n for n in sc.CONTRACT_CONSTANT_NAMES if n in wanted)
 
 
-def compose(task: str, *, sections: list[str] | None = None) -> str:
+def compose(
+    task: str, *, bounds: DispatchBounds, sections: list[str] | None = None
+) -> str:
     """Assemble a spawn prompt: the task body followed by the selected contract blocks.
 
     Args:
-        task: the task-specific body (what THIS lane must build/verify/land).
+        task: the task-specific body.
+        bounds: explicit assignment and stopping rules, never inferred from prose.
         sections: short section keys to include (see :data:`SECTIONS`); ``None`` includes
             every block in canonical order.
 
     Returns:
         ``"<task>\\n\\n<block>\\n\\n<block>..."``. Raises ``KeyError`` on an unknown section.
     """
+    if not isinstance(bounds, DispatchBounds):
+        raise ValueError("dispatch requires validated DispatchBounds")
+    if not task.strip():
+        raise ValueError("dispatch requires a nonempty task")
     sc = _import_contract()
     names = _resolve_sections(sections, sc)
     contract = sc.standard_contract(names)
-    body = task.rstrip()
+    body = f"{task.rstrip()}\n\n{bounds.render()}"
     return f"{body}\n\n{contract}" if contract else body
 
 
@@ -120,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--task-file", type=Path, help="file holding the task body")
     src.add_argument("--task-text", help="task body inline (default: read stdin)")
+    ap.add_argument(
+        "--bounds", type=Path, help="JSON object containing all DispatchBounds fields"
+    )
     ap.add_argument(
         "--sections",
         default="all",
@@ -138,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{'all':12s} -> every block, canonical order")
         return 0
 
+    if args.bounds is None:
+        ap.error("--bounds is required for every dispatch")
+
     if args.task_file is not None:
         task = args.task_file.read_text(encoding="utf-8")
     elif args.task_text is not None:
@@ -149,8 +199,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sections = [s for s in args.sections.split(",") if s.strip()]
     try:
-        print(compose(task, sections=sections))
-    except KeyError as exc:
+        bounds = DispatchBounds.from_payload(
+            json.loads(args.bounds.read_text(encoding="utf-8"))
+        )
+        print(compose(task, bounds=bounds, sections=sections))
+    except (KeyError, TypeError, ValueError, OSError) as exc:
         ap.error(str(exc))
     return 0
 
