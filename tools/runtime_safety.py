@@ -166,12 +166,11 @@ def run_clippy(log_dir: Path | None) -> None:
         [
             "cargo",
             "clippy",
+            "--config",
+            'build.warnings="deny"',
             "-p",
             "molt-runtime",
             "--all-targets",
-            "--",
-            "-D",
-            "warnings",
         ],
         log_path=log_path,
     )

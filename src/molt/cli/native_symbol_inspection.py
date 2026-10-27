@@ -23,6 +23,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from collections.abc import Callable, Generator, Iterable
+from types import TracebackType
 from typing import Literal, Sequence, TypeVar
 
 from molt.cli.atomic_io import _atomic_write_json
@@ -599,9 +600,106 @@ def _require_unchanged_symbol_artifact(
         ) from error
 
 
+class NativeArtifactCapture:
+    """One lexical content capture whose consumer closes custody before publishing.
+
+    Generation admission and symbol inspection share this owner, never a detached
+    digest or a descriptor stored in runtime state. Consumption is one-shot;
+    its closing fences run before the symbol-facts context publishes any cache.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        label: str,
+        observed: StableRegularFileIdentity | None = None,
+    ) -> None:
+        self._path = path
+        self._label = label
+        self._observed = observed
+        self._stack = contextlib.ExitStack()
+        self._opened: StableRegularFileHandle | None = None
+        self._identity: StableRegularFileIdentity | None = None
+        self._consumed = False
+
+    def __enter__(self) -> NativeArtifactCapture:
+        if self._opened is not None or self._consumed:
+            raise ValueError("native artifact capture cannot be reopened")
+        try:
+            self._opened = self._stack.enter_context(
+                open_stable_regular_file(
+                    self._path, label=self._label, observed=self._observed
+                )
+            )
+            self._identity = stable_regular_file_handle_identity(
+                self._opened, label=self._label
+            )
+            if self._observed is not None:
+                verify_stable_regular_file_content(
+                    self._observed,
+                    sha256=self._identity.sha256,
+                    size=self._identity.size,
+                    label=self._label,
+                )
+        except BaseException:
+            self.__exit__(*sys.exc_info())
+            raise
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        self._consumed = True
+        return self._stack.__exit__(exc_type, exc_value, traceback)
+
+    @property
+    def identity(self) -> StableRegularFileIdentity:
+        if (
+            self._consumed
+            or self._opened is None
+            or self._opened.stream.closed
+            or self._identity is None
+        ):
+            raise ValueError("native artifact capture is not live")
+        return self._identity
+
+    @contextlib.contextmanager
+    def consume(
+        self, path: Path, identity: StableRegularFileIdentity | None
+    ) -> Generator[tuple[StableRegularFileHandle, StableRegularFileIdentity]]:
+        current = self.identity
+        if path != current.path:
+            raise ValueError("artifact path differs from its live capture")
+        if identity is not None:
+            verify_stable_regular_file_content(
+                identity,
+                sha256=current.sha256,
+                size=current.size,
+                label=self._label,
+            )
+            if identity != current:
+                raise ValueError("artifact identity differs from its live capture")
+        assert self._opened is not None
+        self._consumed = True
+        try:
+            yield self._opened, current
+        except BaseException:
+            self.__exit__(*sys.exc_info())
+            raise
+        else:
+            self.__exit__(None, None, None)
+
+
 @contextlib.contextmanager
 def _open_native_symbol_artifact(
-    path: Path, identity: StableRegularFileIdentity | None = None
+    path: Path,
+    identity: StableRegularFileIdentity | None = None,
+    *,
+    capture: NativeArtifactCapture | None = None,
 ) -> Generator[tuple[StableRegularFileHandle, StableRegularFileIdentity]]:
     """Admit current bytes and retain their descriptor through every consumer.
 
@@ -614,24 +712,20 @@ def _open_native_symbol_artifact(
         resolved = path.resolve(strict=True)
         if identity is not None and identity.path != resolved:
             raise ValueError("artifact path no longer names its captured generation")
-        with open_stable_regular_file(
-            resolved, label="native symbol artifact", observed=identity
-        ) as opened:
-            current = stable_regular_file_handle_identity(
-                opened, label="native symbol artifact"
+        owner = (
+            NativeArtifactCapture(
+                resolved, label="native symbol artifact", observed=identity
             )
-            if identity is not None:
-                verify_stable_regular_file_content(
-                    identity,
-                    sha256=current.sha256,
-                    size=current.size,
-                    label="native symbol artifact",
-                )
-            try:
-                yield opened, current
-            except (OSError, ValueError) as error:
-                consumer_error = error
-                raise
+            if capture is None
+            else contextlib.nullcontext(capture)
+        )
+        with owner as captured:
+            with captured.consume(resolved, identity) as (opened, current):
+                try:
+                    yield opened, current
+                except (OSError, ValueError) as error:
+                    consumer_error = error
+                    raise
     except NativeSymbolInspectionError:
         raise
     except (OSError, ValueError) as error:
@@ -1236,6 +1330,7 @@ def _native_symbol_facts_admission(
     requirement: NativeSymbolRequirement = NativeSymbolRequirement(),
     publish: bool = False,
     validate_shape: Callable[[StableRegularFileHandle], None] | None = None,
+    capture: NativeArtifactCapture | None = None,
 ) -> Generator[
     tuple[StableRegularFileHandle, StableRegularFileIdentity, _NativeGlobalSymbolFacts]
 ]:
@@ -1247,7 +1342,10 @@ def _native_symbol_facts_admission(
     """
     computed = False
     used_sidecar: tuple[Path, os.stat_result] | None = None
-    with _open_native_symbol_artifact(path, identity) as (opened, admitted):
+    with _open_native_symbol_artifact(path, identity, capture=capture) as (
+        opened,
+        admitted,
+    ):
         if validate_shape is not None:
             validate_shape(opened)
         # Format, not caller spelling or pathname, owns retention and reader

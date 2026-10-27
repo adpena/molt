@@ -97,9 +97,12 @@ def stub_native_symbol_admission(monkeypatch, read_facts) -> None:
     from molt.cli import native_symbol_inspection as symbols
 
     @contextmanager
-    def admit(path, *, archive, identity, target_triple, requirement):
+    def admit(path, *, archive, identity, target_triple, requirement, capture=None):
         assert archive
-        with symbols._open_native_symbol_artifact(path, identity) as (opened, current):
+        with symbols._open_native_symbol_artifact(path, identity, capture=capture) as (
+            opened,
+            current,
+        ):
             facts = read_facts(
                 path,
                 identity=current,
@@ -321,7 +324,7 @@ def _ensure_test_native_link_manifest(
 
 
 def native_runtime_generation_fixture(
-    runtime_lib: Path, build_identity: RuntimeBuildIdentity
+    runtime_lib: Path, build_identity: RuntimeBuildIdentity, *, consume=None
 ):
     """Capture the source fixture's original strict, file-fenced generation."""
     from molt.cli.runtime_native_generation import _capture_generation
@@ -337,6 +340,7 @@ def native_runtime_generation_fixture(
         build_identity=build_identity,
         cargo_profile=profile,
         target_triple=target,
+        consume=consume,
     )
 
 
