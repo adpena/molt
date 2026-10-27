@@ -64,6 +64,25 @@ The live codebase and executable Cargo metadata remain authoritative.
   defaults to `dev-fast` and records both `profile` and `test_profile` in the
   JSON payload. This keeps optimized daemon timing evidence from accidentally
   turning Rust proof/DX timing into optimized release test compilation.
+- Molt timing uses a closed latency/attribution mode. Latency issues ordinary
+  CLI requests eligible for native record reuse; attribution opts into JSON and
+  diagnostics. Exact owned outputs supply artifact identity and size after the
+  timed interval, while explicit source pairs supply edits. A neutral project
+  marker isolates lookup context without changing compiler policy. Cold/warm
+  labels describe invocation order, not a proven cache hit or guest correctness.
+  The existing outer guard retains process/state custody. Without keepalives,
+  the timer blocks in [`Popen.wait`](https://docs.python.org/3.12/library/subprocess.html#subprocess.Popen.wait).
+  With keepalives, one daemon waiter captures completion and a condition wait
+  wakes the reporting thread; no 100 ms polling or process-wide pool is added.
+  [CPython's timed POSIX wait](https://github.com/python/cpython/blob/v3.12.15/Lib/subprocess.py)
+  itself polls, so the waiter uses its untimed kernel wait. This trades one
+  bounded thread/Future allocation for timely progress without timing buckets.
+  Failed cleanup retains the existing atexit owner and source locks; a waiter
+  is joined only after child closure. Elapsed time observes completion, not an
+  exact kernel exit timestamp. Twelve alternating actual short-child pairs on
+  macOS arm64/CPython 3.12.15 changed the reported median interval from 109 ms
+  to 11 ms. This removes timer overhead, not compiler work. No work runs in
+  emitted guest programs.
 - The generated runtime intrinsic resolver is no longer one monolithic Rust
   source file. `runtime/molt-runtime/src/intrinsics/generated.rs` keeps the
   parser-facing `INTRINSICS` manifest table and re-exports a thin resolver, while

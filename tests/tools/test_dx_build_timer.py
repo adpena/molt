@@ -22,8 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def _build_success(cmd, content: bytes = b"mock artifact") -> str:
     """Simulate only the CLI boundary; the timer observes real fixture files."""
-    output = Path(cmd[cmd.index("--out-dir") + 1]) / "program.bin"
+    output = Path(cmd[cmd.index("--output") + 1])
     output.write_bytes(content)
+    if "--json" not in cmd:
+        return f"Successfully built {output}\n"
     return json.dumps(
         {
             "command": "build",
@@ -238,11 +240,14 @@ def test_outer_timer_holds_selected_state_until_child_cleanup(
     )
     if failure in {"stream", "cleanup"}:
 
-        def interrupted_sleep(_seconds):
+        def interrupted_print(*_args, **_kwargs):
             raise RuntimeError("stream fault")
 
-        install_module_view(
-            monkeypatch, "time", module.time, module, sleep=interrupted_sleep
+        monkeypatch.setattr(module, "print", interrupted_print, raising=False)
+        monkeypatch.setattr(
+            module.harness_memory_guard,
+            "_subprocess_keepalive_interval_secs",
+            lambda *_args, **_kwargs: 0.01,
         )
     command = (
         [str(tmp_path / "missing-timer-child")]
@@ -268,7 +273,7 @@ def test_outer_timer_holds_selected_state_until_child_cleanup(
                 match=None if failure == "launch" else "stream fault",
             ) as caught:
                 module._run_completed_inside_active_guard(
-                    command, environment, tmp_path
+                    command, environment, tmp_path, progress_label="fixture child"
                 )
             if failure == "cleanup":
                 assert any(
@@ -474,6 +479,8 @@ def test_molt_build_command_wires_split_runtime_diagnostics(tmp_path: Path) -> N
         target="wasm-split",
         profile="cloudflare",
         out_dir=out_dir,
+        output=out_dir / "program.wasm",
+        measurement=module.MoltMeasurement.ATTRIBUTION,
         cache_dir=tmp_path / "cache",
         diagnostics_file=diagnostics,
     ) == [
@@ -490,6 +497,8 @@ def test_molt_build_command_wires_split_runtime_diagnostics(tmp_path: Path) -> N
         str(out_dir),
         "--cache-dir",
         str(tmp_path / "cache"),
+        "--output",
+        str(out_dir / "program.wasm"),
         "--cache-report",
         "--json",
         "--diagnostics",
@@ -532,6 +541,8 @@ def test_trial_cache_overrides_project_config_through_real_dispatch(
         target="native",
         profile="dev",
         out_dir=tmp_path / "out",
+        output=tmp_path / "out" / "program.bin",
+        measurement=module.MoltMeasurement.LATENCY,
         cache_dir=trial,
         diagnostics_file=tmp_path / "diagnostics.json",
     )
@@ -697,6 +708,9 @@ def test_main_molt_build_scenario_skips_daemon_prime_and_records_phases(
             if list(cmd) == ["cargo", "--version"]
             else _build_success(cmd)
         )
+        if list(cmd) != ["cargo", "--version"]:
+            output = Path(cmd[cmd.index("--output") + 1])
+            (output.parent / "unrelated.log").write_bytes(b"x" * 8192)
         return SimpleNamespace(
             returncode=0,
             stdout=stdout,
@@ -753,29 +767,41 @@ def test_main_molt_build_scenario_skips_daemon_prime_and_records_phases(
         None,
         "dx-build molt-build-native cold run 1/1",
         "dx-build molt-build-native warm run 1/1",
-        "dx-build molt-build-native edit run 1/1",
     ]
     result = payload["results"]["molt-build-native"]
     assert result["target"] == "native"
     assert result["profile"] == "dev"
     assert result["backend_daemons_drained"] == 2
-    assert guard_routes == ["per-phase"] + ["outer" if outer_guard else "per-phase"] * 3
+    assert guard_routes == ["per-phase"] + ["outer" if outer_guard else "per-phase"] * 2
     assert result["daemon_policy"].startswith(
         "outer-guard-reuse" if outer_guard else "per-phase-guard"
     )
     assert result["daemon_policy"] in result["cold_scope"]
     if not outer_guard:
         assert "daemon retention not assumed" in result["cold_scope"]
-    assert [phase["phase"] for phase in result["phases"]] == ["cold", "warm", "edit"]
-    assert [phase["returncode"] for phase in result["phases"]] == [0, 0, 0]
-    edit_source = Path(result["phases"][2]["source"])
-    assert module.PYTHON_TOUCH_MARKER in edit_source.read_text(encoding="utf-8")
+    assert [phase["phase"] for phase in result["phases"]] == ["cold", "warm"]
+    assert [phase["returncode"] for phase in result["phases"]] == [0, 0]
+    assert result["measurement"] == "latency"
+    assert source.read_bytes() == b"print(42)\n"
     python = module._molt_build_python_executable()
     for phase in result["phases"]:
         command = phase["command"]
         assert command[:4] == [python, "-m", "molt.cli", "build"]
-        assert "--cache-report" in command
-        assert "--diagnostics-file" in command
+        assert "--output" in command
+        assert not {
+            "--cache-report",
+            "--json",
+            "--diagnostics",
+            "--diagnostics-file",
+        } & set(command)
+        assert "[tool.molt]" in (
+            Path(phase["source"]).parent / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+        assert phase["measurement"] == "latency"
+        assert phase["output_size_bytes"] == len(b"mock artifact")
+        assert phase["artifact"]["cache"] is None
+        assert phase["artifact"]["observed_toolchain"] is None
+        assert phase["artifact"]["correctness_verified"] is False
 
 
 @pytest.mark.parametrize("proof_queue", [False, True])
@@ -825,6 +851,8 @@ def test_main_molt_build_default_output_root_records_real_diagnostics_paths(
             str(target),
             "--scenarios",
             "molt-build-native",
+            "--molt-measurement",
+            "attribution",
             "--molt-source",
             str(source),
             "--json-out",
@@ -836,7 +864,7 @@ def test_main_molt_build_default_output_root_records_real_diagnostics_paths(
 
     payload = json.loads(out.read_text(encoding="utf-8"))
     expected_root = (tmp_path / "proof" / "row.molt-builds").resolve()
-    assert routes == ["per-phase"] + ["outer" if proof_queue else "per-phase"] * 3
+    assert routes == ["per-phase"] + ["outer" if proof_queue else "per-phase"] * 2
     assert payload["meta"]["molt_output_root_resolved"] == str(expected_root)
     for phase in payload["results"]["molt-build-native"]["phases"]:
         diagnostics_path = Path(phase["diagnostics_file"])
@@ -858,6 +886,9 @@ def test_guest_cache_isolation_retains_compiler_home_and_original_witnesses(
     source = tmp_path / "hello.py"
     original = b"print(42)\n"
     source.write_bytes(original)
+    companion = tmp_path / "edited.py"
+    edited = b"print(43)\n"
+    companion.write_bytes(edited)
     ambient_cache = tmp_path / "shared-cache"
     ambient_cache.mkdir()
     (ambient_cache / "do-not-delete").write_bytes(b"shared")
@@ -913,6 +944,8 @@ def test_guest_cache_isolation_retains_compiler_home_and_original_witnesses(
             "molt-build-native",
             "--molt-source",
             str(source),
+            "--molt-edited-source",
+            str(companion),
             "--molt-output-root",
             str(outputs),
             "--json-out",
@@ -932,11 +965,7 @@ def test_guest_cache_isolation_retains_compiler_home_and_original_witnesses(
     for index, phase in enumerate(result["phases"]):
         witness = Path(phase["source_identity"]["witness"])
         content = witness.read_bytes()
-        expected = (
-            original
-            if index % 3 != 2
-            else original + b"\n__molt_dx_build_timer_edit__ = 1\n"
-        )
+        expected = original if index % 3 != 2 else edited
         assert content == expected
         assert phase["source_identity"]["sha256"] == hashlib.sha256(content).hexdigest()
         assert phase["source_after_sha256"] == phase["source_identity"]["sha256"]
@@ -948,6 +977,7 @@ def test_guest_cache_isolation_retains_compiler_home_and_original_witnesses(
         assert phase["cache_contract"]["empty_before_cold"] is True
         assert not phase["validation_errors"]
     assert source.read_bytes() == original
+    assert companion.read_bytes() == edited
     assert (ambient_cache / "do-not-delete").read_bytes() == b"shared"
     assert (target / "compiler").read_bytes() == b"provisioned"
     assert (retained / "prior-evidence").read_bytes() == b"keep"
@@ -1010,6 +1040,8 @@ def test_invalid_build_preserves_failure_evidence_and_stops_phases(
             str(tmp_path / "target"),
             "--scenarios",
             "molt-build-native",
+            "--molt-measurement",
+            "attribution",
             "--molt-source",
             str(source),
             "--json-out",
@@ -1038,7 +1070,7 @@ def test_invalid_build_preserves_failure_evidence_and_stops_phases(
             assert "differs from CLI" in phase["validation_errors"][0]
 
 
-@pytest.mark.parametrize("mutation_point", ["warm_snapshot", "edit_append"])
+@pytest.mark.parametrize("mutation_point", ["warm_snapshot", "edit_write"])
 def test_edit_rejects_source_mutation_without_adopting_it_as_expected(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1048,8 +1080,11 @@ def test_edit_rejects_source_mutation_without_adopting_it_as_expected(
     source = tmp_path / "hello.py"
     original = b"print(42)\n"
     source.write_bytes(original)
+    companion = tmp_path / "edited.py"
+    edited = b"print(43)\n"
+    companion.write_bytes(edited)
     out = tmp_path / "result.json"
-    calls, appended = [], []
+    calls, writes = [], []
     snapshot = module._write_snapshot
     apply_edit = module._apply_python_edit
     injected = False
@@ -1070,18 +1105,17 @@ def test_edit_rejects_source_mutation_without_adopting_it_as_expected(
             Path(phases[-1]["source"]).write_bytes(b"print(99)\n")
             injected = True
 
-    def inject_at_append(path):
-        appended.append(path)
-        marker = apply_edit(path)
-        # Mutation after the write but before its caller reads the result.
-        if mutation_point == "edit_append":
-            path.write_bytes(b"print(99)\n" + path.read_bytes())
-        return marker
+    def inject_at_write(path, before, after):
+        writes.append(path)
+        apply_edit(path, before, after)
+        # Mutation after the owned transition returns must not become expected.
+        if mutation_point == "edit_write":
+            path.write_bytes(b"print(99)\n" + after)
 
     _mock_build_execution(monkeypatch, module, run)
     monkeypatch.setattr(module, "_drain_current_session_backend_daemons", lambda _: 0)
     monkeypatch.setattr(module, "_write_snapshot", inject_at_snapshot)
-    monkeypatch.setattr(module, "_apply_python_edit", inject_at_append)
+    monkeypatch.setattr(module, "_apply_python_edit", inject_at_write)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1095,19 +1129,17 @@ def test_edit_rejects_source_mutation_without_adopting_it_as_expected(
             "molt-build-native",
             "--molt-source",
             str(source),
+            "--molt-edited-source",
+            str(companion),
             "--json-out",
             str(out),
         ],
     )
     assert module.main() == 1
     assert len(calls) == 2
-    assert len(appended) == (0 if mutation_point == "warm_snapshot" else 1)
+    assert len(writes) == (0 if mutation_point == "warm_snapshot" else 1)
     result = json.loads(out.read_text(encoding="utf-8"))["results"]["molt-build-native"]
-    assert (
-        "between build phases" in result["error"]
-        if mutation_point == "warm_snapshot"
-        else "intended edit" in result["error"]
-    )
+    assert "scenario source changed between build phases" in result["error"]
     assert [phase["phase"] for phase in result["phases"]] == ["cold", "warm"]
     for phase in result["phases"]:
         assert Path(phase["source_identity"]["witness"]).read_bytes() == original
@@ -1116,3 +1148,198 @@ def test_edit_rejects_source_mutation_without_adopting_it_as_expected(
         )
         assert Path(phase["stdout_file"]).is_file()
     assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("measurement", ["latency", "attribution"])
+@pytest.mark.parametrize("target", ["native", "wasm", "wasm-split"])
+def test_measurement_command_preserves_real_cli_cutoff_admission(
+    tmp_path, monkeypatch, measurement, target
+):
+    from molt.cli import build_command, entrypoint_dispatch, entrypoint_parser
+
+    for variable in (
+        "MOLT_CLI_PROFILE",
+        "MOLT_BUILD_DIAGNOSTICS",
+        "MOLT_BUILD_DIAGNOSTICS_FILE",
+        "MOLT_EXTERNAL_STATIC_PACKAGES",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    source = tmp_path / "main.py"
+    source.write_bytes(b"print(42)\n")
+    output = (
+        tmp_path / "out" / ("program.bin" if target == "native" else "program.wasm")
+    )
+    command = dx_build_timer._molt_build_command(
+        source=source,
+        target=target,
+        profile="dev",
+        out_dir=output.parent,
+        output=output,
+        measurement=dx_build_timer.MoltMeasurement(measurement),
+        cache_dir=tmp_path / "cache",
+        diagnostics_file=tmp_path / "diagnostics.json",
+    )
+    flags = {"--json", "--cache-report", "--diagnostics", "--diagnostics-file"}
+    assert flags.intersection(command) == (
+        flags if measurement == "attribution" else set()
+    )
+    assert command[command.index("--output") + 1] == str(output)
+    admitted = []
+
+    def observe(request):
+        admitted.append(build_command._early_cutoff_request(request))
+        assert request.output == str(output)
+        return 0
+
+    parser = entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(command[3:])
+    assert (
+        entrypoint_dispatch._dispatch_entrypoint_command(
+            args,
+            parser=parser,
+            build_fn=observe,
+            config_root=tmp_path,
+            config={},
+            build_cfg={},
+            run_cfg={},
+            compare_cfg={},
+            test_cfg={},
+            diff_cfg={},
+            extension_cfg={},
+            publish_cfg={},
+            cfg_capabilities=None,
+        )
+        == 0
+    )
+    assert len(admitted) == 1
+    assert (admitted[0] is not None) is (
+        measurement == "latency" and target == "native"
+    )
+    assert ("--split-runtime" in command) is (target == "wasm-split")
+
+
+@pytest.mark.parametrize("measurement", ["latency", "attribution"])
+@pytest.mark.parametrize(
+    "defect", [None, "missing", "directory", "symlink", "reported_elsewhere"]
+)
+def test_artifact_observation_binds_exact_owned_output(tmp_path, measurement, defect):
+    if measurement == "latency" and defect == "reported_elsewhere":
+        # Ordinary stdout is deliberately not an artifact-location authority.
+        stdout = '{"command":"build","status":"ok","data":{"output":"foreign"}}'
+    else:
+        stdout = "ordinary non-JSON compiler output"
+    output = tmp_path / "program.bin"
+    sibling = tmp_path / "other.bin"
+    content = b"owned compiled artifact"
+    sibling.write_bytes(content)
+    if defect == "directory":
+        output.mkdir()
+    elif defect == "symlink":
+        try:
+            output.symlink_to(sibling)
+        except OSError:
+            pytest.skip("host does not permit symbolic links")
+    elif defect != "missing":
+        output.write_bytes(content)
+    if measurement == "attribution":
+        stdout = json.dumps(
+            {
+                "command": "build",
+                "status": "ok",
+                "data": {
+                    "output": str(
+                        sibling if defect == "reported_elsewhere" else output
+                    ),
+                    "cache": {"hit": False},
+                },
+            }
+        )
+    mode = dx_build_timer.MoltMeasurement(measurement)
+    if defect in {"missing", "directory", "symlink"} or (
+        defect == "reported_elsewhere" and measurement == "attribution"
+    ):
+        with pytest.raises((OSError, ValueError)):
+            dx_build_timer._molt_build_artifact(stdout, output, mode)
+    else:
+        artifact = dx_build_timer._molt_build_artifact(stdout, output, mode)
+        assert artifact["path"] == str(output)
+        assert artifact["identity"]["sha256"] == hashlib.sha256(content).hexdigest()
+        assert artifact["correctness_verified"] is False
+        if measurement == "latency":
+            assert artifact["cache"] is None
+            assert artifact["observed_toolchain"] is None
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "MOLT_CLI_PROFILE",
+        "MOLT_BUILD_DIAGNOSTICS",
+        "MOLT_BUILD_DIAGNOSTICS_FILE",
+    ],
+)
+def test_latency_refuses_inherited_instrumentation_before_any_command(
+    tmp_path, monkeypatch, variable, capsys
+):
+    source = tmp_path / "main.py"
+    source.write_bytes(b"print(42)\n")
+    monkeypatch.setenv(variable, "instrumented")
+    monkeypatch.setattr(
+        dx_build_timer,
+        "_run_completed",
+        lambda *_a, **_k: pytest.fail(
+            "instrumented latency request launched a command"
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dx_build_timer.py",
+            "--target-dir",
+            str(tmp_path / "target"),
+            "--scenarios",
+            "molt-build-native",
+            "--molt-source",
+            str(source),
+        ],
+    )
+    assert dx_build_timer.main() == 2
+    assert variable in capsys.readouterr().err
+
+
+def test_measurement_mode_rejects_unknown_value_before_commands(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        dx_build_timer,
+        "_run_completed",
+        lambda *_a, **_k: pytest.fail("unknown mode launched a command"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dx_build_timer.py",
+            "--target-dir",
+            str(tmp_path / "target"),
+            "--molt-measurement",
+            "fast-ish",
+        ],
+    )
+    with pytest.raises(SystemExit) as failure:
+        dx_build_timer.main()
+    assert failure.value.code == 2
+
+
+def test_explicit_edit_preserves_companion_bytes_and_refuses_foreign_original(tmp_path):
+    source = tmp_path / "main.py"
+    before = b"def answer():\n    return 42\nprint(answer())\n"
+    after = b"def answer():\n    return 43\nprint(answer())\n"
+    source.write_bytes(before)
+    dx_build_timer._apply_python_edit(source, before, after)
+    assert source.read_bytes() == after
+    foreign = b"print('foreign owner')\n"
+    source.write_bytes(foreign)
+    with pytest.raises(ValueError):
+        dx_build_timer._apply_python_edit(source, before, after)
+    assert source.read_bytes() == foreign
