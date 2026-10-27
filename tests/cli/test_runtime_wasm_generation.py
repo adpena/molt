@@ -15,12 +15,19 @@ import pytest
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmExpectedPair,
+    RuntimeWasmReceiptRole,
+    RuntimeWasmGeneration,
+    SourceRuntimeWasmGeneration,
     bind_runtime_wasm_codegen,
     _generation_receipts,
     hydrate_runtime_wasm_generation,
+    hydrate_runtime_wasm_product,
     publish_runtime_wasm_generation,
+    publish_runtime_wasm_product,
     read_runtime_wasm_generation,
+    read_runtime_wasm_product,
     runtime_wasm_generation_identities,
+    runtime_wasm_product_identities,
     runtime_wasm_generation_path,
 )
 from tests.runtime_build_identity_helper import (
@@ -39,18 +46,63 @@ def _identity(
 def test_expected_pair_is_one_exact_shared_reloc_pair(tmp_path: Path) -> None:
     shared = _identity("shared")
     reloc = _identity("reloc")
-    pair = RuntimeWasmExpectedPair(shared, reloc)
+    pair = RuntimeWasmExpectedPair(shared, reloc, RuntimeWasmReceiptRole.SOURCE_BUILD)
     path = tmp_path / "expected.json"
 
     pair.write(path)
 
     assert RuntimeWasmExpectedPair.read(path) == pair
+    wire = pair.to_dict()
+    assert set(wire) == {
+        "schema",
+        "receipt_role",
+        "family_digest",
+        "family",
+        "shared",
+        "reloc",
+    }
+    assert set(wire["shared"]) == {"digest", "compile_digest", "member_kind"}
+    decoded = RuntimeWasmExpectedPair.from_dict(wire)
+    assert decoded.shared.payload["family"] is decoded.reloc.payload["family"]
+    wire["family"].clear()
+    assert decoded == pair
     with pytest.raises(ValueError, match="schema is invalid"):
         RuntimeWasmExpectedPair.from_dict({**pair.to_dict(), "legacy": {}})
     with pytest.raises(ValueError, match="one shared/reloc build pair"):
-        RuntimeWasmExpectedPair(shared, _identity("reloc", "other-pair"))
+        RuntimeWasmExpectedPair(
+            shared,
+            _identity("reloc", "other-pair"),
+            RuntimeWasmReceiptRole.SOURCE_BUILD,
+        )
     with pytest.raises(ValueError, match="one shared/reloc build pair"):
-        RuntimeWasmExpectedPair(_identity("reloc"), reloc)
+        RuntimeWasmExpectedPair(
+            _identity("reloc"), reloc, RuntimeWasmReceiptRole.SOURCE_BUILD
+        )
+
+
+@pytest.mark.parametrize(
+    "damage", ["family-digest", "member-digest", "member-kind", "expanded-pair"]
+)
+def test_expected_pair_admits_one_family_and_exact_member_references(damage):
+    pair = RuntimeWasmExpectedPair(
+        _identity("shared"), _identity("reloc"), RuntimeWasmReceiptRole.SOURCE_BUILD
+    )
+    wire = pair.to_dict()
+    if damage == "family-digest":
+        wire["family_digest"] = "f" * 64
+    elif damage == "member-digest":
+        wire["shared"]["digest"] = "f" * 64
+    elif damage == "member-kind":
+        wire["shared"], wire["reloc"] = wire["reloc"], wire["shared"]
+    else:
+        wire = {
+            "schema": wire["schema"],
+            "receipt_role": wire["receipt_role"],
+            "shared": pair.shared.to_dict(),
+            "reloc": pair.reloc.to_dict(),
+        }
+    with pytest.raises(ValueError):
+        RuntimeWasmExpectedPair.from_dict(wire)
 
 
 def test_expected_pair_reuses_only_exact_existing_wire_bytes(
@@ -58,7 +110,9 @@ def test_expected_pair_reuses_only_exact_existing_wire_bytes(
 ) -> None:
     from molt import file_publication
 
-    pair = RuntimeWasmExpectedPair(_identity("shared"), _identity("reloc"))
+    pair = RuntimeWasmExpectedPair(
+        _identity("shared"), _identity("reloc"), RuntimeWasmReceiptRole.SOURCE_BUILD
+    )
     path = tmp_path / "expected.json"
     pair.write(path)
     original_bytes = path.read_bytes()
@@ -83,7 +137,9 @@ def test_expected_pair_reuses_only_exact_existing_wire_bytes(
     assert path.read_bytes() == original_bytes
     assert RuntimeWasmExpectedPair.read(path) == pair
     changed = RuntimeWasmExpectedPair(
-        _identity("shared", "changed"), _identity("reloc", "changed")
+        _identity("shared", "changed"),
+        _identity("reloc", "changed"),
+        RuntimeWasmReceiptRole.SOURCE_BUILD,
     )
     changed.write(path)
     assert len(writes) == 2
@@ -94,8 +150,8 @@ def test_expected_pair_reuses_only_exact_existing_wire_bytes(
 @pytest.mark.parametrize(
     "text",
     (
-        '{"schema":"molt.runtime-wasm-expected-pair.v2","schema":"duplicate"}',
-        '{"schema":"molt.runtime-wasm-expected-pair.v2","shared":NaN,"reloc":{}}',
+        '{"schema":"molt.runtime-wasm-expected-pair.v3","schema":"duplicate"}',
+        '{"schema":"molt.runtime-wasm-expected-pair.v3","shared":NaN,"reloc":{}}',
     ),
 )
 def test_expected_pair_reader_rejects_inexact_json(tmp_path: Path, text: str) -> None:
@@ -355,7 +411,7 @@ def test_generation_rejects_self_asserted_identity_and_cross_pair_mix(
 ) -> None:
     generation, shared_identity, reloc_identity = _publish_pair(tmp_path)
     payload = json.loads(generation.manifest.read_text(encoding="utf-8"))
-    payload["receipts"]["shared"]["identity"]["digest"] = "0" * 64
+    payload["product"]["receipts"]["shared"]["identity"]["digest"] = "0" * 64
     generation.manifest.write_text(json.dumps(payload), encoding="utf-8")
     assert (
         read_runtime_wasm_generation(
@@ -381,9 +437,11 @@ def test_receipt_stores_the_shared_family_once_and_rebuilds_both_members(
     generation, shared_identity, reloc_identity = _publish_pair(tmp_path)
     payload = json.loads(generation.manifest.read_text(encoding="utf-8"))
     # HF-183: one family payload; each member keeps only its reference.
-    assert payload["family"] == shared_identity.to_dict()["payload"]["family"]
+    assert (
+        payload["product"]["family"] == shared_identity.to_dict()["payload"]["family"]
+    )
     for kind, identity in (("shared", shared_identity), ("reloc", reloc_identity)):
-        assert payload["receipts"][kind]["identity"] == {
+        assert payload["product"]["receipts"][kind]["identity"] == {
             "digest": identity.digest,
             "compile_digest": identity.compile_digest,
             "member_kind": kind,
@@ -397,7 +455,7 @@ def test_receipt_stores_the_shared_family_once_and_rebuilds_both_members(
     ]
 
     # A family that no longer hashes to family_digest is refused by both readers.
-    payload["family"]["schema"] = "tampered"
+    payload["product"]["family"]["schema"] = "tampered"
     generation.manifest.write_text(json.dumps(payload), encoding="utf-8")
     assert (
         read_runtime_wasm_generation(
@@ -973,7 +1031,7 @@ def test_unknown_generation_files_start_their_window_at_first_sight(
 
 
 @pytest.mark.parametrize(
-    "invalid", ["prior-epoch", "missing-inputs", "malformed-inputs"]
+    "invalid", ["prior-epoch", "prior-v5", "missing-inputs", "malformed-inputs"]
 )
 def test_generation_rejects_receipts_without_complete_environment_observation(
     tmp_path, invalid
@@ -983,6 +1041,8 @@ def test_generation_rejects_receipts_without_complete_environment_observation(
     assert payload["cargo_environment"] == generation.cargo_environment.to_dict()
     if invalid == "prior-epoch":
         payload["schema"] = "molt.runtime-wasm-generation.v4"
+    elif invalid == "prior-v5":
+        payload["schema"] = "molt.runtime-wasm-generation.v5"
     elif invalid == "missing-inputs":
         del payload["cargo_environment"]
     else:
@@ -1011,7 +1071,7 @@ def test_generation_observation_is_context_free_and_byte_keys_ignore_provenance(
     first, shared, reloc = _publish_pair(first_root)
     first_binding = bind_runtime_wasm_codegen(first, None)
     monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "second-build")
-    # Installed/transport parsing validates shape and exact members, independently
+    # Source transport parsing validates shape and exact members, independently
     # of a consumer process's unrelated ambient configuration.
     admitted = read_runtime_wasm_generation(
         first.manifest, expected_shared_identity=shared, expected_reloc_identity=reloc
@@ -1031,3 +1091,178 @@ def test_generation_observation_is_context_free_and_byte_keys_ignore_provenance(
     )
     first_binding.verify()
     second_binding.verify()
+
+
+def test_source_and_product_roles_have_strict_distinct_wire_contracts(tmp_path):
+    source, shared, reloc = _publish_pair(tmp_path)
+    assert isinstance(source, SourceRuntimeWasmGeneration)
+    envelope = json.loads(source.manifest.read_text(encoding="utf-8"))
+    assert set(envelope) == {"schema", "product", "cargo_environment"}
+    assert envelope["schema"] == "molt.runtime-wasm-generation.v6"
+    assert envelope == source.source_payload()
+    product = source.product_payload()
+    assert set(product) == {"schema", "family", "family_digest", "receipts"}
+    assert product["schema"] == "molt.runtime-wasm-product.v1"
+    assert runtime_wasm_product_identities(product) == (shared, reloc)
+    with pytest.raises(ValueError):
+        runtime_wasm_product_identities(envelope)
+    with pytest.raises(ValueError):
+        runtime_wasm_generation_identities(product)
+    assert (
+        read_runtime_wasm_product(
+            source.manifest,
+            expected_shared_identity=shared,
+            expected_reloc_identity=reloc,
+        )
+        is None
+    )
+
+    product_manifest = source.manifest.with_name("installed-product.json")
+    product_manifest.write_text(json.dumps(product), encoding="utf-8")
+    installed = read_runtime_wasm_product(
+        product_manifest,
+        expected_shared_identity=shared,
+        expected_reloc_identity=reloc,
+    )
+    assert type(installed) is RuntimeWasmGeneration
+    assert not hasattr(installed, "cargo_environment")
+    assert (
+        read_runtime_wasm_generation(
+            product_manifest,
+            expected_shared_identity=shared,
+            expected_reloc_identity=reloc,
+        )
+        is None
+    )
+    # Source evidence cannot be smuggled into the product's strict key set.
+    product["cargo_environment"] = source.cargo_environment.to_dict()
+    product_manifest.write_text(json.dumps(product), encoding="utf-8")
+    assert (
+        read_runtime_wasm_product(
+            product_manifest,
+            expected_shared_identity=shared,
+            expected_reloc_identity=reloc,
+        )
+        is None
+    )
+
+
+def test_installed_product_hydration_and_binding_never_create_source_evidence(tmp_path):
+    source, shared, reloc = _publish_pair(tmp_path)
+    product = publish_runtime_wasm_product(
+        tmp_path / "installed" / "molt_runtime.wasm",
+        tmp_path / "installed" / "molt_runtime_reloc.wasm",
+        shared_identity=shared,
+        reloc_identity=reloc,
+        source_shared=source.shared,
+        source_reloc=source.reloc,
+    )
+    assert product.product_payload() == source.product_payload()
+    binding = bind_runtime_wasm_codegen(product, None)
+    assert type(binding.generation) is RuntimeWasmGeneration
+    assert binding.generation.payload is product.payload
+    assert (
+        json.loads(binding.generation.manifest.read_text()) == product.product_payload()
+    )
+    binding.verify()
+    hydrated = hydrate_runtime_wasm_product(
+        source_manifest=binding.generation.manifest,
+        dest_shared=tmp_path / "hydrated" / "molt_runtime.wasm",
+        dest_reloc=tmp_path / "hydrated" / "molt_runtime_reloc.wasm",
+        expected_shared_identity=shared,
+        expected_reloc_identity=reloc,
+        source_generation=binding.generation,
+    )
+    assert type(hydrated) is RuntimeWasmGeneration
+    assert hydrated.product_payload() == product.product_payload()
+    assert hydrated.shared.read_bytes() == b"shared"
+    assert hydrated.reloc.read_bytes() == b"reloc"
+    with pytest.raises(ValueError, match="source hydration requires"):
+        hydrate_runtime_wasm_generation(
+            source_manifest=product.manifest,
+            dest_shared=tmp_path / "forbidden" / "molt_runtime.wasm",
+            dest_reloc=tmp_path / "forbidden" / "molt_runtime_reloc.wasm",
+            expected_shared_identity=shared,
+            expected_reloc_identity=reloc,
+            source_generation=product,
+        )
+    with pytest.raises(ValueError, match="product hydration requires"):
+        hydrate_runtime_wasm_product(
+            source_manifest=source.manifest,
+            dest_shared=tmp_path / "forbidden" / "molt_runtime.wasm",
+            dest_reloc=tmp_path / "forbidden" / "molt_runtime_reloc.wasm",
+            expected_shared_identity=shared,
+            expected_reloc_identity=reloc,
+            source_generation=source,
+        )
+    assert not (tmp_path / "forbidden").exists()
+
+
+def test_equal_products_preserve_distinct_raw_flag_observations(tmp_path):
+    from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+    from molt.process_environment import ProcessEnvironment
+
+    flags = "CARGO_ENCODED_RUSTFLAGS"
+    generations = []
+    environments = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        root.mkdir()
+        environment = ProcessEnvironment({flags: f"--remap-path-prefix={root}=/src"})
+        environments.append(environment)
+        observed = CargoEnvironmentInputs.capture(
+            environment, (flags,), local_unit_count=1
+        )
+        shared, reloc = _source_pair(root / "raw", b"same shared", b"same reloc")
+        generation = publish_runtime_wasm_generation(
+            root / "molt_runtime.wasm",
+            root / "molt_runtime_reloc.wasm",
+            shared_identity=_identity("shared"),
+            reloc_identity=_identity("reloc"),
+            cargo_environment=observed,
+            source_shared=shared,
+            source_reloc=reloc,
+        )
+        generations.append(generation)
+    first, second = generations
+    assert first.product_payload() == second.product_payload()
+    assert first.source_payload() != second.source_payload()
+    first.cargo_environment.verify(environments[0])
+    with pytest.raises(ValueError):
+        first.cargo_environment.verify(environments[1])
+    binding = bind_runtime_wasm_codegen(first, None)
+    assert isinstance(binding.generation, SourceRuntimeWasmGeneration)
+    assert binding.generation.payload is first.payload
+    assert json.loads(binding.generation.manifest.read_text()) == first.source_payload()
+    hydrated = hydrate_runtime_wasm_generation(
+        source_manifest=binding.generation.manifest,
+        dest_shared=tmp_path / "source-copy" / "molt_runtime.wasm",
+        dest_reloc=tmp_path / "source-copy" / "molt_runtime_reloc.wasm",
+        expected_shared_identity=first.shared_identity,
+        expected_reloc_identity=first.reloc_identity,
+        source_generation=binding.generation,
+    )
+    assert hydrated.source_payload() == first.source_payload()
+    with pytest.raises(ValueError):
+        hydrated.cargo_environment.verify(environments[1])
+
+
+@pytest.mark.parametrize("role", list(RuntimeWasmReceiptRole))
+def test_expected_pair_requires_and_retains_explicit_receipt_role(tmp_path, role):
+    pair = RuntimeWasmExpectedPair(_identity("shared"), _identity("reloc"), role)
+    path = tmp_path / "expected.json"
+    pair.write(path)
+    assert RuntimeWasmExpectedPair.read(path).receipt_role is role
+    wire = json.loads(path.read_text())
+    assert wire["schema"] == "molt.runtime-wasm-expected-pair.v3"
+    assert wire["receipt_role"] == role.value
+    del wire["receipt_role"]
+    with pytest.raises(ValueError):
+        RuntimeWasmExpectedPair.from_dict(wire)
+    wire["receipt_role"] = "guess-from-manifest"
+    with pytest.raises(ValueError):
+        RuntimeWasmExpectedPair.from_dict(wire)
+    wire["receipt_role"] = role.value
+    wire["schema"] = "molt.runtime-wasm-expected-pair.v2"
+    with pytest.raises(ValueError):
+        RuntimeWasmExpectedPair.from_dict(wire)

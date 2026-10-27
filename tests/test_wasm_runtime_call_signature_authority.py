@@ -179,7 +179,10 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         WASM_RUNTIME_IMPORT_EXPORT_NAMES,
     )
     from molt.cli.artifact_state import _build_state_root
-    from molt.cli.runtime_wasm_generation import RuntimeWasmExpectedPair
+    from molt.cli.runtime_wasm_generation import (
+        RuntimeWasmExpectedPair,
+        RuntimeWasmReceiptRole,
+    )
     from molt.cli.runtime_paths import _runtime_wasm_artifact_path_from_env
     from molt.cli.runtime_wasm_generation import (
         read_runtime_wasm_generation,
@@ -218,6 +221,8 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         try:
             expected = RuntimeWasmExpectedPair.read(expected_path)
         except ValueError:
+            continue
+        if expected.receipt_role is not RuntimeWasmReceiptRole.SOURCE_BUILD:
             continue
         generation = read_runtime_wasm_generation(
             generation_manifest,

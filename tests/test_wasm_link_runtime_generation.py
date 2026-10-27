@@ -7,6 +7,8 @@ import pytest
 
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmExpectedPair,
+    RuntimeWasmReceiptRole,
+    publish_runtime_wasm_product,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
 )
@@ -119,7 +121,9 @@ def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> 
     )
     expected = tmp_path / "trusted-build-state" / "expected.json"
     expected.parent.mkdir()
-    RuntimeWasmExpectedPair(shared_identity, reloc_identity).write(expected)
+    RuntimeWasmExpectedPair(
+        shared_identity, reloc_identity, RuntimeWasmReceiptRole.SOURCE_BUILD
+    ).write(expected)
 
     selected = wasm_link._verify_runtime_generation(
         reloc=generation.reloc,
@@ -184,3 +188,68 @@ def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> 
             generation_manifest=generation.manifest,
             expected_identity=expected,
         )
+
+
+@pytest.mark.parametrize("product", [False, True])
+@pytest.mark.parametrize("consumer", ["linker", "benchmark"])
+def test_linker_requires_caller_receipt_role_even_when_members_match(
+    tmp_path, product, consumer
+):
+    from argparse import Namespace
+    from tools import bench_wasm_link_cache
+
+    shared_identity = runtime_build_identity("shared")
+    reloc_identity = runtime_build_identity("reloc")
+    source_shared = tmp_path / "shared-source.wasm"
+    source_reloc = tmp_path / "reloc-source.wasm"
+    source_shared.write_bytes(b"shared-runtime")
+    source_reloc.write_bytes(b"reloc-runtime")
+    destination = tmp_path / "published"
+    kwargs = dict(
+        shared_identity=shared_identity,
+        reloc_identity=reloc_identity,
+        source_shared=source_shared,
+        source_reloc=source_reloc,
+    )
+    if product:
+        generation = publish_runtime_wasm_product(
+            destination / "molt_runtime.wasm",
+            destination / "molt_runtime_reloc.wasm",
+            **kwargs,
+        )
+        wrong_role = RuntimeWasmReceiptRole.SOURCE_BUILD
+    else:
+        generation = publish_runtime_wasm_generation(
+            destination / "molt_runtime.wasm",
+            destination / "molt_runtime_reloc.wasm",
+            cargo_environment=runtime_cargo_environment_inputs(),
+            **kwargs,
+        )
+        wrong_role = RuntimeWasmReceiptRole.INSTALLED_PRODUCT
+    expected = tmp_path / "expected.json"
+
+    def read():
+        if consumer == "benchmark":
+            return bench_wasm_link_cache._admitted_runtime_generation(
+                Namespace(
+                    runtime_generation=generation.manifest,
+                    runtime_expected_identity=expected,
+                )
+            )
+        return wasm_link._verify_runtime_generation(
+            shared=generation.shared,
+            reloc=generation.reloc,
+            generation_manifest=generation.manifest,
+            expected_identity=expected,
+        )
+
+    RuntimeWasmExpectedPair(shared_identity, reloc_identity, wrong_role).write(expected)
+    with pytest.raises(SystemExit, match="trusted.*identity"):
+        read()
+    RuntimeWasmExpectedPair(
+        shared_identity, reloc_identity, generation.receipt_role
+    ).write(expected)
+    admitted = read()
+    assert admitted.receipt_role is generation.receipt_role
+    assert admitted.shared.read_bytes() == b"shared-runtime"
+    assert admitted.reloc.read_bytes() == b"reloc-runtime"
