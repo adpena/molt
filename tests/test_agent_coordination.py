@@ -921,6 +921,99 @@ def test_agent_context_proof_audit_preserves_dead_custody_and_nonzero_status(
     assert errors[0]["return_code"] == 1
 
 
+@pytest.mark.parametrize(
+    ("isolated", "prefix_selected", "utf8"), [(0, False, 0), (1, True, 1)]
+)
+def test_agent_context_audit_child_preserves_startup_policy_without_bytecode_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated: int,
+    prefix_selected: bool,
+    utf8: int,
+) -> None:
+    from types import SimpleNamespace
+    from tests.process_guard_common import run_custody_subject_process
+    from tests.python_environment_test_support import create_test_venv
+    from tools import detached_execution
+
+    # Even the old unsafe command runs only this owned image. A .pth import
+    # executes before the audit script, reproducing pre-entry bytecode drift.
+    image = tmp_path / "owned-image"
+    executable = create_test_venv(image)
+    (site_packages,) = image.rglob("site-packages")
+    startup = site_packages / "context_startup_probe.py"
+    startup.write_text(
+        "import sys\n"
+        "policy = [sys.flags.isolated, sys.dont_write_bytecode, "
+        "sys.pycache_prefix, sys.flags.utf8_mode]\n",
+        encoding="utf-8",
+    )
+    (site_packages / "context_startup_probe.pth").write_text(
+        "import context_startup_probe\n", encoding="utf-8"
+    )
+    repo = tmp_path / "repo"
+    (repo / "tools").mkdir(parents=True)
+    (repo / "tools/proof_queue.py").write_text(
+        "import json, sys\n"
+        "assert 'context_startup_probe' in sys.modules, 'startup hook did not run'\n"
+        "print(json.dumps({'issues': [], 'startup': "
+        "sys.modules['context_startup_probe'].policy}))\n",
+        encoding="utf-8",
+    )
+    prefix = str(tmp_path / "selected bytecode") if prefix_selected else None
+    for module in (agent_coordination, detached_execution):
+        install_module_view(
+            monkeypatch,
+            "sys",
+            sys,
+            module,
+            executable=str(executable),
+            flags=SimpleNamespace(isolated=isolated, utf8_mode=utf8),
+            pycache_prefix=prefix,
+        )
+    observed = []
+
+    def execute_generated_command(source, command, *, cwd, timeout=30.0):
+        assert source == "proof.audit"
+        completed = run_custody_subject_process(
+            command,
+            cwd=cwd,
+            timeout=timeout,
+            env={
+                **os.environ,
+                "PYTHONDONTWRITEBYTECODE": "",
+                "PYTHONPATH": "",
+                "PYTHONHOME": "",
+                "PYTHONPYCACHEPREFIX": str(tmp_path / "ambient bytecode"),
+                "PYTHONUTF8": str(1 - utf8),
+            },
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        observed.append(json.loads(completed.stdout)["startup"])
+        return agent_coordination.ContextCommandResult(
+            source=source,
+            command=tuple(command),
+            return_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+
+    sources = (startup, startup.with_suffix(".pth"), repo / "tools/proof_queue.py")
+    before = {path: path.read_bytes() for path in sources}
+    monkeypatch.setattr(
+        agent_coordination, "_run_context_command", execute_generated_command
+    )
+    errors = []
+    payload = agent_coordination._proof_audit_context(repo, errors)
+    assert payload["available"] and errors == []
+    assert observed == [[isolated, True, prefix, utf8]]
+    assert not list(tmp_path.rglob("*.pyc")), "audit startup wrote bytecode"
+    assert {path: path.read_bytes() for path in sources} == before
+
+
 def test_agent_context_command_failure_is_structured_and_cli_returns_nonzero(
     monkeypatch,
     capsys,
