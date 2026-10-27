@@ -206,17 +206,17 @@ def scratch_root(
     artifact_root: str | Path,
     source_root: str | Path,
     *,
-    memory_root: str | Path | None = None,
+    storage_root: str | Path | None = None,
 ) -> Path:
     """Return the scratch root for an artifact root, never inside the checkout.
 
     Disk storage is `<artifact root>/tmp`, or the per-checkout host temp
-    folder when that path falls inside the checkout. Memory storage is one
-    folder per artifact root under the operator's memory-backed root.
+    folder when that path falls inside the checkout. An explicitly selected
+    disk or memory root holds one folder per artifact root.
     """
 
-    if memory_root is not None:
-        return Path(memory_root) / _identity_name(artifact_root)
+    if storage_root is not None:
+        return Path(storage_root) / _identity_name(artifact_root)
     scratch = Path(artifact_root) / SCRATCH_DIRNAME
     if host_path_is_within(scratch, source_root):
         return out_of_tree_scratch_root(source_root)

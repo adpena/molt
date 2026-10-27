@@ -63,6 +63,29 @@ ProcessSample = _process_model.ProcessSample
 ProcessIdentity = _process_model.ProcessIdentity
 ProcessTreeTracker = _process_model.ProcessTreeTracker
 RssViolation = _process_model.RssViolation
+
+
+@dataclass(frozen=True, slots=True)
+class RootGroupAbsence:
+    """A kernel observation of one absent group, never an empty host table."""
+
+    pgid: int
+
+    @classmethod
+    def observe(cls, pgid: int) -> Self | None:
+        if os.name != "posix" or pgid <= 0:
+            return None
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return cls(pgid)
+        except OSError:
+            # Permission refusal and an unavailable probe prove no absence.
+            pass
+        return None
+
+
+TerminalProcessObservation: TypeAlias = Mapping[int, ProcessSample] | RootGroupAbsence
 process_identity = _process_model.process_identity
 process_identity_has_creation_marker = (
     _process_model.process_identity_has_creation_marker

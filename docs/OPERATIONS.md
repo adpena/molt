@@ -712,11 +712,17 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   - `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=<policy default>`
   - `MOLT_USE_SCCACHE=1` and `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`; `CARGO_INCREMENTAL` stays unset, so the Cargo profile builds workspace crates incrementally while sccache caches registry crates
 - **Scratch storage and budget**: `MOLT_SCRATCH_STORAGE` selects run scratch
-  storage: `disk` (the default), `memory` (Linux `/dev/shm`), or the absolute
-  path of a memory-backed directory you mounted, such as a macOS RAM disk.
-  Molt never creates or mounts a RAM disk. Locks, guard markers and build
-  control stay on disk in every mode, so processes with different storage
-  still agree. Before a guarded run starts, the memory guard requires
+  storage: unset or `disk` uses the default artifact scratch; queued guards
+  retain their state-root sibling scratch default. Set
+  `disk:<absolute-existing-directory>` to place scratch on a chosen disk,
+  such as an existing directory on a local SSD. `memory` selects Linux
+  `/dev/shm`; a bare absolute path selects a memory-backed directory you
+  mounted, such as a macOS RAM disk. Explicit disk and memory roots override
+  state-root sibling placement for data scratch only. Molt never creates
+  or mounts a RAM disk. Locks, guard markers, build control, products and
+  caches retain their configured placement, so processes with different
+  scratch storage still agree on control state. Before a guarded run starts,
+  the memory guard requires
   `MOLT_SCRATCH_BUDGET_GB` (default 4) free on the scratch volume and refuses
   the run otherwise, instead of failing mid-run with `ENOSPC`. Set a larger
   budget for full-suite pytest runs.
