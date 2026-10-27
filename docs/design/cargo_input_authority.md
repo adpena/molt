@@ -250,9 +250,11 @@ The command owner also supplies the dep-info base explicitly: the repository
 workspace for runtime/backend and the isolated supervisor workspace for its
 crate. The allowed source fence can be wider than that relative-path base.
 
-The one observation is embedded in each existing result receipt: the native
-link manifest, WASM pair generation, CPython-ABI/backend artifact fingerprint,
-and supervisor generation inputs. Native selection binds its manifest by hash;
+The one observation is embedded in each source-build receipt: the native
+link envelope (schema 7), WASM pair envelope (v6), CPython-ABI/backend artifact
+fingerprint, and supervisor generation inputs. The native and WASM envelopes
+contain one canonical product and mandatory exact `CargoEnvironmentInputs`.
+Native selection binds its complete envelope by hash;
 codegen carries that original archive and manifest through final link. WASM and
 backend source hydration, selected and raw-output reuse, transfer and final
 admission verify the exact carried observation under the current frozen inputs.
@@ -264,9 +266,44 @@ A plan identity describes how to build; this result record describes what was
 read. A changed environment need not change output bytes. Application cache
 identity remains derived from admitted result bytes, following rustc's red-green
 principle, rather than acquiring an environment digest that invalidates equal
-results. Installed artifacts and historical/transport validation check the
-record's shape and member binding without consulting a consumer's ambient
-variables or requiring Cargo or a source checkout.
+results. Native and WASM installed artifacts contain only the canonical product:
+the build identity, actual final member identities and required link semantics.
+Their strict product readers reject a source envelope; strict source readers
+reject a bare product. Source hydration and transfer preserve the full envelope.
+An expected WASM pair also carries its explicit source-build or installed-product
+role through final linking. Its v3 wire format stores one family and two compact
+member references, using the same identity authority as product manifests. Both
+members share one recursively frozen family after decoding; family/member digest
+checks remain mandatory. This removes the duplicated family serialization and
+parse allocation without introducing a second identity rule.
+Installed admission requires the signed cell and
+actual members, without consulting a consumer's ambient variables or requiring
+Cargo. An installed product can never authorize source-cache reuse.
+
+This separation follows [rustc's red-green result comparison](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html#improving-accuracy-the-red-green-algorithm)
+and [Skyframe's explicit dependencies and change pruning](https://bazel.build/reference/skyframe).
+The Molt product/envelope schemas are our application of those principles.
+Cargo build scripts may read `CARGO_ENCODED_RUSTFLAGS` as data, including physical
+remap paths. Equal canonical flags do not establish equal script output. A raw
+observation change therefore still refuses source reuse even when independently
+built final bytes happen to match.
+
+Release production exports the admitted product under the existing cell
+publication transaction. The public inventory and cell identities are v3.
+Before its temporary source build retires, it captures the exact source envelope
+and writes one private `runtime-build-observations.json`, binding each delivered
+cell ID to its raw observations and original envelope SHA-256/size. This record
+is evidence only; it supplies no source-cache admission. Candidate v7 retains
+both independent observation files, while comparing public product inventories
+and actual members for reproducibility. These private records are excluded from
+the delivered archive and wheel. Different raw observations do not themselves
+mean the delivered products differ.
+
+Warm source reuse retains the same observation checks, member fences, leases and
+process count. Product export serializes each metadata payload once in place of
+copying its source envelope; it adds no archive or WASM member hash pass. Private
+release evidence adds one bounded envelope read per cell and one JSON file per
+generation. No second member registry or raw-value normalizer is introduced.
 
 Capture runs once after successful Cargo execution, using the reader's existing
 unit evidence. Warm verification hashes only the recorded present values:

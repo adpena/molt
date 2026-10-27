@@ -31,6 +31,10 @@ from molt.cli.product_store import ProductStore
 from molt.cli.native_link_custody import copy_native_link_custody_archive
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
+    NativeLinkManifestFacts,
+    NativeLinkProductFacts,
+    validate_native_link_dependency_manifest,
+    validate_native_link_product_manifest,
     manifest_from_cargo_json,
     native_link_dependency_manifest_path,
     native_link_flags_from_manifest,
@@ -38,6 +42,8 @@ from molt.cli.native_link_manifest import (
     read_native_link_flags,
     write_native_link_dependency_manifest,
 )
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.process_environment import ProcessEnvironment
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import write_test_static_archive
@@ -97,7 +103,8 @@ def _link_plan_items(
     manifest: Mapping[str, object],
 ) -> list[Mapping[str, object]]:
     return cast(
-        list[Mapping[str, object]], _mapping_field(manifest, "link_plan")["items"]
+        list[Mapping[str, object]],
+        _mapping_field(_mapping_field(manifest, "product"), "link_plan")["items"],
     )
 
 
@@ -196,12 +203,23 @@ def test_manifest_is_path_neutral_and_custodies_non_system_static_libraries(
         target_triple="x86_64-apple-darwin",
     )
     assert path == native_link_dependency_manifest_path(runtime)
-    assert manifest["schema_version"] == 6
+    assert manifest.source_payload()["schema_version"] == 7
+    assert manifest.product_payload()["schema_version"] == 1
     build_identity = build_args["runtime_build_identity"]
-    assert manifest["runtime_build_identity"] == build_identity.to_dict()
-    assert "build_scripts" not in manifest
-    assert os.fspath(tmp_path) not in json.dumps(manifest, sort_keys=True)
-    assert len(cast(list[object], _mapping_field(manifest, "custody")["entries"])) == 1
+    assert manifest.build_identity == build_identity
+    assert "build_scripts" not in manifest.product_payload()
+    assert os.fspath(tmp_path) not in json.dumps(
+        manifest.product_payload(), sort_keys=True
+    )
+    assert (
+        len(
+            cast(
+                list[object],
+                _mapping_field(manifest.product_payload(), "custody")["entries"],
+            )
+        )
+        == 1
+    )
     flags = native_link_flags_from_manifest(
         manifest,
         object_format="macho",
@@ -526,7 +544,10 @@ def test_system_framework_remains_an_explicit_path_neutral_link_plan_item(
         cargo_environment=runtime_cargo_environment_inputs(),
     )
 
-    assert _mapping_field(manifest, "custody")["archive"] is None
+    assert (
+        _mapping_field(_mapping_field(manifest, "product"), "custody")["archive"]
+        is None
+    )
     assert _link_plan_items(manifest) == [
         {"kind": "system-framework", "name": "Metal", "weak": False},
         {"kind": "system-framework", "name": "QuartzCore", "weak": True},
@@ -695,7 +716,7 @@ def test_manifest_rejects_nonstring_item_kind_with_domain_diagnostic(
         cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    manifest["link_plan"]["items"][0]["kind"] = kind
+    manifest["product"]["link_plan"]["items"][0]["kind"] = kind
     path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(
         NativeLinkDependencyManifestError, match="kind must be a string"
@@ -749,7 +770,7 @@ def test_manifest_rejects_resealed_runtime_numeric_coercion(
         cargo_environment=runtime_cargo_environment_inputs(),
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["runtime"]["size_bytes"] = size
+    manifest["product"]["runtime"]["size_bytes"] = size
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(NativeLinkDependencyManifestError, match="nonnegative integer"):
         read_native_link_dependency_manifest(runtime, target_triple=None)
@@ -776,13 +797,13 @@ def test_manifest_profile_follows_cargo_plan_after_storage_relocation(
         cargo_environment=runtime_cargo_environment_inputs(),
     )
     facts = read_native_link_dependency_manifest(runtime, target_triple=None)
-    assert facts["cargo"] == {
+    assert facts.product_payload()["cargo"] == {
         "profile": profile,
         "profile_dir": profile_dir,
         "target_triple": None,
     }
     payload = json.loads(receipt.read_text(encoding="utf-8"))
-    payload["cargo"]["profile_dir"] = runtime.parent.name
+    payload["product"]["cargo"]["profile_dir"] = runtime.parent.name
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(
         NativeLinkDependencyManifestError, match="profile identity is inconsistent"
@@ -805,7 +826,7 @@ def test_manifest_rejects_archive_target_profile_and_json_drift(tmp_path: Path) 
     manifest_path = native_link_dependency_manifest_path(runtime)
     original_manifest = manifest_path.read_text(encoding="utf-8")
     manifest = json.loads(original_manifest)
-    manifest["schema_version"] = 6.0
+    manifest["schema_version"] = 7.0
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(
         NativeLinkDependencyManifestError, match="unsupported manifest schema"
@@ -956,7 +977,7 @@ def test_hydrated_byte_identical_artifact_requires_matching_sidecar(
     with copy_native_link_custody_archive(
         provider,
         consumer,
-        provider_manifest["custody"],
+        provider_manifest["product"]["custody"],
     ):
         pass
     hydrated = read_native_link_dependency_manifest(
@@ -964,7 +985,7 @@ def test_hydrated_byte_identical_artifact_requires_matching_sidecar(
         target_triple=None,
         cargo_profile="dev-fast",
     )
-    assert _mapping_field(hydrated, "runtime")["sha256"]
+    assert _mapping_field(hydrated.product_payload(), "runtime")["sha256"]
 
 
 def test_manifest_replay_survives_pruned_producer_link_directories(
@@ -998,7 +1019,7 @@ def test_manifest_replay_survives_pruned_producer_link_directories(
         target_triple=None,
         runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
-    encoded = json.dumps(manifest, sort_keys=True)
+    encoded = json.dumps(manifest.product_payload(), sort_keys=True)
     assert os.fspath(out_dir) not in encoded
     assert os.fspath(linked_dir) not in encoded
 
@@ -1059,7 +1080,7 @@ def test_hydrated_manifest_refuses_foreign_runtime_build_identity(
     with copy_native_link_custody_archive(
         provider,
         consumer,
-        provider_manifest["custody"],
+        provider_manifest["product"]["custody"],
     ):
         pass
     hydrated = read_native_link_dependency_manifest(
@@ -1067,7 +1088,7 @@ def test_hydrated_manifest_refuses_foreign_runtime_build_identity(
         target_triple=None,
         runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
     )
-    assert hydrated["runtime_build_identity"] == _RUNTIME_BUILD_IDENTITY.to_dict()
+    assert hydrated.build_identity == _RUNTIME_BUILD_IDENTITY
     foreign_identity = native_runtime_staticlib_identity(
         cargo_profile="dev-fast",
         target_triple=None,
@@ -1108,7 +1129,7 @@ def test_repeated_publication_and_concurrent_reads_preserve_exact_build_identity
     final = path.read_bytes()
     assert final == first
 
-    def consume(_index: int) -> Mapping[str, object]:
+    def consume(_index: int) -> NativeLinkManifestFacts:
         return read_native_link_dependency_manifest(
             runtime,
             target_triple=None,
@@ -1119,8 +1140,7 @@ def test_repeated_publication_and_concurrent_reads_preserve_exact_build_identity
         snapshots = list(executor.map(consume, range(16)))
 
     assert all(
-        snapshot["runtime_build_identity"] == _RUNTIME_BUILD_IDENTITY.to_dict()
-        for snapshot in snapshots
+        snapshot.build_identity == _RUNTIME_BUILD_IDENTITY for snapshot in snapshots
     )
 
 
@@ -1316,7 +1336,7 @@ def test_manifest_reader_rejects_tampered_runtime_build_identity(
         cargo_environment=runtime_cargo_environment_inputs(),
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
-    identity = payload["runtime_build_identity"]
+    identity = payload["product"]["runtime_build_identity"]
     for part in identity_path[:-1]:
         identity = identity[part]
     identity[identity_path[-1]] = "tampered"
@@ -1643,3 +1663,153 @@ def test_link_dependency_authority_cannot_return_to_build_directory_scanning() -
     assert cargo_source.count("plan.verify()") == 2
     assert attempt_source.count('encoding="utf-8"') == 1
     assert attempt_source.count('errors="strict"') == 1
+
+
+def _source_product_fixture(
+    runtime: Path, environment: CargoEnvironmentInputs
+) -> dict[str, object]:
+    runtime.write_bytes(b"identical emitted native archive")
+    return manifest_from_cargo_json(
+        _cargo_output("", "-lm -lc -lm -ldl"),
+        runtime_lib=runtime,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+        cargo_environment=environment,
+    )
+
+
+def _admit_source_product(
+    source: Mapping[str, object], runtime: Path
+) -> NativeLinkManifestFacts:
+    return validate_native_link_dependency_manifest(
+        source,
+        runtime_identity=archive_identity.artifact_content_identity(runtime),
+        context="source-product control",
+        target_triple=None,
+        cargo_profile="dev-fast",
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+    )
+
+
+def test_equal_native_products_keep_distinct_exact_source_observations(tmp_path: Path):
+    # A build script can consume raw flags as data. Keep their exact hashes for
+    # source reuse while deriving product identity only from emitted semantics.
+    flags = "CARGO_ENCODED_RUSTFLAGS"
+    first_environment = ProcessEnvironment({flags: "--remap-path-prefix=/one=/molt"})
+    second_environment = ProcessEnvironment({flags: "--remap-path-prefix=/two=/molt"})
+    first = _admit_source_product(
+        _source_product_fixture(
+            tmp_path / "first.a",
+            CargoEnvironmentInputs.capture(
+                first_environment, (flags,), local_unit_count=1
+            ),
+        ),
+        tmp_path / "first.a",
+    )
+    second = _admit_source_product(
+        _source_product_fixture(
+            tmp_path / "second.a",
+            CargoEnvironmentInputs.capture(
+                second_environment, (flags,), local_unit_count=1
+            ),
+        ),
+        tmp_path / "second.a",
+    )
+    assert first.product_payload() == second.product_payload()
+    assert first.source_payload() != second.source_payload()
+    first.cargo_environment.verify(first_environment)
+    with pytest.raises(ValueError, match=flags):
+        first.cargo_environment.verify(second_environment)
+
+    product = validate_native_link_product_manifest(
+        first.product_payload(),
+        runtime_identity=archive_identity.artifact_content_identity(
+            tmp_path / "first.a"
+        ),
+        context="installed product control",
+        target_triple=None,
+        runtime_build_identity=_RUNTIME_BUILD_IDENTITY,
+    )
+    assert type(product) is NativeLinkProductFacts
+    assert not hasattr(product, "cargo_environment")
+    assert native_link_flags_from_manifest(product, object_format="elf") == [
+        "-lm",
+        "-lc",
+        "-lm",
+        "-ldl",
+    ]
+    mutable = first.source_payload()
+    mutable_product = _mapping_field(mutable, "product")
+    mutable_plan = _mapping_field(mutable_product, "link_plan")
+    cast(list[object], mutable_plan["items"]).reverse()
+    mutable_environment = _mapping_field(mutable, "cargo_environment")
+    cast(list[object], mutable_environment["variables"]).clear()
+    assert first.source_payload() != mutable
+    assert first.product_payload() == second.product_payload()
+
+
+@pytest.mark.parametrize(
+    "role", ["bare-product", "missing-observation", "null-observation", "flat-v6"]
+)
+def test_native_source_reader_refuses_product_or_incomplete_build_evidence(
+    tmp_path: Path, role: str
+):
+    runtime = tmp_path / "runtime.a"
+    source = _source_product_fixture(runtime, runtime_cargo_environment_inputs())
+    if role == "bare-product":
+        payload = _mapping_field(source, "product")
+    elif role == "flat-v6":
+        payload = {
+            **_mapping_field(source, "product"),
+            "schema_version": 6,
+            "kind": "molt_native_link_dependencies",
+            "cargo_environment": source["cargo_environment"],
+        }
+    else:
+        payload = dict(source)
+        if role == "missing-observation":
+            del payload["cargo_environment"]
+        else:
+            payload["cargo_environment"] = None
+    path = native_link_dependency_manifest_path(runtime)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(NativeLinkDependencyManifestError):
+        read_native_link_dependency_manifest(runtime, target_triple=None)
+    with pytest.raises(NativeLinkDependencyManifestError):
+        native_link_manifest.read_native_link_dependency_manifest_payload(path)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "source-envelope",
+        "observation",
+        "wrong-kind",
+        "float-schema",
+        "missing-link-plan",
+    ],
+)
+def test_native_product_validator_refuses_role_or_schema_substitution(
+    tmp_path: Path, change: str
+):
+    runtime = tmp_path / "runtime.a"
+    source = _source_product_fixture(runtime, runtime_cargo_environment_inputs())
+    payload = dict(_mapping_field(source, "product"))
+    if change == "source-envelope":
+        payload = source
+    elif change == "observation":
+        payload["cargo_environment"] = source["cargo_environment"]
+    elif change == "wrong-kind":
+        payload["kind"] = "molt_native_link_dependencies"
+    elif change == "float-schema":
+        payload["schema_version"] = 1.0
+    else:
+        del payload["link_plan"]
+    with pytest.raises(NativeLinkDependencyManifestError):
+        validate_native_link_product_manifest(
+            payload,
+            runtime_identity=archive_identity.artifact_content_identity(runtime),
+            context="role substitution control",
+            target_triple=None,
+        )

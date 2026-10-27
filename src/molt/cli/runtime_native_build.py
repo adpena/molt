@@ -51,6 +51,7 @@ from molt.cli.models import (
 from molt.cli.native_link_custody import NativeLinkCustodyError
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
+    NativeLinkManifestFacts,
 )
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
@@ -540,7 +541,20 @@ def _ensure_native_runtime_lib_ready_before_link(
                 extra_runtime_features=runtime_state.extra_runtime_features,
                 rust_cpu=runtime_state.rust_cpu,
             )
-            binding.link_facts.cargo_environment.verify(current.environment)
+            # Only the admitted source generation owns raw build observations.
+            # Product-only installed facts cannot authorize source cache reuse.
+            generation = runtime_state.native_runtime_generation
+            source_facts = binding.link_facts
+            if (
+                generation is None
+                or generation.runtime_lib != binding.runtime_lib
+                or generation.build_identity != binding.build_identity
+                or not isinstance(source_facts, NativeLinkManifestFacts)
+                or source_facts.cargo_environment != generation.cargo_environment
+            ):
+                raise ValueError("native runtime lost its admitted source observations")
+            generation.verify()
+            source_facts.cargo_environment.verify(current.environment)
             binding.verify()
             if current.build_identity != binding.build_identity:
                 raise ValueError(

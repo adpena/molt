@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+from typing import assert_never
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -26,6 +27,8 @@ from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
+    read_runtime_wasm_product,
+    RuntimeWasmReceiptRole,
 )
 from molt.toolchain_identity import (  # noqa: E402
     StableRegularFileChangedError,
@@ -93,7 +96,14 @@ def _verify_runtime_generation(
         expected_pair = RuntimeWasmExpectedPair.read(expected_identity)
     except ValueError as exc:
         raise SystemExit(f"Trusted runtime pair identity is invalid: {exc}") from exc
-    generation = read_runtime_wasm_generation(
+    match expected_pair.receipt_role:
+        case RuntimeWasmReceiptRole.SOURCE_BUILD:
+            reader = read_runtime_wasm_generation
+        case RuntimeWasmReceiptRole.INSTALLED_PRODUCT:
+            reader = read_runtime_wasm_product
+        case unexpected:
+            assert_never(unexpected)
+    generation = reader(
         generation_manifest,
         expected_shared_identity=expected_pair.shared,
         expected_reloc_identity=expected_pair.reloc,

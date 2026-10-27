@@ -175,9 +175,9 @@ def test_disabled_pair_build_still_admits_cached_generation(
         if cache == "corrupt":
             _, _, manifest = pair_cache._cached_pair_paths(shared)
             payload = json.loads(manifest.read_text(encoding="utf-8"))
-            (manifest.parent / payload["receipts"]["shared"]["member"]).write_bytes(
-                b"corrupt"
-            )
+            (
+                manifest.parent / payload["product"]["receipts"]["shared"]["member"]
+            ).write_bytes(b"corrupt")
     monkeypatch.setattr(
         pair_cache,
         "publish_runtime_wasm_generation",
@@ -2775,3 +2775,21 @@ def test_explicit_wasm_incremental_on_reaches_direct_cargo(monkeypatch):
     assert shared.env["CARGO_INCREMENTAL"] == reloc.env["CARGO_INCREMENTAL"] == "1"
     assert shared.build_policy.incrementality.value == "enabled"
     assert not shared.build_policy.publish_shared_cache
+
+
+def test_source_pair_admission_refuses_installed_product(tmp_path):
+    from molt.cli.runtime_wasm_generation import publish_runtime_wasm_product
+
+    ctx, source = _observed_pair_fixture(tmp_path)
+    product = publish_runtime_wasm_product(
+        tmp_path / "installed" / "molt_runtime.wasm",
+        tmp_path / "installed" / "molt_runtime_reloc.wasm",
+        shared_identity=source.shared_identity,
+        reloc_identity=source.reloc_identity,
+        source_shared=source.shared,
+        source_reloc=source.reloc,
+    )
+    assert product.shared.read_bytes() == source.shared.read_bytes()
+    assert product.reloc.read_bytes() == source.reloc.read_bytes()
+    assert ctx.accept_generation(observed_generation=product) is None
+    assert ctx.accepted_generation is None

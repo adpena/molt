@@ -6,7 +6,7 @@ from typing import Mapping
 
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_manifest import (
-    NativeLinkManifestFacts,
+    NativeLinkProductFacts,
     native_link_dependency_manifest_path,
 )
 from molt.cli.native_link_custody import NativeLinkCustodyObservation
@@ -30,7 +30,7 @@ class NativeRuntimeCodegenBinding:
     callable_symbols: StableRegularFileIdentity
     semantic_digest: str
     manifest: StableRegularFileIdentity
-    link_facts: NativeLinkManifestFacts
+    link_facts: NativeLinkProductFacts
     custody: NativeLinkCustodyObservation
 
     def verify(self) -> None:
