@@ -5820,7 +5820,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_SCRATCH_STORAGE",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Run scratch storage: disk (scratch under the artifact root's tmp), memory (Linux /dev/shm), or the absolute path of a memory-backed directory the operator mounted, such as a macOS RAM disk; Molt never creates or mounts one. Locks, guard markers and build control stay on disk in every mode.",
+      "summary": "Run scratch storage: disk (default artifact scratch, or state-root sibling scratch for queued guards), disk:/absolute/existing/directory (operator-selected disk), memory (Linux /dev/shm), or the absolute path of an operator-mounted memory-backed directory. Explicit disk and memory roots override state-root sibling placement for data scratch only. Molt never creates or mounts a RAM disk; controls, guard markers, products and caches retain their configured placement.",
       "values": []
     },
     {

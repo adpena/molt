@@ -204,6 +204,12 @@ intermediates belong to one checkout; sibling worktrees share compiler/download
 caches, not mutable Cargo targets. See the [developer build guidance](docs/DEVELOPER_GUIDE.md)
 for explicit target overrides and separate queued release qualification.
 
+To place transient scratch on a chosen local disk, set
+`MOLT_SCRATCH_STORAGE=disk:/absolute/existing/directory`. This changes data
+scratch placement while control state, build products and caches stay in their
+configured locations. See [scratch storage and budget](docs/OPERATIONS.md#build-throughput-multi-agent)
+for defaults, memory-backed storage and free-space admission.
+
 Managed compiler/runtime source builds keep Cargo intermediates with the
 captured external toolchain inputs; ordinary source edits retain incremental
 state. Python table generators have a separate interpreter signature. These

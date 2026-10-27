@@ -127,6 +127,47 @@ per-process Python objects for each terminal suite-lease check, independent of
 how many pytest workers or nested guards run. Exit census, Windows Job custody,
 interruption handling and explicit custom samplers retain their contracts.
 
+Ordinary completed commands use scoped kernel evidence instead of enumerating
+the host again. This requires the native sampler, a reaped session-leader root,
+an empty successful census taken while its PID was still reserved, and no other
+tracked PID. `RootGroupAbsence.observe` then requires strict `ESRCH` from
+`killpg(pgid, 0)`; permission refusal or another error proves no absence. This
+is a typed observation of that root group, never an empty process table.
+Scratch closure checks the same group again. A present, reused or unobservable
+group refuses this closure rather than borrowing the earlier negative result.
+
+Nested guard records have a different observation scope. A root may publish a
+marker for a child in a separate session and exit between samples. When closure
+reaches a matching birth-bound marker, it obtains one fresh host snapshot and
+reuses it for the remaining marker traversal. Foreign markers require no host
+read; pending, malformed and birth-ambiguous records still hold closure. Explicit
+samplers, tracked descendants, failed censuses and signal invalidation retain
+complete observations. Suite receiver validation stays fresh.
+
+This follows the existing kernel-event reaper and
+[CPython's session-leader launch contract](https://docs.python.org/3/library/subprocess.html#subprocess.Popen),
+using a narrow kernel query before materializing unrelated state. The common
+terminal path costs two constant-size group probes instead of an O(host
+processes) table read, parsing and per-process Python objects. A matching nested
+marker pays for the complete table it needs. No persistent worker, result cache,
+extra thread or relaxation of scratch publication is introduced.
+
+Transient data and durable control placement are independent facts. The typed
+scratch selection accepts `disk:<absolute-existing-directory>` in addition to
+the existing artifact-disk and memory choices. Explicit roots select data even
+when a proof supplies its control-state root; the default still puts data beside
+that state. Lease records name both allocations, and reclamation uses the original
+generation rather than reconstructing ownership from a later storage selection.
+Containment and free-space admission precede allocation. This follows the separate
+disk-cache and sandbox-base choices in
+[LLVM's optional Bazel configuration](https://github.com/llvm/llvm-project/blob/main/utils/bazel/README.md#configuration):
+many small temporary inputs can need different storage from durable artifacts.
+
+The existing host-capacity proof cell owns the guard's process-custody and
+scratch lifecycle producers, including the real daemon transfer/failure protocol
+selector. The shared executor coalesces that consumer with its existing Python
+cohort; it does not require a second manual protocol run.
+
 Transfer checks use the current tracker observation first. Only a live owned
 non-root PID in a non-root process group can be exported; a root-only command
 does not read or lock the shared suite adoption index. A child may move groups

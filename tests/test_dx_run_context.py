@@ -1328,13 +1328,21 @@ def test_scratch_never_lands_in_a_plain_clone(tmp_path: Path) -> None:
             assert clone.resolve() not in (path, *path.parents), (env, path)
 
 
-def test_memory_storage_moves_scratch_but_not_control_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family_layout: tuple[Path, Path]
+@pytest.mark.parametrize("prefix", ["", "disk:"])
+def test_selected_storage_moves_scratch_but_not_control_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    family_layout: tuple[Path, Path],
+    prefix: str,
 ) -> None:
     family, lane = family_layout
     ram = tmp_path / "ram"
     ram.mkdir()
-    env = {"MOLT_SCRATCH_STORAGE": str(ram)}
+    env = {"MOLT_SCRATCH_STORAGE": prefix + str(ram)}
+
+    selected = dx.scratch_storage(env)
+    assert selected.mode == ("disk" if prefix else "memory")
+    assert selected.root == ram.resolve()
 
     scratch = dx.scratch_root(lane, env)
     assert scratch.parent == ram.resolve()
@@ -1359,7 +1367,7 @@ def test_memory_storage_moves_scratch_but_not_control_state(
 def test_disk_storage_is_the_default(raw: str) -> None:
     storage = dx.scratch_storage({"MOLT_SCRATCH_STORAGE": raw})
     assert storage.mode == "disk"
-    assert storage.memory_root is None
+    assert storage.root is None
 
 
 def test_memory_storage_never_creates_a_ram_disk(
@@ -1376,14 +1384,29 @@ def test_memory_storage_never_creates_a_ram_disk(
         dx.scratch_storage({"MOLT_SCRATCH_STORAGE": "ram"})
 
 
-def test_memory_storage_inside_the_checkout_is_refused(
+@pytest.mark.parametrize("prefix", ["", "disk:"])
+def test_selected_storage_inside_the_checkout_is_refused(
     family_layout: tuple[Path, Path],
+    prefix: str,
 ) -> None:
     _family_root, lane = family_layout
     inside = lane / "ram"
     inside.mkdir()
     with pytest.raises(dx.DxConfigError, match="outside the checkout"):
-        dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": str(inside)})
+        dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": prefix + str(inside)})
+
+
+@pytest.mark.parametrize("raw", ["disk:", "disk:relative"])
+def test_explicit_disk_storage_requires_an_absolute_directory(raw: str) -> None:
+    with pytest.raises(dx.DxConfigError, match="absolute path"):
+        dx.scratch_storage({"MOLT_SCRATCH_STORAGE": raw})
+
+
+def test_explicit_disk_storage_never_creates_the_selected_root(tmp_path: Path) -> None:
+    missing = tmp_path / "not-created"
+    with pytest.raises(dx.DxConfigError, match="not a directory"):
+        dx.scratch_storage({"MOLT_SCRATCH_STORAGE": f"disk:{missing}"})
+    assert not missing.exists()
 
 
 def test_proof_scratch_root_prefers_the_queue_issued_root(

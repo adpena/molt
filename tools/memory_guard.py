@@ -300,6 +300,8 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     process_identity as process_identity,
     protected_process_group_ids as protected_process_group_ids,
     reserved_group_exit_census as reserved_group_exit_census,
+    RootGroupAbsence as RootGroupAbsence,
+    TerminalProcessObservation as TerminalProcessObservation,
     signal_payload as signal_payload,
     take_child_exit_census as take_child_exit_census,
     term_signal_payload as term_signal_payload,
@@ -394,7 +396,7 @@ def _temporary_artifact_descendant_closure(
     termination_reports: Sequence[GuardTerminationReport],
     probe_grace: float,
     active_dir: Path,
-    final_samples: Mapping[int, ProcessSample] | None = None,
+    final_observation: TerminalProcessObservation | None = None,
 ) -> tuple[bool, dict[str, object]]:
     """Return non-actuating evidence that no guarded child can still use scratch.
 
@@ -402,9 +404,9 @@ def _temporary_artifact_descendant_closure(
     named as sampled process-group custody: it combines the guard's complete
     observation history with a final process-group liveness probe and a
     process-table observation after the existing cleanup boundary.
-    ``final_samples`` is the post-exit observation when cleanup signalled
-    nothing after it, so it already lies past that boundary; None samples
-    afresh.
+    A complete terminal observation may be reused until a signal. A scoped
+    root-group absence is checked again and never supplies a host-table
+    verdict for nested guard records; those materialize a host snapshot lazily.
     """
 
     if proc is None:
@@ -494,27 +496,41 @@ def _temporary_artifact_descendant_closure(
     root_births.add(child_process.started_at_ns)
     observed_at = time.time()
     root_pgid = child_process.pgid
-    group_closed = _process_group_exited_or_unobservable(
-        root_pgid,
-        grace=max(0.02, probe_grace),
-    )
+    scoped_absence = isinstance(final_observation, RootGroupAbsence)
+    if scoped_absence:
+        assert isinstance(final_observation, RootGroupAbsence)
+        group_closed = bool(
+            final_observation.pgid == root_pgid
+            and not (tracker.known_pids or set()) - {child_process.pid}
+            and RootGroupAbsence.observe(root_pgid) is not None
+        )
+    else:
+        group_closed = _process_group_exited_or_unobservable(
+            root_pgid,
+            grace=max(0.02, probe_grace),
+        )
     evidence["root_pgid"] = root_pgid
     evidence["root_process_group_closed"] = group_closed
+    evidence["final_observation_scope"] = "root-group" if scoped_absence else "host"
+    host_samples: Mapping[int, ProcessSample] | None = None
     try:
-        if final_samples is None:
-            final_samples = sampler()
-        remaining_tracked = tuple(sorted(tracker.update(final_samples)))
+        if isinstance(final_observation, RootGroupAbsence):
+            root_samples: Mapping[int, ProcessSample] = {}
+        else:
+            host_samples = sampler() if final_observation is None else final_observation
+            root_samples = host_samples
+        remaining_tracked = tuple(sorted(tracker.update(root_samples)))
         root_group_members = tuple(
             sorted(
                 sample.pid
-                for sample in final_samples.values()
+                for sample in root_samples.values()
                 if _sample_pgid(sample) == root_pgid
             )
         )
     except (KeyboardInterrupt, Exception) as exc:
         evidence["final_sample_error"] = f"{type(exc).__name__}: {exc}"
         return False, evidence
-    evidence["final_sample_process_count"] = len(final_samples)
+    evidence["final_sample_process_count"] = len(root_samples)
     evidence["remaining_tracked_pids"] = list(remaining_tracked)
     evidence["root_process_group_members"] = list(root_group_members)
     closed = group_closed and not remaining_tracked and not root_group_members
@@ -557,8 +573,12 @@ def _temporary_artifact_descendant_closure(
                     row["error"] = record.error
                     closed = False
                 else:
+                    if host_samples is None:
+                        observed_at = time.time()
+                        host_samples = sampler()
+                        evidence["nested_sample_process_count"] = len(host_samples)
                     observation = observe_custody(
-                        record, final_samples, now_s=observed_at
+                        record, host_samples, now_s=observed_at
                     )
                     row["disposition"] = observation.state
                     row["reason"] = observation.reason
@@ -575,7 +595,7 @@ def _temporary_artifact_descendant_closure(
             if not closed:
                 break
             pending = following
-    except (OSError, ValueError) as exc:
+    except (KeyboardInterrupt, Exception) as exc:
         evidence["guard_generation_error"] = f"{type(exc).__name__}: {exc}"
         closed = False
     evidence["guard_generations"] = generations
@@ -2400,7 +2420,7 @@ def run_guarded(
         stdout: str | bytes = "" if text else b""
         stderr: str | bytes = "" if text else b""
         orphaned_process_groups: tuple[int, ...] = ()
-        post_exit_samples: Mapping[int, ProcessSample] | None = None
+        post_exit_observation: TerminalProcessObservation | None = None
         root_exit_census: dict[str, object] = {}
         try:
             if proc.returncode is None and not guard_interrupted:
@@ -2451,32 +2471,53 @@ def run_guarded(
             if (
                 cleanup_orphans
                 and not guard_interrupted
+                and sampler is _process_model.sample_processes
+                and proc.returncode is not None
+                and child_process.pgid == proc.pid
+                and exit_census is not None
+                and not exit_census
+                and exit_census_error is None
+                and tracker.known_pids == {proc.pid}
+            ):
+                # The reserved pre-reap census found no unseen group member,
+                # no other PID is tracked, and the kernel now proves absence.
+                # This fact covers only the root group. Nested guard records
+                # retain their separate, lazy host observation at closure.
+                post_exit_observation = RootGroupAbsence.observe(proc.pid)
+            if (
+                cleanup_orphans
+                and not guard_interrupted
                 and not _process_model.is_windows_process_model()
                 and child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
+                and not isinstance(post_exit_observation, RootGroupAbsence)
             ):
-                post_exit_samples = sampler()
+                post_exit_observation = sampler()
                 transfer_receipted_daemon_instances(
-                    post_exit_samples,
-                    watched=tracker.update(post_exit_samples),
+                    post_exit_observation,
+                    watched=tracker.update(post_exit_observation),
                     decisive=True,
                 )
-            if cleanup_orphans and not guard_interrupted:
+            if (
+                cleanup_orphans
+                and not guard_interrupted
+                and not isinstance(post_exit_observation, RootGroupAbsence)
+            ):
                 try:
                     # One observation after the root's exit serves every
                     # cleanup decision, and the closure proof, until the
                     # guard signals a process. A signal retires it.
-                    if post_exit_samples is None:
-                        post_exit_samples = sampler()
+                    if post_exit_observation is None:
+                        post_exit_observation = sampler()
                     tracked_orphans = cleanup_tracked_orphans(
                         proc.pid,
                         tracker=tracker,
                         sampler=sampler,
-                        samples=post_exit_samples,
+                        samples=post_exit_observation,
                         grace=0.25,
                         root_reaped=proc.returncode is not None,
                     )
                     if tracked_orphans.termination_reports:
-                        post_exit_samples = None
+                        post_exit_observation = None
                     termination_reports.extend(
                         _validated_termination_reports(
                             tracked_orphans.termination_reports,
@@ -2489,11 +2530,11 @@ def run_guarded(
                             baseline_pgids=baseline_pgids,
                             tracker=tracker,
                             sampler=sampler,
-                            samples=post_exit_samples,
+                            samples=post_exit_observation,
                             grace=0.25,
                         )
                         if repo_orphans.termination_reports:
-                            post_exit_samples = None
+                            post_exit_observation = None
                         termination_reports.extend(
                             _validated_termination_reports(
                                 repo_orphans.termination_reports,
@@ -2507,7 +2548,7 @@ def run_guarded(
                     # authorize PID/group cleanup, and it must not rewrite the
                     # healthy child's return code.  Record the custody gap and
                     # leave the Job Object/orphan reaper as the safety net.
-                    post_exit_samples = None
+                    post_exit_observation = None
                     record_transient_sampling_failure(
                         exc,
                         attempt_already_counted=False,
@@ -2672,7 +2713,7 @@ def run_guarded(
                 termination_reports=termination_reports,
                 probe_grace=termination_wait_s,
                 active_dir=guard_marker.parent,
-                final_samples=post_exit_samples,
+                final_observation=post_exit_observation,
             )
         )
         if root_exit_census:
