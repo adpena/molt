@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_workload,
+    measure_admitted_cell,
+    profile_admitted_sources,
+)
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import os
@@ -645,7 +651,8 @@ def test_hot_profile_controller_forwards_the_selected_minor(monkeypatch, minor):
 
     monkeypatch.setattr(profiling, "build_profiling_binary", build)
     script = Path(__file__).resolve().parents[2] / "tests/benchmarks/bench_fib.py"
-    cells = profiling.run_hot_only_profiles(
+    cells = profile_admitted_sources(
+        profiling,
         scripts=[script],
         spec=NATIVE_CRANELIFT,
         profile="release-output",
@@ -905,6 +912,7 @@ def test_scoreboard_codon_owns_scratch_for_one_measurement(
     monkeypatch.setattr(scoreboard, "_measure_codon_warm", sample)
     runner = scoreboard.CodonRunner(str(tmp_path / "bin/codon"))
     cell = scoreboard.Cell(
+        workload=synthetic_workload("tests/benchmarks/bench_fib.py"),
         benchmark="tests/benchmarks/bench_fib.py",
         target="native",
         backend="native",
@@ -988,7 +996,8 @@ def test_actual_build_cleanup_failure_escapes_measurement_and_profile_callers(
                     log_lines=[],
                 )
             else:
-                measure.measure_cell(
+                measure_admitted_cell(
+                    measure,
                     script_path=script,
                     spec=NATIVE_CRANELIFT,
                     profile="release-fast",
@@ -1034,6 +1043,7 @@ def test_codon_handled_build_io_survives_cleanup_failure(
         scoreboard.harness_memory_guard, "guarded_completed_process", compiler
     )
     cell = scoreboard.Cell(
+        workload=synthetic_workload("tests/benchmarks/bench_fib.py"),
         benchmark="tests/benchmarks/bench_fib.py",
         target="native",
         backend="native",
@@ -1128,7 +1138,8 @@ def test_nested_codon_and_native_cleanup_retain_both_exact_owners(
             lambda path: (False, "independent nested deletion refusal"),
         )
         with pytest.raises(OSError) as caught:
-            measure.measure_cell(
+            measure_admitted_cell(
+                measure,
                 script_path=scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py",
                 spec=NATIVE_CRANELIFT,
                 profile="release-fast",
@@ -1294,7 +1305,8 @@ def test_hot_controller_owns_successful_binary_through_capture_and_cleanup(
     script = scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py"
 
     def run():
-        return profiling.run_hot_only_profiles(
+        return profile_admitted_sources(
+            profiling,
             scripts=[script],
             spec=NATIVE_CRANELIFT,
             profile="release-fast",
@@ -1504,7 +1516,8 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
     )
     monkeypatch.setattr(measure.bench, "resolve_benchmark_run_args", lambda path: [])
     monkeypatch.setattr(measure, "_run_measured_command", sample)
-    cell = measure.measure_cell(
+    cell = measure_admitted_cell(
+        measure,
         script_path=script,
         spec=WASM,
         profile=profile,

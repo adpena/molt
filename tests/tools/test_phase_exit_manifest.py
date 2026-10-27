@@ -22,6 +22,8 @@ blob read.
 
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+
 import base64
 import hashlib
 import json
@@ -546,6 +548,7 @@ def _board(
         for backend in sorted(pa.CANONICAL_PERF_BACKENDS):
             cell = ps.Cell(
                 benchmark=benchmark,
+                workload=synthetic_workload(benchmark),
                 target="native",
                 backend=backend,
                 profile=pa.CANONICAL_PERF_PROFILE,

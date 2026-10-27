@@ -677,7 +677,15 @@ def release_cell_problems(cell: Mapping[str, Any]) -> list[str]:
     """
     import math
 
+    from tools.bench_evidence import workload_identity_problems
+
     problems: list[str] = perf_schema.cell_execution_host_problems(cell)
+    problems.extend(workload_identity_problems(cell.get("workload")))
+    workload = cell.get("workload")
+    if not isinstance(workload, Mapping) or workload.get("entry") != cell.get(
+        "benchmark"
+    ):
+        problems.append("benchmark name differs from admitted workload entry")
     for field in ("build_ok", "molt_ok", "cpython_ok", "stable", "measured_quiescent"):
         if cell.get(field) is not True:
             problems.append(f"{field} must be true")

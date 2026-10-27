@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 from tools.bench_evidence import (
     comparable_run_metadata_errors,
     comparator_time,
@@ -109,6 +112,7 @@ def _profile_bound_cell(
     runtime="release-output", *, compiler="release", target="native", guest="release"
 ):
     return {
+        "workload": synthetic_workload("sample.py"),
         "molt_ok": True,
         "molt_cpython_ratio": 1.0,
         "requested_profile": guest,
@@ -131,7 +135,9 @@ def _profile_run(cell):
         "timing_mode": "warm_throughput",
         "warmup": 1,
         "samples": 3,
-        "benchmarks": {"sample.py": cell},
+        "benchmarks": {
+            "sample.py": {"workload": synthetic_workload("sample.py"), **cell}
+        },
     }
 
 
@@ -236,7 +242,7 @@ def test_profile_comparison_refuses_historical_labels_without_observation():
 
 
 def test_profile_policy_binds_identical_observation_to_actual_metric_lane():
-    from tools.bench_evidence import comparable_build_profile_errors
+    from tools.bench_evidence import comparable_metric_errors
 
     for metric, target, required in (
         ("molt_wasm_time_s", "native", "wasm"),
@@ -245,6 +251,7 @@ def test_profile_policy_binds_identical_observation_to_actual_metric_lane():
         ("molt_wasm_time_s", "luau", "wasm"),
     ):
         cell = {
+            "workload": synthetic_workload("sample.py"),
             metric: 1.0,
             "molt_ok": True,
             "molt_wasm_ok": True,
@@ -253,14 +260,14 @@ def test_profile_policy_binds_identical_observation_to_actual_metric_lane():
             ],
         }
         run = {"benchmarks": {"sample.py": cell}}
-        errors = comparable_build_profile_errors(run, run, metric=metric)
+        errors = comparable_metric_errors(run, run, metric=metric)
         assert errors and all(
             f"requires {required} target" in error for error in errors
         )
 
 
 def test_profile_policy_preserves_native_triples_and_wasm_intent_variants():
-    from tools.bench_evidence import comparable_build_profile_errors
+    from tools.bench_evidence import comparable_metric_errors
 
     for metric, target in (
         ("molt_time_s", "native"),
@@ -271,25 +278,88 @@ def test_profile_policy_preserves_native_triples_and_wasm_intent_variants():
         ("molt_wasm_time_s", "wasm32-unknown-unknown"),
     ):
         cell = {
+            "workload": synthetic_workload("sample.py"),
             metric: 1.0,
             "build_observation": _profile_bound_cell(target=target)[
                 "build_observation"
             ],
         }
         run = {"benchmarks": {"sample.py": cell}}
-        assert comparable_build_profile_errors(run, run, metric=metric) == []
+        assert comparable_metric_errors(run, run, metric=metric) == []
 
 
 def test_profile_policy_refuses_one_observation_for_mixed_native_wasm_cell():
-    from tools.bench_evidence import comparable_build_profile_errors
+    from tools.bench_evidence import comparable_metric_errors
 
-    cell = {**_profile_bound_cell(), "molt_time_s": 1.0, "molt_wasm_time_s": 2.0}
+    cell = {
+        "workload": synthetic_workload("sample.py"),
+        **_profile_bound_cell(),
+        "molt_time_s": 1.0,
+        "molt_wasm_time_s": 2.0,
+    }
     run = {"benchmarks": {"sample.py": cell}}
     for metric in ("molt_time_s", "molt_wasm_time_s"):
-        errors = comparable_build_profile_errors(run, run, metric=metric)
+        errors = comparable_metric_errors(run, run, metric=metric)
         assert errors and all(
             "mixed native/WASM metric cell" in error for error in errors
         )
-    assert comparable_build_profile_errors(run, run, metric="molt_invented_time_s") == [
+    assert comparable_metric_errors(run, run, metric="molt_invented_time_s") == [
         "unregistered Molt comparison metric: molt_invented_time_s"
     ]
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "cpython_time_s",
+        "pypy_time_s",
+        "codon_time_s",
+        "nuitka_time_s",
+        "pyodide_time_s",
+    ],
+)
+@pytest.mark.parametrize("changed", ["missing", "bytes", "sibling", "argv", "entry"])
+def test_external_only_comparison_requires_the_same_admitted_workload(metric, changed):
+    from copy import deepcopy
+    from tools.bench_evidence import comparable_metric_errors
+
+    old = {"workload": synthetic_workload("program.py"), metric: 1.0}
+    new = deepcopy(old)
+    if changed == "missing":
+        new.pop("workload")
+    elif changed == "bytes":
+        new["workload"]["sources"][0]["sha256"] = "a" * 64
+    elif changed == "sibling":
+        new["workload"]["sources"].append(
+            {"path": "sibling.py", "size": 0, "sha256": "b" * 64}
+        )
+    elif changed == "argv":
+        new["workload"]["run_args"] = ["different"]
+    else:
+        new["workload"]["entry"] = "other.py"
+    current, baseline = (
+        {"benchmarks": {"program.py": new}},
+        {"benchmarks": {"program.py": old}},
+    )
+    assert comparable_metric_errors(current, baseline, metric=metric)
+    assert comparable_metric_errors(baseline, baseline, metric=metric) == []
+
+
+@pytest.mark.parametrize("metric", ["cpython_time_s", "molt_time_s"])
+@pytest.mark.parametrize("role", ["current", "baseline"])
+def test_collection_identity_refusal_precedes_canonical_key_intersection(metric, role):
+    from tools.bench_evidence import comparable_metric_errors
+
+    current = {
+        "benchmarks": {
+            "tests/benchmarks/bench_sum.py": {
+                "workload": synthetic_workload("tests/benchmarks/bench_sum.py"),
+                metric: 1.0,
+            }
+        }
+    }
+    baseline = {"benchmarks": {"bench_sum.py": {metric: 1.0}}}
+    if role == "current":
+        current, baseline = baseline, current
+    errors = comparable_metric_errors(current, baseline, metric=metric)
+    assert errors and any(role in error and "workload" in error for error in errors)

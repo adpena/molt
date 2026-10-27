@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import json
@@ -19,6 +21,24 @@ from tools import bench as bench_tool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@contextlib.contextmanager
+def _admitted_workloads(scripts):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    with contextlib.ExitStack() as custody:
+        yield {
+            script: custody.enter_context(
+                admit_benchmark_workload(
+                    Path(script),
+                    project_root=REPO_ROOT,
+                    run_args=bench_tool.resolve_benchmark_run_args(script),
+                    molt_args=bench_tool.molt_args_for_benchmark(script),
+                )
+            )
+            for script in scripts
+        }
 
 
 def _run_bench(
@@ -61,7 +81,7 @@ def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
 
     payload = json.loads(out_json.read_text(encoding="utf-8"))
-    entry = payload["benchmarks"][script.name]
+    entry = payload["benchmarks"][str(script)]
     assert entry["cpython_time_s"] is None
     assert entry["cpython_samples_s"] is None
     assert entry["molt_ok"] is True, res.stderr
@@ -126,7 +146,7 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
 
     payload = json.loads(out_json.read_text(encoding="utf-8"))
-    entry = payload["benchmarks"][script.name]
+    entry = payload["benchmarks"][str(script)]
     assert entry["molt_ok"] is False
     assert entry["molt_time_s"] is None
     assert entry["molt_samples_s"] == []
@@ -1003,22 +1023,24 @@ def _bench_results_with_mocked_native_outputs(
     monkeypatch.setattr(bench_tool, "measure_runtime", fake_measure_runtime)
     monkeypatch.setattr(bench_tool, "measure_molt_run", fake_measure_molt_run)
 
-    return bench_tool.bench_results(
-        [str(script)],
-        sample_count,
-        warmup,
-        True,
-        False,
-        False,
-        False,
-        False,
-        False,
-        None,
-        "release",
-        tty=False,
-        nuitka_cmd=None,
-        pyodide_cmd=None,
-    )[script.name]
+    with _admitted_workloads([str(script)]) as workloads:
+        return bench_tool.bench_results(
+            [str(script)],
+            sample_count,
+            warmup,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd=None,
+            pyodide_cmd=None,
+            workloads=workloads,
+        )[str(script)]
 
 
 def test_prepare_molt_binary_uses_batch_build_server(
@@ -1526,22 +1548,24 @@ def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmar
 
     monkeypatch.setattr(bench_tool, "measure_runtime", fail_external_reference)
 
-    entry = bench_tool.bench_results(
-        [str(script)],
-        1,
-        0,
-        True,
-        False,
-        False,
-        False,
-        False,
-        False,
-        None,
-        "release",
-        tty=False,
-        nuitka_cmd=None,
-        pyodide_cmd=None,
-    )[script.name]
+    with _admitted_workloads([str(script)]) as workloads:
+        entry = bench_tool.bench_results(
+            [str(script)],
+            1,
+            0,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd=None,
+            pyodide_cmd=None,
+            workloads=workloads,
+        )[str(script)]
 
     assert entry["reference_runtime"] == "molt"
     assert (
@@ -1591,22 +1615,24 @@ def test_bench_results_custom_same_basename_keeps_external_reference(
         lambda *args, **kwargs: bench_tool.RunSample(2.0, "custom\n", ""),
     )
 
-    entry = bench_tool.bench_results(
-        [str(script)],
-        1,
-        0,
-        True,
-        False,
-        False,
-        False,
-        False,
-        False,
-        None,
-        "release",
-        tty=False,
-        nuitka_cmd=None,
-        pyodide_cmd=None,
-    )[script.name]
+    with _admitted_workloads([str(script)]) as workloads:
+        entry = bench_tool.bench_results(
+            [str(script)],
+            1,
+            0,
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd=None,
+            pyodide_cmd=None,
+            workloads=workloads,
+        )[str(script)]
 
     assert entry["reference_runtime"] == "cpython"
     assert entry["reference_reason"] == "cpython_reference"
@@ -1636,22 +1662,24 @@ def test_bench_results_records_molt_build_failure_contract(
         bench_tool, "prepare_molt_binary", lambda *args, **kwargs: failure
     )
 
-    entry = bench_tool.bench_results(
-        [str(script)],
-        1,
-        0,
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-        None,
-        "release",
-        tty=False,
-        nuitka_cmd=None,
-        pyodide_cmd=None,
-    )[script.name]
+    with _admitted_workloads([str(script)]) as workloads:
+        entry = bench_tool.bench_results(
+            [str(script)],
+            1,
+            0,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd=None,
+            pyodide_cmd=None,
+            workloads=workloads,
+        )[str(script)]
 
     assert entry["molt_ok"] is False
     assert entry["molt_status"] == "daemon_crash"
@@ -1689,22 +1717,24 @@ def test_bench_results_records_molt_runtime_failure_contract(
     )
     monkeypatch.setattr(bench_tool, "measure_molt_run", lambda *args, **kwargs: failure)
 
-    entry = bench_tool.bench_results(
-        [str(script)],
-        1,
-        0,
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-        None,
-        "release",
-        tty=False,
-        nuitka_cmd=None,
-        pyodide_cmd=None,
-    )[script.name]
+    with _admitted_workloads([str(script)]) as workloads:
+        entry = bench_tool.bench_results(
+            [str(script)],
+            1,
+            0,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd=None,
+            pyodide_cmd=None,
+            workloads=workloads,
+        )[str(script)]
 
     assert entry["molt_ok"] is False
     assert entry["molt_status"] == "runtime_crash"
@@ -1826,7 +1856,10 @@ def test_main_writes_json_then_exits_nonzero_on_output_parity_failure(
     monkeypatch.setattr(
         bench_tool,
         "write_json",
-        lambda path, payload: writes.append(path),
+        lambda path, payload, *, validate_inputs=None: (
+            validate_inputs() if validate_inputs is not None else None,
+            writes.append(path),
+        ),
     )
     monkeypatch.setattr(
         sys,
@@ -2106,23 +2139,25 @@ def _symlink_bench_destination(link: Path, target: Path, *, directory=False):
 
 
 def _direct_bench_results(artifact_root):
-    return bench_tool.bench_results(
-        [],
-        1,
-        0,
-        False,
-        True,
-        False,
-        False,
-        False,
-        False,
-        None,
-        "release",
-        tty=False,
-        nuitka_cmd=None,
-        pyodide_cmd=None,
-        artifact_root=artifact_root,
-    )
+    with _admitted_workloads([]) as workloads:
+        return bench_tool.bench_results(
+            [],
+            1,
+            0,
+            False,
+            True,
+            False,
+            False,
+            False,
+            False,
+            None,
+            "release",
+            tty=False,
+            nuitka_cmd=None,
+            pyodide_cmd=None,
+            artifact_root=artifact_root,
+            workloads=workloads,
+        )
 
 
 @pytest.mark.parametrize(
@@ -2357,6 +2392,9 @@ def test_direct_bench_reuses_external_diagnostics_and_scratch_for_backends(
         def close(self):
             events.append(("closed",))
 
+    script = source / "ordinary.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+
     def measured(*args, **kwargs):
         events.append(("roots", kwargs["codon_root"], kwargs["nuitka_root"]))
         return {}
@@ -2366,26 +2404,28 @@ def test_direct_bench_reuses_external_diagnostics_and_scratch_for_backends(
     )
     monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", Batch)
     monkeypatch.setattr(bench_tool, "_bench_one", measured)
-    assert (
-        bench_tool.bench_results(
-            ["ordinary.py"],
-            1,
-            0,
-            False,
-            False,
-            False,
-            False,
-            False,
-            False,
-            None,
-            "release",
-            tty=False,
-            nuitka_cmd=None,
-            pyodide_cmd=None,
-            artifact_root=artifact_root,
+    with _admitted_workloads([str(script)]) as workloads:
+        assert (
+            bench_tool.bench_results(
+                [str(script)],
+                1,
+                0,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                None,
+                "release",
+                tty=False,
+                nuitka_cmd=None,
+                pyodide_cmd=None,
+                artifact_root=artifact_root,
+                workloads=workloads,
+            )
+            == {}
         )
-        == {}
-    )
     assert events[0] == ("sentinel", artifact_root)
     assert events[1][1]["MOLT_GUARD_PROFILE_LOG"] == str(profile)
     assert events[1][1]["MOLT_BENCH_DAEMON_CLEANUP_LOG"] == str(
@@ -2572,24 +2612,28 @@ def test_actual_backend_sampler_releases_scratch_on_every_exit(
     monkeypatch.setattr(bench_tool, "_run_cmd", build)
     monkeypatch.setattr(bench_tool, "measure_runtime", sample)
 
+    (source / "ordinary.py").write_text("print(1)\n", encoding="utf-8")
+
     def run():
-        return bench_tool.bench_results(
-            [str(source / "ordinary.py")],
-            1,
-            0,
-            False,
-            False,
-            backend == "codon",
-            backend == "nuitka",
-            False,
-            False,
-            None,
-            "release",
-            tty=False,
-            nuitka_cmd="nuitka",
-            pyodide_cmd=None,
-            artifact_root=tmp_path / "reports",
-        )
+        with _admitted_workloads([str(source / "ordinary.py")]) as workloads:
+            return bench_tool.bench_results(
+                [str(source / "ordinary.py")],
+                1,
+                0,
+                False,
+                False,
+                backend == "codon",
+                backend == "nuitka",
+                False,
+                False,
+                None,
+                "release",
+                tty=False,
+                nuitka_cmd="nuitka",
+                pyodide_cmd=None,
+                artifact_root=tmp_path / "reports",
+                workloads=workloads,
+            )
 
     if outcome == "exception":
         with pytest.raises(RuntimeError) as caught:
@@ -2859,6 +2903,14 @@ def test_baseline_and_summary_consume_observation_without_profile_inference():
         },
     }
     cell = {
+        "workload": {
+            "entry": "sample.py",
+            "scope": "local-python-source-closure",
+            "sources": [{"path": "sample.py", "size": 9, "sha256": "c" * 64}],
+            "topology_sha256": "",
+            "run_args": [],
+            "molt_args": [],
+        },
         "requested_profile": "release",
         "build_observation": observation,
         "molt_ok": True,
@@ -2883,3 +2935,132 @@ def test_baseline_and_summary_consume_observation_without_profile_inference():
     errors = bench_tool.compare_baseline(payload, legacy, 0.15)
     assert len(errors) == 1 and "baseline selected profiles unbound" in errors[0]
     assert "observed=`unbound`" in render_bench_summary_markdown(legacy)
+
+
+@pytest.mark.parametrize("mutation", ["entry", "sibling", "new-shadow"])
+def test_regular_benchmark_source_drift_blocks_the_first_sample(
+    monkeypatch, tmp_path, mutation
+):
+    script = tmp_path / "program.py"
+    script.write_text(
+        "import decimal\nimport sibling\nprint(sibling.VALUE)\n", encoding="utf-8"
+    )
+    sibling = tmp_path / "sibling.py"
+    sibling.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
+    builds = []
+
+    def build(*args, **kwargs):
+        builds.append(args[0])
+        if mutation == "entry":
+            original = script.stat()
+            script.write_bytes(script.read_bytes().replace(b"print(", b"repr( "))
+            import os
+
+            os.utime(script, ns=(original.st_atime_ns, original.st_mtime_ns))
+        elif mutation == "sibling":
+            sibling.write_text("VALUE = 2\n", encoding="utf-8")
+        else:
+            (tmp_path / "decimal.py").write_text("VALUE = 0\n", encoding="utf-8")
+        return bench_tool.MoltBinary(
+            tmp_path / "not-executed", _TempDirStub(), 0.1, 1.0
+        )
+
+    monkeypatch.setattr(bench_tool, "prepare_molt_binary", build)
+    monkeypatch.setattr(
+        bench_tool,
+        "measure_molt_run",
+        lambda *a, **kw: pytest.fail("changed benchmark source reached a sample"),
+    )
+    with pytest.raises(ValueError, match="changed"):
+        with _admitted_workloads([str(script)]) as workloads:
+            bench_tool.bench_results(
+                [str(script)],
+                1,
+                0,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                None,
+                "release",
+                workloads=workloads,
+                tty=False,
+                nuitka_cmd=None,
+                pyodide_cmd=None,
+            )
+    assert builds == [str(script)]
+
+
+def test_regular_benchmark_publication_refuses_source_drift_before_replace(tmp_path):
+    from tools.bench_evidence import admit_benchmark_workload
+    from tools.bench_reporting import write_json
+
+    source = tmp_path / "program.py"
+    source.write_text("print(1)\n", encoding="utf-8")
+    destination = tmp_path / "baseline.json"
+    destination.write_bytes(b"previous exact evidence")
+    unrelated = tmp_path / "unrelated.json"
+    unrelated.write_bytes(b"unrelated evidence")
+    with pytest.raises(ValueError, match="changed"):
+        with admit_benchmark_workload(
+            source, project_root=tmp_path, run_args=[], molt_args=[]
+        ) as admitted:
+            payload = {"benchmarks": {str(source): {"workload": admitted.record}}}
+            source.write_text("print(2)\n", encoding="utf-8")
+            write_json(destination, payload, validate_inputs=admitted.verify)
+    assert destination.read_bytes() == b"previous exact evidence"
+    assert unrelated.read_bytes() == b"unrelated evidence"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "baseline.json",
+        "program.py",
+        "unrelated.json",
+    ]
+
+
+def test_regular_benchmark_retains_the_admitted_source_record(monkeypatch, tmp_path):
+    import hashlib
+
+    entry = _bench_results_with_mocked_native_outputs(
+        monkeypatch, tmp_path, cpython_outputs=[("ok", "")], molt_outputs=[("ok", "")]
+    )
+    source = tmp_path / "bench_native_output.py"
+    expected = source.read_bytes()
+    assert entry["workload"]["entry"] == str(source)
+    assert entry["workload"]["sources"] == [
+        {
+            "path": "bench_native_output.py",
+            "size": len(expected),
+            "sha256": hashlib.sha256(expected).hexdigest(),
+        }
+    ]
+    assert entry["workload"]["run_args"] == []
+    assert entry["workload"]["molt_args"] == []
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_baseline_gate_refuses_disjoint_canonical_and_historical_keys(bound):
+    from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+
+    current_name = "tests/benchmarks/bench.py"
+    current = {
+        "timing_mode": "warm_throughput",
+        "samples": 3,
+        "warmup": 1,
+        "benchmarks": {
+            current_name: {
+                "workload": synthetic_workload(current_name),
+                "molt_cpython_ratio": 1.0,
+            }
+        },
+    }
+    old = {"molt_cpython_ratio": 1.0}
+    if bound:
+        old["workload"] = synthetic_workload("bench.py")
+    baseline = {**current, "benchmarks": {"bench.py": old}}
+    errors = bench_tool.compare_baseline(current, baseline, 0.15)
+    assert len(errors) == 1
+    assert ("no comparable benchmark pairs" if bound else "workload") in errors[0]

@@ -18,6 +18,24 @@ from molt.process_model import ProcessSample
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@contextlib.contextmanager
+def _admitted_workloads(scripts):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    with contextlib.ExitStack() as custody:
+        yield {
+            script: custody.enter_context(
+                admit_benchmark_workload(
+                    Path(script),
+                    project_root=bench.REPO_ROOT,
+                    run_args=[],
+                    molt_args=bench.molt_args_for_benchmark(script),
+                )
+            )
+            for script in scripts
+        }
+
+
 def test_bench_individual_reuses_backend_daemon_by_default(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -49,15 +67,23 @@ def test_bench_individual_reuses_backend_daemon_by_default(
         lambda script, timeout_s, limits=None: (True, 0.04, "1"),
     )
 
-    result = bench.bench_one(
-        "tests/benchmarks/bench_bytes_find.py",
-        samples=1,
-        warmup=1,
-        timeout_build=1.0,
-        timeout_run=1.0,
-    )
+    with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
+        result = bench.bench_one(
+            "tests/benchmarks/bench_bytes_find.py",
+            samples=1,
+            warmup=1,
+            timeout_build=1.0,
+            timeout_run=1.0,
+            workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+        )
 
     assert cleanups == 0
+    from tools import bench_diff
+
+    assert result["workload"]["entry"] == "tests/benchmarks/bench_bytes_find.py"
+    cells = {"tests/benchmarks/bench_bytes_find.py": result}
+    external = bench_diff._compute_metric_diffs("cpython_time_s", cells, cells)
+    assert len(external) == 1 and external[0].delta == 0
     assert result["build_ok"] is True
     assert result["run_ok"] is True
     assert result["molt_ok"] is True
@@ -98,14 +124,16 @@ def test_bench_individual_can_opt_into_cold_daemon_isolation(
         lambda script, timeout_s, limits=None: (True, 0.04, "1"),
     )
 
-    bench.bench_one(
-        "tests/benchmarks/bench_bytes_find.py",
-        samples=1,
-        warmup=1,
-        timeout_build=1.0,
-        timeout_run=1.0,
-        isolate_daemon=True,
-    )
+    with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
+        bench.bench_one(
+            "tests/benchmarks/bench_bytes_find.py",
+            samples=1,
+            warmup=1,
+            timeout_build=1.0,
+            timeout_run=1.0,
+            isolate_daemon=True,
+            workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+        )
 
     assert cleanups == 1
 
@@ -309,13 +337,15 @@ def test_bench_individual_rejects_partial_sample_failure(
         lambda script, timeout_s, limits=None: (True, 0.04, "1"),
     )
 
-    result = bench.bench_one(
-        "tests/benchmarks/bench_bytes_find.py",
-        samples=2,
-        warmup=1,
-        timeout_build=1.0,
-        timeout_run=1.0,
-    )
+    with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
+        result = bench.bench_one(
+            "tests/benchmarks/bench_bytes_find.py",
+            samples=2,
+            warmup=1,
+            timeout_build=1.0,
+            timeout_run=1.0,
+            workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+        )
 
     assert result["run_ok"] is False
     assert result["molt_ok"] is False
@@ -351,13 +381,15 @@ def test_bench_individual_records_molt_run_failure_detail(
         lambda script, timeout_s, limits=None: (True, 0.04, "1"),
     )
 
-    result = bench.bench_one(
-        "tests/benchmarks/bench_bytes_find.py",
-        samples=1,
-        warmup=0,
-        timeout_build=1.0,
-        timeout_run=1.0,
-    )
+    with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
+        result = bench.bench_one(
+            "tests/benchmarks/bench_bytes_find.py",
+            samples=1,
+            warmup=0,
+            timeout_build=1.0,
+            timeout_run=1.0,
+            workload=workloads["tests/benchmarks/bench_bytes_find.py"],
+        )
 
     assert result["run_ok"] is False
     assert result["molt_failure_detail"] == "rc=7\nstderr:\nruntime intrinsic missing"
@@ -390,13 +422,15 @@ def test_bench_individual_marks_intrinsic_benchmarks_molt_only(
 
     monkeypatch.setattr(bench, "run_cpython", fail_cpython)
 
-    result = bench.bench_one(
-        "tests/benchmarks/bench_ptr_registry.py",
-        samples=1,
-        warmup=0,
-        timeout_build=1.0,
-        timeout_run=1.0,
-    )
+    with _admitted_workloads(["tests/benchmarks/bench_ptr_registry.py"]) as workloads:
+        result = bench.bench_one(
+            "tests/benchmarks/bench_ptr_registry.py",
+            samples=1,
+            warmup=0,
+            timeout_build=1.0,
+            timeout_run=1.0,
+            workload=workloads["tests/benchmarks/bench_ptr_registry.py"],
+        )
 
     assert result["reference_runtime"] == "molt"
     assert (
@@ -435,13 +469,15 @@ def test_bench_individual_custom_same_basename_keeps_cpython_reference(
         lambda script, timeout_s, limits=None: (True, 0.03, "custom"),
     )
 
-    result = bench.bench_one(
-        str(custom),
-        samples=1,
-        warmup=0,
-        timeout_build=1.0,
-        timeout_run=1.0,
-    )
+    with _admitted_workloads([str(custom)]) as workloads:
+        result = bench.bench_one(
+            str(custom),
+            samples=1,
+            warmup=0,
+            timeout_build=1.0,
+            timeout_run=1.0,
+            workload=workloads[str(custom)],
+        )
 
     assert result["reference_runtime"] == "cpython"
     assert result["reference_reason"] == "cpython_reference"
@@ -544,6 +580,7 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
     def fake_bench_one(script: str, **kwargs: object) -> dict[str, object]:
         bench_calls.append({"script": script, **kwargs})
         return {
+            "workload": kwargs["workload"].record,
             "build_ok": True,
             "run_ok": True,
             "molt_time_s": 0.01,
@@ -575,3 +612,27 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
     assert bench_calls[0]["limits"] is limits
     assert bench_calls[0]["samples"] == 1
     assert bench_calls[0]["warmup"] == 0
+
+
+def test_individual_refuses_unsupported_admitted_guest_args_before_children(
+    tmp_path, monkeypatch
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "program.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        bench,
+        "molt_build",
+        lambda *a, **k: pytest.fail("unsupported argv reached build"),
+    )
+    monkeypatch.setattr(
+        bench,
+        "run_cpython",
+        lambda *a, **k: pytest.fail("unsupported argv reached CPython"),
+    )
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=["different"], molt_args=[]
+    ) as admitted:
+        with pytest.raises(ValueError, match="does not support guest run arguments"):
+            bench.bench_one(str(script), 1, 0, 1.0, 1.0, workload=admitted)

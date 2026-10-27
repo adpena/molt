@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 
 import pytest
 
@@ -15,6 +16,7 @@ def _payload(
     summary_only: bool = False,
 ) -> dict:
     entry: dict = {
+        "workload": synthetic_workload("bench.py"),
         "requested_profile": "release",
         "build_observation": {
             "kind": "molt-build-observation-v1",
@@ -100,13 +102,12 @@ def test_top_level_raw_samples_enable_statistical_fields() -> None:
 
 
 def test_failed_molt_ok_stale_runtime_and_samples_are_ignored() -> None:
-    comparisons = perf_regression.compare_benchmarks(
-        _payload(value=1.2, top_level_samples_s=[1.1, 1.2, 1.3], molt_ok=False),
-        _payload(value=1.0, top_level_samples_s=[0.9, 1.0, 1.1]),
-        perf_regression.DEFAULT_THRESHOLDS,
-    )
-
-    assert comparisons == []
+    with pytest.raises(ValueError, match="no comparable benchmark pairs"):
+        perf_regression.compare_benchmarks(
+            _payload(value=1.2, top_level_samples_s=[1.1, 1.2, 1.3], molt_ok=False),
+            _payload(value=1.0, top_level_samples_s=[0.9, 1.0, 1.1]),
+            perf_regression.DEFAULT_THRESHOLDS,
+        )
 
 
 def test_incompatible_run_metadata_fails_closed() -> None:
@@ -193,3 +194,19 @@ def test_trends_require_every_point_to_bind_the_same_profile(
     older["benchmarks"]["bench.py"].pop("build_observation")
     with pytest.raises(ValueError, match="selected profiles unbound"):
         perf_regression.analyze_trends(baselines, current)
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_regression_gate_refuses_renamed_disjoint_workloads(bound):
+    current, baseline = _payload(value=1.2), _payload(value=1.0)
+    cell = current["benchmarks"].pop("bench.py")
+    cell["workload"] = synthetic_workload("tests/benchmarks/bench.py")
+    current["benchmarks"]["tests/benchmarks/bench.py"] = cell
+    if not bound:
+        baseline["benchmarks"]["bench.py"].pop("workload")
+    with pytest.raises(
+        ValueError, match="no comparable benchmark pairs" if bound else "workload"
+    ):
+        perf_regression.compare_benchmarks(
+            current, baseline, perf_regression.DEFAULT_THRESHOLDS
+        )

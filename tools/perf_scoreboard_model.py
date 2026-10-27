@@ -326,6 +326,8 @@ class Cell:
     backend: str
     profile: str
 
+    workload: dict[str, Any] | None = None
+
     # Build facts (from the daemon batch build).
     build_ok: bool = False
     binary_size_kib: float | None = None
@@ -456,6 +458,13 @@ class Cell:
         consumed by summaries, rebuilds, merges, and CI.
         """
         self.cold_budget_ms = budget_ms
+        from tools.bench_evidence import workload_identity_problems
+
+        problems = workload_identity_problems(self.workload)
+        if problems:
+            self.verdict = VERDICT_FAIL_STALE
+            self.note = "; ".join(problems)
+            return
 
         # FAIL_STALE overrides everything: a non-authoritative board's numbers
         # are not the origin/main contract, full stop.
@@ -748,9 +757,9 @@ def _dimensional_improvement(cell: "Cell", baseline_cell: dict | None) -> str | 
     """
     if not baseline_cell:
         return None
-    from tools.perf_schema import cell_execution_hosts_comparable
+    from tools.perf_schema import cells_comparable
 
-    if not cell_execution_hosts_comparable(vars(cell), baseline_cell):
+    if not cells_comparable(vars(cell), baseline_cell):
         return None
     wins: list[str] = []
 

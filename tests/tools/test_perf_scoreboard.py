@@ -8,6 +8,11 @@ tool's ``--self-test`` (one real bench_fib build).
 
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_workload,
+    measure_admitted_cell,
+)
+
 from dataclasses import asdict
 import json
 import os
@@ -69,7 +74,13 @@ def _cell(
     cold_cpython_s: float | None = None,
     run_blocked: bool = False,
 ) -> ps.Cell:
-    c = ps.Cell(benchmark=benchmark, target="native", backend=backend, profile=profile)
+    c = ps.Cell(
+        workload=synthetic_workload(benchmark),
+        benchmark=benchmark,
+        target="native",
+        backend=backend,
+        profile=profile,
+    )
     c.build_ok = build_ok
     c.molt_ok = molt_ok
     c.cpython_ok = cpython_ok
@@ -518,7 +529,8 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    script = tmp_path / "bench_fib.py"
+    script = tmp_path / "tests" / "benchmarks" / "bench_fib.py"
+    script.parent.mkdir(parents=True)
     script.write_text("print('not built')\n", encoding="utf-8")
     failure = measure.bench.MoltFailure(
         phase="build",
@@ -551,7 +563,8 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
         lambda *args, **kwargs: failure,
     )
 
-    cell = measure.measure_cell(
+    cell = measure_admitted_cell(
+        measure,
         script_path=script,
         spec=measure.BackendSpec("native", "llvm", "native"),
         profile="release-fast",
@@ -593,7 +606,8 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
     tmp_path: Path,
     failed_label: str | None,
 ) -> None:
-    script = tmp_path / "bench_fib.py"
+    script = tmp_path / "tests" / "benchmarks" / "bench_fib.py"
+    script.parent.mkdir(parents=True)
     script.write_text("print('same')\n", encoding="utf-8")
     owner = OwnedTemporaryDirectory(dir=tmp_path)
     binary_path = Path(owner.name) / "bench_fib.exe"
@@ -662,7 +676,8 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
     monkeypatch.setattr(measure, "_run_measured_command", fake_run)
     monkeypatch.setattr(measure, "output_parity_evidence", capture_parity)
 
-    cell = measure.measure_cell(
+    cell = measure_admitted_cell(
+        measure,
         script_path=script,
         spec=measure.BackendSpec("native", "llvm", "native"),
         profile="release-fast",
@@ -1118,6 +1133,7 @@ def _warm_cell(
     fields so we can drive every branch of classify_cell without a real run.
     """
     c = ps.Cell(
+        workload=synthetic_workload("tests/benchmarks/bench_x.py"),
         benchmark="tests/benchmarks/bench_x.py",
         target="native",
         backend="native",
@@ -1407,6 +1423,7 @@ def test_apply_classification_sets_state_on_every_cell() -> None:
         repeat_passes=5,
     )
     green.benchmark = "tests/benchmarks/bench_y.py"
+    green.workload = synthetic_workload(green.benchmark)
     cells = [red, green]
     ps.apply_classification(cells, quiescent=True)
     assert red.classification == ps.CLASS_RED_STABLE
@@ -1448,6 +1465,7 @@ def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
         repeat_passes=3,
     )
     green.benchmark = "tests/benchmarks/bench_sum.py"
+    green.workload = synthetic_workload(green.benchmark)
     ps.apply_classification([red, green], quiescent=False)
     assert red.classification == ps.CLASS_RED_NOISY
     assert green.classification == ps.CLASS_GREEN
@@ -2467,9 +2485,12 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     monkeypatch.setattr(cli, "capture_current_python_runtime", lambda: {})
     monkeypatch.setattr(ps, "_git_rev", lambda: "a" * 40)
     scripts = [
-        Path("tests/benchmarks/bench_fib.py"),
-        Path("tests/benchmarks/bench_sum.py"),
+        tmp_path / "inputs" / "bench_fib.py",
+        tmp_path / "inputs" / "bench_sum.py",
     ]
+    for script in scripts:
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("print(1)\n", encoding="utf-8")
     oracle_meta = {
         "cmd": [sys.executable],
         "executable": sys.executable,
@@ -2547,6 +2568,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
             cold_molt_s=0.1,
             cold_cpython_s=0.2,
         )
+        cell.workload = kwargs["workload"].record
         cell.target = kwargs["spec"].target
         cell.execution_host = plan.as_record() if plan is not None else None
         cell.finalize(budget_ms=1000)
@@ -2559,6 +2581,14 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
         checkpoints.append(json.loads(path.read_text(encoding="utf-8")))
 
     api["_checkpoint"] = checkpoint
+
+    def publish_then_edit_source(path, doc, **kwargs):
+        report._write_scoreboard_doc(path, doc, **kwargs)
+        # A legitimate edit after admitted publication cannot retroactively
+        # invalidate a historical result or make teardown delete that result.
+        scripts[0].write_text("print(2)\n", encoding="utf-8")
+
+    api["_write_scoreboard_doc"] = publish_then_edit_source
     output = tmp_path / "result.json"
     rc = cli.main(
         api,
@@ -2582,6 +2612,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     expected = measured[0].as_record() if backend == "wasm" else None
     assert doc["host"]["execution_host"] == expected
     assert all(d["host"]["execution_host"] == expected for d in checkpoints)
+    assert all(d["provenance"]["authoritative"] is False for d in checkpoints)
     assert all(c["execution_host"] == expected for c in schema.flatten_cells(doc))
 
 
@@ -2602,7 +2633,8 @@ def test_direct_wasm_cell_refuses_missing_node_before_build(monkeypatch, tmp_pat
         lambda *a, **kw: pytest.fail("must refuse before build"),
     )
     with pytest.raises(NodeRuntimeError, match="missing Node"):
-        measure.measure_cell(
+        measure_admitted_cell(
+            measure,
             script_path=ps.REPO_ROOT / "tests/benchmarks/bench_fib.py",
             spec=ps.BACKENDS_BY_NAME["wasm"],
             profile="dev-fast",
@@ -2666,5 +2698,190 @@ def test_baseline_comparison_and_dimensional_win_bind_execution_engine(
     if change == "path":
         assert not newly_red and regressed and dimensional
     else:
-        assert newly_red and "INCOMPARABLE execution host" in newly_red[0]
+        assert newly_red and "INCOMPARABLE workload or execution host" in newly_red[0]
         assert not regressed and dimensional is None
+
+
+@pytest.mark.parametrize(
+    "mutation", ["same-size", "replace", "remove", "sibling", "new-sibling"]
+)
+def test_workload_admission_refuses_source_or_import_generation_change(
+    tmp_path, mutation
+):
+    from tools.bench_evidence import admit_benchmark_workload
+    import os
+
+    source = tmp_path / "program.py"
+    source.write_text(
+        "import decimal\nimport helper\nprint(helper.VALUE)\n", encoding="utf-8"
+    )
+    sibling = tmp_path / "helper.py"
+    sibling.write_text("VALUE = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed|unavailable"):
+        with admit_benchmark_workload(
+            source, project_root=tmp_path, run_args=[], molt_args=[]
+        ) as admitted:
+            original = source.stat()
+            if mutation == "same-size":
+                source.write_bytes(source.read_bytes().replace(b"print(", b"repr( "))
+                os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+            elif mutation == "replace":
+                replacement = tmp_path / "replacement.py"
+                replacement.write_bytes(source.read_bytes())
+                replacement.replace(source)
+            elif mutation == "remove":
+                source.unlink()
+            elif mutation == "sibling":
+                sibling.write_text("VALUE = 2\n", encoding="utf-8")
+            else:
+                (tmp_path / "decimal.py").write_text("VALUE = 0\n", encoding="utf-8")
+            admitted.verify()
+
+
+def test_workload_owns_bytes_arguments_and_original_path(tmp_path):
+    import hashlib
+    from tools.bench_evidence import admit_benchmark_workload, workloads_comparable
+
+    source = tmp_path / "encoded.py"
+    literal = b"# coding: latin-1\r\nprint('caf\xe9')\r\n"
+    source.write_bytes(literal)
+    with admit_benchmark_workload(
+        source, project_root=tmp_path, run_args=["17"], molt_args=[]
+    ) as admitted:
+        assert admitted.script == source
+        record = admitted.record
+        assert record["sources"] == [
+            {
+                "path": "encoded.py",
+                "size": len(literal),
+                "sha256": hashlib.sha256(literal).hexdigest(),
+            }
+        ]
+        assert record["run_args"] == ["17"]
+        record["run_args"].append("foreign")
+        assert admitted.record["run_args"] == ["17"]
+        assert not workloads_comparable(record, admitted.record)
+        admitted.verify()
+
+
+def test_external_source_cannot_impersonate_suite_path_or_collide(tmp_path):
+    from tools.bench_suites import canonical_benchmark_key, molt_args_for_benchmark
+
+    foreign = tmp_path / "tests" / "benchmarks" / "bench_sum_list_hints.py"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("print(1)\n", encoding="utf-8")
+    assert canonical_benchmark_key(foreign) == foreign.as_posix()
+    assert molt_args_for_benchmark(foreign) == []
+    another = tmp_path / "elsewhere" / foreign.name
+    another.parent.mkdir()
+    another.write_text("print(2)\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="colliding"):
+        ps.bench_suites.validate_benchmark_selection([foreign, another])
+    with pytest.raises(SystemExit, match="not found"):
+        ps._resolve_script("missing/directory/bench_sum.py")
+
+
+def test_workload_verification_preserves_primary_failure(tmp_path):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    source = tmp_path / "program.py"
+    source.write_text("print(1)\n", encoding="utf-8")
+    original = RuntimeError("independent consuming failure")
+    with pytest.raises(RuntimeError) as caught:
+        with admit_benchmark_workload(
+            source, project_root=tmp_path, run_args=[], molt_args=[]
+        ):
+            source.write_text("print(2)\n", encoding="utf-8")
+            raise original
+    assert caught.value is original
+    assert any("workload invalidated" in note for note in original.__notes__)
+
+
+def test_source_mutation_after_build_refuses_reference_and_closes_binary(
+    monkeypatch, tmp_path
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    source = tmp_path / "program.py"
+    source.write_text("print(1)\n", encoding="utf-8")
+    owner = OwnedTemporaryDirectory(dir=tmp_path)
+    artifact = Path(owner.name) / "program"
+    artifact.write_bytes(b"owned test image")
+
+    def build(*args, **kwargs):
+        source.write_text("print(2)\n", encoding="utf-8")
+        return measure.bench.MoltBinary(artifact, owner, 0.1, 1.0, None)
+
+    monkeypatch.setattr(measure.bench, "prepare_molt_binary", build)
+    monkeypatch.setattr(
+        measure, "_perfscore_build_env", lambda *a: ProcessEnvironment({})
+    )
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        measure,
+        "_run_measured_command",
+        lambda *a, **kw: pytest.fail("changed input reached a sample"),
+    )
+    with pytest.raises(ValueError, match="changed"):
+        with admit_benchmark_workload(
+            source, project_root=tmp_path, run_args=[], molt_args=[]
+        ) as workload:
+            measure.measure_cell(
+                script_path=source,
+                workload=workload,
+                spec=ps.BACKENDS_BY_NAME["native"],
+                profile="release-fast",
+                samples=1,
+                warmup=0,
+                rss_mb=64,
+                timeout_s=1,
+                batch_server=None,
+                cpython_cmd=("fixture-python",),
+                target_python_version="3.12",
+                log_dir=tmp_path / "logs",
+            )
+    assert not Path(owner.name).exists()
+
+
+def test_publication_refuses_drift_before_replacing_previous_board(
+    monkeypatch, tmp_path
+):
+    from tools import perf_scoreboard_report as report
+
+    destination = tmp_path / "board.json"
+    destination.write_bytes(b"previous qualified artifact")
+    monkeypatch.setattr(report, "_validate_board_for_emit", lambda *a, **kw: None)
+
+    def changed():
+        raise ValueError("independent generation drift")
+
+    with pytest.raises(ValueError, match="generation drift"):
+        report._write_scoreboard_doc(
+            destination,
+            {"new": "not admitted"},
+            context="fixture",
+            validate_inputs=changed,
+        )
+    assert destination.read_bytes() == b"previous qualified artifact"
+
+
+def test_invalid_publication_preserves_unrelated_output_and_cleans_stage(
+    monkeypatch, tmp_path
+):
+    from tools import perf_scoreboard_report as report
+
+    destination = tmp_path / "new-board.json"
+    other = tmp_path / "other-board.json"
+    other.write_bytes(b"unrelated result")
+    monkeypatch.setattr(report, "_validate_board_for_emit", lambda *a, **kw: None)
+
+    def changed():
+        raise ValueError("input changed before commit")
+
+    with pytest.raises(ValueError, match="before commit"):
+        report._write_scoreboard_doc(
+            destination, {}, context="fixture", validate_inputs=changed
+        )
+    assert not destination.exists()
+    assert other.read_bytes() == b"unrelated result"
+    assert set(tmp_path.iterdir()) == {other}

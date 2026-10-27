@@ -140,6 +140,7 @@ def main() -> None:
 
     wasm_binary = bench_wasm.prepare_wasm_binary(
         bench,
+        molt_args=bench_wasm.molt_args_for_benchmark(bench),
         tty=False,
         log=None,
         keep_temp=False,

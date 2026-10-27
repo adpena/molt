@@ -464,7 +464,7 @@ gate constants, required top-level/provenance/host/summary/cell fields, and the
 `FAIL_COLD_BUDGET`, `WARN_COLD_FLOOR`, `UNSTABLE`), `validate_cell()` now
 fails closed unless the build/run booleans, binary size, compile time, cold and
 warm timings, speedups, startup tax, RSS peaks, and log artifact are present. A
-measured runnable cell must also carry affirmative schema-v5 `output_parity`
+measured runnable cell must also carry affirmative schema-v6 `output_parity`
 evidence from `tools.compat.comparison`: exact stdout, exact user stderr, exact
 exit status, and stable output across the cold observation plus every existing
 warmup and timed warm sample. The receipt stores hashes and the first mismatching sample
@@ -541,7 +541,7 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
 ```jsonc
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "kind": "cpython_floor_scoreboard",
   "generated_at": "<iso8601 utc>",
   "git_rev": "<full sha>",
@@ -593,6 +593,13 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
   "scoreboard": {
     "<benchmark>": { "<target>": { "<backend>": { "<profile>": {
+      "workload": {
+        "entry": "tests/benchmarks/<name>.py",
+        "scope": "local-python-source-closure",
+        "sources": [{"path": "tests/benchmarks/<name>.py", "size": 123, "sha256": "<exact sha256>"}],
+        "topology_sha256": "<closure topology sha256 or empty>",
+        "run_args": [], "molt_args": []
+      },
       // --- build facts ---
       "build_ok": true, "binary_size_kib": 4256.3, "compile_time_s": 3.08,
       // --- run facts ---
@@ -654,7 +661,7 @@ artifact, **not** a speedup board, and never feeds the release gate.
 
 ```jsonc
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "kind": "hot_only_cycle_profile",
   "git_rev": "<full sha>",
   "backend": "native", "target": "native", "profile": "release-fast",
@@ -1112,3 +1119,5 @@ the shared typed measurement API as the CPython path.
 - **Widen `CODON_EQUIVALENT_BENCHMARKS`** as more numeric/loop kernels are
   verified semantically drop-in (conservative by design — a false "equivalent"
   is worse than a missing comparison).
+
+Source admission, comparison and final publication follow the [workload-generation contract](../design/foundation/64_perf_scoreboards_and_harness.md#admitted-benchmark-source-generations). Source changes after the final pre-commit admission boundary do not rewrite historical identity. Missing old workload evidence remains unqualified; summary regeneration never supplies it.

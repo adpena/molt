@@ -8,6 +8,10 @@ projection of one canonical cell stream. SYNTHETIC cells only — no molt rebuil
 
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_workload,
+)
+
 import json
 import os
 import sys
@@ -25,6 +29,7 @@ from tests.process_guard_common import run_guarded_test_process  # noqa: E402
 def _cell(**overrides: object) -> dict[str, object]:
     """A GREEN-by-default raw cell dict (the shape flatten_cells yields)."""
     cell: dict[str, object] = {
+        "workload": synthetic_workload(),
         "benchmark": "tests/benchmarks/bench_fib.py",
         "target": "native",
         "backend": "native",
@@ -62,6 +67,8 @@ def _cell(**overrides: object) -> dict[str, object]:
         "repeat_stability": "STABLE_ABOVE",
     }
     cell.update(overrides)
+    if "workload" not in overrides:
+        cell["workload"] = synthetic_workload(cell["benchmark"])
     if cell["backend"] == "wasm":
         from tests.tools.test_perf_schema import _node_observation
 
