@@ -764,6 +764,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard_core/process_custody.py",
+        "RootGroupAbsence.observe",
+        "os.killpg",
+        "guard-internal positive-PGID signal-0 existence probe; only ESRCH "
+        "produces scoped absence, never process termination authority",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard_core/process_custody.py",
         "_send_pid_signal_action",
         "os.kill",
         "memory guard watched-root and escaped-PID signal primitive",

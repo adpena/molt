@@ -63,7 +63,12 @@ from molt.file_publication import (
     resolve_owned_path,
 )
 from molt.disk_capacity import require_scratch_capacity
-from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root, scratch_dir
+from molt.dx import (
+    PROOF_SCRATCH_ROOT_ENV,
+    proof_scratch_root,
+    scratch_dir,
+    scratch_storage,
+)
 from molt.memory_guard_paths import STATE_ROOT_ENV, memory_guard_state_root
 from molt.toolchain_identity import StableRegularFileError
 
@@ -188,9 +193,12 @@ class GuardScratchLease:
 
 def scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
     # A short root preserves Windows compiler/linker path budget. A
-    # queue-issued guard state root carries its scratch beside it; otherwise
-    # guard scratch is run scratch and follows the selected scratch storage.
-    if environ.get(STATE_ROOT_ENV, "").strip():
+    # A queue-issued state root supplies default data placement. An explicit
+    # storage root selects data independently; control state stays unchanged.
+    if (
+        environ.get(STATE_ROOT_ENV, "").strip()
+        and scratch_storage(environ).root is None
+    ):
         return resolve_owned_path(
             memory_guard_state_root(repo_root, environ).parent / _ROOT_DIRNAME
         )

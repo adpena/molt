@@ -1318,13 +1318,14 @@ def product_store_dir(project_root: Path, env: Mapping[str, str]) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class ScratchStorage:
-    """Where run scratch lives: disk, or an operator's memory-backed root."""
+    """Selected storage kind and optional operator root for transient data."""
 
-    memory_root: Path | None = None
+    mode: Literal["disk", "memory"] = "disk"
+    root: Path | None = None
 
-    @property
-    def mode(self) -> Literal["disk", "memory"]:
-        return "disk" if self.memory_root is None else "memory"
+    def __post_init__(self) -> None:
+        if self.mode == "memory" and self.root is None:
+            raise ValueError("memory scratch requires a selected storage root")
 
 
 def scratch_storage(env: Mapping[str, str] | None = None) -> ScratchStorage:
@@ -1341,42 +1342,42 @@ def scratch_storage(env: Mapping[str, str] | None = None) -> ScratchStorage:
                 "host does not have. Mount a RAM disk and set "
                 f"{SCRATCH_STORAGE_ENV} to its absolute path, or use disk."
             )
-        return ScratchStorage(SHARED_MEMORY_ROOT.resolve())
+        return ScratchStorage(mode="memory", root=SHARED_MEMORY_ROOT.resolve())
+    mode: Literal["disk", "memory"] = "memory"
+    if raw.startswith("disk:"):
+        mode = "disk"
+        raw = raw.removeprefix("disk:")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise DxConfigError(
-            f"{SCRATCH_STORAGE_ENV} must be disk, memory, or the absolute path of "
-            f"a memory-backed directory; got {raw!r}"
+            f"{SCRATCH_STORAGE_ENV} must be disk, disk:<absolute path>, memory, "
+            f"or the absolute path of a memory-backed directory; got {raw!r}"
         )
     if not path.is_dir():
         raise DxConfigError(
             f"{SCRATCH_STORAGE_ENV} names {path}, which is not a directory. Molt "
-            "never creates or mounts a RAM disk; mount it first."
+            "never creates or mounts the selected storage root; prepare it first."
         )
-    return ScratchStorage(path.resolve())
+    return ScratchStorage(mode=mode, root=path.resolve())
 
 
 def _scratch_root_for(
     artifact: Path, source_root: Path, env: Mapping[str, str]
 ) -> Path:
     storage = scratch_storage(env)
-    if storage.memory_root is not None and host_path_is_within(
-        storage.memory_root, source_root
-    ):
+    if storage.root is not None and host_path_is_within(storage.root, source_root):
         raise DxConfigError(
-            f"{SCRATCH_STORAGE_ENV} must be outside the checkout: {storage.memory_root}"
+            f"{SCRATCH_STORAGE_ENV} must be outside the checkout: {storage.root}"
         )
-    return custody_layout.scratch_root(
-        artifact, source_root, memory_root=storage.memory_root
-    )
+    return custody_layout.scratch_root(artifact, source_root, storage_root=storage.root)
 
 
 def scratch_root(repo_root: Path, env: Mapping[str, str] | None = None) -> Path:
     """Return the run scratch root for a checkout, never inside it.
 
-    Disk storage puts scratch at ``<artifact root>/tmp``; memory storage puts
-    it under the operator's memory-backed root. `RunContext.canonical_env`
-    exports the same root as ``TMPDIR``.
+    Default disk storage uses ``<artifact root>/tmp``. An explicit disk or
+    memory root holds per-artifact scratch independently of durable state.
+    `RunContext.canonical_env` exports the same root as ``TMPDIR``.
     """
 
     source = Path(repo_root).expanduser().resolve()

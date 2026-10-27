@@ -18,13 +18,15 @@ from tests.process_guard_common import (
 )
 
 
-def _lease(root: Path, number: int = 1):
+def _lease(root: Path, number: int = 1, *, storage: str | None = None):
     state = root / "tmp" / "memory_guard"
     env = {
         "MOLT_MEMORY_GUARD_STATE_ROOT": str(state),
         "MOLT_MEMORY_GUARD_TOKEN": f"{number:032x}",
         "MOLT_MEMORY_GUARD_MARKER": str(state / "active" / f"guard-{number}.json"),
     }
+    if storage is not None:
+        env["MOLT_SCRATCH_STORAGE"] = storage
     lease = scratch.acquire_guard_scratch(root, env)
     env[scratch.SCRATCH_ENV] = str(lease.target)
     return lease, env
@@ -1035,7 +1037,10 @@ def test_terminal_callback_failure_releases_pin_and_preserves_payload(
     assert not file_locks._file_lock_is_owned(handle)
 
 
-def test_allocation_refuses_a_run_whose_scratch_budget_is_not_free(tmp_path):
+@pytest.mark.parametrize("explicit_disk", [False, True])
+def test_allocation_refuses_a_run_whose_scratch_budget_is_not_free(
+    tmp_path, explicit_disk
+):
     state = tmp_path / "tmp" / "memory_guard"
     env = {
         "MOLT_MEMORY_GUARD_STATE_ROOT": str(state),
@@ -1044,11 +1049,17 @@ def test_allocation_refuses_a_run_whose_scratch_budget_is_not_free(tmp_path):
         # One exbibyte: no host volume has it free.
         "MOLT_SCRATCH_BUDGET_GB": str(1024**3),
     }
+    repo = tmp_path / "source"
+    if explicit_disk:
+        selected = tmp_path / "selected"
+        selected.mkdir()
+        env["MOLT_SCRATCH_STORAGE"] = f"disk:{selected}"
+    allocation_root = scratch.scratch_root(repo, env)
 
     with pytest.raises(ValueError, match="scratch capacity admission rejected"):
-        scratch.acquire_guard_scratch(tmp_path, env)
+        scratch.acquire_guard_scratch(repo, env)
     # Admission runs before allocation: nothing was created.
-    assert not (tmp_path / "tmp" / "gs").exists()
+    assert not allocation_root.exists()
 
 
 def test_guard_scratch_follows_the_selected_scratch_storage(tmp_path):
@@ -1063,6 +1074,28 @@ def test_guard_scratch_follows_the_selected_scratch_storage(tmp_path):
 
     assert root.parent.parent == ram.resolve()
     assert root.name == "gs"
+
+
+@pytest.mark.parametrize("prefix", ["disk:", ""])
+def test_explicit_data_storage_preserves_control_state_and_lease_lifecycle(
+    tmp_path, prefix
+):
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    repo = tmp_path / "source"
+    lease, env = _lease(repo, storage=prefix + str(selected))
+    try:
+        assert selected in lease.target.parents
+        assert selected in lease.generation.parents
+        assert lease.owner["guard_marker"] == str(
+            repo / "tmp" / "memory_guard" / "active" / "guard-1.json"
+        )
+        assert scratch.guard_scratch(env) == lease.target
+        assert not (repo / "tmp" / "gs").exists()
+    finally:
+        result = _finish(lease)
+    assert result["state"] == "reclaimed"
+    assert not lease.target.exists()
 
 
 # --- dead-guard resolution and receipt removal ------------------------------

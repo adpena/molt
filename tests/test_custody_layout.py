@@ -65,13 +65,13 @@ def test_memory_scratch_is_one_folder_per_artifact_root_under_the_memory_root(
     first = tmp_path / "one"
     second = tmp_path / "two"
 
-    one = custody_layout.scratch_root(first, first / "molt-src", memory_root=memory)
+    one = custody_layout.scratch_root(first, first / "molt-src", storage_root=memory)
     assert one.parent == memory
     assert one == custody_layout.scratch_root(
-        first, first / "worktrees" / "lane", memory_root=memory
+        first, first / "worktrees" / "lane", storage_root=memory
     )
     assert one != custody_layout.scratch_root(
-        second, second / "molt-src", memory_root=memory
+        second, second / "molt-src", storage_root=memory
     )
 
 

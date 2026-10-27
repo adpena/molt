@@ -623,6 +623,7 @@ def test_temporary_artifact_posix_closure_requires_empty_group_and_final_sample(
     assert evidence["root_process_group_members"] == []
 
 
+@pytest.mark.parametrize("scoped_absence", [False, True])
 @pytest.mark.parametrize(
     "state",
     [
@@ -642,10 +643,11 @@ def test_temporary_artifact_posix_closure_requires_empty_group_and_final_sample(
         "reused_publisher_live",
         "reused_publisher_absent",
         "reused_publisher_legacy_foreign",
+        "stalled_group",
     ],
 )
 def test_temporary_artifact_closure_accounts_for_late_guard_generations(
-    tmp_path, monkeypatch, state
+    tmp_path, monkeypatch, state, scoped_absence
 ):
     active = tmp_path / "custody" / "active"
     retired = active.parent / "retired"
@@ -714,6 +716,12 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
         if state == "legacy_without_publisher":
             payload.pop("guard_process")
         late.write_text(json.dumps(payload), encoding="utf-8")
+    elif state == "stalled_group":
+        payload = json.loads(late.read_text(encoding="utf-8"))
+        payload.update(
+            orphaned_process_groups=[505], updated_at="1970-01-01T00:16:40+00:00"
+        )
+        late.write_text(json.dumps(payload), encoding="utf-8")
     if state == "nested_live":
         marker(active, "c" * 32, pid=303, birth=33, child=404, child_birth=44)
     before = {
@@ -732,10 +740,36 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
             pgid=pid,
             started_at_ns=birth,
         )
+    wall = [1000.0]
+    if state == "stalled_group":
+        samples[505] = memory_guard.ProcessSample(
+            pid=505,
+            ppid=1,
+            rss_kb=1,
+            command="still-live orphan group",
+            pgid=505,
+            started_at_ns=505_000,
+            elapsed_sec=1,
+        )
+        install_thread_module_view(
+            monkeypatch, "time", time, memory_guard, time=lambda: wall[0]
+        )
+
+    def snapshot():
+        # The rows were captured before a long observer stall. That stall
+        # cannot turn their still-live group into evidence of PID reuse.
+        wall[0] = 2000.0
+        return samples
+
     monkeypatch.setattr(
         memory_guard,
         "_process_group_exited_or_unobservable",
         lambda _pgid, *, grace: True,
+    )
+    monkeypatch.setattr(
+        memory_guard.RootGroupAbsence,
+        "observe",
+        classmethod(lambda cls, pgid: cls(pgid)),
     )
     child = dataclasses.replace(
         _guarded_child(),
@@ -761,7 +795,7 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
         proc=types.SimpleNamespace(returncode=0),
         child_process=child,
         tracker=tracker,
-        sampler=lambda: samples,
+        sampler=snapshot,
         windows_job_cleanup=None,
         windows_process_model=False,
         posix_process_model=True,
@@ -771,6 +805,9 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
         sampling_telemetry=_complete_sampling_telemetry(),
         termination_reports=(),
         probe_grace=0,
+        final_observation=(
+            memory_guard.RootGroupAbsence(101) if scoped_absence else None
+        ),
     )
     # The old group and all sampled descendants are gone; the independent
     # persisted generation is the sole evidence of the replacement session.
@@ -6720,38 +6757,6 @@ def test_completed_process_group_does_not_emit_redundant_member_kill(
     assert [action.result for action in report.actions] == ["completed_or_missing"]
 
 
-def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
-    report = _guard_termination_report(reason="tracked_orphan_cleanup")
-
-    def fake_cleanup(root_pid, **kwargs):
-        calls.append({"root_pid": root_pid, **kwargs})
-        return memory_guard.GuardOrphanCleanupResult(
-            process_groups=(777,),
-            termination_reports=(report,),
-        )
-
-    monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
-    # Exercise the explicit no-Job fallback; a live Windows Job is itself the
-    # exact descendant cleanup authority and intentionally bypasses PID-table
-    # orphan cleanup.
-    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
-    _patch_temporary_artifact_closure_closed(monkeypatch)
-
-    result = memory_guard.run_guarded(
-        [sys.executable, "-c", "print('ok')"],
-        max_rss_kb=1_000_000,
-        poll_interval=0.01,
-    )
-
-    assert result.returncode == 0
-    assert result.stdout == "ok\n"
-    assert result.orphaned_process_groups == (777,)
-    assert result.termination_reports == (report,)
-    assert len(calls) == 1
-    assert calls[0]["root_reaped"] is True
-
-
 def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
     monkeypatch,
 ) -> None:
@@ -7363,7 +7368,7 @@ def test_terminal_transfer_and_cleanup_share_observation_until_a_signal(
         return cleanup(root_pid, samples=samples, **kwargs)
 
     def observed_closure(**kwargs):
-        closure_samples.append(kwargs.get("final_samples"))
+        closure_samples.append(kwargs.get("final_observation"))
         return closure(**kwargs)
 
     monkeypatch.setattr(suite_custody, "transferable_groups", observed_transfer)
@@ -7431,8 +7436,13 @@ def test_terminal_transfer_and_cleanup_share_observation_until_a_signal(
         )
         assert result.returncode == 0, result.stderr
         assert result.descendants_closed
-        assert cleanup_samples
         if orphan:
+            # Default cleanup must terminate the real child that moved into
+            # its own process group, and report that exact group.
+            assert result.orphaned_process_groups == (
+                int(pid_file.read_text(encoding="utf-8")),
+            )
+            assert cleanup_samples
             assert decisive_samples
             assert cleanup_samples[0] is decisive_samples[-1]
             assert result.termination_reports
@@ -7443,7 +7453,144 @@ def test_terminal_transfer_and_cleanup_share_observation_until_a_signal(
         else:
             assert not transfer_samples
             assert not result.termination_reports
-            assert closure_samples[-1] is cleanup_samples[0]
+            if cleanup_samples:
+                assert closure_samples[-1] is cleanup_samples[0]
+            else:
+                assert isinstance(closure_samples[-1], memory_guard.RootGroupAbsence)
+    finally:
+        stop_test_processes_carrying(marker)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin terminal sampling")
+@pytest.mark.parametrize("absence_available", [True, False])
+def test_root_only_terminal_observation_avoids_host_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, absence_available: bool
+) -> None:
+    _use_real_scratch(monkeypatch)
+    host_reads = []
+    sample_host = process_model._sample_processes_darwin
+
+    def observed_host():
+        host_reads.append(True)
+        return sample_host()
+
+    monkeypatch.setattr(process_model, "_sample_processes_darwin", observed_host)
+    if not absence_available:
+        monkeypatch.setattr(
+            memory_guard.RootGroupAbsence, "observe", staticmethod(lambda _pgid: None)
+        )
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "pass"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
+    )
+    assert result.returncode == 0 and result.descendants_closed
+    assert bool(host_reads) is not absence_available
+    assert result.temporary_artifacts is not None
+    assert result.temporary_artifacts["closure"]["final_observation_scope"] == (
+        "root-group" if absence_available else "host"
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native POSIX process-group probe")
+def test_root_group_absence_probe_preserves_a_live_owned_child() -> None:
+    child = start_owned_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import os; os.write(1, b'x'); os.read(0, 1)",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        assert child.stdout.read(1) == b"x"
+        rows = process_model.sample_processes_custody(
+            process_model.CustodyInterest(tree_pids=frozenset({child.pid}))
+        )
+        assert rows[child.pid].pgid == child.pid
+        assert memory_guard.RootGroupAbsence.observe(child.pid) is None
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+        returncode = child.wait(timeout=5.0)
+        if child.stdout is not None:
+            child.stdout.close()
+    assert returncode == 0, "the existence query must not signal its live target"
+    assert memory_guard.RootGroupAbsence.observe(child.pid) is not None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin terminal sampling")
+def test_root_absence_does_not_close_an_unseen_nested_guard_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_real_scratch(monkeypatch)
+    release = tmp_path / "release-root"
+    child_pid_file = tmp_path / "nested-child.pid"
+    marker = hung_child_marker()
+    seen_rows: set[int] = set()
+    sample_custody = memory_guard.sample_processes_custody
+
+    def observed_custody(interest):
+        samples = sample_custody(interest)
+        seen_rows.update(samples)
+        if interest.tree_pids & samples.keys():
+            release.touch()
+        return samples
+
+    monkeypatch.setattr(memory_guard, "sample_processes_custody", observed_custody)
+    monkeypatch.setattr(memory_guard, "DEFAULT_FAST_START_POLL_INTERVAL_SEC", 60.0)
+    child_source = "import threading; threading.Event().wait()"
+    script = (
+        "import os, subprocess, sys, time\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(memory_guard.ROOT)!r})\n"
+        "from molt import process_model\n"
+        "from tools.memory_guard_core import active_custody\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.001)\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_source!r}, {marker!r}], start_new_session=True)\n"
+        "pid = os.getpid()\n"
+        "interest = process_model.CustodyInterest(tree_pids=frozenset(), exact_pids=frozenset({pid, child.pid}))\n"
+        "rows = process_model.sample_processes_custody(interest)\n"
+        "token = 'd' * 32\n"
+        "path = Path(os.environ['MOLT_MEMORY_GUARD_MARKER']).parent / f'guard-{pid}-{token}.json'\n"
+        "active_custody.write_active_guard_marker(path, {\n"
+        " 'schema_version': 2, 'pid': pid, 'token': token, 'status': 'child_running',\n"
+        " 'guard_process': {'pid': pid, 'started_at_ns': rows[pid].started_at_ns},\n"
+        " 'child_process': {'pid': child.pid, 'pgid': child.pid, 'started_at_ns': rows[child.pid].started_at_ns},\n"
+        " 'child_launch_state': 'recorded'})\n"
+        f"Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
+    )
+    try:
+        result = memory_guard.run_guarded(
+            [sys.executable, "-c", script],
+            max_rss_kb=1_000_000,
+            poll_interval=60.0,
+            timeout=10.0,
+            env={
+                **os.environ,
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state"),
+            },
+        )
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        assert child_pid not in seen_rows, (
+            "the persisted marker is the independent owner"
+        )
+        assert result.child_returncode == 0
+        assert not result.descendants_closed
+        assert result.returncode == memory_guard.INFRASTRUCTURE_RETURN_CODE
+        assert processes_carrying(marker)
+        assert result.temporary_artifacts is not None
+        assert result.temporary_artifacts["state"] == "indeterminate"
+        closure = result.temporary_artifacts["closure"]
+        assert closure["final_observation_scope"] == "root-group"
+        assert closure["nested_sample_process_count"] > 0
+        assert any(
+            row.get("disposition") == "live" for row in closure["guard_generations"]
+        )
     finally:
         stop_test_processes_carrying(marker)
 
@@ -7554,7 +7701,7 @@ def test_run_guarded_reuses_its_post_exit_snapshot_until_a_signal(
         return memory_guard.GuardOrphanCleanupResult()
 
     def closure(**kwargs):
-        seen["closure"] = kwargs["final_samples"]
+        seen["closure"] = kwargs["final_observation"]
         return True, {"schema": "molt.guard-scratch-closure.v1", "closed": True}
 
     monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", tracked_cleanup)
