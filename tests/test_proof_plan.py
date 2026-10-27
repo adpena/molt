@@ -1261,6 +1261,8 @@ def test_extension_admission_proof_executes_required_public_resolver_witness() -
 def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting() -> (
     None
 ):
+    from tools import runtime_test_gate_plan
+
     commands = {command.id: command for command in PLAN.commands}
     core = commands["rust.test.ir-wasm-runtime-authorities"]
     shipping = commands["rust.test.runtime-cold-lifecycle"]
@@ -1295,11 +1297,33 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
         "--parallel-threads",
         "8",
     )
-    # Local integration consumes the same semantic partition and image profile.
-    # A second local-only profile would build another runtime image without
-    # adding a semantic obligation, and would evade registered queue custody.
+    # Local iteration reuses the registered dev-fast semantic gate. Shipping
+    # CI retains assertion-off qualification; both keep the same child policy.
+    development = commands["portability.rust.macos.runtime-gate"]
     local = next(rule for rule in PLAN.local_rules if rule["name"] == "runtime-lib")
-    assert shlex.split(local["gates"][0]) == list(shipping.argv[9:])
+    assert len(local["gates"]) == 1
+    local_argv = shlex.split(local["gates"][0])
+    assert local_argv == list(development.argv[9:])
+    assert local_argv[:2] == ["python", "tools/run_runtime_test_gate.py"]
+    assert local_argv[local_argv.index("--profile") + 1] == "dev-fast"
+    assert "release-output" not in local_argv
+    assert "--parallel-threads" not in local_argv
+    local_args = runtime_test_gate_plan.parse_arguments(local_argv[2:])
+    shipping_args = runtime_test_gate_plan.parse_arguments(shipping.argv[11:])
+    assert 2 <= local_args.parallel_threads <= 8
+    assert shipping_args.parallel_threads == 8
+    for args in (local_args, shipping_args):
+        assert args.policy == "semantic"
+        assert args.build_timeout_seconds == 6300
+        assert args.child_timeout_seconds == 120
+    for command, argv in (
+        (development, (*development.argv[:9], *local_argv)),
+        (shipping, shipping.argv),
+    ):
+        envelope = command_admission.envelope_for_command(argv)
+        assert envelope["proof_plan_command_ids"] == [command.id]
+        assert command_admission.cargo_cache_domain(envelope) == "cargo-workspace"
+        assert envelope["cargo_native_units"] == {"target": ["c", "c++"]}
     # Satellite-only edits must reach the same local owning gate. Their libtest
     # bodies are not compiled by depending on the ordinary satellite rlibs.
     for path in (

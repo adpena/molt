@@ -17,6 +17,37 @@ pub(crate) enum ObjectConstructorCall {
     Init,
 }
 
+/// A callback-free observation of an admitted function's symbol identity.
+/// Keep it within one policy selection: replacing `__code__` or a trampoline
+/// requires a fresh observation, not a persistent identity cache.
+#[derive(Clone, Copy)]
+pub(crate) struct FunctionSymbolIdentity {
+    function: u64,
+    trampoline: u64,
+}
+
+impl FunctionSymbolIdentity {
+    /// `function` must be a live, admitted TYPE_ID_FUNCTION under runtime custody.
+    #[inline]
+    pub(crate) unsafe fn from_function(function: *mut u8) -> Self {
+        unsafe {
+            Self {
+                function: function_fn_ptr(function),
+                trampoline: function_trampoline_ptr(function),
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn represents(self, symbol: u64) -> bool {
+        crate::builtins::functions::runtime_callable_represents_symbol(
+            self.function,
+            self.trampoline,
+            symbol,
+        )
+    }
+}
+
 #[inline]
 pub(crate) unsafe fn callable_matches_runtime_symbol(
     bits: Option<u64>,
@@ -38,11 +69,7 @@ pub(crate) unsafe fn callable_matches_runtime_symbol(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return false;
         }
-        crate::builtins::functions::runtime_callable_represents_symbol(
-            function_fn_ptr(func_ptr),
-            function_trampoline_ptr(func_ptr),
-            symbol_fn_ptr,
-        )
+        FunctionSymbolIdentity::from_function(func_ptr).represents(symbol_fn_ptr)
     }
 }
 

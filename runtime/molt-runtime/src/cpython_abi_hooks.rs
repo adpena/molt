@@ -4745,7 +4745,7 @@ unsafe extern "C" fn hook_register_c_function(
         unsafe {
             #[cfg(not(target_arch = "wasm32"))]
             function_set_call_target_ptr(func_ptr, raw_trampoline);
-            function_set_trampoline_ptr(func_ptr, fn_ptr_value);
+            function_set_trampoline_ptr(&_py, func_ptr, fn_ptr_value);
             if dispatch_kind.is_variadic() {
                 (*header_from_obj_ptr(func_ptr))
                     .fetch_or_flags(HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE);

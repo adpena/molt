@@ -38,8 +38,10 @@ def _canonical_profile_value(key: str, value: object) -> object:
 
 def _effective_profile(profiles: dict, name: str) -> dict:
     """Independent Cargo-inheritance oracle for declarative profile contracts."""
-    declared = profiles[name]
-    parent = declared.get("inherits")
+    # Cargo's built-in test profile inherits dev even without a manifest row:
+    # https://doc.rust-lang.org/cargo/reference/profiles.html#test
+    declared = profiles.get("test", {}) if name == "test" else profiles[name]
+    parent = declared.get("inherits", "dev" if name == "test" else None)
     resolved = _effective_profile(profiles, parent) if parent is not None else {}
     for key, value in declared.items():
         if key == "inherits":
@@ -168,8 +170,9 @@ def test_workspace_dev_dependency_symbols_have_one_wildcard_authority() -> None:
     workspace_names = _declared_workspace_package_names(manifest)
     assert profiles["dev-fast"]["inherits"] == "dev"
     assert "package" not in profiles["dev-fast"]
+    assert "package" not in profiles.get("test", {})
 
-    for profile_name in ("dev", "dev-fast"):
+    for profile_name in ("dev", "dev-fast", "test"):
         packages = _effective_profile(profiles, profile_name)["package"]
         # Cargo applies this to every non-workspace member, including future
         # dependencies. Named overrides merge per field, so opt-only hot
@@ -202,6 +205,9 @@ def test_workspace_dev_dependency_wildcard_preserves_workspace_policy() -> None:
         "molt-codegen-abi": {"opt-level": 1, "debug": 0},
         "molt-artifact-publish": {"opt-level": 1, "debug": 0},
         "molt-runtime": {"opt-level": 2, "debug": 0},
+        "molt-runtime-core": {"opt-level": 2, "debug": 0},
+        "molt-lang-obj-model": {"opt-level": 2, "debug": 0},
+        "molt-runtime-collections": {"opt-level": 2, "debug": 0},
         # The maintained vendor patches are members only so their upstream
         # tests resolve; they keep the dependency debug policy, not a hot
         # override.
@@ -210,13 +216,16 @@ def test_workspace_dev_dependency_wildcard_preserves_workspace_policy() -> None:
     }
     assert expected_hot_members.keys() <= workspace_names
 
-    for profile_name, member_debug in (("dev", 2), ("dev-fast", 1)):
+    for profile_name, member_debug in (("dev", 2), ("dev-fast", 1), ("test", 2)):
         profile = _effective_profile(profiles, profile_name)
         # Cargo excludes workspace members from package."*". Members without
         # a named override keep the profile's debug/optimization settings;
         # the existing workspace hot exceptions retain their complete policy.
         assert profile["debug"] == member_debug
         assert profile["opt-level"] == 0
+        # Cargo's dev defaults retain both checks despite package optimization.
+        assert profile.get("debug-assertions", True) is True
+        assert profile.get("overflow-checks", True) is True
         assert {
             name: policy
             for name, policy in profile["package"].items()
@@ -297,6 +306,9 @@ def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
         "molt-runtime-collections",
     }
     for name, level in (
+        ("release", 3),
+        ("release-fast", 3),
+        ("dev-release", 3),
         ("release-output", 3),
         ("release-size", "s"),
         ("wasm-release", "s"),

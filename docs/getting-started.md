@@ -101,6 +101,11 @@ uv run --python 3.12 molt build examples/hello.py --profile dev
 
 `--release` is shorthand for `--profile release`.
 
+Dev builds optimize the hot runtime crates used by generated programs while
+retaining debug assertions and overflow checks. Compiler iteration settings are
+separate; [profile inheritance](agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md#build-storage-and-profile-inheritance)
+owns the effective policy.
+
 Source-checkout WASM runtime builds default to nonincremental compilation for
 both `dev` and `release`. Explicit iteration controls can select stable family
 state; actual incrementality follows the captured Cargo plan. Explicit Cargo
