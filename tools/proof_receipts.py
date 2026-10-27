@@ -389,6 +389,14 @@ def new_receipt(
 def command_record(command: ReceiptCommand) -> dict[str, Any]:
     from tools.proof_plan import CargoTargetAccess
 
+    effects = {}
+    if "cargo_target_access" in command.data:
+        # Only an explicit declaration owns this facet. In particular, CI tool
+        # prerequisites do not declare the local scheduler's target effects.
+        effects["cargo_target_access"] = CargoTargetAccess.resolve(
+            command.data.get("toolchains", ()),
+            CargoTargetAccess(command.data["cargo_target_access"]),
+        ).value
     return {
         "id": command.id,
         "family": command.family,
@@ -398,9 +406,7 @@ def command_record(command: ReceiptCommand) -> dict[str, Any]:
         "dependencies": list(command.dependencies),
         "tiers": list(command.data["tiers"]),
         "resource_class": command.data["resource_class"],
-        "cargo_target_access": CargoTargetAccess.resolve(
-            command.data.get("toolchains", ()), command.data.get("cargo_target_access")
-        ).value,
+        **effects,
         "timeout_budget": command.data.get("timeout_budget"),
         "timeout_seconds": int(command.data["timeout_seconds"]),
         "timeout_env": list(command.data.get("timeout_env", [])),
@@ -704,6 +710,13 @@ def verify_receipts(
             if payload.get("status") != "success":
                 errors.append(f"{command_id}: enclosing receipt did not succeed")
             exact_fields = command_record(command)
+            if (
+                "cargo_target_access" in record
+                and "cargo_target_access" not in exact_fields
+            ):
+                errors.append(
+                    f"{command_id}: receipt cargo_target_access does not match authority"
+                )
             for field in ("id", "family", "cell", "argv"):
                 del exact_fields[
                     field

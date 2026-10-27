@@ -11383,3 +11383,68 @@ def test_build_early_cutoff_owns_producers_and_fixture_consumers(changed):
     )
     assert gate.toolchains == ("python",)
     assert gate.cargo_target_access is CargoTargetAccess.NONE
+
+
+@pytest.mark.parametrize("extra", [None, "none", "isolated", "shared", "unknown"])
+def test_ci_receipt_omits_undeclared_effect_and_rejects_extraneous_facet(
+    tmp_path, extra
+):
+    command = next(row for row in PLAN.commands if row.id == "python.static.ty")
+    plan = replace(PLAN, commands=(command,))
+    receipt = _receipt_for(command, tmp_path)
+    receipt["authority_sha256"] = proof_plan._authority_sha256(plan)
+    record = receipt["commands"][0]
+    # This existing fixture spells the independent CI wire contract. Exercise
+    # the real serializer too, without deriving the expected field set from it.
+    assert "cargo_target_access" not in command.data
+    assert "cargo_target_access" not in record
+    produced = proof_receipts.command_record(command)
+    assert "cargo_target_access" not in produced
+    assert produced == {key: record[key] for key in produced}
+    record.update(produced)
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert _verify_receipts(plan, ["python_static"], tmp_path) == []
+
+    record["cargo_target_access"] = extra
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert _verify_receipts(plan, ["python_static"], tmp_path) == [
+        "python.static.ty: receipt cargo_target_access does not match authority"
+    ]
+
+
+@pytest.mark.parametrize(
+    "facet, accepted",
+    [
+        ({"cargo_target_access": "none"}, True),
+        ({}, False),
+        ({"cargo_target_access": None}, False),
+        ({"cargo_target_access": "isolated"}, False),
+        ({"cargo_target_access": "shared"}, False),
+        ({"cargo_target_access": "unknown"}, False),
+    ],
+)
+def test_receipt_declared_effect_requires_exact_value_and_presence(
+    tmp_path, facet, accepted
+):
+    original = next(row for row in PLAN.commands if row.id == "python.static.ty")
+    command = replace(original, data={**original.data, "cargo_target_access": "none"})
+    plan = replace(PLAN, commands=(command,))
+    receipt = _receipt_for(command, tmp_path)
+    receipt["authority_sha256"] = proof_plan._authority_sha256(plan)
+    receipt["commands"][0].update(facet)
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    errors = _verify_receipts(plan, ["python_static"], tmp_path)
+    assert errors == (
+        []
+        if accepted
+        else ["python.static.ty: receipt cargo_target_access does not match authority"]
+    )
+
+
+@pytest.mark.parametrize("value", [None, False, 0, "unknown", [], {}])
+def test_receipt_refuses_invalid_explicit_effect_declarations(value):
+    original = next(row for row in PLAN.commands if row.id == "python.static.ty")
+    command = replace(original, data={**original.data, "cargo_target_access": value})
+    with pytest.raises((ValueError, TypeError)):
+        proof_receipts.command_record(command)
