@@ -229,7 +229,7 @@ def test_runtime_identity_reports_manifest_admission_failures(
     detail = {
         "missing": "cannot read native link dependency manifest",
         "malformed": "cannot read native link dependency manifest",
-        "missing-observation": "invalid manifest shape",
+        "missing-observation": "invalid source manifest shape",
         "archive-drift": "archive digest mismatch",
     }[mutation]
     with pytest.raises(

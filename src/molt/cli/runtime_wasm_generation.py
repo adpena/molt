@@ -8,6 +8,7 @@ import shutil
 from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass, replace
 from functools import cached_property
+from enum import Enum
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
@@ -32,6 +33,7 @@ from molt.exact_json import (
 from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
     _freeze_json,
+    _thaw_json,
     _frozen_json_projection,
     runtime_family_digest,
 )
@@ -48,8 +50,9 @@ if TYPE_CHECKING:
     from molt.wasm_artifact import WasmRuntimeFacts
 
 
-_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v5"
-_RUNTIME_WASM_EXPECTED_PAIR_SCHEMA = "molt.runtime-wasm-expected-pair.v2"
+_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v6"
+_RUNTIME_WASM_PRODUCT_SCHEMA = "molt.runtime-wasm-product.v1"
+_RUNTIME_WASM_EXPECTED_PAIR_SCHEMA = "molt.runtime-wasm-expected-pair.v3"
 _RUNTIME_WASM_GENERATION_NAME = "molt_runtime.generation.json"
 _MEMBER_SUFFIX = ".runtime-wasm-member"
 _SHARED_RUNTIME_NAME = "molt_runtime.wasm"
@@ -82,6 +85,11 @@ def _runtime_wasm_store(root: Path) -> AbstractContextManager[GenerationStore]:
     return generation_store(root, _RUNTIME_WASM_STORE)
 
 
+class RuntimeWasmReceiptRole(Enum):
+    SOURCE_BUILD = "source-build"
+    INSTALLED_PRODUCT = "installed-product"
+
+
 @dataclass(frozen=True)
 class RuntimeWasmGeneration:
     manifest: Path
@@ -97,9 +105,18 @@ class RuntimeWasmGeneration:
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", _freeze_json(self.payload))
 
-    @cached_property
-    def cargo_environment(self) -> CargoEnvironmentInputs:
-        return CargoEnvironmentInputs.from_dict(self.payload.get("cargo_environment"))
+    @property
+    def receipt_role(self) -> RuntimeWasmReceiptRole:
+        return RuntimeWasmReceiptRole.INSTALLED_PRODUCT
+
+    def product_payload(self) -> dict[str, object]:
+        """Serialize the canonical product without granting source-build custody."""
+        payload = _thaw_json(self.payload)
+        assert isinstance(payload, dict)
+        return payload
+
+    def _publication_payload(self) -> Mapping[str, object]:
+        return self.payload
 
     def verify_members(self, *, hash_content: bool = False) -> None:
         for path, member in (
@@ -218,6 +235,41 @@ class RuntimeWasmGeneration:
             raise ValueError("runtime WASM lacks structural admission")
 
 
+def _source_generation_payload(
+    product: Mapping[str, object], cargo_environment: CargoEnvironmentInputs
+) -> dict[str, object]:
+    return {
+        "schema": _RUNTIME_WASM_GENERATION_SCHEMA,
+        "product": product,
+        "cargo_environment": cargo_environment.to_dict(),
+    }
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRuntimeWasmGeneration(RuntimeWasmGeneration):
+    """A final product and the exact observations required for source reuse."""
+
+    cargo_environment: CargoEnvironmentInputs
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not isinstance(self.cargo_environment, CargoEnvironmentInputs):
+            raise ValueError("source runtime WASM requires Cargo environment evidence")
+
+    @property
+    def receipt_role(self) -> RuntimeWasmReceiptRole:
+        return RuntimeWasmReceiptRole.SOURCE_BUILD
+
+    def source_payload(self) -> dict[str, object]:
+        return _source_generation_payload(
+            self.product_payload(), self.cargo_environment
+        )
+
+    def _publication_payload(self) -> Mapping[str, object]:
+        # Retain the one frozen family; serialization projects it lazily.
+        return _source_generation_payload(self.payload, self.cargo_environment)
+
+
 @dataclass(frozen=True)
 class RuntimeWasmCodegenBinding:
     """One physical runtime pair and build plan for an app's code generation."""
@@ -264,9 +316,15 @@ def bind_runtime_wasm_codegen(
     without redirecting this app's final admission or linker.
     """
     with ExitStack() as owned:
-        validated = _validate_generation_payload(
+        validate = (
+            _validate_generation_payload
+            if isinstance(generation, SourceRuntimeWasmGeneration)
+            else _validate_product_payload
+        )
+        payload = generation._publication_payload()
+        validated = validate(
             generation.manifest,
-            generation.payload,
+            payload,
             expected_shared_identity=generation.shared_identity,
             expected_reloc_identity=generation.reloc_identity,
             _owned=owned,
@@ -281,7 +339,7 @@ def bind_runtime_wasm_codegen(
             )
         data = (
             json.dumps(
-                generation.payload,
+                payload,
                 sort_keys=True,
                 indent=2,
                 allow_nan=False,
@@ -334,12 +392,15 @@ def bind_runtime_wasm_codegen(
 
 @dataclass(frozen=True)
 class RuntimeWasmExpectedPair:
-    """Caller-trusted exact build identities for one shared/reloc pair."""
+    """Caller-trusted identities and receipt role for one shared/reloc pair."""
 
     shared: RuntimeBuildIdentity
     reloc: RuntimeBuildIdentity
+    receipt_role: RuntimeWasmReceiptRole
 
     def __post_init__(self) -> None:
+        if not isinstance(self.receipt_role, RuntimeWasmReceiptRole):
+            raise ValueError("runtime WASM expected pair receipt role is invalid")
         if (
             self.shared.payload.get("member_kind") != "shared"
             or self.reloc.payload.get("member_kind") != "reloc"
@@ -352,8 +413,11 @@ class RuntimeWasmExpectedPair:
     def to_dict(self) -> dict[str, object]:
         return {
             "schema": _RUNTIME_WASM_EXPECTED_PAIR_SCHEMA,
-            "shared": self.shared.to_dict(),
-            "reloc": self.reloc.to_dict(),
+            "receipt_role": self.receipt_role.value,
+            "family_digest": self.shared.family_digest,
+            "family": self.shared.family_payload(),
+            "shared": self.shared.member_reference(),
+            "reloc": self.reloc.member_reference(),
         }
 
     @classmethod
@@ -361,13 +425,24 @@ class RuntimeWasmExpectedPair:
         payload = string_keyed_mapping(value)
         if (
             payload is None
-            or set(payload) != {"schema", "shared", "reloc"}
+            or set(payload)
+            != {"schema", "receipt_role", "family_digest", "family", "shared", "reloc"}
             or payload.get("schema") != _RUNTIME_WASM_EXPECTED_PAIR_SCHEMA
         ):
             raise ValueError("runtime WASM expected pair schema is invalid")
+        family = _freeze_json(payload.get("family"))
         return cls(
-            shared=RuntimeBuildIdentity.from_dict(payload.get("shared")),
-            reloc=RuntimeBuildIdentity.from_dict(payload.get("reloc")),
+            shared=RuntimeBuildIdentity.from_member_reference(
+                payload.get("shared"),
+                family=family,
+                family_digest=payload.get("family_digest"),
+            ),
+            reloc=RuntimeBuildIdentity.from_member_reference(
+                payload.get("reloc"),
+                family=family,
+                family_digest=payload.get("family_digest"),
+            ),
+            receipt_role=RuntimeWasmReceiptRole(payload.get("receipt_role")),
         )
 
     @classmethod
@@ -466,6 +541,63 @@ def publish_runtime_wasm_generation(
     expected_source_receipts: dict[str, dict[str, object]] | None = None,
     source_observations: tuple[StableRegularFileIdentity, StableRegularFileIdentity]
     | None = None,
+) -> SourceRuntimeWasmGeneration:
+    """Publish source-build evidence and its final immutable product together."""
+    if not isinstance(cargo_environment, CargoEnvironmentInputs):
+        raise ValueError("source runtime WASM requires Cargo environment evidence")
+    generation = _publish_runtime_wasm(
+        shared,
+        reloc,
+        shared_identity=shared_identity,
+        reloc_identity=reloc_identity,
+        publication=cargo_environment,
+        source_shared=source_shared,
+        source_reloc=source_reloc,
+        expected_source_receipts=expected_source_receipts,
+        source_observations=source_observations,
+    )
+    assert isinstance(generation, SourceRuntimeWasmGeneration)
+    return generation
+
+
+def publish_runtime_wasm_product(
+    shared: Path,
+    reloc: Path,
+    *,
+    shared_identity: RuntimeBuildIdentity,
+    reloc_identity: RuntimeBuildIdentity,
+    source_shared: Path | None = None,
+    source_reloc: Path | None = None,
+    expected_source_receipts: dict[str, dict[str, object]] | None = None,
+    source_observations: tuple[StableRegularFileIdentity, StableRegularFileIdentity]
+    | None = None,
+) -> RuntimeWasmGeneration:
+    """Publish an installed product; this grants no source-cache authority."""
+    return _publish_runtime_wasm(
+        shared,
+        reloc,
+        shared_identity=shared_identity,
+        reloc_identity=reloc_identity,
+        publication=RuntimeWasmReceiptRole.INSTALLED_PRODUCT,
+        source_shared=source_shared,
+        source_reloc=source_reloc,
+        expected_source_receipts=expected_source_receipts,
+        source_observations=source_observations,
+    )
+
+
+def _publish_runtime_wasm(
+    shared: Path,
+    reloc: Path,
+    *,
+    shared_identity: RuntimeBuildIdentity,
+    reloc_identity: RuntimeBuildIdentity,
+    publication: CargoEnvironmentInputs | RuntimeWasmReceiptRole,
+    source_shared: Path | None = None,
+    source_reloc: Path | None = None,
+    expected_source_receipts: dict[str, dict[str, object]] | None = None,
+    source_observations: tuple[StableRegularFileIdentity, StableRegularFileIdentity]
+    | None = None,
 ) -> RuntimeWasmGeneration:
     """Atomically point at one immutable shared+reloc runtime generation.
 
@@ -474,7 +606,15 @@ def publish_runtime_wasm_generation(
     materialized here; only an explicit final deployment may project them.
     """
 
-    expected_pair = RuntimeWasmExpectedPair(shared_identity, reloc_identity)
+    if isinstance(publication, CargoEnvironmentInputs):
+        receipt_role = RuntimeWasmReceiptRole.SOURCE_BUILD
+    elif publication is RuntimeWasmReceiptRole.INSTALLED_PRODUCT:
+        receipt_role = RuntimeWasmReceiptRole.INSTALLED_PRODUCT
+    else:
+        raise ValueError("runtime WASM publication role lacks required evidence")
+    expected_pair = RuntimeWasmExpectedPair(
+        shared_identity, reloc_identity, receipt_role
+    )
     shared_identity = expected_pair.shared
     reloc_identity = expected_pair.reloc
     if shared.name != _SHARED_RUNTIME_NAME or reloc.name != _RELOC_RUNTIME_NAME:
@@ -516,12 +656,16 @@ def publish_runtime_wasm_generation(
         reloc_member = reloc.parent / str(reloc_record["member"])
         # Both members share one family; the receipt stores it once.
         payload = {
-            "schema": _RUNTIME_WASM_GENERATION_SCHEMA,
+            "schema": _RUNTIME_WASM_PRODUCT_SCHEMA,
             "family_digest": shared_identity.family_digest,
             "family": shared_identity.family_payload(),
-            "cargo_environment": cargo_environment.to_dict(),
             "receipts": {"shared": shared_record, "reloc": reloc_record},
         }
+        if isinstance(publication, CargoEnvironmentInputs):
+            payload = _source_generation_payload(payload, publication)
+            validate = _validate_generation_payload
+        else:
+            validate = _validate_product_payload
         manifest = runtime_wasm_generation_path(shared)
         # The store lock covers member reuse through selection, so eviction
         # never removes a member this publication found and selects.
@@ -537,7 +681,7 @@ def publish_runtime_wasm_generation(
             # already have replaced it (last writer wins by contract), and that
             # replacement is not a defect of this publication.
             with ExitStack() as owned:
-                generation = _validate_generation_payload(
+                generation = validate(
                     manifest,
                     payload,
                     expected_shared_identity=shared_identity,
@@ -648,32 +792,56 @@ def _generation_receipts(
     return typed
 
 
+def _source_envelope(
+    payload: object,
+) -> tuple[Mapping[str, object], CargoEnvironmentInputs]:
+    value = string_keyed_mapping(payload)
+    if (
+        value is None
+        or set(value) != {"schema", "product", "cargo_environment"}
+        or value.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
+    ):
+        raise ValueError("runtime WASM source generation receipt is invalid")
+    product = string_keyed_mapping(value.get("product"))
+    if product is None:
+        raise ValueError("runtime WASM source generation product is invalid")
+    return product, CargoEnvironmentInputs.from_dict(value.get("cargo_environment"))
+
+
 def runtime_wasm_generation_identities(
     payload: object,
 ) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
-    """Rebuild a receipt's shared and reloc identities from its one family.
+    """Rebuild identities only from a complete source-build envelope."""
+    product, _environment = _source_envelope(payload)
+    return runtime_wasm_product_identities(product)
 
-    For readers that hold no trusted identity, such as an installed runtime
-    bundle; each member is validated in full, digests included.
-    """
+
+def runtime_wasm_product_identities(
+    payload: object,
+) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
+    """Rebuild identities from an installed product, never a build envelope."""
     value = string_keyed_mapping(payload)
     receipts = None if value is None else _generation_receipts(value.get("receipts"))
     if (
         value is None
+        or set(value) != {"schema", "family_digest", "family", "receipts"}
         or receipts is None
-        or value.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
+        or value.get("schema") != _RUNTIME_WASM_PRODUCT_SCHEMA
     ):
-        raise ValueError("runtime WASM generation receipt is invalid")
-    CargoEnvironmentInputs.from_dict(value.get("cargo_environment"))
+        raise ValueError("runtime WASM product receipt is invalid")
+    family = _freeze_json(value.get("family"))
     shared, reloc = (
         RuntimeBuildIdentity.from_member_reference(
             receipts[kind].get("identity"),
-            family=value.get("family"),
+            family=family,
             family_digest=value.get("family_digest"),
         )
         for kind in ("shared", "reloc")
     )
-    return shared, reloc
+    pair = RuntimeWasmExpectedPair(
+        shared, reloc, RuntimeWasmReceiptRole.INSTALLED_PRODUCT
+    )
+    return pair.shared, pair.reloc
 
 
 def read_runtime_wasm_generation(
@@ -681,23 +849,18 @@ def read_runtime_wasm_generation(
     *,
     expected_shared_identity: RuntimeBuildIdentity,
     expected_reloc_identity: RuntimeBuildIdentity,
-) -> RuntimeWasmGeneration | None:
-    """Validate the atomically selected immutable pair against trusted identities."""
-
+) -> SourceRuntimeWasmGeneration | None:
+    """Read a strict source envelope; ambient admission belongs to its caller."""
     try:
-        expected_pair = RuntimeWasmExpectedPair(
+        RuntimeWasmExpectedPair(
             expected_shared_identity,
             expected_reloc_identity,
+            RuntimeWasmReceiptRole.SOURCE_BUILD,
         )
-    except ValueError:
-        return None
-    expected_shared_identity = expected_pair.shared
-    expected_reloc_identity = expected_pair.reloc
-    try:
         receipt_identity, payload = capture_exact(
             manifest,
             max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
-            label="runtime WASM generation",
+            label="runtime WASM source generation",
         )
     except (OSError, UnicodeError, ValueError):
         return None
@@ -710,7 +873,36 @@ def read_runtime_wasm_generation(
     )
 
 
-def _generation_record_descriptors(
+def read_runtime_wasm_product(
+    manifest: Path,
+    *,
+    expected_shared_identity: RuntimeBuildIdentity,
+    expected_reloc_identity: RuntimeBuildIdentity,
+) -> RuntimeWasmGeneration | None:
+    """Read a strict installed product without granting source-build custody."""
+    try:
+        RuntimeWasmExpectedPair(
+            expected_shared_identity,
+            expected_reloc_identity,
+            RuntimeWasmReceiptRole.INSTALLED_PRODUCT,
+        )
+        receipt_identity, payload = capture_exact(
+            manifest,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="runtime WASM product",
+        )
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return _validate_product_payload(
+        manifest,
+        payload,
+        expected_shared_identity=expected_shared_identity,
+        expected_reloc_identity=expected_reloc_identity,
+        receipt_identity=receipt_identity,
+    )
+
+
+def _product_record_descriptors(
     manifest: Path,
     payload: object,
     *,
@@ -721,14 +913,12 @@ def _generation_record_descriptors(
     if (
         expected_shared_identity.family_digest != expected_reloc_identity.family_digest
         or not isinstance(payload, Mapping)
-        or set(payload)
-        != {"schema", "family_digest", "family", "receipts", "cargo_environment"}
-        or payload.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
+        or set(payload) != {"schema", "family_digest", "family", "receipts"}
+        or payload.get("schema") != _RUNTIME_WASM_PRODUCT_SCHEMA
         or payload.get("family_digest") != expected_shared_identity.family_digest
     ):
         return None
     try:
-        CargoEnvironmentInputs.from_dict(payload.get("cargo_environment"))
         if runtime_family_digest(payload.get("family")) != payload["family_digest"]:
             return None
     except (TypeError, ValueError):
@@ -751,7 +941,7 @@ def _generation_record_descriptors(
     return None if shared is None or reloc is None else (shared, reloc)
 
 
-def _validate_generation_payload(
+def _validate_product_payload(
     manifest: Path,
     payload: object,
     *,
@@ -772,7 +962,7 @@ def _validate_generation_payload(
     if _owned is None:
         try:
             with ExitStack() as owned:
-                return _validate_generation_payload(
+                return _validate_product_payload(
                     manifest,
                     payload,
                     expected_shared_identity=expected_shared_identity,
@@ -783,7 +973,7 @@ def _validate_generation_payload(
                 )
         except (OSError, ValueError):
             return None
-    descriptors = _generation_record_descriptors(
+    descriptors = _product_record_descriptors(
         manifest,
         payload,
         expected_shared_identity=expected_shared_identity,
@@ -815,6 +1005,46 @@ def _validate_generation_payload(
     )
 
 
+def _validate_generation_payload(
+    manifest: Path,
+    payload: object,
+    *,
+    expected_shared_identity: RuntimeBuildIdentity,
+    expected_reloc_identity: RuntimeBuildIdentity,
+    receipt_identity: StableRegularFileIdentity | None = None,
+    observed_members: tuple[StableRegularFileIdentity, StableRegularFileIdentity]
+    | None = None,
+    _owned: ExitStack | None = None,
+) -> SourceRuntimeWasmGeneration | None:
+    try:
+        product, cargo_environment = _source_envelope(payload)
+    except (TypeError, ValueError):
+        return None
+    admitted = _validate_product_payload(
+        manifest,
+        product,
+        expected_shared_identity=expected_shared_identity,
+        expected_reloc_identity=expected_reloc_identity,
+        receipt_identity=receipt_identity,
+        observed_members=observed_members,
+        _owned=_owned,
+    )
+    if admitted is None:
+        return None
+    return SourceRuntimeWasmGeneration(
+        manifest=admitted.manifest,
+        shared=admitted.shared,
+        reloc=admitted.reloc,
+        shared_identity=admitted.shared_identity,
+        reloc_identity=admitted.reloc_identity,
+        shared_member_identity=admitted.shared_member_identity,
+        reloc_member_identity=admitted.reloc_member_identity,
+        payload=admitted.payload,
+        receipt_identity=admitted.receipt_identity,
+        cargo_environment=cargo_environment,
+    )
+
+
 def hydrate_runtime_wasm_generation(
     *,
     source_manifest: Path,
@@ -822,8 +1052,8 @@ def hydrate_runtime_wasm_generation(
     dest_reloc: Path,
     expected_shared_identity: RuntimeBuildIdentity,
     expected_reloc_identity: RuntimeBuildIdentity,
-    source_generation: RuntimeWasmGeneration | None = None,
-) -> RuntimeWasmGeneration:
+    source_generation: SourceRuntimeWasmGeneration | None = None,
+) -> SourceRuntimeWasmGeneration:
     """Validate and hydrate only from the source pointer's immutable members."""
 
     if source_generation is None:
@@ -833,6 +1063,8 @@ def hydrate_runtime_wasm_generation(
             expected_reloc_identity=expected_reloc_identity,
         )
     else:
+        if not isinstance(source_generation, SourceRuntimeWasmGeneration):
+            raise ValueError("source hydration requires a source runtime generation")
         payload = source_generation
         if (
             payload.manifest != source_manifest
@@ -856,6 +1088,58 @@ def hydrate_runtime_wasm_generation(
         shared_identity=expected_shared_identity,
         reloc_identity=expected_reloc_identity,
         cargo_environment=payload.cargo_environment,
+        source_shared=source_member_shared,
+        source_reloc=source_member_reloc,
+        expected_source_receipts=receipts,
+        source_observations=(
+            payload.shared_member_identity,
+            payload.reloc_member_identity,
+        ),
+    )
+
+
+def hydrate_runtime_wasm_product(
+    *,
+    source_manifest: Path,
+    dest_shared: Path,
+    dest_reloc: Path,
+    expected_shared_identity: RuntimeBuildIdentity,
+    expected_reloc_identity: RuntimeBuildIdentity,
+    source_generation: RuntimeWasmGeneration | None = None,
+) -> RuntimeWasmGeneration:
+    """Hydrate an installed product without creating source-build evidence."""
+
+    if source_generation is None:
+        payload = read_runtime_wasm_product(
+            source_manifest,
+            expected_shared_identity=expected_shared_identity,
+            expected_reloc_identity=expected_reloc_identity,
+        )
+    else:
+        if type(source_generation) is not RuntimeWasmGeneration:
+            raise ValueError("product hydration requires an installed runtime product")
+        payload = source_generation
+        if (
+            payload.manifest != source_manifest
+            or payload.shared_identity != expected_shared_identity
+            or payload.reloc_identity != expected_reloc_identity
+        ):
+            raise ValueError("runtime WASM hydration source changed selection")
+        payload.verify_members()
+    if payload is None:
+        raise ValueError(
+            "runtime WASM installed product does not match trusted identity"
+        )
+    source_member_shared = payload.shared
+    source_member_reloc = payload.reloc
+    receipts = _generation_receipts(payload.payload.get("receipts"))
+    if receipts is None:
+        raise ValueError("validated runtime generation receipts are invalid")
+    return publish_runtime_wasm_product(
+        dest_shared,
+        dest_reloc,
+        shared_identity=expected_shared_identity,
+        reloc_identity=expected_reloc_identity,
         source_shared=source_member_shared,
         source_reloc=source_member_reloc,
         expected_source_receipts=receipts,

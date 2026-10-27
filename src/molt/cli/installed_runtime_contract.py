@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from molt.cli.native_link_custody import NativeLinkCustodyObservation
-from molt.cli.native_link_manifest import NativeLinkManifestFacts
+from molt.cli.native_link_manifest import NativeLinkProductFacts
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.compiler_distribution import NATIVE_CALLABLE_PROJECTION_ROLE
 from molt.file_publication import resolve_owned_path
@@ -42,7 +42,7 @@ class InstalledNativeAdmission:
     archive: StableRegularFileIdentity
     manifest: StableRegularFileIdentity
     callable_projection: StableRegularFileIdentity
-    link_facts: NativeLinkManifestFacts
+    link_facts: NativeLinkProductFacts
     custody: NativeLinkCustodyObservation
     callable_semantic_digest: str
 

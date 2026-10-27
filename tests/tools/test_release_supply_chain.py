@@ -587,7 +587,15 @@ def _runtime_cells(root: Path, *, platform: str, arch: str, snapshot) -> Path:
         _runtime_callable_projection_name,
     )
     from molt.exact_json import write_exact
-    from tools.release.runtime_cells import INVENTORY_NAME
+    from tools.release.runtime_cells import (
+        INVENTORY_NAME,
+        BUILD_OBSERVATIONS_NAME,
+        BUILD_OBSERVATIONS_SCHEMA,
+    )
+    from tests.runtime_build_identity_helper import (
+        RUNTIME_FIXTURE_INPUT,
+        runtime_cargo_environment_inputs,
+    )
 
     files = []
     archive_name = "libmolt_runtime.stdlib_micro.a"
@@ -643,6 +651,26 @@ def _runtime_cells(root: Path, *, platform: str, arch: str, snapshot) -> Path:
             ],
         },
     )
+    write_exact(
+        root / BUILD_OBSERVATIONS_NAME,
+        {
+            "schema": BUILD_OBSERVATIONS_SCHEMA,
+            "source": {
+                "object_format": snapshot.object_format,
+                "commit": snapshot.source_sha,
+                "tree": snapshot.tree_sha,
+            },
+            "cells": [
+                {
+                    "cell_id": cell_id,
+                    "cargo_environment": runtime_cargo_environment_inputs(
+                        {RUNTIME_FIXTURE_INPUT: str(root)}
+                    ).to_dict(),
+                    "source_receipt": {"sha256": "d" * 64, "size": 100},
+                }
+            ],
+        },
+    )
     return root
 
 
@@ -664,6 +692,7 @@ def runtime_projection_compiler(tmp_path, monkeypatch, release_source):
         runtime_root / INVENTORY_NAME, max_bytes=65536, label="fixture runtime"
     )
     (runtime_root / INVENTORY_NAME).unlink()
+    (runtime_root / "runtime-build-observations.json").unlink()
     native = runtime["cells"][0]
     unused = copy.deepcopy(native)
     unused["key"]["cargo_profile"] = "dev-fast"
@@ -2723,6 +2752,36 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
         with pytest.raises(ValueError):
             release_authority.assemble_index(**release_inputs, output=output)
         assert not output.exists()
+
+
+def test_candidate_retains_distinct_observations_and_refuses_resealed_foreign_cells(
+    release_inputs,
+):
+    """Transport evidence stays exact even when both delivered products match."""
+    directory = release_inputs["candidate_root"] / "linux-x86_64"
+    candidate_path = directory / "candidate.json"
+    candidate = release_authority._load_candidate(candidate_path)
+    primary, secondary = (
+        json.loads((directory / row["filename"]).read_text(encoding="utf-8"))
+        for row in candidate["runtime_builds"]
+    )
+    assert primary["source"] == secondary["source"] == candidate["runtime"]["source"]
+    assert primary["cells"][0]["cell_id"] == secondary["cells"][0]["cell_id"]
+    assert (
+        primary["cells"][0]["cargo_environment"]
+        != secondary["cells"][0]["cargo_environment"]
+    )
+    record = candidate["runtime_builds"][0]
+    path = directory / record["filename"]
+    primary["cells"][0]["cell_id"] = "e" * 64
+    path.write_text(json.dumps(primary), encoding="utf-8")
+    candidate["runtime_builds"][0] = release_model.file_record(
+        path, kind="runtime-build-observations"
+    )
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    # The outer file record is valid: only the product/evidence join can fail.
+    with pytest.raises(ValueError, match="observations differ from product inventory"):
+        release_authority._load_candidate(candidate_path)
 
 
 @pytest.mark.parametrize("changed", ["worker", "source", "wasm_facts"])

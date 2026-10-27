@@ -32,7 +32,10 @@ from molt.cli.installed_runtime_contract import (
     InstalledNativeAdmission,
     InstalledRuntimeError,
 )
-from molt.cli.native_link_manifest import native_link_dependency_manifest_path
+from molt.cli.native_link_manifest import (
+    native_link_dependency_manifest_path,
+    read_native_link_dependency_manifest,
+)
 from molt.cli.runtime_paths import _runtime_lib_archive_name
 from molt.cli.runtime_wasm_build_support import (
     _wasm_runtime_codegen_flags,
@@ -41,6 +44,7 @@ from molt.cli.runtime_wasm_build_support import (
 from molt.cli.runtime_wasm_generation import (
     bind_runtime_wasm_codegen,
     publish_runtime_wasm_generation,
+    publish_runtime_wasm_product,
 )
 from molt.verified_subset import current_host_coordinate
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -107,6 +111,8 @@ def _native_cell(
         "runtime_features": sorted(set(config["runtime_features"])),
     }
     manifest = native_link_dependency_manifest_path(archive)
+    source_facts = read_native_link_dependency_manifest(archive, target_triple=None)
+    manifest.write_text(json.dumps(source_facts.product_payload()), encoding="utf-8")
     content = runtime_callable_symbols._runtime_callable_projection_content(
         _PROJECTION_SYMBOLS
     )
@@ -840,7 +846,7 @@ def test_release_native_cell_stages_the_canonical_projection(
     (tmp_path / "source").mkdir()
     output = tmp_path / "cells"
     output.mkdir()
-    record = runtime_cells._produce_native(
+    produced = runtime_cells._produce_native(
         runtime_cells.RuntimeCellRequest(
             distribution.NATIVE_RUNTIME_CELL, runtime_profile, "micro"
         ),
@@ -848,6 +854,7 @@ def test_release_native_cell_stages_the_canonical_projection(
         output,
         None,
     )
+    record = produced.record
     role = distribution.NATIVE_CALLABLE_PROJECTION_ROLE
     roles = {entry["role"]: entry for entry in record["files"]}
     assert set(roles) == {"runtime_archive", "native_link_manifest", role}
@@ -1153,7 +1160,9 @@ def test_installed_codegen_requires_the_operation_admission(
     cell = _cell(bundle)
     identity = installed_runtime.admit_installed_native_runtime(cell).build_identity
     source_generation = (
-        native_runtime_generation_fixture(cell.runtime_lib, identity)
+        native_runtime_generation_fixture(
+            bundle.parent / "stray-source" / cell.runtime_lib.name, identity
+        )
         if stray_source_generation
         else None
     )
@@ -1231,14 +1240,13 @@ def _bound_installed_wasm(bundle: Path, tmp_path: Path, monkeypatch):
         sources[role].write_bytes(data)
     root = cell.retained_root
     root.mkdir(parents=True)
-    generation = publish_runtime_wasm_generation(
+    generation = publish_runtime_wasm_product(
         root / "molt_runtime.wasm",
         root / "molt_runtime_reloc.wasm",
         shared_identity=runtime_build_identity("shared"),
         reloc_identity=runtime_build_identity("reloc"),
         source_shared=sources["wasm_shared_member"],
         source_reloc=sources["wasm_reloc_member"],
-        cargo_environment=runtime_cargo_environment_inputs(),
     )
     binding = bind_runtime_wasm_codegen(generation, None)
     state = _RuntimeArtifactState(
@@ -1558,14 +1566,13 @@ def _ship_installed_wasm_cell(bundle: Path, tmp_path: Path, **facts) -> dict:
         sources[kind] = producer / f"{kind}.source.wasm"
         sources[kind].write_bytes(data)
         assert inspect_wasm_binary(sources[kind]) == "valid"
-    generation = publish_runtime_wasm_generation(
+    generation = publish_runtime_wasm_product(
         producer / "molt_runtime.wasm",
         producer / "molt_runtime_reloc.wasm",
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
         source_shared=sources["shared"],
         source_reloc=sources["reloc"],
-        cargo_environment=runtime_cargo_environment_inputs(),
     )
     members = (
         (generation.manifest, "wasm_generation_manifest"),
@@ -1614,13 +1621,13 @@ def _select_installed_wasm(bundle: Path) -> installed_runtime.InstalledRuntimeCe
 def _record_wasm_hydrations(monkeypatch) -> list[Path]:
     """Observe the real retained-pair hydration; it still runs unchanged."""
     hydrations: list[Path] = []
-    hydrate = installed_runtime.hydrate_runtime_wasm_generation
+    hydrate = installed_runtime.hydrate_runtime_wasm_product
 
     def observed(**kwargs):
         hydrations.append(kwargs["dest_shared"])
         return hydrate(**kwargs)
 
-    monkeypatch.setattr(installed_runtime, "hydrate_runtime_wasm_generation", observed)
+    monkeypatch.setattr(installed_runtime, "hydrate_runtime_wasm_product", observed)
     return hydrations
 
 
@@ -1804,7 +1811,7 @@ def test_installed_wasm_retained_generation_follows_the_content_addressed_rule(
     them. The pair already pinned for code generation rejects every member
     replacement through its file fences.
     """
-    from molt.cli.runtime_wasm_generation import read_runtime_wasm_generation
+    from molt.cli.runtime_wasm_generation import read_runtime_wasm_product
 
     _forbid_cargo(monkeypatch)
     _ship_installed_wasm_cell(bundle, tmp_path)
@@ -1846,7 +1853,7 @@ def test_installed_wasm_retained_generation_follows_the_content_addressed_rule(
         else [cell.retained_root / "molt_runtime.wasm"]
     )
     assert (
-        read_runtime_wasm_generation(
+        read_runtime_wasm_product(
             first.manifest,
             expected_shared_identity=first.shared_identity,
             expected_reloc_identity=first.reloc_identity,
@@ -2202,7 +2209,6 @@ def test_installed_readiness_joins_features_to_the_exact_runtime_profile(
 def test_wasm_release_producer_uses_declared_physical_profile(
     tmp_path, monkeypatch, profile
 ):
-    from types import SimpleNamespace
     from tools.release import runtime_cells
     from molt.cli import runtime_wasm_build_policy
 
@@ -2234,16 +2240,23 @@ def test_wasm_release_producer_uses_declared_physical_profile(
             )
             == profile
         )
-        state.runtime_wasm_codegen_binding = SimpleNamespace(
-            generation=SimpleNamespace(**members)
+        generation = publish_runtime_wasm_generation(
+            tmp_path / "source-pair" / "molt_runtime.wasm",
+            tmp_path / "source-pair" / "molt_runtime_reloc.wasm",
+            shared_identity=runtime_build_identity("shared"),
+            reloc_identity=runtime_build_identity("reloc"),
+            source_shared=members["shared"],
+            source_reloc=members["reloc"],
+            cargo_environment=runtime_cargo_environment_inputs(),
         )
+        state.runtime_wasm_codegen_binding = bind_runtime_wasm_codegen(generation, None)
         return True
 
     # Only the external compilation boundary is fake. Request/profile selection,
     # artifact state setup, file staging and content-addressed key are real.
     monkeypatch.setattr(runtime_wasm_pair_build, "_ensure_runtime_wasm_both", build)
     with runtime_cells._isolated_build_environment(work, epoch=1700000000):
-        record = runtime_cells._produce_wasm(
+        produced = runtime_cells._produce_wasm(
             runtime_cells.RuntimeCellRequest(
                 distribution.WASM_RUNTIME_CELL, profile, "micro"
             ),
@@ -2252,7 +2265,7 @@ def test_wasm_release_producer_uses_declared_physical_profile(
             None,
         )
     assert observed == [profile]
-    assert record["key"]["cargo_profile"] == profile
+    assert produced.record["key"]["cargo_profile"] == profile
     assert os.environ["MOLT_WASM_CARGO_PROFILE"] == "ambient-wrong"
 
 

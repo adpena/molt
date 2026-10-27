@@ -197,8 +197,8 @@ def validate_wasm_facts_record(record: object) -> dict[str, Any]:
     return record
 
 
-RUNTIME_INVENTORY_SCHEMA = "molt.installed-runtime.v2"
-RUNTIME_CELL_SCHEMA = "molt.installed-runtime-cell.v2"
+RUNTIME_INVENTORY_SCHEMA = "molt.installed-runtime.v3"
+RUNTIME_CELL_SCHEMA = "molt.installed-runtime-cell.v3"
 RUNTIME_ROOT = "runtime"
 # Complete top-level bundle projection shared by its producer and installers.
 COMPILER_BUNDLE_DIRECTORIES = ("bin", "source", RUNTIME_ROOT, "share")

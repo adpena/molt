@@ -40,6 +40,14 @@ Qualify these properties with the existing
 These are development and release checks, with no added work in the end-user
 binary. Evidence establishes only the exercised cells; see section 5.1.
 
+Release product reproducibility compares independently built final bytes and
+canonical product manifests. Private build observations remain exact and may
+contain different physical paths. They are preserved in build evidence, never
+normalized away to establish source-cache reuse. Native and WASM use separate
+strict source-envelope and installed-product readers; the
+[Cargo input contract](../../../design/cargo_input_authority.md#observed-environment-inputs)
+owns their schemas and release evidence custody.
+
 ### 2.3 Build-path independence
 
 The location of the compiler's sources is not a build input. The same compiler

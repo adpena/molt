@@ -269,11 +269,20 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
         if selection == "producer-failure":
             raise ValueError("injected producer failure")
         actual = declared[0] if selection == "wrong-output" else request
-        return {
-            "id": str(len(produced)),
-            "kind": actual.kind,
-            "key": runtime_cells.runtime_cell_key(actual),
-        }
+        from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
+        from molt.toolchain_identity import stable_regular_file_identity
+
+        receipt = Path.cwd() / "source-receipt-test-only.json"
+        receipt.write_text("{}", encoding="utf-8")
+        return runtime_cells.ProducedRuntimeCell(
+            {
+                "id": f"{len(produced):064x}",
+                "kind": actual.kind,
+                "key": runtime_cells.runtime_cell_key(actual),
+            },
+            runtime_cargo_environment_inputs(),
+            stable_regular_file_identity(receipt, label="test source receipt"),
+        )
 
     monkeypatch.setattr(runtime_cells, "_produce_native", producer)
     monkeypatch.setattr(runtime_cells, "_produce_wasm", producer)
@@ -333,7 +342,7 @@ def test_runtime_component_selection_uses_pinned_policy_before_production(
         assert produced == (list(declared) if selection == "all" else [chosen])
         assert len(inventory["cells"]) == (70 if selection == "all" else 1)
         assert verified == [
-            (pinned, [str(i) for i in range(1, len(produced) + 1)]),
+            (pinned, [f"{i:064x}" for i in range(1, len(produced) + 1)]),
             (pinned, []),
         ]
         assert (
