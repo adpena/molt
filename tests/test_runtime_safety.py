@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 
 from pathlib import Path
 import subprocess
@@ -9,6 +10,8 @@ import molt.dx as molt_dx
 import pytest
 
 from tools import runtime_safety
+from tests.executable_test_support import write_mock_executable
+from tests.process_guard_common import run_guarded_test_process
 
 # Cargo runs in this file are fakes; build capacity is not under test.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
@@ -73,7 +76,100 @@ def test_run_clippy_preserves_warning_policy_and_result(
         runtime_safety.run_clippy(tmp_path)
 
     assert calls == [expected]
-    assert (tmp_path / "runtime_clippy.log").read_text() == "clippy diagnostic\n"
+    assert (tmp_path / "runtime_clippy.log").read_text(
+        encoding="utf-8"
+    ) == "clippy diagnostic\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="deployment checklist is a POSIX script")
+@pytest.mark.parametrize("failed_command", [None, "test", "clippy", "check"])
+def test_pre_deploy_cargo_checks_use_exit_status(
+    tmp_path: Path, failed_command: str | None
+) -> None:
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required for the deployment checklist")
+
+    root = tmp_path / "project"
+    scripts = root / "deploy" / "scripts"
+    cloudflare = root / "deploy" / "cloudflare"
+    mcp = root / "deploy" / "mcp"
+    for directory in (scripts, cloudflare, mcp, root / "docs" / "deployment"):
+        directory.mkdir(parents=True)
+    source = runtime_safety.ROOT / "deploy" / "scripts" / "pre_deploy_check.sh"
+    script = write_mock_executable(scripts / source.name, source.read_bytes())
+    (cloudflare / "wrangler.toml").write_text('name = "test"\n', encoding="utf-8")
+    (mcp / "ocr_tool.json").write_text("{}\n", encoding="utf-8")
+    for name in ("worker.js", "ocr_api.js", "x402.js", "monitoring.js"):
+        (cloudflare / name).write_text("// syntax fixture\n", encoding="utf-8")
+
+    mock_bin = tmp_path / "bin"
+    mock_bin.mkdir()
+    write_mock_executable(
+        mock_bin / "cargo",
+        b"#!/bin/sh\n"
+        b'printf "%s\\n" "$@" >> "$CARGO_CALLS"\n'
+        b'printf "\\n" >> "$CARGO_CALLS"\n'
+        b'if [ "$1" = "$FAILED_CARGO_COMMAND" ]; then\n'
+        b'    echo "Finished passed"\n'
+        b"    exit 101\n"
+        b"fi\n"
+        b"exit 0\n",
+    )
+    for name in ("node", "git"):
+        write_mock_executable(mock_bin / name, b"#!/bin/sh\nexit 0\n")
+    calls_path = tmp_path / "cargo-calls.txt"
+    env = dict(os.environ)
+    env.update(
+        PATH=str(mock_bin) + os.pathsep + env.get("PATH", ""),
+        CARGO_CALLS=str(calls_path),
+        FAILED_CARGO_COMMAND=failed_command or "",
+    )
+    result = run_guarded_test_process(
+        [bash, str(script)],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == (1 if failed_command else 0), (
+        result.stdout,
+        result.stderr,
+    )
+    calls = [
+        call.splitlines()
+        for call in calls_path.read_text(encoding="utf-8").strip().split("\n\n")
+    ]
+    # All three commands must run even when an earlier check fails; the
+    # independent argv oracle also preserves every package/feature/target cell.
+    assert calls == [
+        ["test", "-p", "molt-gpu", "--all-features"],
+        [
+            "clippy",
+            "--config",
+            'build.warnings="deny"',
+            "-p",
+            "molt-gpu",
+            "--all-features",
+        ],
+        [
+            "check",
+            "-p",
+            "molt-gpu",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--no-default-features",
+            "--features",
+            "cpu-backend,wasm-backend",
+        ],
+    ]
+    if failed_command:
+        assert "1 CHECK(S) FAILED" in result.stdout
+        assert "ALL CHECKS PASSED" not in result.stdout
+    else:
+        assert "ALL CHECKS PASSED" in result.stdout
 
 
 def test_miri_tmp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:

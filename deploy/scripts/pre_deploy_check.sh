@@ -17,7 +17,7 @@ echo ""
 
 # 1. Rust tests (molt-gpu)
 echo -n "1. Rust tests (molt-gpu): "
-if cargo test -p molt-gpu --all-features 2>&1 | tail -5 | grep -q "passed"; then
+if cargo test -p molt-gpu --all-features 2>&1 | tail -5; then
     echo "PASS"
 else
     echo "FAIL"
@@ -26,7 +26,7 @@ fi
 
 # 2. Clippy
 echo -n "2. Clippy (molt-gpu): "
-if cargo clippy -p molt-gpu --all-features -- -D warnings 2>&1 | tail -1 | grep -q "Finished"; then
+if cargo clippy --config 'build.warnings="deny"' -p molt-gpu --all-features 2>&1 | tail -1; then
     echo "PASS"
 else
     echo "FAIL"
@@ -35,7 +35,7 @@ fi
 
 # 3. WASM compilation
 echo -n "3. WASM target check: "
-if cargo check -p molt-gpu --target wasm32-unknown-unknown --no-default-features --features cpu-backend,wasm-backend 2>&1 | tail -1 | grep -q "Finished"; then
+if cargo check -p molt-gpu --target wasm32-unknown-unknown --no-default-features --features cpu-backend,wasm-backend 2>&1 | tail -1; then
     echo "PASS"
 else
     echo "FAIL"
