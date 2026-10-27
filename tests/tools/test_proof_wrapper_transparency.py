@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tools import proof_command_argv, proof_plan, venv_exec
@@ -733,7 +735,10 @@ def test_modeled_venv_python_matches_direct_wrapper_selection_and_startup(
     assert exact == venv_exec.resolve_command(payload, venv=root, managed=not borrowed)
 
 
-def test_failed_exec_restores_retained_shared_source_descriptor(tmp_path):
+@pytest.mark.parametrize("explicit_handoff", [False, True])
+def test_failed_exec_restores_retained_shared_source_descriptor(
+    tmp_path, explicit_handoff
+):
     import os
     import sys
     from pathlib import Path
@@ -754,7 +759,8 @@ before = os.get_inheritable(handle.file.fileno())
 try:
     try:
         forward_command([str(root / 'missing-program')], env=os.environ,
-                        retained_shared_handles=(handle,))
+                        retained_shared_handles=(handle,),
+                        handoff_argument="--state-handoff" if sys.argv[2] == "True" else None)
     except FileNotFoundError:
         pass
     else:
@@ -769,7 +775,7 @@ assert exclusive is not None
 _release_file_lock(exclusive)
 """
     result = run_custody_subject_process(
-        [sys.executable, "-B", "-c", code, str(tmp_path)],
+        [sys.executable, "-B", "-c", code, str(tmp_path), str(explicit_handoff)],
         cwd=Path(__file__).resolve().parents[2],
         env=dict(os.environ),
         capture_output=True,
@@ -837,3 +843,96 @@ with checkout_state_retirement(image) as available:
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX inherited descriptor admission")
+@pytest.mark.parametrize("defect", ["pid", "inode", "unknown", "noninheritable", "own"])
+def test_exec_handoff_rejects_substitution_before_changing_any_descriptor(
+    tmp_path, defect
+):
+    import dataclasses
+    from molt.file_locks import (
+        _file_lock_descriptor_action,
+        _try_acquire_file_lock,
+        _release_file_lock,
+    )
+    from molt.process_spawn import ExecSharedDescriptor, ExecStateHandoff
+
+    lock = tmp_path / "source.lock"
+    source = _try_acquire_file_lock(lock, shared=True)
+    assert source is not None
+    incoming = []
+    try:
+        with _file_lock_descriptor_action():
+            for _ in range(2):
+                fd = os.dup(source.file.fileno())
+                os.set_inheritable(fd, True)
+                incoming.append(fd)
+        metadata = lock.stat()
+        items = [
+            ExecSharedDescriptor(fd, lock, metadata.st_dev, metadata.st_ino)
+            for fd in incoming
+        ]
+        pid = os.getpid()
+        if defect == "pid":
+            pid += 1
+        elif defect == "inode":
+            items[1] = dataclasses.replace(items[1], inode=metadata.st_ino + 1)
+        elif defect == "unknown":
+            other = tmp_path / "unrelated-data"
+            other.write_text("not a state lock", encoding="utf-8")
+            with _file_lock_descriptor_action():
+                os.close(incoming[1])
+                incoming[1] = os.open(other, os.O_RDONLY)
+                os.set_inheritable(incoming[1], True)
+            other_stat = other.stat()
+            items[1] = ExecSharedDescriptor(
+                incoming[1], other, other_stat.st_dev, other_stat.st_ino
+            )
+        elif defect == "noninheritable":
+            with _file_lock_descriptor_action():
+                os.set_inheritable(incoming[1], False)
+        elif defect == "own":
+            items[1] = dataclasses.replace(items[1], fd=source.file.fileno())
+        packet = ExecStateHandoff.from_json(
+            ExecStateHandoff(pid, tuple(items)).to_json()
+        )
+        with pytest.raises(ValueError):
+            packet.receive(source)
+        assert os.get_inheritable(incoming[0]), (
+            "partial admission changed an earlier descriptor"
+        )
+        assert os.fstat(incoming[0]).st_ino == metadata.st_ino
+        assert _try_acquire_file_lock(lock) is None
+    finally:
+        with _file_lock_descriptor_action():
+            for fd in incoming:
+                os.close(fd)
+        _release_file_lock(source)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["boolean_pid", "stdio", "duplicate", "extra", "relative", "duplicate_key"],
+)
+def test_exec_handoff_wire_rejects_ambiguous_descriptors(tmp_path, defect):
+    import json
+    from molt.process_spawn import ExecStateHandoff
+
+    row = {"fd": 5, "path": str(tmp_path / "source.lock"), "device": 1, "inode": 2}
+    payload = {"schema": "molt.exec-state-handoff.v1", "pid": 42, "descriptors": [row]}
+    if defect == "boolean_pid":
+        payload["pid"] = True
+    elif defect == "stdio":
+        row["fd"] = 1
+    elif defect == "duplicate":
+        payload["descriptors"].append(dict(row))
+    elif defect == "extra":
+        payload["roots"] = []
+    elif defect == "relative":
+        row["path"] = "source.lock"
+    raw = json.dumps(payload)
+    if defect == "duplicate_key":
+        raw = '{"pid":1,' + raw[1:]
+    with pytest.raises(ValueError):
+        ExecStateHandoff.from_json(raw)

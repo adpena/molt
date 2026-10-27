@@ -34,6 +34,7 @@ from types import ModuleType
 
 from molt.process_environment import ProcessEnvironment
 from molt import process_guard
+from molt.process_spawn import ExecStateHandoff
 from molt.file_locks import (
     _FileLockHandle,
     _acquire_file_lock,
@@ -82,7 +83,7 @@ class Controller:
         return self.root.joinpath(*DRIVER)
 
 
-_running_source_use: tuple[int, Controller, ExitStack] | None = None
+_running_source_use: tuple[int, Controller, ExitStack, _FileLockHandle] | None = None
 
 
 def controllers_root(common_dir: Path) -> Path:
@@ -322,7 +323,13 @@ def _sync_environment(root: Path) -> None:
         )
 
 
-def verify_pinned_controller(key: str, *, driver_file: str, common_dir: Path) -> None:
+def verify_pinned_controller(
+    key: str,
+    *,
+    driver_file: str,
+    common_dir: Path,
+    exec_handoff: ExecStateHandoff | None = None,
+) -> None:
     """Refuse a --pinned-controller claim that this process does not satisfy."""
 
     expected = controllers_root(common_dir) / key
@@ -341,17 +348,26 @@ def verify_pinned_controller(key: str, *, driver_file: str, common_dir: Path) ->
     if _running_source_use is not None and _running_source_use[0] == os.getpid():
         if _running_source_use[1] != controller:
             raise DriverError("this process already owns a different controller source")
+        if exec_handoff is not None:
+            exec_handoff.receive(_running_source_use[3])
         return
     source_use = ExitStack()
-    source_use.enter_context(controller_source_use(controller))
     atexit.register(source_use.close)
-    _running_source_use = (os.getpid(), controller, source_use)
+    source_handle = source_use.enter_context(controller_source_use(controller))
+    _running_source_use = (os.getpid(), controller, source_use, source_handle)
+    if exec_handoff is not None:
+        exec_handoff.receive(source_handle)
 
 
 def add_pinned_controller_arguments(parser: argparse.ArgumentParser) -> None:
     """One private startup contract shared by integrate and queue-run."""
     parser.add_argument("--pinned-controller", help=argparse.SUPPRESS)
     parser.add_argument("--controller-cwd", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--controller-state-handoff",
+        type=ExecStateHandoff.from_json,
+        help=argparse.SUPPRESS,
+    )
 
 
 def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None:
@@ -364,6 +380,11 @@ def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None
     """
     raw = getattr(args, "controller_cwd", None)
     key = getattr(args, "pinned_controller", None)
+    exec_handoff = getattr(args, "controller_state_handoff", None)
+    if exec_handoff is not None and (key is None or os.name != "posix"):
+        raise DriverError(
+            "exec state handoff requires a pinned POSIX controller", code=EXIT_USAGE
+        )
     if raw is None:
         if os.name == "nt" and key is not None:
             raise DriverError(
@@ -376,8 +397,12 @@ def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None
                     "controller driver has no pinned cache identity", code=EXIT_USAGE
                 )
             verify_pinned_controller(
-                key, driver_file=driver_file, common_dir=driver.parents[4]
+                key,
+                driver_file=driver_file,
+                common_dir=driver.parents[4],
+                exec_handoff=exec_handoff,
             )
+            args.controller_state_handoff = None
         return
     if key is None:
         raise DriverError(
@@ -401,7 +426,13 @@ def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None
             "controller driver has no pinned cache identity", code=EXIT_USAGE
         )
     common_dir = driver.parents[4]
-    verify_pinned_controller(key, driver_file=driver_file, common_dir=common_dir)
+    verify_pinned_controller(
+        key,
+        driver_file=driver_file,
+        common_dir=common_dir,
+        exec_handoff=exec_handoff,
+    )
+    args.controller_state_handoff = None
     try:
         os.chdir(original)
     except OSError as error:
@@ -459,7 +490,10 @@ def _run_controller(
         from molt.process_spawn import forward_command
 
         return forward_command(
-            command, env=os.environ, retained_shared_handles=(source_handle,)
+            command,
+            env=os.environ,
+            retained_shared_handles=(source_handle,),
+            handoff_argument="--controller-state-handoff",
         )
     # Windows launchers retain their startup directory. Keep both this
     # waiting process and the selected venv redirector in the surviving cache;
