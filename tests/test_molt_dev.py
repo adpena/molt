@@ -6420,6 +6420,138 @@ def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
 
 
+@pytest.mark.parametrize("detached", [False, True])
+@pytest.mark.parametrize("kind", ["tracked", "staged", "untracked"])
+def test_integration_source_observation_is_fresh_and_uses_one_status(
+    drv, tmp_path, monkeypatch, detached, kind
+):
+    work = tmp_path / "source"
+    _init_repo(work)
+    commit = _commit_file(work, "tracked.txt", "original\n", "source")
+    if detached:
+        _git(work, "checkout", "--detach", "-q", commit)
+    _git(work, "config", "status.showUntrackedFiles", "no")
+    _git(work, "config", "diff.ignoreSubmodules", "all")
+    commands = _record_driver_git_commands(drv, monkeypatch)
+    git = drv.Git(work)
+    clean = git.checkout_observation()
+    assert clean.head == commit
+    assert clean.dirty_records == ()
+    expected = [
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+        "--branch",
+        "--no-ahead-behind",
+    ]
+    assert commands == [expected]
+
+    path = work / ("untracked.txt" if kind == "untracked" else "tracked.txt")
+    path.write_text("changed\n", encoding="utf-8")
+    if kind == "staged":
+        _git(work, "add", "--", path.name)
+    with pytest.raises(drv.DriverError, match="clean selected source"):
+        drv._assert_integration_source(git, commit)
+    assert commands == [expected, expected]
+    assert clean.dirty_records == ()  # A prior observation never changes or refreshes.
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "# branch.oid " + "b" * 40,
+        "# branch.head phantom",
+        pytest.param(
+            "line\nbreak\tname",
+            marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filename controls"),
+        ),
+    ],
+)
+def test_integration_source_observation_keeps_rename_paths_opaque(
+    drv, tmp_path, original
+):
+    work = tmp_path / "rename"
+    _init_repo(work)
+    commit = _commit_file(work, original, "rename contents\n", "source")
+    _git(work, "config", "status.renames", "true")
+    _git(work, "mv", "--", original, "renamed target")
+    git = drv.Git(work)
+    observed = git.checkout_observation()
+    assert observed.head == commit
+    assert len(observed.dirty_records) == 2
+    assert observed.dirty_records[0].startswith("2 R.")
+    assert observed.dirty_records[0].endswith(" renamed target")
+    assert observed.dirty_records[1] == original
+    with pytest.raises(drv.DriverError, match="clean selected source"):
+        drv._assert_integration_source(git, commit)
+
+
+def test_integration_source_observation_reports_head_drift_before_dirt(
+    drv, tmp_path, monkeypatch
+):
+    work = tmp_path / "head"
+    _init_repo(work)
+    before = _commit_file(work, "tracked.txt", "original\n", "source")
+    _commit_file(work, "tracked.txt", "committed change\n", "new source")
+    (work / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+    commands = _record_driver_git_commands(drv, monkeypatch)
+    with pytest.raises(drv.DriverError, match="source HEAD changed"):
+        drv._assert_integration_source(drv.Git(work), before)
+    assert len(commands) == 1
+    assert "status" in commands[0]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "# branch.oid " + "a" * 40,
+        "# branch.head main\0",
+        "# branch.oid (initial)\0",
+        "# branch.oid short\0",
+        "# branch.oid " + "A" * 40 + "\0",
+        "# branch.oid " + "a" * 40 + " \0",
+        "# branch.oid\0",
+        "# branch.oid " + "a" * 40 + "\0# branch.oid " + "a" * 40 + "\0",
+        "? dirty\0# branch.oid " + "a" * 40 + "\0",
+    ],
+)
+def test_integration_source_observation_refuses_invalid_head_headers(
+    drv, tmp_path, monkeypatch, output
+):
+    calls = []
+
+    def status(self, args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    monkeypatch.setattr(drv.Git, "_run", status)
+    with pytest.raises(drv.DriverError, match="integration source"):
+        drv.Git(tmp_path).checkout_observation()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("oid_length", [40, 64])
+def test_integration_source_observation_ignores_unknown_headers(
+    drv, tmp_path, monkeypatch, oid_length
+):
+    head = "a" * oid_length
+    output = (
+        f"# future.extension arbitrary value\0# branch.head main\0# branch.oid {head}\0"
+    )
+    monkeypatch.setattr(
+        drv.Git,
+        "_run",
+        lambda self, args, **kwargs: subprocess.CompletedProcess(args, 0, output, ""),
+    )
+    observed = drv.Git(tmp_path).checkout_observation()
+    assert observed.head == head
+    assert observed.dirty_records == ()
+
+
 @pytest.mark.parametrize("kind", ["tracked", "staged", "untracked", "policy"])
 def test_integrate_refuses_dirty_selected_source(drv, origin_and_clone, kind):
     _, work = origin_and_clone

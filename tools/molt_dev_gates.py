@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from tools.molt_dev_policy import GateEnvironment
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 import datetime as dt
 import hashlib
@@ -56,11 +56,20 @@ CONCURRENT_GATE_BYTES = 1 << 30
 
 
 class Gate(Protocol):
-    command: str | tuple[str, ...]
-    toolchains: tuple[str, ...]
-    concurrent: bool
-    collection_command: tuple[str, ...] | None
-    pytest: bool
+    @property
+    def command(self) -> str | tuple[str, ...]: ...
+
+    @property
+    def toolchains(self) -> tuple[str, ...]: ...
+
+    @property
+    def concurrent(self) -> bool: ...
+
+    @property
+    def collection_command(self) -> tuple[str, ...] | None: ...
+
+    @property
+    def pytest(self) -> bool: ...
 
 
 class Progress(Protocol):
@@ -444,7 +453,7 @@ def _cargo_chain(commands: list[_LocalGateCommand]) -> list[_LocalGateCommand]:
 
 
 def run_selected_gates(
-    gates: list[Gate],
+    gates: Sequence[Gate],
     runtime: GateRuntime,
     gate_seconds: list[tuple[float, str]],
     *,
