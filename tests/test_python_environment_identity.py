@@ -105,8 +105,12 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     payload = {"identity": realized} if with_custody else realized
 
     class Context:
-        def __init__(self, *, hash_workers):
+        def __init__(self, *, hash_workers, digest_cache):
             assert hash_workers == 1
+            assert isinstance(digest_cache, files.FileDigestCache)
+
+        def protect_tree(self, root):
+            assert isinstance(root, Path)
 
         def __enter__(self):
             events.append("context-open")
@@ -383,6 +387,197 @@ def _tree(root: Path, context: files.PythonFileCaptureContext):
         root, root_id="fixture", label="fixture", pool=pool
     )
     return tree, pool
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows captures fresh handle content")
+@pytest.mark.parametrize("workers", [1, 3])
+def test_tree_capture_reuses_host_digests_without_content_reads(
+    tmp_path, monkeypatch, workers
+):
+    from molt import toolchain_identity
+
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    root = tmp_path / "source"
+    root.mkdir()
+    contents = {"a.py": b"first", "b.py": b"second"}
+    for name, data in contents.items():
+        (root / name).write_bytes(data)
+    store = tmp_path / "digests.sqlite"
+    with files.PythonFileCaptureContext(
+        hash_workers=workers,
+        digest_cache=files.FileDigestCache(store, max_age_ns=10**18),
+    ) as cold:
+        expected, cold_pool = _tree(root, cold)
+        expected_nodes = cold_pool.nodes
+        cold.verify()
+        assert cold.inventory_profile()["hashed_bytes"] == sum(
+            map(len, contents.values())
+        )
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("unchanged captured content was read again")
+
+    monkeypatch.setattr(files, "stable_regular_file_identity", refuse)
+    monkeypatch.setattr(toolchain_identity, "stable_regular_file_identity", refuse)
+    with files.PythonFileCaptureContext(
+        hash_workers=workers,
+        digest_cache=files.FileDigestCache(store, max_age_ns=10**18),
+    ) as warm:
+        actual, warm_pool = _tree(root, warm)
+        warm.verify()
+        assert actual == expected
+        assert warm_pool.nodes == expected_nodes
+        assert {row["sha256"] for row in warm_pool.nodes} == {
+            hashlib.sha256(data).hexdigest() for data in contents.values()
+        }
+        assert warm.inventory_profile()["hashed_files"] == 0
+        assert warm.inventory_profile()["hashed_bytes"] == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows captures fresh handle content")
+@pytest.mark.parametrize("change", ["rewrite", "replace", "hardlink-replace"])
+def test_warm_digest_never_adopts_a_generation_after_inventory(
+    tmp_path, monkeypatch, change
+):
+    from molt import toolchain_identity
+
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    root = tmp_path / "source"
+    root.mkdir()
+    path = root / "a.py"
+    path.write_bytes(b"before")
+    if change == "hardlink-replace":
+        try:
+            os.link(path, root / "alias.py")
+        except OSError as exc:
+            pytest.skip(f"hardlink creation unavailable: {exc}")
+    store = tmp_path / "digests.sqlite"
+    with files.PythonFileCaptureContext(
+        digest_cache=files.FileDigestCache(store, max_age_ns=10**18)
+    ) as context:
+        _tree(root, context)
+        context.verify()
+    rows = [(candidate, candidate.lstat()) for candidate in sorted(root.iterdir())]
+    changed = root / "alias.py" if change == "hardlink-replace" else path
+    before = changed.lstat()
+    if change == "rewrite":
+        changed.write_bytes(b"after!")
+    else:
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(changed.read_bytes())
+        os.replace(replacement, changed)
+    os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with (
+        files.PythonFileCaptureContext(
+            digest_cache=files.FileDigestCache(store, max_age_ns=10**18)
+        ) as context,
+        pytest.raises(ValueError, match="changed"),
+    ):
+        context.bind_many(rows, label="captured inventory")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows captures fresh handle content")
+def test_cached_capture_rehashes_a_same_size_rewrite_with_restored_mtime(
+    tmp_path, monkeypatch
+):
+    from molt import toolchain_identity
+
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    root = tmp_path / "source"
+    root.mkdir()
+    path = root / "a.py"
+    path.write_bytes(b"before")
+    store = tmp_path / "digests.sqlite"
+    with files.PythonFileCaptureContext(
+        digest_cache=files.FileDigestCache(store, max_age_ns=10**18)
+    ) as cold:
+        _tree(root, cold)
+        cold.verify()
+    before = path.lstat()
+    path.write_bytes(b"after!")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with files.PythonFileCaptureContext(
+        digest_cache=files.FileDigestCache(store, max_age_ns=10**18)
+    ) as changed:
+        _tree(root, changed)
+        changed.verify()
+        assert changed.inventory_profile()["hashed_files"] == 1
+        assert (
+            changed.file_custody()[0]["sha256"] == hashlib.sha256(b"after!").hexdigest()
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never stages cached digests")
+def test_failed_membership_fence_publishes_no_new_digests(tmp_path, monkeypatch):
+    from molt import toolchain_identity
+
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    root = tmp_path / "source"
+    root.mkdir()
+    path = root / "a.py"
+    path.write_bytes(b"captured")
+    store = tmp_path / "digests.sqlite"
+    with files.PythonFileCaptureContext(
+        digest_cache=files.FileDigestCache(store, max_age_ns=10**18)
+    ) as context:
+        _tree(root, context)
+        (root / "later.py").write_bytes(b"new import")
+        with pytest.raises(ValueError, match="changed"):
+            context.verify()
+    assert (
+        files.FileDigestCache(store, max_age_ns=10**18).lookup(
+            path, expected_path_stat=path.lstat(), label="unpublished capture"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("indirection", [False, True])
+def test_capture_refuses_cache_inside_tree_before_creating_it(tmp_path, indirection):
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "a.py").write_bytes(b"unchanged")
+    selected = root
+    if indirection:
+        selected = tmp_path / "alias"
+        try:
+            selected.symlink_to(root, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+    store = selected / "cache" / "digests.sqlite"
+    with (
+        files.PythonFileCaptureContext(
+            digest_cache=files.FileDigestCache(store, max_age_ns=10**18)
+        ) as context,
+        pytest.raises(ValueError, match="cache overlaps"),
+    ):
+        _tree(root, context)
+    assert sorted(path.name for path in root.iterdir()) == ["a.py"]
+
+
+def test_capture_entry_refuses_image_cache_before_capturing_runtime(
+    tmp_path, monkeypatch
+):
+    from molt import toolchain_facts
+
+    image = tmp_path / "image"
+    image.mkdir()
+    store = image / "cache" / "digests.sqlite"
+    monkeypatch.setattr(
+        toolchain_facts,
+        "host_file_digest_cache",
+        lambda: files.FileDigestCache(store, max_age_ns=10**18),
+    )
+    monkeypatch.setattr(sys, "argv", ["identity", "--capture-environment", str(image)])
+    monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("runtime capture started before cache-location admission")
+
+    monkeypatch.setattr(identity, "capture_current_python_environment", refuse)
+    with pytest.raises(ValueError, match="cache overlaps"):
+        identity._main()
+    assert not list(image.iterdir())
 
 
 @pytest.mark.parametrize("change", ["membership", "changed-size-restored-mtime"])
@@ -1065,9 +1260,15 @@ def test_batch_bind_uses_one_open_per_fresh_file_and_keeps_the_final_fence(
     assert sorted(opened) == ["a.py", "b.py"]
     # A subsequent bind independently verifies the stored generation.
     context.bind(*rows[0], label="fixture")
-    assert sorted(opened) == ["a.py", "a.py", "b.py"]
+    assert sorted(opened) == (
+        ["a.py", "a.py", "b.py"] if os.name == "nt" else ["a.py", "b.py"]
+    )
     context.verify()
-    assert sorted(opened) == ["a.py", "a.py", "a.py", "b.py", "b.py"]
+    assert sorted(opened) == (
+        ["a.py", "a.py", "a.py", "b.py", "b.py"]
+        if os.name == "nt"
+        else ["a.py", "b.py"]
+    )
     paths[1].write_bytes(b"changed-size.py")
     os.utime(paths[1], ns=(rows[1][1].st_atime_ns, rows[1][1].st_mtime_ns))
     with pytest.raises(ValueError, match="changed"):
