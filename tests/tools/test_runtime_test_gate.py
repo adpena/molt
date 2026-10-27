@@ -1409,8 +1409,18 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     resolved = []
 
     def plan(
-        root, *, env, cargo_command, requested_target, host_target, rustflags_transform
+        root,
+        *,
+        env,
+        cargo_command,
+        requested_target,
+        host_target,
+        rustflags_transform,
+        required_cargo_capabilities,
     ):
+        assert required_cargo_capabilities == (
+            runtime_cargo_plan.CargoCapability.BUILD_DIRECTORY,
+        )
         assert env["NODE_OPTIONS"] == inherited_node_options
         # Exercise the real planner's executable-selection boundary, while its
         # SDK/configuration/compiler work remains outside this host unit test.
@@ -2245,8 +2255,19 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
             raise RuntimeError("selected Cargo input changed during execution")
 
     def plan(
-        root, *, env, cargo_command, requested_target, host_target, rustflags_transform
+        root,
+        *,
+        env,
+        cargo_command,
+        requested_target,
+        host_target,
+        rustflags_transform,
+        required_cargo_capabilities,
     ):
+        assert required_cargo_capabilities == (
+            runtime_cargo_plan.CargoCapability.BUILD_DIRECTORY,
+            runtime_cargo_plan.CargoCapability.WARNINGS_DENY,
+        )
         assert root == source and list(cargo_command) == submitted
         assert requested_target == "wasm32-wasip1"
         assert host_target is None
