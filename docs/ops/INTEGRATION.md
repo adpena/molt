@@ -419,7 +419,7 @@ main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 `molt.checkout_provisioning` owns a checkout's lock-declared inputs.
 `python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
 hand from an existing bootstrap interpreter. Managed Python uses the existing
-source-build publisher and schema 7 recipe at
+source-build publisher and schema 8 recipe at
 `<artifact_root>/build-environments/development/<checkout_component>/<recipe_sha>`.
 The recipe binds the selected interpreter, lock closure, dependency groups and
 editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`
