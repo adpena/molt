@@ -31,6 +31,51 @@ def test_fuzz_workspace_for_unknown_target_raises() -> None:
         runtime_safety._fuzz_workspace_for_target("definitely_missing_target")
 
 
+@pytest.mark.usefixtures("developer_host_context")
+@pytest.mark.parametrize("returncode", [0, 101])
+def test_run_clippy_preserves_warning_policy_and_result(
+    monkeypatch, tmp_path: Path, returncode: int
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        calls.append(list(cmd))
+        assert kwargs["capture_output"] is True
+        assert kwargs["env"]["CARGO_BUILD_WARNINGS"] == "allow"
+        return subprocess.CompletedProcess(
+            cmd, returncode, stdout="", stderr="clippy diagnostic\n"
+        )
+
+    # The command must carry the policy even when the inherited Cargo setting
+    # permits warnings. Cargo's real warning/cache behavior has separate proofs.
+    monkeypatch.setenv("CARGO_BUILD_WARNINGS", "allow")
+    monkeypatch.setattr(
+        runtime_safety.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    expected = [
+        "cargo",
+        "clippy",
+        "--config",
+        'build.warnings="deny"',
+        "-p",
+        "molt-runtime",
+        "--all-targets",
+    ]
+    if returncode:
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            runtime_safety.run_clippy(tmp_path)
+        assert raised.value.returncode == returncode
+        assert raised.value.cmd == expected
+        assert raised.value.stderr == "clippy diagnostic\n"
+    else:
+        runtime_safety.run_clippy(tmp_path)
+
+    assert calls == [expected]
+    assert (tmp_path / "runtime_clippy.log").read_text() == "clippy diagnostic\n"
+
+
 def test_miri_tmp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:
     for key in ("MOLT_DIFF_TMPDIR", "TMPDIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
