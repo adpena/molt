@@ -2333,7 +2333,9 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
             str(receipt_root),
         ]
     )
-    aggregate = json.loads(next(receipt_root.glob("*/aggregate.json")).read_text())
+    aggregate = json.loads(
+        next(receipt_root.glob("*/aggregate.json")).read_text(encoding="utf-8")
+    )
     assert builds == [actual]
     assert aggregate["source_command"] == submitted
     assert aggregate["build_command"] == actual
