@@ -2594,7 +2594,11 @@ def _runtime_gate_cargo_capabilities(
 
     return (
         CargoCapability.BUILD_DIRECTORY,
-        *((CargoCapability.WARNINGS_DENY,) if invocation.subcommand == "clippy" else ()),
+        *(
+            (CargoCapability.WARNINGS_DENY,)
+            if invocation.subcommand == "clippy"
+            else ()
+        ),
     )
 
 
