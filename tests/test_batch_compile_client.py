@@ -786,14 +786,14 @@ def test_batch_graceful_close_sends_internal_shutdown(tmp_path):
         "for line in sys.stdin:\n"
         " request=json.loads(line)\n"
         " if request['op']=='shutdown':\n"
-        f"  pathlib.Path({str(marker)!r}).write_text('shutdown')\n"
+        f"  pathlib.Path({str(marker)!r}).write_bytes(b'shutdown')\n"
         " print(json.dumps({'id':request['id'],'ok':True}),flush=True)\n"
         " if request['op']=='shutdown': break\n"
     )
     with _script_client(tmp_path, source) as (client, roots):
         assert client.request("ping", timeout=5)["ok"]
         client.close(timeout=5)
-        assert marker.read_text() == "shutdown"
+        assert marker.read_bytes() == b"shutdown"
         _assert_batch_retirement(roots, True)
         with pytest.raises(RuntimeError, match="is closing") as caught:
             client.request("ping", timeout=1)
