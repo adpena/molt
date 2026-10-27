@@ -411,6 +411,22 @@ One runner owns main. Agents enqueue and continue.
 
 ## Costs
 
+Commit metadata comes from one typed, NUL-framed Git history read: original
+identity, parents, subject, Change-Ids and optional patch equivalence. Integration
+retains the selected range's immutable records for its subject display instead
+of starting one Git process per commit. Representation checks obtain parent
+counts and native patch-equivalence marks from a right-only symmetric-difference
+walk, replacing separate merge enumeration and cherry processes. The chosen
+merge-base window still bounds Change-Id matches, and merges still require
+actual ancestry. This uses [Git's native history and cherry comparison](https://git-scm.com/docs/git-log)
+with Python orchestration, following [Bazel's amortized worker execution](https://bazel.build/remote/persistent)
+and [Ninja's minimum incremental work](https://ninja-build.org/manual.html).
+The selected immutable records are reused only within that operation; mutable
+ref and source fences remain fresh. Subject rendering changes from O(commits)
+processes to one history read. Patch comparison now occurs during that walk even
+when Change-Ids could suffice, an explicit trade whose graph cost must be
+included in latency measurements.
+
 Real-controller tests share one immutable committed driver history per pytest
 session across xdist workers and the driver/claim families. The existing
 `shared_session_tree` lock publishes it once, following
