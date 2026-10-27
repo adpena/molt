@@ -38,7 +38,6 @@ authority_inputs = [
   "tools/compat/test_policy.py",
   "tools/disk_guard.py",
   "tools/checkout_maintenance.py",
-  "tools/cache_maintenance.py",
   "tools/controller_source.py",
   "tools/detached_execution.py",
   "tools/driver_errors.py",
