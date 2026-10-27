@@ -469,14 +469,15 @@ fn actual_manifest_command_checks_sdk_signature_before_core_start_and_keeps_gues
 #[test]
 fn actual_manifest_command_core_start_exit_precedes_exported_start() {
     let fixture = ArtifactFixture::new();
-    let (_, manifest) = fixture.command_manifest(
-        "command.wat",
-        br#"(module
+    let bytes = wat::parse_str(
+        r#"(module
       (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
       (memory (export "memory") 1)
       (func $core i32.const 19 call $exit) (start $core)
       (func (export "_start") unreachable))"#,
-    );
+    )
+    .expect("valid binary WASI command fixture");
+    let (_, manifest) = fixture.command_manifest("command.wasm", &bytes);
     let output = host()
         .arg("--wasi-command-manifest")
         .arg(&manifest)
