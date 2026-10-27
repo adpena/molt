@@ -5303,16 +5303,22 @@ pytest = [
 [[rule]]
 name = "subprocess-guard-coverage"
 toolchains = ["python"]
-description = "Raw-process scanner, shared guard-wiring observations and their semantic controls."
+description = "Subprocess guard coverage diagnostics and their semantic controls."
+globs = ["tools/check_subprocess_guard_coverage.py", "tests/tools/test_subprocess_guard_coverage.py"]
+gates = []
+pytest = ["tests/tools/test_subprocess_guard_coverage.py"]
+
+[[rule]]
+name = "guard-wiring-source-observation"
+toolchains = ["python"]
+description = "Shared raw-source observation changes select guard-wiring consumers; leaf scanner tests stay local."
 globs = [
   "tools/check_subprocess_guard_coverage.py",
   "tools/check_memory_guard_wiring.py",
-  "tests/tools/test_subprocess_guard_coverage.py",
   "tests/tools/test_check_memory_guard_wiring.py",
 ]
 gates = []
 pytest = [
-  "tests/tools/test_subprocess_guard_coverage.py",
   "tests/tools/test_check_memory_guard_wiring.py",
   "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
 ]
