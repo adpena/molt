@@ -395,7 +395,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `process-environment-consumers` | 9 | 0 |
 | `build-control-paths` | 6 | 0 |
 | `repository-scan-records` | 4 | 0 |
-| `subprocess-guard-coverage` | 2 | 0 |
+| `subprocess-guard-coverage` | 4 | 0 |
 | `environment-registry-audit` | 2 | 0 |
 | `cpython-coverage-generation` | 2 | 0 |
 | `unicode-source-facts` | 1 | 0 |

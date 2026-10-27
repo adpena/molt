@@ -204,6 +204,18 @@ large graphs can use more storage than the old sparse map. Stable managed slots
 retain the dependency build across lanes. Keep cold dependency rebuild cost,
 compiler execution latency and ordinary edit-to-test latency separate.
 
+Repository audit tests now share one streaming import-policy observation and
+leave full-tree subprocess acceptance to the existing mandatory source-policy
+gate. The copied-default scan-record oracle uses a real isolated inventory,
+including Python and shell findings, exact cold/warm equality and a rejected
+source mutation. One serial macOS arm64 comparison reduced the selected test
+bundle from 21.05 to 8.58 seconds guarded wall time. The restructured bundle
+retains all three import policies and adds missing-position controls; full-source
+acceptance executes separately in the mandatory gate. This is one test-cost
+comparison, not a whole-integration, compiler-latency or cross-platform result.
+The per-file snippet index removes repeated source-prefix extraction; its
+initial same-node macro comparison alone established no material improvement.
+
 A measured allocator landing spent 277.31 seconds in changed-package Clippy
 selection and execution; the Python cohorts already overlapped that work. The
 old root-manifest/local-patch rule selected all ten declared Clippy cells. The
