@@ -6757,38 +6757,6 @@ def test_completed_process_group_does_not_emit_redundant_member_kill(
     assert [action.result for action in report.actions] == ["completed_or_missing"]
 
 
-def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
-    report = _guard_termination_report(reason="tracked_orphan_cleanup")
-
-    def fake_cleanup(root_pid, **kwargs):
-        calls.append({"root_pid": root_pid, **kwargs})
-        return memory_guard.GuardOrphanCleanupResult(
-            process_groups=(777,),
-            termination_reports=(report,),
-        )
-
-    monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
-    # Exercise the explicit no-Job fallback; a live Windows Job is itself the
-    # exact descendant cleanup authority and intentionally bypasses PID-table
-    # orphan cleanup.
-    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
-    _patch_temporary_artifact_closure_closed(monkeypatch)
-
-    result = memory_guard.run_guarded(
-        [sys.executable, "-c", "print('ok')"],
-        max_rss_kb=1_000_000,
-        poll_interval=0.01,
-    )
-
-    assert result.returncode == 0
-    assert result.stdout == "ok\n"
-    assert result.orphaned_process_groups == (777,)
-    assert result.termination_reports == (report,)
-    assert len(calls) == 1
-    assert calls[0]["root_reaped"] is True
-
-
 def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
     monkeypatch,
 ) -> None:
@@ -7469,6 +7437,11 @@ def test_terminal_transfer_and_cleanup_share_observation_until_a_signal(
         assert result.returncode == 0, result.stderr
         assert result.descendants_closed
         if orphan:
+            # Default cleanup must terminate the real child that moved into
+            # its own process group, and report that exact group.
+            assert result.orphaned_process_groups == (
+                int(pid_file.read_text(encoding="utf-8")),
+            )
             assert cleanup_samples
             assert decisive_samples
             assert cleanup_samples[0] is decisive_samples[-1]
