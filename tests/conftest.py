@@ -16,6 +16,7 @@ from tools.import_file import bind_repository_imports, require_repository_identi
 
 if TYPE_CHECKING:
     from molt.llvm_toolchain import WasiSdkInstallation
+    from tests.integration_driver_fixture import GitFixture
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
 
 
@@ -363,6 +364,26 @@ def driver_seed(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Pat
     return shared_session_tree(
         tmp_path_factory, worker_id, "driver-seed", copy_driver_trees
     )
+
+
+@pytest.fixture(scope="session")
+def driver_history_seed(
+    tmp_path_factory: pytest.TempPathFactory, worker_id: str, driver_seed: Path
+) -> GitFixture:
+    """One immutable committed driver, shared across integration test families."""
+    from tests.integration_driver_fixture import (
+        GitFixture,
+        build_driver_history,
+        shared_session_tree,
+    )
+
+    root = shared_session_tree(
+        tmp_path_factory,
+        worker_id,
+        "driver-history",
+        lambda root: build_driver_history(root, driver_seed),
+    )
+    return GitFixture(root / "origin.git", root / "work")
 
 
 @pytest.fixture(scope="session")

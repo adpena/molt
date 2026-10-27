@@ -90,6 +90,7 @@ from tools.molt_dev_common import (  # noqa: E402
     _run_fast_captured_command,
 )
 from tests.integration_driver_fixture import (  # noqa: E402
+    GitFixture,
     clone_tree,
     copy_driver_trees,
     isolated_checkout_artifacts as isolated_checkout_artifacts,
@@ -406,46 +407,15 @@ def borrowed_gate_python(origin_and_clone, monkeypatch):
     monkeypatch.setenv("MOLT_VENV", sys.prefix)
 
 
-def _build_driver_origin(root: Path, driver: Path) -> None:
-    """The seed history, with this checkout's driver trees committed on main."""
-    seed = root / "seed"
-    _init_repo(seed)
-    copy_driver_trees(seed, seed=driver)
-    (seed / "tools/proof_plan.toml").write_text(
-        'always = ["echo integration-policy"]\n', encoding="utf-8"
-    )
-    (seed / "README.md").write_text("seed\n", encoding="utf-8")
-    _git(seed, "add", "-A", "--", ".")
-    _git(seed, "commit", "-q", "--no-verify", "-m", "seed: main driver")
-    _git(root, "clone", "--bare", "-q", str(seed), str(root / "origin.git"))
-
-
-@pytest.fixture(scope="session")
-def _driver_origin_seed(tmp_path_factory, worker_id, driver_seed):
-    """A bare origin whose main carries the driver, built once per session.
-
-    A landing runs main's pinned driver, so a test that lands through it needs
-    the driver committed on main. Each such test copied the driver trees
-    (1,088 files, 25 MB) into its clone and committed them; the session now
-    makes that commit once and each test clones it.
-    """
-    from tests.integration_driver_fixture import shared_session_tree
-
-    root = shared_session_tree(
-        tmp_path_factory,
-        worker_id,
-        "driver-origin",
-        lambda root: _build_driver_origin(root, driver_seed),
-    )
-    return root / "origin.git"
-
-
 @pytest.fixture
 def driver_origin_and_clone(
-    tmp_path, _driver_origin_seed, monkeypatch, isolated_checkout_artifacts
-):
+    tmp_path: Path,
+    driver_history_seed: GitFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_checkout_artifacts: Path,
+) -> tuple[Path, Path]:
     """`origin_and_clone` whose main already carries this checkout's driver."""
-    return _clone_origin(tmp_path, _driver_origin_seed, monkeypatch)
+    return _clone_origin(tmp_path, driver_history_seed.origin, monkeypatch)
 
 
 def test_driver_seed_keeps_runtime_dependencies_without_optional_groups(
