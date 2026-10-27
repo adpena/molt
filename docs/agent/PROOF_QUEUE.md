@@ -283,10 +283,16 @@ selects its target C ABI explicitly; a pure-Rust sibling keeps Cargo's ordinary
 WASI startup. This follows [Rust's WASI target contract](https://doc.rust-lang.org/stable/rustc/platform-support/wasm32-wasip1.html),
 which separates self-contained Rust builds from external C interoperability.
 The existing Cargo operation driver also owns the compile-only `wasi-clippy`
-policy. Its operation retains the original default dev profile, library package
-scope, lint flags and cold deadline. Changed-package lint selection reads that
-same operation. Successful completion requires Cargo's terminal success record
-and command status; it does not qualify a runtime or guest test cell.
+policy. Its operation retains the default dev profile, library package scope
+and cold deadline. Warning denial uses Cargo's `build.warnings="deny"` setting,
+following [Clippy's recommendation](https://doc.rust-lang.org/stable/clippy/usage.html#elevating-warning-to-errors).
+The selected Cargo must support that setting (1.97 or newer), admitted through
+the same capability/version authority as resource-keyed build directories.
+Managed Clippy refuses forwarded compiler arguments: its workspace wrapper also
+runs host build scripts, so target ABI flags cannot travel in that lane.
+Changed-package lint selection reads the same operation. Successful completion
+requires Cargo's terminal success record and command status; it does not qualify
+a runtime or guest test cell.
 
 Molt runtime WASI C-ABI library links use the selected SDK's raw linker with
 Rust's self-contained C runtime disabled. C and C++ compilation retain their

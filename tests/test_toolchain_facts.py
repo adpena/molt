@@ -1027,32 +1027,69 @@ def test_rustup_failure_is_not_recorded(
 # --- cargo --version -----------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("version", "build_directory", "warnings_deny"),
+    [
+        ("1.90.0", False, False),
+        ("1.91.0", True, False),
+        ("1.96.0", True, False),
+        ("1.97.0", True, True),
+    ],
+)
+@pytest.mark.parametrize("verbose", [False, True])
+def test_cargo_capabilities_keep_their_independent_version_boundaries(
+    version: str, build_directory: bool, warnings_deny: bool, verbose: bool
+) -> None:
+    banner = f"cargo {version} (abc 2026-01-01)\n"
+    if verbose:
+        banner += f"release: {version}\nhost: aarch64-apple-darwin\n"
+    for capability, accepted, minimum in (
+        (plans.CargoCapability.BUILD_DIRECTORY, build_directory, "1.91"),
+        (plans.CargoCapability.WARNINGS_DENY, warnings_deny, "1.97"),
+    ):
+        if accepted:
+            plans.require_cargo_capability_version(banner, capability)
+        else:
+            with pytest.raises(ValueError, match=minimum.replace(".", r"\.")):
+                plans.require_cargo_capability_version(banner, capability)
+
+
 def test_cargo_version_is_asked_once_per_cargo_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cargo = write_mock_executable(tmp_path / "cargo", b"MZ cargo 1.99.0")
-    spawns = _Spawns(lambda command, kwargs: ("cargo 1.99.0 (abc 2026-01-01)\n", ""))
+    cargo = write_mock_executable(tmp_path / "cargo", b"MZ cargo 1.96.0")
+    spawns = _Spawns(lambda command, kwargs: ("cargo 1.96.0 (abc 2026-01-01)\n", ""))
     monkeypatch.setattr(plans.process_guard, "run_completed_command", spawns)
     root = tmp_path / "project"
     root.mkdir()
 
-    def admit() -> None:
+    def admit(capabilities: tuple[plans.CargoCapability, ...] = ()) -> None:
         custody = CargoExecutableCustody.capture("tool/cargo", cargo)
-        plans._require_cargo_build_directory(custody, root=root, env={})
+        plans._require_cargo_capabilities(
+            custody, root=root, env={}, capabilities=capabilities
+        )
 
     admit()
     assert spawns.count == 1 and spawns.commands[0] == [os.fspath(cargo), "--version"]
+    # Cache the tool's answer, not a successful verdict for every capability.
+    with pytest.raises(ValueError, match=r"1\.97"):
+        admit((plans.CargoCapability.WARNINGS_DENY,))
+    assert spawns.count == 1
     _fresh_process(monkeypatch)
     admit()
+    with pytest.raises(ValueError, match=r"1\.97"):
+        admit((plans.CargoCapability.WARNINGS_DENY,))
     assert spawns.count == 1
+    spawns.answer = lambda command, kwargs: ("cargo 1.99.1\n", "")
     _rewrite_with_restored_mtime(cargo, b"MZ cargo 1.99.1")
     _fresh_process(monkeypatch)
-    admit()
+    admit((plans.CargoCapability.WARNINGS_DENY,))
     assert spawns.count == 2
     spawns.answer = lambda command, kwargs: ("cargo 1.90.0\n", "")
     _rewrite_with_restored_mtime(cargo, b"MZ cargo 1.90.0")
     with pytest.raises(ValueError, match="1.91"):
         admit()
+    assert spawns.count == 3
 
 
 # --- Darwin selectors ------------------------------------------------------------

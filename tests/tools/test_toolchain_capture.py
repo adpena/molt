@@ -4744,7 +4744,9 @@ def _runtime_gate_registered_command(policy):
         "foreign-sdk",
         "source-target",
         "unresolved-producer",
-        "unresolved-final-mode",
+        "missing-warning-policy",
+        "allow-warning-policy",
+        "old-cargo-warning-policy",
     ],
 )
 def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
@@ -4779,9 +4781,8 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
         "-p",
         "molt-tir",
         "--message-format=json",
-        "--",
-        "-D",
-        "warnings",
+        "--config",
+        'build.warnings="deny"',
     ]
     assert operation["source_command"] == source_command
     assert operation["role"] == "runtime"
@@ -4797,15 +4798,8 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
     assert child["producer_command"][0] == str(tools["cargo"])
     assert child["producer_command"][1] == "clippy"
     assert child["producer_command"] != registered
-    separator = child["producer_command"].index("--")
-    assert child["producer_command"][separator + 1 :] == [
-        "-D",
-        "warnings",
-        "-C",
-        "link-self-contained=no",
-        "-C",
-        "linker-flavor=wasm-ld",
-    ]
+    assert "--" not in child["producer_command"]
+    assert child["producer_command"].count('build.warnings="deny"') == 1
     assert any(
         value.startswith("build.build-dir=") for value in child["producer_command"]
     )
@@ -4840,13 +4834,22 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
         child = operation["selection"]
         child["producer_command"] = source_command
         child["command_semantics_sha256"] = canonical_json_sha256(source_command)
-    elif mutation == "unresolved-final-mode":
+    elif mutation == "old-cargo-warning-policy":
+        # 1.96 supports resource-keyed build directories, but cannot establish
+        # the newer deny-warnings policy. Every SDK/argv/pin remains valid.
+        operation["selection"]["cargo_version"] = "cargo 1.96.0 (123456789 2026-06-01)"
+    elif mutation in {"missing-warning-policy", "allow-warning-policy"}:
         child = operation["selection"]
         producer = child["producer_command"]
-        separator = producer.index("--")
-        # Preserve every tool/output pin and dependency flag. Only the final
-        # crate's SDK modes are absent, as in the plausible unnormalized plan.
-        unresolved = [*producer[: separator + 1], "-D", "warnings"]
+        policy_index = producer.index('build.warnings="deny"')
+        assert producer[policy_index - 1] == "--config"
+        # Keep all tool/output pins and SDK/dependency facts. Only Cargo's
+        # warning policy is missing or weakened in the executed command.
+        unresolved = list(producer)
+        if mutation == "missing-warning-policy":
+            del unresolved[policy_index - 1 : policy_index + 1]
+        else:
+            unresolved[policy_index] = 'build.warnings="allow"'
         child["producer_command"] = unresolved
         child["admitted_command"] = ["cargo", *unresolved[1:]]
         digest = canonical_json_sha256(unresolved)
@@ -4861,13 +4864,50 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
     with pytest.raises(
         ValueError,
         match="runtime Cargo child command differs from its operation"
-        if mutation == "unresolved-final-mode"
+        if mutation in {"missing-warning-policy", "allow-warning-policy"}
+        else r"runtime Cargo requires Cargo 1\.97 or newer for warning denial"
+        if mutation == "old-cargo-warning-policy"
         else None,
     ):
         toolchain_capture.validate_rust_link_selection(
             changed, command_argv=command, full_capture=True
         )
     assert calls == before
+
+
+def test_managed_wasi_clippy_refuses_forwarded_arguments_before_planning(
+    tmp_path, monkeypatch
+):
+    from molt.cli import runtime_cargo_plan
+    from tools.runtime_test_gate_plan import CargoOperation
+
+    def forbidden_plan(*_args, **_kwargs):
+        pytest.fail(
+            "unsupported forwarded Clippy arguments must refuse before planning"
+        )
+
+    monkeypatch.setattr(
+        runtime_cargo_plan, "resolve_runtime_cargo_plan", forbidden_plan
+    )
+    operation = CargoOperation(
+        "runtime",
+        (
+            "cargo",
+            "clippy",
+            "--target",
+            "wasm32-wasip1",
+            "--lib",
+            "--",
+            "-D",
+            "warnings",
+        ),
+        "runtime-wasi",
+        "managed-wasi",
+    )
+    with pytest.raises(ValueError, match="does not admit forwarded compiler arguments"):
+        toolchain_capture.resolve_runtime_gate_cargo_operation(
+            operation, cwd=tmp_path, env={}, compiler_host=None
+        )
 
 
 def test_mixed_wasi_driver_projects_sdk_only_to_its_c_owning_operation(

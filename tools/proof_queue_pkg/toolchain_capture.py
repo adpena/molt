@@ -62,7 +62,7 @@ from tools.proof_queue_pkg.process_image_capture import (
 
 
 if TYPE_CHECKING:
-    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
+    from molt.cli.runtime_cargo_plan import CargoCapability, RuntimeCargoPlan
     from molt.wasi_sdk_identity import WasiCAbiProjection
     from tools.proof_queue_pkg import command_admission
     from tools.runtime_test_gate_plan import CargoOperation
@@ -2587,6 +2587,17 @@ def _require_stable_cargo_version(version: object) -> None:
 RUNTIME_GATE_RUST_SELECTION_SCHEMA = "molt.proof-runtime-gate-rust-selection.v2"
 
 
+def _runtime_gate_cargo_capabilities(
+    invocation: command_admission.CargoInvocation,
+) -> tuple[CargoCapability, ...]:
+    from molt.cli.runtime_cargo_plan import CargoCapability
+
+    return (
+        CargoCapability.BUILD_DIRECTORY,
+        *((CargoCapability.WARNINGS_DENY,) if invocation.subcommand == "clippy" else ()),
+    )
+
+
 def resolve_runtime_gate_cargo_operation(
     operation: CargoOperation,
     *,
@@ -2602,6 +2613,11 @@ def resolve_runtime_gate_cargo_operation(
     from tools.runtime_test_gate_plan import WASI_TARGET
 
     invocation = command_admission.parse_cargo_invocation(operation.command)
+    if invocation.subcommand == "clippy" and invocation.compiler_arguments():
+        raise ValueError(
+            "managed WASI Clippy does not admit forwarded compiler arguments; "
+            "use Cargo build.warnings configuration to preserve host and target scope"
+        )
     plan = resolve_runtime_cargo_plan(
         cwd,
         env=env,
@@ -2613,6 +2629,7 @@ def resolve_runtime_gate_cargo_operation(
             if invocation.subcommand == "test"
             else None
         ),
+        required_cargo_capabilities=_runtime_gate_cargo_capabilities(invocation),
     )
     plan.verify()
     return list(plan.command), plan.environment, plan
@@ -3862,18 +3879,9 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
         or re.fullmatch(r"[0-9a-f]{64}", directory.name) is None
     ):
         raise ValueError("runtime Cargo intermediate output escaped its captured base")
-    command = operation.command
-    forwarded = invocation.compiler_arguments()
-    if forwarded:
-        # RuntimeCargoPlan also normalizes its final compiler lane, without
-        # repeating the dependency lane's SDK search directories.
-        command = (
-            *command[: command.index("--") + 1],
-            *abi.rustflags(forwarded, include_search=False),
-        )
     return list(
         cargo_argv._pin_cargo_command(
-            command,
+            operation.command,
             {name: Path(value) for name, value in tools.items()},
             {name: Path(value) for name, value in wrappers.items()},
             WASI_TARGET,
@@ -3998,12 +4006,15 @@ def _validate_runtime_gate_rust_selection(
         selection = row["selection"]
         if operation.environment == "runtime-wasi" and isinstance(selection, Mapping):
             from molt.cli.runtime_cargo_plan import (
-                require_cargo_build_directory_version,
+                require_cargo_capability_version,
             )
 
-            require_cargo_build_directory_version(
-                str(selection.get("cargo_version", ""))
-            )
+            for capability in _runtime_gate_cargo_capabilities(
+                command_admission.parse_cargo_invocation(operation.command)
+            ):
+                require_cargo_capability_version(
+                    str(selection.get("cargo_version", "")), capability
+                )
         if (
             not isinstance(selection, Mapping)
             or selection.get("producer_command") != expected_command

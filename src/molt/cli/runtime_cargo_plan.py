@@ -1050,21 +1050,39 @@ def _cargo_build_directory_base(root: Path, environment: Mapping[str, str]) -> P
     return Path(os.path.abspath(path if path.is_absolute() else root / path))
 
 
-def require_cargo_build_directory_version(version: str) -> None:
-    """Admit the Cargo capability from its captured short or verbose banner."""
+class CargoCapability(Enum):
+    BUILD_DIRECTORY = ((1, 91, 0), "resource-keyed build directories")
+    WARNINGS_DENY = ((1, 97, 0), "warning denial")
+
+    def __init__(
+        self, minimum_version: tuple[int, int, int], description: str
+    ) -> None:
+        self.minimum_version = minimum_version
+        self.description = description
+
+
+def require_cargo_capability_version(
+    version: str, capability: CargoCapability
+) -> None:
+    """Admit a typed Cargo capability from its captured version banner."""
     banner = version.partition("\n")[0].rstrip("\r")
     match = re.fullmatch(r"cargo (\d+)\.(\d+)\.(\d+)(?:[-+ ][^\r\n]*)?", banner)
-    if match is None or tuple(map(int, match.groups())) < (1, 91, 0):
+    if match is None or tuple(map(int, match.groups())) < capability.minimum_version:
+        minimum = ".".join(map(str, capability.minimum_version)).removesuffix(".0")
         raise ValueError(
-            "runtime Cargo requires Cargo 1.91 or newer for resource-keyed build directories"
+            f"runtime Cargo requires Cargo {minimum} or newer for {capability.description}"
         )
 
 
-def _require_cargo_build_directory(
-    cargo: CargoExecutableCustody, *, root: Path, env: Mapping[str, str]
+def _require_cargo_capabilities(
+    cargo: CargoExecutableCustody,
+    *,
+    root: Path,
+    env: Mapping[str, str],
+    capabilities: tuple[CargoCapability, ...] = (),
 ) -> None:
     # Older Cargo ignores unknown configuration keys instead of proving that
-    # the selected intermediate graph is used. Admit the capability up front.
+    # the selected policy is used. Admit all requirements from one cached probe.
     tool = ProbeTool.from_identity(cargo.entrypoint, cargo.identity)
     key = ProbeKey(
         "cargo-version",
@@ -1091,10 +1109,9 @@ def _require_cargo_build_directory(
 
     result, _cached = completed_probe(host_toolchain_facts(), key, run)
     if result.returncode != 0:
-        raise ValueError(
-            "runtime Cargo requires Cargo 1.91 or newer; its version probe failed"
-        )
-    require_cargo_build_directory_version(result.stdout)
+        raise ValueError("runtime Cargo capability version probe failed")
+    for capability in dict.fromkeys((CargoCapability.BUILD_DIRECTORY, *capabilities)):
+        require_cargo_capability_version(result.stdout, capability)
 
 
 def _cargo_profile_package_selector_name(spec: str) -> str | None:
@@ -1978,6 +1995,7 @@ def resolve_runtime_cargo_plan(
     environment_transform: Callable[[ProcessEnvironment], Mapping[str, str]]
     | None = None,
     rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
+    required_cargo_capabilities: tuple[CargoCapability, ...] = (),
 ) -> RuntimeCargoPlan:
     if any(item.startswith("+") for item in cargo_command[1:2]):
         raise ValueError(
@@ -2233,7 +2251,12 @@ def resolve_runtime_cargo_plan(
     )
     cargo = resolve_rustup_proxy(cargo, role="cargo", root=root, env=environment)
     cargo_custody = CargoExecutableCustody.capture("tool/cargo", cargo)
-    _require_cargo_build_directory(cargo_custody, root=root, env=environment)
+    _require_cargo_capabilities(
+        cargo_custody,
+        root=root,
+        env=environment,
+        capabilities=required_cargo_capabilities,
+    )
     tools: dict[str, Path] = {"rustc": rustc, "cargo": cargo}
     defaults = runtime_tool_selection.target_tool_defaults(target)
     for role in ("cc", "cxx", "ar", "ranlib", "linker"):
