@@ -1370,6 +1370,45 @@ def _no_rehash(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(identity, "stable_regular_file_identity", refuse)
 
 
+def test_digest_cache_windows_never_looks_up_or_records_content(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    path = tmp_path / "input"
+    path.write_bytes(b"actual content")
+    captured = identity.stable_regular_file_identity(path, label="input")
+    metadata = path.lstat()
+    cache = identity.FileDigestCache(tmp_path / "unused.sqlite", max_age_ns=10**18)
+    monkeypatch.setattr(identity, "os", SimpleNamespace(name="nt"))
+    assert cache.lookup(path, expected_path_stat=metadata, label="input") is None
+    cache.remember(captured)
+    cache.flush()
+    assert not cache.store.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX metadata has kernel ctime")
+def test_metadata_fence_uses_no_open_and_preserves_inventory_snapshot(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "input"
+    path.write_bytes(b"actual content")
+    captured = identity.stable_regular_file_identity(path, label="input")
+    original = path.lstat()
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("metadata fence reopened content")
+
+    monkeypatch.setattr(identity, "open_stable_regular_file", refuse)
+    identity.verify_stable_regular_file_metadata(
+        captured, label="input", expected_path_stat=original
+    )
+    path.write_bytes(b"actual content")
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    with pytest.raises(ValueError, match="changed since identity capture"):
+        identity.verify_stable_regular_file_metadata(
+            captured, label="input", expected_path_stat=original
+        )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
 def test_digest_cache_reuses_a_recorded_digest_across_processes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

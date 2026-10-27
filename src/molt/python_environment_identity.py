@@ -483,6 +483,7 @@ def python_capture_authority_paths(
         "source_build_requirements",
         "process_guard",
         "toolchain_identity",
+        "toolchain_facts",
         "input_report",
         "llvm_linker_roles",
         "file_hashing",
@@ -548,8 +549,19 @@ def _main() -> None:
         payload = current_python_runtime_selection()
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
+        from molt.toolchain_facts import host_file_digest_cache
 
-        with PythonFileCaptureContext(hash_workers=args.hash_workers) as context:
+        with PythonFileCaptureContext(
+            hash_workers=args.hash_workers, digest_cache=host_file_digest_cache()
+        ) as context:
+            # Refuse before the first cache lookup can create SQLite files in
+            # an interpreter or active import tree. Inventories additionally
+            # register their precise physical roots before binding any files.
+            for candidate in (sys.prefix, sys.base_prefix, *sys.path):
+                if candidate and Path(candidate).is_dir():
+                    context.protect_tree(Path(candidate))
+            if args.capture_environment is not None:
+                context.protect_tree(args.capture_environment)
             if args.capture_runtime:
                 payload = capture_current_python_runtime(
                     capture_context=context, with_custody=args.with_custody
