@@ -418,8 +418,17 @@ CAS before publication. Original argv, image paths and raw descendant records
 stay unchanged; historical readers validate retained bytes against those recorded
 execution identities. A copy is evidence, never a claim that the copy was run.
 The runtime gate's compiler-only build records also retain its explicitly observed
-WASI guest, production host and emitted ABI dynamic-library files. Generic truth
-receipts retain executed images and admitted self-image streams; they do not claim
+WASI guest, production host and emitted ABI dynamic-library files. All runtime
+gate policies put their run directories under the existing canonical
+`proof_scratch_root/runtime-gate-runs`: queue-issued scratch wins, otherwise DX
+selects scratch from `MOLT_EXT_ROOT` and the checkout's custody layout. An explicit
+`--receipt-root` remains operator-owned. Native semantic/allocation, WASI lifecycle,
+provider and compile-only lint records share this output owner; none defaults to
+creating a `proof-receipts` directory in the source checkout. CI diagnostics use
+the same `build-control.outputs.proof_scratch_root` projection, including
+interrupted aggregate/child/CAS evidence, without changing strict proof receipt
+locations. Generic truth receipts retain executed images and admitted self-image
+streams; they do not claim
 a complete replay closure of every loader dependency. Mixed test stdout is never
 used to discover extra files for retention. L7/list cost reports remain advisory
 measurements bound to recorded fingerprints, without retained-executable replay;
