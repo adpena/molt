@@ -313,12 +313,14 @@ def run_wasm_linked(
         env.pop(key, None)
     if env_overrides:
         env.update(env_overrides)
-    manifest = wasm_runtime_manifest_path(wasm_path)
+    manifest = wasm_runtime_manifest_path(wasm_path).resolve()
     host_args = [host_bin, str(manifest)]
     try:
         return _run_wasm_test_process(
             host_args,
-            cwd=root,
+            # WASI preopens dot. Relative writes and tempfile's valid cwd
+            # fallback belong to this case's existing product directory.
+            cwd=manifest.parent,
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
