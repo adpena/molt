@@ -23,7 +23,7 @@ from tools.compat.comparison import (
     compare_outputs,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 RED_THRESHOLD = 1.00
 UNSTABLE_CV = 0.20
 
@@ -199,6 +199,7 @@ REQUIRED_SUMMARY_FIELDS = frozenset(
 REQUIRED_CELL_FIELDS = frozenset(
     {
         "benchmark",
+        "workload",
         "target",
         "backend",
         "profile",
@@ -496,6 +497,7 @@ class PerfCell:
     """
 
     benchmark: str
+    workload: dict[str, Any]
     target: str
     backend: str
     profile: str
@@ -537,6 +539,7 @@ class PerfCell:
             raise ValueError("; ".join(problems))
         return PerfCell(
             benchmark=str(payload["benchmark"]),
+            workload=dict(payload["workload"]),
             target=str(payload["target"]),
             backend=str(payload["backend"]),
             profile=str(payload["profile"]),
@@ -837,9 +840,11 @@ def cell_execution_host_problems(cell: Mapping[str, Any]) -> list[str]:
     return [] if value is None else ["native execution_host must be null"]
 
 
-def cell_execution_hosts_comparable(
-    left: Mapping[str, Any], right: Mapping[str, Any]
-) -> bool:
+def cells_comparable(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    from tools.bench_evidence import workloads_comparable
+
+    if not workloads_comparable(left.get("workload"), right.get("workload")):
+        return False
     if cell_execution_host_problems(left) or cell_execution_host_problems(right):
         return False
     if left.get("backend") == "wasm" and right.get("backend") == "wasm":
@@ -871,7 +876,13 @@ def board_execution_host_problems(
 
 
 def validate_cell(cell: Mapping[str, Any]) -> list[str]:
+    from tools.bench_evidence import workload_identity_problems
+
     problems: list[str] = cell_execution_host_problems(cell)
+    problems.extend(workload_identity_problems(cell.get("workload")))
+    workload = cell.get("workload")
+    if isinstance(workload, Mapping) and workload.get("entry") != cell.get("benchmark"):
+        problems.append("benchmark name differs from admitted workload entry")
     missing = REQUIRED_CELL_FIELDS - set(cell)
     if missing:
         problems.append(
@@ -998,7 +1009,9 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
 def validate_board(doc: Mapping[str, Any]) -> list[str]:
     """Return schema contract violations for a scoreboard document."""
 
-    problems: list[str] = []
+    from tools.bench_evidence import workload_collection_problems
+
+    problems: list[str] = workload_collection_problems(flatten_cells(doc))
     missing = REQUIRED_TOP_LEVEL_KEYS - set(doc)
     if missing:
         problems.append(f"missing top-level keys: {sorted(missing)}")

@@ -149,13 +149,15 @@ _MOLT_ARGS_BY_BASENAME = {
 
 
 def canonical_benchmark_key(script: str | Path) -> str:
-    """Return a repo-relative benchmark key when a benchmark path is recognizable."""
-    raw = str(script).replace("\\", "/")
-    while raw.startswith("./"):
-        raw = raw[2:]
-    if _BENCHMARK_ROOT in raw:
-        return _BENCHMARK_ROOT + raw.rsplit(_BENCHMARK_ROOT, 1)[1]
-    return Path(raw).name
+    """Exact repository membership; external paths never impersonate suite keys."""
+    path = Path(script).expanduser()
+    root = Path(__file__).resolve().parents[1]
+    if path.is_absolute():
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            return path.as_posix()
+    return path.as_posix()
 
 
 def molt_args_for_benchmark(script: str | Path) -> list[str]:
@@ -164,4 +166,13 @@ def molt_args_for_benchmark(script: str | Path) -> list[str]:
     args = MOLT_ARGS_BY_BENCH.get(key)
     if args is not None:
         return list(args)
-    return list(_MOLT_ARGS_BY_BASENAME.get(Path(key).name, ()))
+    return list(_MOLT_ARGS_BY_BASENAME.get(key, ()))
+
+
+def validate_benchmark_selection(scripts: list[Path]) -> None:
+    keys = [canonical_benchmark_key(p) for p in scripts]
+    # Current log publication uses stems. Reject collisions before any build.
+    stems = [p.stem for p in scripts]
+    physical = [p.resolve() for p in scripts]
+    if any(len(set(values)) != len(values) for values in (keys, stems, physical)):
+        raise ValueError("benchmark selection has colliding source, key or log names")

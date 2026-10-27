@@ -37,12 +37,14 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
     def _fake_prepare_wasm_binary(
         script: str,
         *,
+        molt_args,
         tty: bool = False,
         log: object | None = None,
         keep_temp: bool = False,
         limits: object | None = None,
     ):
         prepared_kwargs["script"] = script
+        prepared_kwargs["molt_args"] = molt_args
         prepared_kwargs["tty"] = tty
         prepared_kwargs["log"] = log
         prepared_kwargs["keep_temp"] = keep_temp
@@ -98,6 +100,7 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
         (True, wasm_profile.bench_wasm.RUNTIME_WASM_RELOC),
     ]
     assert prepared_kwargs["script"] == "tests/benchmarks/bench_sum.py"
+    assert prepared_kwargs["molt_args"] == []
     assert prepared_kwargs["tty"] is False
     assert prepared_kwargs["log"] is None
     assert prepared_kwargs["keep_temp"] is False

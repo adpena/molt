@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -102,6 +103,11 @@ def select_shard(
 
 
 def main(api: Mapping[str, Any], argv: list[str]) -> int:
+    with ExitStack() as workload_custody:
+        return _main(api, argv, workload_custody)
+
+
+def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) -> int:
     parser = argparse.ArgumentParser(
         description="CPython floor-scoreboard — the release-blocking perf gate."
     )
@@ -370,6 +376,29 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
             ns.shard,
             set_name="explicit" if ns.benchmark else ns.set,
         )
+    from tools.bench_evidence import admit_benchmark_workload
+
+    workloads = {
+        script: workload_custody.enter_context(
+            admit_benchmark_workload(
+                script,
+                project_root=Path(__file__).resolve().parents[1],
+                run_args=api["bench"].resolve_benchmark_run_args(str(script)),
+                molt_args=api["bench_suites"].molt_args_for_benchmark(script),
+            )
+        )
+        for script in scripts
+    }
+
+    def verify_workloads() -> None:
+        for workload in workloads.values():
+            workload.verify()
+
+    def finish_workload_custody() -> None:
+        # Mandatory source-close fences are part of admission, before rename.
+        verify_workloads()
+        workload_custody.close()
+
     try:
         cpython_oracle = api["_resolve_system_cpython"](ns.cpython)
     except RuntimeError as exc:
@@ -461,6 +490,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
             return 2
         hot_cells = api["run_hot_only_profiles"](
             scripts=scripts,
+            workloads=workloads,
             spec=spec,
             profile=profile,
             target_python_version=target_python.short,
@@ -475,6 +505,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
             quiescence=quiescence,
             cpython_version=cpython_version,
             out=ns.out,
+            validate_inputs=finish_workload_custody,
         )
 
     # --- Provenance + authoritative gate (council ruling A + B + #69) ------
@@ -647,6 +678,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                     try:
                         cell = api["measure_cell"](
                             script_path=script,
+                            workload=workloads[script],
                             spec=spec,
                             profile=profile,
                             samples=ns.samples,
@@ -708,6 +740,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                                     or "CPython baseline could not run this script",
                                 }
                             )
+                    verify_workloads()
                     # Checkpoint partial JSON after every cell (death-recoverable).
                     try:
                         api["_checkpoint"](
@@ -723,6 +756,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                             pypy_version=pypy_version,
                             codon_version=codon_version,
                             execution_host=execution_host_record,
+                            validate_inputs=verify_workloads,
                         )
                     except api["ScoreboardSchemaError"] as exc:
                         api["_print_schema_error"](exc)
@@ -783,7 +817,13 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
     api["_attach_regressions"](doc)
     doc.pop("_out_path", None)
     try:
-        api["_write_scoreboard_doc"](out_path, doc, context=f"scoreboard {out_path}")
+        verify_workloads()
+        api["_write_scoreboard_doc"](
+            out_path,
+            doc,
+            context=f"scoreboard {out_path}",
+            validate_inputs=finish_workload_custody,
+        )
     except api["ScoreboardSchemaError"] as exc:
         api["_print_schema_error"](exc)
         return 3

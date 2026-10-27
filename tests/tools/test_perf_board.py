@@ -8,10 +8,16 @@ projection of one canonical cell stream. SYNTHETIC cells only — no molt rebuil
 
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_workload,
+)
+
 import json
 import os
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
@@ -25,6 +31,7 @@ from tests.process_guard_common import run_guarded_test_process  # noqa: E402
 def _cell(**overrides: object) -> dict[str, object]:
     """A GREEN-by-default raw cell dict (the shape flatten_cells yields)."""
     cell: dict[str, object] = {
+        "workload": synthetic_workload(),
         "benchmark": "tests/benchmarks/bench_fib.py",
         "target": "native",
         "backend": "native",
@@ -62,6 +69,8 @@ def _cell(**overrides: object) -> dict[str, object]:
         "repeat_stability": "STABLE_ABOVE",
     }
     cell.update(overrides)
+    if "workload" not in overrides:
+        cell["workload"] = synthetic_workload(cell["benchmark"])
     if cell["backend"] == "wasm":
         from tests.tools.test_perf_schema import _node_observation
 
@@ -253,22 +262,28 @@ def test_codon_board_excludes_non_equivalent_cells() -> None:
     assert boards["codon"]["summary"]["cells_owned"] == 0
 
 
-# --- Real committed board round-trips through the plane ----------------------
+# --- Historical boards cannot acquire workload identity retroactively --------
 
 
-def test_committed_quiet_native_projects_cleanly() -> None:
-    doc = json.loads(
-        (REPO_ROOT / "bench" / "scoreboard" / "quiet_native.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    boards = pb.project_all(doc)
+def test_committed_quiet_native_refuses_unbound_historical_workloads() -> None:
+    path = REPO_ROOT / "bench" / "scoreboard" / "quiet_native.json"
+    before = path.read_bytes()
+    doc = json.loads(before)
+    cells = pb.flatten_cells(doc)
+    assert cells and all("workload" not in cell for cell in cells)
+    with pytest.raises(ValueError, match="workload identity"):
+        pb.project_all(doc)
+    assert path.read_bytes() == before
+    assert json.loads(before) == doc
+
+
+def test_bound_synthetic_plane_preserves_each_owned_cell_projection() -> None:
+    boards = pb.project_all(_source_doc([_cell()]))
     assert set(boards) == {"cpython", "backend", "profile", "pypy", "codon"}
-    # Every owned cell has a gate verdict; every board carries a methodology row.
+    # Every owned cell has a gate verdict and the required methodology fields.
     for board in boards.values():
         for cell in _walk_leaves(board["table"]):
             assert "gate" in cell and cell["gate"]["verdict"] in pb._GATE_VERDICTS
-            # Methodology fields the constitution requires per row.
             for fld in ("warm_speedup", "binary_size_kib", "compile_time_s"):
                 assert fld in cell
 

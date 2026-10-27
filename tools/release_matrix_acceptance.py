@@ -208,6 +208,8 @@ def required_matrix(*, source_sha: str, root: Path = _ROOT) -> ReleaseMatrix:
         verify_stable_regular_file_identity(
             identity, label="release matrix authority generation"
         )
+    for cell in cells:
+        cell["benchmark_sha256"] = hashes[cell["benchmark"]]
     return ReleaseMatrix(
         source_sha,
         _digest(hashes),
@@ -248,8 +250,10 @@ def performance_matrix_problems(
     authority, not be copied from these receipts by the caller.
     """
     from tools.perf_authority import release_cell_problems
+    from tools.bench_evidence import workloads_comparable
 
     problems = []
+    workload_by_benchmark: dict[str, object] = {}
     expected = {cell["id"]: cell for cell in matrix.performance_cells}
     observed = set()
     shard_coordinates = set()
@@ -346,6 +350,43 @@ def performance_matrix_problems(
             if not isinstance(measurement, Mapping):
                 problems.append(f"{identity}: measured canonical cell required")
             else:
+                workload = measurement.get("workload")
+                if (
+                    not isinstance(workload, Mapping)
+                    or workload.get("entry") != expected[identity]["benchmark"]
+                ):
+                    problems.append(
+                        f"{identity}: workload entry differs from required benchmark"
+                    )
+                benchmark = expected[identity]["benchmark"]
+                sources = (
+                    workload.get("sources") if isinstance(workload, Mapping) else None
+                )
+                entry_rows = (
+                    [
+                        row
+                        for row in sources
+                        if isinstance(row, Mapping) and row.get("path") == benchmark
+                    ]
+                    if isinstance(sources, list)
+                    else []
+                )
+                if (
+                    len(entry_rows) != 1
+                    or entry_rows[0].get("sha256")
+                    != expected[identity].get("benchmark_sha256")
+                    or not isinstance(expected[identity].get("benchmark_sha256"), str)
+                ):
+                    problems.append(
+                        f"{identity}: workload entry digest differs from matrix source authority"
+                    )
+                if benchmark in workload_by_benchmark and not workloads_comparable(
+                    workload_by_benchmark[benchmark], workload
+                ):
+                    problems.append(
+                        f"{identity}: conflicting workload identities for benchmark"
+                    )
+                workload_by_benchmark[benchmark] = workload
                 observation = measurement.get("build_observation")
                 selected = (
                     observation.get("selected_profiles")

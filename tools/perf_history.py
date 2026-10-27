@@ -108,25 +108,17 @@ def _execution_host_class(board: Mapping[str, Any]) -> tuple[str, str, int, str]
 def _suite_hash(board: Mapping[str, Any]) -> str:
     """Content hash of the benchmark set this board covers (its cell keys), so a
     board that measured a different suite is a different identity-class."""
-    table = board.get("table", {})
-    keys = sorted(_iter_cell_keys(table))
+    from tools.bench_evidence import workload_collection_problems
+
+    cells = _flatten_projected_cells(board)
+    problems = workload_collection_problems(list(cells.values()))
+    if problems:
+        raise ValueError("; ".join(problems))
+    keys = sorted(
+        key + " " + json.dumps(cell["workload"], sort_keys=True, separators=(",", ":"))
+        for key, cell in cells.items()
+    )
     return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()[:16]
-
-
-def _iter_cell_keys(node: Any) -> list[str]:
-    """Walk a projected board ``table`` (nested by group_by) and yield leaf cell
-    keys (``benchmark [backend/profile]``)."""
-    out: list[str] = []
-    if isinstance(node, Mapping):
-        # A leaf is a cell dict (has a "gate" entry); otherwise recurse.
-        if "gate" in node and "benchmark" in node:
-            out.append(
-                f"{node.get('benchmark')} [{node.get('backend')}/{node.get('profile')}]"
-            )
-        else:
-            for child in node.values():
-                out.extend(_iter_cell_keys(child))
-    return out
 
 
 def _methodology_field(board: Mapping[str, Any], field: str) -> str:
@@ -326,6 +318,8 @@ def _flatten_projected_cells(board: Mapping[str, Any]) -> dict[str, dict[str, An
         if isinstance(node, Mapping):
             if "gate" in node and "benchmark" in node:
                 key = f"{node.get('benchmark')} [{node.get('backend')}/{node.get('profile')}]"
+                if key in out:
+                    raise ValueError(f"duplicate projected workload cell: {key}")
                 out[key] = dict(node)
             else:
                 for child in node.values():
@@ -354,8 +348,19 @@ def regressions_vs_baseline(
     delta is NOT flagged (the no-false-positive gate, doc 64 §5)."""
     if _execution_host_class(candidate) != _execution_host_class(baseline):
         raise ValueError("execution hosts are not comparable")
+    from tools.bench_evidence import workload_collection_problems, workloads_comparable
+
     base_cells = _flatten_projected_cells(baseline)
     cand_cells = _flatten_projected_cells(candidate)
+    problems = workload_collection_problems(list(base_cells.values()))
+    problems.extend(workload_collection_problems(list(cand_cells.values())))
+    if problems:
+        raise ValueError("; ".join(problems))
+    for key in base_cells.keys() & cand_cells.keys():
+        if not workloads_comparable(
+            base_cells[key].get("workload"), cand_cells[key].get("workload")
+        ):
+            raise ValueError(f"workloads are not comparable: {key}")
     out: list[Regression] = []
     for key, cand in sorted(cand_cells.items()):
         base = base_cells.get(key)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_workload,
+)
+
 import json
 from pathlib import Path
 
@@ -23,6 +27,7 @@ def _matching_output_parity() -> dict[str, object]:
 
 def _cell(**overrides: object) -> dict[str, object]:
     cell: dict[str, object] = {
+        "workload": synthetic_workload(),
         "benchmark": "tests/benchmarks/bench_fib.py",
         "target": "native",
         "backend": "native",
@@ -58,6 +63,8 @@ def _cell(**overrides: object) -> dict[str, object]:
         "attribution_confidence": 0.8,
     }
     cell.update(overrides)
+    if "workload" not in overrides:
+        cell["workload"] = synthetic_workload(cell["benchmark"])
     return cell
 
 
@@ -153,6 +160,7 @@ def test_schema_accepts_valid_board_and_materializes_cell() -> None:
     assert flattened == [cell]
     perf_cell = schema.PerfCell.from_payload(flattened[0])
     assert perf_cell.benchmark == "tests/benchmarks/bench_fib.py"
+    assert perf_cell.workload == synthetic_workload(perf_cell.benchmark)
     assert perf_cell.verdict == schema.VERDICT_GREEN
     assert perf_cell.stable is True
     assert perf_cell.warm_speedup == 2.0
@@ -487,3 +495,35 @@ def test_engine_comparability_ignores_install_path_and_filename():
     right["identity"]["entrypoint"] = "node-copy.exe"
     right["identity"]["content_filename"] = "node-copy.exe"
     assert schema.execution_host_key(left) == schema.execution_host_key(right)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "hash", "argv", "duplicate"])
+def test_workload_identity_is_required_for_comparison_and_admission(mutation):
+    import copy
+    from tools.bench_evidence import workloads_comparable
+
+    left = _cell()
+    right = copy.deepcopy(left)
+    if mutation == "missing":
+        right.pop("workload")
+    elif mutation == "hash":
+        right["workload"]["sources"][0]["sha256"] = "a" * 64
+    elif mutation == "argv":
+        right["workload"]["run_args"] = ["different-input"]
+    else:
+        right["workload"]["sources"] *= 2
+    assert not workloads_comparable(left["workload"], right.get("workload"))
+    assert not schema.cells_comparable(left, right)
+    if mutation in {"missing", "duplicate"}:
+        assert any("workload" in p for p in schema.validate_cell(right))
+
+
+def test_external_same_basename_cannot_be_retagged_as_canonical_workload():
+    from tools.bench_evidence import workload_identity_problems
+
+    record = synthetic_workload("/private/foreign/bench_fib.py")
+    record["sources"][0]["sha256"] = "f" * 64
+    record["entry"] = "tests/benchmarks/bench_fib.py"
+    assert workload_identity_problems(record) == [
+        "workload entry is absent from its captured source paths"
+    ]

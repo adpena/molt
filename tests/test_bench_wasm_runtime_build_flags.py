@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+
 import hashlib
 import io
 import json
@@ -41,7 +43,9 @@ def test_wasm_benchmark_preserves_one_admitted_build_attempt(
         bench_wasm,
         perf_counter=lambda: next(ticks),
     )
-    monkeypatch.setattr(bench_wasm, "molt_args_for_benchmark", lambda _script: [])
+    monkeypatch.setattr(
+        bench_wasm, "molt_args_for_benchmark", lambda _script: ["--wrong-selection"]
+    )
     monkeypatch.setattr(bench_wasm, "_parse_env_float", lambda *a, **k: 90.0)
     monkeypatch.setattr(
         bench_wasm, "_write_build_timeout_diag", lambda **k: diagnostics.append(k)
@@ -66,9 +70,17 @@ def test_wasm_benchmark_preserves_one_admitted_build_attempt(
 
     monkeypatch.setattr(bench_wasm, "_run_cmd", run)
     result = bench_wasm._build_wasm_output(
-        ["python"], env, output, "bench.py", tty=False, log=None
+        ["python"],
+        env,
+        output,
+        "bench.py",
+        molt_args=["--profile", "dev"],
+        tty=False,
+        log=None,
     )
     assert len(calls) == 1
+    assert calls[0][0][-3:] == ["--profile", "dev", "bench.py"]
+    assert "--wrong-selection" not in calls[0][0]
     assert calls[0][1] == env == original_env
     assert output.read_bytes() == b"preserved failure evidence"
     assert result == (2.5 if outcome == "pass" else None)
@@ -77,6 +89,24 @@ def test_wasm_benchmark_preserves_one_admitted_build_attempt(
         assert bench_wasm._LAST_BUILD_FAILURE_DETAIL is None
     else:
         assert bench_wasm._LAST_BUILD_FAILURE_DETAIL
+
+
+@contextlib.contextmanager
+def _admitted_workloads(scripts):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    with contextlib.ExitStack() as custody:
+        yield {
+            script: custody.enter_context(
+                admit_benchmark_workload(
+                    Path(script),
+                    project_root=Path(bench_wasm.__file__).resolve().parents[1],
+                    run_args=[],
+                    molt_args=bench_wasm.molt_args_for_benchmark(script),
+                )
+            )
+            for script in scripts
+        }
 
 
 def test_prepare_wasm_binary_does_not_retry_failed_build(
@@ -90,14 +120,27 @@ def test_prepare_wasm_binary_does_not_retry_failed_build(
     )
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["python"])
 
-    def failed_build(_python_cmd, env, _output, script, **_kwargs):
+    def failed_build(
+        _python_cmd,
+        env,
+        _output,
+        script,
+        *,
+        molt_args,
+        tty,
+        log,
+        limits,
+        use_molt_build_cache,
+    ):
+        del tty, log, limits, use_molt_build_cache
+        assert molt_args == []
         calls.append((script, dict(env)))
         bench_wasm._LAST_BUILD_FAILURE_DETAIL = "build_timeout timeout_s=90.0"
         return None
 
     monkeypatch.setattr(bench_wasm, "_build_wasm_output", failed_build)
     result = bench_wasm.prepare_wasm_binary(
-        "case.py", tty=False, log=None, keep_temp=False, limits=object()
+        "case.py", molt_args=[], tty=False, log=None, keep_temp=False, limits=object()
     )
     assert result is None
     assert len(calls) == len(prunes) == 1
@@ -281,21 +324,25 @@ def test_failed_wasm_run_has_null_time_and_samples(monkeypatch, tmp_path: Path) 
         ),
     )
 
-    results = bench_wasm.bench_results(
-        [str(script)],
-        samples=1,
-        warmup=0,
-        super_run=True,
-        runner_cmd=["node"],
-        runner_name="node",
-        control_runner_cmd=None,
-        control_runner_name=None,
-        tty=False,
-        log=None,
-        keep_temp=False,
-    )
+    with _admitted_workloads([str(script)]) as workloads:
+        results = bench_wasm.bench_results(
+            [str(script)],
+            samples=1,
+            warmup=0,
+            super_run=True,
+            runner_cmd=["node"],
+            runner_name="node",
+            control_runner_cmd=None,
+            control_runner_name=None,
+            tty=False,
+            log=None,
+            keep_temp=False,
+            workloads=workloads,
+        )
 
-    entry = results["bench_fail"]
+    entry = results[str(script)]
+    assert entry["workload"]["entry"] == str(script)
+    assert entry["workload"]["run_args"] == []
     assert entry["molt_wasm_ok"] is False
     assert entry["molt_wasm_time_s"] is None
     assert entry["molt_wasm_samples_s"] == []
@@ -418,21 +465,25 @@ def test_partial_wasm_sample_failure_has_null_time(monkeypatch, tmp_path: Path) 
         ),
     )
 
-    results = bench_wasm.bench_results(
-        [str(script)],
-        samples=2,
-        warmup=0,
-        super_run=False,
-        runner_cmd=["node"],
-        runner_name="node",
-        control_runner_cmd=None,
-        control_runner_name=None,
-        tty=False,
-        log=None,
-        keep_temp=False,
-    )
+    with _admitted_workloads([str(script)]) as workloads:
+        results = bench_wasm.bench_results(
+            [str(script)],
+            samples=2,
+            warmup=0,
+            super_run=False,
+            runner_cmd=["node"],
+            runner_name="node",
+            control_runner_cmd=None,
+            control_runner_name=None,
+            tty=False,
+            log=None,
+            keep_temp=False,
+            workloads=workloads,
+        )
 
-    entry = results["bench_partial"]
+    entry = results[str(script)]
+    assert entry["workload"]["entry"] == str(script)
+    assert entry["workload"]["run_args"] == []
     assert entry["molt_wasm_ok"] is False
     assert entry["molt_wasm_time_s"] is None
     assert entry["molt_wasm_samples_s"] == [0.01]
@@ -546,3 +597,163 @@ def test_runtime_target_is_checkout_scoped_unless_a_session_is_pinned(
 
     monkeypatch.setenv("MOLT_SESSION_ID", "lane-a")
     assert bench_wasm._cargo_target_root() == (target / "sessions" / "lane-a")
+
+
+def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
+    tmp_path, monkeypatch
+):
+    from tools.bench_evidence import admit_benchmark_workload
+    from tests.wasm_execution_manifest import (
+        EMPTY_WASM_MODULE,
+        write_wasm_execution_manifest,
+    )
+
+    script = tmp_path / "program.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    commands = []
+    monkeypatch.setattr(
+        bench_wasm, "molt_args_for_benchmark", lambda _: ["--wrong-selection"]
+    )
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
+    monkeypatch.setattr(bench_wasm, "_prune_backend_daemons", lambda _: None)
+    monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["selected-python"])
+    monkeypatch.setattr(
+        bench_wasm.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: contextlib.nullcontext(),
+    )
+
+    def run(command, **kwargs):
+        commands.append(command)
+        out = Path(command[command.index("--out-dir") + 1]) / "output.wasm"
+        out.write_bytes(EMPTY_WASM_MODULE)
+        linked = out.with_name("output_linked.wasm")
+        linked.write_bytes(EMPTY_WASM_MODULE)
+        write_wasm_execution_manifest(out.parent, linked=linked)
+        return bench_wasm._RunResult(0)
+
+    monkeypatch.setattr(bench_wasm, "_run_cmd", run)
+    monkeypatch.setattr(
+        bench_wasm, "collect_samples", lambda *a, **k: ([0.1], True, None, [])
+    )
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=[], molt_args=["--profile", "dev"]
+    ) as admitted:
+        data = bench_wasm.bench_results(
+            [str(script)],
+            1,
+            0,
+            False,
+            workloads={str(script): admitted},
+            runner_cmd=["node"],
+            runner_name="node",
+            control_runner_cmd=None,
+            control_runner_name=None,
+            tty=False,
+            log=None,
+            keep_temp=False,
+        )
+    assert len(commands) == 1
+    assert commands[0][:4] == ["selected-python", "-m", "molt.cli", "build"]
+    assert commands[0][-3:] == ["--profile", "dev", str(script)]
+    assert "--wrong-selection" not in commands[0]
+    assert data[str(script)]["workload"]["molt_args"] == ["--profile", "dev"]
+
+
+def test_wasm_producer_preserves_source_drift_when_scratch_cleanup_fails(
+    tmp_path, monkeypatch
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "program.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    owner = OwnedTemporaryDirectory()
+    wasm = bench_wasm.WasmBinary({}, owner, 0.1, 1.0, True, None, None, None)
+    original_cleanup = type(owner).cleanup
+    monkeypatch.setattr(
+        bench_wasm.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: contextlib.nullcontext(),
+    )
+
+    def prepare(*args, **kwargs):
+        script.write_text("print(2)\n", encoding="utf-8")
+        return wasm
+
+    def cleanup(self):
+        if self is owner:
+            raise OSError("independent scratch cleanup refusal")
+        original_cleanup(self)
+
+    monkeypatch.setattr(bench_wasm, "prepare_wasm_binary", prepare)
+    monkeypatch.setattr(
+        bench_wasm,
+        "collect_samples",
+        lambda *a, **k: pytest.fail("drift reached sample"),
+    )
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(type(owner), "cleanup", cleanup)
+            with pytest.raises(ValueError, match="changed") as caught:
+                with admit_benchmark_workload(
+                    script, project_root=tmp_path, run_args=[], molt_args=[]
+                ) as admitted:
+                    bench_wasm.bench_results(
+                        [str(script)],
+                        1,
+                        0,
+                        False,
+                        workloads={str(script): admitted},
+                        runner_cmd=["node"],
+                        runner_name="node",
+                        control_runner_cmd=None,
+                        control_runner_name=None,
+                        tty=False,
+                        log=None,
+                        keep_temp=False,
+                    )
+            assert caught.value.benchmark_temporary_directories == (owner,)
+            assert any(
+                "independent scratch cleanup refusal" in note
+                for note in caught.value.__notes__
+            )
+            assert Path(owner.name).is_dir()
+    finally:
+        original_cleanup(owner)
+
+
+def test_wasm_producer_refuses_unsupported_admitted_guest_args_before_build(
+    tmp_path, monkeypatch
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "program.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        bench_wasm.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        bench_wasm,
+        "prepare_wasm_binary",
+        lambda *a, **k: pytest.fail("unsupported argv reached build"),
+    )
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=["different"], molt_args=[]
+    ) as admitted:
+        with pytest.raises(ValueError, match="does not support guest run arguments"):
+            bench_wasm.bench_results(
+                [str(script)],
+                1,
+                0,
+                False,
+                workloads={str(script): admitted},
+                runner_cmd=["node"],
+                runner_name="node",
+                control_runner_cmd=None,
+                control_runner_name=None,
+                tty=False,
+                log=None,
+                keep_temp=False,
+            )

@@ -24,7 +24,8 @@ import statistics
 import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,8 @@ BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
 from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools import bench_suites  # noqa: E402
+from tools.bench_evidence import AdmittedBenchmarkWorkload, admit_benchmark_workload  # noqa: E402
+from tools.bench_reporting import write_json  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.build_state_layout import project_build_state_root  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
@@ -502,11 +505,17 @@ def collect_samples(
     measure_fn,
     samples: int,
     warmup: int,
+    *,
+    validate_inputs: Callable[[], None] | None = None,
 ) -> SampleBatch:
     """Collect warmup and measured samples, failing closed on any bad sample."""
     warmup_samples: list[RunSample] = []
     for idx in range(warmup):
+        if validate_inputs is not None:
+            validate_inputs()
         ok, elapsed, output = measure_fn()
+        if validate_inputs is not None:
+            validate_inputs()
         if not ok:
             return SampleBatch(
                 samples=[],
@@ -519,7 +528,11 @@ def collect_samples(
 
     measured: list[RunSample] = []
     for idx in range(samples):
+        if validate_inputs is not None:
+            validate_inputs()
         ok, elapsed, output = measure_fn()
+        if validate_inputs is not None:
+            validate_inputs()
         if not ok:
             return SampleBatch(
                 samples=measured,
@@ -549,6 +562,7 @@ def bench_one(
     timeout_build: float,
     timeout_run: float,
     *,
+    workload: AdmittedBenchmarkWorkload,
     isolate_daemon: bool = False,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> dict:
@@ -556,10 +570,18 @@ def bench_one(
 
     Returns a result dict for the JSON report.
     """
-    extra_args = molt_args_for_benchmark(script)
+    if Path(script).expanduser().absolute() != workload.script:
+        raise ValueError("benchmark source differs from admitted workload")
+    workload.verify()
+    if workload.record["run_args"]:
+        raise ValueError(
+            "individual benchmark execution does not support guest run arguments"
+        )
+    extra_args = workload.record["molt_args"]
     reference_contract = benchmark_reference_contract(script)
 
     result: dict = {
+        "workload": workload.record,
         "reference_runtime": reference_contract.reference_runtime,
         "reference_reason": reference_contract.reason,
         "build_ok": False,
@@ -590,113 +612,126 @@ def bench_one(
     # --- Build with Molt ---
     BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     tmp = tempfile.TemporaryDirectory(prefix="molt-iso-bench-", dir=BENCH_TMP_ROOT)
-    out_dir = Path(tmp.name)
-    binary, build_s, build_err = molt_build(
-        script,
-        out_dir,
-        timeout_build,
-        extra_args=extra_args,
-        limits=limits,
-    )
-    result["build_time_s"] = round(build_s, 4)
+    try:
+        out_dir = Path(tmp.name)
+        binary, build_s, build_err = molt_build(
+            script,
+            out_dir,
+            timeout_build,
+            extra_args=extra_args,
+            limits=limits,
+        )
+        workload.verify()
+        result["build_time_s"] = round(build_s, 4)
 
-    if binary is None:
-        result["error"] = build_err
-        print(f"  BUILD FAIL: {build_err}", file=sys.stderr)
-        if reference_contract.external_baselines:
+        if binary is None:
+            result["error"] = build_err
+            print(f"  BUILD FAIL: {build_err}", file=sys.stderr)
+            if reference_contract.external_baselines:
+                cp_batch = collect_samples(
+                    lambda: run_cpython(script, timeout_run, limits=limits),
+                    samples=samples,
+                    warmup=warmup,
+                    validate_inputs=workload.verify,
+                )
+                result["cpython_samples_s"] = cp_batch.times_s
+                result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+                if cp_batch.ok:
+                    cp_time = statistics.median(cp_batch.times_s)
+                    result["cpython_time_s"] = round(cp_time, 6)
+                    result["cpython_output"] = cp_batch.first_output
+                else:
+                    result["cpython_failure_detail"] = cp_batch.failed_detail or None
+            return result
+
+        result["build_ok"] = True
+        result["molt_build_s"] = round(build_s, 4)
+
+        # --- Run Molt (multiple samples, take median) ---
+        molt_batch = collect_samples(
+            lambda: run_binary(binary, timeout_run, limits=limits),
+            samples=samples,
+            warmup=warmup,
+            validate_inputs=workload.verify,
+        )
+        result["molt_samples_s"] = molt_batch.times_s
+        result["molt_warmup_samples_s"] = molt_batch.warmup_times_s
+        molt_output = molt_batch.first_output
+        if molt_batch.ok:
+            result["run_ok"] = True
+            result["molt_time_s"] = round(statistics.median(molt_batch.times_s), 6)
+            result["molt_output"] = molt_output
+        else:
+            result["error"] = f"Molt run failed during {molt_batch.failed_phase}"
+            if molt_batch.failed_detail:
+                result["molt_failure_detail"] = molt_batch.failed_detail
+                result["error"] += f": {molt_batch.failed_detail}"
+
+        if not reference_contract.external_baselines:
+            if molt_batch.ok:
+                result["molt_ok"] = True
+        else:
+            # --- Run CPython (multiple samples, take median) ---
             cp_batch = collect_samples(
                 lambda: run_cpython(script, timeout_run, limits=limits),
                 samples=samples,
                 warmup=warmup,
+                validate_inputs=workload.verify,
             )
             result["cpython_samples_s"] = cp_batch.times_s
             result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
+            cpython_output = cp_batch.first_output
             if cp_batch.ok:
-                cp_time = statistics.median(cp_batch.times_s)
-                result["cpython_time_s"] = round(cp_time, 6)
-                result["cpython_output"] = cp_batch.first_output
+                result["cpython_time_s"] = round(statistics.median(cp_batch.times_s), 6)
+                result["cpython_output"] = cpython_output
             else:
                 result["cpython_failure_detail"] = cp_batch.failed_detail or None
-        tmp.cleanup()
+                if result["error"] is None:
+                    result["error"] = (
+                        f"CPython run failed during {cp_batch.failed_phase}"
+                    )
+                    if cp_batch.failed_detail:
+                        result["error"] += f": {cp_batch.failed_detail}"
+
+            # --- Output match ---
+            if molt_batch.ok and cp_batch.ok:
+                result["output_match"] = molt_output == cpython_output
+                if result["output_match"]:
+                    result["molt_ok"] = True
+                else:
+                    result["error"] = "output mismatch"
+            elif molt_output or cpython_output:
+                result["output_match"] = False
+
+        # --- Speedup ---
+        if result["molt_ok"]:
+            speedup = perf_authority.signed_ratio_value(
+                result["cpython_time_s"],
+                result["molt_time_s"],
+                direction=perf_authority.RatioDirection.SPEEDUP,
+            )
+            cpython_ratio_block = perf_authority.signed_ratio(
+                result["molt_time_s"],
+                result["cpython_time_s"],
+                direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
+            )
+            result["speedup"] = round(speedup, 1) if speedup is not None else None
+            result["molt_speedup"] = speedup
+            result["molt_cpython_ratio"] = cpython_ratio_block["value"]
+            result["ratio_directions"] = {
+                "molt_speedup": perf_authority.RatioDirection.SPEEDUP.value,
+                "molt_cpython_ratio": cpython_ratio_block["direction"],
+            }
+
         return result
-
-    result["build_ok"] = True
-    result["molt_build_s"] = round(build_s, 4)
-
-    # --- Run Molt (multiple samples, take median) ---
-    molt_batch = collect_samples(
-        lambda: run_binary(binary, timeout_run, limits=limits),
-        samples=samples,
-        warmup=warmup,
-    )
-    result["molt_samples_s"] = molt_batch.times_s
-    result["molt_warmup_samples_s"] = molt_batch.warmup_times_s
-    molt_output = molt_batch.first_output
-    if molt_batch.ok:
-        result["run_ok"] = True
-        result["molt_time_s"] = round(statistics.median(molt_batch.times_s), 6)
-        result["molt_output"] = molt_output
-    else:
-        result["error"] = f"Molt run failed during {molt_batch.failed_phase}"
-        if molt_batch.failed_detail:
-            result["molt_failure_detail"] = molt_batch.failed_detail
-            result["error"] += f": {molt_batch.failed_detail}"
-
-    if not reference_contract.external_baselines:
-        if molt_batch.ok:
-            result["molt_ok"] = True
-    else:
-        # --- Run CPython (multiple samples, take median) ---
-        cp_batch = collect_samples(
-            lambda: run_cpython(script, timeout_run, limits=limits),
-            samples=samples,
-            warmup=warmup,
-        )
-        result["cpython_samples_s"] = cp_batch.times_s
-        result["cpython_warmup_samples_s"] = cp_batch.warmup_times_s
-        cpython_output = cp_batch.first_output
-        if cp_batch.ok:
-            result["cpython_time_s"] = round(statistics.median(cp_batch.times_s), 6)
-            result["cpython_output"] = cpython_output
-        else:
-            result["cpython_failure_detail"] = cp_batch.failed_detail or None
-            if result["error"] is None:
-                result["error"] = f"CPython run failed during {cp_batch.failed_phase}"
-                if cp_batch.failed_detail:
-                    result["error"] += f": {cp_batch.failed_detail}"
-
-        # --- Output match ---
-        if molt_batch.ok and cp_batch.ok:
-            result["output_match"] = molt_output == cpython_output
-            if result["output_match"]:
-                result["molt_ok"] = True
-            else:
-                result["error"] = "output mismatch"
-        elif molt_output or cpython_output:
-            result["output_match"] = False
-
-    # --- Speedup ---
-    if result["molt_ok"]:
-        speedup = perf_authority.signed_ratio_value(
-            result["cpython_time_s"],
-            result["molt_time_s"],
-            direction=perf_authority.RatioDirection.SPEEDUP,
-        )
-        cpython_ratio_block = perf_authority.signed_ratio(
-            result["molt_time_s"],
-            result["cpython_time_s"],
-            direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
-        )
-        result["speedup"] = round(speedup, 1) if speedup is not None else None
-        result["molt_speedup"] = speedup
-        result["molt_cpython_ratio"] = cpython_ratio_block["value"]
-        result["ratio_directions"] = {
-            "molt_speedup": perf_authority.RatioDirection.SPEEDUP.value,
-            "molt_cpython_ratio": cpython_ratio_block["direction"],
-        }
-
-    tmp.cleanup()
-    return result
+    finally:
+        primary = sys.exception()
+        try:
+            tmp.cleanup()
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            primary.add_note(f"benchmark scratch cleanup also failed: {cleanup}")
 
 
 # ---------------------------------------------------------------------------
@@ -810,6 +845,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    with ExitStack() as workload_custody:
+        _main(workload_custody)
+
+
+def _main(workload_custody: ExitStack) -> None:
     args = parse_args()
     if args.samples <= 0:
         raise SystemExit("--samples must be >= 1")
@@ -853,6 +893,24 @@ def main() -> None:
     )
     print()
 
+    bench_suites.validate_benchmark_selection([Path(script) for script in benchmarks])
+    workloads = {
+        script: workload_custody.enter_context(
+            admit_benchmark_workload(
+                Path(script),
+                project_root=REPO_ROOT,
+                run_args=[],
+                molt_args=molt_args_for_benchmark(script),
+            )
+        )
+        for script in benchmarks
+    }
+
+    def finish_workload_custody() -> None:
+        for workload in workloads.values():
+            workload.verify()
+        workload_custody.close()
+
     results: dict[str, dict] = {}
 
     with harness_memory_guard.repo_process_sentinel(
@@ -870,10 +928,11 @@ def main() -> None:
                 warmup=args.warmup,
                 timeout_build=args.timeout_build,
                 timeout_run=args.timeout_run,
+                workload=workloads[script],
                 isolate_daemon=args.isolate_daemon,
                 limits=limits,
             )
-            results[name] = result
+            results[workloads[script].record["entry"]] = result
 
             # Quick inline status
             if result["build_ok"] and result["run_ok"]:
@@ -919,15 +978,14 @@ def main() -> None:
     }
     if args.json_out:
         out_path = Path(args.json_out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        write_json(out_path, report, validate_inputs=finish_workload_custody)
         print(f"Results written to {out_path}")
     else:
         # Also dump to a default location
         default_out = BENCH_RESULTS_DIR / (
             "bench_individual_" + datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + ".json"
         )
-        default_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        write_json(default_out, report, validate_inputs=finish_workload_custody)
         print(f"Results written to {default_out}")
 
     if args.isolate_daemon:

@@ -38,6 +38,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from collections.abc import Mapping
+from contextlib import ExitStack
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -60,7 +62,14 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools import harness_memory_guard  # noqa: E402
-from tools import perf_authority  # noqa: E402
+from tools import perf_authority, bench_suites  # noqa: E402
+from tools.bench_evidence import (  # noqa: E402
+    AdmittedBenchmarkWorkload,
+    BenchmarkWorkloadRecord,
+    admit_benchmark_workload,
+    workload_identity_problems,
+)
+from tools.bench_reporting import write_json  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 
@@ -76,6 +85,7 @@ class TestResult:
     name: str
     suite: str  # "bench", "diff"
     status: str  # "pass", "fail", "error", "skip", "timeout"
+    workload: BenchmarkWorkloadRecord | None
     cpython_stdout: str = ""
     cpython_stderr: str = ""
     cpython_rc: int = 0
@@ -96,6 +106,8 @@ class TestResult:
             "suite": self.suite,
             "status": self.status,
         }
+        if self.workload is not None:
+            d["workload"] = self.workload
         if self.cpython_time_s is not None:
             d["cpython_time_s"] = round(self.cpython_time_s, 6)
         if self.molt_time_s is not None:
@@ -240,13 +252,34 @@ def run_single_test(
     molt_cmd: list,
     python_cmd: str,
     timeout_s: float,
+    *,
+    workload: AdmittedBenchmarkWorkload | None,
 ) -> TestResult:
     """Run one test script through CPython and Molt, compare outputs."""
     name = script.name
-    result = TestResult(name=name, suite=suite, status="error")
+    if suite == "bench" and workload is None:
+        raise ValueError("benchmark execution requires an admitted workload")
+    if workload is not None:
+        if script.expanduser().absolute() != workload.script:
+            raise ValueError("benchmark source differs from admitted workload")
+        workload.verify()
+        if workload.record["run_args"]:
+            raise ValueError(
+                "legacy benchmark execution does not support guest run arguments"
+            )
+        if workload.record["molt_args"] != molt_cmd[1:]:
+            raise ValueError("benchmark command differs from admitted Molt arguments")
+    result = TestResult(
+        name=name,
+        suite=suite,
+        status="error",
+        workload=workload.record if workload is not None else None,
+    )
 
     # --- CPython ---
     cp_out, cp_err, cp_rc, cp_time = run_cmd([python_cmd, str(script)], timeout_s)
+    if workload is not None:
+        workload.verify()
     result.cpython_stdout = cp_out
     result.cpython_stderr = cp_err
     result.cpython_rc = cp_rc
@@ -268,7 +301,11 @@ def run_single_test(
 
     # --- Molt ---
     molt_full_cmd = molt_cmd + [str(script)]
+    if workload is not None:
+        workload.verify()
     m_out, m_err, m_rc, m_time = run_cmd(molt_full_cmd, timeout_s)
+    if workload is not None:
+        workload.verify()
     result.molt_stdout = m_out
     result.molt_stderr = m_err
     result.molt_rc = m_rc
@@ -356,14 +393,16 @@ def detect_regressions(results: list, baseline_path: Path):
     if not baseline_path.exists():
         return []
 
-    with open(baseline_path) as f:
+    with open(baseline_path, encoding="utf-8") as f:
         baseline = json.load(f)
 
-    bl_benchmarks = baseline.get("benchmarks", {})
+    # Status belongs to the harness's existing suite/name result records.
+    # Flat benchmark keys now carry source identity and serve metric readers.
+    bl_results = baseline.get("results", {})
     regressions = []
 
     for r in results:
-        bl = bl_benchmarks.get(r.name)
+        bl = bl_results.get(r.suite, {}).get(r.name)
         if bl is None:
             continue
 
@@ -530,7 +569,12 @@ def build_json_report(
                 r.cpython_time_s,
                 direction=perf_authority.RatioDirection.MOLT_OVER_BASELINE,
             )
-            bench_baseline[r.name] = {
+            problems = workload_identity_problems(r.workload)
+            if problems:
+                raise ValueError("; ".join(problems))
+            assert r.workload is not None
+            bench_baseline[r.workload["entry"]] = {
+                "workload": r.workload,
                 "requested_profile": molt_profile,
                 "build_observation": None,
                 "molt_ok": r.status == "pass",
@@ -569,6 +613,8 @@ def run_suite(
     parallel: int,
     colors: Colors,
     verbose: bool,
+    *,
+    workloads: Mapping[Path, AdmittedBenchmarkWorkload],
 ) -> tuple:
     """Run a test suite. Returns (results_list, SuiteSummary)."""
     if not scripts:
@@ -584,7 +630,13 @@ def run_suite(
         with ThreadPoolExecutor(max_workers=parallel) as pool:
             for script in scripts:
                 fut = pool.submit(
-                    run_single_test, script, suite_name, molt_cmd, python_cmd, timeout_s
+                    run_single_test,
+                    script,
+                    suite_name,
+                    molt_cmd,
+                    python_cmd,
+                    timeout_s,
+                    workload=workloads[script] if suite_name == "bench" else None,
                 )
                 futures[fut] = script
 
@@ -594,7 +646,14 @@ def run_suite(
                 print_result_line(colors, r, verbose)
     else:
         for script in scripts:
-            r = run_single_test(script, suite_name, molt_cmd, python_cmd, timeout_s)
+            r = run_single_test(
+                script,
+                suite_name,
+                molt_cmd,
+                python_cmd,
+                timeout_s,
+                workload=workloads[script] if suite_name == "bench" else None,
+            )
             results.append(r)
             print_result_line(colors, r, verbose)
 
@@ -617,6 +676,11 @@ def run_suite(
 
 
 def main():
+    with ExitStack() as workload_custody:
+        return _main(workload_custody)
+
+
+def _main(workload_custody: ExitStack):
     parser = argparse.ArgumentParser(
         description="Molt unified benchmark and differential testing harness.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -692,6 +756,12 @@ def main():
 
     all_results = []
     summaries = []
+    workloads = {}
+
+    def finish_workload_custody() -> None:
+        for workload in workloads.values():
+            workload.verify()
+        workload_custody.close()
 
     with harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,
@@ -702,6 +772,18 @@ def main():
         # --- Benchmark suite ---
         if args.bench:
             scripts = collect_bench_scripts(args.filter)
+            bench_suites.validate_benchmark_selection(scripts)
+            workloads = {
+                script: workload_custody.enter_context(
+                    admit_benchmark_workload(
+                        script,
+                        project_root=REPO_ROOT,
+                        run_args=[],
+                        molt_args=molt_cmd[1:],
+                    )
+                )
+                for script in scripts
+            }
             results, summary = run_suite(
                 "bench",
                 scripts,
@@ -711,6 +793,7 @@ def main():
                 args.parallel,
                 colors,
                 args.verbose,
+                workloads=workloads,
             )
             all_results.extend(results)
             summaries.append(summary)
@@ -727,6 +810,7 @@ def main():
                 args.parallel,
                 colors,
                 args.verbose,
+                workloads={},
             )
             all_results.extend(results)
             summaries.append(summary)
@@ -747,15 +831,12 @@ def main():
         molt_profile=args.molt_profile,
     )
     output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(report, f, indent=2, default=str)
+    write_json(output_path, report, validate_inputs=finish_workload_custody)
     print(f"  JSON report written to: {output_path}")
 
     # --- Update baseline ---
     if args.update_baseline:
-        with open(baseline_path, "w") as f:
-            json.dump(report, f, indent=2, default=str)
+        write_json(baseline_path, report)
         print(f"  Baseline updated: {baseline_path}")
 
     print()

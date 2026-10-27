@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from tools.bench_evidence import AdmittedBenchmarkWorkload
+
 import os
 from dataclasses import asdict
 from collections.abc import Mapping
@@ -76,6 +78,7 @@ def _cpython_run_env() -> ProcessEnvironment:
 def measure_cell(
     *,
     script_path: Path,
+    workload: AdmittedBenchmarkWorkload,
     spec: BackendSpec,
     profile: str,
     samples: int,
@@ -102,9 +105,16 @@ def measure_cell(
     ``emit_cycle_profile`` captures a CPU CYCLE profile (``/usr/bin/sample``) for
     a warm-red cell — the Rule-1 attribution signal (cycles, not alloc-count).
     """
+    if script_path.absolute() != workload.script:
+        raise ValueError("benchmark source differs from admitted workload")
+    workload.verify()
     benchmark = bench_suites.canonical_benchmark_key(script_path)
     cell = Cell(
-        benchmark=benchmark, target=spec.target, backend=spec.backend, profile=profile
+        benchmark=benchmark,
+        target=spec.target,
+        backend=spec.backend,
+        profile=profile,
+        workload=workload.record,
     )
     log_path = log_dir / f"{Path(benchmark).stem}__{spec.backend}__{profile}.log"
     cell.log_artifact = str(log_path.relative_to(REPO_ROOT))
@@ -126,7 +136,7 @@ def measure_cell(
         target_python_version,
         "--backend",
         selection.codegen_backend,
-        *bench_suites.molt_args_for_benchmark(script_path),
+        *workload.record["molt_args"],
     ]
     build_flag = selection.guest_profile
 
@@ -142,6 +152,7 @@ def measure_cell(
     )
 
     if not isinstance(binary, bench.MoltBinary):
+        workload.verify()
         cell.build_ok = False
         if isinstance(binary, bench.MoltFailure):
             _record_molt_failure(cell, binary)
@@ -167,6 +178,7 @@ def measure_cell(
 
     primary: BaseException | None = None
     try:
+        workload.verify()
         cell.build_ok = True
         cell.build_observation = binary.build_observation
         from tools.perf_scoreboard_build_profiles import profile_binding_problems
@@ -186,13 +198,20 @@ def measure_cell(
             f"build_ok size_kib={cell.binary_size_kib} compile_s={cell.compile_time_s}"
         )
 
-        run_args = bench.resolve_benchmark_run_args(str(script_path))
+        run_args = workload.record["run_args"]
         invocation = bench.molt_binary_invocation(
             binary, build_env, execution_host=execution_host
         )
         molt_cmd, molt_run_env = invocation.command, invocation.environment
 
+        def run_reference(*args: Any, **kwargs: Any) -> RunOutcome:
+            workload.verify()
+            result = _run_measured_command(*args, **kwargs)
+            workload.verify()
+            return result
+
         def run_molt(*args: Any, **kwargs: Any) -> RunOutcome:
+            workload.verify()
             if execution_host is not None:
                 execution_host.verify()
             outcome = _run_measured_command(*args, **kwargs)
@@ -210,6 +229,7 @@ def measure_cell(
                             f"HOST STDERR invalidated sample:\n{outcome.host_stderr}"
                         )
                     raise
+            workload.verify()
             return outcome
 
         # --- COLD samples (first process; retain exact streams for parity) ------
@@ -222,7 +242,7 @@ def measure_cell(
             capture_output=True,
             guest_stderr_path=invocation.guest_stderr_path,
         )
-        cold_cpy = _run_measured_command(
+        cold_cpy = run_reference(
             [*cpython_cmd, str(script_path), *run_args],
             env=_cpython_run_env(),
             rss_mb=rss_mb,
@@ -306,7 +326,7 @@ def measure_cell(
                 for sample_idx, run in enumerate(molt_runs)
             )
             cpy_warmups = [
-                _run_measured_command(
+                run_reference(
                     [*cpython_cmd, str(script_path), *run_args],
                     env=_cpython_run_env(),
                     rss_mb=rss_mb,
@@ -326,7 +346,7 @@ def measure_cell(
                 for sample_idx, run in enumerate(cpy_warmups)
             )
             cpy_runs = [
-                _run_measured_command(
+                run_reference(
                     [*cpython_cmd, str(script_path), *run_args],
                     env=_cpython_run_env(),
                     rss_mb=rss_mb,
@@ -503,6 +523,7 @@ def measure_cell(
         # column is populated, but it is a CPython-style interpreter comparator,
         # not a molt-backend fact.
         if pypy_bin is not None and cell.warm_molt_s:
+            workload.verify()
             pypy_warm = _measure_interpreter_warm(
                 pypy_bin,
                 str(script_path),
@@ -513,6 +534,7 @@ def measure_cell(
                 timeout_s=timeout_s,
                 label=f"pypy:{benchmark}",
             )
+            workload.verify()
             if pypy_warm is not None:
                 cell.pypy_warm_s = round(pypy_warm, 6)
                 cell.pypy_ratio = _safe_ratio(pypy_warm, cell.warm_molt_s)
@@ -522,6 +544,7 @@ def measure_cell(
 
         # --- Codon comparator lane (AOT north star; equivalence-gated) ----------
         if codon_runner is not None and cell.warm_molt_s:
+            workload.verify()
             codon_runner.measure_into(
                 cell,
                 script_path=script_path,
@@ -533,6 +556,7 @@ def measure_cell(
                 log_lines=log_lines,
             )
 
+        workload.verify()
         cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
         log_lines.append(
             f"molt warm_median={cell.warm_molt_s} cpython warm_median={cell.warm_cpython_s} "

@@ -1676,6 +1676,73 @@ def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
         local_python_import_closure(tmp_path, (root_module,))
 
 
+def test_explicit_source_domain_preserves_manifest_scope_and_separates_queries(
+    tmp_path: Path,
+) -> None:
+    tools = tmp_path / "tools"
+    src = tmp_path / "src"
+    bench = tmp_path / "tests" / "benchmarks"
+    tools.mkdir()
+    src.mkdir()
+    bench.mkdir(parents=True)
+    seed = bench / "program.py"
+    seed.write_text("import helper\nimport library\n", encoding="utf-8")
+    helper = bench / "helper.py"
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    library = tmp_path / "library.py"
+    library.write_text("VALUE = 2\n", encoding="utf-8")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        'schema_version = 1\nsearch_roots = ["src", "tools", "."]\n'
+        'source_roots = ["src", "tools"]\nsource = []\n',
+        encoding="utf-8",
+    )
+    search_roots = (bench, tmp_path)
+    with graph.local_python_import_graph_transaction():
+        with pytest.raises(ValueError, match="outside local source roots"):
+            local_python_import_closure(tmp_path, (seed,), search_roots=search_roots)
+        narrow = local_python_import_closure(
+            tmp_path, (seed,), search_roots=search_roots, source_roots=(bench,)
+        )
+        assert set(narrow.paths) == {seed, helper, manifest}
+        broad = local_python_import_closure(
+            tmp_path, (seed,), search_roots=search_roots, source_roots=(tmp_path,)
+        )
+        assert set(broad.paths) == {seed, helper, library, manifest}
+        assert broad.content_digest != narrow.content_digest
+        assert (
+            local_python_import_closure(
+                tmp_path, (seed,), search_roots=search_roots, source_roots=(bench,)
+            )
+            == narrow
+        )
+        with pytest.raises(ValueError, match="outside local source roots"):
+            local_python_import_closure(tmp_path, (seed,), search_roots=search_roots)
+
+
+@pytest.mark.parametrize("domain", ["empty", "missing", "duplicate", "outside"])
+def test_explicit_source_domain_refuses_invalid_or_external_roots(
+    tmp_path: Path, domain: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    seed = project / "entry.py"
+    seed.write_text("VALUE = 1\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    roots, message = {
+        "empty": ((), "requires a source root"),
+        "missing": ((project / "missing",), "missing local Python source root"),
+        "duplicate": ((project, project / "."), "duplicate local Python source root"),
+        "outside": ((project / ".." / "outside",), "outside project root"),
+    }[domain]
+    with pytest.raises(ValueError, match=message):
+        local_python_import_closure(
+            project, (seed,), search_roots=(project,), source_roots=roots
+        )
+
+
 def test_manifest_search_order_and_domain_changes_invalidate_warm_closure(
     tmp_path: Path,
 ) -> None:

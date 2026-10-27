@@ -56,7 +56,12 @@ in `bench_diff.py`, and `bench_dashboard.py` reuse the shared observation policy
 Standalone producers without a retained observation remain unbound, including
 historical and current `bench_wasm.py` records. Their raw measurements remain
 readable, but cannot authorize cross-run Molt timing comparisons. External-only
-metrics in `bench_diff.py` retain their existing independent comparison rules.
+metrics in `bench_diff.py` retain their independent success/profile rules, but
+require equal admitted source workloads, like every other cross-run metric.
+Fresh `bench_individual.py` and `bench/harness.py` CPython records carry this
+same source identity; their missing Molt build observations remain unbound.
+The Rust-transpile tool emits a separate list of nested millisecond results,
+which the shared flat-map reader already refuses before metric comparison.
 
 Methodology v8 binds source and ancestry to original Git objects, ignoring
 replacement refs and legacy grafts. Performance freshness resolves the current
@@ -99,7 +104,7 @@ fail closed when that execution identity is absent. Profile declarations and
 source-checkout measurements do not qualify the installed release matrix.
 
 WASM scoreboard execution records one admitted Node plan per invocation in
-schema-v5 board and cell `execution_host` facts. The path names the exact selected
+schema-v6 board and cell `execution_host` facts. The path names the exact selected
 executable; comparability uses engine kind, observed version, byte size and
 SHA-256 rather than its installation path or basename. A different engine image
 or version splits history and refuses merging. Missing historical observations
@@ -889,3 +894,36 @@ verdict owner (`bench_reporting`, `bench_diff`, `bench_dashboard`,
 `perf_regression` and the legacy harness), including the target-admission
 dependencies. They are not unlocked report-formatting mechanics. The canonical
 bump must run after final formatting, and historical versions remain separate.
+
+Scoreboard workload facts use the [admitted source-generation contract](../docs/design/foundation/64_perf_scoreboards_and_harness.md#admitted-benchmark-source-generations). The full release matrix retains each canonical benchmark's entry digest from its existing source-authority capture as `benchmark_sha256`; a measured workload must name that exact entry and digest. Cross-cell consistency does not substitute for this matrix binding. This is source-record consistency, not loaded-byte attestation.
+
+
+Regular native and WASM benchmark JSON producers carry the same admitted local
+Python-source workload record as the scoreboard. Their source generations stay
+held through measurement and close before the atomic result replacement. Shared
+baseline, diff, dashboard and trend comparisons require equal valid workloads,
+including comparisons of external-runtime-only metrics; matching names or
+profiles cannot substitute for source identity. Historical records and separate
+legacy harness formats without that contract remain displayable but cannot be
+compared under this policy. This does not attest loaded bytes or undeclared data,
+and does not upgrade noncanonical benchmark provenance or missing build-profile
+observations. Source checks run outside each measured child interval and still
+have controller/descriptor/IO costs that must be measured separately.
+
+The legacy harness keeps its status-only baseline decision on its existing
+`results[suite][name]` records. Source-bound flat `benchmarks` keys serve metric
+readers; they do not replace or re-key that status coordinate. Thus old harness
+status evidence remains useful without assigning it a workload identity or
+qualifying its unbound Molt timing observations.
+
+
+
+Input collections are validated before matching benchmark keys, so a renamed
+historical basename cannot disappear from an acceptance gate as an empty match.
+Baseline and threshold gates refuse zero actual comparable measurement pairs;
+ordinary added/removed reports remain available without a performance verdict.
+Current producers consume their admitted Molt/run argument lists. WASM and the
+individual runner reject nonempty guest run arguments, which their current APIs
+do not execute; the legacy harness additionally checks its actual Molt command
+tail against the admitted list before either runtime starts. These refusals do
+not add a new argument parser or silently change the executed program.
