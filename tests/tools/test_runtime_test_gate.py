@@ -824,8 +824,10 @@ def test_cargo_build_timeout_keeps_real_partial_streams(monkeypatch, tmp_path):
     "output_owner", ["explicit", "queue", "default", "external", "relative-external"]
 )
 def test_default_profile_is_shipping_before_build(
-    monkeypatch, tmp_path, output_owner, selected_cargo, policy
+    monkeypatch, tmp_path, output_owner, selected_cargo, policy, capsys
 ):
+    import json
+
     # Observe typed build argv without compiling or publishing a synthetic pass.
     seen = []
     source = tmp_path / "molt-src"
@@ -859,8 +861,9 @@ def test_default_profile_is_shipping_before_build(
         )
         expected_root = external / "tmp/runtime-gate-runs"
     else:
-        # The existing family layout owns tmp beside molt-src, never inside it.
-        expected_root = tmp_path / "tmp/runtime-gate-runs"
+        # No Git fixture claims a family layout here. DX owns the default's
+        # opaque namespace; the public contract is retained output outside ROOT.
+        expected_root = None
     monkeypatch.setattr(
         gate.truth, "git_source_identity", lambda: {"schema": "molt.git-source.v1"}
     )
@@ -891,13 +894,33 @@ def test_default_profile_is_shipping_before_build(
     assert gate.main(argv) == 1
     command = seen[0]
     assert command[command.index("--profile") + 1] == "release-output"
-    runs = list(expected_root.iterdir())
-    assert len(runs) == 1
-    assert {path.name for path in runs[0].iterdir()} == {
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "failed"
+    assert summary["error"] == "RuntimeError: Cargo compilation failed with 1"
+    receipt = Path(summary["receipt"])
+    assert receipt.name == "aggregate.json" and receipt.is_absolute()
+    run = receipt.parent
+    assert not run.resolve().is_relative_to(source.resolve())
+    if expected_root is None:
+        assert run.parent.name == "runtime-gate-runs"
+    else:
+        # Explicit roots retain their independent exact-path/precedence oracles.
+        assert run.parent == expected_root
+        assert list(expected_root.iterdir()) == [run]
+    assert {path.name for path in run.iterdir()} == {
         "aggregate.json",
         "build.stdout.jsonl",
         "build.stderr.log",
         "cargo.metadata.json",
+    }
+    aggregate = json.loads(receipt.read_text(encoding="utf-8"))
+    assert aggregate["policy"] == policy and aggregate["status"] == "failed"
+    assert aggregate["build_returncode"] == 1
+    assert aggregate["error"] == "RuntimeError: Cargo compilation failed with 1"
+    assert (run / "build.stdout.jsonl").read_bytes() == b""
+    assert (run / "build.stderr.log").read_bytes() == b"intentional stopped build"
+    assert json.loads((run / "cargo.metadata.json").read_text(encoding="utf-8")) == {
+        "packages": []
     }
     assert list(source.iterdir()) == []
     if output_owner == "explicit":
