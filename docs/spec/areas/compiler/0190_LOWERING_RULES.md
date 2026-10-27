@@ -792,6 +792,17 @@ The saved-state dispatch map is transported explicitly, independently of label
 numbers and physical block order. Backends do not synthesize suspension returns
 or a second activation ownership policy.
 
+Final block linearization reads the shared full-CFG reverse postorder in
+`molt_ir::tir::dominators`, including implicit exception transfers and handler
+retention. Allocation IDs do not define execution order: a cleanup suffix
+allocated before its predecessor must not become a backward transfer merely
+because its ID is smaller. State-resume adjacency is a layout constraint over
+that order; it does not change control arcs, release order or handler payloads.
+Retention edges remain distinct from the observation-position execution proof
+used for ownership and SSA availability. This follows the graph-based ordering
+used by [LLVM reverse postorder](https://llvm.org/doxygen/classllvm_1_1ReversePostOrderTraversal.html)
+and its explicit [normal and unwind successors](https://llvm.org/docs/LangRef.html#invoke-instruction).
+
 Release placement names an owned root only where one authority,
 `drop_insertion/availability.rs`, finds it available. The root's definition
 must reach the point on every path, including an exception edge that leaves a
