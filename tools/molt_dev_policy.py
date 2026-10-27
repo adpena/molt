@@ -20,11 +20,17 @@ from typing import TYPE_CHECKING
 from molt.process_environment import ProcessEnvironment
 from tools.dirty_tree_policy import is_ignored as _is_ignored
 from tools.git_identity import changed_paths
+from tools.proof_plan import CargoTargetAccess
 from tools.driver_errors import EXIT_USAGE, CandidateFailure, DriverError  # noqa: E402
 
 if TYPE_CHECKING:
     from tools.molt_dev import Git
-    from tools.proof_plan import LocalPytestSelection, PlanEntity, PytestMemoryUnits
+    from tools.proof_plan import (
+        LocalGateDeclaration,
+        LocalPytestSelection,
+        PlanEntity,
+        PytestMemoryUnits,
+    )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 GATES_CONFIG_NAME = "proof_plan.toml"
@@ -69,6 +75,14 @@ class SelectedGate:
     pytest: bool = False
     # Named-node admission never replaces mandatory execution.
     collection_command: tuple[str, ...] | None = None
+    cargo_target_access: CargoTargetAccess | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "cargo_target_access",
+            CargoTargetAccess.resolve(self.toolchains, self.cargo_target_access),
+        )
 
     @property
     def precheck(self) -> bool:
@@ -105,7 +119,7 @@ class GateConfig:
     pytest_memory_units: "PytestMemoryUnits"
     rules: list[GateRule] = field(default_factory=list)
     always: list[str] = field(default_factory=list)
-    prerequisites: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    prerequisites: dict[str, LocalGateDeclaration] = field(default_factory=dict)
     prerequisite_policy: dict = field(default_factory=dict)
     root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1])
     # The proof executor's declared admission: its ceiling and resource classes.
@@ -177,6 +191,11 @@ class GateConfig:
             except ValueError as exc:
                 raise DriverError(f"invalid proof plan ({label}): {exc}") from exc
             errors += claim_errors
+            try:
+                resolved_selections = local_pytest_selections(entry)
+            except (ValueError, TypeError, KeyError) as exc:
+                errors.append(f"{name}: {exc}")
+                resolved_selections = []
             if errors:
                 raise DriverError("\n".join(errors))
             rules.append(
@@ -186,7 +205,7 @@ class GateConfig:
                     gates=gates,
                     description=str(entry.get("description", "")),
                     pytest=pytest_targets,
-                    pytest_select=local_pytest_selections(entry),
+                    pytest_select=resolved_selections,
                     plan_entities=claims,
                 )
             )
@@ -267,8 +286,8 @@ class GateConfig:
             for gate in gates:
                 identifiers = [
                     identifier
-                    for identifier, (command, _tools) in self.prerequisites.items()
-                    if command == gate.command
+                    for identifier, declaration in self.prerequisites.items()
+                    if declaration.command == gate.command
                 ]
                 if not identifiers:
                     identifiers = [
@@ -343,6 +362,7 @@ class GateConfig:
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
         pytest_tools: dict[str, dict[str, None]] = {}
+        pytest_access: dict[str, list[CargoTargetAccess]] = {}
         pytest_index: int | None = None
         pytest_commands: set[str] = set()
 
@@ -356,6 +376,7 @@ class GateConfig:
             concurrent: bool = False,
             pytest: bool = False,
             collection_command: tuple[str, ...] | None = None,
+            cargo_target_access: CargoTargetAccess,
         ) -> None:
             key = command_key(command)
             if key in indices:
@@ -366,19 +387,37 @@ class GateConfig:
                     toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools))),
                     pytest=prior.pytest or pytest,
                     collection_command=prior.collection_command or collection_command,
+                    cargo_target_access=CargoTargetAccess.union(
+                        (prior.cargo_target_access, cargo_target_access)
+                    ),
                 )
             else:
                 indices[key] = len(selected)
                 selected.append(
-                    SelectedGate(command, tools, concurrent, pytest, collection_command)
+                    SelectedGate(
+                        command,
+                        tools,
+                        concurrent,
+                        pytest,
+                        collection_command,
+                        cargo_target_access,
+                    )
                 )
 
         def tools(identifier: str) -> tuple[str, ...]:
-            return self.prerequisites[identifier][1]
+            return self.prerequisites[identifier].toolchains
+
+        def access(identifier: str) -> CargoTargetAccess:
+            return self.prerequisites[identifier].cargo_target_access
 
         if touched:
             for index, command in enumerate(self.always):
-                add(command, tools(f"local.always.{index}"), concurrent=True)
+                add(
+                    command,
+                    tools(f"local.always.{index}"),
+                    concurrent=True,
+                    cargo_target_access=access(f"local.always.{index}"),
+                )
         for rule in self.rules:
             by_path = any(_is_ignored(path, tuple(rule.globs)) for path in touched)
             by_plan = plan_touched and (
@@ -396,13 +435,20 @@ class GateConfig:
             matched_rules.append(rule)
             owner = f"local.{rule.name}"
             for index, command in enumerate(rule.gates):
-                add(command, tools(f"{owner}.{index}"))
+                add(
+                    command,
+                    tools(f"{owner}.{index}"),
+                    cargo_target_access=access(f"{owner}.{index}"),
+                )
             if rule.pytest:
                 if pytest_index is None:
                     pytest_index = len(selected)
                 for target in rule.pytest:
                     pytest_tools.setdefault(target, {}).update(
                         dict.fromkeys(tools(f"{owner}.pytest"))
+                    )
+                    pytest_access.setdefault(target, []).append(
+                        access(f"{owner}.pytest")
                     )
             for index, selection in enumerate(rule.pytest_select):
                 command = local_pytest_argv(
@@ -414,6 +460,7 @@ class GateConfig:
                 add(
                     command,
                     tools(f"{owner}.pytest-select-{index}"),
+                    cargo_target_access=access(f"{owner}.pytest-select-{index}"),
                     pytest=True,
                     collection_command=(
                         local_pytest_collection_argv(command)
@@ -428,9 +475,9 @@ class GateConfig:
         # Extras are raw policy commands, not bound argv or unowned shell text.
         for command in extra or ():
             owners = [
-                required
-                for raw, required in self.prerequisites.values()
-                if raw == command
+                declaration
+                for declaration in self.prerequisites.values()
+                if declaration.command == command
             ]
             if not owners:
                 raise DriverError(
@@ -439,24 +486,34 @@ class GateConfig:
                 )
             add(
                 command,
-                tuple(dict.fromkeys(name for owner in owners for name in owner)),
+                tuple(
+                    dict.fromkeys(name for owner in owners for name in owner.toolchains)
+                ),
+                cargo_target_access=CargoTargetAccess.union(
+                    tuple(owner.cargo_target_access for owner in owners)
+                ),
             )
         if pytest_index is not None:
-            assignments: dict[str, tuple[str, ...]] = {}
+            assignments: dict[str, tuple[tuple[str, ...], CargoTargetAccess]] = {}
             for group in self.pytest_memory_units.overlapping_requests(pytest_targets):
                 group_tools = tuple(
                     dict.fromkeys(
                         tool for target in group for tool in pytest_tools[target]
                     )
                 )
-                assignments.update(dict.fromkeys(group, group_tools))
-            cohorts: dict[tuple[str, ...], list[str]] = {}
+                group_access = CargoTargetAccess.union(
+                    tuple(
+                        effect for target in group for effect in pytest_access[target]
+                    )
+                )
+                assignments.update(dict.fromkeys(group, (group_tools, group_access)))
+            cohorts: dict[tuple[tuple[str, ...], CargoTargetAccess], list[str]] = {}
             for target in pytest_targets:
                 cohorts.setdefault(assignments[target], []).append(target)
             # Keep add()'s command indices valid until every deduplication and
             # prerequisite union is complete. Only newly appended cohorts move.
             before_cohorts = len(selected)
-            for cohort_tools, targets in cohorts.items():
+            for (cohort_tools, cohort_access), targets in cohorts.items():
                 command = local_pytest_argv(
                     targets, memory_units=self.pytest_memory_units
                 )
@@ -466,6 +523,7 @@ class GateConfig:
                 add(
                     command,
                     cohort_tools,
+                    cargo_target_access=cohort_access,
                     pytest=True,
                     collection_command=(
                         local_pytest_collection_argv(
@@ -496,19 +554,23 @@ class GateConfig:
     def cargo_outputs(
         self,
         environments: dict[tuple[str, ...], GateEnvironment],
+        gates: Collection[SelectedGate],
     ) -> dict[tuple[str, ...], tuple[Path, ...]]:
-        """Outputs of gate owners explicitly declaring Cargo capability.
+        """Shared outputs of the selected writers, not all admitted tools.
 
-        Declared capability is conservative: it does not prove that a Cargo
-        child launches. Actual argv/output admission remains with each child.
-        Transitive tool availability (for example generator metadata queries)
-        does not impose a compilation-space requirement.
+        Isolated fixtures admit their actual private output through child custody.
+        A toolchain shared with a writer does not make a read-only gate a writer.
         """
         from molt.cargo_execution_policy import cargo_output_paths
 
+        shared = {
+            gate.toolchains
+            for gate in gates
+            if gate.cargo_target_access is CargoTargetAccess.SHARED
+        }
         outputs = {}
         for tools, context in environments.items():
-            if "cargo" in tools:
+            if tools in shared:
                 outputs[tools] = cargo_output_paths(
                     (), cwd=self.root, env=context.environment
                 )

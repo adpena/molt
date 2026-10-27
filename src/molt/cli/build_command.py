@@ -83,22 +83,17 @@ def _cpu_model() -> str:
 def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
     """(key, record path) when this request may reuse a recorded build.
 
-    Only a native binary build with an explicit absolute output file and the
-    cache enabled qualifies. A request that publishes anything beyond the
+    Only a native binary build with the cache enabled qualifies. Its actual
+    output selection comes from the recorded layout, never from a guessed
+    entry name or project root. A request that publishes anything beyond the
     binary, or reads an input no authority reports to the build record, never
     cuts off.
     """
-    output = request.output
     capabilities = request.capabilities
     if (
         request.target is not TargetKind.NATIVE
         or not request.cache
         or request.json_output
-        or output is None
-        or not Path(output).is_absolute()
-        # A directory output names the binary after the entry module.
-        or output.endswith(("/", os.sep))
-        or Path(output).is_dir()
         or request.emit not in (None, "bin")
         or request.emit_ir is not None
         or request.linked
@@ -201,11 +196,15 @@ def _record_build(
     key: str,
     ledger: _build_record.InputLedger,
     request: BuildRequest,
-    output: Path,
 ) -> str | None:
     """Write the record of a successful build; returns why none was written.
     A record never fails the build it describes."""
     try:
+        output = ledger.output_selection
+        if output is None:
+            return "native output selection was not reported"
+        if output.output != request.output:
+            return "native output selection differs from the build request"
         _report_executed_code(ledger)
         capabilities = request.capabilities
         if isinstance(capabilities, str):
@@ -217,7 +216,7 @@ def _record_build(
             selection = "/var/db/xcode_select_link"
             ledger.probe(selection, _input_report.resolved_probe(selection))
         _build_record.resolve_observed(
-            ledger, _excluded_read_roots(request), published_output=output
+            ledger, _excluded_read_roots(request), published_output=output.path
         )
         return _build_record.write_record(record, key, ledger, output=output)
     except Exception as error:  # noqa: BLE001 - the build already succeeded
@@ -237,11 +236,12 @@ def _with_early_cutoff(
         if cutoff is None:
             return build_function(request)
         key, record = cutoff
-        assert request.output is not None
-        output = Path(request.output)
-        change = _build_record.check(record, key, output)
-        if change is None:
-            _success(f"Successfully built {output} (inputs unchanged)", file=sys.stderr)
+        change = _build_record.check(record, key)
+        if isinstance(change, _build_record.BuildRecordHit):
+            _success(
+                f"Successfully built {change.output} (inputs unchanged)",
+                file=sys.stderr,
+            )
             return 0
         verbose = request.verbose
         if verbose:
@@ -253,7 +253,7 @@ def _with_early_cutoff(
         ) as ledger:
             result = build_function(request)
         if result == 0:
-            reason = _record_build(record, key, ledger, request, output)
+            reason = _record_build(record, key, ledger, request)
             if reason is not None and verbose:
                 print(f"Build record not written: {reason}", file=sys.stderr)
         return result

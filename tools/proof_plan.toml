@@ -4178,6 +4178,10 @@ pytest = [
 [[rule]]
 name = "frontend-ir-assembly"
 toolchains = ["python", "rustc", "cargo"]
+# The explicit verifier gate builds Rust against the shared target. The pytest
+# request includes private native-object and fake-Cargo publication fixtures;
+# its named selectors exclude actual batch-build server and Cargo producers.
+pytest_cargo_target_access = "isolated"
 description = "Prove source-record admission, borrowed lowering records, copy-on-write assembly and reusable module-cache results across native, WASM and GPU preparation."
 globs = [
   "src/molt/cli/function_records.py",
@@ -4336,7 +4340,7 @@ pytest = [
 # Backend environment identity is one Python/Rust contract. These bounded
 # consumers catch selected-input and fixture migrations before expensive Cargo.
 pytest_select = [
-  { k = "not compiled_gpu_kernel_vector_add", targets = ["tests/test_gpu_kernel_compiled.py"], toolchains = ["python"] },
+  { k = "not compiled_gpu_kernel_vector_add", targets = ["tests/test_gpu_kernel_compiled.py"], toolchains = ["python"], cargo_target_access = "none" },
 ]
 
 [[rule]]
@@ -5393,6 +5397,27 @@ pytest = [
   "tests/tools/test_encoding_gate.py",
 ]
 
+# Build-record and default-output admission run before compiler provisioning.
+[[rule]]
+name = "build-early-cutoff"
+toolchains = ["python"]
+description = "Source-bound build records and default outputs preserve early reuse and failure admission."
+globs = [
+  "src/molt/build_record.py",
+  "src/molt/input_report.py",
+  "src/molt/build_output_selection.py",
+  "src/molt/cli/build_command.py",
+  "src/molt/cli/build_output_layout.py",
+  "tests/test_build_record.py",
+  "tests/cli/test_build_early_cutoff.py",
+  "tests/cli/test_compiler_source_root.py",
+  "tests/test_tool_releases.py",
+]
+gates = []
+pytest_select = [
+  { all = true, targets = ["tests/test_build_record.py", "tests/cli/test_build_early_cutoff.py", "tests/cli/test_compiler_source_root.py", "tests/test_tool_releases.py"], toolchains = ["python"], cargo_target_access = "none" },
+]
+
 # --- Runtime Cargo input custody ----------------------------------------
 [[rule]]
 name = "runtime-cargo-input-custody"
@@ -6401,6 +6426,8 @@ gates = [
 [[rule]]
 name = "runtime-vfs"
 toolchains = ["python", "rustc", "cargo"]
+# Browser VFS tests execute Node over private tar fixtures, never Cargo.
+pytest_cargo_target_access = "none"
 description = "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke."
 globs = [
   "runtime/molt-runtime-vfs/**/*.rs",

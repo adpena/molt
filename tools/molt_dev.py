@@ -1317,7 +1317,7 @@ def _integrate_exclusive(
         environments = prepared.environments
         progress.environments = environments
         try:
-            cargo_outputs = config.cargo_outputs(environments)
+            cargo_outputs = config.cargo_outputs(environments, gate_cmds)
             capacity_requirements = admit_selected_output_capacity(
                 cargo_outputs, environments
             )

@@ -9198,3 +9198,93 @@ def test_detached_missing_published_entry_refuses_before_state_mutation(
         )
     assert not state.exists()
     assert set(tmp_path.rglob("*")) == before, "refusal created state or a launch lock"
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["overlap", "cancel"])
+def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
+    tmp_path, cancel
+):
+    import threading
+    from tools.proof_plan import CargoTargetAccess
+
+    writer_started = threading.Event()
+    private_started = threading.Event()
+    completed = []
+    lease = tmp_path / "shared-target-owner"
+    gates = [
+        SelectedGate(("writer", "first"), ("python", "cargo")),
+        SelectedGate(
+            ("private",),
+            ("python", "cargo"),
+            pytest=True,
+            cargo_target_access=CargoTargetAccess.ISOLATED,
+        ),
+        SelectedGate(("writer", "last"), ("python", "cargo")),
+    ]
+
+    def run(command, repo, environment, cancelled, streams=None):
+        if command[0] == "private":
+            assert writer_started.wait(5)
+            assert lease.exists(), "isolated work waited for shared-target release"
+            private_started.set()
+            return _gate_outcome(6 if cancel else 0, "", "", None)
+        # Exclusive filesystem ownership independently catches overlapping writers.
+        with lease.open("x", encoding="utf-8"):
+            if command[1] == "first":
+                writer_started.set()
+                assert private_started.wait(5)
+                if cancel:
+                    deadline = time.monotonic() + 5
+                    while not cancelled() and time.monotonic() < deadline:
+                        threading.Event().wait(0.01)
+                    assert cancelled(), (
+                        "private failure did not cancel the active writer"
+                    )
+            completed.append(command[1])
+        lease.unlink()
+        return _gate_outcome(137 if cancel else 0, "", "", None, cancelled=cancel)
+
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, gates, run)
+    if cancel:
+        with pytest.raises(GateFailure, match="exit 6"):
+            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 4)
+    else:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 4)
+    receipt = json.loads((tmp_path / "receipt.heavy.json").read_text(encoding="utf-8"))
+    assert [row["cargo_target_access"] for row in receipt["commands"]] == [
+        "shared",
+        "isolated",
+        "shared",
+    ]
+    assert [row["dependencies"] for row in receipt["commands"]] == [
+        [],
+        [],
+        ["local.gate.1"],
+    ]
+    assert completed == (["first"] if cancel else ["first", "last"])
+    assert not lease.exists()
+    if cancel:
+        assert [row["status"] for row in receipt["commands"]] == [
+            "cancelled",
+            "failure",
+            "skipped",
+        ]
+
+
+def test_only_selected_shared_target_effects_admit_shared_output_capacity(tmp_path):
+    from tools.proof_plan import CargoTargetAccess
+
+    config = GateConfig.parse("always=[]\n", "effects", root=tmp_path)
+    private = SelectedGate(
+        ("python", "private"),
+        ("python", "cargo"),
+        pytest=True,
+        cargo_target_access=CargoTargetAccess.ISOLATED,
+    )
+    context = GateEnvironment(
+        ProcessEnvironment({"CARGO_TARGET_DIR": str(tmp_path / "shared")}), None, False
+    )
+    environments = {private.toolchains: context}
+    assert config.cargo_outputs(environments, [private]) == {}
+    writer = SelectedGate(("cargo", "build"), private.toolchains)
+    assert config.cargo_outputs(environments, [private, writer])

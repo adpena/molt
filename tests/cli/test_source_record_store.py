@@ -405,6 +405,122 @@ def test_advisory_refresh_declines_busy_owners_without_reopening(tmp_path, monke
         store.close()
 
 
+def test_inventory_exact_blob_bytes_survive_replacement_renewal_and_fenced_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    store = _store(tmp_path)
+    assert store._connect() is not None  # Initialize an empty store.
+    expected: dict[tuple[records.RecordKind, str], bytes] = {}
+
+    with store.maintenance(dry_run=False) as maintenance:
+
+        def exact_inventory():
+            actual = maintenance.inventory()
+            assert actual.entries == len(expected)
+            assert actual.size_bytes == sum(
+                len(payload) for payload in expected.values()
+            )
+            return actual
+
+        exact_inventory()
+        payloads: tuple[tuple[records.RecordKind, bytes], ...] = (
+            ("import-scan", b""),
+            ("intrinsic-facts", b"\x00\xff\x00"),
+            ("module-analysis", b"analysis" * 17),
+            ("module-lowering", bytes(range(256))),
+        )
+        for kind, payload in payloads:
+            assert store.put(kind, "same-key", payload, generation="g")
+            expected[kind, "same-key"] = payload
+            exact_inventory()
+        observed = {
+            (row.kind, row.key): row for row in maintenance.iter_lru(exact_inventory())
+        }
+        renewal = store.get("import-scan", "same-key", generation="g", max_bytes=None)
+        assert renewal is not None
+        clock[0] += 301 * 1_000_000_000
+        assert renewal.refresh() and store.save_renewals() == 1
+        exact_inventory()  # Stamp-only writes cannot change count or byte size.
+        replacement = b"\x00replacement\xff" * 13
+        assert store.put("intrinsic-facts", "same-key", replacement, generation="g")
+        expected["intrinsic-facts", "same-key"] = replacement
+        exact_inventory()
+        assert maintenance.remove(
+            [
+                observed["import-scan", "same-key"],
+                observed["intrinsic-facts", "same-key"],
+                observed["module-analysis", "same-key"],
+            ]
+        ) == ("busy", "busy", "removed")
+        del expected["module-analysis", "same-key"]
+        exact_inventory()
+        current = list(maintenance.iter_lru(exact_inventory()))
+        assert maintenance.remove(current) == ("removed",) * len(current)
+        expected.clear()
+        exact_inventory()
+
+
+def test_inventory_sqlite_program_reads_expression_index_not_payload_table(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    assert store.put("module-analysis", "k", b"\x00body\xff", generation="g")
+    with store.maintenance(dry_run=True) as maintenance:
+        statements = []
+        connection = maintenance._connection
+        connection.set_trace_callback(statements.append)
+        actual = maintenance.inventory()
+        connection.set_trace_callback(None)
+        assert (actual.entries, actual.size_bytes) == (1, len(b"\x00body\xff"))
+        # Explain the exact statement that the production method executed;
+        # an independently reconstructed indexed query would miss a regression.
+        (query,) = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT COUNT(")
+        ]
+        roots = dict(
+            connection.execute(
+                "SELECT name, rootpage FROM sqlite_schema WHERE name IN (?, ?)",
+                ("records", "records_payload_size"),
+            ).fetchall()
+        )
+        assert set(roots) == {"records", "records_payload_size"}
+        program = connection.execute("EXPLAIN " + query).fetchall()
+        # Use SQLite's named opcodes and schema-reported root pages, never
+        # instruction addresses, register numbers or EXPLAIN QUERY PLAN prose.
+        index_cursors = {
+            row[2]
+            for row in program
+            if row[1] == "OpenRead" and row[3] == roots["records_payload_size"]
+        }
+        table_cursors = {
+            row[2]
+            for row in program
+            if row[1] == "OpenRead" and row[3] == roots["records"]
+        }
+        assert index_cursors, sqlite3.sqlite_version
+        assert any(row[1] == "Column" and row[2] in index_cursors for row in program)
+        # An unused table cursor plus DeferredSeek is normal for expression
+        # indexes. Reject actual table traversal or data reads, not its opening.
+        table_access = {
+            "Column",
+            "RowData",
+            "Rowid",
+            "SeekRowid",
+            "NotExists",
+            "Rewind",
+            "Last",
+            "Next",
+            "Prev",
+        }
+        assert not [
+            row for row in program if row[1] in table_access and row[2] in table_cursors
+        ], sqlite3.sqlite_version
+
+
 def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

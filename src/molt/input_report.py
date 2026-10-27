@@ -88,6 +88,8 @@ class FactSink(Protocol):
 
     def observe(self, entry: tuple[str, str]) -> None: ...
 
+    def build_output(self, selection: object) -> None: ...
+
 
 # Process-global, not context-local: frontend worker threads report to it.
 _SINK: FactSink | None = None
@@ -340,6 +342,9 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
         sink.probe(name, None if outcome is None else (outcome[0], outcome[1]))
     elif kind == "refuse":
         sink.refuse(entry[1])
+    elif kind == "build_output":
+        _, selection = entry
+        sink.build_output(selection)
     else:
         sink.refuse(f"unknown worker fact {kind!r}")
 
@@ -451,6 +456,15 @@ def report_directory(path: Path | str) -> None:
 def report_probe(path: Path | str) -> None:
     if active():
         _report_probe_fact(path, resolved_probe(path))
+
+
+def report_build_output(selection: Mapping[str, str | None]) -> None:
+    """Report the native layout's actual selection, not a guessed output name."""
+    sink = _SINK
+    if sink is not None:
+        sink.build_output(dict(selection))
+    else:
+        _worker_log(["build_output", dict(selection)])
 
 
 def refuse(reason: str) -> None:

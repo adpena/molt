@@ -129,6 +129,15 @@ _ROUNDS = 3
 def test_concurrent_builds_of_same_named_programs_run_their_own_code(
     tmp_path: Path,
 ) -> None:
+    # Guest optimization and host compiler optimization are independent. This
+    # artifact-ownership proof uses the developer compiler, without building
+    # another thin-LTO release compiler solely for these nine tiny programs.
+    build_env = {
+        **os.environ,
+        "MOLT_BACKEND_PROFILE": "release",
+        "MOLT_RELEASE_BACKEND_CARGO_PROFILE": "release-fast",
+    }
+
     def build_and_run(job: tuple[int, str]) -> tuple[str, str]:
         round_index, key = job
         project = tmp_path / f"{key}{round_index}"
@@ -151,6 +160,7 @@ def test_concurrent_builds_of_same_named_programs_run_their_own_code(
             ],
             capture_output=True,
             text=True,
+            env=build_env,
             timeout=900.0,
         )
         # The daemon can append peer-request log lines to a failure. Retain
