@@ -219,7 +219,7 @@ jobs:
           name: proof-diagnostics-platform-portability-${{ matrix.cell }}
           path: |
             proof-receipts/platform-portability-${{ matrix.cell }}.json
-            proof-receipts/evidence/runtime-gate-runs/
+            ${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/runtime-gate-runs/', steps.build-control.outputs.proof_scratch_root) || '' }}
             ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
             ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
@@ -550,7 +550,7 @@ jobs:
           name: proof-diagnostics-rust
           path: |
             proof-receipts/evidence/cargo-test-truth-runs/
-            proof-receipts/evidence/runtime-gate-runs/
+            ${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/runtime-gate-runs/', steps.build-control.outputs.proof_scratch_root) || '' }}
             proof-receipts/evidence/runtime-extension-admission/
             ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
             ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/cargo-timings/cargo-timing-*.html', env.CARGO_TARGET_DIR) || '' }}

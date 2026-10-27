@@ -2864,13 +2864,66 @@ def test_ci_command_diagnostics_survive_missing_final_receipts(
     assert not fnmatchcase(upload["with"]["name"], strict_download["with"]["pattern"])
     paths = upload["with"]["path"].splitlines()
     if family == "rust":
+        resolver = next(step for step in steps if step.get("id") == "build-control")
+        assert resolver["uses"] == "./.github/actions/upload-proof-diagnostics"
+        assert resolver["if"] == "always()"
+        assert steps.index(executor) < steps.index(resolver) < steps.index(upload)
         assert paths == [
             "proof-receipts/evidence/cargo-test-truth-runs/",
-            "proof-receipts/evidence/runtime-gate-runs/",
+            "${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/runtime-gate-runs/', steps.build-control.outputs.proof_scratch_root) || '' }}",
             "proof-receipts/evidence/runtime-extension-admission/",
             "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
             "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/cargo-timings/cargo-timing-*.html', env.CARGO_TARGET_DIR) || '' }}",
         ]
+        scratch = tmp_path / "current custody" / "tmp"
+        run = scratch / "runtime-gate-runs" / "failed-runtime"
+        expected = {
+            run / name
+            for name in (
+                "aggregate.json",
+                "child-0/.partial.stderr.log",
+                "child-0/raw.stderr.log",
+                "custody-cas/bytes/ab/cd",
+            )
+        }
+        for path in expected:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"interrupted runtime witness\x00\xff")
+        foreign = (
+            tmp_path
+            / "foreign custody/tmp/runtime-gate-runs/failed-runtime/aggregate.json"
+        )
+        foreign.parent.mkdir(parents=True)
+        foreign.write_bytes(b"foreign runtime witness")
+        stale = (
+            tmp_path / "proof-receipts/evidence/runtime-gate-runs/old/aggregate.json"
+        )
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"stale checkout witness")
+        selected: set[Path] = set()
+        for line in paths:
+            rendered = _diagnostic_path_expression(
+                line,
+                {
+                    "steps.build-control.outputs.proof_scratch_root": str(scratch),
+                    "env.CARGO_TARGET_DIR": "",
+                },
+            )
+            if not rendered:
+                continue
+            pattern = Path(rendered)
+            if not pattern.is_absolute():
+                pattern = tmp_path / pattern
+            for match in glob.glob(str(pattern), recursive=True, include_hidden=True):
+                path = Path(match)
+                if path.is_dir():
+                    selected.update(
+                        child for child in path.rglob("*") if child.is_file()
+                    )
+                else:
+                    selected.add(path)
+        assert selected == expected
+        assert foreign not in selected and stale not in selected
     else:
         assert job["env"]["MOLT_DEBUG_ARTIFACT_DIR"] == (
             "${{ github.workspace }}/proof-receipts/evidence/llvm-backend-debug"
@@ -3107,7 +3160,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         if detailed
         else [
             "proof-receipts/platform-portability-${{ matrix.cell }}.json",
-            "proof-receipts/evidence/runtime-gate-runs/",
+            "${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/runtime-gate-runs/', steps.build-control.outputs.proof_scratch_root) || '' }}",
             "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
             "${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}",
@@ -3167,9 +3220,8 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             ]
     else:
         retained_files += [
-            workspace / "proof-receipts/evidence/runtime-gate-runs/run/aggregate.json",
-            workspace
-            / "proof-receipts/evidence/runtime-gate-runs/run/child-0/raw.stderr.log",
+            custody / "tmp/runtime-gate-runs/run/aggregate.json",
+            custody / "tmp/runtime-gate-runs/run/child-0/raw.stderr.log",
             custody / "target/release-output/deps/molt-test-artifacts/run/stderr.log",
             metadata / "case/metadata-owner.json",
             metadata / "case/execution.supervisor-receipt.json",
@@ -3230,7 +3282,6 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             candidate.is_relative_to(custody)
             or (not detailed and candidate.is_relative_to(metadata))
             or candidate == workspace / rendered[0]
-            or candidate == workspace / "proof-receipts/evidence/runtime-gate-runs"
             or (
                 wasm
                 and candidate

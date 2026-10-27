@@ -51,7 +51,7 @@ from tools import runtime_descendant_receipts as descendants  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
-from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root  # noqa: E402
+from molt.dx import proof_scratch_root  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
 from molt.flag_strings import FlagStringRule  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
@@ -1360,11 +1360,7 @@ def finish_aggregate(run: Path, aggregate: dict) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_arguments(argv)
     if args.receipt_root is None:
-        args.receipt_root = (
-            proof_scratch_root(ROOT)
-            if os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip()
-            else ROOT / "proof-receipts/evidence"
-        ) / "runtime-gate-runs"
+        args.receipt_root = proof_scratch_root(ROOT) / "runtime-gate-runs"
     run_id = "runtime-" + uuid.uuid4().hex
     run = args.receipt_root / run_id
     run.mkdir(parents=True, exist_ok=False)

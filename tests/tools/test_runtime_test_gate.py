@@ -819,27 +819,48 @@ def test_cargo_build_timeout_keeps_real_partial_streams(monkeypatch, tmp_path):
         stop_test_processes_carrying(marker)
 
 
-@pytest.mark.parametrize("output_owner", ["explicit", "queue", "proof-plan"])
+@pytest.mark.parametrize("policy", ["semantic", "allocation-observer"])
+@pytest.mark.parametrize(
+    "output_owner", ["explicit", "queue", "default", "external", "relative-external"]
+)
 def test_default_profile_is_shipping_before_build(
-    monkeypatch, tmp_path, output_owner, selected_cargo
+    monkeypatch, tmp_path, output_owner, selected_cargo, policy
 ):
     # Observe typed build argv without compiling or publishing a synthetic pass.
     seen = []
-    source = tmp_path / "source"
+    source = tmp_path / "molt-src"
     source.mkdir()
     scratch = tmp_path / "queue-scratch"
+    external = tmp_path / "external artifacts"
     monkeypatch.setattr(gate, "ROOT", source)
-    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
-    argv = []
+    for name in (
+        "MOLT_PROOF_SCRATCH_ROOT",
+        "MOLT_EXT_ROOT",
+        "MOLT_CI_EPHEMERAL_CUSTODY_ROOT",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", "disk")
+    argv = ["--policy", policy]
     if output_owner == "explicit":
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
         monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
         expected_root = tmp_path / "explicit-receipts"
-        argv = ["--receipt-root", str(expected_root)]
+        argv += ["--receipt-root", str(expected_root)]
     elif output_owner == "queue":
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
         monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
         expected_root = scratch / "runtime-gate-runs"
+    elif output_owner in {"external", "relative-external"}:
+        monkeypatch.setenv(
+            "MOLT_EXT_ROOT",
+            str(external) if output_owner == "external" else "../external artifacts",
+        )
+        expected_root = external / "tmp/runtime-gate-runs"
     else:
-        expected_root = source / "proof-receipts/evidence/runtime-gate-runs"
+        # The existing family layout owns tmp beside molt-src, never inside it.
+        expected_root = tmp_path / "tmp/runtime-gate-runs"
     monkeypatch.setattr(
         gate.truth, "git_source_identity", lambda: {"schema": "molt.git-source.v1"}
     )
@@ -878,10 +899,52 @@ def test_default_profile_is_shipping_before_build(
         "build.stderr.log",
         "cargo.metadata.json",
     }
-    if output_owner != "proof-plan":
-        assert list(source.iterdir()) == []
+    assert list(source.iterdir()) == []
     if output_owner == "explicit":
         assert not scratch.exists()
+    if output_owner in {"explicit", "queue", "default"}:
+        assert not external.exists()
+
+
+@pytest.mark.parametrize(
+    "policy,dispatcher",
+    [
+        ("wasi-clippy", "run_compile_only_lint"),
+        ("zlib-wasi", "run_zlib_wasi"),
+        ("wasi-lifecycle", "run_wasi_lifecycle"),
+    ],
+)
+def test_policy_receipts_use_external_scratch_without_checkout_outputs(
+    monkeypatch, tmp_path, policy, dispatcher
+):
+    source = tmp_path / "molt-src"
+    source.mkdir()
+    external = tmp_path / "selected artifacts"
+    monkeypatch.setattr(gate, "ROOT", source)
+    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", "disk")
+    observed = []
+
+    def stop_before_build(args, run, aggregate):
+        observed.append(run)
+        assert args.policy == policy
+        (run / "partial-build.log").write_bytes(b"retained failure witness\x00\xff")
+        raise RuntimeError("independent stopped policy build")
+
+    monkeypatch.setattr(gate, dispatcher, stop_before_build)
+    assert gate.main(["--policy", policy]) == 1
+    (run,) = observed
+    assert run.parent == external / "tmp/runtime-gate-runs"
+    import json
+
+    receipt = json.loads((run / "aggregate.json").read_text(encoding="utf-8"))
+    assert receipt["policy"] == policy and receipt["status"] == "failed"
+    assert receipt["error"] == "RuntimeError: independent stopped policy build"
+    assert (
+        run / "partial-build.log"
+    ).read_bytes() == b"retained failure witness\x00\xff"
+    assert list(source.iterdir()) == []
 
 
 def test_build_rustflags_cannot_override_shipping_assertions():
