@@ -15613,6 +15613,7 @@ def test_backend_source_paths_are_feature_aware() -> None:
         # `object`, and the lock closure is conservative over features.
         "vendor/rust/cranelift-object",
         "vendor/rust/object",
+        "vendor/rust/regalloc2",
     }
     codegen_abi = {
         "runtime/molt-codegen-abi",

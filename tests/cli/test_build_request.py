@@ -291,9 +291,9 @@ def test_unrelated_unknown_project_keys_keep_existing_policy():
 def test_retired_codec_cli_option_is_rejected(capsys):
     from molt.cli.build_request_resolution import parse_build_arguments
 
-    with pytest.raises(ValueError, match="Invalid build arguments"):
+    with pytest.raises(ValueError, match="unrecognized arguments: --codec"):
         parse_build_arguments(["--codec", "json"], file_path="program.py")
-    assert "--codec" in capsys.readouterr().err
+    assert capsys.readouterr().err == ""
 
 
 def test_retired_codec_request_keyword_is_rejected():
