@@ -186,7 +186,7 @@ replayed run prints exactly what a computed run prints.
 This follows [Ruff's per-file cache](https://docs.astral.sh/ruff/settings/#cache-dir),
 [Go's content-addressed build and test cache](https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching),
 [Bazel's action cache](https://bazel.build/remote/caching) and
-[Cargo's fingerprints](https://doc.rust-lang.org/nightly/nightly-rustc/cargo/core/compiler/fingerprint/index.html).
+[Cargo's fingerprints](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html).
 Two measured choices differ. Ruff keys a file by its metadata; records key by
 content. Reading and hashing the 57 MB of tracked Python costs about 0.3 s of CPU
 on this host, and a content key is safe to share across worktrees and cannot
@@ -1944,20 +1944,36 @@ existing cached reader before landing. It adds no cache server, whole-environmen
 admission cache, metadata-only admission shortcut or emitted-program overhead. Full release acceptance
 remains separate from developer-loop measurements.
 
-Developer launch admission returns a request-bound result rather than serializing
-the complete captured environment for a caller that discards it. The selected
-child still captures live inputs, applies the full environment validator,
-validates checkout/Python/group selection and compares the published image, then
-closes its retained file/membership fences and capture context before emitting
-the result. The guardian enforces a response bound derived from the expected
-coordinates, exact schema and request equality, process-tree closure and its
-existing reader-source fences. This is an immediate operation result, not a
-proof receipt or reusable permission. Capture operations used by proof ingress
-continue to return complete identity and custody payloads. One canonical
-development-selection validator serves both the cheap metadata selector and
-live admission; the latter reads its published recipe once. Saved work is the
-large response encoding, pipe transfer, parent parse and redundant manifest
-validation. Full validator work moves to the child and is not removed.
+Ordinary developer launches use the existing metadata selection contract:
+physical image/checkout coordinates, published recipe, requested Python/groups,
+editable binding, declared inputs and the bytecode startup policy. A selected
+interpreter child reads that metadata for a site-free guardian and returns a
+bounded exact selection result. The parent retains reader-source fences and
+closed process custody. Ordinary execution makes no claim that every installed
+file was freshly admitted; proof and release ingress independently capture
+actual live bytes with complete identity and custody. The two roles share
+request coordinates and selection validation, while carrying distinct wire
+operations. A selection result cannot substitute for a proof capture.
+
+This removes the full environment traversal from an ordinary launch. Remaining
+cost is interpreter startup, reading and validating the published manifest and
+declared inputs, a small response, guard closure and the bounded reader-source
+fences. No whole-environment admission cache or installed-byte trust receipt is
+introduced. Cargo likewise treats its [registry dependencies as static](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html#special-considerations)
+during ordinary freshness checks; Molt retains exact live captures at proof and
+release boundaries rather than making that an ordinary-launch claim.
+
+Environment capture places read-only published-image checks immediately before
+its mandatory closing file/membership fence, instead of traversing every file
+and directory again after capture returns. Standalone capture and full custody
+output always pass that finalization boundary. Runtime, wheel-target and
+retained-session fences serve distinct intervals and remain separate. The
+saving is one complete metadata/membership pass per published-image capture,
+with one direct callable invocation and no new cache or persistent state.
+Cold capture still reads the same inputs and bytes. This follows
+[Cargo's completion-bound fingerprint update](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html#fingerprint-calculation)
+in placing acceptance after required work; Molt also retains exact
+file-generation and membership checks at that boundary.
 
 
 ### Clippy warning policy and cache reuse

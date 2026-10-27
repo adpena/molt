@@ -2970,7 +2970,14 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     assert accepted.returncode == 0, accepted.stderr
     assert json.loads(accepted.stdout) == {"runtime": runtime["runtime_closure_sha256"]}
 
-    def direct_wrapper():
+    def direct_wrapper(*payload):
+        if not payload:
+            payload = (
+                "python",
+                "-I",
+                "-c",
+                "import json,sys; print(json.dumps([sys.prefix,sys.dont_write_bytecode,sys.pycache_prefix]))",
+            )
         with python_environment_identity.PythonIdentityVerifier() as verifier:
             prefix = verifier.prefix
             return verifier.run(
@@ -2982,10 +2989,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
                     "-S",
                     str(source / "tools/venv_exec.py"),
                     "--",
-                    "python",
-                    "-I",
-                    "-c",
-                    "import json,sys; print(json.dumps([sys.prefix,sys.dont_write_bytecode,sys.pycache_prefix]))",
+                    *payload,
                 ],
                 cwd=tmp_path,
                 env=environment,
@@ -3001,7 +3005,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         # A controller imported from checkout A explicitly admits image B
         # through B's selected reader, with a separate external-source grant.
         assert (
-            publisher.admit_development_environment(
+            publisher.select_development_environment(
                 root, repo_root=source, groups=groups
             )
             == root
@@ -3019,7 +3023,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
             image_schema.SourceBuildEnvironmentError,
             match="package source admission failed",
         ) as refused_home:
-            publisher.admit_development_environment(
+            publisher.select_development_environment(
                 root, repo_root=source, groups=groups
             )
         assert str(source / "src/molt") in str(refused_home.value)
@@ -3029,7 +3033,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         selected_reader.unlink()
         try:
             with pytest.raises(FileNotFoundError) as missing_reader:
-                publisher.admit_development_environment(
+                publisher.select_development_environment(
                     root, repo_root=source, groups=groups
                 )
             assert str(selected_reader) in str(missing_reader.value)
@@ -3043,6 +3047,35 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         launched = direct_wrapper()
         assert launched.returncode == 0, launched.stderr
         assert json.loads(launched.stdout) == [str(root), True, str(root / "bytecode")]
+        # Ordinary selection validates recipe metadata and startup policy.
+        # Exact proof admission independently rejects changed installed bytes.
+        unrelated = site / "idna" / "core.py"
+        original_unrelated = unrelated.read_bytes()
+        stamp = unrelated.stat()
+        changed_unrelated = original_unrelated.replace(b"\n", b" ", 1)
+        assert changed_unrelated != original_unrelated
+        assert len(changed_unrelated) == len(original_unrelated)
+        try:
+            unrelated.chmod(stamp.st_mode | 0o200)
+            unrelated.write_bytes(changed_unrelated)
+            os.utime(unrelated, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            ordinary = direct_wrapper()
+            assert ordinary.returncode == 0, ordinary.stderr
+            assert json.loads(ordinary.stdout) == [
+                str(root),
+                True,
+                str(root / "bytecode"),
+            ]
+            native_ordinary = direct_wrapper("git", "--version")
+            assert native_ordinary.returncode == 0, native_ordinary.stderr
+            assert native_ordinary.stdout.startswith("git version ")
+            exact = read()
+            assert exact.returncode != 0 and not exact.stdout
+            assert "installed distribution RECORD mismatch" in exact.stderr
+        finally:
+            unrelated.write_bytes(original_unrelated)
+            os.utime(unrelated, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            unrelated.chmod(stamp.st_mode)
         refused = read("99.0")
         assert refused.returncode != 0 and not refused.stdout
         assert "different requested Python" in refused.stderr
