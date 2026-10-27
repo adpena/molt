@@ -285,6 +285,7 @@ pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<*const ()> {
 
 #[inline]
 unsafe fn init_runtime_callable_function_obj(
+    py: &PyToken<'_>,
     ptr: *mut u8,
     fn_key: u64,
     raw_fn_ptr: u64,
@@ -314,7 +315,7 @@ unsafe fn init_runtime_callable_function_obj(
     let normalized_trampoline_ptr = normalize_runtime_trampoline_ptr(raw_fn_ptr, trampoline_ptr);
     if normalized_trampoline_ptr != 0 {
         unsafe {
-            function_set_trampoline_ptr(ptr, normalized_trampoline_ptr);
+            function_set_trampoline_ptr(py, ptr, normalized_trampoline_ptr);
         }
     }
 }
@@ -401,9 +402,7 @@ pub(crate) fn alloc_runtime_function_obj(
         return ptr;
     }
     unsafe {
-        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, 0, false);
-        // The call path trusts the binder flag in both states.
-        crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
+        init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, 0, false);
     }
     ptr
 }
@@ -452,7 +451,7 @@ pub extern "C" fn molt_func_new(
             MoltObject::none().bits()
         } else {
             unsafe {
-                init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
+                init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, trampoline_ptr, true);
                 finish_compiled_function(_py, ptr, entry_custody)
             }
         }
@@ -495,10 +494,7 @@ fn molt_func_new_builtin_raw_impl(
         return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
     }
     unsafe {
-        init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, false);
-        // Compiled code can name any runtime symbol, including one that binds
-        // its own arguments; the call path trusts the binder flag.
-        crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
+        init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, trampoline_ptr, false);
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
         if !object_init_class_edge_unpublished(_py, ptr, builtin_bits, ClassEdgeOwnership::Owned) {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
@@ -872,7 +868,7 @@ pub extern "C" fn molt_func_new_closure(
         }
         unsafe {
             function_set_closure_bits(_py, ptr, closure_bits, call_abi);
-            init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
+            init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, trampoline_ptr, true);
             finish_compiled_function(_py, ptr, entry_custody)
         }
     })
@@ -1127,6 +1123,7 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             return MoltObject::none().bits();
         }
         init_runtime_callable_function_obj(
+            _py,
             func_ptr,
             callable_identity.fn_ptr,
             callable_identity.fn_ptr,
@@ -1325,7 +1322,6 @@ unsafe fn publish_function_metadata_code(
             crate::object::layout::bump_function_mutation_version(func_ptr);
         }
         let detached = crate::call::bind::detach_callable_ic_caches();
-        crate::call::bind::refresh_function_requires_binder_flag(py, func_ptr);
         // All scalar, code, version, and cache-visible derived state is coherent
         // before either detached cache edges or displaced metadata can finalize.
         detached.release(py);
@@ -2666,7 +2662,7 @@ mod function_type_execution_kind_tests {
                 .expect("valid compiled signature");
                 let source = alloc_function_obj(_py, 41, 0);
                 assert!(!source.is_null());
-                function_set_trampoline_ptr(source, 73);
+                function_set_trampoline_ptr(_py, source, 73);
                 assert!(function_set_code_bits(_py, source, code_bits));
                 assert_eq!(
                     crate::object::layout::code_publish_execution_kind(

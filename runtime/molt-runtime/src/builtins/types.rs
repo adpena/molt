@@ -1098,8 +1098,7 @@ mod tests {
                 let first_bits = MoltObject::from_ptr(first).bits();
                 let sibling_bits = MoltObject::from_ptr(sibling).bits();
 
-                function_set_trampoline_ptr(first, 0x202);
-                assert!(function_set_code_bits(_py, first, original_bits));
+                function_set_trampoline_ptr(_py, first, 0x202);
                 code_set_signature_bits(
                     _py,
                     original,
@@ -1110,6 +1109,7 @@ mod tests {
                     varkw_bits,
                 )
                 .expect("valid compiled signature");
+                assert!(function_set_code_bits(_py, first, original_bits));
                 code_set_frame_slot_id(original, 23);
                 assert_eq!(
                     code_publish_execution_kind(original, CodeExecutionKind::Generator),
@@ -1118,21 +1118,25 @@ mod tests {
 
                 // A different function cannot attach after publication or rewrite the
                 // shared code object's callable or signature metadata.
-                function_set_trampoline_ptr(sibling, 0x404);
+                function_set_trampoline_ptr(_py, sibling, 0x404);
                 assert!(!function_set_code_bits(_py, sibling, original_bits));
                 assert!(exception_pending(_py));
                 crate::clear_exception(_py);
                 assert_eq!(function_code_bits(sibling), 0);
-                code_set_signature_bits(
-                    _py,
-                    original,
-                    empty_bits,
-                    MoltObject::from_int(0).bits(),
-                    arg_names_bits,
-                    MoltObject::none().bits(),
-                    MoltObject::none().bits(),
-                )
-                .expect("published signature remains immutable");
+                assert!(
+                    code_set_signature_bits(
+                        _py,
+                        original,
+                        empty_bits,
+                        MoltObject::from_int(0).bits(),
+                        arg_names_bits,
+                        MoltObject::none().bits(),
+                        MoltObject::none().bits(),
+                    )
+                    .is_err()
+                );
+                assert!(exception_pending(_py));
+                crate::clear_exception(_py);
                 assert_eq!(code_callable_fn_ptr(original), 0x101);
                 assert_eq!(code_callable_trampoline_ptr(original), 0x202);
                 assert_eq!(code_callable_arity(original), 1);

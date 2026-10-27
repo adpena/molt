@@ -1632,6 +1632,10 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
             crate::object::layout::FunctionCallAbi::Positional as u64;
         crate::object::function_metadata::initialize(ptr);
         inc_ref_bits(_py, none_bits);
+        // Even raw runtime-function allocation may select a specialized
+        // binder. All fields are initialized; this projection needs no builtin
+        // class initialization, allocation, or Python callback.
+        crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
     }
     ptr
 }

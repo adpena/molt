@@ -6245,7 +6245,7 @@ pytest = [
 [[rule]]
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
-description = "Runtime/object-model Rust: one Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed."
+description = "Runtime/object-model Rust: one dev-fast Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed; release-output qualification remains in CI."
 globs = [
   "runtime/molt-runtime/**/*.rs",
   "runtime/molt-obj-model/**/*.rs",
@@ -6254,7 +6254,7 @@ globs = [
   "runtime/**/Cargo.toml",
 ]
 gates = [
-  "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
+  "python tools/run_runtime_test_gate.py --profile dev-fast --build-timeout-seconds 6300 --child-timeout-seconds 120",
 ]
 
 [[rule]]

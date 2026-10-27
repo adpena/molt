@@ -302,7 +302,7 @@ def test_nonfinite_or_nonpositive_timeouts_rejected_before_any_child(option, val
     assert error.value.code == 2
 
 
-def observed_fixture():
+def observed_fixture(*, checked=False):
     import json
 
     artifact = {"executable": str(Path("runtime.exe").resolve())}
@@ -311,10 +311,10 @@ def observed_fixture():
         "executable": artifact["executable"],
         "profile": {
             "test": True,
-            "debug_assertions": False,
+            "debug_assertions": checked,
             "opt_level": "3",
             "debuginfo": 0,
-            "overflow_checks": False,
+            "overflow_checks": checked,
         },
         "features": ["default", "stdlib"],
         "target": {"name": "molt_runtime", "kind": ["rlib"]},
@@ -327,11 +327,80 @@ def test_resolved_compiler_profile_features_preserved():
     observed = gate.observed_build(output, artifact, "release-fast", {})
     assert observed["observed_profile"] == payload["profile"]
     assert observed["features"] == payload["features"]
-    # A different inner-loop profile remains explicitly that coordinate.
+    # A correctness profile carries its observed checks, not just its label.
+    checked_artifact, _, checked_output = observed_fixture(checked=True)
     assert (
-        gate.observed_build(output, artifact, "dev-fast", {})["requested_profile"]
+        gate.observed_build(checked_output, checked_artifact, "dev-fast", {})[
+            "requested_profile"
+        ]
         == "dev-fast"
     )
+
+
+@pytest.mark.parametrize("profile", ["dev-fast", "release-fast", "release-output"])
+@pytest.mark.parametrize("field", ["debug_assertions", "overflow_checks"])
+@pytest.mark.parametrize("value", [None, "true", 1, "opposite"])
+def test_named_profile_requires_observed_check_evidence(profile, field, value):
+    import json
+
+    artifact, payload, _ = observed_fixture(checked=profile == "dev-fast")
+    if value is None:
+        del payload["profile"][field]
+    else:
+        payload["profile"][field] = (
+            profile != "dev-fast" if value == "opposite" else value
+        )
+    with pytest.raises(RuntimeError):
+        gate.observed_build(json.dumps(payload), artifact, profile, {})
+
+
+@pytest.mark.parametrize("profile", ["dev-fast", "release-fast", "release-output"])
+@pytest.mark.parametrize("field", ["debug-assertions", "overflow-checks"])
+@pytest.mark.parametrize(
+    "variable,template",
+    [
+        ("RUSTFLAGS", "-C{field}={value}"),
+        ("CARGO_ENCODED_RUSTFLAGS", "-C\x1f{field}={value}"),
+        ("CARGO_BUILD_RUSTFLAGS", "--codegen={field}={value}"),
+        ("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS", "--codegen {field}={value}"),
+    ],
+)
+def test_named_profile_rejects_contradictory_and_unknown_check_flags(
+    profile, field, variable, template
+):
+    checked = profile == "dev-fast"
+    artifact, _, output = observed_fixture(checked=checked)
+    for value in ("no" if checked else "yes", "unknown", ""):
+        flags = template.format(field=field.replace("-", "_"), value=value)
+        environment = gate.build_environment({variable: flags})
+        assert environment[variable] == flags
+        with pytest.raises(RuntimeError):
+            gate.observed_build(output, artifact, profile, environment)
+    flags = template.format(field=field, value="yes" if checked else "no")
+    assert gate.observed_build(output, artifact, profile, {variable: flags})
+
+
+@pytest.mark.parametrize("profile", ["dev-fast", "release-fast", "release-output"])
+@pytest.mark.parametrize("field", ["DEBUG_ASSERTIONS", "OVERFLOW_CHECKS"])
+@pytest.mark.parametrize("inherited", [False, True])
+def test_named_profile_checks_cargo_selectors_and_retains_them(
+    profile, field, inherited
+):
+    checked = profile == "dev-fast"
+    selector = (
+        ("DEV" if checked else "RELEASE")
+        if inherited
+        else profile.upper().replace("-", "_")
+    )
+    variable = f"CARGO_PROFILE_{selector}_{field}"
+    artifact, _, output = observed_fixture(checked=checked)
+    for value in ("false" if checked else "true", "unknown", ""):
+        environment = gate.build_environment({variable: value})
+        assert environment[variable] == value
+        with pytest.raises(RuntimeError):
+            gate.observed_build(output, artifact, profile, environment)
+    environment = gate.build_environment({variable: "true" if checked else "false"})
+    assert gate.observed_build(output, artifact, profile, environment)
 
 
 def abi_compiler_fixture(
@@ -587,7 +656,9 @@ def test_target_flags_and_explicit_cfg_do_not_escape_profile_witness(variable, v
         gate.observed_build(output, artifact, "release-fast", {variable: value})
 
 
-def test_shipping_and_iteration_roles_are_explicit():
+def test_shipping_iteration_and_correctness_roles_are_explicit():
+    import json
+
     artifact, _, output = observed_fixture()
     assert (
         gate.observed_build(output, artifact, "release-output", {})["profile_role"]
@@ -597,8 +668,22 @@ def test_shipping_and_iteration_roles_are_explicit():
         gate.observed_build(output, artifact, "release-fast", {})["profile_role"]
         == "iteration"
     )
+    checked_artifact, _, checked_output = observed_fixture(checked=True)
     assert (
-        gate.observed_build(output, artifact, "dev-fast", {})["profile_role"]
+        gate.observed_build(checked_output, checked_artifact, "dev-fast", {})[
+            "profile_role"
+        ]
+        == "correctness"
+    )
+    custom = gate.observed_build(output, artifact, "custom-profile", {})
+    assert custom["profile_role"] == "custom"
+    assert custom["requested_profile"] == "custom-profile"
+    _, payload, _ = observed_fixture()
+    del payload["profile"]["overflow_checks"]
+    assert (
+        gate.observed_build(
+            json.dumps(payload), artifact, "custom-profile", {"RUSTFLAGS": "-C"}
+        )["profile_role"]
         == "custom"
     )
 
@@ -1010,7 +1095,12 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
                 "name": name,
                 "kind": ["rlib" if name == "molt_runtime" else "test"],
             },
-            "profile": {"test": True, "debug_assertions": False, "opt_level": "3"},
+            "profile": {
+                "test": True,
+                "debug_assertions": False,
+                "overflow_checks": False,
+                "opt_level": "3",
+            },
             "features": ["l7-attestation-probe", "stdlib_full"],
             "executable": str(binary),
         }
@@ -1315,7 +1405,12 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                 "reason": "compiler-artifact",
                 "package_id": package,
                 "target": {"name": name, "kind": [kind]},
-                "profile": {"test": True, "debug_assertions": True, "opt_level": "0"},
+                "profile": {
+                    "test": True,
+                    "debug_assertions": True,
+                    "overflow_checks": True,
+                    "opt_level": "0",
+                },
                 "features": ["stdlib_micro"] if package == "molt-runtime" else [],
                 "executable": str(image),
             }
@@ -2116,7 +2211,12 @@ def test_semantic_build_owns_exact_satellite_controls_in_one_cargo_lifecycle(
                 "reason": "compiler-artifact",
                 "package_id": package_id,
                 "target": {"name": target, "kind": [kind]},
-                "profile": {"test": True, "debug_assertions": False, "opt_level": "z"},
+                "profile": {
+                    "test": True,
+                    "debug_assertions": False,
+                    "overflow_checks": False,
+                    "opt_level": "z",
+                },
                 "features": [],
                 "executable": str(images[target]),
             }

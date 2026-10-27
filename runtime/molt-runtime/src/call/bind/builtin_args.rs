@@ -93,12 +93,13 @@ pub(super) unsafe fn builtin_call_binding(
     func_ptr: *mut u8,
 ) -> Option<BuiltinCallBinding> {
     unsafe {
-        let callable_bits = Some(MoltObject::from_ptr(func_ptr).bits());
-        // Identity projection must not register targets or acquire the native
-        // callable registry lock on every metadata/inline-cache query.
+        // The caller already admitted this function. Observe its identity once
+        // without reboxing/registering it or resolving the same pointer for
+        // every candidate. Metadata reads below cannot run Python callbacks.
+        let identity = crate::call::type_policy::FunctionSymbolIdentity::from_function(func_ptr);
         macro_rules! matches_builtin {
             ($symbol:path) => {
-                callable_matches_runtime_symbol(callable_bits, fn_key!($symbol))
+                identity.represents(fn_key!($symbol))
             };
         }
         let bind_kind = obj_from_bits(function_binding_meta(
