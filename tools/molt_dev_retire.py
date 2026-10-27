@@ -26,15 +26,8 @@ from tools.dirty_tree_policy import (
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
 )
 from tools.molt_dev_change_ids import landing_representation
-from tools.molt_dev_common import (
-    EXIT_FAIL,
-    EXIT_OK,
-    _fail,
-    _ok,
-    _run_fast_captured_command,
-    _step,
-    _warn,
-)
+from tools.driver_errors import EXIT_FAIL, EXIT_OK  # noqa: E402
+from tools.molt_dev_common import _fail, _ok, _run_fast_captured_command, _step, _warn  # noqa: E402
 
 
 def _driver() -> ModuleType:

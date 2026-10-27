@@ -489,7 +489,7 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
 
 
 def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> None:
-    from tools import molt_dev, molt_dev_common, molt_dev_policy
+    from tools import driver_errors, molt_dev, molt_dev_policy
 
     upstream = "a" * 40
     raw = "echo {integration_upstream_commit}..HEAD"
@@ -513,7 +513,7 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     )
     assert prepared.fingerprints == {}
     with pytest.raises(
-        molt_dev_common.DriverError, match="lack declared prerequisite custody"
+        driver_errors.DriverError, match="lack declared prerequisite custody"
     ):
         cfg.select(["feature.rs"], extra=[bound])
     literal = ("python", "-m", "pytest", "tests/test_proof_plan.py")
@@ -540,14 +540,14 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     ],
 )
 def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
-    from tools import molt_dev_common, molt_dev_policy
+    from tools import driver_errors, molt_dev_policy
 
     with pytest.raises(ValueError, match="placeholder"):
         proof_plan.local_gate_commands(
             {"always": [command]},
             memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
         )
-    with pytest.raises(molt_dev_common.DriverError, match="placeholder"):
+    with pytest.raises(driver_errors.DriverError, match="placeholder"):
         molt_dev_policy.GateConfig.parse(
             "always = " + json.dumps([command]), "invalid fixture"
         )
@@ -1159,7 +1159,7 @@ def test_local_pytest_unit_projection_does_not_round_down_its_envelope(
     ],
 )
 def test_local_rule_schema_rejects_unconsumed_fields(field, value) -> None:
-    from tools import molt_dev_common, molt_dev_policy
+    from tools import driver_errors, molt_dev_policy
 
     first, *rest = PLAN.local_rules
     invalid = {**first, field: value}
@@ -1175,7 +1175,7 @@ def test_local_rule_schema_rejects_unconsumed_fields(field, value) -> None:
         + "\n"
     )
     with pytest.raises(
-        molt_dev_common.DriverError, match="unknown local rule fields.*" + field
+        driver_errors.DriverError, match="unknown local rule fields.*" + field
     ):
         molt_dev_policy.GateConfig.parse(source, "unconsumed policy fixture")
 

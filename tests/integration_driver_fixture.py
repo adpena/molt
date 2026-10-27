@@ -44,7 +44,7 @@ import pytest
 
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from tools.molt_dev_common import _run_fast_captured_command
-from tools.molt_dev_controller import CONTROLLER_PATHS
+from tools.controller_source import CONTROLLER_PATHS  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # Under the controller paths but not part of the driver (module docstring).

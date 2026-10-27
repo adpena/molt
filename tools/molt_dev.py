@@ -158,15 +158,17 @@ bind_repository_imports(__file__)
 from molt import python_interpreter  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 
-from tools.molt_dev_common import (  # noqa: E402
-    _COMMANDS,
-    DEFAULT_REPO,
+from tools.driver_errors import (  # noqa: E402
     EXIT_FAIL,
     EXIT_OK,
     EXIT_USAGE,
     DriverError,
     PublicationRace,
     RebaseConflict,
+)
+from tools.molt_dev_common import (  # noqa: E402
+    _COMMANDS,
+    DEFAULT_REPO,
     _fail,
     _run_fast_captured_bytes,
     _run_fast_captured_command,

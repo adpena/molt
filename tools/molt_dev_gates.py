@@ -34,7 +34,8 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol
 
 from tools import harness_memory_guard, proof_executor, proof_receipts
-from tools.molt_dev_common import DriverError, GateFailure, _say, _warn
+from tools.driver_errors import DriverError, GateFailure  # noqa: E402
+from tools.molt_dev_common import _say, _warn  # noqa: E402
 from tools.memory_guard_core.reporting import NAMED_RECORD_MIN_AGE_S
 
 if TYPE_CHECKING:
