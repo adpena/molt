@@ -101,6 +101,7 @@ def _parse_arguments():
         "--editable-project", nargs=2, metavar=("ENVIRONMENT", "PROJECT")
     )
     modes.add_argument("--capture-environment", type=Path, metavar="ROOT")
+    modes.add_argument("--admit-development-environment", type=Path, metavar="ROOT")
     modes.add_argument("--capture-active-environment", action="store_true")
     parser.add_argument("--runtime-session", action="store_true")
     parser.add_argument("--wheel-tag-source", type=Path)
@@ -122,9 +123,24 @@ def _parse_arguments():
     ) and (not args.admit_published_environment or args.development_checkout is None):
         parser.error("development intent requires published admission and a checkout")
     if args.admit_published_environment and (
-        not (args.capture_environment or args.capture_active_environment)
+        not (
+            args.capture_environment
+            or args.capture_active_environment
+            or args.admit_development_environment
+        )
     ):
         parser.error("published admission requires a read-only environment capture")
+    if args.admit_development_environment is not None:
+        if not args.admit_published_environment or args.development_checkout is None:
+            parser.error(
+                "development receipt requires published admission and a checkout"
+            )
+        if (
+            args.with_custody
+            or args.runtime_session
+            or args.wheel_tag_source is not None
+        ):
+            parser.error("development receipt does not produce a capture or session")
     if args.wheel_tag_source is not None and (
         not args.capture_runtime or args.with_custody or args.runtime_session
     ):
@@ -562,6 +578,8 @@ def _main() -> None:
                     context.protect_tree(Path(candidate))
             if args.capture_environment is not None:
                 context.protect_tree(args.capture_environment)
+            if args.admit_development_environment is not None:
+                context.protect_tree(args.admit_development_environment)
             if args.capture_runtime:
                 payload = capture_current_python_runtime(
                     capture_context=context, with_custody=args.with_custody
@@ -579,7 +597,11 @@ def _main() -> None:
             else:
                 from molt.python_environment_location import _active_environment_prefix
 
-                root = args.capture_environment or _active_environment_prefix()
+                root = (
+                    args.admit_development_environment
+                    or args.capture_environment
+                    or _active_environment_prefix()
+                )
                 bootstrap = list(args.admit_site_bootstrap)
                 if args.admit_virtualenv_bootstrap:
                     bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
@@ -598,25 +620,40 @@ def _main() -> None:
                     from molt.source_build_environment import (
                         admit_published_environment,
                     )
+                    from molt.source_build_environment_schema import (
+                        DevelopmentEnvironmentAdmission,
+                        DevelopmentEnvironmentAdmissionReceipt,
+                    )
 
                     realized = (
                         cast(dict[str, object], payload["identity"])
                         if args.with_custody
                         else payload
                     )
-                    if args.development_checkout is not None:
-                        from molt.source_build_environment import (
-                            load_development_environment,
+                    intent = (
+                        DevelopmentEnvironmentAdmission(
+                            args.development_checkout.resolve(strict=True),
+                            args.development_python,
+                            tuple(args.development_group),
                         )
-
-                        load_development_environment(
-                            root,
-                            repo_root=args.development_checkout,
-                            python=args.development_python,
-                            groups=tuple(args.development_group),
-                        )
-                    admit_published_environment(root, realized)
+                        if args.development_checkout is not None
+                        else None
+                    )
+                    if args.admit_development_environment is not None:
+                        # The old guardian validated the full response. Moving
+                        # transport must retain that exact validator here.
+                        realized = validate_python_environment_identity(realized)
+                    admit_published_environment(
+                        root, realized, development_admission=intent
+                    )
                     context.verify()
+                    if args.admit_development_environment is not None:
+                        assert intent is not None
+                        payload = dict(
+                            DevelopmentEnvironmentAdmissionReceipt(
+                                root.resolve(strict=True), intent
+                            ).payload()
+                        )
             if args.runtime_session:
                 _serve_runtime_session(
                     payload, context, requests=sys.stdin, responses=sys.stdout
