@@ -49,6 +49,7 @@ def source_only_perf_checkout(monkeypatch, tmp_path):
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
     monkeypatch.setattr(measure, "REPO_ROOT", source)
+    monkeypatch.setattr(scoreboard, "REPO_ROOT", source)
     monkeypatch.setattr(measure.bench, "REPO_ROOT", source)
     # Preserve the production default's relationship to its source checkout.
     # Moving this to artifacts in the fixture would hide constructor writes.
