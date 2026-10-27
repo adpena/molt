@@ -571,6 +571,8 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   Apply inventories twice; failed durable removal leaves named residue for
   recovery review. Build admission must remeasure actual free space afterward.
 
+- **Python runtime refresh**: ordinary checkout provisioning reads the published selection metadata; command admission checks live inputs. After a base interpreter changes, clear `UV_PROJECT_ENVIRONMENT` and run `python -m molt.checkout_provisioning ensure uv-environment --refresh-runtime`. This explicitly recaptures the runtime through the existing image publisher and updates the default selection under its provisioning lock. Previous generations keep their lifetime protection and are never repaired in place. The flag applies only to `ensure` with `uv-environment`; ordinary selection keeps its cheap metadata path.
+
 
 - **Build-state authority**: [`molt.build_state_layout.build_state_root`](../src/molt/build_state_layout.py) is the shared projection for CLI builds, daemon custody, governors, and differential harness locks; `project_build_state_root` applies it to the project's Cargo target. Explicit `MOLT_BUILD_STATE_DIR` selects the state root (relative paths are project-relative). Otherwise, with `MOLT_EXT_ROOT`, state lives at `<MOLT_EXT_ROOT>/tmp/build-control/<target-address>/`; the address comes from the canonical Cargo-target identity, not the receipt or guest directory. Only environments without an artifact root use `<CARGO_TARGET_DIR>/.molt_state/`. Select disposable payload locations separately; never hand-compute the address. CI failure-artifact uploads resolve this same authority under the admitted harness environment.
 - **Benchmark build-cache policy**: `tools/bench.py` and `tools/bench_wasm.py`
@@ -1061,6 +1063,17 @@ fail closed; the inventory itself makes no claim about current file bytes.
   in-place migration. Run the existing `molt_cache_prune.py`
   command to inspect or apply it. Its totals combine file bytes and logical
   source payload bytes; separate DB/WAL/SHM measurements report physical storage.
+  Exact source-record inventory scans a [SQLite-maintained expression index](https://www.sqlite.org/expridx.html) on
+  `length(payload)`, with one compact length entry per record. Inventory remains
+  linear in record count; publication, replacement and deletion maintain the
+  index transactionally, while recency-only updates leave it untouched. BLOB
+  length does not require loading the entire payload; the index avoids sparse
+  payload-table page access. [`INDEXED BY`](https://www.sqlite.org/lang_indexedby.html)
+  requires this access path; an unavailable index is a cache maintenance error.
+  Adding this index changes the DDL digest, so its
+  namespace starts empty and repopulates on cache misses. Old and new namespaces
+  may coexist until the existing lifetime-protected retirement permits removal;
+  there is no in-place index migration or separate application byte counter.
   Each metadata page releases its read snapshot before yielding to row or file
   eviction. The existing inventory count bounds examined observations, including
   repeated rows after recency changes or backward clock movement; an upper key
