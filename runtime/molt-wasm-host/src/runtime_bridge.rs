@@ -780,6 +780,7 @@ mod indirect_dispatch_tests {
                         (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                         (func (export "molt_runtime_execution_leave") (param i64))
                         (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                        (func (export "molt_main_exit_status") (result i64) i64.const 0)
                         (func (export "molt_exception_pending") (result i64) i64.const 0))"#
                     ),
                 )
@@ -794,6 +795,7 @@ mod indirect_dispatch_tests {
                     (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                     (func (export "molt_runtime_execution_leave") (param i64))
                     (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                    (func (export "molt_main_exit_status") (result i64) i64.const 0)
                     (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
                     )
                     .unwrap()
@@ -934,6 +936,7 @@ mod indirect_dispatch_tests {
                 (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                 (func (export "molt_runtime_execution_leave") (param i64))
                 (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                (func (export "molt_main_exit_status") (result i64) i64.const 0)
                 (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
         )
         .unwrap();
@@ -966,6 +969,7 @@ mod indirect_dispatch_tests {
             (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
             (func (export "molt_runtime_execution_leave") (param i64))
             (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+            (func (export "molt_main_exit_status") (result i64) i64.const 0)
             (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
         )
         .unwrap();

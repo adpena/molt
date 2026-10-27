@@ -24,6 +24,7 @@ fn lifetime_fixture(
     enter_body: &str,
     leave_body: &str,
     shutdown_body: &str,
+    report_body: &str,
 ) -> (Store<HostState>, Instance, Arc<Mutex<Vec<i32>>>) {
     let module = Module::new(
         engine,
@@ -32,6 +33,11 @@ fn lifetime_fixture(
         (import "test" "mark" (func $mark (param i32)))
         (global $pending (mut i64) (i64.const {pending}))
         (func (export "molt_exception_pending") (result i64) global.get $pending)
+        (func (export "molt_main_exit_status") (result i64)
+            i32.const 5 call $mark {report_body}
+            global.get $pending i64.const 0 i64.ne
+            i64.const 0 global.set $pending
+            if (result i64) i64.const 7 else i64.const 0 end)
         (func (export "molt_main") (result i64)
             i32.const 2 call $mark {main_body} i64.const 0)
         (func (export "molt_runtime_execution_enter") (result i64)
@@ -59,14 +65,14 @@ fn lifetime_fixture(
 fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
     let engine = build_engine().unwrap();
     for (main, pending, enter, leave, shutdown, expected, diagnostic) in [
-        ("", 0, "i64.const 41", "", "", vec![1, 2, 3, 4], None),
+        ("", 0, "i64.const 41", "", "", vec![1, 2, 5, 3, 4], None),
         (
             "",
             0,
             "i64.const 41",
             "",
             "i64.const 0 return",
-            vec![1, 2, 3, 4],
+            vec![1, 2, 5, 3, 4],
             Some("shutdown did not complete"),
         ),
         (
@@ -75,7 +81,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "",
             "i64.const 2 return",
-            vec![1, 2, 3, 4],
+            vec![1, 2, 5, 3, 4],
             Some("shutdown did not complete"),
         ),
         (
@@ -106,21 +112,12 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             Some("malformed molt_exception_pending status"),
         ),
         (
-            "i64.const 1 global.set $pending",
-            0,
-            "i64.const 41",
-            "",
-            "",
-            vec![1, 2, 3, 4],
-            Some("pending runtime exception"),
-        ),
-        (
             "",
             0,
             "i64.const 41",
             "unreachable",
             "",
-            vec![1, 2, 3, 4],
+            vec![1, 2, 5, 3, 4],
             Some("leave runtime execution"),
         ),
         (
@@ -129,7 +126,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "",
             "unreachable",
-            vec![1, 2, 3, 4],
+            vec![1, 2, 5, 3, 4],
             Some("finalize Molt application"),
         ),
         (
@@ -152,7 +149,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
         ),
     ] {
         let (mut store, instance, events) =
-            lifetime_fixture(&engine, main, pending, enter, leave, shutdown);
+            lifetime_fixture(&engine, main, pending, enter, leave, shutdown, "");
         let result = execute_test_lifetime(&mut store, &instance);
         assert_eq!(*events.lock().unwrap(), expected);
         if let Some(diagnostic) = diagnostic {
@@ -174,6 +171,7 @@ fn finite_lifetime_preserves_primary_typed_trap_and_both_cleanup_failures() {
         "i64.const 41",
         "unreachable",
         "unreachable",
+        "",
     );
     let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
     assert_eq!(*events.lock().unwrap(), vec![1, 2, 3, 4]);
@@ -199,7 +197,7 @@ fn finite_lifetime_retains_pending_failure_without_successful_execution_admissio
         "i64.const 1 global.set $pending unreachable",
         "i64.const 1 global.set $pending i64.const 0",
     ] {
-        let (mut store, instance, events) = lifetime_fixture(&engine, "", 0, enter, "", "");
+        let (mut store, instance, events) = lifetime_fixture(&engine, "", 0, enter, "", "", "");
         let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
         assert_eq!(*events.lock().unwrap(), vec![1, 4]);
         let text = format!("{error:#}");
@@ -217,7 +215,8 @@ fn finite_lifetime_retains_pending_failure_without_successful_execution_admissio
         );
     }
     // An admitted instance can already carry a core-start/setup exception.
-    let (mut store, instance, events) = lifetime_fixture(&engine, "", 1, "i64.const 41", "", "");
+    let (mut store, instance, events) =
+        lifetime_fixture(&engine, "", 1, "i64.const 41", "", "", "");
     let lifetime = MoltRuntimeLifetime::admit(&mut store, &instance).unwrap();
     let error = lifetime.finish(&mut store, Ok(())).unwrap_err();
     assert_eq!(*events.lock().unwrap(), vec![4]);
@@ -228,6 +227,7 @@ fn finite_lifetime_retains_pending_failure_without_successful_execution_admissio
 fn lifetime_export_admission_precedes_any_guest_start() {
     let engine = build_engine().unwrap();
     let exports = [
+        ("molt_main_exit_status", "(result i64) i64.const 0"),
         ("molt_runtime_execution_enter", "(result i64) i64.const 41"),
         ("molt_runtime_execution_leave", "(param i64)"),
         ("molt_runtime_shutdown", "(result i64) i64.const 0"),
@@ -294,6 +294,7 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
     for (linked, fail_table_setup) in [(true, true), (false, true), (false, false)] {
         let runtime_fields = r#"
             (func (export "molt_anchor"))
+            (func (export "molt_main_exit_status") (result i64) i64.const 0)
             (func (export "molt_runtime_execution_enter") (result i64) unreachable)
             (func (export "molt_runtime_execution_leave") (param i64) unreachable)
             (func (export "molt_runtime_shutdown") (result i64) unreachable)
@@ -374,4 +375,87 @@ fn host_resource_cleanup_closes_owned_sockets_and_is_repeatable() {
     // not merely that the host registry forgot its handle.
     let replacement = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
     replacement.bind(&address).unwrap();
+}
+
+#[test]
+fn finite_lifetime_reports_exit_once_before_release_and_shutdown() {
+    let engine = build_engine().unwrap();
+    for (raw, expected) in [
+        (0, GuestTermination::Returned),
+        (7, GuestTermination::ApplicationExit(7)),
+        (4_294_967_295_i64, GuestTermination::ApplicationExit(-1)),
+    ] {
+        let body = format!("i64.const 0 global.set $pending i64.const {raw} return");
+        let (mut store, instance, events) = lifetime_fixture(
+            &engine,
+            "i64.const 1 global.set $pending",
+            0,
+            "i64.const 41",
+            "",
+            "",
+            &body,
+        );
+        assert_eq!(
+            execute_test_lifetime(&mut store, &instance).unwrap(),
+            expected
+        );
+        assert_eq!(*events.lock().unwrap(), vec![1, 2, 5, 3, 4]);
+    }
+}
+
+#[test]
+fn finite_lifetime_preserves_reporter_failure_and_finalizes_once() {
+    let engine = build_engine().unwrap();
+    for (body, diagnostic, trap) in [
+        (
+            "i32.const 1 i32.const 0 i32.div_s drop",
+            "call molt_main_exit_status",
+            true,
+        ),
+        (
+            "i64.const -1 return",
+            "malformed molt_main_exit_status",
+            false,
+        ),
+        (
+            "i64.const 4294967296 return",
+            "malformed molt_main_exit_status",
+            false,
+        ),
+    ] {
+        let (mut store, instance, events) = lifetime_fixture(
+            &engine,
+            "i64.const 1 global.set $pending",
+            0,
+            "i64.const 41",
+            "",
+            "",
+            body,
+        );
+        let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
+        assert_eq!(*events.lock().unwrap(), vec![1, 2, 5, 3, 4]);
+        assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
+        assert!(format!("{error:#}").contains("pending runtime exception before runtime shutdown"));
+        assert_eq!(
+            error.downcast_ref::<wasmtime::Trap>(),
+            trap.then_some(&wasmtime::Trap::IntegerDivisionByZero)
+        );
+    }
+}
+
+#[test]
+fn finite_lifetime_does_not_report_again_after_leave_publishes_exception() {
+    let engine = build_engine().unwrap();
+    let (mut store, instance, events) = lifetime_fixture(
+        &engine,
+        "",
+        0,
+        "i64.const 41",
+        "i64.const 1 global.set $pending",
+        "",
+        "",
+    );
+    let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
+    assert_eq!(*events.lock().unwrap(), vec![1, 2, 5, 3, 4]);
+    assert!(format!("{error:#}").contains("pending runtime exception before runtime shutdown"));
 }

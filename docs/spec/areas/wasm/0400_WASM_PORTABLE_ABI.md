@@ -740,6 +740,21 @@ Every other Molt host service, runtime or native import requires the current
 deployment manifest, including when mixed with valid indirect calls. Molt
 applications must enter through their manifest.
 
+The Rust host requires the existing runtime export `molt_main_exit_status:
+() -> i64` before either linked or split guest core start. After a normal
+`molt_main` return it calls this reporter exactly once, on the canonical runtime
+instance and while the runtime execution lease remains entered. The runtime owns
+uncaught-exception display, `sys.excepthook`, `SystemExit`, and consumption of the
+original pending exception; the host does not reconstruct or print it again.
+The raw carrier must fit `u32`, whose bits are then interpreted as `i32`, matching
+the native runtime exit ABI. Zero means successful return; a nonzero application
+exit remains distinct from WASI `proc_exit`. Execution leave, runtime shutdown,
+and host resource closure complete before the host exits with that status.
+Pre-main pending failures and guest traps retain their existing failure paths;
+they do not call the reporter. A fresh pending exception during execution leave
+still fails before shutdown, rather than triggering a second report. This uses
+the existing export and deployment version, without a new status schema.
+
 The Rust host's explicit `--wasi-command-manifest PATH` selector admits SDK
 services for a WASI command through that same current version 3 reader, module
 size and SHA authority. It requires one `linked` module, no runtime provider or
