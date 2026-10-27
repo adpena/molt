@@ -1,4 +1,3 @@
-# MOLT_ENV: MOLT_CODEC=json
 """Purpose: differential coverage for call arity trampoline."""
 
 

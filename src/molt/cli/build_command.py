@@ -418,7 +418,6 @@ def build(request: BuildRequest) -> int:
                 prepared_build_roots=prepared_build_roots,
                 prepared_build_config=prepared_build_config,
                 resolved_build_entry=resolved_build_entry,
-                parse_codec=request.parse_codec,
                 type_hint_policy=request.type_hint_policy,
                 profile=request.profile,
                 json_output=request.json_output,

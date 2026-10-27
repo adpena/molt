@@ -401,7 +401,6 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
 _LOWERING_CTX = dict(
     module_execution_kind="imported",
     known_classes_snapshot={},
-    parse_codec="json",
     type_hint_policy="trust",
     type_facts=None,
     enable_phi=True,

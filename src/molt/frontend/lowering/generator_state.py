@@ -298,7 +298,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
 
     def __init__(
         self,
-        parse_codec: Literal["msgpack", "cbor", "json"] = "msgpack",
         type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
         *,
         source_path: str | None = None,
@@ -413,7 +412,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # Python 3.14 owns deferred evaluation through __annotate__; 3.12/3.13
         # retain eager evaluation unless future annotations applies.
         self.eager_annotations = target_python < (3, 14)
-        self.parse_codec = parse_codec
         self.type_hint_policy = type_hint_policy
         self.in_annotation = False
         self._reset_type_hint_scope_state(reset_bytearray_len=True)

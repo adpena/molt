@@ -1624,10 +1624,11 @@ resource_class = "scheduled-suite"
 needs = ["nightly-prepare", "conformance-aggregate", "differential-aggregate", "regrtest-aggregate"]
 
 # Frontend IR determinism: each case recompiles a program in fresh
-# interpreters (several hash seeds, both parse codecs, a midend wall-clock
-# budget) and requires byte-identical IR. The 145 cases take 140 s at -n 4 on
-# an M-series Mac and took 878 s on the hosted runner (Nightly run
-# 37947710312), too slow for the PR unit job. It needs no build, so it runs
+# interpreters (several hash seeds, a midend wall-clock
+# budget) and requires byte-identical IR. Before the retired codec axis was
+# removed, this proof took 140 s at -n 4 on an M-series Mac and 878 s on the
+# hosted runner (Nightly run 37947710312). These are historical coordinates,
+# not timings for the current case set. It needs no backend build, so it runs
 # beside the build chain.
 [[command]]
 id = "nightly.determinism.ir-hashseed"
@@ -3273,8 +3274,9 @@ family = "python_unit_collection"
 cell = "linux-x86_64-py312-unit-collection"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-# The hashseed proof runs eight fresh-process cold/warm builds (each IR codec
-# and worker mode under a fixed and a random seed); it ran 24 until 2026-10-17,
+# The hashseed proof runs eight fresh processes, each with a cold/warm CLI
+# pair (16 builds across worker modes and fixed/independent random seeds).
+# It used 24 process configurations until 2026-10-17,
 # when hosted Linux (run 38515158046) needed about 10 min for them at -n 2.
 timeout_seconds = 1320
 cache_domain = "pytest"

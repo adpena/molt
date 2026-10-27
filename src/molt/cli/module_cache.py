@@ -42,7 +42,7 @@ from molt.cli.function_references import (
 from molt.cli.json_cache import (
     SOURCE_ANALYSIS_CACHE_MAX_BYTES,
 )
-from molt.cli.build_request import ParseCodec, TypeHintPolicy
+from molt.cli.build_request import TypeHintPolicy
 from molt.cli.models import (
     _RuntimeImportScanCustody,
     ImportScanMode,
@@ -1285,7 +1285,6 @@ def _module_lowering_context_payload(
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -1374,7 +1373,6 @@ def _module_lowering_context_payload(
         "size": source_lease.source_size,
         "source_sha256": source_lease.source_sha256,
         "source_kind": source_lease.source_kind,
-        "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "type_facts": _type_facts_cache_payload(scoped_type_facts),
         "enable_phi": enable_phi,
@@ -1532,7 +1530,6 @@ def _module_lowering_context_digest_for_module(
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -1571,7 +1568,6 @@ def _module_lowering_context_digest_for_module(
         logical_source_path=logical_source_path,
         module_execution_kind=module_execution_kind,
         known_classes_snapshot=known_classes_snapshot,
-        parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         type_facts=type_facts,
         enable_phi=enable_phi,
@@ -1816,7 +1812,6 @@ def _load_cached_module_lowering_result(
     module_execution_kind: ModuleExecutionKind,
     is_package: bool,
     known_classes_snapshot: dict[ClassId, ClassInfo],
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -1858,7 +1853,6 @@ def _load_cached_module_lowering_result(
             logical_source_path=logical_source_path,
             module_execution_kind=module_execution_kind,
             known_classes_snapshot=known_classes_snapshot,
-            parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             type_facts=type_facts,
             enable_phi=enable_phi,
@@ -1923,7 +1917,6 @@ def _module_worker_payload(
     module_path: Path,
     logical_source_path: str,
     source_lease: _ModuleSourceLease,
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     module_is_namespace: bool,
     module_execution_kind: ModuleExecutionKind,
@@ -1992,7 +1985,6 @@ def _module_worker_payload(
         "module_path": str(module_path),
         "logical_source_path": logical_source_path,
         "source_lease": source_lease.worker_payload(),
-        "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "module_is_namespace": module_is_namespace,
         "module_execution_kind": module_execution_kind,

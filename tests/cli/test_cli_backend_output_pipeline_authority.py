@@ -886,7 +886,6 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
         )
     }
     args.update(
-        parse_codec="msgpack",
         type_hint_policy="ignore",
         out_dir=None,
         split_runtime=False,

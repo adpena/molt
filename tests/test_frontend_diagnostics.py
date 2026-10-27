@@ -161,7 +161,7 @@ def test_removed_positional_policy_cannot_be_reinterpreted_as_a_source_path(
     policy: str,
 ) -> None:
     with pytest.raises(TypeError):
-        SimpleTIRGenerator("json", "ignore", policy)
+        SimpleTIRGenerator("ignore", policy)
     with pytest.raises(TypeError):
         CompatibilityReporter(policy)
     assert CompatibilityReporter(source_path=policy).source_path == policy

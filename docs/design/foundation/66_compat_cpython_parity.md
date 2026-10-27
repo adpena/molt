@@ -63,29 +63,20 @@ release completed children on every failure while preserving a pending error.
 Complete lexical `tokenize` conformance, other versioned metadata and release
 matrix qualification remain separate obligations in the findings ledger.
 
-## One codec selection across build transports
+## Codec packages own their parsers
 
-Differential, benchmark and conformance builds explicitly select their structured
-codec through `molt.cli.build_request.parse_codec_from_input`, which delegates to
-the existing strict `BuildRequest` decoder. `MOLT_CODEC` unset selects the
-request's declared `msgpack` default, including when a local project config
-selects another codec. An explicitly empty or invalid value is a build admission
-failure, reported per file before compiler dispatch. The ordinary CLI continues
-to resolve its explicit options and project configuration through its existing
-request resolver.
+Runtime JSON, MessagePack and CBOR packages select their own parsing intrinsics.
+The compiler has no codec selector: the retired `--codec` and build-request
+`parse_codec` inputs are rejected by their existing argument/request boundaries,
+and project `build.codec` is rejected at configuration admission. Other unknown
+project keys retain the existing configuration policy. `MOLT_CODEC` is no longer
+a declared or read harness input.
 
-After item-budget admission, the differential producer selects the codec once
-alongside the CLI interpreter in `BackendExecutionContext`. Native direct and
-batch builds, WASM, LLVM, Luau and JIT consume that same typed field; ambient
-variables cannot replace it. The context-free native entry, benchmark and
-conformance inputs use the same pure codec projection before dispatch. A
-terminal batch item or suite trip cannot initiate codec selection or batch startup.
-
-This adds one bounded request-decoder admission per selected input, allocating
-one input dictionary and one temporary request. Benchmark command projection
-also decodes its validated payload once to recover the typed codec for `--codec`.
-It adds no process, filesystem, cache or emitted-program work. Batch and direct
-command projections retain their existing request validation and build/run budgets.
+The shared backend IR transport remains its existing content-addressed
+MessagePack lease; standalone backend debug/input formats are separate contracts.
+Retirement removes one request/context field, one per-input strict decoder call
+and an unused lowering-cache partition. It changes no runtime codec operation and
+makes no guest performance claim.
 
 ## One authoritative execution attempt
 

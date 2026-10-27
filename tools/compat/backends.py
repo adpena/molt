@@ -66,7 +66,6 @@ from molt.llvm_toolchain import (
 )
 from molt.capability_policy import expand_capabilities, split_capability_tokens
 from molt.compilation_target import TargetKind
-from molt.cli.build_request import ParseCodec
 from molt.cli.run_tier import (
     JIT_IMAGE_SUFFIX,
     jit_program_started,
@@ -419,7 +418,6 @@ class BackendExecutionContext:
 
     target_python: TargetPythonVersion
     molt_cli_python: str
-    parse_codec: ParseCodec
     build_profile: str
     capabilities: str
     environment: Mapping[str, str]
@@ -749,8 +747,6 @@ def _build_cmd(
         context.build_profile,
         "--python-version",
         context.target_python.short,
-        "--codec",
-        context.parse_codec,
         "--respect-pythonpath",
         "--out-dir",
         str(out_dir),

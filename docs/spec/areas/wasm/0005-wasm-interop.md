@@ -40,7 +40,6 @@ world json-service {
 Molt allows direct binding to Rust-defined functions in a Molt Package.
 ```python
 # molt_json is a compatibility package (compiled Rust or WASM).
-# Use `--codec json` when the compiler should lower parse calls to JSON.
 @molt.ffi("molt_json::parse")
 def parse_json(data: str) -> dict:
     """Compiled by Molt into a direct call to the WASM export."""

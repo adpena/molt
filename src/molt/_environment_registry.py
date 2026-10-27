@@ -1804,20 +1804,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "msgpack",
-      "kind": "enum",
-      "name": "MOLT_CODEC",
-      "output_neutral": false,
-      "owner": "tools/bench.py",
-      "summary": "Structured codec explicitly passed by every differential backend, bench and conformance build through the canonical typed request input; unset pins msgpack independently of project configuration, and an empty or invalid value fails build admission.",
-      "values": [
-        "msgpack",
-        "cbor",
-        "json"
-      ]
-    },
-    {
       "audience": "user",
       "default": "",
       "kind": "string",

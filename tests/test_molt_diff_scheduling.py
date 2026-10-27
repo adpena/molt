@@ -1506,7 +1506,6 @@ def _install_held_backend_probe(initializer, initargs, released, entered):
     molt_diff._python_exe_version = lambda *a, **k: (3, 12)
     molt_diff._backend_execution_context = lambda *a, **k: (
         backends.BackendExecutionContext(
-            parse_codec="msgpack",
             molt_cli_python=sys.executable,
             target_python=version,
             build_profile="dev",
@@ -1672,49 +1671,6 @@ def test_live_preview_is_one_bounded_write_and_not_a_full_result_copy(monkeypatc
     assert len(writes) == 1 and len(writes[0]) < 900
     assert writes[0].startswith("[BACKEND UNCALIBRATED]")
     assert writes[0].endswith("[matrix still running; final verdict pending]\n")
-
-
-@pytest.mark.parametrize("raw_codec", ["", "invalid-codec"])
-def test_warm_cache_codec_refusal_is_per_file_and_continues_cohort(
-    suite, tmp_path, monkeypatch, capsys, raw_codec
-):
-    for index, path in enumerate(suite.files):
-        header = f"# MOLT_ENV: MOLT_CODEC={raw_codec}\n" if index == 0 else ""
-        path.write_text(header + "print(42)\n", encoding="utf-8")
-    monkeypatch.delenv("MOLT_CODEC", raising=False)
-    monkeypatch.setattr(
-        molt_diff, "_resolve_molt_cli_python", lambda: "/selected/python"
-    )
-    monkeypatch.setattr(
-        molt_diff, "_resolve_python_command", lambda *_a, **_k: (sys.executable,)
-    )
-    monkeypatch.setattr(
-        molt_diff,
-        "_python_command_metadata",
-        lambda *_a, **_k: molt_diff._PythonOracleMetadata((3, 12), sys.executable),
-    )
-    warmed = []
-
-    def warm(path, profile, *, execution_context):
-        warmed.append(path)
-        assert execution_context.parse_codec == "msgpack"
-        assert execution_context.molt_cli_python == "/selected/python"
-        return molt_diff.compat_backends.BackendResult("", "", 0)
-
-    monkeypatch.setattr(molt_diff, "run_molt_build_only", warm)
-    summary = molt_diff.run_diff(
-        suite.files,
-        sys.executable,
-        jobs=1,
-        warm_cache=True,
-        failures_output=tmp_path / "failures.txt",
-    )
-    assert warmed == [str(path) for path in suite.files[1:]]
-    assert suite.calls == [str(path) for path in suite.files]
-    assert summary["failed"] == 1 and summary["passed"] == len(suite.files) - 1
-    output = capsys.readouterr().out
-    assert output.count("[WARM-CACHE FAIL]") == 1
-    assert str(suite.files[0]) in output and "parse_codec" in output
 
 
 def test_warm_cache_other_value_error_keeps_its_original_failure(

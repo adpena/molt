@@ -293,7 +293,6 @@ def test_batch_build_params_are_native_and_canonical_env(monkeypatch):
         "TMPDIR": "/repo/tmp",
         "PYTHONPATH": "/repo/src",
         "MOLT_SESSION_ID": "conformance-test",
-        "MOLT_CODEC": "json",
     }
 
     captured = {}
@@ -315,7 +314,6 @@ def test_batch_build_params_are_native_and_canonical_env(monkeypatch):
     assert "fallback" not in params
     assert params["trusted"] is False
     assert params["profile"] == "release"
-    assert params["parse_codec"] == "json"
     assert params["type_hint_policy"] == "check"
     assert "env_overrides" not in params
     assert not {"codec", "type_hints", "type_facts", "backend"} & params.keys()
@@ -440,32 +438,6 @@ def test_compile_file_reports_batch_error_without_host_fallback(tmp_path: Path):
     assert not out.exists()
 
 
-@pytest.mark.parametrize("raw_codec", ["", "invalid-codec"])
-def test_compile_file_rejects_invalid_codec_before_batch_startup(
-    monkeypatch, tmp_path, raw_codec
-):
-    def unexpected_start(*args, **kwargs):
-        pytest.fail("invalid conformance configuration started the batch client")
-
-    monkeypatch.setattr(
-        run_molt_conformance, "BatchCompileServerClient", unexpected_start
-    )
-    out = tmp_path / "program_molt"
-    with run_molt_conformance.ConformanceBatchCompiler(
-        ["molt"], {"MOLT_CODEC": raw_codec}
-    ) as compiler:
-        result = run_molt_conformance.compile_file(
-            compiler, tmp_path / "program.py", out
-        )
-
-    assert not result.ok and not result.timed_out
-    assert "rc=2" in result.detail
-    assert "parse_codec" in result.detail
-    if raw_codec:
-        assert raw_codec in result.detail
-    assert not out.exists()
-
-
 @pytest.mark.parametrize("explicit_ping", [False, True])
 def test_conformance_batch_startup_follows_validation_and_pings_once(
     monkeypatch, tmp_path, explicit_ping
@@ -481,16 +453,13 @@ def test_conformance_batch_startup_follows_validation_and_pings_once(
             if op == "ping":
                 return {"ok": True, "pong": True}
             assert params["file_path"] == str(tmp_path / "program.py")
-            assert params["parse_codec"] == "json"
             return {"ok": True, "returncode": 0}
 
         def close(self, *, force=False, timeout):
             events.append("close")
 
     monkeypatch.setattr(run_molt_conformance, "BatchCompileServerClient", Client)
-    with run_molt_conformance.ConformanceBatchCompiler(
-        ["molt"], {"MOLT_CODEC": "json"}
-    ) as compiler:
+    with run_molt_conformance.ConformanceBatchCompiler(["molt"], {}) as compiler:
         assert events == []
         if explicit_ping:
             compiler.ping()
@@ -778,20 +747,3 @@ def test_preflight_keeps_the_warmup_budget_until_a_build_succeeds(
     warm = run_molt_conformance.WARMUP_TIMEOUT
     cold_free = run_molt_conformance.COMPILE_TIMEOUT
     assert budgets == [warm, warm, cold_free, cold_free]
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"), [(None, "msgpack"), ("json", "json"), ("cbor", "cbor")]
-)
-def test_conformance_codec_uses_supplied_input_not_ambient_config(
-    monkeypatch, tmp_path, raw, expected
-):
-    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
-    (tmp_path / "molt.toml").write_text('[build]\ncodec = "cbor"\n', encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    params = run_molt_conformance._molt_batch_build_params(
-        Path("case.py"), Path("case_molt"), {} if raw is None else {"MOLT_CODEC": raw}
-    )
-    assert params["parse_codec"] == expected
-    assert params["file_path"] == "case.py" and params["output"] == "case_molt"
-    assert params["target"] == "native" and params["profile"] == "release"

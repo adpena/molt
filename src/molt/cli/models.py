@@ -49,7 +49,7 @@ from molt.toolchain_identity import StableRegularFileIdentity
 if TYPE_CHECKING:
     from molt.tool_releases import ToolDiscovery
     from molt.backend_protocol import BackendEmissionOrigin
-    from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
+    from molt.cli.build_request import BuildProfile, TypeHintPolicy
     from molt.cli.link_input_observation import CompilationInputRecord
     from molt.cli.external_native import (
         _ExternalNativeAbiSymbol,
@@ -617,7 +617,6 @@ class _SerialFrontendLoweringContext:
     module_source_catalog: _ModuleSourceCatalog
     generated_module_source_paths: Mapping[str, str]
     project_root: Path | None
-    parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
     type_facts: TypeFacts | None
     enable_phi: bool

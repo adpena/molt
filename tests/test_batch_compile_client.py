@@ -65,20 +65,20 @@ def test_batch_build_envelope_keeps_environment_outside_typed_params(
         client, "_readline", lambda deadline, **kwargs: '{"id": 1, "ok": true}'
     )
     params = build_request_to_payload(
-        BuildRequest(file_path="program.py", profile="dev", parse_codec="json")
+        BuildRequest(file_path="program.py", profile="dev", python_version="3.14")
     )
     environment = ProcessEnvironment(
-        {"Path": "/fixture/bin", "MOLT_CODEC": "json"}, rule=rule
+        {"Path": "/fixture/bin", "MOLT_CAPABILITIES": "net"}, rule=rule
     )
 
     client.request("build", params=params, env_overrides=environment, timeout=1.0)
 
     sent = json.loads(client._proc.sent.readline())
     assert sent["id"] == 1 and sent["op"] == "build"
-    assert sent["env_overrides"] == {"Path": "/fixture/bin", "MOLT_CODEC": "json"}
+    assert sent["env_overrides"] == {"Path": "/fixture/bin", "MOLT_CAPABILITIES": "net"}
     assert sent["params"] == params
     assert sent["params"]["profile"] == "dev"
-    assert sent["params"]["parse_codec"] == "json"
+    assert sent["params"]["python_version"] == "3.14"
     assert "env_overrides" not in sent["params"]
 
 

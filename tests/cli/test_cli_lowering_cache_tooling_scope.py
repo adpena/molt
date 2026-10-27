@@ -263,7 +263,7 @@ builtins.__import__ = recording_import
 sys.addaudithook(audit)
 from molt.frontend import compile_to_tir
 
-ir = compile_to_tir(sys.stdin.read(), parse_codec="json")
+ir = compile_to_tir(sys.stdin.read())
 print(json.dumps({
     "functions": len(ir["functions"]),
     "edges": sorted(edges),
@@ -471,7 +471,7 @@ import hashlib, json, sys
 from molt.cli import cache_fingerprints
 from molt.frontend import compile_to_tir
 
-ir = compile_to_tir(sys.stdin.read(), parse_codec="json")
+ir = compile_to_tir(sys.stdin.read())
 print(json.dumps({
     "root": str(cache_fingerprints._compiler_root()),
     "key": cache_fingerprints._frontend_semantic_tooling_fingerprint(),
@@ -539,7 +539,6 @@ def _lowering_context(module_path: Path, **changes: object) -> str | None:
         "logical_source_path": str(module_path),
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
-        "parse_codec": "json",
         "type_hint_policy": "ignore",
         "type_facts": None,
         "enable_phi": True,
@@ -569,7 +568,6 @@ def _lowering_context(module_path: Path, **changes: object) -> str | None:
         # cli/module_stdlib_policy.py reads the stdlib matrix document.
         ("stdlib_allowlist", {"json"}),
         # cli/build_request.py request fields.
-        ("parse_codec", "msgpack"),
         ("type_hint_policy", "trust"),
         ("optimization_profile", "release"),
     ],
