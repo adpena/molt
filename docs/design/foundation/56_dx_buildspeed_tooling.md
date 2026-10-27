@@ -630,6 +630,35 @@ The source cache and detached worker have lightweight canonical owners in
 maintenance use these same implementations without importing the CLI driver.
 The detached owner rejects a selected snapshot missing its worker entry before
 creating launch state.
+Source CLI builds use the same retained supervisor for a due user-cache sweep.
+One prune-lock timestamp observation names its attempt under the selected
+cache's `logs/cache_retention/automatic`; `tools/cache_maintenance.py` enters
+the existing `automatic_retention` policy with the daily CLI interval. The
+cache-policy imports live only in that worker; the shared scheduler and its
+proof execution identity do not import the compiler's cache consumers. The
+pruner alone admits and stamps the attempt, protects live entries and installed
+home/bin state, and reports partial failures as a nonzero worker result.
+A retained worker waits for a contended
+prune lock through the existing 50 ms acquisition polling and rechecks cadence
+after admission. Foreground callers remain nonwaiting. Its completion stamp
+advances even after a failed collection, preserving the original exception if
+stamp publication also fails. Relative
+home/bin selectors bind to the command's original cwd before dispatch. The
+caller never scans files or source-record payloads, and a blocked worker does
+not delay command return. Missing published policy defers visibly without
+consuming the epoch. Installed distributions lack the repository source
+publisher and continue to run their packaged daily policy directly; explicit
+`molt cache prune` remains synchronous everywhere.
+
+The warm CLI path costs one stamp stat and no process. A due source dispatch
+adds local Git identity queries, source and state locks, bounded launch records
+and one retained supervisor/worker pair; its cold source publication scales with
+the controller tree. The collection still performs its full I/O in that worker.
+This trades process startup for removing cache-size-dependent command latency,
+without creating another collector, queue or database authority. Cargo's
+opportunistic GC and uv's explicit cache pruning above inform the cadence and
+locking; asynchronous source dispatch is Molt's measured development-loop choice.
+
 A pinned completion resolves published Git identity through its admitted physical
 controller/common-directory binding; the source snapshot has no `.git`, and
 neither ambient cwd nor dirty caller files select policy.

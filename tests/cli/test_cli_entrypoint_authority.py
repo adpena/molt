@@ -373,6 +373,10 @@ def test_cli_build_applies_the_cache_budget_to_its_cache_once_a_day(
     # succeeded, at most once a day; failures, --no-cache builds and
     # MOLT_CACHE_PRUNE=0 leave the cache alone.
     from molt import cache_eviction
+    from molt import dx
+
+    # Installed distributions run the packaged policy without source tools.
+    monkeypatch.setattr(dx, "_source_checkout_maintenance", lambda: None)
 
     cache = tmp_path / "cache"
     entry = _old_cache_entry(cache)
@@ -402,6 +406,57 @@ def test_cli_build_applies_the_cache_budget_to_its_cache_once_a_day(
     monkeypatch.setattr(cache_eviction, "automatic_retention", no_second_sweep)
     assert entrypoint._build(request) == 0
     assert entry.exists()
+
+
+def test_source_build_dispatches_retention_without_inventory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from molt import cache_eviction, dx
+
+    cache = tmp_path / "cache"
+    entry = _old_cache_entry(cache)
+    seen = []
+
+    def schedule(root, environment, *, cwd, epoch):
+        assert root == cache and cwd == Path.cwd() and epoch == "initial"
+        seen.append(environment.get("MOLT_CACHE_MAX_GB"))
+        return cache / "worker-evidence"
+
+    monkeypatch.setattr(
+        dx,
+        "_source_checkout_maintenance",
+        lambda: SimpleNamespace(schedule_cache=schedule),
+    )
+    monkeypatch.setattr(
+        cache_eviction,
+        "automatic_retention",
+        lambda *_a, **_k: pytest.fail("source command inventoried cache"),
+    )
+    monkeypatch.setattr(build_command, "build", lambda _request: 0)
+    monkeypatch.setenv("MOLT_CACHE_MAX_GB", "0")
+    monkeypatch.delenv("MOLT_CACHE_PRUNE", raising=False)
+    assert (
+        entrypoint._build(BuildRequest(file_path="app.py", cache_dir=str(cache))) == 0
+    )
+    assert seen == ["0"] and entry.exists()
+
+
+def test_source_retention_scheduling_failure_preserves_build(
+    tmp_path, monkeypatch, capsys
+):
+    from types import SimpleNamespace
+    from molt import dx
+
+    def refused(*_a, **_k):
+        raise RuntimeError("unresolved existing worker")
+
+    monkeypatch.setattr(
+        dx,
+        "_source_checkout_maintenance",
+        lambda: SimpleNamespace(schedule_cache=refused),
+    )
+    monkeypatch.delenv("MOLT_CACHE_PRUNE", raising=False)
+    entrypoint._apply_cache_budget_after_build(tmp_path / "cache", verbose=False)
+    assert "unresolved existing worker" in capsys.readouterr().err
 
 
 def test_cache_prune_command_applies_the_budget_and_reports_bytes(
