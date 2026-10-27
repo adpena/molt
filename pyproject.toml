@@ -180,8 +180,8 @@ PYTHONPATH = "{root}/src"
 
 [tool.molt.dx.commands]
 install = "python -m molt.checkout_provisioning ensure uv-environment"
-clippy-backend = "cargo clippy -p molt-backend --features native-backend -- -D warnings"
-clippy-tir = "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings"
+clippy-backend = "cargo clippy --config 'build.warnings=\"deny\"' -p molt-backend --features native-backend"
+clippy-tir = "cargo clippy --config 'build.warnings=\"deny\"' -p molt-tir --all-targets --all-features"
 clippy = [
     "@clippy-backend",
     "@clippy-tir",

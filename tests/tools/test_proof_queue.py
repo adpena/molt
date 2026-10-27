@@ -21323,7 +21323,7 @@ def test_clippy_identity_capture_reuse_and_command_obligation(
     tools, env, _version, calls = _clippy_component_fixture(
         tmp_path, monkeypatch, proxy=proxy
     )
-    command = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+    command = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--all-targets"]
     envelope = command_admission.envelope_for_command(command)
     plan = proof_plan.ProofPlan.load()
 

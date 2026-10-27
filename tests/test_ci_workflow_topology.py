@@ -4226,13 +4226,12 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
     assert commands["rust.clippy.workspace-default"]["argv"] == [
         "cargo",
         "clippy",
+        "--config",
+        'build.warnings="deny"',
         "--locked",
         "--workspace",
         "--all-targets",
         "--keep-going",
-        "--",
-        "-D",
-        "warnings",
     ]
     assert "logs/ci-cargo-build.log" not in ci_text
 

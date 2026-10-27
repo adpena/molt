@@ -22,6 +22,7 @@ from typing import TypeVar
 from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.product_store import ProductStore, ProductStoreError
+from molt.cli.native_symbol_inspection import NativeArtifactCapture
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
     native_link_custody_archive_path,
@@ -108,6 +109,15 @@ class NativeRuntimeGeneration:
         ]
 
 
+NativeRuntimeGenerationConsumer = Callable[
+    [NativeRuntimeGeneration, NativeArtifactCapture], None
+]
+
+
+class NativeRuntimeGenerationConsumerError(RuntimeError):
+    """An action failed while consuming a valid generation, not store corruption."""
+
+
 def _capture_generation(
     runtime_lib: Path,
     *,
@@ -115,6 +125,7 @@ def _capture_generation(
     cargo_profile: str,
     target_triple: str | None,
     expected_records: object | None = None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> NativeRuntimeGeneration:
     identity = require_native_runtime_staticlib_identity(
         build_identity,
@@ -122,36 +133,43 @@ def _capture_generation(
         target_triple=target_triple,
         artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
     )
-    archive = stable_regular_file_identity(runtime_lib, label="native runtime archive")
-    manifest_file = stable_regular_file_identity(
-        native_link_dependency_manifest_path(runtime_lib),
-        label="native runtime link manifest",
-    )
-    manifest = read_native_link_dependency_manifest(
-        runtime_lib,
-        cargo_profile=cargo_profile,
-        target_triple=target_triple,
-        runtime_build_identity=identity,
-    )
-    members = [("runtime_archive", archive), ("native_link_manifest", manifest_file)]
-    custody = native_link_custody_archive_path(runtime_lib, manifest.custody)
-    if custody is not None:
-        members.append(
-            (
-                "native_link_custody_archive",
-                stable_regular_file_identity(
-                    custody, label="native runtime link custody"
-                ),
-            )
+    with NativeArtifactCapture(runtime_lib, label="native runtime archive") as capture:
+        archive = capture.identity
+        manifest_file = stable_regular_file_identity(
+            native_link_dependency_manifest_path(runtime_lib),
+            label="native runtime link manifest",
         )
-    generation = NativeRuntimeGeneration(
-        runtime_lib,
-        identity,
-        tuple(members),
-        manifest.cargo_environment,
-    )
-    if expected_records is not None and generation.records() != expected_records:
-        raise ValueError("native runtime generation members differ from selection")
+        manifest = read_native_link_dependency_manifest(
+            runtime_lib,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            runtime_build_identity=identity,
+        )
+        members = [
+            ("runtime_archive", archive),
+            ("native_link_manifest", manifest_file),
+        ]
+        custody = native_link_custody_archive_path(runtime_lib, manifest.custody)
+        if custody is not None:
+            members.append(
+                (
+                    "native_link_custody_archive",
+                    stable_regular_file_identity(
+                        custody, label="native runtime link custody"
+                    ),
+                )
+            )
+        generation = NativeRuntimeGeneration(
+            runtime_lib,
+            identity,
+            tuple(members),
+            manifest.cargo_environment,
+        )
+        if expected_records is not None and generation.records() != expected_records:
+            raise ValueError("native runtime generation members differ from selection")
+        generation.verify()
+        if consume is not None:
+            consume(generation, capture)
     generation.verify()
     return generation
 
@@ -200,6 +218,7 @@ def read_native_runtime_generation(
     *,
     cargo_profile: str,
     target_triple: str | None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> NativeRuntimeGeneration | None:
     """Admit the retained closure ``coordinate`` selects, or None for no selection.
 
@@ -242,6 +261,7 @@ def read_native_runtime_generation(
             cargo_profile=cargo_profile,
             target_triple=target_triple,
             expected_records=payload["members"],
+            consume=consume,
         )
     except (
         OSError,
@@ -299,6 +319,7 @@ def native_runtime_store_generation(
     runtime_name: str,
     cargo_profile: str,
     target_triple: str | None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> NativeRuntimeGeneration | None:
     """The stored variant of ``identity`` built under ``environment``, admitted.
 
@@ -331,28 +352,45 @@ def native_runtime_store_generation(
             recorded.verify(environment)
         except ValueError:
             continue
+
+        def require_matching_generation(
+            generation: NativeRuntimeGeneration | None,
+        ) -> None:
+            if generation is None or generation.build_identity != identity:
+                raise ProductStoreError(
+                    store,
+                    identity.digest,
+                    "it holds another build identity",
+                    variant=variant,
+                )
+            if generation.cargo_environment != recorded:
+                raise ProductStoreError(
+                    store,
+                    identity.digest,
+                    "its Cargo environment differs from its receipt",
+                    variant=variant,
+                )
+
+        def consume_matching_generation(
+            generation: NativeRuntimeGeneration, capture: NativeArtifactCapture
+        ) -> None:
+            # Codegen must not consume even valid bytes of a different request.
+            require_matching_generation(generation)
+            assert consume is not None
+            consume(generation, capture)
+
         try:
             generation = read_native_runtime_generation(
-                coordinate, cargo_profile=cargo_profile, target_triple=target_triple
+                coordinate,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                consume=consume_matching_generation if consume is not None else None,
             )
         except ValueError as exc:
             raise ProductStoreError(
                 store, identity.digest, str(exc), variant=variant
             ) from exc
-        if generation is None or generation.build_identity != identity:
-            raise ProductStoreError(
-                store,
-                identity.digest,
-                "it holds another build identity",
-                variant=variant,
-            )
-        if generation.cargo_environment != recorded:
-            raise ProductStoreError(
-                store,
-                identity.digest,
-                "its Cargo environment differs from its receipt",
-                variant=variant,
-            )
+        require_matching_generation(generation)
         return generation
     return None
 
@@ -385,6 +423,7 @@ def _select_staged_generation(
     target_triple: str | None,
     inputs_are_current: Callable[[], bool],
     expected_generation: object = None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> NativeRuntimeGeneration | None:
     """Publish a staged closure under its digest, then select it atomically."""
     profile_dir = cargo_profile_directory(cargo_profile)
@@ -403,6 +442,7 @@ def _select_staged_generation(
             cargo_profile=cargo_profile,
             target_triple=target_triple,
             expected_records=staged.records(),
+            consume=consume,
         )
 
     published = publish_native_runtime_directory(
@@ -439,6 +479,7 @@ def publish_native_runtime_generation(
     build_identity: RuntimeBuildIdentity,
     cargo_environment: CargoEnvironmentInputs,
     inputs_are_current: Callable[[], bool],
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> NativeRuntimeGeneration | None:
     """Stage the closure, recapture inputs once, then select it atomically.
 
@@ -483,6 +524,7 @@ def publish_native_runtime_generation(
             cargo_profile=cargo_profile,
             target_triple=target_triple,
             inputs_are_current=inputs_are_current,
+            consume=consume,
         )
 
 

@@ -106,7 +106,7 @@ In both options, define:
 - deterministic builds policy
 
 ### Rust code quality gates
-- `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
+- `cargo fmt`, `cargo clippy --config 'build.warnings="deny"'`, `cargo test`
 - Add a CI workflow job for Rust (separate from Python job).
 - Use `cargo deny` or `cargo audit` as a supply-chain gate (recommended).
 
@@ -161,5 +161,5 @@ Add the following explicit instructions to the prompt:
 
 ## 5) Concrete acceptance criteria
 - `uv sync --frozen` succeeds on a clean machine and reproduces identical environments in CI.
-- `cargo test` + `cargo clippy -D warnings` pass in CI.
+- `cargo test` + `cargo clippy --config 'build.warnings="deny"'` pass in CI.
 - A sample “Molt Package” implemented in Rust compiles to WASM and is callable from a Molt-built binary with deterministic output.

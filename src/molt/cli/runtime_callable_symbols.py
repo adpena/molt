@@ -21,6 +21,10 @@ from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_for_codegen
 from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+from molt.cli.runtime_native_generation import (
+    NativeRuntimeGeneration,
+    NativeRuntimeGenerationConsumerError,
+)
 from molt.cli.native_link_manifest import (
     _object_format_for_identity,
     NativeLinkDependencyManifestError,
@@ -60,6 +64,7 @@ def _runtime_callable_symbols_file(
     *,
     identity: StableRegularFileIdentity,
     target_triple: str | None = None,
+    capture: native_symbol_inspection.NativeArtifactCapture | None = None,
 ) -> tuple[RuntimeCallableProjection | None, str | None]:
     """Project runtime callables from the shared, generation-bound archive facts.
 
@@ -73,6 +78,7 @@ def _runtime_callable_symbols_file(
             archive=True,
             target_triple=target_triple,
             identity=identity,
+            capture=capture,
             requirement=native_symbol_inspection.NativeSymbolRequirement(
                 function_prefix="molt_",
                 excluded_functions=WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
@@ -285,6 +291,37 @@ def _stage_runtime_callable_symbols_for_native_codegen(
     if runtime_lib is None or is_wasm_freestanding:
         runtime_state.revoke_native_runtime_admission()
         return "", None
+    source_projection: (
+        tuple[NativeRuntimeGeneration, RuntimeCallableProjection] | None
+    ) = None
+    projection_seconds = 0.0
+
+    def consume_source_generation(
+        generation: NativeRuntimeGeneration,
+        capture: native_symbol_inspection.NativeArtifactCapture,
+    ) -> None:
+        nonlocal source_projection, projection_seconds
+        if source_projection is not None:
+            raise ValueError("native codegen received more than one source generation")
+        started = time.perf_counter()
+        try:
+            projection, failure = _runtime_callable_symbols_file(
+                generation.runtime_lib,
+                identity=generation.members[0][1],
+                target_triple=target_triple,
+                capture=capture,
+            )
+            if projection is None:
+                raise NativeRuntimeGenerationConsumerError(
+                    f"runtime callable projection failed: {failure}"
+                )
+            source_projection = generation, projection
+        finally:
+            projection_seconds += time.perf_counter() - started
+            _record_runtime_callable_stage_ms(
+                stage_timings_ms, "runtime_callable_symbols_file", started
+            )
+
     ensure_start = time.perf_counter()
     runtime_ready = _ensure_native_runtime_lib_ready_for_codegen(
         runtime_state,
@@ -298,11 +335,12 @@ def _stage_runtime_callable_symbols_for_native_codegen(
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
         stage_timings_ms=stage_timings_ms,
+        consume=consume_source_generation,
     )
     _record_runtime_callable_stage_ms(
         stage_timings_ms,
         "runtime_callable_symbols_ensure_runtime_lib",
-        ensure_start,
+        ensure_start + projection_seconds,
     )
     # Readiness selects an immutable generation. The original coordinate names
     # Cargo output and cannot authorize symbol projection or final linking.
@@ -375,6 +413,8 @@ def _stage_runtime_callable_symbols_for_native_codegen(
                 generation is None
                 or generation.runtime_lib != runtime_lib
                 or generation.build_identity != build_identity
+                or source_projection is None
+                or source_projection[0] is not generation
             ):
                 raise ValueError("native codegen lost its admitted source generation")
             generation.verify()
@@ -399,21 +439,21 @@ def _stage_runtime_callable_symbols_for_native_codegen(
             json_output,
             command="build",
         )
-    symbol_file_start = time.perf_counter()
     if admission is None:
-        projection, symbols_failure = _runtime_callable_symbols_file(
-            runtime_lib, identity=archive_identity, target_triple=target_triple
-        )
+        assert source_projection is not None
+        projection = source_projection[1]
+        symbols_failure = None
     else:
+        symbol_file_start = time.perf_counter()
         assert cell is not None
         projection, symbols_failure = _installed_runtime_callable_projection(
             cell, admission
         )
-    _record_runtime_callable_stage_ms(
-        stage_timings_ms,
-        "runtime_callable_symbols_file",
-        symbol_file_start,
-    )
+        _record_runtime_callable_stage_ms(
+            stage_timings_ms,
+            "runtime_callable_symbols_file",
+            symbol_file_start,
+        )
     if projection is None:
         runtime_state.revoke_native_runtime_admission()
         return "", _fail(

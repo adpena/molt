@@ -208,7 +208,7 @@ def test_comments_and_prose_are_not_cargo_commands(
 # Clippy subsumes the former cargo check of molt-tir.
 [[command]]
 id = "rust.clippy.example"
-argv = ["cargo", "clippy", "--locked", "-p", "molt-tir", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-tir"]
 """,
     )
     assert MODULE.violations() == []

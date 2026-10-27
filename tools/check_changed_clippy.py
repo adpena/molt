@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint every Cargo package a change reaches with the proof plan's clippy cells.
 
-CI runs `cargo clippy -D warnings` in the pre-push, pr and main tiers, but no
+CI runs Clippy with Cargo-owned warning denial in all integration tiers, but no
 landing gate did, so lints reached main unseen (HF-318). This gate closes that
 path. The pre-push lint commands in tools/proof_plan.toml and their canonical Cargo
 operations stay the authority for features, targets and profiles; the gate runs
@@ -21,6 +21,8 @@ identity and execution budget; commands without one remain unchanged:
 
 Each selected command runs with its declared toolchains projected exactly as
 tools/toolchain_env.py projects them, so the gate and CI lint the same cells.
+The declared `--config build.warnings="deny"` rejects emitted lint warnings,
+including cached diagnostics, without changing Clippy compiler arguments.
 Cargo replays cached results for unchanged crates; a warm target pays only for
 the reached crates. A successful gate runs every selected cell; the first
 failed cell stops the gate without launching later cells.

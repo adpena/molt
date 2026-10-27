@@ -1758,6 +1758,40 @@ mod tests {
     }
 
     #[test]
+    fn exact_dict_backing_preserves_boxed_identity_without_registration() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let key = MoltObject::from_int(7).bits();
+                let value = MoltObject::from_int(11).bits();
+                let ptr = crate::alloc_dict_with_pairs(py, &[key, value]);
+                assert!(!ptr.is_null());
+                let bits = MoltObject::from_ptr(ptr).bits();
+                let refs = (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot();
+                // Ordinary boxed references decode without registry membership.
+                // Remove only this owned dictionary to detect fresh registration.
+                let _ = molt_obj_model::release_ptr(ptr);
+                assert!(!molt_obj_model::is_registered_ptr(ptr));
+                for _ in 0..2 {
+                    assert_eq!(
+                        super::super::ops::dict_backing_bits(py, bits),
+                        Ok(Some(bits))
+                    );
+                    assert!(!molt_obj_model::is_registered_ptr(ptr));
+                    assert_eq!(
+                        (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot(),
+                        refs
+                    );
+                }
+                assert_eq!(obj_from_bits(bits).as_ptr(), Some(ptr));
+                assert_eq!(crate::dict_get_in_place(py, ptr, key).unwrap(), Some(value));
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
     fn dict_shape_tail_and_declared_rows_have_disjoint_owners() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -1767,9 +1801,14 @@ mod tests {
                 let object = alloc_instance_for_class(py, class_ptr);
                 let ptr = obj_from_bits(object).as_ptr().unwrap();
                 let tail = super::super::layout::dict_subclass_storage_slot(ptr).unwrap();
-                let backing = super::super::ops::dict_like_bits_from_ptr(py, ptr)
+                let backing = super::super::ops::dict_backing_bits(py, object)
                     .unwrap()
                     .unwrap();
+                assert_eq!(*tail, backing);
+                assert_eq!(
+                    super::super::ops::dict_backing_bits(py, object),
+                    Ok(Some(backing))
+                );
                 assert_eq!(*tail, backing);
                 for_each_field(py, class_ptr, &mut |field| {
                     assert!(field.offset + WORD <= tail as usize - ptr as usize);
@@ -1778,7 +1817,7 @@ mod tests {
                 // with a second owner that hides the broken physical invariant.
                 *tail = MoltObject::from_int(99).bits();
                 dec_ref_bits(py, backing);
-                assert!(super::super::ops::dict_like_bits_from_ptr(py, ptr).is_err());
+                assert!(super::super::ops::dict_backing_bits(py, object).is_err());
                 assert!(exception_pending(py));
                 assert_eq!(*tail, MoltObject::from_int(99).bits());
                 clear_exception(py);

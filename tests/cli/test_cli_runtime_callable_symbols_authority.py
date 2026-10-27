@@ -333,7 +333,7 @@ def test_final_codegen_admission_reverifies_original_observed_environment(
 
 
 @pytest.mark.parametrize("replace_receipt", [False, True])
-def test_source_codegen_pins_original_generation_without_rehashing_archive(
+def test_source_codegen_future_pins_original_generation_with_fresh_capture(
     admitted_runtime, tmp_path, monkeypatch, replace_receipt
 ):
     from concurrent.futures import Future
@@ -348,6 +348,17 @@ def test_source_codegen_pins_original_generation_without_rehashing_archive(
     ready = Future()
     ready.set_result(True)
     state.runtime_lib_ready_future = ready
+
+    captured_archives = []
+    hash_handle = native_symbol_inspection.stable_regular_file_handle_identity
+
+    def count_capture(opened, **kwargs):
+        captured_archives.append(opened.path)
+        return hash_handle(opened, **kwargs)
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "stable_regular_file_handle_identity", count_capture
+    )
 
     def inspect_archive(_path, **kwargs):
         assert kwargs["identity"] == generation.members[0][1]
@@ -375,12 +386,17 @@ def test_source_codegen_pins_original_generation_without_rehashing_archive(
     )
     if replace_receipt:
         assert failure is not None and not digest
+        assert not captured_archives
         assert state.native_runtime_generation is None
         assert state.native_runtime_codegen_binding is None
     else:
         assert failure is None and digest
-        assert state.native_runtime_codegen_binding.archive is generation.members[0][1]
-        assert state.native_runtime_codegen_binding.manifest is generation.members[1][1]
+        assert captured_archives == [generation.runtime_lib]
+        assert state.native_runtime_codegen_binding.archive == generation.members[0][1]
+        assert state.native_runtime_codegen_binding.manifest == generation.members[1][1]
+        assert (
+            state.native_runtime_codegen_binding.runtime_lib == generation.runtime_lib
+        )
 
 
 @pytest.mark.parametrize("changed_input", ["source", "configuration", "rustc"])

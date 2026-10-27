@@ -51,6 +51,62 @@ from tests.process_guard_common import (
 
 
 PLAN = proof_plan.ProofPlan.load()
+
+
+@pytest.mark.parametrize("scope", ["structured", "rule", "always"])
+@pytest.mark.parametrize(
+    "format_args",
+    [
+        ["--message-format", "json"],
+        ["--message-format=json"],
+        ["--message-format=json-render-diagnostics"],
+        ["--message-format", "json,diagnostic-short"],
+        ["--message-format=human,json-diagnostic-rendered-ansi"],
+    ],
+)
+def test_clippy_json_diagnostics_cannot_bypass_warning_policy(scope, format_args):
+    original = next(
+        command
+        for command in PLAN.commands
+        if command.id == "rust.clippy.workspace-default"
+    )
+    argv = [*original.argv, *format_args]
+    if scope == "structured":
+        replacement = replace(original, data={**original.data, "argv": argv})
+        plan = replace(
+            PLAN,
+            commands=tuple(
+                replacement if command is original else command
+                for command in PLAN.commands
+            ),
+        )
+    elif scope == "always":
+        plan = replace(PLAN, always=(*PLAN.always, shlex.join(argv)))
+    else:
+        plan = replace(
+            PLAN,
+            local_rules=(
+                {**PLAN.local_rules[0], "gates": [shlex.join(argv)]},
+                *PLAN.local_rules[1:],
+            ),
+        )
+    assert any("Clippy JSON diagnostics bypass" in error for error in plan.validate())
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        [],
+        ["--message-format=human"],
+        ["--message-format", "short"],
+        ["--", "-W", "clippy::pedantic"],
+    ],
+)
+def test_clippy_supported_diagnostics_and_other_lint_flags_are_preserved(suffix):
+    argv = ("cargo", "clippy", "--config", 'build.warnings="deny"', *suffix)
+    assert proof_plan.clippy_diagnostic_format_error(argv) is None
+
+
 _LEAN_PIN = next(
     policy.data["setup_value"]
     for policy in PLAN.toolchain_policies
