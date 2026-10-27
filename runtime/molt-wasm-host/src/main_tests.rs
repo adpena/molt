@@ -648,6 +648,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main"))
                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
         ),
         (
@@ -655,6 +656,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main") (result i64) i64.const 0)
                (func (export "molt_isolate_bootstrap"))
                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
         ),
         (
@@ -662,6 +664,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main") (result i64) i64.const 0)
                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                (func (export "molt_isolate_import") (param i32) (result i64) i64.const 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
         ),
         (
@@ -669,6 +672,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main") (result i64) i64.const 0)
                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i32) i32.const 0)"#,
         ),
     ] {
@@ -715,6 +719,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
               (func $initialize unreachable)
               (start $initialize)
               (func (export "molt_anchor"))
+              (func (export "molt_main_exit_status") (result i64) i64.const 0)
               (func (export "molt_exception_pending") (result i32) i32.const 0))"#,
     )
     .unwrap();
@@ -763,6 +768,7 @@ fn module_entrypoint_abis_reject_missing_parameters_and_result_drift() {
             format!(
                 r#"(module
                     {definition}
+                    (func (export "molt_main_exit_status") (result i64) i64.const 0)
                     (func (export "molt_exception_pending") (result i64) i64.const 0))"#
             ),
         )
@@ -1073,6 +1079,7 @@ fn loaded_guest_primitive_executes_linked_application_contract() {
         (module
           (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
           (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 0)
           (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
           (func (export "molt_runtime_execution_leave") (param i64))
@@ -1106,6 +1113,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
           (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
           (func (export "molt_runtime_execution_leave") (param i64))
           (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+          (func (export "molt_main_exit_status") (result i64) i64.const 7)
           (func (export "molt_exception_pending") (result i64) i64.const 0))
     "#,
     )
@@ -1117,6 +1125,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
           (import "molt_runtime" "anchor" (func $anchor))
           (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
           (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+          (func (export "molt_main_exit_status") (result i64) unreachable)
           (func (export "molt_main") (result i64) call $anchor i64.const 0))
     "#,
     )
@@ -1131,7 +1140,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
             None,
         )
         .unwrap(),
-        GuestTermination::Returned
+        GuestTermination::ApplicationExit(7)
     );
 }
 
@@ -1156,6 +1165,7 @@ fn execute_split_import_fixture(
                 (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
                 (func (export "molt_runtime_execution_leave") (param i64))
                 (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                (func (export "molt_main_exit_status") (result i64) i64.const 0)
                 (func (export "molt_exception_pending") (result i64) i64.const 0))"#
         ),
     )
@@ -1422,6 +1432,7 @@ fn app_startup_calls_only_molt_main_wrapper() {
     let bootstrap_order = Arc::clone(&order);
     let main_order = Arc::clone(&order);
     let start_order = Arc::clone(&order);
+    let report_order = Arc::clone(&order);
     let mark_bootstrap = Func::wrap(&mut store, move || {
         bootstrap_order.lock().unwrap().push("bootstrap");
     });
@@ -1440,6 +1451,12 @@ fn app_startup_calls_only_molt_main_wrapper() {
     linker
         .define(&mut store, "env", "mark_start", mark_start)
         .unwrap();
+    let mark_report = Func::wrap(&mut store, move || {
+        report_order.lock().unwrap().push("report");
+    });
+    linker
+        .define(&mut store, "env", "mark_report", mark_report)
+        .unwrap();
     let module = Module::new(
         &engine,
         r#"
@@ -1447,11 +1464,13 @@ fn app_startup_calls_only_molt_main_wrapper() {
               (import "env" "mark_bootstrap" (func $mark_bootstrap))
               (import "env" "mark_main" (func $mark_main))
               (import "env" "mark_start" (func $mark_start))
+              (import "env" "mark_report" (func $mark_report))
               (func (export "molt_isolate_bootstrap") (result i64)
                 call $mark_bootstrap
                 i64.const 0)
               (func (export "molt_isolate_import") (param i64) (result i64)
                 local.get 0)
+              (func (export "molt_main_exit_status") (result i64) call $mark_report i64.const 0)
               (func (export "molt_exception_pending") (result i64)
                 i64.const 0)
               (func (export "molt_main") (result i64)
@@ -1466,49 +1485,51 @@ fn app_startup_calls_only_molt_main_wrapper() {
 
     call_test_app_startup(&mut store, &instance, &instance).unwrap();
 
-    assert_eq!(&*order.lock().unwrap(), &["main"]);
+    assert_eq!(&*order.lock().unwrap(), &["main", "report"]);
 }
 
 #[test]
-fn app_startup_rejects_pending_runtime_failure() {
+fn app_startup_reports_and_consumes_pending_runtime_failure() {
     let engine = build_engine().expect("production host engine");
     let mut store = Store::new(&engine, test_host_state());
     let module = Module::new(
         &engine,
-        r#"
-        (module
-          (global $pending (mut i64) (i64.const 0))
-          (func (export "molt_main") (result i64)
-            i64.const 1
-            global.set $pending
-            i64.const 0)
-          (func (export "molt_exception_pending") (result i64)
-            global.get $pending))
-    "#,
+        r#"(module
+        (global $pending (mut i64) (i64.const 0))
+        (global $reports (mut i64) (i64.const 0))
+        (func (export "molt_main") (result i64)
+            i64.const 1 global.set $pending i64.const 0)
+        (func (export "molt_exception_pending") (result i64) global.get $pending)
+        (func (export "reports") (result i64) global.get $reports)
+        (func (export "molt_main_exit_status") (result i64)
+            global.get $pending i64.const 1 i64.ne if unreachable end
+            global.get $reports i64.const 1 i64.add global.set $reports
+            i64.const 0 global.set $pending i64.const 7))"#,
     )
     .unwrap();
     let instance = Linker::new(&engine)
         .instantiate(&mut store, &module)
         .unwrap();
-    let error = call_test_app_startup(&mut store, &instance, &instance)
-        .expect_err("pending runtime failure must not become successful startup");
-    assert!(error.to_string().contains("MOLT_APP_BOOTSTRAP_FAILED"));
-    let pending = instance
-        .get_typed_func::<(), i64>(&mut store, "molt_exception_pending")
-        .unwrap();
     assert_eq!(
-        pending.call(&mut store, ()).unwrap(),
-        1,
-        "host must preserve diagnostic state"
+        call_test_app_startup(&mut store, &instance, &instance).unwrap(),
+        GuestTermination::ApplicationExit(7)
     );
+    for (name, expected) in [("molt_exception_pending", 0), ("reports", 1)] {
+        let observed = instance
+            .get_typed_func::<(), i64>(&mut store, name)
+            .unwrap();
+        assert_eq!(observed.call(&mut store, ()).unwrap(), expected);
+    }
 }
 
 #[test]
 fn app_startup_resolves_status_before_executing_main() {
     for status_export in [
         "",
-        r#"(func (export "molt_exception_pending") (result i32) i32.const 0)"#,
-        r#"(func (export "molt_exception_pending") (result i64) i64.const 2)"#,
+        r#"(func (export "molt_main_exit_status") (result i64) i64.const 0)
+          (func (export "molt_exception_pending") (result i32) i32.const 0)"#,
+        r#"(func (export "molt_main_exit_status") (result i64) i64.const 0)
+          (func (export "molt_exception_pending") (result i64) i64.const 2)"#,
     ] {
         let engine = build_engine().expect("production host engine");
         let mut store = Store::new(&engine, test_host_state());
@@ -1548,7 +1569,8 @@ fn split_startup_reads_runtime_instance_status_not_application_shadow() {
     let runtime = Module::new(
         &engine,
         r#"
-        (module (func (export "molt_exception_pending") (result i64) i64.const 1))
+        (module (func (export "molt_main_exit_status") (result i64) i64.const 0)
+          (func (export "molt_exception_pending") (result i64) i64.const 1))
     "#,
     )
     .unwrap();
@@ -1564,6 +1586,7 @@ fn split_startup_reads_runtime_instance_status_not_application_shadow() {
             global.set $calls
             i64.const 0)
           (func (export "calls") (result i64) global.get $calls)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 0))
     "#,
     )
@@ -1601,6 +1624,7 @@ fn linked_startup_rejects_preexisting_failure_before_main() {
             global.set $calls
             i64.const 0)
           (func (export "calls") (result i64) global.get $calls)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 1))
     "#,
     )
@@ -1633,6 +1657,7 @@ fn app_startup_preserves_wasm_trap_failure() {
         r#"
         (module
           (func (export "molt_main") (result i64) unreachable)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 0))
     "#,
     )
@@ -1770,4 +1795,58 @@ fn manifest_command_captures_source_and_cannot_admit_an_unrelated_module() {
         "{error:#}"
     );
     assert!(!format!("{error:#}").contains("unreachable"), "{error:#}");
+}
+
+#[test]
+fn split_reporter_admission_rejects_runtime_defect_despite_valid_app_shadow() {
+    let engine = build_engine().unwrap();
+    for reporter in [
+        "",
+        r#"(global (export "molt_main_exit_status") i64 (i64.const 0))"#,
+        r#"(func (export "molt_main_exit_status") (param i64) (result i64) i64.const 0)"#,
+        r#"(func (export "molt_main_exit_status") (result i32) i32.const 0)"#,
+    ] {
+        let runtime = Module::new(
+            &engine,
+            format!(
+                r#"(module
+            (func $start unreachable) (start $start)
+            (func (export "molt_anchor"))
+            (func (export "molt_exception_pending") (result i64) i64.const 0)
+            (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
+            (func (export "molt_runtime_execution_leave") (param i64))
+            (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+            {reporter})"#
+            ),
+        )
+        .unwrap();
+        let app = Module::new(
+            &engine,
+            r#"(module
+            (import "molt_runtime" "anchor" (func))
+            (func $start unreachable) (start $start)
+            (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
+            (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+            (func (export "molt_main_exit_status") (result i64) i64.const 0)
+            (func (export "molt_main") (result i64) unreachable))"#,
+        )
+        .unwrap();
+        let error = execute_test_guest(
+            &engine,
+            &app,
+            Some(&runtime),
+            LoadedGuestKind::MoltApplication { linked: false },
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("molt_main_exit_status"),
+            "{error:#}"
+        );
+        assert!(
+            error.downcast_ref::<wasmtime::Trap>().is_none(),
+            "{error:#}"
+        );
+    }
 }

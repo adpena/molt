@@ -590,10 +590,13 @@ fn main() -> Result<()> {
     .try_init()
     .context("initialize host diagnostics")?;
     let termination = run()?;
-    if let GuestTermination::WasiExit(status) = termination
-        && status != 0
-    {
-        std::process::exit(status);
+    match termination {
+        GuestTermination::Returned => {}
+        GuestTermination::ApplicationExit(status) | GuestTermination::WasiExit(status) => {
+            if status != 0 {
+                std::process::exit(status);
+            }
+        }
     }
     Ok(())
 }

@@ -495,3 +495,78 @@ fn actual_manifest_command_core_start_exit_precedes_exported_start() {
     assert!(diagnostic.contains("molt_main"), "{diagnostic}");
     assert!(!diagnostic.contains("unreachable"), "{diagnostic}");
 }
+
+#[test]
+fn actual_application_reports_runtime_exit_status_and_finishes_lifetime() {
+    for status in [0, 7] {
+        let fixture = ArtifactFixture::new();
+        // The guest asserts the finite protocol independently: entered, main,
+        // reporter, leave, shutdown. A skipped/repeated/reordered call traps.
+        let program = wat::parse_str(format!(
+            r#"(module
+            (import "wasi_snapshot_preview1" "fd_write"
+                (func $write (param i32 i32 i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 32) "reported\0a")
+            (data (i32.const 48) "shutdown\0a")
+            (global $phase (mut i32) (i32.const 0))
+            (global $pending (mut i64) (i64.const 0))
+            (func $advance (param $before i32) (param $after i32)
+                global.get $phase local.get $before i32.ne if unreachable end
+                local.get $after global.set $phase)
+            (func (export "molt_isolate_bootstrap") (result i64) unreachable)
+            (func (export "molt_isolate_import") (param i64) (result i64) unreachable)
+            (func (export "molt_exception_pending") (result i64) global.get $pending)
+            (func (export "molt_runtime_execution_enter") (result i64)
+                i32.const 0 i32.const 1 call $advance i64.const 41)
+            (func (export "molt_main") (result i64)
+                i32.const 1 i32.const 2 call $advance
+                i64.const 1 global.set $pending i64.const 0)
+            (func (export "molt_main_exit_status") (result i64)
+                i32.const 2 i32.const 3 call $advance
+                global.get $pending i64.const 1 i64.ne if unreachable end
+                i64.const 0 global.set $pending
+                i32.const 0 i32.const 32 i32.store
+                i32.const 4 i32.const 9 i32.store
+                i32.const 2 i32.const 0 i32.const 1 i32.const 16 call $write
+                if unreachable end
+                i64.const {status})
+            (func (export "molt_runtime_execution_leave") (param i64)
+                local.get 0 i64.const 41 i64.ne if unreachable end
+                i32.const 3 i32.const 4 call $advance)
+            (func (export "molt_runtime_shutdown") (result i64)
+                i32.const 4 i32.const 5 call $advance
+                i32.const 0 i32.const 48 i32.store
+                i32.const 4 i32.const 9 i32.store
+                i32.const 2 i32.const 0 i32.const 1 i32.const 16 call $write
+                if unreachable end
+                i64.const 1))"#
+        ))
+        .unwrap();
+        fixture.write("application.wasm", &program);
+        let manifest = fixture.write(
+            "manifest.json",
+            &serde_json::to_vec(&serde_json::json!({
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
+                "mode": "linked",
+                "modules": {"linked": {"path": "application.wasm", "size": program.len(),
+                    "sha256": molt_wasm_host::sha256_hex(&program)}},
+                "entry": {"module": "linked", "function": "molt_main"}
+            }))
+            .unwrap(),
+        );
+        let output = host()
+            .arg(&manifest)
+            .current_dir(fixture.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(status),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"reported\nshutdown\n");
+    }
+}

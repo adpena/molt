@@ -4,6 +4,7 @@ use wasmtime_wasi::I32Exit;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GuestTermination {
     Returned,
+    ApplicationExit(i32),
     WasiExit(i32),
 }
 
@@ -108,6 +109,12 @@ pub(super) fn validate_guest_module_entrypoint(
             )?;
             validate_exported_function_type(
                 runtime,
+                "molt_main_exit_status",
+                &[],
+                &[ValType::I64],
+            )?;
+            validate_exported_function_type(
+                runtime,
                 "molt_runtime_execution_enter",
                 &[],
                 &[ValType::I64],
@@ -143,42 +150,15 @@ fn read_runtime_exception_pending(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ApplicationStatusPhase {
-    BeforeMoltMain,
-    AfterMoltMain,
-}
-
-impl ApplicationStatusPhase {
-    fn label(self) -> &'static str {
-        match self {
-            Self::BeforeMoltMain => "before molt_main",
-            Self::AfterMoltMain => "after molt_main",
-        }
-    }
-
-    fn pending_diagnostic(self) -> &'static str {
-        match self {
-            Self::BeforeMoltMain => {
-                "MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before molt_main"
-            }
-            Self::AfterMoltMain => {
-                "MOLT_APP_BOOTSTRAP_FAILED: molt_main returned with a pending runtime exception"
-            }
-        }
-    }
-}
-
-pub(super) fn admit_application_runtime_status(
+fn admit_application_runtime_status(
     store: &mut Store<HostState>,
     runtime: &Instance,
-    phase: ApplicationStatusPhase,
 ) -> Result<()> {
     let pending = runtime
         .get_typed_func::<(), i64>(&mut *store, "molt_exception_pending")
         .context("missing or malformed molt_exception_pending startup status export")?;
-    if read_runtime_exception_pending(store, &pending, phase.label())? {
-        bail!("{}", phase.pending_diagnostic());
+    if read_runtime_exception_pending(store, &pending, "before molt_main")? {
+        bail!("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before molt_main");
     }
     Ok(())
 }
@@ -194,14 +174,28 @@ pub(super) fn call_molt_application_entrypoint(
     let main = application
         .get_typed_func::<(), i64>(&mut *store, "molt_main")
         .context("missing or malformed molt_main application entrypoint export")?;
-    admit_application_runtime_status(store, runtime, ApplicationStatusPhase::BeforeMoltMain)?;
+    admit_application_runtime_status(store, runtime)?;
+    let report_exit = runtime
+        .get_typed_func::<(), i64>(&mut *store, "molt_main_exit_status")
+        .context("missing or malformed molt_main_exit_status application status export")?;
     log::debug!("calling molt_main");
     let _entry_result = main
         .call(&mut *store, ())
         .context("call molt_main application entrypoint")?;
     log::debug!("molt_main returned");
-    admit_application_runtime_status(store, runtime, ApplicationStatusPhase::AfterMoltMain)?;
-    Ok(GuestTermination::Returned)
+    // The runtime owns uncaught-exception reporting, SystemExit and exception
+    // consumption. Report once while the execution lease remains entered.
+    let raw_status = report_exit
+        .call(&mut *store, ())
+        .context("call molt_main_exit_status application reporter")?;
+    let status = u32::try_from(raw_status).with_context(|| {
+        format!("malformed molt_main_exit_status status: expected i64 raw u32, got {raw_status}")
+    })? as i32;
+    Ok(if status == 0 {
+        GuestTermination::Returned
+    } else {
+        GuestTermination::ApplicationExit(status)
+    })
 }
 
 fn call_wasi_command_entrypoint(
