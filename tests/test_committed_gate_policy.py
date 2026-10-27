@@ -922,7 +922,7 @@ def test_transitive_cargo_metadata_availability_adds_no_build_requirement():
         gate.toolchains: GateEnvironment(ProcessEnvironment({}), None, False)
         for gate in gates
     }
-    assert cfg.cargo_outputs(environments) == {}
+    assert cfg.cargo_outputs(environments, gates) == {}
 
 
 def test_a_ci_command_edit_skips_the_driver_and_source_extension_suites():

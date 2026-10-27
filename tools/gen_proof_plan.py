@@ -229,7 +229,8 @@ def _json_projection(plan: ProofPlan) -> str:
         ),
     )
     local_commands = {
-        identifier: command for identifier, (command, _) in local_rows.items()
+        identifier: declaration.command
+        for identifier, declaration in local_rows.items()
     }
     local_ids: dict[str, list[str]] = {}
     for identifier in local_rows:
@@ -294,8 +295,12 @@ def _json_projection(plan: ProofPlan) -> str:
             "always_command_ids": local_ids.get("local.always", []),
             "commands": local_commands,
             "toolchains": {
-                identifier: list(plan.toolchain_closure(tools))
-                for identifier, (_, tools) in local_rows.items()
+                identifier: list(plan.toolchain_closure(declaration.toolchains))
+                for identifier, declaration in local_rows.items()
+            },
+            "cargo_target_access": {
+                identifier: declaration.cargo_target_access.value
+                for identifier, declaration in local_rows.items()
             },
             "rules": local_rules,
         },
@@ -561,6 +566,13 @@ def _markdown_projection(plan: ProofPlan) -> str:
         [
             "",
             "## Local integration families",
+            "",
+            "Local commands declare Cargo target access independently of toolchain "
+            "availability: `shared` writers serialize, while audited `isolated` "
+            "fixture targets and `none` (no target mutation) may overlap within "
+            "the existing resource limits. Unannotated Cargo remains `shared`. "
+            "Overlapping requests retain their strongest effect; the JSON "
+            "projection records each resolved command effect.",
             "",
             "| Rule | Input globs | Commands |",
             "|---|---:|---:|",

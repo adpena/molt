@@ -742,6 +742,140 @@ def test_development_contract_upgrade_selects_new_intent_without_repairing_old_i
     assert old.manifest_path.read_bytes() == old_manifest_bytes
 
 
+@pytest.mark.parametrize("api", ["input", "single", "all"])
+def test_runtime_refresh_reselects_changed_runtime_without_rewriting_old_image(
+    tmp_path, monkeypatch, api
+):
+    from molt import source_build_environment as publisher
+    from molt.exact_json import canonical_json_sha256
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+    from tests import python_environment_test_support as fixtures
+
+    root, artifacts = tmp_path / "project", tmp_path / "artifacts"
+    _init_repo(root)
+    old = materialize_development_environment(root, artifacts, select=True)
+    environment = ProcessEnvironment({"MOLT_EXT_ROOT": str(artifacts)})
+    spec = cp.checkout_input("uv-environment", root, environment)
+    assert isinstance(spec, cp.DevelopmentEnvironment)
+    selection = cp._development_selection_path(spec, cp._development_intent(spec))
+    old_manifest = old.manifest_path.read_bytes()
+    old_selection = selection.read_bytes()
+    runtime = fixtures.runtime_identity_manifest
+
+    def changed_runtime(**options):
+        payload = runtime(**options)
+        # Same version selector, independently changed runtime content identity.
+        payload["file_nodes"][0]["sha256"] = "e" * 64
+        payload.pop("runtime_closure_sha256")
+        payload["runtime_closure_sha256"] = canonical_json_sha256(payload)
+        return payload
+
+    monkeypatch.setattr(fixtures, "runtime_identity_manifest", changed_runtime)
+    published = []
+
+    def publish(checkout, *, provision, **options):
+        assert checkout == root.resolve() and provision is True
+        assert not options["environ"].get("UV_PROJECT_ENVIRONMENT")
+        handle = _try_acquire_file_lock(cp._lock_path(spec))
+        if handle is not None:
+            _release_file_lock(handle)
+        assert handle is None, "runtime refresh left the provisioning owner"
+        image = materialize_development_environment(root, artifacts)
+        published.append(image.root)
+        return image
+
+    monkeypatch.setattr(publisher, "development_environment", publish)
+    assert cp.ensure_input(spec).environment_root == old.root
+    assert published == [] and selection.read_bytes() == old_selection
+    if api == "input":
+        refreshed = cp.ensure_input(spec, refresh_runtime=True)
+    elif api == "single":
+        refreshed = cp.ensure("uv-environment", root, environment, refresh_runtime=True)
+    else:
+        (refreshed,) = cp.ensure_all(
+            root, environment, names=iter(("uv-environment",)), refresh_runtime=True
+        )
+    assert published == [refreshed.environment_root]
+    assert refreshed.environment_root != old.root
+    assert json.loads(selection.read_bytes())["generation"] == str(
+        refreshed.environment_root
+    )
+    assert old.manifest_path.read_bytes() == old_manifest
+    assert cp.ensure_input(spec).environment_root == refreshed.environment_root
+    assert len(published) == 1
+    exact = dataclasses.replace(
+        spec,
+        environment=environment.updated({"UV_PROJECT_ENVIRONMENT": str(old.root)}),
+    )
+    with pytest.raises(cp.ProvisioningError, match="explicit UV_PROJECT_ENVIRONMENT"):
+        cp.ensure_input(exact, refresh_runtime=True)
+    assert len(published) == 1 and old.manifest_path.read_bytes() == old_manifest
+
+
+def test_runtime_refresh_all_consumes_names_once_and_only_refreshes_uv(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def ensure(name, *_args, refresh_runtime=False, **_options):
+        calls.append((name, refresh_runtime))
+        return cp.Ensured(name, False, 0)
+
+    monkeypatch.setattr(cp, "ensure", ensure)
+    names = iter(("git-hooks", "uv-environment", "browser-acorn"))
+    cp.ensure_all(tmp_path, {}, names=names, refresh_runtime=True)
+    assert calls == [
+        ("git-hooks", False),
+        ("uv-environment", True),
+        ("browser-acorn", False),
+    ]
+    calls.clear()
+    with pytest.raises(cp.ProvisioningError, match="requires uv-environment"):
+        cp.ensure_all(tmp_path, {}, names=iter(("git-hooks",)), refresh_runtime=True)
+    with pytest.raises(cp.ProvisioningError, match="explicit UV_PROJECT_ENVIRONMENT"):
+        cp.ensure_all(
+            tmp_path, {"UV_PROJECT_ENVIRONMENT": "exact-image"}, refresh_runtime=True
+        )
+    assert calls == []
+
+
+def test_runtime_refresh_refuses_other_input_before_provisioning(checkout):
+    with pytest.raises(cp.ProvisioningError, match="requires uv-environment"):
+        cp.ensure_input(_tree(checkout), refresh_runtime=True)
+    assert _runs(checkout) == []
+
+
+def test_runtime_refresh_cli_routes_and_rejects_invalid_modes(tmp_path, monkeypatch):
+    calls = []
+
+    def ensure_all(checkout, *, names, refresh_runtime=False):
+        calls.append((checkout, names, refresh_runtime))
+        return ()
+
+    monkeypatch.setattr(cp, "ensure_all", ensure_all)
+    assert (
+        cp.main(
+            [
+                "ensure",
+                "uv-environment",
+                "--refresh-runtime",
+                "--checkout",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    assert calls == [(tmp_path, ("uv-environment",), True)]
+    for arguments in (
+        ["status", "uv-environment", "--refresh-runtime"],
+        ["ensure", "git-hooks", "--refresh-runtime"],
+    ):
+        with pytest.raises(SystemExit) as raised:
+            cp.main([*arguments, "--checkout", str(tmp_path)])
+        assert raised.value.code == 2
+    assert len(calls) == 1
+
+
 def test_implicit_evicted_generation_republishes_through_existing_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

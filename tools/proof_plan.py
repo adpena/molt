@@ -21,6 +21,7 @@ import platform
 import re
 import shlex
 from dataclasses import dataclass, field as dataclass_field
+from enum import Enum
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -714,6 +715,8 @@ _LOCAL_RULE_FIELDS = frozenset(
         "gates",
         "pytest",
         "pytest_select",
+        "cargo_target_access",
+        "pytest_cargo_target_access",
         "toolchains",
         "plan_entities",
     }
@@ -1056,16 +1059,56 @@ def local_pytest_command(
     return shlex.join(local_pytest_argv(targets, select, memory_units=memory_units))
 
 
+class CargoTargetAccess(str, Enum):
+    """Local gate effects, independent of the tools a gate must admit."""
+
+    NONE = "none"
+    ISOLATED = "isolated"
+    SHARED = "shared"
+
+    @classmethod
+    def resolve(
+        cls, toolchains: Collection[str], value: object = None
+    ) -> CargoTargetAccess:
+        if value is None:
+            return cls.SHARED if "cargo" in toolchains else cls.NONE
+        try:
+            access = cls(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "cargo_target_access must be none, isolated or shared"
+            ) from exc
+        if access is not cls.NONE and "cargo" not in toolchains:
+            raise ValueError("Cargo target access requires an explicit cargo toolchain")
+        return access
+
+    @classmethod
+    def union(cls, values: Collection[CargoTargetAccess | None]) -> CargoTargetAccess:
+        # A command or overlapping pytest request cannot shed an owner's effect.
+        if any(not isinstance(value, cls) for value in values):
+            raise ValueError("Cargo target access union requires admitted effects")
+        if cls.SHARED in values:
+            return cls.SHARED
+        if cls.ISOLATED in values:
+            return cls.ISOLATED
+        return cls.NONE
+
+
 @dataclass(frozen=True)
 class LocalPytestSelection:
     select: tuple[str, ...]
     targets: tuple[str, ...]
     toolchains: tuple[str, ...]
+    cargo_target_access: CargoTargetAccess
 
 
 def _local_pytest_selection_key(entry: Mapping[str, Any]) -> str:
     keys = set(entry) & _LOCAL_PYTEST_SELECTION_KEYS
-    unknown = set(entry) - _LOCAL_PYTEST_SELECTION_KEYS - {"targets", "toolchains"}
+    unknown = (
+        set(entry)
+        - _LOCAL_PYTEST_SELECTION_KEYS
+        - {"targets", "toolchains", "cargo_target_access"}
+    )
     if len(keys) != 1 or unknown:
         raise ValueError("must hold exactly one of k, m or all, and targets")
     return next(iter(keys))
@@ -1091,6 +1134,16 @@ def local_pytest_selections(
                 select,
                 tuple(entry["targets"]),
                 tuple(entry.get("toolchains", rule.get("toolchains", []))),
+                CargoTargetAccess.resolve(
+                    tuple(entry.get("toolchains", rule.get("toolchains", []))),
+                    entry.get(
+                        "cargo_target_access",
+                        rule.get(
+                            "pytest_cargo_target_access",
+                            rule.get("cargo_target_access"),
+                        ),
+                    ),
+                ),
             )
         )
     return selections
@@ -1126,6 +1179,12 @@ def local_pytest_select_errors(
         if isinstance(targets, list) and not targets:
             errors.append(f"{label}.targets must be non-empty")
         errors.extend(local_pytest_target_errors(label, targets, root=root))
+        if "cargo_target_access" in entry:
+            try:
+                # Inherited tools are checked when resolving the complete rule.
+                CargoTargetAccess.resolve(("cargo",), entry["cargo_target_access"])
+            except ValueError as exc:
+                errors.append(f"{label}: {exc}")
         if "toolchains" in entry:
             tools = entry["toolchains"]
             if (
@@ -1152,37 +1211,63 @@ def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class LocalGateDeclaration:
+    command: str
+    toolchains: tuple[str, ...]
+    cargo_target_access: CargoTargetAccess
+
+
 def local_gate_commands(
     data: Mapping[str, Any],
     *,
     memory_units: PytestMemoryUnits,
-) -> dict[str, tuple[str, tuple[str, ...]]]:
-    """The existing generated local IDs and their declared prerequisites."""
-    commands = {}
+) -> dict[str, LocalGateDeclaration]:
+    """One projection of local identities, prerequisites and target effects."""
+    commands: dict[str, LocalGateDeclaration] = {}
 
-    def add_shell(identifier: str, command: str, tools: Iterable[str]) -> None:
-        if error := local_gate_template_error(command):
-            raise ValueError(f"{identifier}: {error}")
-        commands[identifier] = command, tuple(tools)
+    def add(
+        identifier: str, command: str, tools: Iterable[str], access: object = None
+    ) -> None:
+        toolchains = tuple(tools)
+        commands[identifier] = LocalGateDeclaration(
+            command, toolchains, CargoTargetAccess.resolve(toolchains, access)
+        )
 
     for index, command in enumerate(data.get("always", [])):
-        add_shell(f"local.always.{index}", command, data.get("always_toolchains", []))
+        identifier = f"local.always.{index}"
+        if error := local_gate_template_error(command):
+            raise ValueError(f"{identifier}: {error}")
+        add(identifier, command, data.get("always_toolchains", []))
     for rule in data.get("rule", []):
+        tools = rule.get("toolchains", [])
+        gate_access = rule.get("cargo_target_access")
+        pytest_access = rule.get("pytest_cargo_target_access", gate_access)
+        # Validate declarations even on a currently empty branch of the rule.
+        CargoTargetAccess.resolve(tools, gate_access)
+        CargoTargetAccess.resolve(tools, pytest_access)
         for index, command in enumerate(rule.get("gates", [])):
-            add_shell(
-                f"local.{rule['name']}.{index}", command, rule.get("toolchains", [])
-            )
+            identifier = f"local.{rule['name']}.{index}"
+            if error := local_gate_template_error(command):
+                raise ValueError(f"{identifier}: {error}")
+            add(identifier, command, tools, gate_access)
+        # Pytest targets and selectors are literal argv, including parameter IDs.
+        # Only the shell-command producers above admit integration templates.
         if rule.get("pytest"):
-            commands[f"local.{rule['name']}.pytest"] = (
+            add(
+                f"local.{rule['name']}.pytest",
                 local_pytest_command(rule["pytest"], memory_units=memory_units),
-                tuple(rule.get("toolchains", [])),
+                tools,
+                pytest_access,
             )
         for index, selection in enumerate(local_pytest_selections(rule)):
-            commands[f"local.{rule['name']}.pytest-select-{index}"] = (
+            add(
+                f"local.{rule['name']}.pytest-select-{index}",
                 local_pytest_command(
                     selection.targets, selection.select, memory_units=memory_units
                 ),
                 selection.toolchains,
+                selection.cargo_target_access,
             )
     return commands
 
@@ -2992,6 +3077,17 @@ class ProofPlan:
                     toolchain_names=local_toolchain_names,
                 )
             )
+            try:
+                CargoTargetAccess.resolve(tools or (), rule.get("cargo_target_access"))
+                CargoTargetAccess.resolve(
+                    tools or (),
+                    rule.get(
+                        "pytest_cargo_target_access", rule.get("cargo_target_access")
+                    ),
+                )
+                local_pytest_selections(rule)
+            except (ValueError, TypeError, KeyError) as exc:
+                errors.append(f"{name}: local gate effects: {exc}")
         return errors
 
     def all_selected(self, *, reason: str, fail_closed: bool = True) -> Selection:

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from molt import build_record, input_report
+from molt.build_output_selection import BuildOutputSelection
 from molt.process_birth import current_process_started_ns
 
 KEY = "k" * 64
@@ -52,7 +53,10 @@ def _write(
     tmp_path: Path, ledger: build_record.InputLedger, output: Path
 ) -> tuple[Path, str | None]:
     record = build_record.record_path(tmp_path / "state", KEY)
-    return record, build_record.write_record(record, KEY, ledger, output=output)
+    selection = BuildOutputSelection.capture(
+        str(output), output, out_dir=None, project_root=tmp_path
+    )
+    return record, build_record.write_record(record, KEY, ledger, output=selection)
 
 
 def _fixture(tmp_path: Path):
@@ -79,13 +83,105 @@ def _fixture(tmp_path: Path):
 
 
 def _current(record: Path, output: Path, key: str = KEY) -> bool:
-    return build_record.check(record, key, output) is None
+    result = build_record.check(record, key)
+    return isinstance(result, build_record.BuildRecordHit) and result.output == output
 
 
 def test_an_unchanged_build_is_current(tmp_path: Path) -> None:
     _source, _tool, output, record = _fixture(tmp_path)
     assert _current(record, output)
     assert not _current(record, output, "j" * 64), "the key binds"
+
+
+def test_output_selection_survives_first_publication_and_checks_directory_kind(
+    tmp_path,
+):
+    output = tmp_path / "program"
+    selection = BuildOutputSelection.capture(
+        "program", tmp_path / "default", out_dir=None, project_root=tmp_path
+    )
+    assert not output.exists()
+    output.write_bytes(b"first published binary")
+    record = build_record.record_path(tmp_path / "state", KEY)
+    assert (
+        build_record.write_record(record, KEY, _future_ledger(), output=selection)
+        is None
+    )
+    result = build_record.check(record, KEY)
+    assert isinstance(result, build_record.BuildRecordHit) and result.output == output
+    output.unlink()
+    output.mkdir()
+    (output / "default").write_bytes(b"other binary")
+    assert isinstance(build_record.check(record, KEY), str)
+
+
+def test_output_selection_detects_redirected_directory_with_identical_output_inode(
+    tmp_path,
+):
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    binary = first / "app"
+    binary.write_bytes(b"shared inode does not preserve destination selection")
+    try:
+        os.link(binary, second / "app")
+        alias = tmp_path / "alias"
+        alias.symlink_to(first, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks/hardlinks unavailable: {exc}")
+    selection = BuildOutputSelection.capture(
+        "alias", tmp_path / "app", out_dir=None, project_root=tmp_path
+    )
+    record = build_record.record_path(tmp_path / "state", KEY)
+    assert (
+        build_record.write_record(record, KEY, _future_ledger(), output=selection)
+        is None
+    )
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+    assert input_report.stat_token(alias / "app") == input_report.stat_token(binary)
+    assert isinstance(build_record.check(record, KEY), str)
+
+
+def test_reported_output_selection_uses_the_existing_worker_fact_protocol(
+    tmp_path, monkeypatch
+):
+    selection = BuildOutputSelection.capture(
+        None, tmp_path / "app", out_dir=None, project_root=tmp_path
+    )
+    ledger = _future_ledger()
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    input_report.report_build_output(selection.to_dict())
+    assert ledger.output_selection == selection
+    worker_ledger = _future_ledger()
+    input_report._merge_worker_fact(
+        worker_ledger, ["build_output", selection.to_dict()]
+    )
+    assert worker_ledger.output_selection == selection
+    other = BuildOutputSelection.capture(
+        None, tmp_path / "other", out_dir=None, project_root=tmp_path
+    )
+    worker_ledger.build_output(other.to_dict())
+    assert worker_ledger.refusals == ["build selected more than one native output"]
+
+
+@pytest.mark.parametrize(
+    "field", ["default", "out_dir", "project_root", "path", "resolved_path"]
+)
+def test_record_rejects_relative_output_selection_context(tmp_path, field):
+    _source, _tool, _output, record = _fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["output"]["selection"][field] = "relative"
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert isinstance(build_record.check(record, KEY), str)
+
+
+def test_previous_coordinate_record_schema_is_rejected(tmp_path):
+    _source, _tool, _output, record = _fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["schema"] = "molt-build-record-v6"
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert build_record.check(record, KEY) == "no record for this request"
 
 
 def test_equal_bytes_rewritten_stay_current_only_with_a_digest(tmp_path: Path) -> None:
@@ -99,7 +195,7 @@ def test_equal_bytes_rewritten_stay_current_only_with_a_digest(tmp_path: Path) -
 def test_a_content_change_is_stale(tmp_path: Path) -> None:
     source, _tool, output, record = _fixture(tmp_path)
     source.write_text("print('b')\n", encoding="utf-8")
-    assert build_record.check(record, KEY, output) == f"file {source}"
+    assert build_record.check(record, KEY) == f"file {source}"
 
 
 def test_a_changed_or_missing_output_is_stale(tmp_path: Path) -> None:
@@ -214,7 +310,7 @@ def test_equal_byte_cargo_tool_alias_retargeting_cannot_reuse_output(
     assert reason is None and _current(record, output)
     alias.unlink()
     alias.symlink_to(second)
-    assert build_record.check(record, KEY, output) == f"lookup {alias}"
+    assert build_record.check(record, KEY) == f"lookup {alias}"
     with pytest.raises(ValueError):
         captured.verify()
 
@@ -1093,7 +1189,7 @@ def test_a_removed_temporary_file_adds_no_input(
 def test_non_object_json_records_miss_without_failing_builds(tmp_path, payload):
     _source, _tool, output, record = _fixture(tmp_path)
     record.write_text(json.dumps(payload), encoding="utf-8")
-    assert build_record.check(record, KEY, output) is not None
+    assert isinstance(build_record.check(record, KEY), str)
 
 
 @pytest.mark.parametrize("field", ["files", "directories", "probes"])
@@ -1105,13 +1201,13 @@ def test_malformed_record_collections_miss_without_raising(tmp_path, field, valu
     payload = json.loads(record.read_text(encoding="utf-8"))
     payload[field] = value
     record.write_text(json.dumps(payload), encoding="utf-8")
-    assert build_record.check(record, KEY, output) is not None
+    assert isinstance(build_record.check(record, KEY), str)
 
 
 def test_excessively_nested_json_record_misses(tmp_path):
     _source, _tool, output, record = _fixture(tmp_path)
     record.write_text("[" * 2_000 + "0" + "]" * 2_000, encoding="utf-8")
-    assert build_record.check(record, KEY, output) is not None
+    assert isinstance(build_record.check(record, KEY), str)
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork unavailable")
@@ -1666,4 +1762,4 @@ def test_source_only_record_epoch_is_rejected(tmp_path: Path) -> None:
     payload = json.loads(record.read_text(encoding="utf-8"))
     payload["schema"] = "molt-build-record-v4"
     record.write_text(json.dumps(payload), encoding="utf-8")
-    assert build_record.check(record, KEY, output) == "no record for this request"
+    assert build_record.check(record, KEY) == "no record for this request"
