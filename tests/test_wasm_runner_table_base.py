@@ -66,7 +66,7 @@ console.log(JSON.stringify({cases}));
 """
     )
     result = _run_wasm_test_process(
-        ["node", "-e", script], cwd=ROOT, env=os.environ, timeout=30
+        ["node", "-e", script], role="tool", cwd=ROOT, env=os.environ, timeout=30
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"cases": 22}
@@ -153,6 +153,7 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
     )
     parsed = _run_wasm_test_process(
         [wasm_tools, "parse", str(wat_path), "-o", str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -169,9 +170,15 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
     env = dict(os.environ)
     env.pop("NODE_NO_WARNINGS", None)
 
-    omitted = _run_wasm_test_process(command, cwd=ROOT, env=env, timeout=30)
+    omitted = _run_wasm_test_process(
+        command, role="guest-host", cwd=ROOT, env=env, timeout=30
+    )
     passed = _run_wasm_test_process(
-        [*command, "--sample", "value"], cwd=ROOT, env=env, timeout=30
+        [*command, "--sample", "value"],
+        role="guest-host",
+        cwd=ROOT,
+        env=env,
+        timeout=30,
     )
 
     assert omitted.returncode != 0
@@ -239,6 +246,7 @@ def _wasm_from_wat(
     wat_path.write_text(wat, encoding="utf-8")
     result = _run_wasm_test_process(
         [wasm_tools, "parse", str(wat_path), "-o", str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -267,6 +275,7 @@ def _wasm_from_wat(
     # The facts tool reads the module from stdin.
     result = _run_wasm_test_process(
         publish_command,
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=300,
@@ -393,6 +402,7 @@ def test_direct_node_runner_keeps_exact_guest_stderr_separate_from_host(
             "--",
             str(manifest),
         ],
+        role="guest-host",
         cwd=ROOT,
         env=env,
         timeout=30,
@@ -458,6 +468,7 @@ def test_direct_split_runner_app_stderr_close_cannot_retarget_runtime_shutdown(
             "--",
             str(manifest),
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -521,6 +532,7 @@ def test_direct_node_runner_retires_capture_after_guest_fd_ownership_changes(
             "--",
             str(_linked_manifest(module)),
         ],
+        role="guest-host",
         cwd=ROOT,
         env={**os.environ, "MOLT_WASM_TRACE_RUN": "1"},
         timeout=30,
@@ -546,6 +558,7 @@ def test_direct_node_runner_capture_admission_preserves_existing_bytes(
             "--",
             "absent.json",
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -582,6 +595,7 @@ def test_direct_node_runner_rejects_nonregular_capture_before_open(
             "--",
             "absent.json",
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=10,
@@ -632,6 +646,7 @@ def test_direct_node_runner_rejects_capture_inode_substitution(
             "--",
             "absent.json",
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=10,
@@ -646,6 +661,7 @@ def test_direct_node_runner_rejects_capture_inode_substitution(
 def test_direct_node_runner_rejects_ambiguous_capture_prefix(tail: list[str]) -> None:
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", "--guest-stderr", *tail],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -663,6 +679,7 @@ def _extract_table_base(wasm_path: Path) -> int | None:
     )
     result = _run_wasm_test_process(
         ["node", "-e", script, str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -694,7 +711,7 @@ process.stdout.write(JSON.stringify({
 }));
 """
     result = _run_wasm_test_process(
-        ["node", "-e", script], cwd=ROOT, env=os.environ, timeout=30
+        ["node", "-e", script], role="tool", cwd=ROOT, env=os.environ, timeout=30
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
@@ -725,6 +742,7 @@ def test_parse_wasm_imports_handles_tag_imports_before_memory(tmp_path: Path) ->
     )
     result = _run_wasm_test_process(
         ["node", "-e", script, str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -843,6 +861,7 @@ def test_linked_runner_uses_env_table_base_without_calling_setter(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_linked_manifest(wasm_path))],
+        role="guest-host",
         cwd=ROOT,
         env={**os.environ, "NODE_NO_WARNINGS": "1"},
         timeout=30,
@@ -868,6 +887,7 @@ def test_linked_runner_uses_only_main_startup_authority(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_linked_manifest(wasm_path))],
+        role="guest-host",
         cwd=ROOT,
         env={**os.environ, "NODE_NO_WARNINGS": "1"},
         timeout=30,
@@ -983,6 +1003,7 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1122,6 +1143,7 @@ def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1248,6 +1270,7 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1335,6 +1358,7 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1427,6 +1451,7 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1501,6 +1526,7 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1584,6 +1610,7 @@ def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1669,6 +1696,7 @@ def test_direct_split_runner_dispatches_runtime_owned_reserved_trampoline(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1726,6 +1754,7 @@ def _remap_default_app_runtime_shared_table_index(
     )
     result = _run_wasm_test_process(
         ["node", "-e", script, str(idx), json.dumps(list(installed_indices))],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -1902,6 +1931,7 @@ const transport = loaded.exports.transport;
 """
     result = _run_wasm_test_process(
         ["node", "--require", str(preload), "-e", script],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -1985,7 +2015,7 @@ const host = loaded.exports.socket;
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = _run_wasm_test_process(
-        ["node", "-e", script], cwd=ROOT, env=os.environ, timeout=30
+        ["node", "-e", script], role="guest-host", cwd=ROOT, env=os.environ, timeout=30
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [

@@ -51,6 +51,7 @@ class TestWasmToolAvailability:
         assert wasm_ld.is_file()
         result = _run_wasm_test_process(
             [str(wasm_ld), "--version"],
+            role="tool",
             cwd=ROOT,
             env=os.environ,
             timeout=10,
@@ -72,6 +73,7 @@ class TestWasmToolAvailability:
             pytest.skip("wasm-tools not found; install via cargo")
         result = _run_wasm_test_process(
             [wasm_tools, "--version"],
+            role="tool",
             cwd=ROOT,
             env=os.environ,
             timeout=10,
@@ -110,6 +112,7 @@ def _build_wasm(
         cmd.append("--linked")
     result = _run_wasm_test_process(
         cmd,
+        role="tool",
         env=env,
         cwd=ROOT,
         timeout=300,

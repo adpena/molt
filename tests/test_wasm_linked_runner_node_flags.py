@@ -80,6 +80,7 @@ def test_wasm_test_process_uses_memory_guard(monkeypatch, tmp_path: Path) -> Non
 
     result = wasm_runner._run_wasm_test_process(
         ["node", "-e", "console.log('ok')"],
+        role="tool",
         cwd=tmp_path,
         env={"NODE_NO_WARNINGS": "1"},
         timeout=5,
@@ -93,14 +94,67 @@ def test_wasm_test_process_uses_memory_guard(monkeypatch, tmp_path: Path) -> Non
     assert captured["kwargs"]["timeout"] == 5
 
 
+@pytest.mark.parametrize("selection", ["inherited", "empty", "explicit"])
+def test_wasm_tool_process_preserves_the_callers_environment_selection(
+    monkeypatch, tmp_path: Path, selection: str
+) -> None:
+    # A tool may ignore or override ambient runtime policy. The helper must
+    # neither parse that policy nor replace None/empty with another mapping.
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "unknown-tier")
+    explicit = {"MOLT_CAPABILITIES": "net/invalid", "TOOL_SENTINEL": "preserved"}
+    supplied = (
+        None if selection == "inherited" else {} if selection == "empty" else explicit
+    )
+    observed = []
+
+    def record_guard(command, **kwargs):
+        observed.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "tool output", "")
+
+    monkeypatch.setattr(
+        wasm_runner.process_guard_common, "run_guarded_test_process", record_guard
+    )
+    result = wasm_runner._run_wasm_test_process(
+        ["selected-tool", "--help"], role="tool", cwd=tmp_path, env=supplied
+    )
+    assert result.returncode == 0 and result.stdout == "tool output"
+    assert observed == [supplied] and observed[0] is supplied
+    assert explicit == {
+        "MOLT_CAPABILITIES": "net/invalid",
+        "TOOL_SENTINEL": "preserved",
+    }
+
+
+def test_wasm_tool_process_cli_help_precedes_invalid_ambient_guest_policy() -> None:
+    # Actual argparse help exits before guest-policy selection. Invalid runtime
+    # settings cannot prevent this tool command from reaching that boundary.
+    root = Path(wasm_runner.__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env.update(
+        MOLT_CAPABILITY_TIER="unknown-tier",
+        MOLT_CAPABILITIES="net/invalid",
+        PYTHONDONTWRITEBYTECODE="1",
+    )
+    before = dict(env)
+    result = wasm_runner._run_wasm_test_process(
+        [sys.executable, "-B", "-m", "molt.cli", "build", "--help"],
+        role="tool",
+        cwd=root,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--target" in result.stdout and "Compile a Python file" in result.stdout
+    assert env == before
+
+
 @pytest.mark.parametrize(
     "command",
     [
         ["node", "runner.js"],
         ["molt-wasm-host", "manifest.json"],
-        [sys.executable, "-m", "molt.cli", "build", "source.py"],
     ],
-    ids=["node", "rust-host", "cli-build"],
+    ids=["node", "rust-host"],
 )
 @pytest.mark.parametrize("inherited", [False, True], ids=["explicit", "inherited"])
 def test_wasm_test_process_projects_profiles_before_the_real_guard_boundary(
@@ -133,7 +187,11 @@ def test_wasm_test_process_projects_profiles_before_the_real_guard_boundary(
         record_guard,
     )
     result = wasm_runner._run_wasm_test_process(
-        command, cwd=tmp_path, env=None if inherited else original, timeout=5
+        command,
+        role="guest-host",
+        cwd=tmp_path,
+        env=None if inherited else original,
+        timeout=5,
     )
     assert result.returncode == 0
     if inherited:
@@ -168,7 +226,9 @@ def test_wasm_test_process_projects_profiles_before_the_real_guard_boundary(
     assert projected["UNRELATED_SENTINEL"] == "preserve-this"
     # Explicit leaves are already runtime policy; re-entry neither adds thread
     # grants nor changes the canonical identity or unrelated environment.
-    wasm_runner._run_wasm_test_process(command, cwd=tmp_path, env=projected, timeout=5)
+    wasm_runner._run_wasm_test_process(
+        command, role="guest-host", cwd=tmp_path, env=projected, timeout=5
+    )
     assert observed[1] == projected
 
 
@@ -191,7 +251,7 @@ def test_wasm_test_process_explicit_empty_env_does_not_adopt_ambient_grants(
     )
     explicit: dict[str, str] = {}
     wasm_runner._run_wasm_test_process(
-        ["node", "runner.js"], cwd=tmp_path, env=explicit
+        ["node", "runner.js"], role="guest-host", cwd=tmp_path, env=explicit
     )
     assert explicit == {}
     assert observed[0]["MOLT_CAPABILITIES"] == ""
@@ -221,7 +281,7 @@ def test_wasm_test_process_refuses_invalid_policy_before_guard_admission(
     before = dict(original)
     with pytest.raises(ManifestError, match=diagnostic):
         wasm_runner._run_wasm_test_process(
-            ["node", "runner.js"], cwd=tmp_path, env=original
+            ["node", "runner.js"], role="guest-host", cwd=tmp_path, env=original
         )
     assert original == before
 
@@ -249,6 +309,7 @@ def test_wasm_test_process_preserves_timeout_semantics(
     try:
         wasm_runner._run_wasm_test_process(
             ["node", "runner.js"],
+            role="guest-host",
             cwd=tmp_path,
             env={},
             timeout=2,
@@ -278,6 +339,7 @@ def test_wasm_nested_default_inherits_owning_proof_budget(
 
     wasm_runner._run_wasm_test_process(
         ["node", "runner.js"],
+        role="guest-host",
         cwd=tmp_path,
         env={PROOF_COMMAND_TIMEOUT_ENV: "1200"},
     )
@@ -928,6 +990,7 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
             "wasm/run_wasm.js",
             str(wasm_runtime_manifest_path(output_wasm)),
         ],
+        role="guest-host",
         cwd=root,
         env=os.environ.copy(),
         capture_output=True,
@@ -981,6 +1044,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=env,
         capture_output=True,
@@ -992,6 +1056,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
 
     result = wasm_runner._run_wasm_test_process(
         [node_bin, "wasm/run_wasm.js", str(tmp_path / "manifest.json")],
+        role="guest-host",
         cwd=root,
         env=os.environ.copy(),
         capture_output=True,
@@ -1026,6 +1091,7 @@ def test_linked_wasm_exports_table_base_setter_when_available(
             ),
             str(output_wasm),
         ],
+        role="tool",
         cwd=root,
         capture_output=True,
         text=True,

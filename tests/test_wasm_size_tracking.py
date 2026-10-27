@@ -35,6 +35,7 @@ def _build_and_measure(src_path: Path, tmp_path: Path, target: str = "wasm") -> 
             "--linked-output",
             str(linked),
         ],
+        role="tool",
         cwd=PROJECT_ROOT,
         env=wasm_test_build_env(PROJECT_ROOT, linked=True),
         timeout=180,

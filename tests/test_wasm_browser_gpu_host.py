@@ -92,6 +92,7 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -176,6 +177,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -233,6 +235,7 @@ def test_browser_host_split_runtime_compiled_gpu_kernel_uses_webgpu_dispatch(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -350,6 +353,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -402,6 +406,7 @@ def test_browser_host_direct_mode_tensor_linear_uses_webgpu_dispatch(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -490,6 +495,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -540,6 +546,7 @@ def test_browser_host_direct_mode_tinygrad_linear_uses_webgpu_dispatch(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -628,6 +635,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -679,6 +687,7 @@ def test_browser_host_direct_mode_molt_nn_linear_uses_webgpu_dispatch(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -767,6 +776,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -816,6 +826,7 @@ def test_browser_host_direct_mode_tensor_linear_without_webgpu_fails_fast(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -875,6 +886,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -927,6 +939,7 @@ def test_browser_host_direct_mode_tensor_linear_split_last_dim_uses_webgpu_dispa
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1015,6 +1028,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1065,6 +1079,7 @@ def test_browser_host_direct_mode_tensor_linear_squared_relu_gate_uses_webgpu_di
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1156,6 +1171,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1209,6 +1225,7 @@ def test_browser_host_direct_mode_tensor_attention_uses_webgpu_dispatch(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1334,6 +1351,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1390,6 +1408,7 @@ def test_browser_host_direct_mode_turboquant_attention_uses_webgpu_dispatch(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1523,6 +1542,7 @@ console.log(JSON.stringify(fakeState));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1703,6 +1723,7 @@ console.log(JSON.stringify({result, workersCreated, detail, input: [...bytes.sli
     )
     completed = _run_wasm_test_process(
         [node, str(script)],
+        role="guest-host",
         cwd=root,
         env=os.environ.copy(),
         capture_output=True,

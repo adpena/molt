@@ -9,6 +9,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Literal, assert_never
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,7 @@ def _select_out_dir(default: Path, root: Path) -> Path:
 def _run_wasm_test_process(
     args: Sequence[str],
     *,
+    role: Literal["tool", "guest-host"],
     cwd: Path,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
@@ -93,10 +95,23 @@ def _run_wasm_test_process(
     check: bool = False,
     input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    # Direct Node and Rust hosts consume exact runtime grants; named profiles
-    # belong to the same policy projection used by the CLI embedding owner.
-    process_env = ProcessEnvironmentBuilder(os.environ if env is None else env)
-    process_env.update(resolve_runtime_policy_from_env(process_env).to_env_vars())
+    """Keep tool selection distinct from a direct Molt embedding policy.
+
+    Tools own argument/environment precedence and accept the caller's exact
+    mapping or inheritance request. Direct guest hosts consume runtime grants,
+    so only that role projects profiles through the canonical policy owner.
+    Guard budget classification remains with process_guard_common.
+    """
+    process_env: Mapping[str, str] | None
+    match role:
+        case "tool":
+            process_env = env
+        case "guest-host":
+            projected = ProcessEnvironmentBuilder(os.environ if env is None else env)
+            projected.update(resolve_runtime_policy_from_env(projected).to_env_vars())
+            process_env = projected
+        case _:
+            assert_never(role)
     return process_guard_common.run_guarded_test_process(
         list(args),
         prefix="MOLT_WASM_TEST",
@@ -278,6 +293,7 @@ def build_wasm_linked(
     try:
         build = _run_wasm_test_process(
             list(command.argv),
+            role="tool",
             cwd=command.cwd,
             env=command.environment,
         )
@@ -325,6 +341,7 @@ def run_wasm_linked(
             host_args,
             # WASI preopens dot. Relative writes and tempfile's valid cwd
             # fallback belong to this case's existing product directory.
+            role="guest-host",
             cwd=manifest.parent,
             env=env,
         )

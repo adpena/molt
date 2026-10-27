@@ -233,6 +233,7 @@ console.log('ok');
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         env=os.environ,
         timeout=None,
