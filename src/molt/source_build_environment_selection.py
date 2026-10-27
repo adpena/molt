@@ -267,7 +267,10 @@ def read_development_environment_selection(
         environment_python_path,
         validate_managed_bytecode_prefix,
     )
-    from molt.python_interpreter import parse_python_interpreter_request
+    from molt.python_interpreter import (
+        PythonInterpreterRequest,
+        parse_python_interpreter_request,
+    )
 
     try:
         root, repo_root = development_coordinates(root, repo_root)
@@ -316,8 +319,9 @@ def read_development_environment_selection(
         version = _contract.parse_canonical_python_runtime_version(
             payload["python_version"]
         )
-        if version.release[:2] < (3, 12):
-            raise ValueError("development image requires CPython 3.12 or newer")
+        # The interpreter request type owns the supported physical-version
+        # domain; the record parser separately preserves prerelease identity.
+        PythonInterpreterRequest(*version.release)
         if python is not None:
             request = parse_python_interpreter_request(python)
             if version.is_prerelease or not request.matches_release(version.release):
