@@ -6,7 +6,6 @@ import base64
 import configparser
 import csv
 import enum
-import hashlib
 import hmac
 import importlib.machinery
 import importlib.util
@@ -22,14 +21,13 @@ from email.parser import Parser
 from pathlib import Path, PurePath
 from typing import cast
 
-from molt.exact_json import canonical_json_sha256, loads_exact
+from molt.exact_json import canonical_json_sha256
 from molt.python_environment_location import (
     _active_environment_prefix,
     _environment_sysconfig_path,
     _site_roots,
     editable_direct_url_path,
     environment_bytecode_prefix,
-    ENVIRONMENT_BYTECODE_DIRECTORY,
     SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     environment_provisioning_record_path,
 )
@@ -760,282 +758,23 @@ def _bytecode_disposition(
     return _BytecodeDisposition.OWNED
 
 
-def _ordinary_cache_bytes(source: bytes, filename: str, optimization: int) -> bytes:
-    code = compile(source, filename, "exec", dont_inherit=True, optimize=optimization)
-    return (
-        importlib.util.MAGIC_NUMBER
-        + struct.pack("<I", 3)
-        + importlib.util.source_hash(source)
-        + marshal.dumps(code)
-    )
-
-
-class _BytecodeDerivationProof:
-    """Trusted compile results for one publish/fresh-capture action only.
-
-    No source/code buffers, node IDs, metadata shortcuts or disk receipts enter
-    this table. Literal filenames matter even when hardlinks share source bytes.
-    """
-
-    def __init__(self) -> None:
-        self._runtime_sha256: str | None = None
-        self._digests: dict[tuple[bytes, str, int], tuple[int, bytes]] = {}
-        self._active = True
-
-    def _require_active(self) -> None:
-        if not self._active:
-            raise PythonEnvironmentIdentityError("bytecode derivation proof is revoked")
-
-    def bind_runtime(self, runtime: Mapping[str, object], *, publish: bool) -> None:
-        self._require_active()
-        digest = runtime.get("runtime_closure_sha256")
-        if not isinstance(digest, str) or not _valid_sha256(digest):
-            raise PythonEnvironmentIdentityError(
-                "bytecode producer runtime identity is invalid"
-            )
-        if publish and self._runtime_sha256 is None:
-            self._runtime_sha256 = digest
-        elif digest != self._runtime_sha256:
-            raise PythonEnvironmentIdentityError(
-                "bytecode producer runtime changed before capture"
-            )
-
-    def compile(self, source: bytes, filename: str, optimization: int) -> bytes:
-        self._require_active()
-        if self._runtime_sha256 is None:
-            raise PythonEnvironmentIdentityError(
-                "bytecode derivation has no producer runtime"
-            )
-        bytecode = _ordinary_cache_bytes(source, filename, optimization)
-        # Populate only after the canonical trusted compiler succeeds.
-        self._digests[(hashlib.sha256(source).digest(), filename, optimization)] = (
-            len(bytecode),
-            hashlib.sha256(bytecode).digest(),
-        )
-        return bytecode
-
-    def matches(
-        self, source: bytes, filename: str, optimization: int, actual: bytes
-    ) -> bool:
-        self._require_active()
-        expected = self._digests.get(
-            (hashlib.sha256(source).digest(), filename, optimization)
-        )
-        if expected is None:
-            # New or changed sources never inherit a proof from another input.
-            # This derivation is not remembered: only the publisher populates it.
-            return actual == _ordinary_cache_bytes(source, filename, optimization)
-        length, digest = expected
-        return len(actual) == length and hmac.compare_digest(
-            hashlib.sha256(actual).digest(), digest
-        )
-
-    def close(self) -> None:
-        self._active = False
-        self._runtime_sha256 = None
-        self._digests.clear()
-
-
-def _image_cache_from_source(source: Path, prefix: Path, optimization: int) -> Path:
-    """Rebase CPython's actual verifier cache suffix into the image namespace.
-
-    cache_from_source owns drive stripping, optimization tags and separators.
-    Changing sys.pycache_prefix, even briefly, would let concurrent imports read
-    unadmitted image code; derive the relative path without changing the reader.
-    """
-    if sys.pycache_prefix is None:
-        raise PythonEnvironmentIdentityError(
-            "Python verifier has no pre-start bytecode prefix"
-        )
-    verifier_prefix = Path(sys.pycache_prefix).absolute()
-    cache = Path(
-        importlib.util.cache_from_source(
-            str(source), optimization="" if optimization == 0 else optimization
-        )
-    ).absolute()
-    try:
-        suffix = cache.relative_to(verifier_prefix)
-    except ValueError as exc:
-        raise PythonEnvironmentIdentityError(
-            f"CPython cache path escapes the verifier prefix: {cache}"
-        ) from exc
-    if not suffix.parts or ".." in suffix.parts:
-        raise PythonEnvironmentIdentityError(
-            f"CPython cache path has no confined verifier suffix: {cache}"
-        )
-    return prefix / suffix
-
-
-def _ordinary_bytecode_projection(
-    root: Path,
-    tree_by_path: Mapping[str, Mapping[str, object]],
-    owned: set[str],
-    pool: _FileNodePool,
-    runtime: Mapping[str, object],
-    runtime_roots: Sequence[tuple[str, Path]],
-    runtime_pool: _FileNodePool,
-    external: Mapping[str, object],
-    external_roots: Sequence[tuple[str, Path]],
-    *,
-    publish: bool,
-    derivations: _BytecodeDerivationProof | None = None,
+def _validate_managed_bytecode_prefix(
+    root: Path, tree_by_path: Mapping[str, Mapping[str, object]]
 ) -> None:
-    """One producer/receiver for immutable ordinary caches, never rewrite caches.
-
-    Source bytes come from captured nodes. The table holds references, not code
-    objects or source buffers; compilation/marshalling is bounded to one module.
-    CPython owns path mapping (including Windows drives and optimization tags).
-    """
-    if derivations is not None:
-        derivations.bind_runtime(runtime, publish=publish)
+    """Managed readers compile imported sources; no executable cache is shipped."""
     prefix = environment_bytecode_prefix(root)
-    verifier_prefix = (
-        Path(sys.pycache_prefix).absolute() if sys.pycache_prefix is not None else None
-    )
+    relative = prefix.relative_to(root).as_posix()
     if (
-        verifier_prefix is None
-        or verifier_prefix == prefix
-        or verifier_prefix.is_relative_to(root)
-        or not verifier_prefix.is_dir()
-        or verifier_prefix.is_symlink()
-        or _is_junction(verifier_prefix)
-        or any(verifier_prefix.iterdir())
+        not prefix.is_dir()
+        or prefix.is_symlink()
+        or _is_junction(prefix)
+        or any(prefix.iterdir())
+        or tree_by_path.get(relative, {}).get("kind") != "directory"
+        or any(path.startswith(relative + "/") for path in tree_by_path)
     ):
         raise PythonEnvironmentIdentityError(
-            "image admission requires a separate empty verifier bytecode prefix"
+            "managed source-only image requires a physical empty bytecode prefix"
         )
-    if not prefix.is_dir() or prefix.is_symlink() or _is_junction(prefix):
-        raise PythonEnvironmentIdentityError(
-            "image bytecode prefix is not a real directory"
-        )
-    sources: list[tuple[Path, str, _FileNodePool]] = []
-    for relative in sorted(owned):
-        row = tree_by_path.get(relative)
-        if relative.endswith(".py") and row is not None and _is_file_entry(row):
-            sources.append((root / relative, str(row["node"]), pool))
-    locations = dict(runtime_roots)
-    for tree in cast(Sequence[Mapping[str, object]], runtime["runtime_roots"]):
-        for row in cast(Sequence[Mapping[str, object]], tree["entries"]):
-            relative = str(row["path"])
-            if relative.endswith(".py") and _is_file_entry(row):
-                sources.append(
-                    (
-                        locations[str(tree["id"])] / relative,
-                        str(row["node"]),
-                        runtime_pool,
-                    )
-                )
-    expected: dict[str, tuple[Path, str, _FileNodePool, int, Path]] = {}
-    for source, node, owner in sources:
-        for optimization in (0, 1, 2):
-            cache = _image_cache_from_source(source, prefix, optimization)
-            key = os.path.normcase(os.path.abspath(cache))
-            previous = expected.get(key)
-            if previous is not None and previous[0] != source:
-                raise PythonEnvironmentIdentityError(
-                    f"bytecode source paths collide: {previous[0]} and {source}"
-                )
-            expected[key] = (source, node, owner, optimization, cache)
-    # Mutable editable sources cannot alias a populated fixed-source cache on
-    # Windows, where CPython removes the drive from the prefix mapping.
-    roots = dict(external_roots)
-    for tree in cast(Sequence[Mapping[str, object]], external["trees"]):
-        external_root = roots[str(tree["source_root"])] / str(tree["source_path"])
-        for row in cast(Sequence[Mapping[str, object]], tree["entries"]):
-            if str(row["path"]).endswith(".py") and _is_file_entry(row):
-                source = external_root / str(row["path"])
-                for optimization in (0, 1, 2):
-                    key = os.path.normcase(
-                        str(_image_cache_from_source(source, prefix, optimization))
-                    )
-                    if key in expected and expected[key][0] != source:
-                        raise PythonEnvironmentIdentityError(
-                            f"editable source aliases an immutable bytecode source: {source}"
-                        )
-    if publish:
-        if any(prefix.iterdir()):
-            raise PythonEnvironmentIdentityError(
-                "ordinary bytecode publication requires an empty owned prefix"
-            )
-        producer_groups: dict[
-            tuple[str, _FileNodePool, str], list[tuple[Path, int]]
-        ] = {}
-        for source, node, owner, optimization, cache in expected.values():
-            producer_groups.setdefault((str(source), owner, node), []).append(
-                (cache, optimization)
-            )
-        created_parents: set[Path] = set()
-        for (filename, owner, node), variants in producer_groups.items():
-            source_data = owner.read_bound(
-                node, label="ordinary bytecode producer source"
-            )
-            try:
-                for target, optimization in variants:
-                    try:
-                        bytecode = (
-                            _ordinary_cache_bytes(source_data, filename, optimization)
-                            if derivations is None
-                            else derivations.compile(
-                                source_data, filename, optimization
-                            )
-                        )
-                    except SyntaxError:
-                        # Keep each optimization's independent attempt for
-                        # invalid fixtures or source for another Python version.
-                        continue
-                    parent = target.parent
-                    if parent not in created_parents:
-                        parent.mkdir(parents=True, exist_ok=True)
-                        created_parents.add(parent)
-                    with target.open("xb") as output:
-                        output.write(bytecode)
-                    del bytecode
-            finally:
-                # Release this module before reading the next one's bytes.
-                del source_data
-    else:
-        receiver_groups: dict[
-            tuple[str, _FileNodePool, str], list[tuple[str, str, int]]
-        ] = {}
-        for relative, row in tree_by_path.items():
-            if (
-                not relative.startswith(ENVIRONMENT_BYTECODE_DIRECTORY + "/")
-                or row.get("kind") == "directory"
-            ):
-                continue
-            key = os.path.normcase(str(root / relative))
-            binding = expected.get(key)
-            if binding is None or row.get("kind") not in {"file", "hardlink"}:
-                raise PythonEnvironmentIdentityError(
-                    f"image bytecode has no ordinary source producer: {relative}"
-                )
-            source, node, owner, optimization, _cache = binding
-            receiver_groups.setdefault((str(source), owner, node), []).append(
-                (relative, str(row["node"]), optimization)
-            )
-        for (filename, owner, node), variants in receiver_groups.items():
-            source_data = owner.read_bound(node, label="ordinary bytecode source")
-            try:
-                for relative, cache_node, optimization in variants:
-                    actual = pool.read_bound(
-                        cache_node, label="ordinary bytecode projection"
-                    )
-                    matches = (
-                        actual
-                        == _ordinary_cache_bytes(source_data, filename, optimization)
-                        if derivations is None
-                        else derivations.matches(
-                            source_data, filename, optimization, actual
-                        )
-                    )
-                    if not matches:
-                        raise PythonEnvironmentIdentityError(
-                            "image bytecode differs from its source/runtime "
-                            f"derivation: {relative}"
-                        )
-                    del actual
-            finally:
-                del source_data
 
 
 def immutable_environment_image(payload: Mapping[str, object]) -> dict[str, object]:
@@ -1229,7 +968,7 @@ def capture_current_python_environment(
     capture_context: PythonFileCaptureContext | None = None,
     with_custody: bool = False,
 ) -> dict[str, object]:
-    """Read-only admission always derives caches independently from source."""
+    """Capture exact live bytes without precompiling unimported modules."""
     return _capture_current_python_environment(
         root,
         excluded_relative_paths=excluded_relative_paths,
@@ -1240,48 +979,6 @@ def capture_current_python_environment(
     )
 
 
-def publish_current_python_environment(
-    root: Path,
-    *,
-    excluded_relative_paths: Sequence[str] = (),
-    admitted_site_bootstrap_paths: Sequence[str] = (),
-    admitted_external_roots: Sequence[Path] = (),
-    hash_workers: int = 1,
-) -> dict[str, object]:
-    """Publish ordinary caches, then attest fresh bytes in this isolated reader.
-
-    The first capture owns producer fences but its pre-bytecode payload is never
-    returned. A distinct receiver context rehashes all inputs and actual caches.
-    Both contexts close and the in-memory proof is revoked before return.
-    """
-    derivations = _BytecodeDerivationProof()
-    try:
-        with PythonFileCaptureContext(hash_workers=hash_workers) as producer:
-            _capture_current_python_environment(
-                root,
-                excluded_relative_paths=excluded_relative_paths,
-                admitted_site_bootstrap_paths=admitted_site_bootstrap_paths,
-                admitted_external_roots=admitted_external_roots,
-                capture_context=producer,
-                publish_bytecode=True,
-                derivations=derivations,
-            )
-            with PythonFileCaptureContext(hash_workers=hash_workers) as receiver:
-                payload = _capture_current_python_environment(
-                    root,
-                    excluded_relative_paths=excluded_relative_paths,
-                    admitted_site_bootstrap_paths=admitted_site_bootstrap_paths,
-                    admitted_external_roots=admitted_external_roots,
-                    capture_context=receiver,
-                    derivations=derivations,
-                )
-                producer.verify()
-                receiver.verify()
-        return payload
-    finally:
-        derivations.close()
-
-
 def _capture_current_python_environment(
     root: Path,
     *,
@@ -1290,8 +987,6 @@ def _capture_current_python_environment(
     admitted_external_roots: Sequence[Path] = (),
     capture_context: PythonFileCaptureContext | None = None,
     with_custody: bool = False,
-    publish_bytecode: bool = False,
-    derivations: _BytecodeDerivationProof | None = None,
 ) -> dict[str, object]:
     """Capture an exact immutable environment using the active interpreter."""
 
@@ -1339,38 +1034,9 @@ def _capture_current_python_environment(
             f"environment scripts root is not a real directory: {scripts_root}"
         )
     site_roots = _site_roots(canonical_root)
-    if publish_bytecode:
-        # The existing publisher holds the address lock across this child. The
-        # exact sibling record is the only recoverable unpublished generation;
-        # a published image is never a bytecode writer destination.
-        manifest = canonical_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST
-        provisional = environment_provisioning_record_path(canonical_root)
-        try:
-            record = loads_exact(provisional.read_text(encoding="utf-8"))
-            recipe = record["custody"]
-            address = {
-                key: value for key, value in recipe.items() if key != "environment_id"
-            }
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise PythonEnvironmentIdentityError(
-                "ordinary bytecode publication has no exact provisional owner"
-            ) from exc
-        if (
-            manifest.exists()
-            or manifest.is_symlink()
-            or set(record) != {"state", "custody"}
-            or record["state"] != "provisioning"
-            or recipe.get("environment_id") != canonical_root.name
-            or canonical_json_sha256(address) != canonical_root.name
-        ):
-            raise PythonEnvironmentIdentityError(
-                "ordinary bytecode publication requires an unpublished exact-address image"
-            )
-        environment_bytecode_prefix(canonical_root).mkdir(exist_ok=True)
-        excluded_relative_paths = (
-            *excluded_relative_paths,
-            ENVIRONMENT_BYTECODE_DIRECTORY,
-        )
+    managed = (
+        canonical_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    ).exists() or environment_provisioning_record_path(canonical_root).exists()
     excluded = frozenset(
         unicodedata.normalize("NFC", Path(value).as_posix())
         for value in excluded_relative_paths
@@ -1383,6 +1049,11 @@ def _capture_current_python_environment(
     )
     tree_entries = cast(list[Mapping[str, object]], tree["entries"])
     tree_by_path = {str(row["path"]): row for row in tree_entries}
+    if managed:
+        # Validate the same snapshot the attestation will bind. A write before
+        # inventory cannot become an admitted baseline; later writes fail its
+        # retained membership/generation fence.
+        _validate_managed_bytecode_prefix(canonical_root, tree_by_path)
     source_paths_by_key = {
         _portable_path_key(path): path
         for path in tree_by_path
@@ -1530,24 +1201,6 @@ def _capture_current_python_environment(
         bootstrap_paths=admitted_bootstrap,
         capture_context=capture_context,
     )
-    if (
-        publish_bytecode
-        or (canonical_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists()
-        or environment_provisioning_record_path(canonical_root).exists()
-    ):
-        _ordinary_bytecode_projection(
-            canonical_root,
-            tree_by_path,
-            owned_files,
-            tree_pool,
-            runtime,
-            runtime_roots,
-            runtime_pool,
-            external_import_custody,
-            external_roots,
-            publish=publish_bytecode,
-            derivations=derivations,
-        )
     native_modules = [
         {
             "path": str(row["path"]),

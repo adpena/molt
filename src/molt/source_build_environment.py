@@ -343,7 +343,7 @@ def _environment_spec(
         "schema_version": _schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_groups": list(selected_groups),
         "editable_binding": _editable_binding(repo_root) if editable else None,
-        "bytecode_policy": _schema.ORDINARY_BYTECODE_POLICY,
+        "bytecode_policy": _schema.IMAGE_BYTECODE_POLICY,
         "dependency_group_requirements": list(group_requirements),
         "lock_closure": lock_closure,
         "python_runtime": python_runtime,
@@ -406,7 +406,6 @@ def _probe_source_build_python(
     root: Path | None = None,
     external_root: Path | None = None,
     source_root: Path | None = None,
-    publish_bytecode: bool = False,
     verifier: PythonIdentityVerifier,
     capture_wheel_target: bool = False,
     development_admission: _schema.DevelopmentEnvironmentAdmission | None = None,
@@ -428,15 +427,13 @@ def _probe_source_build_python(
             "--admit-virtualenv-bootstrap",
         ]
     if development_admission is not None:
-        if root is None or publish_bytecode:
+        if root is None:
             raise _schema.SourceBuildEnvironmentError(
                 "development admission requires a read-only environment capture"
             )
         probe_arguments.extend(development_admission.probe_arguments())
     if external_root is not None:
         probe_arguments.extend(("--admit-external-root", str(external_root)))
-    if publish_bytecode:
-        probe_arguments.append("--publish-bytecode")
     if capture_wheel_target:
         if root is not None:
             raise _schema.SourceBuildEnvironmentError(
@@ -719,24 +716,6 @@ def _validate_recipe_inputs(repo_root: Path, custody: Mapping[str, object]) -> N
         )
 
 
-def _publish_environment_bytecode(
-    python_executable: Path,
-    root: Path,
-    *,
-    external_root: Path | None = None,
-    source_root: Path | None = None,
-) -> dict[str, object]:
-    with PythonIdentityVerifier() as verifier:
-        return _probe_source_build_python(
-            python_executable,
-            verifier=verifier,
-            root=root,
-            external_root=external_root,
-            source_root=source_root,
-            publish_bytecode=True,
-        )
-
-
 def _provision_source_build_environment(
     repo_root: Path,
     spec: tuple[Path, Path, Path, _schema._SourceBuildCustody, Path],
@@ -899,6 +878,7 @@ def _provision_source_build_environment(
         environment.pop("VIRTUAL_ENV", None)
         environment["UV_PROJECT_ENVIRONMENT"] = str(root)
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["UV_COMPILE_BYTECODE"] = "0"
         environment["PYTHONPYCACHEPREFIX"] = str(environment_bytecode_prefix(root))
         child_environment = ProcessEnvironment(environment)
         raw_base = (
@@ -943,12 +923,10 @@ def _provision_source_build_environment(
                 f"uv sync did not create source-build Python: {python_executable}"
             )
         verify_inputs()
-        realized = _publish_environment_bytecode(
-            python_executable,
-            root,
-            external_root=external_root,
-            source_root=source_root,
-        )
+        # The published read namespace is empty. CPython compiles only modules
+        # actually imported by a command; -B keeps this image immutable.
+        environment_bytecode_prefix(root).mkdir(exist_ok=True)
+        realized = capture()
         verify_inputs()
         manifest = _attested_environment(custody, realized)
         _validate_recipe_inputs(repo_root, custody)
@@ -988,7 +966,7 @@ def _published_recipe(root: Path) -> tuple[dict[str, object], Mapping[str, objec
     if (
         type(recipe["schema_version"]) is not int
         or recipe["schema_version"] != _schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
-        or recipe["bytecode_policy"] != _schema.ORDINARY_BYTECODE_POLICY
+        or recipe["bytecode_policy"] != _schema.IMAGE_BYTECODE_POLICY
         or manifest["environment_id"] != root.name
         or canonical_json_sha256(recipe) != root.name
     ):

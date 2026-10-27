@@ -1329,18 +1329,7 @@ def _locked_environment_spec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, Path, Path, dict[str, object], Path]:
-    # Publication state-machine tests supply synthetic captured bytes. The real
-    # bytecode producer has independent source/loader controls in identity tests.
-    def publish(python, root, **options):
-        # The composite publisher returns its fresh receiver capture. Individual
-        # state-machine cases provide that capture's independent payload/fault.
-        return build_environment._probe_environment_identity(
-            python,
-            root,
-            **{key: value for key, value in options.items() if value is not None},
-        )
-
-    monkeypatch.setattr(build_environment, "_publish_environment_bytecode", publish)
+    # State-machine fixtures provide the fresh live capture independently.
     monkeypatch.setattr(
         build_environment, "_validate_recipe_inputs", lambda *_args, **_kwargs: None
     )
@@ -4256,7 +4245,7 @@ def test_source_build_environment_refuses_input_rewrite_with_restored_bytes_and_
     assert build_environment.environment_provisioning_record_path(spec[0]).is_file()
 
 
-@pytest.mark.parametrize("changed_at", ["sync", "bytecode", "capture"])
+@pytest.mark.parametrize("changed_at", ["sync", "capture"])
 def test_editable_publication_refuses_selected_reader_rewrite(
     tmp_path, monkeypatch, changed_at
 ):
@@ -4286,14 +4275,6 @@ def test_editable_publication_refuses_selected_reader_rewrite(
         observe("sync")
         return subprocess.CompletedProcess(argv, 0)
 
-    def publish(python, root, *, external_root, source_root):
-        assert (python, root) == (spec[1], spec[0])
-        assert external_root == source_root == selected
-        observe("bytecode")
-        return capture(
-            python, root, external_root=external_root, source_root=source_root
-        )
-
     def capture(python, root, *, external_root, source_root):
         assert (python, root) == (spec[1], spec[0])
         assert external_root == source_root == selected
@@ -4303,7 +4284,6 @@ def test_editable_publication_refuses_selected_reader_rewrite(
         )
 
     monkeypatch.setattr(build_environment, "_run_uv_sync", sync)
-    monkeypatch.setattr(build_environment, "_publish_environment_bytecode", publish)
     monkeypatch.setattr(build_environment, "_probe_environment_identity", capture)
     with pytest.raises(
         build_environment_schema.SourceBuildEnvironmentError,
@@ -4312,11 +4292,9 @@ def test_editable_publication_refuses_selected_reader_rewrite(
         build_environment._provision_source_build_environment(
             selected, spec, environ={}
         )
-    # The outer reader fence now surrounds the composite child. Mutations in
-    # either child phase must still refuse before attestation publication.
-    assert stages == (
-        ["sync"] if changed_at == "sync" else ["sync", "bytecode", "capture"]
-    )
+    # The outer reader fence surrounds the sole fresh capture. Neither sync nor
+    # capture may change the selected reader before attestation publication.
+    assert stages == (["sync"] if changed_at == "sync" else ["sync", "capture"])
     assert not spec[2].exists()
     assert build_environment.environment_provisioning_record_path(spec[0]).is_file()
 
