@@ -875,7 +875,14 @@ def _verify_no_dropped_commits(
 
 
 def _subject(git: Git, sha: str) -> str:
-    return git._run(["log", "-1", "--format=%s", sha]).stdout.strip()
+    from tools.molt_dev_change_ids import read_commit_records
+
+    records = read_commit_records(
+        lambda arguments: git._run(arguments).stdout, f"{sha}^!"
+    )
+    if len(records) != 1 or records[0].oid != sha:
+        raise DriverError("Git subject lookup did not return its requested commit")
+    return records[0].subject
 
 
 def _assert_integration_source(git: Git, commit: str) -> None:
@@ -1169,7 +1176,12 @@ def _integrate_exclusive(
     # upstream. Immutable commit identities preserve the entire source graph
     # when no rebase is needed; patch IDs are required only for actual replay.
     source_range = f"{upstream_before}..{head_before}"
-    source_shas = git.commits_in_range(source_range)
+    from tools.molt_dev_change_ids import read_commit_records
+
+    source_records = read_commit_records(
+        lambda arguments: git._run(arguments).stdout, source_range
+    )
+    source_shas = [record.oid for record in source_records]
     _assert_integration_source(git, head_before)
     if not source_shas:
         progress.emit("candidate_selected")
@@ -1184,7 +1196,10 @@ def _integrate_exclusive(
         return EXIT_OK
     _say(
         f"    integrating {len(source_shas)} commit(s):\n"
-        + "\n".join(f"      {git.short(s)}  {_subject(git, s)}" for s in source_shas)
+        + "\n".join(
+            f"      {git.short(record.oid)}  {record.subject}"
+            for record in source_records
+        )
     )
 
     # --- step 2: rebase onto upstream (only if behind) ----------------------

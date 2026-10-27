@@ -3876,18 +3876,18 @@ def test_integrate_no_rebase_rejects_head_drift_before_selection(
         _commit_file(work, "feature.py", "value = 1\n", "feature")
     captured = _git(work, "rev-parse", "HEAD").stdout.strip()
     trigger = f"{captured}..{upstream}" if has_source else f"{upstream}..{captured}"
-    original = drv.Git.commits_in_range
+    original = drv.Git._run
     changed = False
 
-    def move_head(self, range_expr):
+    def move_head(self, arguments, **kwargs):
         nonlocal changed
-        result = original(self, range_expr)
-        if range_expr == trigger and not changed:
+        result = original(self, arguments, **kwargs)
+        if arguments[0] in {"log", "rev-list"} and trigger in arguments and not changed:
             changed = True
             _git(work, "commit", "--allow-empty", "-qm", "concurrent source drift")
         return result
 
-    monkeypatch.setattr(drv.Git, "commits_in_range", move_head)
+    monkeypatch.setattr(drv.Git, "_run", move_head)
     commands = _record_driver_git_commands(drv, monkeypatch)
     with pytest.raises(DriverError, match="source HEAD changed"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))

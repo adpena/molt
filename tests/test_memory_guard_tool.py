@@ -7332,6 +7332,122 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
         stop_test_processes_carrying(marker)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX terminal process custody")
+@pytest.mark.parametrize("orphan", [False, True])
+@pytest.mark.parametrize("custom_sampler", [False, True])
+def test_terminal_transfer_and_cleanup_share_observation_until_a_signal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    orphan: bool,
+    custom_sampler: bool,
+) -> None:
+    from molt import backend_daemon_suite_custody as suite_custody
+
+    _use_real_scratch(monkeypatch)
+    decisive_samples = []
+    transfer_samples = []
+    cleanup_samples = []
+    closure_samples = []
+    transfer = suite_custody.transferable_groups
+    cleanup = memory_guard.cleanup_tracked_orphans
+    closure = memory_guard._temporary_artifact_descendant_closure
+
+    def observed_transfer(environment, *, samples, **kwargs):
+        transfer_samples.append(samples)
+        if kwargs.get("wait_for_lock"):
+            decisive_samples.append(samples)
+        return transfer(environment, samples=samples, **kwargs)
+
+    def observed_cleanup(root_pid, *, samples, **kwargs):
+        cleanup_samples.append(samples)
+        return cleanup(root_pid, samples=samples, **kwargs)
+
+    def observed_closure(**kwargs):
+        closure_samples.append(kwargs.get("final_samples"))
+        return closure(**kwargs)
+
+    monkeypatch.setattr(suite_custody, "transferable_groups", observed_transfer)
+    monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", observed_cleanup)
+    monkeypatch.setattr(
+        memory_guard, "_temporary_artifact_descendant_closure", observed_closure
+    )
+    marker = hung_child_marker()
+    pid_file = tmp_path / "child.pid"
+    release = tmp_path / "release-child"
+    moved = tmp_path / "child-moved"
+    sample_host = memory_guard.sample_processes
+    sample_custody = memory_guard.sample_processes_custody
+
+    def release_observed_child(samples):
+        if pid_file.exists() and int(pid_file.read_text()) in samples:
+            release.touch()
+        return samples
+
+    def observe_child(sample):
+        if orphan:
+            _wait_for_pid_file(pid_file)
+        return release_observed_child(sample())
+
+    if not custom_sampler:
+        monkeypatch.setattr(
+            memory_guard,
+            "sample_processes_custody",
+            lambda interest: observe_child(lambda: sample_custody(interest)),
+        )
+    # Observe the child in the root group, then let it move after that
+    # observation. The next snapshot is terminal: cached group membership
+    # cannot decide whether it needs the suite's transfer check.
+    monkeypatch.setattr(memory_guard, "DEFAULT_FAST_START_POLL_INTERVAL_SEC", 60.0)
+    child_script = (
+        "import os, threading, time\nfrom pathlib import Path\n"
+        f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        "os.setsid()\n"
+        f"Path({str(moved)!r}).touch()\n"
+        "threading.Event().wait()\n"
+    )
+    script = (
+        "import subprocess, sys, time\nfrom pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}, {marker!r}])\n"
+        f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+        f"while not Path({str(moved)!r}).exists(): time.sleep(0.01)\n"
+        if orphan
+        else "pass\n"
+    )
+    try:
+        result = memory_guard.run_guarded(
+            [sys.executable, "-c", script],
+            max_rss_kb=1_000_000,
+            poll_interval=60.0,
+            env={
+                **os.environ,
+                LEASE_ENV: str(tmp_path / "no-adoptions" / "lease.json"),
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state"),
+            },
+            sampler=(
+                (lambda: observe_child(sample_host))
+                if custom_sampler
+                else memory_guard.sample_processes
+            ),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.descendants_closed
+        assert cleanup_samples
+        if orphan:
+            assert decisive_samples
+            assert cleanup_samples[0] is decisive_samples[-1]
+            assert result.termination_reports
+            # Real orphan termination invalidates the observation. The actual
+            # closure consumer must obtain fresh rows after that signal.
+            assert closure_samples[-1] is None
+            assert not processes_carrying(marker)
+        else:
+            assert not transfer_samples
+            assert not result.termination_reports
+            assert closure_samples[-1] is cleanup_samples[0]
+    finally:
+        stop_test_processes_carrying(marker)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX owned-child reap")
 def test_timeout_closure_survives_a_late_reap_of_the_killed_child(
     monkeypatch: pytest.MonkeyPatch,
