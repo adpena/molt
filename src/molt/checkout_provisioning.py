@@ -878,8 +878,15 @@ def input_state(spec: CheckoutInput) -> InputState:
     return _owned_state(spec)
 
 
-def ensure_input(spec: CheckoutInput) -> Ensured:
-    """Make ``spec`` current; raise `ProvisioningError` when it cannot be."""
+def ensure_input(spec: CheckoutInput, *, refresh_runtime: bool = False) -> Ensured:
+    """Make ``spec`` current; optionally recapture its development runtime recipe."""
+    if refresh_runtime:
+        if not isinstance(spec, DevelopmentEnvironment):
+            raise ProvisioningError("runtime refresh requires uv-environment")
+        if spec.environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
+            raise ProvisioningError(
+                "runtime refresh cannot replace explicit UV_PROJECT_ENVIRONMENT"
+            )
     started = time.monotonic()
     if isinstance(spec, DevelopmentEnvironment):
         from molt.python_interpreter import is_python_version_selector
@@ -890,11 +897,11 @@ def ensure_input(spec: CheckoutInput) -> Ensured:
             # Current selection is a cheap recipe projection, not a claim that
             # published executable bytes have passed operation admission.
             intent = _development_intent(spec)
-            # A command/path selector needs the publisher's one exact runtime
-            # probe; bounded metadata alone cannot certify that executable.
+            # A command/path selector or explicit refresh needs the publisher's
+            # exact runtime probe; bounded metadata cannot certify current bytes.
             selected = (
                 _current_development_environment(spec)
-                if is_python_version_selector(intent["python"])
+                if not refresh_runtime and is_python_version_selector(intent["python"])
                 else None
             )
             if selected is not None:
@@ -944,6 +951,7 @@ def ensure(
     guard_source_root: Path | None = None,
     python: str | None = None,
     groups: tuple[str, ...] | None = None,
+    refresh_runtime: bool = False,
 ) -> Ensured:
     """Publish/select the declared input through its existing owner."""
     return ensure_input(
@@ -954,7 +962,8 @@ def ensure(
             guard_source_root=guard_source_root,
             python=python,
             groups=groups,
-        )
+        ),
+        refresh_runtime=refresh_runtime,
     )
 
 
@@ -964,18 +973,34 @@ def ensure_all(
     names: Iterable[CheckoutInputName] = DEFAULT_CHECKOUT_INPUT_NAMES,
     *,
     guard_source_root: Path | None = None,
+    refresh_runtime: bool = False,
 ) -> tuple[Ensured, ...]:
     """Provision every named input; report every failure together.
 
     Each input is atomic: a failure leaves that input unstamped and keeps the
     inputs that did succeed.
     """
+    names = tuple(names)
+    if refresh_runtime:
+        if "uv-environment" not in names:
+            raise ProvisioningError("runtime refresh requires uv-environment")
+        environment = ProcessEnvironment(os.environ if environ is None else environ)
+        if environment.get("UV_PROJECT_ENVIRONMENT", "").strip():
+            raise ProvisioningError(
+                "runtime refresh cannot replace explicit UV_PROJECT_ENVIRONMENT"
+            )
     done: list[Ensured] = []
     failures: list[str] = []
     for name in names:
         try:
             done.append(
-                ensure(name, checkout, environ, guard_source_root=guard_source_root)
+                ensure(
+                    name,
+                    checkout,
+                    environ,
+                    guard_source_root=guard_source_root,
+                    refresh_runtime=refresh_runtime and name == "uv-environment",
+                )
             )
         except ProvisioningError as exc:
             failures.append(str(exc))
@@ -1005,6 +1030,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--checkout", type=Path, default=compiler_source_root())
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--refresh-runtime",
+        action="store_true",
+        help="Recapture the current Python runtime through the uv-environment publisher.",
+    )
     args = parser.parse_args(argv)
     unknown = sorted(set(args.inputs) - set(CHECKOUT_INPUT_NAMES))
     if unknown:
@@ -1014,6 +1044,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.inputs
         else DEFAULT_CHECKOUT_INPUT_NAMES
     )
+    if args.refresh_runtime and args.action != "ensure":
+        parser.error("--refresh-runtime requires ensure")
+    if args.refresh_runtime and "uv-environment" not in names:
+        parser.error("--refresh-runtime requires uv-environment")
     if args.action == "status":
         try:
             states = {
@@ -1029,7 +1063,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"{name}: {state}")
         return 0 if all(state == "current" for state in states.values()) else 1
     try:
-        done = ensure_all(args.checkout, names=names)
+        done = ensure_all(
+            args.checkout, names=names, refresh_runtime=args.refresh_runtime
+        )
     except ProvisioningError as exc:
         print(exc, file=sys.stderr)
         return 1

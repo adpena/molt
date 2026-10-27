@@ -16,10 +16,12 @@ from typing import TypeVar, cast
 from molt import input_report
 from molt.exact_json import canonical_json_sha256
 from molt.toolchain_identity import (
+    FileDigestCache,
     StableRegularFileIdentity,
     read_stable_regular_file,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
+    verify_stable_regular_file_metadata,
 )
 from molt.python_identity_common import (
     PythonEnvironmentIdentityError,
@@ -155,13 +157,18 @@ def _ordered_capture_work(
 class PythonFileCaptureContext:
     """One bounded capture lane, shared hashes, and exact nonsemantic file custody."""
 
-    def __init__(self, *, hash_workers: int = 1) -> None:
+    def __init__(
+        self, *, hash_workers: int = 1, digest_cache: FileDigestCache | None = None
+    ) -> None:
         if type(hash_workers) is not int or not 1 <= hash_workers <= 32:
             raise PythonEnvironmentIdentityError(
                 "hash_workers must be an integer in 1..32"
             )
         self._closed = False
         self.hash_workers = hash_workers
+        self._digest_cache = digest_cache
+        self._new_digests: list[StableRegularFileIdentity] = []
+        self._protected_trees: set[Path] = set()
         self._files: dict[Path, StableRegularFileIdentity] = {}
         self._objects: dict[tuple[int, int], StableRegularFileIdentity] = {}
         # Keep each emitted semantic row alive until the envelope binds its
@@ -191,14 +198,50 @@ class PythonFileCaptureContext:
         self._objects.clear()
         self._node_custody.clear()
         self._verification_fences.clear()
+        self._new_digests.clear()
+        self._protected_trees.clear()
 
-    def _remember(self, identity: StableRegularFileIdentity) -> None:
+    def protect_tree(self, root: Path) -> None:
+        """Keep cache writes outside the physical trees this capture reads."""
+        self._require_active()
+        if self._digest_cache is not None:
+            self._protected_trees.add(root.resolve())
+            self._check_digest_cache_location()
+
+    def _check_digest_cache_location(self) -> None:
+        if self._digest_cache is not None:
+            store = self._digest_cache.store.resolve()
+            if any(store.is_relative_to(root) for root in self._protected_trees):
+                raise PythonEnvironmentIdentityError(
+                    f"file digest cache overlaps a captured Python tree: {store}"
+                )
+
+    def _remember(self, identity: StableRegularFileIdentity, *, hashed: bool) -> None:
         self._files[identity.path] = identity
         device, inode, _mode, _size, _mtime_ns, _ctime_ns = identity._stat_identity
         if inode:
-            self._objects[(device, inode)] = identity
-        self._hashed_bytes += identity.size
-        self._hashed_files += 1
+            self._objects.setdefault((device, inode), identity)
+        if hashed:
+            self._hashed_bytes += identity.size
+            self._hashed_files += 1
+            if self._digest_cache is not None:
+                self._new_digests.append(identity)
+
+    @staticmethod
+    def _verify_file(
+        identity: StableRegularFileIdentity,
+        *,
+        label: str,
+        expected_path_stat: os.stat_result | None = None,
+    ) -> None:
+        if os.name == "nt":
+            verify_stable_regular_file_identity(
+                identity, label=label, expected_path_stat=expected_path_stat
+            )
+        else:
+            verify_stable_regular_file_metadata(
+                identity, label=label, expected_path_stat=expected_path_stat
+            )
 
     def bind_many(
         self, rows: Sequence[tuple[Path, os.stat_result]], *, label: str
@@ -210,6 +253,7 @@ class PythonFileCaptureContext:
         maps. Publication still requires the outer file and membership fences.
         """
         self._require_active()
+        self._check_digest_cache_location()
         groups: dict[
             tuple[int, int] | Path,
             list[tuple[int, Path, os.stat_result, StableRegularFileIdentity | None]],
@@ -226,12 +270,25 @@ class PythonFileCaptureContext:
                 prior = self._objects.get(_stable_object_key(expected))
             groups.setdefault(key, []).append((index, lexical, expected, prior))
 
+        # The host cache is serial custody. Workers only hash new object groups;
+        # they never open SQLite or mutate its pending records.
+        cached: dict[int, StableRegularFileIdentity] = {}
+        if self._digest_cache is not None:
+            for group in groups.values():
+                index, lexical, expected, prior = group[0]
+                if prior is None:
+                    hit = self._digest_cache.lookup(
+                        lexical, expected_path_stat=expected, label=label
+                    )
+                    if hit is not None:
+                        cached[index] = hit
+
         def capture_group(
             group: list[
                 tuple[int, Path, os.stat_result, StableRegularFileIdentity | None]
             ],
         ) -> list[tuple[int, StableRegularFileIdentity, bool]]:
-            captured: StableRegularFileIdentity | None = None
+            captured = cached.get(group[0][0])
             results: list[tuple[int, StableRegularFileIdentity, bool]] = []
             for index, lexical, expected, prior in group:
                 identity = prior if prior is not None else captured
@@ -243,7 +300,7 @@ class PythonFileCaptureContext:
                 else:
                     if identity.path != lexical:
                         identity = replace(identity, path=lexical)
-                    verify_stable_regular_file_identity(
+                    self._verify_file(
                         identity, label=label, expected_path_stat=expected
                     )
                 captured = identity
@@ -262,10 +319,7 @@ class PythonFileCaptureContext:
         identities = []
         for index in range(len(rows)):
             identity, hashed = bound[index]
-            if hashed:
-                self._remember(identity)
-            else:
-                self._files[identity.path] = identity
+            self._remember(identity, hashed=hashed)
             if input_report.first_report(identity):
                 input_report.report_captured_file(
                     identity.path, identity.stat_token(), identity.sha256
@@ -281,12 +335,11 @@ class PythonFileCaptureContext:
     def verify(self) -> None:
         self._require_active()
         try:
+            self._check_digest_cache_location()
             identities = list(self._files.values())
 
             def verify_identity(identity: StableRegularFileIdentity) -> None:
-                verify_stable_regular_file_identity(
-                    identity, label="Python capture custody"
-                )
+                self._verify_file(identity, label="Python capture custody")
 
             for _ in _ordered_capture_work(
                 identities, verify_identity, workers=self.hash_workers
@@ -294,6 +347,12 @@ class PythonFileCaptureContext:
                 pass
             for verify in self._verification_fences:
                 verify()
+            if self._digest_cache is not None:
+                self._check_digest_cache_location()
+                for identity in self._new_digests:
+                    self._digest_cache.remember(identity)
+                self._digest_cache.flush()
+                self._new_digests.clear()
         except BaseException:
             self.close()
             raise
@@ -860,6 +919,7 @@ def _stable_tree_inventory(
     """Capture a tree with one hash per file object and a closing snapshot."""
 
     canonical = root.resolve(strict=True)
+    pool.capture_context.protect_tree(canonical)
     before_root, before = _tree_membership_snapshot(
         canonical,
         label=label,
