@@ -59,6 +59,9 @@ _SCHEMA = (
         revision BLOB NOT NULL,
         PRIMARY KEY (kind, key)
     )""",
+    # Exact aggregate inventory scans compact SQLite-maintained lengths rather
+    # than sparse payload table pages. Recency updates never touch this index.
+    "CREATE INDEX IF NOT EXISTS records_payload_size ON records(length(payload))",
     # Last use lives apart from the payload. SQLite rewrites a whole row on
     # UPDATE, so a stamp in `records` rewrote every payload it renewed, with
     # 47 times the WAL bytes of this narrow table.
@@ -355,7 +358,8 @@ class SourceRecordMaintenance:
 
     def inventory(self) -> SourceRecordInventory:
         with self._cursor(
-            "SELECT count(*), coalesce(sum(length(payload)), 0) FROM records"
+            "SELECT count(*), coalesce(sum(length(payload)), 0)"
+            " FROM records INDEXED BY records_payload_size"
         ) as cursor:
             count, size = cursor.fetchone()
         return SourceRecordInventory(count, size)
