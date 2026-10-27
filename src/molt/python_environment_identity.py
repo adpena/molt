@@ -106,7 +106,6 @@ def _parse_arguments():
     parser.add_argument("--wheel-tag-source", type=Path)
     parser.add_argument("--input-report-log-dir")
     parser.add_argument("--with-custody", action="store_true")
-    parser.add_argument("--publish-bytecode", action="store_true")
     parser.add_argument("--hash-workers", type=int, default=1)
     parser.add_argument("--admit-virtualenv-bootstrap", action="store_true")
     parser.add_argument("--admit-site-bootstrap", action="append", default=[])
@@ -124,19 +123,12 @@ def _parse_arguments():
         parser.error("development intent requires published admission and a checkout")
     if args.admit_published_environment and (
         not (args.capture_environment or args.capture_active_environment)
-        or args.publish_bytecode
     ):
         parser.error("published admission requires a read-only environment capture")
     if args.wheel_tag_source is not None and (
         not args.capture_runtime or args.with_custody or args.runtime_session
     ):
         parser.error("wheel tag capture requires a plain runtime capture")
-    if args.publish_bytecode and (
-        not args.capture_environment or args.with_custody or args.runtime_session
-    ):
-        parser.error(
-            "bytecode publication requires one unpublished environment capture"
-        )
     admissions = (
         args.admit_virtualenv_bootstrap
         or args.admit_site_bootstrap
@@ -177,7 +169,6 @@ else:
         PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA as PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA,
         PYTHON_ENVIRONMENT_IDENTITY_SCHEMA as PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
         capture_current_python_environment,
-        publish_current_python_environment,
         python_environment_executable_files as python_environment_executable_files,
         validate_python_environment_identity as validate_python_environment_identity,
         virtualenv_site_bootstrap_relative_paths as virtualenv_site_bootstrap_relative_paths,
@@ -555,19 +546,6 @@ def _main() -> None:
         payload = locate_current_python_environment()
     elif args.runtime_selection:
         payload = current_python_runtime_selection()
-    elif args.publish_bytecode:
-        root = args.capture_environment
-        assert root is not None  # The argument contract requires an explicit image.
-        bootstrap = list(args.admit_site_bootstrap)
-        if args.admit_virtualenv_bootstrap:
-            bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
-        payload = publish_current_python_environment(
-            root,
-            excluded_relative_paths=(SOURCE_BUILD_ENVIRONMENT_MANIFEST,),
-            admitted_site_bootstrap_paths=bootstrap,
-            admitted_external_roots=args.admit_external_root,
-            hash_workers=args.hash_workers,
-        )
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
 
