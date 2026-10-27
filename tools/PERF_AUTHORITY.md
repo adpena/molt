@@ -219,6 +219,26 @@ ordinary cache validation. The [image contract](../docs/ops/INTEGRATION.md)
 owns these boundaries; timing the removed eager builder does not measure the
 current image policy.
 
+Automatic checkout retention uses the existing detached supervisor and immutable
+controller source, retaining source and interpreter use through terminal
+publication. A recent daily stamp costs one observation and a small immutable
+epoch value, with no process or inventory. Due status and attempt identity come
+from that same observation. Due dispatch reuses the controller's existing source
+publisher without fetching or installing dependencies; discovery and deletion
+continue under the existing daily and per-root locks after command return.
+
+One source command previously spent 46.73 seconds after its 11.26-second guard
+in synchronous daily collection. A controlled macOS arm64 fixture now returns
+while its collector is independently blocked, removes the originating lane, then
+executes actual eligible-root reclamation and retains both GC and pressure logs.
+Dispatch with a new source projection took 4.95 seconds; reuse from the surviving
+pinned controller took 0.47 seconds in that fixture. A separate source-only
+publication of 2,095 files / 37.54 MB took 1.43 seconds. These are component
+observations, not paired whole-compiler latency measurements. Background I/O
+remains, failed startup can still wait for custody closure, and environment
+admission is a separate cost. The [retention contract](../docs/design/foundation/56_dx_buildspeed_tooling.md#26-checkout-state-retention-hf-313)
+owns policy, startup and failure boundaries.
+
 WASM policy separates typed build intent, target placement, effective captured
 Cargo incrementality and shared publication. The ordinary nonincremental default
 is retained: one controlled `dev-fast`, micro-runtime WASM source edit took

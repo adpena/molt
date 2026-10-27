@@ -4319,6 +4319,289 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
     assert not (tmp_path / "old-a").exists()
 
 
+def _controller_source_fixture(tmp_path, key="a" * 32):
+    from tools import molt_dev_controller as controller
+
+    root = tmp_path / "molt" / "controllers" / key
+    root.mkdir(parents=True)
+    (root / controller.RECORD_NAME).write_text(
+        json.dumps({"schema": controller.SCHEMA, "key": key, "commit": "1" * 40}),
+        encoding="utf-8",
+    )
+    return controller.Controller(key=key, root=root.resolve())
+
+
+def test_controller_source_use_excludes_aged_retirement_and_staging(
+    tmp_path, monkeypatch
+):
+    from tools import molt_dev_controller as controller
+
+    selected = _controller_source_fixture(tmp_path)
+    staging = selected.root.with_name(
+        controller.STAGING_PREFIX + selected.key + "-fixture"
+    )
+    staging.mkdir()
+    (staging / "partial-source").write_bytes(b"not published")
+    monkeypatch.setattr(controller, "KEEP", 1)
+    now = time.time()
+    old = now - 2 * controller.IDLE_S
+    with controller.controller_source_use(selected):
+        os.utime(selected.root / controller.RECORD_NAME, (old, old))
+        os.utime(staging, (old, old))
+        controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+        assert selected.driver.parent.parent.is_dir()
+        assert (staging / "partial-source").read_bytes() == b"not published"
+    controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+    assert not selected.root.exists()
+    assert not staging.exists()
+
+
+def test_controller_source_publishes_committed_policy_without_environment(
+    origin_and_clone, monkeypatch
+):
+    from tools import molt_dev_controller as controller
+    from molt.file_locks import _try_acquire_file_lock
+
+    _, work = origin_and_clone
+    for path in controller.CONTROLLER_PATHS:
+        target = work / path
+        if path in {"tools", "src/molt", "config"}:
+            target /= "source.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("published source\n", encoding="utf-8")
+    _git(work, "add", "--", *controller.CONTROLLER_PATHS)
+    _git(work, "commit", "-q", "--no-verify", "-m", "published source fixture")
+    commit = _git(work, "rev-parse", "HEAD").stdout.strip()
+    (work / "tools/source.txt").write_text("dirty caller\n", encoding="utf-8")
+    monkeypatch.setattr(
+        controller,
+        "_sync_environment",
+        lambda *_: pytest.fail("source acquisition synced uv"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_retire_idle",
+        lambda *a, **kw: pytest.fail("source acquisition swept controllers"),
+    )
+    with controller.controller_source(work, work / ".git", commit) as selected:
+        assert (selected.root / "tools/source.txt").read_text(
+            encoding="utf-8"
+        ) == "published source\n"
+        assert not (selected.root / controller.ENVIRONMENT_NAME).exists()
+        assert (
+            _try_acquire_file_lock(controller._source_lock_path(selected.root)) is None
+        )
+    assert (work / "tools/source.txt").read_text(encoding="utf-8") == "dirty caller\n"
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX controller uses process-preserving exec"
+)
+def test_controller_exec_retains_source_without_an_extra_process(tmp_path):
+    from tools import molt_dev_controller as controller
+    from tests.process_guard_common import run_custody_subject_process
+
+    selected = _controller_source_fixture(tmp_path)
+    selected.driver.parent.mkdir()
+    lock_path = controller._source_lock_path(selected.root)
+    selected.driver.write_text(
+        "import fcntl, os, sys\n"
+        f"with open({str(lock_path)!r}, 'rb') as lock:\n"
+        "    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    except BlockingIOError: pass\n"
+        "    else: raise AssertionError('controller source lease lost across exec')\n"
+        "assert os.getpid() == int(os.environ['EXPECTED_CONTROLLER_PID'])\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    code = (
+        "import os, sys\nfrom pathlib import Path\n"
+        "from tools import molt_dev_controller as controller\n"
+        "controller.venv_python = lambda _: Path(sys.executable)\n"
+        "os.environ['EXPECTED_CONTROLLER_PID'] = str(os.getpid())\n"
+        f"controller.run_controller(controller.Controller({selected.key!r}, Path({str(selected.root)!r})), [], repo=Path.cwd())\n"
+    )
+    result = run_custody_subject_process(
+        [sys.executable, "-B", "-c", code],
+        cwd=REPO_ROOT,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 7, result.stderr
+
+
+def test_detached_controller_worker_retains_source_through_terminal_publication(
+    tmp_path, monkeypatch
+):
+    from tools import molt_dev_controller as controller, molt_dev_detached as detached
+    from molt.file_locks import _try_acquire_file_lock
+
+    selected = _controller_source_fixture(tmp_path)
+    state = tmp_path / "worker"
+    state.mkdir()
+    payload = state / "worker.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "argv": [sys.executable, "-B", "-c", "raise SystemExit(9)"],
+                "cwd": str(Path.cwd()),
+                "use_token": "c" * 32,
+                "controller": {"key": selected.key, "root": str(selected.root)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(detached, "_REPO_ROOT", selected.root)
+    real_write = detached._atomic_write_text
+    observed = []
+    (state / "run.log").write_text("startup diagnostic retained\n", encoding="utf-8")
+
+    def write(path, value):
+        if path.name == "rc":
+            assert (
+                _try_acquire_file_lock(controller._source_lock_path(selected.root))
+                is None
+            )
+            observed.append(value)
+        return real_write(path, value)
+
+    monkeypatch.setattr(detached, "_atomic_write_text", write)
+    assert detached._detached_worker_main(payload, controller_required=True) == 0
+    assert observed == ["9"]
+    assert (state / "state-use-ready.json").is_file()
+    assert (
+        (state / "run.log")
+        .read_text(encoding="utf-8")
+        .startswith("startup diagnostic retained\n")
+    )
+    from molt.file_locks import _release_file_lock
+
+    handle = _try_acquire_file_lock(controller._source_lock_path(selected.root))
+    assert handle is not None
+    _release_file_lock(handle)
+
+
+def test_detached_controller_worker_rejects_source_substitution_before_ready(
+    tmp_path, monkeypatch
+):
+    from tools import molt_dev_detached as detached
+
+    selected = _controller_source_fixture(tmp_path)
+    state = tmp_path / "worker"
+    state.mkdir()
+    payload = state / "worker.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "argv": ["must-not-run"],
+                "cwd": str(Path.cwd()),
+                "use_token": "c" * 32,
+                "controller": {"key": "b" * 32, "root": str(selected.root)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(detached, "_REPO_ROOT", selected.root)
+    monkeypatch.setattr(
+        detached,
+        "_exec_wait_rc",
+        lambda *a: pytest.fail("substituted source ran a child"),
+    )
+    assert detached._detached_worker_main(payload, controller_required=True) == 0
+    assert not (state / "state-use-ready.json").exists()
+    assert (state / "rc").read_text(encoding="utf-8") == "126"
+
+
+def test_detached_preentry_failure_keeps_startup_trace(tmp_path):
+    from tools import molt_dev_detached as detached
+
+    selected = _controller_source_fixture(tmp_path)
+    entry = selected.root / "tools" / "molt_dev_detached.py"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text(
+        "raise RuntimeError('independent failure before worker entry')\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "failed-startup"
+    with pytest.raises(detached.DriverError, match="worker exited 1"):
+        detached.launch_detached(
+            state,
+            ["must-not-run"],
+            cwd=selected.root,
+            environment=dict(os.environ),
+            controller=selected,
+        )
+    assert not (state / "state-use-ready.json").exists()
+    if os.name == "posix":
+        assert (state / "rc").read_text(encoding="utf-8") == "1"
+    diagnostic = (state / "run.log").read_text(encoding="utf-8")
+    assert "Traceback" in diagnostic
+    assert "independent failure before worker entry" in diagnostic
+
+
+def test_detached_published_source_survives_caller_removal_and_idle_retention(
+    tmp_path, driver_seed, monkeypatch
+):
+    from tools import molt_dev_controller as controller, molt_dev_detached as detached
+
+    selected = _controller_source_fixture(tmp_path)
+    copy_driver_trees(selected.root, seed=driver_seed)
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    poison = caller / "tools"
+    poison.mkdir()
+    (poison / "__init__.py").write_text(
+        "raise AssertionError('caller PYTHONPATH entered immutable supervisor')\n",
+        encoding="utf-8",
+    )
+    release, ready = tmp_path / "release", tmp_path / "child-ready"
+    code = (
+        "from pathlib import Path\nimport time\n"
+        f"Path({str(ready)!r}).touch()\n"
+        f"release=Path({str(release)!r})\n"
+        "deadline=time.monotonic()+20\n"
+        "while not release.exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        "assert release.exists(), 'test release deadline'\n"
+    )
+    state = tmp_path / "maintenance"
+    with controller.controller_source_use(selected):
+        detached.launch_detached(
+            state,
+            [sys.executable, "-I", "-B", "-c", code],
+            cwd=selected.root,
+            environment={**os.environ, "PYTHONPATH": str(caller)},
+            controller=selected,
+        )
+    try:
+        shutil.rmtree(caller)
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), (state / "run.log").read_text(encoding="utf-8")
+        # Every timestamp is deliberately stale: only real OS source use may
+        # keep this controller while the detached command remains alive.
+        now = time.time()
+        old = now - 2 * controller.IDLE_S
+        os.utime(selected.root / controller.RECORD_NAME, (old, old))
+        monkeypatch.setattr(controller, "KEEP", 1)
+        controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
+        assert selected.driver.exists()
+    finally:
+        release.touch()
+        deadline = time.monotonic() + 10
+        while not (state / "rc").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert (state / "rc").read_text(encoding="utf-8") == "0"
+    # Terminal publication precedes source-handle release by a few instructions.
+    deadline = time.monotonic() + 5
+    while selected.root.exists() and time.monotonic() < deadline:
+        controller._retire_idle(selected.root.parent, current=tmp_path, now=time.time())
+        time.sleep(0.02)
+    assert not selected.root.exists()
+
+
 # --------------------------------------------------------------------------
 # Landing queue: batches, bisection, conflicts and races
 # --------------------------------------------------------------------------
@@ -8029,7 +8312,12 @@ def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_
     # Use the controller's interpreter, without the proof environment's
     # editable-install startup hooks binding Molt to a different source tree.
     molt_dev_controller._sync_environment(cache)
-    (cache / ".molt-controller.json").write_text("{}\n", encoding="utf-8")
+    (cache / ".molt-controller.json").write_text(
+        json.dumps(
+            {"schema": molt_dev_controller.SCHEMA, "key": key, "commit": "1" * 40}
+        ),
+        encoding="utf-8",
+    )
     report = tmp_path / "controller-context.json"
     state = tmp_path / "preserved-state"
     state.write_bytes(b"independent state")
@@ -8100,7 +8388,7 @@ assert Path.cwd() == Path({str(wt)!r})
 os.environ.update(CARGO_TARGET_DIR="relative-target", CARGO_HOME="relative-cargo-home", TMPDIR="relative-tmp", TMP="relative-tmp", TEMP="relative-tmp")
 os.environ["MOLT_SOURCE_ROOT"] = os.path.relpath({str(cache)!r}, Path.cwd())
 real_os = controller.os
-controller.os = SimpleNamespace(name="nt", chdir=real_os.chdir, environ=real_os.environ)
+controller.os = SimpleNamespace(**{{key: getattr(real_os, key) for key in dir(real_os) if key != "name"}}, name="nt")
 rc = controller.run_controller(controller.Controller({key!r}, Path({str(cache)!r})),
     ["integrate", "--repo", ".", "--marker", "exists:unchanged-relative", "--no-push"], repo=Path("."))
 assert Path.cwd() == Path({str(cache)!r})

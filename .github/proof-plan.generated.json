@@ -29,6 +29,7 @@
     "tools/compat/diff_output_layout.py",
     "tools/compat/test_policy.py",
     "tools/disk_guard.py",
+    "tools/checkout_maintenance.py",
     "tools/guarded_entrypoints.py",
     "tools/proof_queue_pkg/__init__.py",
     "tools/memory_guard_core/common.py",
@@ -541,6 +542,7 @@
         "tests/tools/test_dev_test_runner.py/**",
         "tests/tools/test_direct_run_process_custody.py/**",
         "tests/tools/test_disk_guard.py/**",
+        "tests/tools/test_checkout_maintenance.py/**",
         "tests/tools/test_drift_harvest.py/**",
         "tests/tools/test_encoding_gate.py/**",
         "tests/tools/test_linux_vm.py/**",
@@ -3637,6 +3639,7 @@
         "tests/tools/test_dev_test_runner.py",
         "tests/tools/test_direct_run_process_custody.py",
         "tests/tools/test_disk_guard.py",
+        "tests/tools/test_checkout_maintenance.py",
         "tests/tools/test_drift_harvest.py",
         "tests/tools/test_encoding_gate.py",
         "tests/tools/test_linux_vm.py",
@@ -9483,6 +9486,7 @@
       "local.builtin-binding-guard-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
       "local.cargo-source-closure.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_runtime_source_closure.py tests/cli/test_cli_cache_fingerprint.py::test_backend_source_fingerprint_tracks_selected_leaf_sources tests/cli/test_cli_cache_fingerprint.py::test_jit_runner_fingerprint_tracks_the_runner_crate_and_its_codegen tests/cli/test_cli_cache_fingerprint.py::test_compiler_fingerprints_track_the_build_inputs_their_crates_declare tests/cli/test_cli_cache_fingerprint.py::test_a_cached_launch_misses_when_an_input_of_its_tier_changes tests/cli/test_cli_cache_fingerprint.py::test_the_real_closures_key_what_their_crates_read_outside_themselves tests/cli/test_cli_cache_fingerprint.py::test_source_graphs_follow_preserved_stat_transitive_manifest_replacements tests/cli/test_cli_cache_fingerprint.py::test_backend_lock_identity_tracks_only_reachable_dependency_content tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_fails_closed tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_resolves_same_name_version_by_source tests/cli/test_cli_cache_fingerprint.py::test_cargo_document_capture_bounds_actual_growth_before_parse tests/cli/test_compiler_identity.py::test_lock_projection_is_mandatory_without_raw_lock_in_source_paths tests/cli/test_compiler_identity.py::test_unreachable_bad_rows_do_not_become_a_second_lock_validator tests/cli/test_compiler_identity.py::test_cargo_git_reference_and_path_precedence",
       "local.changed-clippy-selection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_check_changed_clippy.py",
+      "local.checkout-maintenance.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_checkout_maintenance.py",
       "local.checkout-output-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/test_custody_layout.py tests/test_dx_run_context.py tests/tools/test_proof_queue_output_layout.py tests/cli/test_llvm_wasi_tools.py tests/tools/test_disk_guard.py tests/tools/test_lane_maturity.py tests/tools/test_proof_queue_lane_maturity.py",
       "local.ci-wiring.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/cli/test_native_toolchain_transfer.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.ci-wiring.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_proof_plan.py",
@@ -9492,6 +9496,7 @@
       "local.cpython-abi-authorities.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4",
       "local.cpython-coverage-generation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_gen_cpython_coverage.py",
       "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_committed_gate_policy.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/test_cargo_workspace.py",
+      "local.dev-tooling.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_checkout_maintenance.py",
       "local.docs-architecture.0": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
       "local.edgebox-typescript.0": "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- python -m molt.tool_releases run npm -- run check",
@@ -9546,6 +9551,7 @@
       "local.process-environment-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_standalone_benchmark_memory_guard.py",
       "local.process-environment-consumers.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k batch_suite_trip_uses_submitted_request_custody_before_shutdown tests/test_molt_diff_memory_guard.py",
       "local.process-environment-consumers.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker' tests/test_demo_bench_memory_guard.py",
+      "local.process-forwarding-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_command_execution.py tests/tools/test_proof_wrapper_transparency.py",
       "local.proof-plan-tests.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_proof_plan.py",
       "local.public-contract.0": "python tools/public_contract_gate.py --check",
       "local.public-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_public_contract_gate.py tests/tools/test_release_exit_gate.py tests/tools/test_release_criterion_receipt.py tests/tools/test_release_matrix_acceptance.py",
@@ -10566,7 +10572,8 @@
       },
       {
         "command_ids": [
-          "local.dev-tooling.pytest"
+          "local.dev-tooling.pytest",
+          "local.dev-tooling.pytest-select-0"
         ],
         "description": "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests.",
         "gates": [],
@@ -10577,7 +10584,12 @@
           "tools/check_rust_toolchain.py",
           "tools/check_rustfmt.py",
           "src/molt/cargo_workspace.py",
+          "src/molt/checkout_state.py",
+          "src/molt/file_locks.py",
+          "src/molt/process_spawn.py",
+          "tools/command_execution.py",
           "tools/molt_dev.py",
+          "tools/checkout_maintenance.py",
           "tools/molt_dev_*.py",
           "src/molt/checkout_provisioning.py",
           "tests/tools/test_rust_toolchain_contract.py",
@@ -10602,9 +10614,87 @@
           "tests/tools/test_check_rustfmt.py",
           "tests/test_cargo_workspace.py"
         ],
+        "pytest_select": [
+          {
+            "all": true,
+            "targets": [
+              "tests/tools/test_checkout_maintenance.py"
+            ],
+            "toolchains": [
+              "python",
+              "git"
+            ]
+          }
+        ],
         "toolchains": [
           "python",
           "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.checkout-maintenance.pytest-select-0"
+        ],
+        "description": "Published maintenance policy, captured reclaim scope and terminal error propagation.",
+        "gates": [],
+        "globs": [
+          "tools/checkout_maintenance.py",
+          "tests/tools/test_checkout_maintenance.py",
+          "src/molt/dx.py",
+          "src/molt/checkout_state.py",
+          "src/molt/file_locks.py",
+          "src/molt/custody_layout.py",
+          "src/molt/process_spawn.py",
+          "tools/disk_guard.py",
+          "tools/molt_dev_controller.py",
+          "tools/molt_dev_detached.py",
+          "tools/command_execution.py",
+          "tools/git_identity.py",
+          "tools/import_file.py"
+        ],
+        "name": "checkout-maintenance",
+        "pytest_select": [
+          {
+            "all": true,
+            "targets": [
+              "tests/tools/test_checkout_maintenance.py"
+            ],
+            "toolchains": [
+              "python",
+              "git"
+            ]
+          }
+        ],
+        "toolchains": [
+          "python",
+          "git"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.process-forwarding-custody.pytest"
+        ],
+        "description": "Process forwarding, detached acknowledgement and selected-image retention.",
+        "gates": [],
+        "globs": [
+          "src/molt/process_spawn.py",
+          "src/molt/checkout_state.py",
+          "src/molt/file_locks.py",
+          "tools/command_execution.py",
+          "tools/molt_dev_controller.py",
+          "tools/molt_dev_detached.py",
+          "tools/venv_exec.py",
+          "tests/tools/test_command_execution.py",
+          "tests/tools/test_proof_wrapper_transparency.py"
+        ],
+        "name": "process-forwarding-custody",
+        "pytest": [
+          "tests/tools/test_command_execution.py",
+          "tests/tools/test_proof_wrapper_transparency.py"
+        ],
+        "toolchains": [
+          "python",
+          "git"
         ]
       },
       {
@@ -10733,6 +10823,7 @@
         "globs": [
           "src/molt/custody_layout.py",
           "src/molt/dx.py",
+          "src/molt/checkout_state.py",
           "src/molt/llvm_wasi_tools.py",
           "tools/proof_queue_pkg/cargo_output_layout.py",
           "tools/disk_guard.py",
@@ -11845,6 +11936,7 @@
           "tools/proof_queue.py",
           "tools/proof_queue_pkg/runner.py",
           "tools/disk_guard.py",
+          "src/molt/checkout_state.py",
           "tools/drift_harvest.py",
           "tools/check_gate_liveness.py",
           "tests/tools/test_lane_maturity.py",
@@ -13114,6 +13206,10 @@
         "python",
         "uv"
       ],
+      "local.checkout-maintenance.pytest-select-0": [
+        "python",
+        "git"
+      ],
       "local.checkout-output-custody.pytest": [
         "python"
       ],
@@ -13154,6 +13250,10 @@
       "local.dev-tooling.pytest": [
         "python",
         "uv"
+      ],
+      "local.dev-tooling.pytest-select-0": [
+        "python",
+        "git"
       ],
       "local.docs-architecture.0": [
         "python"
@@ -13386,6 +13486,10 @@
       "local.process-environment-consumers.pytest-select-1": [
         "python",
         "uv"
+      ],
+      "local.process-forwarding-custody.pytest": [
+        "python",
+        "git"
       ],
       "local.proof-plan-tests.pytest-select-0": [
         "python",

@@ -555,10 +555,12 @@ The disk guard applies the policy at most once a day after a command publishes
 its result, and on demand with `tools/disk_guard.py --gc`.
 `RunContext.canonical_env` only materializes and stamps its finite selected
 roots; resolving an environment or preparing a capsule never starts global
-collection. `molt.dx.collect_checkout_state_after_result` is the shared
-source-only invocation boundary. It uses the command's captured environment,
-preserves its result, reports ordinary collection failures (including returned
-reclaim errors), and defers to an enclosing memory guard's completion.
+collection. `molt.dx.collect_checkout_state_after_result` is the shared source-only
+scheduling boundary. It preserves the command's captured environment and result,
+and defers to an enclosing memory guard's completion. A due owner dispatches
+`tools/checkout_maintenance.py` through the existing detached supervisor; it
+returns after startup custody is acknowledged. The worker runs the one existing
+collector and publishes its own terminal result outside the originating lane.
 
 The automatic owners are the CLI build scope after its artifact claims release
 (including a cached build), outer CLI source work after dispatch publication
@@ -577,7 +579,7 @@ that root waits for its next eligible maintenance owner. Other command owners
 retain their actual selected environments. Maintenance does not reconstruct
 either selection from the ambient environment after work.
 Terminal JSON and human output, including the proof queue's final status,
-flush to their output streams before synchronous maintenance can block.
+flush to their output streams before maintenance dispatch.
 Published failures are eligible too. Startup-report workers and proof
 payload workers defer to their verifying caller; the timed guarded-execution
 phase never runs this global sweep. Result publication grants scheduling only:
@@ -598,21 +600,60 @@ acquire a second maintenance lifetime.
 
 The existing stamp at `target/.molt-checkout-state-gc` remains the cadence
 authority: after resolving the selected root, a warm completion reads its stamp
-once. A due attempt takes a stable
-external nonblocking file lock under `target/.disk_guard`, rechecks the stamp,
-records its start, and holds the lock through collection. Competing automatic
+once and starts no process. A due dispatch names one existing detached state by
+one coherent stamp observation under `logs/disk_guard/automatic`. Due status
+and attempt generation come from that same immutable observation; another
+worker advancing the stamp cannot consume a future epoch. Existing launch
+admission coalesces simultaneous observations. Neither the caller nor a ready
+acknowledgement advances the daily stamp. The worker's `disk_guard.collect_due`
+takes the stable external nonblocking daily lock, rechecks cadence, records its
+start, and holds that lock through actual collection. Competing automatic
 callers skip without inventory or waiting. A failed or interrupted attempt
 keeps the original daily throttle; root-specific retirement locks and policy
 rechecks still authorize every deletion, including explicit/manual collection.
 This follows [Cargo's opportunistic automatic-GC admission](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/gc.rs.html#40-89)
 and [uv's owned pruning after a CI job](https://docs.astral.sh/uv/concepts/cache/#caching-in-continuous-integration).
 
-This scheduling removes global scan/deletion work from environment and payload
-startup, not from total command wall time. A due completion still pays O(managed
-roots + reclaimed directory entries), without a new process or daemon.
-The pressure pass's between-candidate budget cannot bound one recursive tree
-deletion. No bounded whole-command latency or reduction in deletion operations
-follows from moving maintenance to completion.
+Automatic collection policy comes from the locally known published
+`origin/main`, using the integration controller's existing immutable source
+publisher and tree identity. Captured caller scope is a separate input: relative
+protected targets resolve against its original cwd, while the supervisor and
+collector run from the surviving controller. No dirty working tree, network
+fetch, environment installation or controller retention sweep participates in
+this selection. A missing worker contract defers visibly without daily admission.
+The source context may publish a missing exact controller through the existing
+archive owner; it does not synchronize that controller's Python environment.
+A pinned completion resolves published Git identity through its admitted physical
+controller/common-directory binding; the source snapshot has no `.git`, and
+neither ambient cwd nor dirty caller files select policy.
+
+The supervisor and collector use isolated no-site Python startup. An editable
+installation can otherwise preload caller modules through `.pth` or
+`sitecustomize` before immutable source binds. Interpreter custody uses its actual
+command resource, including on CPython 3.12 where `-S` exposes the base prefix.
+Candidate queue drivers need dependencies and use the controller owner's locked
+environment instead. Startup diagnostics append to the existing `run.log` from
+before Python entry, so a pre-entry failure remains inspectable.
+
+Controller source has shared use from before worker birth through child closure
+and terminal `rc` publication. Controller retention takes the corresponding
+exclusive lock nonblockingly and rechecks eligibility; age alone cannot retire
+live source. Existing detached startup acknowledgement also retains the selected
+interpreter's managed state. `ready` and `pid` establish startup custody; only
+`rc` establishes orderly completion. Failed or unresolved attempts retain their
+state, logs and verification path. Another completion cannot replace an attempt
+or choose a random new name to evade it. Explicit detached recovery is required
+when failure preceded daily admission. A collection error remains a nonzero
+worker result and cannot change the completed command's exit status.
+
+The due return path pays finite source selection/publication, metadata and the
+existing supervisor/collector startup handoff. Discovery and deletion remain
+O(managed roots + reclaimed entries), but execute after command return. This
+removes waiting, not filesystem work or disk contention. A failed startup handoff
+still retains custody through actual closure and has no hard latency bound.
+Synchronous build-capacity admission and explicit `--gc` retain their semantics.
+GC and pressure results have separate exclusive log records, typed operations,
+monotonic phase/deletion timings and exact reclaimed/skipped/error paths.
 
 Worktree retirement (`integrate --cleanup-worktree` and `lane retire`)
 retires the worktree's daemons, removes it, and then reclaims its roots at

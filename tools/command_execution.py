@@ -216,13 +216,20 @@ def detached_command_use(
     ready_path: Path,
     use_token: str,
 ) -> Generator[None]:
-    """Acknowledge only after acquiring the detached worker's actual use."""
-    from molt.checkout_state import checkout_state_environment_roots, checkout_state_use
+    """Acknowledge only after acquiring the worker's state and interpreter use.
+
+    A stdlib-only worker may run with -S: on CPython 3.12 its sys.prefix is the
+    base installation, while sys.executable still selects the managed image.
+    The canonical command-resource projection retains that actual executable.
+    """
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
 
     if not ready_path.is_absolute() or re.fullmatch(r"[0-9a-f]{32}", use_token) is None:
         raise ValueError("invalid detached use handoff descriptor")
     with checkout_state_use(
-        checkout_state_environment_roots(source_root, environment, cwd=cwd)
+        checkout_state_command_roots(
+            source_root, environment, (sys.executable,), cwd=cwd
+        )
     ):
         temporary = ready_path.with_name(f".{ready_path.name}.{use_token}.tmp")
         try:

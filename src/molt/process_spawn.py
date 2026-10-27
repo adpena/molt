@@ -12,7 +12,10 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from types import ModuleType
 from pathlib import Path
-from typing import IO, Any, Self, TextIO, TypedDict
+from typing import IO, TYPE_CHECKING, Any, Self, TextIO, TypedDict
+
+if TYPE_CHECKING:
+    from .file_locks import _FileLockHandle
 
 
 PROCESS_STATE_HANDOFF_TIMEOUT_S = 30.0
@@ -234,12 +237,15 @@ def forward_command(
     *,
     env: Mapping[str, str],
     cwd: str | os.PathLike[str] | None = None,
+    retained_shared_handles: Sequence[_FileLockHandle] = (),
 ) -> int:
     """Transfer a CLI wrapper to its command without adding a custody owner.
 
     POSIX exec preserves process identity and signal delivery. Windows has no
     equivalent exec: wait for the child so its actual status reaches the caller.
     The command (or an existing outer guard) owns any descendant lifecycle.
+    Caller-owned shared handles transfer through the same audited POSIX exec
+    boundary as managed state; the caller retains them during a Windows wait.
     """
     if isinstance(command, (str, bytes)):
         raise TypeError("command must be typed argv, not shell text")
@@ -247,11 +253,18 @@ def forward_command(
     if not argv:
         raise ValueError("command is required")
     from .checkout_state import checkout_state_command_roots, checkout_state_use
-    from .file_locks import _file_lock_descriptor_action, _file_lock_owned_operation
+    from .file_locks import (
+        _file_lock_descriptor_action,
+        _file_lock_is_owned,
+        _file_lock_owned_operation,
+    )
     from .source_root import compiler_source_root
 
     child_env = dict(env)
     source = compiler_source_root()
+    for handle in retained_shared_handles:
+        if not handle.shared or not _file_lock_is_owned(handle):
+            raise ValueError("forwarded source use requires live shared handles")
     if os.name == "nt":
         with ProcessStateUse(source, child_env, cwd, argv) as state_owner:
             process = subprocess.Popen(
@@ -291,6 +304,7 @@ def forward_command(
     with checkout_state_use(
         checkout_state_command_roots(source, child_env, argv, cwd=cwd)
     ) as handles:
+        handles = (*handles, *retained_shared_handles)
         with ExitStack() as custody:
             for handle in handles:
                 custody.enter_context(

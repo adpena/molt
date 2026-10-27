@@ -4,7 +4,8 @@
 bors-ng tests a batch of approved changes merged onto main and bisects a
 failed batch; Zuul and the GitHub merge queue test each change on top of the
 changes ahead of it. ``molt_dev.py land`` writes one request and returns. The
-runner, always main's pinned driver, replays every ready lane onto main's tip
+runner, main's pinned driver or an explicitly adopted committed controller,
+replays every ready lane onto main's tip
 in its own sandbox worktree, runs the union of the batch's selected gates
 once through ``integrate`` and publishes the tested commit. A failed batch
 splits into halves until the failing lane stands alone; a lane that does not
@@ -23,6 +24,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from types import ModuleType
 from typing import Any
 from dataclasses import asdict, dataclass
@@ -32,11 +34,17 @@ from heapq import nlargest
 from pathlib import Path
 
 from tools.molt_dev_controller import (
+    ENVIRONMENT_NAME,
     add_pinned_controller_arguments,
     integration_controller,
+    controller_for_source,
+    controller_source,
+    controller_source_use,
     run_from_pinned_controller,
 )
-from tools.molt_dev_detached import python_command
+from tools.molt_dev_detached import launch_detached, python_command
+from tools.venv_exec import venv_python
+from molt.path_custody import host_path_is_within
 from molt import process_model
 from molt.file_locks import FileLockTimeout
 from tools.molt_dev_common import (
@@ -584,6 +592,66 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
         return
     # A unique name: a runner that is exiting never blocks the next one.
     name = "runner-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    if args.candidate_controller:
+        driver_file = drv.__file__
+        if driver_file is None:
+            raise DriverError("candidate controller has no source file")
+        source = Path(driver_file).resolve().parents[1]
+        common_dir = drv._git_common_directory(repo)
+        if common_dir is None:
+            raise DriverError("cannot resolve candidate runner's Git common directory")
+        with ExitStack() as custody:
+            controller = controller_for_source(source)
+            if controller is None:
+                source_git = drv.Git(source)
+                observed = source_git.checkout_observation()
+                if observed.dirty_records:
+                    raise DriverError(
+                        "candidate runner requires clean committed controller source: "
+                        f"{source}; commit the reviewed changes before adoption"
+                    )
+                controller = custody.enter_context(
+                    controller_source(source, common_dir, observed.head)
+                )
+                if source_git.checkout_observation() != observed:
+                    raise DriverError(
+                        "candidate controller source changed during capture"
+                    )
+            else:
+                custody.enter_context(controller_source_use(controller))
+            from tools import molt_dev_controller
+
+            # The caller may be an editable image whose site startup imports
+            # its checkout even under -I. Use the controller's existing locked,
+            # non-editable dependency environment while its source is retained.
+            molt_dev_controller._sync_environment(controller.root)
+            runner_prefix = python_command(str(controller.driver))
+            runner_prefix[0] = str(venv_python(controller.root / ENVIRONMENT_NAME))
+            if "-I" not in runner_prefix:
+                runner_prefix.insert(1, "-I")
+            if "-B" not in runner_prefix:
+                runner_prefix.insert(1, "-B")
+            pid = launch_detached(
+                paths.runners / name,
+                [
+                    *runner_prefix,
+                    "queue",
+                    "run",
+                    "--repo",
+                    str(repo),
+                    "--remote",
+                    args.remote,
+                    "--branch",
+                    args.branch,
+                    "--candidate-controller",
+                ],
+                cwd=repo,
+                environment=os.environ,
+                controller=controller,
+            )
+        _ok(f"candidate runner {name!r} spawned from {controller.root}: pid {pid}")
+        _ok(f"runner evidence: {paths.runners / name} (run.log/rc)")
+        return
     detached = drv.build_parser().parse_args(
         [
             "detached-run",
@@ -604,7 +672,6 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
             args.remote,
             "--branch",
             args.branch,
-            *(["--candidate-controller"] if args.candidate_controller else []),
         ]
     )
     drv.cmd_detached_run(detached)
@@ -708,7 +775,8 @@ def _sandbox_git(paths, git, upstream: str):
     return drv.Git(sandbox.resolve())
 
 
-def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
+def _land_one_batch(args: argparse.Namespace, git, paths) -> bool:
+    """Land one batch; True transfers unfinished retirement to published main."""
 
     drv = _driver()
     git.fetch(args.remote, args.branch)
@@ -724,10 +792,13 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
         if landing_representation(git, request.head, upstream).landed
     ]
     if already_landed:
-        _after_landing(git.repo, already_landed, args, paths, upstream)
+        if not _after_landing(git.repo, already_landed, args, paths, upstream):
+            return True
     ready = pending(paths)
     if not ready:
-        return
+        # The same plan owner drops closed requests after a retirement repin.
+        next_batch(paths, ready)
+        return False
     batch = next_batch(paths, ready)
     sandbox = _sandbox_git(paths, git, upstream)
 
@@ -742,7 +813,7 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
         _warn(f"{request.id} {reason}")
     if not candidate.included:
         retire_batch_plan(paths, batch)
-        return
+        return False
     integration = drv.build_parser().parse_args(
         [
             "integrate",
@@ -767,31 +838,49 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
     except (RebaseConflict, PublicationRace) as exc:
         # main moved under the batch; the next runner rebuilds it on the new tip.
         _warn(f"main moved; rebuilding the batch: {exc}")
-        return
+        return False
     except CandidateFailure as exc:
         if len(candidate.included) > 1:
             _warn(f"batch of {len(candidate.included)} failed; bisecting")
             bisect(paths, batch, candidate.included)
-            return
+            return False
         (request,) = candidate.included
         record_result(paths, request, status=LandingStatus.FAILED, detail=str(exc))
         # The runner's log is where an operator looks first: say why.
         _fail(f"{request.id} failed: {exc}")
         retire_batch_plan(paths, batch)
-        return
+        return False
     landed = drv.require_git_object_id(sandbox.head_sha(), label="landed batch")
-    _after_landing(sandbox.repo, candidate.included, args, paths, landed)
+    if not _after_landing(sandbox.repo, candidate.included, args, paths, landed):
+        return True
     retire_batch_plan(paths, batch)
+    return False
 
 
 def _after_landing(
     sandbox: Path, requests, args: argparse.Namespace, paths, landed: str
-) -> None:
+) -> bool:
     """Refresh the shared hooks from the published main; retire landed lanes.
 
     Publish terminal success only after the managed lane retirement finishes.
     """
     drv = _driver()
+    # A candidate facade from an older launcher may still execute in a lane
+    # this batch just published. Leave the exact enrolled requests pending;
+    # published main can finish retirement after the runner lock is released.
+    source_paths = [_COMMANDS.repo_root.resolve(), Path.cwd().resolve()]
+    if drv.__file__ is not None:
+        source_paths.append(Path(drv.__file__).resolve())
+    if any(
+        (request.branch or "").startswith("lane/")
+        and any(
+            host_path_is_within(source, Path(request.worktree).resolve())
+            for source in source_paths
+        )
+        for request in requests
+    ):
+        _warn("published batch needs a surviving controller for managed retirement")
+        return False
     from molt import checkout_provisioning as provisioning
 
     try:
@@ -843,6 +932,7 @@ def _after_landing(
                 )
                 _warn(detail)
         record_result(paths, request, status=status, landed=landed, detail=detail)
+    return True
 
 
 def cmd_queue_run(args: argparse.Namespace) -> int:
@@ -864,12 +954,28 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
         if handle is None:
             _ok("another landing runner is active")
             return EXIT_OK
+        needs_repin = False
         try:
             if pending(paths):
                 _step(f"landing runner ({controller})")
-                _land_one_batch(args, git, paths)
+                needs_repin = _land_one_batch(args, git, paths)
         finally:
             drv._release_file_lock(handle)
+        if needs_repin:
+            main = drv._main_worktree(git)
+            if main is None:
+                raise DriverError(
+                    "cannot find a surviving main checkout for retirement"
+                )
+            # A forwarded POSIX process inherits cwd. Move both it and the
+            # queue's repo coordinate outside the lane before publication can
+            # release that lane; no candidate-adoption flag crosses this hop.
+            os.chdir(main)
+            repin_args = argparse.Namespace(**{**vars(args), "repo": str(main)})
+            return run_from_pinned_controller(
+                repin_args,
+                ["queue", "run", "--remote", args.remote, "--branch", args.branch],
+            )
         # Checked after the release: a request that arrives later starts its
         # own runner, so none waits on a runner that is about to exit.
         if not pending(paths):
