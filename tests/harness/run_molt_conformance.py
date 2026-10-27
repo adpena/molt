@@ -41,7 +41,6 @@ from molt.harness_conformance import (  # noqa: E402
 from molt.temporary_artifacts import execution_scratch  # noqa: E402
 from molt.cli.build_request import (  # noqa: E402
     BuildRequest,
-    parse_codec_from_input,
     build_request_to_payload,
 )
 from run_monty_conformance import parse_expectation  # noqa: E402
@@ -147,7 +146,6 @@ def _molt_batch_build_params(
     request = BuildRequest(
         file_path=str(src),
         output=str(out),
-        parse_codec=parse_codec_from_input(env.get("MOLT_CODEC")),
     )
     return build_request_to_payload(request)
 

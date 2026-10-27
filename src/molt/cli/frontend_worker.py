@@ -19,7 +19,7 @@ from molt.frontend.lowering.exception_lowering import MoltSyntaxError
 from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
-from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
+from molt.cli.build_request import BuildProfile, TypeHintPolicy
 from molt.cli.models import (
     ModuleExecutionKind,
     _FrontendModuleResultTimings,
@@ -106,7 +106,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 "finished_ns": worker_finished_ns,
             },
         }
-    parse_codec = cast(ParseCodec, payload["parse_codec"])
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
     module_is_namespace = bool(payload["module_is_namespace"])
     module_execution_kind = cast(ModuleExecutionKind, payload["module_execution_kind"])
@@ -169,7 +168,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
             },
         }
     gen = SimpleTIRGenerator(
-        parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         source_path=logical_source_path,
         module_name=module_name,
@@ -309,7 +307,6 @@ def _module_frontend_generator(
     logical_source_path: str,
     module_is_namespace: bool,
     module_execution_kind: ModuleExecutionKind,
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     enable_phi: bool,
     stdlib_allowlist: Collection[str],
@@ -322,7 +319,6 @@ def _module_frontend_generator(
     scoped_known_classes: dict[ClassId, ClassInfo],
 ) -> SimpleTIRGenerator:
     return SimpleTIRGenerator(
-        parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         source_path=logical_source_path,
         type_facts=scoped_inputs.type_facts,
@@ -435,7 +431,6 @@ def _lower_module_serial_with_context(
             logical_source_path=logical_source_path,
             module_execution_kind=module_execution_kind,
             known_classes_snapshot=lowering_context.known_classes,
-            parse_codec=lowering_context.parse_codec,
             type_hint_policy=lowering_context.type_hint_policy,
             type_facts=lowering_context.type_facts,
             enable_phi=lowering_context.enable_phi,
@@ -491,7 +486,6 @@ def _lower_module_serial_with_context(
         logical_source_path=logical_source_path,
         module_is_namespace=module_is_namespace,
         module_execution_kind=module_execution_kind,
-        parse_codec=lowering_context.parse_codec,
         type_hint_policy=lowering_context.type_hint_policy,
         enable_phi=lowering_context.enable_phi,
         stdlib_allowlist=lowering_context.stdlib_allowlist,
@@ -635,7 +629,6 @@ def _prepare_frontend_parallel_batch(
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
     known_classes_snapshot: dict[ClassId, ClassInfo],
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -717,7 +710,6 @@ def _prepare_frontend_parallel_batch(
                 logical_source_path=logical_source_path,
                 module_execution_kind=module_execution_kind,
                 known_classes_snapshot=known_classes_snapshot,
-                parse_codec=parse_codec,
                 type_hint_policy=type_hint_policy,
                 type_facts=type_facts,
                 enable_phi=enable_phi,
@@ -758,7 +750,6 @@ def _prepare_frontend_parallel_batch(
             module_execution_kind=module_execution_kind,
             is_package=is_package,
             known_classes_snapshot=known_classes_snapshot,
-            parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             type_facts=type_facts,
             enable_phi=enable_phi,
@@ -800,7 +791,6 @@ def _prepare_frontend_parallel_batch(
                     module_path=module_path,
                     logical_source_path=logical_source_path,
                     source_lease=source_lease,
-                    parse_codec=parse_codec,
                     type_hint_policy=type_hint_policy,
                     module_is_namespace=module_is_namespace,
                     module_execution_kind=module_execution_kind,

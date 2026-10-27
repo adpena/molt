@@ -1951,7 +1951,6 @@ def test_cli_completion_uses_parser_commands_flags_and_positional_semantics(
         (["harness"], "", {"quick", "standard", "deep"}, {"--quick"}),
         (["harness", "quick"], "", {"--json"}, {"quick", "standard", "deep"}),
         (["build"], "-q", {"-q"}, {"--q"}),
-        (["build", "--codec"], "", {"msgpack", "cbor", "json"}, {"--output"}),
         (["run", "app.py"], "--", {"--json", "--profile"}, set()),
         (["run", "app.py", "--profile"], "", {"dev", "release"}, {"--json"}),
         (["compare"], "--", {"--python", "--profile"}, set()),

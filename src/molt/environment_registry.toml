@@ -815,15 +815,6 @@ owner = "src/molt/cli/entrypoint.py"
 summary = "cProfile stats file for one molt CLI command; {pid} expands to the process id, so parallel builds write separate files. Read it with python -m pstats."
 
 [[variable]]
-name = "MOLT_CODEC"
-audience = "developer"
-kind = "enum"
-default = "msgpack"
-values = ["msgpack", "cbor", "json"]
-owner = "tools/bench.py"
-summary = "Structured codec explicitly passed by every differential backend, bench and conformance build through the canonical typed request input; unset pins msgpack independently of project configuration, and an empty or invalid value fails build admission."
-
-[[variable]]
 name = "MOLT_CODESIGN_IDENTITY"
 audience = "user"
 kind = "string"

@@ -239,7 +239,6 @@ class SimpleTIRGenerator(
 
 def compile_to_tir(
     source: str,
-    parse_codec: Literal["msgpack", "cbor", "json"] = "msgpack",
     type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
 ) -> dict[str, Any]:
     from molt.target_python import require_frontend_python
@@ -247,7 +246,6 @@ def compile_to_tir(
     require_frontend_python()
     tree = ast.parse(source)
     gen = SimpleTIRGenerator(
-        parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
     )
     gen.visit(tree)

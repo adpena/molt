@@ -11,7 +11,6 @@ from molt.cli.build_request import (
     FactGraphRequest,
     build_request_from_payload,
     build_request_to_payload,
-    parse_codec_from_input,
 )
 
 
@@ -21,7 +20,6 @@ def full_payload():
     return {
         "file_path": "main.py",
         "target": "wasm",
-        "parse_codec": "json",
         "type_hint_policy": "trust",
         "type_facts_path": "facts.json",
         "pgo_profile": "pgo.json",
@@ -116,7 +114,6 @@ def test_capability_forms(capabilities):
         ("target", False),
         ("file_path", 1),
         ("lib_paths", [1]),
-        ("parse_codec", "pickle"),
         ("type_hint_policy", "coerce"),
         ("profile", "debug"),
         ("emit", "exe"),
@@ -136,7 +133,7 @@ def test_bad_types_reject(name, value):
 
 
 @pytest.mark.parametrize(
-    "name", ["unknown", "codec", "type_hints", "backend", "type_facts"]
+    "name", ["unknown", "codec", "parse_codec", "type_hints", "backend", "type_facts"]
 )
 def test_unknown_and_replaced_names_reject(name):
     with pytest.raises(ValueError, match="unknown fields"):
@@ -252,20 +249,53 @@ def test_batch_refusal_reports_all_unknown_options_before_environment(
     }
 
 
+@pytest.mark.parametrize("value", [None, "", "json", 17])
+@pytest.mark.parametrize("section", ["build", "tool.molt.build"])
+def test_retired_codec_configuration_is_rejected_at_existing_admission(value, section):
+    from molt.cli.config_resolution import _resolve_build_config
+
+    config = (
+        {"build": {"codec": value}}
+        if section == "build"
+        else {"tool": {"molt": {"build": {"codec": value}}}}
+    )
+    with pytest.raises(ValueError, match="configuration 'codec' was removed"):
+        _resolve_build_config(config)
+
+
 @pytest.mark.parametrize(
-    ("raw", "expected"),
-    [(None, "msgpack"), ("msgpack", "msgpack"), ("cbor", "cbor"), ("json", "json")],
+    ("filename", "text"),
+    [
+        ("molt.toml", '[build]\ncodec = "json"\n'),
+        ("pyproject.toml", '[tool.molt.build]\ncodec = "json"\n'),
+    ],
 )
-def test_codec_input_admits_only_the_selected_value(
-    raw, expected, monkeypatch, tmp_path
-):
-    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
-    (tmp_path / "molt.toml").write_text('[build]\ncodec = "cbor"\n', encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    assert parse_codec_from_input(raw) == expected
+def test_retired_codec_in_project_file_fails_before_build(tmp_path, filename, text):
+    from molt.cli.build_request_resolution import resolve_build_arguments
+
+    (tmp_path / filename).write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="configuration 'codec' was removed"):
+        resolve_build_arguments(
+            [], file_path="program.py", module=None, project_root=tmp_path, env={}
+        )
 
 
-@pytest.mark.parametrize("raw", ["", "invalid-codec", "JSON", " msgpack "])
-def test_codec_input_rejects_present_invalid_values(raw):
-    with pytest.raises(ValueError, match="parse_codec"):
-        parse_codec_from_input(raw)
+def test_unrelated_unknown_project_keys_keep_existing_policy():
+    from molt.cli.config_resolution import _resolve_build_config
+
+    assert _resolve_build_config({"build": {"unrelated_setting": 17}}) == {
+        "unrelated_setting": 17
+    }
+
+
+def test_retired_codec_cli_option_is_rejected(capsys):
+    from molt.cli.build_request_resolution import parse_build_arguments
+
+    with pytest.raises(ValueError, match="Invalid build arguments"):
+        parse_build_arguments(["--codec", "json"], file_path="program.py")
+    assert "--codec" in capsys.readouterr().err
+
+
+def test_retired_codec_request_keyword_is_rejected():
+    with pytest.raises(TypeError, match="parse_codec"):
+        BuildRequest(file_path="program.py", **{"parse_codec": "json"})

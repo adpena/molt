@@ -42,7 +42,6 @@ def resolve_build_request(
     env: Mapping[str, str],
 ) -> BuildRequest:
     target = _configured_build_target(args.target, build_cfg)
-    codec = args.codec or build_cfg.get("codec") or _DEFAULT_REQUEST.parse_codec
     type_hints = (
         args.type_hints
         or build_cfg.get("type_hints")
@@ -258,7 +257,6 @@ def resolve_build_request(
     return BuildRequest(
         file_path=args.file,
         target=selected_target,
-        parse_codec=codec,
         type_hint_policy=type_hints,
         type_facts_path=type_facts,
         pgo_profile=pgo_profile,

@@ -19,7 +19,6 @@ from molt.compilation_target import (
     validate_target,
 )
 
-ParseCodec = Literal["msgpack", "cbor", "json"]
 BuildProfile = Literal["dev", "release"]
 # "jit" publishes a JIT image, one executable file the development JIT runner
 # (molt-jit) starts, instead of an AOT executable; `molt run --tier jit`
@@ -38,7 +37,6 @@ class FactGraphRequest:
 class BuildRequest:
     file_path: str | None
     target: Target = TargetKind.NATIVE
-    parse_codec: ParseCodec = "msgpack"
     type_hint_policy: TypeHintPolicy = "check"
     type_facts_path: str | None = None
     pgo_profile: str | None = None
@@ -147,14 +145,6 @@ def build_request_from_payload(payload: object) -> BuildRequest:
     if "target" in admitted:
         admitted["target"] = admit_target(admitted["target"])
     return msgspec.convert(admitted, BuildRequest, strict=True, dec_hook=_decode_path)
-
-
-def parse_codec_from_input(value: str | None) -> ParseCodec:
-    """Admit a codec input using the request's strict decoder and default."""
-    payload: dict[str, object] = {"file_path": None}
-    if value is not None:
-        payload["parse_codec"] = value
-    return build_request_from_payload(payload).parse_codec
 
 
 def build_request_values(request: BuildRequest) -> dict[str, Any]:

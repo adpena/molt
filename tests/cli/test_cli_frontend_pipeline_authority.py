@@ -45,7 +45,6 @@ def _frontend_args(source_root: Path, *, target: str, split_runtime: bool):
         prepared_build_roots=SimpleNamespace(molt_root=source_root),
         prepared_build_config=SimpleNamespace(),
         resolved_build_entry=SimpleNamespace(),
-        parse_codec="msgpack",
         type_hint_policy="ignore",
         profile="dev",
         json_output=True,

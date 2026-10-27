@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from typing import Never, get_args
-from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy, EmitMode
+from molt.cli.build_request import BuildProfile, TypeHintPolicy, EmitMode
 from molt.cli.run_tier import RunTier
 
 from molt.backend_executable_names import CODEGEN_BACKENDS
@@ -95,12 +95,6 @@ def _add_build_parser(
         action="store_true",
         default=False,
         help="Optimized release build (alias for --build-profile release).",
-    )
-    build_parser.add_argument(
-        "--codec",
-        choices=get_args(ParseCodec),
-        default=None,
-        help="Structured codec for parse calls (default from config or msgpack).",
     )
     build_parser.add_argument(
         "--type-hints",
