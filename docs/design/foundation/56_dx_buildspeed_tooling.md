@@ -607,9 +607,11 @@ worker advancing the stamp cannot consume a future epoch. Existing launch
 admission coalesces simultaneous observations. Neither the caller nor a ready
 acknowledgement advances the daily stamp. The worker's `disk_guard.collect_due`
 takes the stable external nonblocking daily lock, rechecks cadence, records its
-start, and holds that lock through actual collection. Competing automatic
-callers skip without inventory or waiting. A failed or interrupted attempt
-keeps the original daily throttle; root-specific retirement locks and policy
+start, and holds that lock through actual collection and its completion stamp.
+Competing automatic callers skip without inventory or waiting. Completion
+advances that same stamp on success or error: a collector spanning a whole
+cadence interval cannot let a terminal contended no-op block future epochs.
+Hard interruption keeps the start-time throttle. Root-specific retirement locks and policy
 rechecks still authorize every deletion, including explicit/manual collection.
 This follows [Cargo's opportunistic automatic-GC admission](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/gc.rs.html#40-89)
 and [uv's owned pruning after a CI job](https://docs.astral.sh/uv/concepts/cache/#caching-in-continuous-integration).
@@ -645,6 +647,14 @@ state, logs and verification path. Another completion cannot replace an attempt
 or choose a random new name to evade it. Explicit detached recovery is required
 when failure preceded daily admission. A collection error remains a nonzero
 worker result and cannot change the completed command's exit status.
+
+POSIX controller repinning transfers a finite typed descriptor receipt through
+the shared pinned startup contract. The receiver validates each descriptor's
+identity before marking it close-on-exec. It retains those locks for its current
+invocation; the next transfer acquires current declared and command resources
+before exec closes the previous set. Sender-only interpreter prefixes and old
+controller source do not accumulate across repins. Generic forwarding and the
+Windows waiting path retain their existing lifetime rules.
 
 The due return path pays finite source selection/publication, metadata and the
 existing supervisor/collector startup handoff. Discovery and deletion remain

@@ -192,6 +192,75 @@ def test_concurrent_daily_admission_cannot_consume_the_next_epoch(
     assert maintenance.schedule(root, {}, cwd=tmp_path) is None
 
 
+def test_long_collection_completion_leaves_a_new_dispatchable_epoch(
+    tmp_path, monkeypatch, published_source
+):
+    from molt import checkout_state
+    from tools import disk_guard
+
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    stamp = root.joinpath(*GC_STAMP)
+    launches = []
+    collections = []
+    monkeypatch.setattr(
+        disk_guard, "collect", lambda **_kwargs: collections.append("collected") or []
+    )
+
+    def launch(state, _command, **_kwargs):
+        state.mkdir(parents=True)
+        # This contender reaches an orderly terminal result while the older
+        # admitted collector can still hold the real daily lock.
+        assert disk_guard.collect_due(root=root, env={}) == []
+        (state / "rc").write_text("0\n", encoding="utf-8")
+        launches.append(state)
+
+    monkeypatch.setattr(detached, "launch_detached", launch)
+    entered = threading.Event()
+    release = threading.Event()
+    errors = []
+
+    def long_collection():
+        try:
+            with checkout_state.checkout_state_gc(root) as admitted:
+                assert admitted
+                # Model a collector surviving a day, such as host suspension.
+                os.utime(stamp, (1, 1))
+                entered.set()
+                assert release.wait(30), "fixture collector was never released"
+        except BaseException as error:
+            errors.append(error)
+            entered.set()
+
+    worker = threading.Thread(target=long_collection)
+    worker.start()
+    try:
+        assert entered.wait(30), "fixture collector did not acquire admission"
+        if errors:
+            raise errors[0]
+        first = maintenance.schedule(root, {}, cwd=tmp_path)
+        assert first is not None and (first / "rc").is_file()
+        assert not collections
+        blocked_generation = stamp.stat().st_mtime_ns
+    finally:
+        release.set()
+        worker.join(30)
+        assert not worker.is_alive(), "fixture collector did not close"
+    if errors:
+        raise errors[0]
+    assert not checkout_state.checkout_state_gc_due(root)
+    assert stamp.stat().st_mtime_ns != blocked_generation
+    assert maintenance.schedule(root, {}, cwd=tmp_path) is None
+    # The following due observation has its own identity. The terminal no-op
+    # stays intact and needs neither removal nor replacement to make progress.
+    next_due = blocked_generation + 1_000_000_000
+    os.utime(stamp, ns=(next_due, next_due))
+    second = maintenance.schedule(root, {}, cwd=tmp_path)
+    assert second != first
+    assert launches == [first, second] and collections == ["collected"]
+    assert (first / "rc").read_text(encoding="utf-8") == "0\n"
+
+
 def test_worker_publishes_result_errors_as_nonzero(tmp_path, monkeypatch, capsys):
     from tools import disk_guard
 

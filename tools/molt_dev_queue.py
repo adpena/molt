@@ -1076,7 +1076,7 @@ def add_queue_arguments(
         help="queue without first running the lane's static gates in the lane "
         "(the batch still runs every gate)",
     )
-    p_land.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    add_pinned_controller_arguments(p_land)
     p_land.set_defaults(func=cmd_land)
 
     p_queue = sub.add_parser("queue", help="the landing queue's runner and state")

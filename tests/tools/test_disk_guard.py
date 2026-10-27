@@ -1515,6 +1515,8 @@ def test_daily_collection_admission_is_nonblocking_across_processes(tmp_path):
         finally:
             child.communicate("x", timeout=10)
         assert child.returncode == 0
+    assert not checkout_state.checkout_state_gc_due(ext)
+    os.utime(ext.joinpath(*checkout_state.GC_STAMP), (1, 1))
     with pytest.raises(RuntimeError, match="interrupted fixture"):
         with checkout_state.checkout_state_gc(ext) as admitted:
             assert admitted is True
@@ -3528,6 +3530,37 @@ def test_all_retirement_consumers_measure_actual_deletions(
     assert all(path.exists() for path in keep)
 
 
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_daily_completion_stamp_failure_preserves_collection_error(
+    tmp_path, monkeypatch, primary_failure
+):
+    from molt import checkout_state
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+    from tests.process_guard_common import ModuleView
+
+    root = tmp_path / "artifacts"
+    root.mkdir()
+
+    def stamp_failure(*_args, **_kwargs):
+        raise OSError("completion stamp fixture")
+
+    expected = RuntimeError if primary_failure else OSError
+    message = "collector fixture" if primary_failure else "completion stamp fixture"
+    with pytest.raises(expected, match=message) as error:
+        with checkout_state.checkout_state_gc(root) as admitted:
+            assert admitted
+            monkeypatch.setattr(
+                checkout_state, "os", ModuleView(os, utime=stamp_failure)
+            )
+            if primary_failure:
+                raise RuntimeError("collector fixture")
+    if primary_failure:
+        assert any("completion stamp fixture" in note for note in error.value.__notes__)
+    handle = _try_acquire_file_lock(root.joinpath(*checkout_state._GC_LOCK))
+    assert handle is not None, "stamp failure retained daily ownership"
+    _release_file_lock(handle)
+
+
 @pytest.mark.parametrize("failure", [False, True])
 def test_due_collection_owns_real_admission_until_result_or_exception(
     tmp_path, monkeypatch, failure
@@ -3569,6 +3602,10 @@ def test_due_collection_owns_real_admission_until_result_or_exception(
     else:
         assert dg.collect_due(root=root, env={"fixture": "selected"}) is expected
     assert called == [root.resolve()]
+    # Completion advances cadence even after a collection spans the interval
+    # or raises. A contended no-op cannot permanently consume this generation.
+    assert not checkout_state.checkout_state_gc_due(root)
+    os.utime(root.joinpath(*checkout_state.GC_STAMP), (1, 1))
     # The context has closed before returning or propagating the exception.
     with checkout_state.checkout_state_gc(root) as admitted:
         assert admitted is True

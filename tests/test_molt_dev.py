@@ -4096,7 +4096,19 @@ def test_landing_commands_run_main_pinned_controller_not_the_candidate(
     ]
     if os.name == "nt":
         expected_argv.extend(["--controller-cwd", str(REPO_ROOT.resolve())])
-    assert report["argv"] == expected_argv
+    if os.name == "posix":
+        from molt.process_spawn import ExecStateHandoff
+
+        assert report["argv"][-2] == "--controller-state-handoff"
+        handoff = ExecStateHandoff.from_json(report["argv"][-1])
+        from tools import molt_dev_controller as controller
+
+        assert controller._source_lock_path(root) in {
+            item.path for item in handoff.descriptors
+        }
+        assert report["argv"][:-2] == expected_argv
+    else:
+        assert report["argv"] == expected_argv
     record = json.loads((root / ".molt-controller.json").read_text(encoding="utf-8"))
     assert record == {
         "schema": "molt.integration-controller.v1",
@@ -9050,3 +9062,108 @@ def test_runtime_only_gate_demand_keeps_target_failure_without_source_image(
             ),
         )
     assert not (tmp_path / ".venv").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="same-PID exec source and image custody")
+def test_controller_repins_release_previous_sources_and_command_images(tmp_path):
+    from molt.checkout_state import record_checkout_owner
+    from molt.dx import cargo_target_dir_for_artifact_root
+    from molt.python_environment_location import environment_python_path
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+    from tests.process_guard_common import run_custody_subject_process
+
+    selected = [
+        _controller_source_fixture(tmp_path / "common", key=str(index) * 32)
+        for index in range(1, 4)
+    ]
+    images = []
+    for index in range(4):
+        owner = tmp_path / f"image-owner-{index}"
+        image = materialize_development_environment(
+            owner, tmp_path / "artifacts", runnable=index < 3
+        )
+        record_checkout_owner(image.root, owner=owner, kind="python-environment")
+        images.append(image.root)
+    target_owner = tmp_path / "target-owner"
+    target_owner.mkdir()
+    target = cargo_target_dir_for_artifact_root(
+        tmp_path / "artifacts", None, source_root=target_owner
+    )
+    target.mkdir(parents=True)
+    record_checkout_owner(target, owner=target_owner, kind="cargo-target")
+    report = tmp_path / "stages.jsonl"
+    roots = [str(item.root) for item in selected]
+    interpreters = [str(environment_python_path(root)) for root in images[:3]]
+    script = f"""
+import argparse, json, os, sys, time
+from pathlib import Path
+sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+from tools import molt_dev_controller as controller
+from molt.checkout_state import checkout_state_retirement
+roots = [Path(item) for item in {roots!r}]
+images = [Path(item) for item in {[str(root) for root in images]!r}]
+interpreters = {interpreters!r}
+parser = argparse.ArgumentParser()
+parser.add_argument('stage', type=int)
+parser.add_argument('--repo')
+controller.add_pinned_controller_arguments(parser)
+args = parser.parse_args()
+packet = args.controller_state_handoff
+assert packet is not None
+controller.resume_controller_cwd(args, driver_file=__file__)
+assert all(not os.get_inheritable(item.fd) for item in packet.descriptors)
+assert os.getpid() == int(os.environ['EXPECTED_CONTROLLER_PID'])
+with open({str(report)!r}, 'a') as output:
+    output.write(json.dumps({{'stage': args.stage, 'pid': os.getpid()}}) + '\\n')
+if args.stage < 3:
+    next_root = roots[args.stage]
+    controller.venv_python = lambda _: Path(interpreters[args.stage])
+    controller.run_controller(controller.Controller(next_root.name, next_root),
+                              [str(args.stage + 1)], repo=Path(args.repo))
+    raise AssertionError('POSIX exec returned')
+# These independent exclusive admissions catch retained historical command
+# resources even when source locks alone would look correct.
+for old in images[:2]:
+    with checkout_state_retirement(old) as available:
+        assert available, ('old command image retained', old)
+for live in [images[2], images[3], Path({str(target)!r})]:
+    with checkout_state_retirement(live) as available:
+        assert not available, ('current or declared input custody lost', live)
+controller.KEEP = 1
+controller.IDLE_S = 0
+controller._retire_idle(roots[0].parent, current=Path({str(tmp_path)!r}),
+                        now=time.time() + 10)
+assert not roots[0].exists(), 'controller 1 still retained after two execs'
+assert not roots[1].exists(), 'controller 2 still retained after next exec'
+assert roots[2].exists(), 'active controller source retired'
+"""
+    for item in selected:
+        item.driver.parent.mkdir()
+        item.driver.write_text(script, encoding="utf-8")
+    launch = f"""
+import os, sys
+from pathlib import Path
+from tools import molt_dev_controller as controller
+os.environ['EXPECTED_CONTROLLER_PID'] = str(os.getpid())
+controller.venv_python = lambda _: Path({interpreters[0]!r})
+controller.run_controller(controller.Controller({selected[0].key!r}, Path({roots[0]!r})),
+                          ['1'], repo=Path({str(target_owner)!r}))
+"""
+    env = dict(os.environ)
+    env.update(CARGO_TARGET_DIR=str(target), VIRTUAL_ENV=str(images[3]))
+    result = run_custody_subject_process(
+        [sys.executable, "-B", "-c", launch],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    stages = [
+        json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["stage"] for item in stages] == [1, 2, 3]
+    assert len({item["pid"] for item in stages}) == 1

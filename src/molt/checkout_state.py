@@ -502,12 +502,15 @@ def checkout_state_environment_roots(
     environment: Mapping[str, str],
     *,
     cwd: str | os.PathLike[str] | None = None,
+    include_current_process: bool = True,
 ) -> tuple[tuple[Path, CheckoutOwner | None], ...]:
     """Declared state and this process's environment, without a child command.
 
     Suite owners and a detached worker acknowledging its own use hold this
     explicit projection. Launch owners must use ``checkout_state_command_roots``.
     Activation is a declared resource selection, never interpreter identity.
+    A receiving exec handoff excludes the replaced process's ambient prefix;
+    declared environment resources still belong to the receiving invocation.
     """
     from .build_state_layout import build_state_root
 
@@ -533,7 +536,8 @@ def checkout_state_environment_roots(
             )
     import sys
 
-    roots[Path(sys.prefix).absolute()] = None
+    if include_current_process:
+        roots[Path(sys.prefix).absolute()] = None
     raw_prefix = environment.get("PYTHONPYCACHEPREFIX", "").strip()
     if raw_prefix:
         from .python_environment_location import environment_bytecode_prefix
@@ -580,6 +584,7 @@ def checkout_state_command_roots(
     command: Sequence[str],
     *,
     cwd: str | os.PathLike[str] | None = None,
+    include_current_process: bool = True,
 ) -> tuple[tuple[Path, CheckoutOwner | None], ...]:
     """Retain finite declared and possible native command resources.
 
@@ -590,7 +595,14 @@ def checkout_state_command_roots(
     """
     from .process_launch import command_resources
 
-    roots = dict(checkout_state_environment_roots(source_root, environment, cwd=cwd))
+    roots = dict(
+        checkout_state_environment_roots(
+            source_root,
+            environment,
+            cwd=cwd,
+            include_current_process=include_current_process,
+        )
+    )
     working = Path.cwd() if cwd is None else Path(cwd).absolute()
     _retain_python_resources(
         roots, command_resources(command, environment, cwd=working)
@@ -1288,8 +1300,10 @@ def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
 
     The stamp remains the cadence authority. The stable external interlock
     coalesces callers that observed the same due stamp, including collections
-    lasting longer than the interval. Failed/interrupted attempts keep the
-    existing daily throttle. Explicit collection retains its own root locks.
+    lasting longer than the interval. An admitted attempt stamps its start and
+    completion under that lock, so a terminal contended no-op cannot consume
+    the next due epoch. Hard interruption keeps the start-time throttle.
+    Explicit collection retains its own root locks.
     """
     if not checkout_state_gc_due(artifact_root):
         yield False
@@ -1313,7 +1327,19 @@ def checkout_state_gc(artifact_root: Path) -> Generator[bool, None, None]:
             stamp = artifact_root.joinpath(*GC_STAMP)
             stamp.touch()
             os.utime(stamp)
-            yield True
+            failure: BaseException | None = None
+            try:
+                yield True
+            except BaseException as exc:
+                failure = exc
+                raise
+            finally:
+                try:
+                    os.utime(stamp)
+                except OSError as exc:
+                    if failure is None:
+                        raise
+                    failure.add_note(f"daily GC completion stamp failed: {exc}")
     finally:
         _release_file_lock(handle)
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import ntpath
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -232,12 +234,133 @@ def detached_process_group_kwargs(
     return {"start_new_session": True}
 
 
+@dataclass(frozen=True, slots=True)
+class ExecSharedDescriptor:
+    fd: int
+    path: Path
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExecStateHandoff:
+    """One same-process exec's exact shared descriptors.
+
+    The receiver makes these close-on-exec after validating their identity.
+    No scan of unrelated descriptors or retained historical root set exists.
+    """
+
+    pid: int
+    descriptors: tuple[ExecSharedDescriptor, ...]
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "schema": "molt.exec-state-handoff.v1",
+                "pid": self.pid,
+                "descriptors": [
+                    {
+                        "fd": item.fd,
+                        "path": str(item.path),
+                        "device": item.device,
+                        "inode": item.inode,
+                    }
+                    for item in self.descriptors
+                ],
+            },
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> ExecStateHandoff:
+        from .exact_json import loads_exact
+
+        value = loads_exact(raw)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema", "pid", "descriptors"}
+            or value["schema"] != "molt.exec-state-handoff.v1"
+            or type(value["pid"]) is not int
+            or value["pid"] <= 0
+            or not isinstance(value["descriptors"], list)
+        ):
+            raise ValueError("invalid exec state handoff")
+        descriptors = []
+        for item in value["descriptors"]:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"fd", "path", "device", "inode"}
+                or type(item["fd"]) is not int
+                or item["fd"] < 3
+                or type(item["device"]) is not int
+                or item["device"] < 0
+                or type(item["inode"]) is not int
+                or item["inode"] < 0
+                or not isinstance(item["path"], str)
+                or not Path(item["path"]).is_absolute()
+            ):
+                raise ValueError("invalid exec shared descriptor")
+            descriptors.append(
+                ExecSharedDescriptor(
+                    item["fd"], Path(item["path"]), item["device"], item["inode"]
+                )
+            )
+        if len(descriptors) != len({item.fd for item in descriptors}):
+            raise ValueError("duplicate exec shared descriptors")
+        return cls(value["pid"], tuple(descriptors))
+
+    def receive(self, source_handle: _FileLockHandle) -> None:
+        """Keep this invocation's use; exclude it from subsequent execs.
+
+        Validate every descriptor before changing any. The next forward owns
+        its current canonical command resources before exec closes these old
+        descriptions. Closing or unlocking here would weaken current use.
+        """
+        from .checkout_state import is_checkout_state_lock_file
+        from .file_locks import _file_lock_descriptor_action, _file_lock_owned_operation
+
+        if os.name != "posix" or self.pid != os.getpid():
+            raise ValueError("exec state handoff requires the original POSIX process")
+        source_path = Path(source_handle.registry_key)
+        with (
+            _file_lock_owned_operation(
+                source_handle, expected_lock_path=source_path, shared=True
+            ),
+            _file_lock_descriptor_action(),
+        ):
+            for item in self.descriptors:
+                if item.fd == source_handle.file.fileno() or (
+                    item.path != source_path
+                    and not is_checkout_state_lock_file(item.path)
+                ):
+                    raise ValueError("exec descriptor is not a handed-off shared lock")
+                opened = os.fstat(item.fd)
+                named = item.path.stat()
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (item.device, item.inode)
+                    or not os.path.samestat(opened, named)
+                    or not os.get_inheritable(item.fd)
+                ):
+                    raise ValueError("exec descriptor identity or inheritance changed")
+            changed = []
+            try:
+                for item in self.descriptors:
+                    os.set_inheritable(item.fd, False)
+                    changed.append(item.fd)
+            except BaseException:
+                for fd in changed:
+                    os.set_inheritable(fd, True)
+                raise
+
+
 def forward_command(
     command: Sequence[str],
     *,
     env: Mapping[str, str],
     cwd: str | os.PathLike[str] | None = None,
     retained_shared_handles: Sequence[_FileLockHandle] = (),
+    handoff_argument: str | None = None,
 ) -> int:
     """Transfer a CLI wrapper to its command without adding a custody owner.
 
@@ -246,12 +369,21 @@ def forward_command(
     The command (or an existing outer guard) owns any descendant lifecycle.
     Caller-owned shared handles transfer through the same audited POSIX exec
     boundary as managed state; the caller retains them during a Windows wait.
+    A receiving controller requests an explicit typed argv handoff. Generic
+    wrappers retain the existing exec-to-exit resource lifetime.
     """
     if isinstance(command, (str, bytes)):
         raise TypeError("command must be typed argv, not shell text")
     argv = list(command)
     if not argv:
         raise ValueError("command is required")
+    if handoff_argument is not None and (
+        not handoff_argument.startswith("--")
+        or "=" in handoff_argument
+        or any(char.isspace() for char in handoff_argument)
+        or handoff_argument in argv
+    ):
+        raise ValueError("exec handoff requires one unbound option name")
     from .checkout_state import checkout_state_command_roots, checkout_state_use
     from .file_locks import (
         _file_lock_descriptor_action,
@@ -266,6 +398,8 @@ def forward_command(
         if not handle.shared or not _file_lock_is_owned(handle):
             raise ValueError("forwarded source use requires live shared handles")
     if os.name == "nt":
+        if handoff_argument is not None:
+            raise ValueError("exec state handoff is POSIX-only")
         with ProcessStateUse(source, child_env, cwd, argv) as state_owner:
             process = subprocess.Popen(
                 native_popen_command(argv), cwd=cwd, env=child_env
@@ -302,7 +436,13 @@ def forward_command(
                         raise
                     error.add_note(f"child context cleanup failed: {cleanup_error!r}")
     with checkout_state_use(
-        checkout_state_command_roots(source, child_env, argv, cwd=cwd)
+        checkout_state_command_roots(
+            source,
+            child_env,
+            argv,
+            cwd=cwd,
+            include_current_process=handoff_argument is None,
+        )
     ) as handles:
         handles = (*handles, *retained_shared_handles)
         with ExitStack() as custody:
@@ -323,6 +463,23 @@ def forward_command(
                 ]
                 original_cwd = os.getcwd()
                 try:
+                    if handoff_argument is not None:
+                        descriptors = []
+                        for handle in handles:
+                            metadata = os.fstat(handle.file.fileno())
+                            descriptors.append(
+                                ExecSharedDescriptor(
+                                    handle.file.fileno(),
+                                    Path(handle.registry_key),
+                                    metadata.st_dev,
+                                    metadata.st_ino,
+                                )
+                            )
+                        transfer = ExecStateHandoff(os.getpid(), tuple(descriptors))
+                        # Apply the same closed wire admission to the producer.
+                        payload = transfer.to_json()
+                        ExecStateHandoff.from_json(payload)
+                        argv.extend((handoff_argument, payload))
                     for fd, _ in inherited:
                         os.set_inheritable(fd, True)
                     if cwd is not None:
