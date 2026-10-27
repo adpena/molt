@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 import tests.wasm_linked_runner as wasm_runner
+from molt.capability_manifest import ManifestError
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from molt.cli.wasm_host import (
     molt_wasm_host_exe_name,
@@ -90,6 +91,139 @@ def test_wasm_test_process_uses_memory_guard(monkeypatch, tmp_path: Path) -> Non
     assert captured["kwargs"]["prefix"] == "MOLT_WASM_TEST"
     assert captured["kwargs"]["cwd"] == tmp_path
     assert captured["kwargs"]["timeout"] == 5
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["node", "runner.js"],
+        ["molt-wasm-host", "manifest.json"],
+        [sys.executable, "-m", "molt.cli", "build", "source.py"],
+    ],
+    ids=["node", "rust-host", "cli-build"],
+)
+@pytest.mark.parametrize("inherited", [False, True], ids=["explicit", "inherited"])
+def test_wasm_test_process_projects_profiles_before_the_real_guard_boundary(
+    monkeypatch, tmp_path: Path, command: list[str], inherited: bool
+) -> None:
+    original = {
+        "MOLT_CAPABILITIES": "net,env.read,future.transport.quic",
+        "MOLT_CAPABILITY_TIER": "none",
+        "MOLT_CAPABILITY_POLICY_DIGEST": "stale-policy",
+        "MOLT_WASM_HOST_DEBUG": "1",
+        "UNRELATED_SENTINEL": "preserve-this",
+    }
+    if inherited:
+        for name, value in original.items():
+            monkeypatch.setenv(name, value)
+    before = dict(os.environ) if inherited else dict(original)
+    observed: list[dict[str, str]] = []
+
+    def record_guard(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        assert cmd == command
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["timeout"] == 5
+        assert kwargs["encoding"] == "utf-8"
+        observed.append(dict(kwargs["env"]))
+        return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+
+    monkeypatch.setattr(
+        wasm_runner.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        record_guard,
+    )
+    result = wasm_runner._run_wasm_test_process(
+        command, cwd=tmp_path, env=None if inherited else original, timeout=5
+    )
+    assert result.returncode == 0
+    if inherited:
+        assert dict(os.environ) == before
+    else:
+        assert original == before
+    projected = observed[0]
+    # Independent public profile contract, including the three operations used
+    # before the SMTP witness reaches its genuine unsupported thread spawn.
+    assert set(projected["MOLT_CAPABILITIES"].split(",")) == {
+        "net.socket",
+        "net.socketpair",
+        "net.resolve",
+        "net.bind",
+        "net.listen",
+        "net.connect",
+        "net.poll",
+        "net.asyncio",
+        "ssl.connect",
+        "ssl.listen",
+        "ssl.read",
+        "ssl.write",
+        "websocket.connect",
+        "websocket.listen",
+        "env.read",
+        "future.transport.quic",
+    }
+    assert projected["MOLT_CAPABILITY_TIER"] == "none"
+    assert projected["MOLT_CAPABILITY_POLICY_DIGEST"].startswith("sha256:")
+    assert projected["MOLT_CAPABILITY_POLICY_DIGEST"] != "stale-policy"
+    assert projected["MOLT_WASM_HOST_DEBUG"] == "1"
+    assert projected["UNRELATED_SENTINEL"] == "preserve-this"
+    # Explicit leaves are already runtime policy; re-entry neither adds thread
+    # grants nor changes the canonical identity or unrelated environment.
+    wasm_runner._run_wasm_test_process(command, cwd=tmp_path, env=projected, timeout=5)
+    assert observed[1] == projected
+
+
+def test_wasm_test_process_explicit_empty_env_does_not_adopt_ambient_grants(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOLT_CAPABILITIES", "thread.spawn")
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
+    monkeypatch.setenv("AMBIENT_ONLY_SENTINEL", "must-not-leak")
+    observed: list[dict[str, str]] = []
+
+    def record_guard(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append(dict(kwargs["env"]))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        wasm_runner.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        record_guard,
+    )
+    explicit: dict[str, str] = {}
+    wasm_runner._run_wasm_test_process(
+        ["node", "runner.js"], cwd=tmp_path, env=explicit
+    )
+    assert explicit == {}
+    assert observed[0]["MOLT_CAPABILITIES"] == ""
+    assert observed[0]["MOLT_CAPABILITY_TIER"] == "none"
+    assert "AMBIENT_ONLY_SENTINEL" not in observed[0]
+
+
+@pytest.mark.parametrize(
+    ("invalid", "diagnostic"),
+    [
+        ({"MOLT_CAPABILITIES": "net/invalid"}, "invalid capability token"),
+        ({"MOLT_CAPABILITY_TIER": "unknown-tier"}, "unknown capability tier"),
+    ],
+)
+def test_wasm_test_process_refuses_invalid_policy_before_guard_admission(
+    monkeypatch, tmp_path: Path, invalid: dict[str, str], diagnostic: str
+) -> None:
+    def forbid_guard(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("invalid policy reached child admission")
+
+    monkeypatch.setattr(
+        wasm_runner.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        forbid_guard,
+    )
+    original = {"MOLT_CAPABILITY_TIER": "none", **invalid}
+    before = dict(original)
+    with pytest.raises(ManifestError, match=diagnostic):
+        wasm_runner._run_wasm_test_process(
+            ["node", "runner.js"], cwd=tmp_path, env=original
+        )
+    assert original == before
 
 
 def test_wasm_test_process_preserves_timeout_semantics(
@@ -404,6 +538,7 @@ def test_run_wasm_linked_uses_product_cwd_without_rebasing_inputs(
         "MOLT_CWD_PROBE_INPUT": str(explicit_input),
     }.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("MOLT_CAPABILITIES", "thread.spawn")
     inherited = dict(os.environ)
     monkeypatch.chdir(tmp_path)
     selections = []
@@ -435,6 +570,11 @@ assert pathlib.Path(os.environ['MOLT_CWD_PROBE_INPUT']).read_text(encoding='utf-
 assert os.environ['TEMP'] == 'explicit-relative-temp'
 assert os.environ['TMP'] == 'explicit-other-temp'
 assert os.environ['MOLT_WASM_HOST_DEBUG'] == '1'
+grants = set(os.environ['MOLT_CAPABILITIES'].split(','))
+assert {'net.socket', 'net.bind', 'net.listen', 'env.read'} <= grants
+assert 'net' not in grants and 'thread.spawn' not in grants
+assert os.environ['MOLT_CAPABILITY_TIER'] == 'none'
+assert os.environ['MOLT_CAPABILITY_POLICY_DIGEST'].startswith('sha256:')
 pathlib.Path('relative-output').write_text('guest output', encoding='utf-8')
 print('owned cwd and explicit inputs')
 sys.exit(int(sys.argv[2]))
@@ -448,7 +588,11 @@ sys.exit(int(sys.argv[2]))
     result = wasm_runner.run_wasm_linked(
         checkout,
         Path("products/output_linked.wasm"),
-        env_overrides={"MOLT_WASM_HOST_DEBUG": "1"},
+        env_overrides={
+            "MOLT_WASM_HOST_DEBUG": "1",
+            "MOLT_CAPABILITIES": "net,env.read",
+            "MOLT_CAPABILITY_TIER": "none",
+        },
     )
     assert result.returncode == exit_code, result.stderr
     assert result.stdout == "owned cwd and explicit inputs\n"
@@ -480,7 +624,11 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
         recorded.setdefault("envs", []).append(dict(kwargs["env"]))
         return subprocess.CompletedProcess(args[0], 0, "", "")
 
-    monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
+    monkeypatch.setattr(
+        wasm_runner.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        _fake_run,
+    )
 
     result = wasm_runner.run_wasm_linked(
         tmp_path,
@@ -488,6 +636,8 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
         env_overrides={
             "MOLT_WASM_HOST_DEBUG": "1",
             "MOLT_WASM_TEST_CHILD_RLIMIT_GB": "0",
+            "MOLT_CAPABILITY_TIER": "none",
+            "MOLT_CAPABILITIES": "net,env.read",
         },
     )
     assert result.returncode == 0
@@ -495,6 +645,12 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
     envs = cast(list[dict[str, str]], recorded["envs"])
     assert envs[0].get("MOLT_WASM_HOST_DEBUG") == "1"
     assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
+
+    assert {"net.socket", "net.bind", "net.listen", "env.read"} <= set(
+        envs[0]["MOLT_CAPABILITIES"].split(",")
+    )
+    assert "net" not in envs[0]["MOLT_CAPABILITIES"].split(",")
+    assert "thread.spawn" not in envs[0]["MOLT_CAPABILITIES"].split(",")
 
 
 def test_run_wasm_linked_scrubs_stale_artifact_env(

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli import wasm_toolchain
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 from molt.dx import (
@@ -92,11 +93,15 @@ def _run_wasm_test_process(
     check: bool = False,
     input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    # Direct Node and Rust hosts consume exact runtime grants; named profiles
+    # belong to the same policy projection used by the CLI embedding owner.
+    process_env = ProcessEnvironmentBuilder(os.environ if env is None else env)
+    process_env.update(resolve_runtime_policy_from_env(process_env).to_env_vars())
     return process_guard_common.run_guarded_test_process(
         list(args),
         prefix="MOLT_WASM_TEST",
         cwd=cwd,
-        env=os.environ if env is None else env,
+        env=process_env,
         capture_output=capture_output,
         text=text,
         timeout=timeout,
