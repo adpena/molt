@@ -20,7 +20,9 @@ from tools import molt_dev_detached as detached
 
 
 def _git(root, *args):
-    return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    return subprocess.check_output(
+        ["git", "-C", str(root), *args], text=True, encoding="utf-8"
+    ).strip()
 
 
 @pytest.fixture
