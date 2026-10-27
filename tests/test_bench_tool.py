@@ -208,7 +208,18 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
     assert res.returncode == 0, res.stderr
 
     payload = json.loads(out_json.read_text(encoding="utf-8"))
-    fast_entry = payload["benchmarks"][fast_script.name]
+    fast_entry = payload["benchmarks"][str(fast_script)]
+    import hashlib
+
+    assert fast_entry["workload"]["entry"] == str(fast_script)
+    assert fast_entry["workload"]["entry_source"] == fast_script.name
+    assert fast_entry["workload"]["sources"] == [
+        {
+            "path": fast_script.name,
+            "size": 9,
+            "sha256": hashlib.sha256(b"print(1)\n").hexdigest(),
+        }
+    ]
     assert fast_entry["cpython_time_s"] is None
     assert fast_entry["cpython_samples_s"] is None
     assert fast_entry["molt_ok"] is True, res.stderr
@@ -216,7 +227,7 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
     assert fast_entry["molt_speedup"] is None
     assert fast_entry["molt_output_parity"]["reason"] == "reference_unavailable"
 
-    slow_entry = payload["benchmarks"][slow_script.name]
+    slow_entry = payload["benchmarks"][str(slow_script)]
     assert slow_entry["molt_ok"] is False
     assert slow_entry["molt_time_s"] is None
     assert slow_entry["molt_samples_s"] == []
@@ -1583,7 +1594,7 @@ def test_bench_results_skips_external_reference_for_molt_only_intrinsic_benchmar
             nuitka_cmd=None,
             pyodide_cmd=None,
             workloads=workloads,
-        )[str(script)]
+        )["tests/benchmarks/bench_channel_throughput.py"]
 
     assert entry["reference_runtime"] == "molt"
     assert (

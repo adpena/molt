@@ -75,7 +75,7 @@ def profile_admitted_sources(profiling, **kwargs):
             path: custody.enter_context(
                 admit_benchmark_workload(
                     path,
-                    project_root=path.parent,
+                    project_root=profiling.REPO_ROOT,
                     run_args=profiling.bench.resolve_benchmark_run_args(str(path)),
                     molt_args=profiling.bench_suites.molt_args_for_benchmark(path),
                 )
