@@ -20,7 +20,8 @@ targets and configured runtime locations are not cleared. Daemon reuse is
 possible only when an eligible outer guard owns the suite; per-phase guards
 retain their normal child cleanup. The receipt records the selected policy.
 These are noncanonical diagnostics, not installed-user or correctness acceptance.
-The synthetic edit adds a global assignment; no guest program is executed.
+Latency mode uses ordinary CLI requests; attribution mode requests diagnostics.
+An optional explicit companion source supplies the edit; no guest is executed.
 Each scenario is run N times so noise from other agents is visible.
 Synthetic source touches are restored and then repaired with an unmeasured
 baseline build so the persistent target is not left stale for the next scenario,
@@ -37,6 +38,7 @@ import argparse
 import atexit
 from contextlib import ExitStack
 from dataclasses import asdict
+from enum import StrEnum
 import hashlib
 import json
 import os
@@ -45,6 +47,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Mapping
@@ -70,7 +73,26 @@ from tools.throughput_measurement import elapsed_sec, phase_result  # noqa: E402
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 TOUCH_MARKER = b"\n// dx_build_timer touch\n"
-PYTHON_TOUCH_MARKER = "\n__molt_dx_build_timer_edit__ = 1\n"
+
+
+class MoltMeasurement(StrEnum):
+    LATENCY = "latency"
+    ATTRIBUTION = "attribution"
+
+    @property
+    def instrumentation(self) -> bool:
+        match self:
+            case MoltMeasurement.LATENCY:
+                return False
+            case MoltMeasurement.ATTRIBUTION:
+                return True
+
+
+_MOLT_INSTRUMENTATION_ENV = (
+    "MOLT_CLI_PROFILE",
+    "MOLT_BUILD_DIAGNOSTICS",
+    "MOLT_BUILD_DIAGNOSTICS_FILE",
+)
 
 MOLT_BUILD_SCENARIO_PREFIX = "molt-build-"
 MOLT_BUILD_TARGETS = frozenset({"native", "wasm", "wasm-split"})
@@ -234,7 +256,6 @@ def _run_completed_inside_active_guard(
     keep custody while letting intentional warm daemons live until suite exit.
     """
 
-    start = _now()
     interval = (
         harness_memory_guard._subprocess_keepalive_interval_secs(  # noqa: SLF001
             env,
@@ -243,11 +264,11 @@ def _run_completed_inside_active_guard(
         if progress_label is not None
         else None
     )
-    next_keepalive = start + interval if interval is not None else None
     from molt.checkout_state import checkout_state_command_roots, checkout_state_use
 
     use = ExitStack()
     proc: subprocess.Popen[str] | None = None
+    waiter: threading.Thread | None = None
 
     def close_use() -> None:
         if proc is not None and proc.poll() is None:
@@ -257,6 +278,9 @@ def _run_completed_inside_active_guard(
                 if proc.poll() is None:
                     raise
         use.close()
+        if waiter is not None:
+            # Only proven child closure makes joining the kernel waiter safe.
+            waiter.join()
         atexit.unregister(close_use)
 
     # Retain the lock owner even if interrupted streaming and failed cleanup
@@ -281,6 +305,7 @@ def _run_completed_inside_active_guard(
                 errors="replace",
             ) as stderr_tmp,
         ):
+            start = _now()
             proc = _COMMANDS.start_owned(
                 cmd,
                 cwd=cwd,
@@ -289,21 +314,41 @@ def _run_completed_inside_active_guard(
                 stderr=stderr_tmp,
                 text=True,
             )
-            while proc.poll() is None:
-                now = _now()
-                if next_keepalive is not None and now >= next_keepalive:
-                    elapsed = int(now - start)
-                    print(
-                        (
-                            f"{progress_label}: still running elapsed={elapsed}s "
-                            f"timeout=unbounded pid={proc.pid}"
-                        ),
-                        flush=True,
-                    )
-                    assert interval is not None
-                    next_keepalive = now + interval
-                time.sleep(0.1)
-            elapsed = _now() - start
+            if interval is None:
+                proc.wait()
+                elapsed = _now() - start
+            else:
+                from concurrent.futures import Future, TimeoutError as FutureTimeout
+
+                completion: Future[float] = Future()
+                child = proc
+
+                def wait_for_child() -> None:
+                    try:
+                        child.wait()
+                        completion.set_result(_now() - start)
+                    except BaseException as error:
+                        completion.set_exception(error)
+
+                candidate_waiter = threading.Thread(
+                    target=wait_for_child, name="dx-build-wait", daemon=True
+                )
+                candidate_waiter.start()
+                waiter = candidate_waiter
+                while True:
+                    try:
+                        elapsed = completion.result(timeout=interval)
+                        break
+                    except FutureTimeout:
+                        if completion.done():
+                            elapsed = completion.result()
+                            break
+                        print(
+                            f"{progress_label}: still running "
+                            f"elapsed={int(_now() - start)}s "
+                            f"timeout=unbounded pid={proc.pid}",
+                            flush=True,
+                        )
             stdout_tmp.seek(0)
             stderr_tmp.seek(0)
             child_stdout = stdout_tmp.read()
@@ -446,6 +491,8 @@ def _molt_build_command(
     profile: str,
     out_dir: Path,
     cache_dir: Path,
+    output: Path,
+    measurement: MoltMeasurement,
     diagnostics_file: Path,
     python_executable: str | None = None,
 ) -> list[str]:
@@ -464,27 +511,49 @@ def _molt_build_command(
         str(out_dir),
         "--cache-dir",
         str(cache_dir),
-        "--cache-report",
-        "--json",
-        "--diagnostics",
-        "--diagnostics-file",
-        str(diagnostics_file),
+        "--output",
+        str(output),
     ]
+    if measurement.instrumentation:
+        cmd.extend(
+            [
+                "--cache-report",
+                "--json",
+                "--diagnostics",
+                "--diagnostics-file",
+                str(diagnostics_file),
+            ]
+        )
     if target == "wasm-split":
         cmd.append("--split-runtime")
     return cmd
 
 
-def _apply_python_edit(source: Path) -> str:
-    with source.open("ab") as handle:
-        handle.write(PYTHON_TOUCH_MARKER.encode("utf-8"))
-    return PYTHON_TOUCH_MARKER.strip()
+def _apply_python_edit(source: Path, original: bytes, edited: bytes) -> None:
+    if source.read_bytes() != original:
+        raise ValueError("scenario source changed before edit")
+    source.write_bytes(edited)
+    if source.read_bytes() != edited:
+        raise ValueError("scenario source differs from the intended edit")
 
 
-def _molt_build_artifact(stdout: str, out_dir: Path) -> dict[str, object]:
+def _molt_build_artifact(
+    stdout: str, output: Path, measurement: MoltMeasurement
+) -> dict[str, object]:
     """Observe the CLI's primary output; never infer correctness from a digest."""
     from molt.toolchain_identity import stable_file_content_identity
 
+    if output.resolve() != output:
+        raise ValueError("build output redirected from the selected path")
+    identity = stable_file_content_identity(output, label="DX build artifact")
+    if not measurement.instrumentation:
+        return {
+            "path": str(output),
+            "identity": identity,
+            "observed_toolchain": None,
+            "cache": None,
+            "correctness_verified": False,
+        }
     payload = json.loads(stdout)
     if not isinstance(payload, dict) or payload.get("command") != "build":
         raise ValueError("missing build JSON receipt")
@@ -493,12 +562,11 @@ def _molt_build_artifact(stdout: str, out_dir: Path) -> dict[str, object]:
     data = payload.get("data")
     if not isinstance(data, dict) or not isinstance(data.get("output"), str):
         raise ValueError("build JSON has no output path")
-    output = Path(data["output"])
-    if not output.is_absolute():
-        output = REPO_ROOT / output
-    if not output.resolve().is_relative_to(out_dir.resolve()):
-        raise ValueError("build output is outside the scenario output directory")
-    identity = stable_file_content_identity(output, label="DX build artifact")
+    reported_output = Path(data["output"])
+    if not reported_output.is_absolute():
+        reported_output = REPO_ROOT / reported_output
+    if reported_output.resolve() != output:
+        raise ValueError("build JSON output differs from the selected path")
     observed = data.get("observed_toolchain")
     if isinstance(observed, dict) and observed.get("artifact") is not None:
         reported = observed["artifact"]
@@ -594,6 +662,8 @@ def _snapshot_payload(
             "runs": args.runs,
             "target_dir": args.target_dir,
             "molt_source": getattr(args, "molt_source", None),
+            "molt_edited_source": getattr(args, "molt_edited_source", None),
+            "molt_measurement": getattr(args, "molt_measurement", None),
             "molt_profile": getattr(args, "molt_profile", None),
             "molt_output_root": getattr(args, "molt_output_root", None),
             "molt_output_root_resolved": str(_molt_build_output_root(args)),
@@ -664,6 +734,20 @@ def main() -> int:
         ),
     )
     ap.add_argument(
+        "--molt-measurement",
+        type=MoltMeasurement,
+        choices=tuple(MoltMeasurement),
+        default=MoltMeasurement.LATENCY,
+        help="Ordinary CLI latency (default) or instrumented attribution.",
+    )
+    ap.add_argument(
+        "--molt-edited-source",
+        help=(
+            "Explicit companion source for the edit phase of isolated single-file "
+            "Molt workloads; omitted means cold/warm only."
+        ),
+    )
+    ap.add_argument(
         "--molt-profile",
         default="dev",
         help="Profile passed to real `molt build` scenarios (default: dev).",
@@ -716,9 +800,31 @@ def main() -> int:
     molt_source = Path(args.molt_source)
     if not molt_source.is_absolute():
         molt_source = (REPO_ROOT / molt_source).resolve()
+    molt_edited_source = (
+        Path(args.molt_edited_source).expanduser().resolve()
+        if args.molt_edited_source
+        else None
+    )
     if any(_is_molt_build_scenario(scenario) for scenario in args.scenarios):
         if not molt_source.is_file():
             preflight_errors.append(f"molt_source missing: {molt_source}")
+        if molt_edited_source is not None:
+            if not molt_edited_source.is_file():
+                preflight_errors.append(
+                    f"molt_edited_source missing: {molt_edited_source}"
+                )
+            elif molt_source.is_file() and (
+                molt_source.read_bytes() == molt_edited_source.read_bytes()
+            ):
+                preflight_errors.append("molt_edited_source must change source bytes")
+        if not args.molt_measurement.instrumentation:
+            inherited = [name for name in _MOLT_INSTRUMENTATION_ENV if env.get(name)]
+            if inherited:
+                preflight_errors.append(
+                    "latency measurement requires unset "
+                    + ", ".join(inherited)
+                    + "; use --molt-measurement attribution for instrumentation"
+                )
     if preflight_errors:
         print("dx_build_timer scenario preflight failed:", file=sys.stderr)
         for error in preflight_errors:
@@ -869,12 +975,18 @@ def main() -> int:
             "profile": args.molt_profile,
             "source": str(molt_source),
             "workflow": "source-checkout-diagnostic",
+            "measurement": args.molt_measurement,
             "cold_scope": (
                 "fresh MOLT_CACHE and explicit --cache-dir; compiler home, Cargo targets and configured runtime locations not cleared; "
                 + daemon_policy
             ),
             "daemon_policy": daemon_policy,
-            "edit_kind": "synthetic global assignment; no guest correctness check",
+            "edit_kind": (
+                "explicit supplied source pair; no guest correctness check"
+                if molt_edited_source is not None
+                else "none; cold/warm only"
+            ),
+            "edited_source": str(molt_edited_source) if molt_edited_source else None,
             "driver": {
                 "python": molt_build_python,
                 "cwd": str(REPO_ROOT),
@@ -918,24 +1030,36 @@ def main() -> int:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 diagnostics_root.mkdir(parents=True, exist_ok=True)
                 source_copy = work_root / source_name
+                (work_root / "pyproject.toml").write_text(
+                    "[tool.molt]\n", encoding="utf-8"
+                )
                 shutil.copy2(molt_source, source_copy)
                 expected_source = source_copy.read_bytes()
+                edited_source = (
+                    molt_edited_source.read_bytes()
+                    if molt_edited_source is not None
+                    else None
+                )
+                if edited_source == expected_source:
+                    raise ValueError("molt_edited_source must change source bytes")
                 source_witness = inputs_root / "original.py"
                 source_witness.write_bytes(expected_source)
+                output = (
+                    out_dir / ("program.bin" if target == "native" else "program.wasm")
+                ).resolve()
 
-                for phase in ("cold", "warm", "edit"):
+                phase_names = (
+                    ("cold", "warm", "edit")
+                    if edited_source is not None
+                    else ("cold", "warm")
+                )
+                for phase in phase_names:
                     if source_copy.read_bytes() != expected_source:
                         raise ValueError("scenario source changed between build phases")
                     if phase == "edit":
-                        expected_edited = expected_source + PYTHON_TOUCH_MARKER.encode(
-                            "utf-8"
-                        )
-                        _apply_python_edit(source_copy)
-                        if source_copy.read_bytes() != expected_edited:
-                            raise ValueError(
-                                "scenario source differs from the intended edit"
-                            )
-                        expected_source = expected_edited
+                        assert edited_source is not None
+                        _apply_python_edit(source_copy, expected_source, edited_source)
+                        expected_source = edited_source
                         source_witness = inputs_root / "edited.py"
                         source_witness.write_bytes(expected_source)
                     source_identity = {
@@ -952,6 +1076,8 @@ def main() -> int:
                         profile=args.molt_profile,
                         out_dir=out_dir,
                         cache_dir=cache_root,
+                        output=output,
+                        measurement=args.molt_measurement,
                         diagnostics_file=diagnostics_file,
                         python_executable=molt_build_python,
                     )
@@ -994,10 +1120,14 @@ def main() -> int:
                             timed_out=timed_out,
                             stdout=_output_text(proc.stdout),
                             stderr=_output_text(proc.stderr),
-                            output_path=out_dir,
                         )
                     )
-                    phase_payload["diagnostics_file"] = str(diagnostics_file)
+                    phase_payload["measurement"] = args.molt_measurement
+                    phase_payload["diagnostics_file"] = (
+                        str(diagnostics_file)
+                        if args.molt_measurement.instrumentation
+                        else None
+                    )
                     phase_payload["source"] = str(source_copy)
                     phase_payload["run"] = i + 1
                     phase_payload["source_identity"] = source_identity
@@ -1022,8 +1152,11 @@ def main() -> int:
                             raise ValueError("scenario source changed during build")
                         if proc.returncode == 0:
                             phase_payload["artifact"] = _molt_build_artifact(
-                                _output_text(proc.stdout), out_dir
+                                _output_text(proc.stdout), output, args.molt_measurement
                             )
+                            phase_payload["output_size_bytes"] = phase_payload[
+                                "artifact"
+                            ]["identity"]["size"]
                     except (OSError, ValueError) as exc:
                         phase_payload["validation_errors"].append(str(exc))
                     phases.append(phase_payload)

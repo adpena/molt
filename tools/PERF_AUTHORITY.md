@@ -177,10 +177,22 @@ to attribute the current limiter, and compare the same unchanged
 or edited workload before and after each load-bearing change. Use
 `tools/dx_build_timer.py` for build-loop measurements and
 `MOLT_CLI_PROFILE` for attribution; keep instrumented timings separate from
-uninstrumented latency. The timer currently requests JSON and diagnostics, which
-disable the native build-record cutoff; ordinary CLI latency requires a separate
-uninstrumented invocation until that timer contract is repaired. Classify a new
-failure before repeating an expensive proof.
+uninstrumented latency. The timer defaults to `--molt-measurement latency`, with
+ordinary CLI flags and one explicit output; native requests remain eligible for
+build-record cutoff. `--molt-measurement attribution` requests JSON, cache reports
+and diagnostics, which disable that cutoff. Latency refuses inherited profiling
+or diagnostics rather than silently measuring an instrumented path. Classify a
+new failure before repeating an expensive proof.
+
+Molt timer trials copy one source into an isolated project and use a fresh guest
+cache, retaining configured compiler/runtime locations. They measure cold and
+the first unchanged build; a warm label does not prove a record hit, particularly
+under the fixed racy-window policy. `--molt-edited-source` adds an explicit source
+pair's edit phase; the tool never rewrites arbitrary input as a synthetic edit.
+Receipts retain mode, actual source bytes/digests, command, streams and exactly
+the selected artifact's digest and byte size. Attribution observations stay
+unavailable in latency mode, and neither mode proves guest execution correctness.
+Historical instrumented receipts retain their original comparison class.
 
 A bounded macOS arm64/CPython 3.12.15 observation of native `dev` builds of
 `bench_calls.py`, in the same retained project/cache/output, found metadata-only
