@@ -169,13 +169,13 @@ def main(argv: list[str] | None = None) -> int:
         managed = not (args.venv or os.environ.get("MOLT_VENV"))
         if managed:
             from molt.dx import DxConfigError, DxProject
-            from molt.source_build_environment import admit_development_environment
+            from molt.source_build_environment import select_development_environment
             from molt.source_build_environment_schema import (
                 SourceBuildEnvironmentError,
             )
 
             try:
-                venv = admit_development_environment(
+                venv = select_development_environment(
                     venv, repo_root=ROOT, groups=DxProject(ROOT).dependency_groups()
                 )
             except (DxConfigError, SourceBuildEnvironmentError) as exc:
