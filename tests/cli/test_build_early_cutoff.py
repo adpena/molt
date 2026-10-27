@@ -24,7 +24,10 @@ from molt.cli.build_request import BuildRequest
 
 
 def _fake_build(
-    calls: list[str], *, project_root: Path | None = None, entry_module: str | None = None
+    calls: list[str],
+    *,
+    project_root: Path | None = None,
+    entry_module: str | None = None,
 ):
     def build(request: BuildRequest) -> int:
         from molt.cli.build_output_layout import (
@@ -86,7 +89,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _run(build, project: Path, output: Path | str | None, *, first: bool = True) -> None:
+def _run(
+    build, project: Path, output: Path | str | None, *, first: bool = True
+) -> None:
     # Each call is the first build of a new process.
     build_record._BUILDS_ENTERED = 0 if first else 1
     assert (
@@ -285,7 +290,9 @@ def test_package_name_and_relative_out_dir_use_actual_layout(
     assert not (nested / "products").exists()
 
 
-def test_a_file_output_replaced_by_a_directory_selects_a_new_binary(project: Path) -> None:
+def test_a_file_output_replaced_by_a_directory_selects_a_new_binary(
+    project: Path,
+) -> None:
     calls: list[str] = []
     build = build_command._with_early_cutoff(_fake_build(calls))
     _run(build, project, "program")

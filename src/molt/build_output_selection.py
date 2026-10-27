@@ -76,7 +76,10 @@ class BuildOutputSelection:
             out_dir=self.out_dir,
             project_root=self.project_root,
         )
-        if current != self.path or Path(os.path.realpath(current)) != self.resolved_path:
+        if (
+            current != self.path
+            or Path(os.path.realpath(current)) != self.resolved_path
+        ):
             raise ValueError(f"output selection changed: {self.path}")
 
     def to_dict(self) -> dict[str, str | None]:
