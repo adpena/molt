@@ -231,6 +231,7 @@ def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):
     script.write_text("print(1)", encoding="utf-8")
     measure_admitted_cell(
         measure,
+        project_root=measure.REPO_ROOT,
         script_path=script,
         spec=measure.BackendSpec("native", "native", "native"),
         profile="release-fast",
@@ -600,6 +601,7 @@ def test_measure_cell_closes_actual_binary_owner_on_every_exit(
         except RuntimeError:
             return measure_admitted_cell(
                 measure,
+                project_root=measure.REPO_ROOT,
                 script_path=tmp_path / "bench_probe.py",
                 spec=measure.BackendSpec(target, target, target),
                 profile="release-fast",
@@ -670,6 +672,7 @@ def test_measure_cell_preserves_replaced_allocation_and_original_error(
     with pytest.raises(OSError) as caught:
         measure_admitted_cell(
             measure,
+            project_root=measure.REPO_ROOT,
             script_path=tmp_path / "bench_probe.py",
             spec=measure.BackendSpec("native", "native", "native"),
             profile="release-fast",

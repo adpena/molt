@@ -998,6 +998,7 @@ def test_actual_build_cleanup_failure_escapes_measurement_and_profile_callers(
             else:
                 measure_admitted_cell(
                     measure,
+                    project_root=measure.REPO_ROOT,
                     script_path=script,
                     spec=NATIVE_CRANELIFT,
                     profile="release-fast",
@@ -1140,6 +1141,7 @@ def test_nested_codon_and_native_cleanup_retain_both_exact_owners(
         with pytest.raises(OSError) as caught:
             measure_admitted_cell(
                 measure,
+                project_root=scoreboard.REPO_ROOT,
                 script_path=scoreboard.REPO_ROOT / "tests/benchmarks/bench_fib.py",
                 spec=NATIVE_CRANELIFT,
                 profile="release-fast",
@@ -1518,6 +1520,7 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
     monkeypatch.setattr(measure, "_run_measured_command", sample)
     cell = measure_admitted_cell(
         measure,
+        project_root=measure.REPO_ROOT,
         script_path=script,
         spec=WASM,
         profile=profile,

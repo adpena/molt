@@ -565,6 +565,7 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
 
     cell = measure_admitted_cell(
         measure,
+        project_root=measure.REPO_ROOT,
         script_path=script,
         spec=measure.BackendSpec("native", "llvm", "native"),
         profile="release-fast",
@@ -678,6 +679,7 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
 
     cell = measure_admitted_cell(
         measure,
+        project_root=measure.REPO_ROOT,
         script_path=script,
         spec=measure.BackendSpec("native", "llvm", "native"),
         profile="release-fast",
@@ -2671,6 +2673,7 @@ def test_direct_wasm_cell_refuses_missing_node_before_build(monkeypatch, tmp_pat
     with pytest.raises(NodeRuntimeError, match="missing Node"):
         measure_admitted_cell(
             measure,
+            project_root=measure.REPO_ROOT,
             script_path=ps.REPO_ROOT / "tests/benchmarks/bench_fib.py",
             spec=ps.BACKENDS_BY_NAME["wasm"],
             profile="dev-fast",
