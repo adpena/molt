@@ -945,6 +945,7 @@ class _SubprocessVisitor(ast.NodeVisitor):
     def __init__(self, *, path: str, source_text: str) -> None:
         self.path = path
         self.source_text = source_text
+        self._source_lines: list[bytes] | None = None
         self.subprocess_aliases: set[str] = {"subprocess"}
         self.os_aliases: set[str] = {"os"}
         self.direct_imports: dict[str, str] = {}
@@ -1037,31 +1038,59 @@ class _SubprocessVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
+        methods: list[str] = []
         method = self._raw_call_method(node.func)
         if method is not None:
-            self._record_call(node, method)
+            methods.append(method)
         if self._is_shell_execution(node, method=method):
-            self._record_call(node, "shell.exec")
+            methods.append("shell.exec")
         command = self._executed_constant_command(node, method=method)
         if command is not None and any(
             pattern in command for pattern in SHELL_KILL_PATTERNS
         ):
-            self._record_call(node, "shell.kill")
+            methods.append("shell.kill")
+        if methods:
+            source = self._source_segment(node)
+            if source is not None:
+                source = " ".join(source.strip().split())
+            for method in methods:
+                self.calls.append(
+                    RawSubprocessCall(
+                        path=self.path,
+                        line=node.lineno,
+                        qualname=".".join(self.stack) if self.stack else "<module>",
+                        method=method,
+                        source=f"{method}(...)" if source is None else source,
+                    )
+                )
         self.generic_visit(node)
 
-    def _record_call(self, node: ast.Call, method: str) -> None:
-        source = ast.get_source_segment(self.source_text, node)
-        if source is None:
-            source = f"{method}(...)"
-        self.calls.append(
-            RawSubprocessCall(
-                path=self.path,
-                line=node.lineno,
-                qualname=".".join(self.stack) if self.stack else "<module>",
-                method=method,
-                source=" ".join(source.strip().split()),
-            )
-        )
+    def _source_segment(self, node: ast.Call) -> str | None:
+        try:
+            first, last = node.lineno - 1, node.end_lineno
+            column, end_column = node.col_offset, node.end_col_offset
+        except AttributeError:
+            return None
+        if last is None or end_column is None:
+            return None
+        last -= 1
+        if self._source_lines is None:
+            # Bytes split only CR/LF/CRLF, as Python's parser does, and retain
+            # UTF-8 byte columns. The terminal empty line matches ast's index.
+            self._source_lines = [
+                *self.source_text.encode().splitlines(keepends=True),
+                b"",
+            ]
+        lines = self._source_lines
+        if first == last:
+            return lines[first][column:end_column].decode()
+        return b"".join(
+            [
+                lines[first][column:],
+                *lines[first + 1 : last],
+                lines[last][:end_column],
+            ]
+        ).decode()
 
     def _bind_constant(self, target: ast.expr, value: object | None) -> None:
         if isinstance(target, (ast.List, ast.Tuple)):

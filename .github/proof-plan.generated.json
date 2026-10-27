@@ -9842,7 +9842,7 @@
       "local.stringprep-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_stringprep_tables.py",
       "local.structural-audit-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_structural_audit_records.py",
       "local.structural-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_structural_audit.py",
-      "local.subprocess-guard-coverage.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_subprocess_guard_coverage.py",
+      "local.subprocess-guard-coverage.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_memory_guard_wiring.py tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
       "local.suite-honesty.0": "python tools/check_differential_suite_layout.py",
       "local.suite-honesty.1": "python tools/check_suite_honesty.py",
       "local.table-drift.0": "python tools/check_table_drift.py --check",
@@ -11340,15 +11340,19 @@
         "command_ids": [
           "local.subprocess-guard-coverage.pytest"
         ],
-        "description": "Subprocess guard coverage diagnostics and their semantic controls.",
+        "description": "Raw-process scanner, shared guard-wiring observations and their semantic controls.",
         "gates": [],
         "globs": [
           "tools/check_subprocess_guard_coverage.py",
-          "tests/tools/test_subprocess_guard_coverage.py"
+          "tools/check_memory_guard_wiring.py",
+          "tests/tools/test_subprocess_guard_coverage.py",
+          "tests/tools/test_check_memory_guard_wiring.py"
         ],
         "name": "subprocess-guard-coverage",
         "pytest": [
-          "tests/tools/test_subprocess_guard_coverage.py"
+          "tests/tools/test_subprocess_guard_coverage.py",
+          "tests/tools/test_check_memory_guard_wiring.py",
+          "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth"
         ],
         "toolchains": [
           "python"
