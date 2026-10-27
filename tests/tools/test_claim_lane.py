@@ -12,10 +12,13 @@ from pathlib import Path
 
 import pytest
 
+from tools.molt_dev_common import _run_fast_captured_command
+
 from tests.integration_driver_fixture import (
-    clone_tree,
-    copy_driver_trees,
+    GitFixture,
+    copy_git_fixture,
     isolated_checkout_artifacts as isolated_checkout_artifacts,
+    publish_git_fixture,
     shared_session_tree,
 )
 
@@ -24,14 +27,12 @@ CLAIM = TOOLS / "claim_lane.py"
 
 
 def _git(repo: Path, *args: str) -> str:
-    return run_guarded_test_process(
-        ["git", *args],
+    result = _run_fast_captured_command(
+        ["git", "-C", str(repo), *args],
         cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    ).stdout.strip()
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
 
 
 def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -55,9 +56,6 @@ def _claims_body(rows: str) -> str:
 
 def _build_seed(root: Path) -> None:
     """Minimal committed claims history for real fetch/read/refusal checks."""
-    bare = root / "remote.git"
-    bare.mkdir()
-    _git(bare, "init", "--bare", "-q", "-b", "main")
     w = root / "work"
     (w / "docs" / "agent").mkdir(parents=True)
     _git(w, "init", "-q", "-b", "main")
@@ -66,21 +64,21 @@ def _build_seed(root: Path) -> None:
     (w / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "init")
-    _git(w, "push", "-q", str(bare), "main")
+    publish_git_fixture(GitFixture(root / "remote.git", w))
 
 
-def _build_integration_seed(root: Path, seed: Path, driver: Path) -> None:
+def _build_integration_seed(root: Path, driver: GitFixture) -> None:
     """The claims history with main's complete pinned controller and policy."""
-    clone_tree(seed / "remote.git", root / "remote.git")
-    clone_tree(seed / "work", root / "work")
+    copy_git_fixture(driver, GitFixture(root / "remote.git", root / "work"))
     w = root / "work"
-    copy_driver_trees(w, seed=driver)
+    (w / "docs/agent").mkdir(parents=True)
+    (w / "docs/agent/CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
     (w / "tools/proof_plan.toml").write_text(
         'always = ["echo claim-policy"]\n', encoding="utf-8"
     )
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "pin integration controller")
-    _git(w, "push", "-q", str(root / "remote.git"), "main")
+    _git(w, "push", "-q", "origin", "main")
 
 
 @pytest.fixture(scope="session")
@@ -93,15 +91,14 @@ def _seed(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
 def _integration_seed(
     tmp_path_factory: pytest.TempPathFactory,
     worker_id: str,
-    _seed: Path,
-    driver_seed: Path,
+    driver_history_seed: GitFixture,
 ) -> Path:
     """Only landing tests need the driver; it is committed once per session."""
     return shared_session_tree(
         tmp_path_factory,
         worker_id,
         "claim-integration-seed",
-        lambda root: _build_integration_seed(root, _seed, driver_seed),
+        lambda root: _build_integration_seed(root, driver_history_seed),
     )
 
 
@@ -116,12 +113,11 @@ def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> P
     # editable checkout into the parent test environment.
     monkeypatch.setenv("MOLT_VENV", sys.prefix)
     # Clone (copy-on-write), never hardlink: each test mutates refs and objects.
-    clone_tree(seed / "remote.git", tmp_path / "remote.git")
-    clone_tree(seed / "work", tmp_path / "work")
+    copy_git_fixture(
+        GitFixture(seed / "remote.git", seed / "work"),
+        GitFixture(tmp_path / "remote.git", tmp_path / "work"),
+    )
     w = tmp_path / "work"
-    _git(w, "remote", "add", "origin", str(tmp_path / "remote.git"))
-    _git(w, "fetch", "-q", "origin")
-    _git(w, "branch", "-q", "--set-upstream-to=origin/main", "main")
     return w
 
 
@@ -143,6 +139,55 @@ def driver_repo(
     isolated_checkout_artifacts: Path,
 ) -> Path:
     return _copy_repo(tmp_path, _integration_seed, monkeypatch)
+
+
+@pytest.mark.parametrize("seed_name", ["_seed", "_integration_seed"])
+def test_claim_seed_tracks_published_main(
+    seed_name: str, request: pytest.FixtureRequest
+) -> None:
+    seed = request.getfixturevalue(seed_name)
+    work = seed / "work"
+    tip = _git(work, "rev-parse", "HEAD")
+    assert _git(work, "rev-parse", "origin/main") == tip
+    assert _git(work, "ls-remote", "origin", "refs/heads/main").split()[0] == tip
+    assert _git(seed / "remote.git", "rev-parse", "refs/heads/main") == tip
+
+
+def test_prepared_claim_copies_keep_working_history_private(
+    _seed: Path, tmp_path: Path
+) -> None:
+    seed = GitFixture(_seed / "remote.git", _seed / "work")
+    first = GitFixture(tmp_path / "first/origin.git", tmp_path / "first/work")
+    second = GitFixture(tmp_path / "second/origin.git", tmp_path / "second/work")
+    copy_git_fixture(seed, first)
+    copy_git_fixture(seed, second)
+    tip = _git(seed.work, "rev-parse", "HEAD")
+    assert _git(first.work, "rev-parse", "origin/main") == tip
+    assert _git(first.work, "ls-remote", "origin", "refs/heads/main").split()[0] == tip
+    assert not (first.work / ".git/objects/info/alternates").exists()
+    for relative in ("docs/agent/CLAIMS.md", ".git/config", ".git/index"):
+        original = (seed.work / relative).read_bytes()
+        sibling = (second.work / relative).read_bytes()
+        target = first.work / relative
+        target.write_bytes(target.read_bytes() + b"private mutation\n")
+        assert (seed.work / relative).read_bytes() == original
+        assert (second.work / relative).read_bytes() == sibling
+    object_path = Path("objects") / tip[:2] / tip[2:]
+    expected = (seed.origin / object_path).read_bytes()
+    for repo in (first.origin, first.work / ".git"):
+        target = repo / object_path
+        target.chmod(0o600)
+        target.write_bytes(b"corrupt only the private object")
+    assert (seed.origin / object_path).read_bytes() == expected
+    assert (seed.work / ".git" / object_path).read_bytes() == expected
+    assert (
+        _git(second.work, "show", "HEAD:docs/agent/CLAIMS.md")
+        == _claims_body("").strip()
+    )
+    assert (
+        _git(second.origin, "show", "HEAD:docs/agent/CLAIMS.md")
+        == _claims_body("").strip()
+    )
 
 
 def _set_claims(repo: Path, rows: str) -> None:

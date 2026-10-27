@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+from typing import Literal, get_args
 
 from molt import process_guard
 from molt.exact_json import loads_exact
@@ -432,10 +433,27 @@ def select_darwin_sdk(
     return DarwinSDK(developer_dir, sdk, version, hashlib.sha256(data).hexdigest())
 
 
+DarwinToolName = Literal["clang", "clang++", "ar", "ranlib", "ld"]
+_DARWIN_TOOL_NAMES = get_args(DarwinToolName)
+
+
 def select_darwin_toolchain(
-    env: Mapping[str, str], *, developer_dir: Path | None = None
+    env: Mapping[str, str],
+    *,
+    developer_dir: Path | None = None,
+    names: tuple[DarwinToolName, ...] = _DARWIN_TOOL_NAMES,
 ) -> DarwinToolchain:
-    """Capture the full native tool set under one fresh SDK selection."""
+    """Capture requested native tools under one fresh SDK selection.
+
+    Full C/C++ clients retain the complete set. Consumers with narrower command
+    requirements select their tools before any discovery or capture.
+    """
+    if (
+        not names
+        or len(set(names)) != len(names)
+        or set(names) - set(_DARWIN_TOOL_NAMES)
+    ):
+        raise ValueError("Darwin tools must be a nonempty unique declared selection")
     developer_dir = _darwin_developer_directory(env, developer_dir=developer_dir)
     sdk = select_darwin_sdk(env, developer_dir=developer_dir)
     env = ProcessEnvironment(env)
@@ -448,7 +466,7 @@ def select_darwin_toolchain(
         *_darwin_toolchain_inputs(developer_dir, selected_env),
         file_input(sdk.sdk_root / "usr" / "bin"),
     )
-    for name in ("clang", "clang++", "ar", "ranlib", "ld"):
+    for name in names:
         selected = _darwin_selection(
             "xcrun-find",
             xcrun,

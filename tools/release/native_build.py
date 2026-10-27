@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -58,6 +58,7 @@ from molt.platform_toolchain import (  # noqa: E402
     activate_msvc_environment,
     select_darwin_toolchain,
     DarwinToolchain,
+    DarwinToolName,
 )
 from molt.rust_toolchain import (  # noqa: E402
     cargo_configuration_paths,
@@ -92,39 +93,46 @@ from tools.release.git_source_snapshot import (  # noqa: E402
 )
 from tools.release.release_model import ROOT, target_by_id  # noqa: E402
 
-SCHEMA = "molt.release-native-build.v6"
+SCHEMA = "molt.release-native-build.v7"
 RECEIPT_NAME = "native-build.json"
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+
+@dataclass(frozen=True)
+class _Component:
+    package: str
+    binary: str
+    profile: str
+    features: tuple[str, ...]
+    c_units: Literal["native", "none"]
+
+    @property
+    def native_requirements(self) -> dict[str, list[str]]:
+        return {} if self.c_units == "none" else {"target": ["c"]}
+
+
 _COMPONENTS = {
-    "compiler": (
+    # llvm-sys still compiles its C wrappers with no-llvm-linking. The worker
+    # builds bundled SQLite and psm; neither graph selects a C++/CMake producer.
+    "compiler": _Component(
         HostToolProduct.BACKEND.value,
         HostToolProduct.BACKEND.value,
         PRODUCTION_COMPILER_PROFILE,
         PRODUCTION_COMPILER_FEATURES,
+        "native",
     ),
-    "wasm_facts": (
+    "wasm_facts": _Component(
         HostToolProduct.WASM_FACTS.value,
         HostToolProduct.WASM_FACTS.value,
         PRODUCTION_COMPILER_PROFILE,
         HostToolProduct.WASM_FACTS.required_features,
+        "none",
     ),
-    "launcher": ("molt-launcher", "molt", PRODUCTION_COMPILER_PROFILE, ()),
-    "worker": ("molt-worker", "molt-worker", "release-output", ()),
+    "launcher": _Component(
+        "molt-launcher", "molt", PRODUCTION_COMPILER_PROFILE, (), "none"
+    ),
+    "worker": _Component("molt-worker", "molt-worker", "release-output", (), "native"),
 }
-_TOOL_ROLES = frozenset(
-    {
-        "cargo",
-        "rustc",
-        "cc",
-        "cxx",
-        "ar",
-        "ranlib",
-        "linker",
-        "linker_backend",
-        "cmake",
-        "ninja",
-    }
-)
 _MSVC_CL_MAX_CODE_UNITS = 1024
 # Build policy is authored below. Ambient flags, wrappers, per-target overrides,
 # Python injection and arbitrary Cargo/MOLT variables never enter this map.
@@ -346,9 +354,18 @@ def snapshot_rust_channel(repo_root: Path, snapshot: GitSourceSnapshot) -> str:
     return rust_channel(data)
 
 
-def tool_roles(platform: str, arch: str) -> set[str]:
-    return set(_TOOL_ROLES) | (
-        {"nasm"} if (platform, arch) == ("windows", "x86_64") else set()
+def tool_roles(components: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
+    # The same order owns PATH projection across independent generations.
+    return (
+        "cargo",
+        "rustc",
+        "linker",
+        "linker_backend",
+        *(
+            ("cc", "ar")
+            if any(plan["cargo_native_units"] for plan in components.values())
+            else ()
+        ),
     )
 
 
@@ -379,15 +396,16 @@ def component_plan(platform: str, arch: str) -> dict[str, Any]:
     suffix = ".exe" if platform == "windows" else ""
     return {
         role: {
-            "package": package,
-            "binary": binary,
-            "profile": profile,
+            "package": component.package,
+            "binary": component.binary,
+            "profile": component.profile,
             "default_features": role != "compiler",
-            "features": list(features),
+            "features": list(component.features),
+            "cargo_native_units": component.native_requirements,
             "target": triple,
-            "path": f"bin/{binary}{suffix}",
+            "path": f"bin/{component.binary}{suffix}",
         }
-        for role, (package, binary, profile, features) in _COMPONENTS.items()
+        for role, component in _COMPONENTS.items()
     }
 
 
@@ -457,7 +475,7 @@ def validate_receipt(payload: object) -> dict[str, Any]:
         "policy",
     )
     if (
-        policy["revision"] != 2
+        policy["revision"] != 3
         or type(policy["revision"]) is not int
         or not isinstance(policy["rust_channel"], str)
         or not re.fullmatch(r"\d+\.\d+\.\d+", policy["rust_channel"])
@@ -496,7 +514,7 @@ def validate_receipt(payload: object) -> dict[str, Any]:
     ):
         raise ValueError("invalid native build platform version")
     tools = _object(
-        receipt["tools"], tool_roles(target["platform"], target["arch"]), "tool roles"
+        receipt["tools"], set(tool_roles(policy["components"])), "tool roles"
     )
     for role, tool in tools.items():
         _object(
@@ -613,37 +631,30 @@ def _tool_paths(
     env: Mapping[str, str],
     *,
     platform: str,
-    arch: str,
+    components: Mapping[str, Mapping[str, Any]],
     darwin: DarwinToolchain | None = None,
 ) -> dict[str, Path]:
     names = {
         "cargo": "cargo",
         "rustc": "rustc",
-        "cc": "clang",
-        "cxx": "clang++",
-        "ar": "ar",
-        "ranlib": "ranlib",
         "linker": "clang",
-        "cmake": "cmake",
-        "ninja": "ninja",
     }
+    if "cc" in tool_roles(components):
+        names.update(cc="clang", ar="ar")
     if platform == "windows":
-        names.update(
-            cc="cl.exe", cxx="cl.exe", ar="lib.exe", ranlib="lib.exe", linker="link.exe"
-        )
-    if platform == "windows" and arch == "x86_64":
-        names["nasm"] = "nasm"
+        names["linker"] = "link.exe"
+        if "cc" in names:
+            names.update(cc="cl.exe", ar="lib.exe")
     if darwin is not None:
         names.update(
             {
                 role: str(darwin.tools[name])
                 for role, name in (
                     ("cc", "clang"),
-                    ("cxx", "clang++"),
                     ("ar", "ar"),
-                    ("ranlib", "ranlib"),
                     ("linker", "clang"),
                 )
+                if role in names
             }
         )
     paths = {
@@ -709,9 +720,11 @@ def _select_build_tools(
     work: Path,
     triple: str,
     platform: str,
+    component: Mapping[str, Any],
 ) -> None:
     # Pin drivers and the linker backend, including cc-rs target spellings.
-    directories = list(dict.fromkeys(str(path.parent) for path in paths.values()))
+    selected = {role: paths[role] for role in tool_roles({"component": component})}
+    directories = list(dict.fromkeys(str(path.parent) for path in selected.values()))
     if platform == "windows":
         directories.append(str(Path(env["SYSTEMROOT"]) / "System32"))
     else:
@@ -720,15 +733,8 @@ def _select_build_tools(
     for name, role in (
         ("CARGO", "cargo"),
         ("RUSTC", "rustc"),
-        ("CC", "cc"),
-        ("CXX", "cxx"),
-        ("AR", "ar"),
-        ("RANLIB", "ranlib"),
     ):
         env[name] = str(paths[role])
-        if name in {"CC", "CXX", "AR", "RANLIB"}:
-            for suffix in (triple, triple.replace("-", "_")):
-                env[f"{name}_{suffix}"] = str(paths[role])
     env[f"CARGO_TARGET_{triple.replace('-', '_').upper()}_LINKER"] = str(
         paths["linker"]
     )
@@ -739,6 +745,18 @@ def _select_build_tools(
     ]
     if platform == "windows":
         rustflags.extend(("-C", "link-arg=/Brepro", "-C", "link-arg=/DEBUG:NONE"))
+    else:
+        rustflags.extend(("-C", f"link-arg=--ld-path={paths['linker_backend']}"))
+    env["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
+        rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
+    )
+    if not component["cargo_native_units"]:
+        return
+    for name, role in (("CC", "cc"), ("AR", "ar")):
+        env[name] = str(paths[role])
+        for suffix in (triple, triple.replace("-", "_")):
+            env[f"{name}_{suffix}"] = str(paths[role])
+    if platform == "windows":
         # cl owns this argument string in both cc-rs and CMake builds. Keeping
         # the path out of CFLAGS avoids cmake-rs rejoining decoded argv without
         # quoting. /pathmap alone is silently ignored by MSVC (D9007).
@@ -756,19 +774,9 @@ def _select_build_tools(
         env["CL"] = cl_flags
         cflags = ["/Brepro"]
     else:
-        rustflags.extend(("-C", f"link-arg=--ld-path={paths['linker_backend']}"))
         cflags = [f"-ffile-prefix-map={work}=/molt", f"-fdebug-prefix-map={work}=/molt"]
-    env["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
-        rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
-    )
     # CC_SHELL_ESCAPED_FLAGS below selects cc-rs's shell rule for these.
-    env["CFLAGS"] = env["CXXFLAGS"] = FlagStringRule.CC_SHELL.encode(
-        cflags, variable="CFLAGS"
-    )
-    env["CMAKE"] = str(paths["cmake"])
-    env["CMAKE_GENERATOR"] = "Ninja"
-    if "nasm" in paths:
-        env["NASM"] = str(paths["nasm"])
+    env["CFLAGS"] = FlagStringRule.CC_SHELL.encode(cflags, variable="CFLAGS")
     env["CC_SHELL_ESCAPED_FLAGS"] = "1"
     env["ZERO_AR_DATE"] = "1"
     if platform == "windows":
@@ -818,6 +826,10 @@ def produce_native_build(
         raise ValueError("native release binaries must be built on their target host")
     if type(source_date_epoch) is not int or source_date_epoch <= 0:
         raise ValueError("native release epoch must be a positive integer")
+    plans = component_plan(platform, arch)
+    darwin_names: tuple[DarwinToolName, ...] = (
+        ("clang", "ar", "ld") if "ar" in tool_roles(plans) else ("clang", "ld")
+    )
     output = resolve_owned_path(output)
     if output.exists():
         raise FileExistsError(f"native build destination already exists: {output}")
@@ -853,7 +865,7 @@ def produce_native_build(
         if platform == "windows":
             inherited = activate_msvc_environment(inherited, repo_root=source)
         elif platform == "macos":
-            darwin = select_darwin_toolchain(inherited)
+            darwin = select_darwin_toolchain(inherited, names=darwin_names)
             inherited = inherited.updated(darwin.environment())
             versions = darwin.versions()
         from tools.release.binary_compatibility import linux_shared_library_capability
@@ -874,20 +886,19 @@ def produce_native_build(
                     ("ucrt", "UCRTVERSION"),
                 )
             }
-        paths = _tool_paths(source, env, platform=platform, arch=arch, darwin=darwin)
+        paths = _tool_paths(
+            source, env, platform=platform, components=plans, darwin=darwin
+        )
         triple = RUST_TARGET_BY_COORDINATE[(platform, arch)]
-        _select_build_tools(env, paths, work=work, triple=triple, platform=platform)
-        compiler_env = llvm_inputs.environment(env)
         identities = _tool_identities(paths, env)
         _validate_rust_tools(identities, env["RUSTUP_TOOLCHAIN"], triple)
-        plans = component_plan(platform, arch)
         receipt = {
             "schema": SCHEMA,
             "source": source_record(snapshot),
             "source_date_epoch": source_date_epoch,
             "target": {"platform": platform, "arch": arch, "rust_target": triple},
             "policy": {
-                "revision": 2,
+                "revision": 3,
                 "rust_channel": env["RUSTUP_TOOLCHAIN"],
                 "platform_versions": versions,
                 "components": plans,
@@ -899,7 +910,17 @@ def produce_native_build(
         for role, plan in plans.items():
             if role == "compiler":
                 llvm_inputs.verify()
-            role_env = ProcessEnvironment(compiler_env if role == "compiler" else env)
+            role_env = ProcessEnvironmentBuilder(env)
+            _select_build_tools(
+                role_env,
+                paths,
+                work=work,
+                triple=triple,
+                platform=platform,
+                component=plan,
+            )
+            if role == "compiler":
+                role_env = ProcessEnvironmentBuilder(llvm_inputs.environment(role_env))
             command = cargo_command(
                 plan, source=source, work=work, cargo=paths["cargo"]
             )
@@ -925,7 +946,7 @@ def produce_native_build(
         derive_bundle_wheel_compatibility(stage, platform=platform, arch=arch)
         snapshot.verify(source)
         if darwin is not None and darwin != select_darwin_toolchain(
-            env, developer_dir=darwin.developer_dir
+            env, developer_dir=darwin.developer_dir, names=darwin_names
         ):
             raise ValueError("Darwin SDK or tool selection changed during native build")
         require_config_free_build_root(work, env)

@@ -400,6 +400,36 @@ One runner owns main. Agents enqueue and continue.
 
 ## Costs
 
+Real-controller tests share one immutable committed driver history per pytest
+session across xdist workers and the driver/claim families. The existing
+`shared_session_tree` lock publishes it once, following
+[pytest-xdist's session-fixture guidance](https://github.com/pytest-dev/pytest-xdist/blob/master/docs/how-to.rst#making-session-scoped-fixtures-execute-only-once).
+Driver tests retain real per-test Git clones, so a fresh checkout's index binds
+its own file metadata. Claim tests retain their existing CoW/copy of prepared
+repository pairs and retarget the relative remote. This keeps their source,
+Git objects, indexes, refs and config private, without alternates or cross-test
+hardlinks. Claim policy and claim records are delta commits from the same
+driver history; the producer pushes through named `origin` so the prepared
+tracking ref describes the published main. Actual fetch/rebase/push, pinned
+controller selection and retirement still execute in the subject tests.
+Like [LLVM lit's per-test output directories](https://github.com/llvm/llvm-project/blob/main/llvm/utils/lit/lit/TestRunner.py),
+mutable test outputs remain separate from shared inputs. Generic Git-clone
+tests and lane-provisioning fixtures retain their distinct setup contracts.
+
+The cold cost is one driver indexing/commit plus preparation of its tracking
+refs. Claim fixtures copy directory metadata and share blocks where supported,
+otherwise copy bytes, then run one remote rewrite. This removes per-claim
+fetch/upstream setup and duplicate driver indexing. Copied indexes still need
+their existing first-use refresh; copying prepared worktrees into the driver
+family shifted work into that refresh and was not adopted. Both families route
+Git plumbing through the existing command executor: admitted metadata queries
+retain command-state use custody without a second full memory guard; writes
+and transfers remain guarded. Direct object-byte mutation tests check isolation beyond Git's atomic
+ref replacement; a separate real-Git oracle checks each published seed's HEAD,
+tracking main and remote main before the subject can repair stale state.
+This changes test setup only; it does not establish compiler throughput or
+qualification on untested host platforms.
+
 - A candidate that selects every family runs the whole pre-push tier. On
   this Mac the calibrated Python cells take 20 s to 601 s each (2026-10-17);
   the slowest, `python.unit.surface-contracts.macos`, now exceeds its 600 s
