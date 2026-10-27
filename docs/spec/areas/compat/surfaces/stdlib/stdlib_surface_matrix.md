@@ -409,6 +409,24 @@ is authoritative for exact grants, operation requirements, and profiles. Network
 integration programs can select the `net` profile; restricted applications grant
 only the required operations from that matrix.
 
+JSON `sort_keys` sorts a retained snapshot of original `(key, value)` items
+through the ordinary runtime stable list sort before key conversion or
+`skipkeys` filtering, as in CPython 3.12.15's
+[`json.encoder`](https://github.com/python/cpython/blob/v3.12.15/Lib/json/encoder.py)
+and [`_json` accelerator](https://github.com/python/cpython/blob/v3.12.15/Modules/_json.c).
+Tuple equality/value comparisons, rich-comparison truth conversion and pending
+exceptions retain their shared owners. Each selected key is converted and its
+value is encoded before visiting the next key, preserving default-callback and
+error precedence. Skipped keys emit no separators; a nonempty dictionary whose
+keys are all skipped preserves CPython's opening/closing indentation, while an
+empty dictionary remains `{}`. Nonempty sorted input adds one private list,
+one item tuple per entry and a retained sorted snapshot; its temporary list
+backing retires once that snapshot owns the tuples. The unsorted path keeps
+its flat snapshot. The previous vector of all converted keys/values is removed.
+Shared sorting costs O(n log n) comparisons and O(n) retained
+storage; no independent JSON comparator or performance improvement is claimed.
+This mechanism does not qualify the remaining JSON parity matrix.
+
 ## 6. TODOs (tracked in ROADMAP.md)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `itertools` + `operator` core-adjacent intrinsics.
