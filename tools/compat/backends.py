@@ -77,11 +77,6 @@ from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tools.compat import diff_output_layout, test_policy
 
-# molt_diff is imported by the harness before adapters are used; we import the
-# already-bootstrapped module here for its capability/CLI-python helpers so the
-# wasm/llvm/luau build commands match the native lane's environment exactly.
-# The native adapter does NOT import run_molt directly — it is injected — so this
-# module never forces a circular import at module-load time.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -422,6 +417,7 @@ class BackendExecutionContext:
     """One immutable compiler/runtime policy shared by every backend."""
 
     target_python: TargetPythonVersion
+    molt_cli_python: str
     build_profile: str
     capabilities: str
     environment: Mapping[str, str]
@@ -434,6 +430,8 @@ class BackendExecutionContext:
         canonical_target = _parse_target_python_version(self.target_python.short)
         if self.target_python != canonical_target:
             raise ValueError("backend target Python must be canonical")
+        if not isinstance(self.molt_cli_python, str) or not self.molt_cli_python:
+            raise TypeError("backend CLI Python must name one executable")
         if any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in self.environment.items()
@@ -558,12 +556,6 @@ class NativeAdapter:
 # ---------------------------------------------------------------------------
 # Shared cross-backend build/run helpers
 # ---------------------------------------------------------------------------
-
-
-def _molt_cli_python() -> str:
-    import molt_diff  # bootstrapped by the harness before adapters run
-
-    return molt_diff._resolve_molt_cli_python()
 
 
 def suite_trip_outcome(
@@ -744,7 +736,7 @@ def _build_cmd(
     extra_build_args: list[str] | None = None,
 ) -> list[str]:
     cmd = [
-        _molt_cli_python(),
+        context.molt_cli_python,
         "-m",
         "molt.cli",
         "build",
