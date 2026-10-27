@@ -74,9 +74,15 @@ class PythonInterpreterRequest:
             or observed.local is not None
         ):
             return False
-        if self.micro is None:
-            return observed.release[:2] == (self.major, self.minor)
-        return observed.release == (self.major, self.minor, self.micro)
+        return self.matches_release(observed.release)
+
+    def matches_release(self, release: tuple[int, ...]) -> bool:
+        """Compare an already-parsed final CPython release without packaging."""
+        return len(release) == 3 and (
+            release[:2] == (self.major, self.minor)
+            if self.micro is None
+            else release == (self.major, self.minor, self.micro)
+        )
 
 
 def parse_python_interpreter_request(value: str) -> PythonInterpreterRequest:

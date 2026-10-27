@@ -4,21 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
-import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
     from packaging.requirements import Requirement
 
+from molt import python_environment_contract as _contract
 from molt.exact_json import canonical_json_sha256
-from molt.python_identity_common import PythonEnvironmentIdentityError, _valid_sha256
+from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_environment_custody import validate_python_environment_identity
 from molt.python_runtime_identity import validate_python_runtime_identity
-from molt.python_environment_location import (
-    SOURCE_BUILD_ENVIRONMENT_MANIFEST as SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-)
+
 from molt.python_uv_lock_identity import (
     PYTHON_MARKER_ENVIRONMENT_FIELDS,
     environment_matches_lock_closure,
@@ -26,37 +23,10 @@ from molt.python_uv_lock_identity import (
 )
 
 
-class SourceBuildEnvironmentError(ValueError):
-    pass
-
-
-SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 8
-IMAGE_BYTECODE_POLICY = "cpython-source-only.v1"
-
-
-def source_build_environment_contract() -> dict[str, object]:
-    """Current producer policy; selection intents derive from these authorities."""
-    from molt.python_environment_custody import PYTHON_ENVIRONMENT_IDENTITY_SCHEMA
-    from molt.python_environment_location import PYTHON_ENVIRONMENT_LOCATION_SCHEMA
-    from molt.python_runtime_identity import PYTHON_RUNTIME_IDENTITY_SCHEMA
-    from molt.python_uv_lock_identity import (
-        UV_LOCK_GROUP_CLOSURE_SCHEMA,
-        PYTHON_WHEEL_TARGET_SCHEMA,
-    )
-
-    return {
-        "source_build": SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
-        "lock_closure": UV_LOCK_GROUP_CLOSURE_SCHEMA,
-        "wheel_target": PYTHON_WHEEL_TARGET_SCHEMA,
-        "runtime": PYTHON_RUNTIME_IDENTITY_SCHEMA,
-        "environment": PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
-        "location": PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-        "bytecode": IMAGE_BYTECODE_POLICY,
-    }
-
-
 class _SourceBuildAddress(TypedDict):
     schema_version: int
+    producer_contract: _contract.SourceBuildEnvironmentContract
+    declared_inputs: dict[str, str | None]
     dependency_groups: list[str]
     dependency_group_requirements: list[str]
     lock_closure: dict[str, object]
@@ -68,80 +38,6 @@ class _SourceBuildAddress(TypedDict):
 
 class _SourceBuildCustody(_SourceBuildAddress):
     environment_id: str
-
-
-@dataclass(frozen=True)
-class DevelopmentEnvironmentRequest:
-    """Checkout/Python/group intent, independent of selection or proof role."""
-
-    repo_root: Path
-    python: str | None
-    groups: tuple[str, ...]
-
-    def intent_arguments(self) -> tuple[str, ...]:
-        return (
-            "--development-checkout",
-            str(self.repo_root),
-            *(() if self.python is None else ("--development-python", self.python)),
-            *(
-                value
-                for group in self.groups
-                for value in ("--development-group", group)
-            ),
-        )
-
-
-class _DevelopmentSelectionResult(StrEnum):
-    COMPLETE = "molt.development-environment-selection.v1"
-
-
-class _DevelopmentSelectionPayload(TypedDict):
-    schema: Literal[_DevelopmentSelectionResult.COMPLETE]
-    environment: str
-    environment_id: str
-    checkout: str
-    python: str | None
-    groups: list[str]
-
-
-@dataclass(frozen=True)
-class DevelopmentEnvironmentSelectionReceipt:
-    """Immediate metadata selection, never live-byte admission or proof."""
-
-    root: Path
-    request: DevelopmentEnvironmentRequest
-
-    def __post_init__(self) -> None:
-        if (
-            not self.root.is_absolute()
-            or not self.request.repo_root.is_absolute()
-            or not _valid_sha256(self.root.name)
-        ):
-            raise SourceBuildEnvironmentError(
-                "invalid development selection coordinates"
-            )
-
-    def payload(self) -> _DevelopmentSelectionPayload:
-        return {
-            "schema": _DevelopmentSelectionResult.COMPLETE,
-            "environment": str(self.root),
-            "environment_id": self.root.name,
-            "checkout": str(self.request.repo_root),
-            "python": self.request.python,
-            "groups": list(self.request.groups),
-        }
-
-    @property
-    def response_limit_bytes(self) -> int:
-        # Derive the bound from actual coordinates, including escaped Unicode
-        # and long Windows paths; do not impose an arbitrary path-length limit.
-        return len(json.dumps(self.payload(), ensure_ascii=True).encode("utf-8")) + 1024
-
-    def accept(self, payload: object) -> None:
-        if type(payload) is not dict or payload != self.payload():
-            raise SourceBuildEnvironmentError(
-                "development selection receipt differs from its exact request"
-            )
 
 
 @dataclass(frozen=True)
@@ -170,7 +66,7 @@ def canonical_source_marker_environment(
         field for field in PYTHON_MARKER_ENVIRONMENT_FIELDS if field not in source
     ]
     if missing:
-        raise SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "source build marker environment is missing: " + ", ".join(missing)
         )
     return {field: str(source[field]) for field in PYTHON_MARKER_ENVIRONMENT_FIELDS}
@@ -221,11 +117,11 @@ def active_source_build_requirements(
         try:
             requirement = Requirement(raw)
         except InvalidRequirement as exc:
-            raise SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"invalid source build requirement {raw!r}: {exc}"
             ) from exc
         if requirement.url is not None:
-            raise SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "source build requirements with direct URLs cannot be revalidated "
                 f"from installed distribution metadata: {raw!r}"
             )
@@ -239,6 +135,7 @@ def active_source_build_requirements(
 def source_build_environment_problems(payload: object) -> list[str]:
     from packaging.utils import canonicalize_name
 
+    from molt.source_build_environment_selection import valid_declared_input_digests
     from molt.source_build_requirements import realized_build_requirement
 
     expected_fields = {
@@ -257,17 +154,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
     validated_environment: Mapping[str, object] | None = None
 
     custody = payload.get("custody")
-    recipe_keys = {
-        "schema_version",
-        "environment_id",
-        "dependency_groups",
-        "dependency_group_requirements",
-        "lock_closure",
-        "python_runtime",
-        "uv",
-        "editable_binding",
-        "bytecode_policy",
-    }
+    recipe_keys = {*_SourceBuildAddress.__annotations__, "environment_id"}
     if not isinstance(custody, Mapping) or set(custody) != {
         *recipe_keys,
         "realized_environment",
@@ -279,8 +166,12 @@ def source_build_environment_problems(payload: object) -> list[str]:
         recipe = {key: custody[key] for key in recipe_keys if key != "environment_id"}
         dependency_groups = custody.get("dependency_groups")
         if (
-            custody.get("editable_binding") is not None
-            or custody.get("bytecode_policy") != IMAGE_BYTECODE_POLICY
+            not _contract.source_build_environment_contract_matches(
+                custody.get("producer_contract")
+            )
+            or not valid_declared_input_digests(custody.get("declared_inputs"))
+            or custody.get("editable_binding") is not None
+            or custody.get("bytecode_policy") != _contract.IMAGE_BYTECODE_POLICY
             or not isinstance(dependency_groups, list)
             or len(dependency_groups) != 1
         ):
@@ -290,7 +181,8 @@ def source_build_environment_problems(payload: object) -> list[str]:
         environment_id = custody.get("environment_id")
         if (
             type(custody.get("schema_version")) is not int
-            or custody.get("schema_version") != SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
+            or custody.get("schema_version")
+            != _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
             or not isinstance(environment_id, str)
             or len(environment_id) != 64
             or any(character not in "0123456789abcdef" for character in environment_id)
@@ -390,7 +282,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
         )
     try:
         active = active_source_build_requirements(requirements, marker_environment)
-    except SourceBuildEnvironmentError:
+    except _contract.SourceBuildEnvironmentError:
         problems.append("extension-set manifest build requirements are invalid")
         return problems
     if isinstance(python, Mapping):

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from molt import python_environment_contract as _contract
 from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
@@ -238,7 +239,7 @@ def _runtime_payload(
         },
     ]
     payload: dict[str, Any] = {
-        "schema": runtime.PYTHON_RUNTIME_IDENTITY_SCHEMA,
+        "schema": _contract.PYTHON_RUNTIME_IDENTITY_SCHEMA,
         "implementation": "cpython",
         "version": version,
         "cache_tag": "cpython-" + "".join(version.split(".")[:2]),

@@ -21,15 +21,15 @@ from email.parser import Parser
 from pathlib import Path, PurePath
 from typing import cast
 
+from molt import python_environment_contract as _contract
 from molt.exact_json import canonical_json_sha256
 from molt.python_environment_location import (
     _active_environment_prefix,
     _environment_sysconfig_path,
     _site_roots,
     editable_direct_url_path,
-    environment_bytecode_prefix,
-    SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     environment_provisioning_record_path,
+    validate_managed_bytecode_prefix,
 )
 from molt.python_file_node_custody import (
     PythonFileCaptureContext,
@@ -65,7 +65,7 @@ from molt.python_runtime_identity import (
 )
 from molt.toolchain_identity import stable_executable_probe
 
-PYTHON_ENVIRONMENT_IDENTITY_SCHEMA = "molt.python-environment-closure.v7"
+
 PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA = "molt.python-environment-capabilities.v2"
 _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 _ENVIRONMENT_IDENTITY_FIELDS = frozenset(
@@ -758,22 +758,6 @@ def _bytecode_disposition(
     return _BytecodeDisposition.OWNED
 
 
-def validate_managed_bytecode_prefix(root: Path) -> Path:
-    """Validate the physical source-only read namespace at selection or capture."""
-    prefix = environment_bytecode_prefix(root)
-    if (
-        not prefix.is_dir()
-        or prefix.is_symlink()
-        or _is_junction(prefix)
-        or prefix.resolve(strict=True) != prefix
-        or any(prefix.iterdir())
-    ):
-        raise PythonEnvironmentIdentityError(
-            "managed source-only image requires a physical empty bytecode prefix"
-        )
-    return prefix
-
-
 def _validate_managed_bytecode_prefix(
     root: Path, tree_by_path: Mapping[str, Mapping[str, object]]
 ) -> None:
@@ -1032,7 +1016,7 @@ def capture_current_python_environment(
         )
     site_roots = _site_roots(canonical_root)
     managed = (
-        canonical_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST
+        canonical_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     ).exists() or environment_provisioning_record_path(canonical_root).exists()
     excluded = frozenset(
         unicodedata.normalize("NFC", Path(value).as_posix())
@@ -1211,7 +1195,7 @@ def capture_current_python_environment(
         )
     ]
     material = {
-        "schema": PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
+        "schema": _contract.PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
         **_platform_identity(),
         "capabilities": capabilities,
         "runtime": runtime,
@@ -1407,7 +1391,7 @@ def validate_python_environment_identity(payload: object) -> dict[str, object]:
     if (
         not isinstance(payload, dict)
         or set(payload) != _ENVIRONMENT_IDENTITY_FIELDS
-        or payload.get("schema") != PYTHON_ENVIRONMENT_IDENTITY_SCHEMA
+        or payload.get("schema") != _contract.PYTHON_ENVIRONMENT_IDENTITY_SCHEMA
     ):
         raise PythonEnvironmentIdentityError(
             "Python environment closure shape is invalid"

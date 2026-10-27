@@ -483,9 +483,11 @@ def main() -> None:
         if env.get("MOLT_VENV"):
             raise RuntimeError("the version matrix requires managed development images")
         if env.get("UV_PROJECT_ENVIRONMENT"):
-            from molt.source_build_environment import load_development_environment
+            from molt.source_build_environment_selection import (
+                read_development_environment_selection,
+            )
 
-            load_development_environment(
+            read_development_environment_selection(
                 Path(env["UV_PROJECT_ENVIRONMENT"]), repo_root=ROOT
             )
         env.pop("UV_PROJECT_ENVIRONMENT", None)
