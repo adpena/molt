@@ -1975,6 +1975,21 @@ def active_source_namespace_case(
     payload = _build_environment_manifest(
         ["ninja==1.13.0"], dependency_group="source-build-numpy"
     )
+    # Keep declared-input identity real while runtime/lock observations retain
+    # their independent synthetic oracle for this single-capture state machine.
+    files = {
+        "pyproject.toml": b"[dependency-groups]\nsource-build-numpy=['ninja==1.13.0']\nsource-build-scipy=['ninja==1.13.0']\n",
+        "uv.lock": b"version=1\n",
+    }
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    payload["custody"]["declared_inputs"] = {
+        **{name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+        ".python-version": None,
+    }
+    from tests.python_environment_test_support import reseal_build_environment_custody
+
+    reseal_build_environment_custody(payload)
     custody = payload["custody"]
     realized = custody["realized_environment"]
     namespace = tmp_path / "build-environments/source-extension"
