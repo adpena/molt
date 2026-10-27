@@ -2062,7 +2062,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "suite"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "--workspace", "--all-targets", "--keep-going"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -2081,7 +2081,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "suite"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "--workspace", "--all-targets", "--keep-going"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -3488,7 +3488,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--target", "wasm32-wasip1", "--lib", "-p", "molt-runtime", "-p", "molt-tir", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "--target", "wasm32-wasip1", "--lib", "-p", "molt-runtime", "-p", "molt-tir"]
 toolchains = ["rustc", "cargo", "wasm-ld"]
 
 # Lockfiles outside the main workspace (MLIR backend, fuzz targets) are not
@@ -3581,7 +3581,7 @@ timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
 cwd = "deploy/browser/simd-ops-rs"
-argv = ["cargo", "clippy", "--locked", "--release", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "--release", "--target", "wasm32-unknown-unknown"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -3750,7 +3750,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--keep-going", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "--workspace", "--all-targets", "--keep-going"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -3762,7 +3762,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features"]
 toolchains = ["rustc", "cargo"]
 
 # The stdlib_micro runtime tier compiles every satellite (http, itertools, path) through `src/bridge`.
@@ -3775,7 +3775,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_micro", "--lib", "--tests", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_micro", "--lib", "--tests"]
 toolchains = ["rustc", "cargo"]
 
 # The stdlib_edge runtime tier compiles the http and path satellites through `src/bridge`.
@@ -3788,7 +3788,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_edge", "--lib", "--tests", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_edge", "--lib", "--tests"]
 toolchains = ["rustc", "cargo"]
 
 # The stdlib_standard runtime tier compiles the http satellite through `src/bridge`.
@@ -3801,7 +3801,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_standard", "--lib", "--tests", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-runtime", "--no-default-features", "--features", "stdlib_standard", "--lib", "--tests"]
 toolchains = ["rustc", "cargo"]
 
 # The backend binary the CLI builds for --target wasm (backend_features_for_target).
@@ -3814,7 +3814,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend", "--all-targets", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-backend", "--no-default-features", "--features", "wasm-backend", "--all-targets"]
 toolchains = ["rustc", "cargo"]
 
 # The backend binary the CLI builds for --target luau (backend_features_for_target).
@@ -3827,7 +3827,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "luau-backend", "--all-targets", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-backend", "--no-default-features", "--features", "luau-backend", "--all-targets"]
 toolchains = ["rustc", "cargo"]
 
 # The backend binary the CLI builds for --target rust (backend_features_for_target).
@@ -3840,7 +3840,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "--no-default-features", "--features", "rust-backend", "--all-targets", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "-p", "molt-backend", "--no-default-features", "--features", "rust-backend", "--all-targets"]
 toolchains = ["rustc", "cargo"]
 
 [[command]]
@@ -3896,7 +3896,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
-argv = ["cargo", "clippy", "--locked", "--profile", "release-fast", "-p", "molt-backend", "-p", "molt-backend-native", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--config", 'build.warnings="deny"', "--locked", "--profile", "release-fast", "-p", "molt-backend", "-p", "molt-backend-native", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
@@ -6045,7 +6045,7 @@ pytest = [
 [[rule]]
 name = "rust-clippy-changed"
 toolchains = ["python", "rustc", "cargo"]
-description = "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches."
+description = "Clippy with Cargo-owned warning denial and the proof plan's feature, target and profile cells for every Cargo package a change reaches."
 globs = [
   "runtime/**",
   "vendor/rust/**",
@@ -6260,7 +6260,7 @@ globs = [
 # One feature-complete development graph, including the owning IR/WASM tests.
 # Shipped-profile acceptance remains in its target/profile proof authorities.
 gates = [
-  "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
+  "cargo clippy --config 'build.warnings=\"deny\"' --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features",
   "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
 ]
 
@@ -6306,7 +6306,7 @@ globs = [
   "wasm/molt_vfs_browser.js",
 ]
 gates = [
-  "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+  "cargo clippy --config 'build.warnings=\"deny\"' --locked -p molt-runtime-vfs --all-targets --all-features",
   "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
 ]
 pytest = [

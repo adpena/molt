@@ -1648,26 +1648,20 @@ unsafe fn dict_subclass_storage_bits(py: &PyToken<'_>, ptr: *mut u8) -> Result<O
     }
 }
 
-pub(crate) unsafe fn dict_like_bits_from_ptr(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-) -> Result<Option<u64>, ()> {
-    unsafe {
-        match object_type_id(ptr) {
-            TYPE_ID_DICT => Ok(Some(MoltObject::from_ptr(ptr).bits())),
-            TYPE_ID_OBJECT => dict_subclass_storage_bits(py, ptr),
-            _ => Ok(None),
-        }
-    }
-}
-
 /// Dictionary admission distinguishes a non-dictionary from failed lazy storage.
 /// Returned backing bits are borrowed from the original receiver. Completion
 /// depends on the actual storage operation, never an admitted prior exception.
+/// Exact dictionaries retain their boxed identity without registering it again.
 pub(crate) fn dict_backing_bits(py: &PyToken<'_>, bits: u64) -> Result<Option<u64>, ()> {
-    match obj_from_bits(bits).as_ptr() {
-        Some(ptr) => unsafe { dict_like_bits_from_ptr(py, ptr) },
-        None => Ok(None),
+    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+        return Ok(None);
+    };
+    unsafe {
+        match object_type_id(ptr) {
+            TYPE_ID_DICT => Ok(Some(bits)),
+            TYPE_ID_OBJECT => dict_subclass_storage_bits(py, ptr),
+            _ => Ok(None),
+        }
     }
 }
 

@@ -68,11 +68,9 @@ fn callback_dict_subclass(_py: &PyToken<'_>) -> (u64, u64, u64) {
     );
     assert_eq!(unsafe { crate::object_class_bits(instance_ptr) }, class);
     assert!(!unsafe { crate::object_is_exact_builtin_dict(_py, instance_ptr) });
-    let storage = unsafe {
-        crate::object::ops::dict_like_bits_from_ptr(_py, instance_ptr)
-            .expect("dictionary storage resolution succeeds")
-    }
-    .expect("dict subclass storage");
+    let storage = crate::object::ops::dict_backing_bits(_py, instance)
+        .expect("dictionary storage resolution succeeds")
+        .expect("dict subclass storage");
     assert_ne!(storage, instance);
     assert_eq!(
         unsafe { object_type_id(obj_from_bits(storage).as_ptr().unwrap()) },

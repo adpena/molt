@@ -419,7 +419,9 @@ def _install_fake_backend_compile(
         write_fake_runtime_artifacts()
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
         runtime_state.native_runtime_generation = native_runtime_generation_fixture(
-            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+            runtime_state.runtime_lib,
+            RUNTIME_BUILD_IDENTITY,
+            consume=kwargs.get("consume"),
         )
         return True
 
@@ -22238,14 +22240,15 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     )
 
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
-        del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
         ensure_calls.append(runtime_state.runtime_lib)
         if not runtime_lib.exists():
             write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
         runtime_state.native_runtime_generation = native_runtime_generation_fixture(
-            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+            runtime_state.runtime_lib,
+            RUNTIME_BUILD_IDENTITY,
+            consume=kwargs.get("consume"),
         )
         return True
 
@@ -22368,14 +22371,15 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
     )
 
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
-        del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
         ensure_calls.append(runtime_state.runtime_lib)
         if not runtime_lib.exists():
             write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
         runtime_state.native_runtime_generation = native_runtime_generation_fixture(
-            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+            runtime_state.runtime_lib,
+            RUNTIME_BUILD_IDENTITY,
+            consume=kwargs.get("consume"),
         )
         return True
 
@@ -22494,13 +22498,14 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     )
 
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
-        del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
         if not runtime_lib.exists():
             write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
         runtime_state.native_runtime_generation = native_runtime_generation_fixture(
-            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+            runtime_state.runtime_lib,
+            RUNTIME_BUILD_IDENTITY,
+            consume=kwargs.get("consume"),
         )
         return True
 
@@ -22623,14 +22628,15 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
     )
 
     def fake_ensure_runtime_lib_ready(runtime_state: object, **kwargs: object) -> bool:
-        del kwargs
         assert isinstance(runtime_state, cli_models._RuntimeArtifactState)
         ensure_calls.append(runtime_state.runtime_lib)
         if not runtime_lib.exists():
             write_test_static_archive(runtime_lib, payload=b"runtime")
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
         runtime_state.native_runtime_generation = native_runtime_generation_fixture(
-            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+            runtime_state.runtime_lib,
+            RUNTIME_BUILD_IDENTITY,
+            consume=kwargs.get("consume"),
         )
         return True
 
@@ -22783,7 +22789,9 @@ def test_ensure_native_runtime_lib_ready_for_codegen_passes_resolved_modules(
         captured.append(frozenset(cast(set[str], kwargs["resolved_modules"])))
         runtime_state.native_runtime_build_identity = RUNTIME_BUILD_IDENTITY
         runtime_state.native_runtime_generation = native_runtime_generation_fixture(
-            runtime_state.runtime_lib, RUNTIME_BUILD_IDENTITY
+            runtime_state.runtime_lib,
+            RUNTIME_BUILD_IDENTITY,
+            consume=kwargs.get("consume"),
         )
         return True
 

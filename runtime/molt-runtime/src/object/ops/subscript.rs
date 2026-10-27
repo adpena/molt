@@ -861,7 +861,7 @@ pub(crate) fn index_impl(
                         }
                     };
                 }
-                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_backing_bits(_py, obj_bits) {
                     Ok(storage) => storage,
                     Err(()) => return Err(()),
                 } {
@@ -1681,7 +1681,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     }
                     return obj_bits;
                 }
-                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_backing_bits(_py, obj_bits) {
                     Ok(storage) => storage,
                     Err(()) => return MoltObject::none().bits(),
                 } {
@@ -1919,7 +1919,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     }
                     return raise_exception::<_>(_py, "TypeError", "cannot delete memory");
                 }
-                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_backing_bits(_py, obj_bits) {
                     Ok(storage) => storage,
                     Err(()) => return MoltObject::none().bits(),
                 } {
@@ -2147,7 +2147,7 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                     };
                 }
                 let type_id = object_type_id(ptr);
-                if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
+                if let Some(dict_bits) = match dict_backing_bits(_py, container_bits) {
                     Ok(storage) => storage,
                     Err(()) => return MoltObject::none().bits(),
                 } {

@@ -262,6 +262,31 @@ A mismatch enters the normal explicit build/no-build policy. Metadata refresh
 preserves the admitted observation and cannot replace or erase it. Missing or
 older observation schemas never authorize source reuse.
 
+Native source codegen shares one `NativeArtifactCapture` between generation
+admission and callable-symbol inspection. The owner opens and hashes the archive,
+admits its complete member and environment records, and passes a one-shot live
+capture to the symbol consumer. Consumption closes the handle and completes its
+mutation/path fences before symbol-facts cache or selection-receipt publication.
+A detached digest and a warm symbol cache never authorize skipping the current
+content read. Standalone symbol inspection uses the same capture owner.
+
+This follows the ownership principle in
+[LLVM's `OwningBinary`](https://llvm.org/doxygen/Binary_8h_source.html): retain
+the backing storage with the binary reader. Molt retains a bounded stream and
+its existing POSIX fences rather than copying the complete archive into memory.
+It removes one O(archive bytes) read/hash from a source-codegen admission while
+holding one descriptor and constant-size owner state through that action.
+Cold scratch capture closes before rename. This preserves
+[Windows sharing exclusions until handle closure](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew);
+POSIX mutation fences remain observations rather than an atomic snapshot.
+
+A completed readiness future has already closed its earlier admission. Codegen
+therefore freshly admits that exact generation against its original member
+records; it cannot reselect a newer generation or trust an expired handle.
+Installed runtime cells retain their separate package admission. Neither path
+stores a descriptor in runtime state. Consumer failures remain distinct from
+store corruption, and failed closing fences publish no symbol-facts cache entry.
+
 A plan identity describes how to build; this result record describes what was
 read. A changed environment need not change output bytes. Application cache
 identity remains derived from admitted result bytes, following rustc's red-green

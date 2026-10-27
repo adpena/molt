@@ -35,10 +35,18 @@ from tests.runtime_build_identity_helper import (
 )
 
 
-def publish(coordinate: Path, *, seed: str = "one", inputs_are_current=lambda: True):
+def publish(
+    coordinate: Path,
+    *,
+    seed: str = "one",
+    inputs_are_current=lambda: True,
+    payload: bytes | None = None,
+):
     coordinate.parent.mkdir(parents=True, exist_ok=True)
     scratch = coordinate.with_name("cargo-output.a")
-    write_test_static_archive(scratch, payload=seed.encode())
+    write_test_static_archive(
+        scratch, payload=seed.encode() if payload is None else payload
+    )
     return generations.publish_native_runtime_generation(
         coordinate,
         source_archive=scratch,
@@ -68,6 +76,126 @@ def stored_selector(store: ProductStore, generation) -> Path:
     return generations.native_runtime_generation_path(
         variant / generation.runtime_lib.name
     )
+
+
+def test_generation_and_callable_projection_share_one_content_capture(
+    tmp_path, monkeypatch
+):
+    from molt.cli import native_symbol_inspection, runtime_callable_symbols
+    from tests.native_artifact_fixtures import native_relocatable_object
+
+    coordinate = tmp_path / "dev-fast" / "libmolt_runtime.micro.a"
+    generation = publish(
+        coordinate, payload=native_relocatable_object(symbols=("molt_fixture",))
+    )
+    assert generation is not None
+    hashed = []
+    handles = []
+    hash_handle = native_symbol_inspection.stable_regular_file_handle_identity
+
+    def count(opened, **kwargs):
+        hashed.append(opened.path)
+        handles.append(opened.stream)
+        return hash_handle(opened, **kwargs)
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "stable_regular_file_handle_identity", count
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    projections = []
+
+    def consume(admitted, capture):
+        projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+            admitted.runtime_lib,
+            identity=admitted.members[0][1],
+            capture=capture,
+        )
+        assert failure is None and projection is not None
+        assert projection.identity.path.read_bytes() == b"molt_fixture\n"
+        projections.append(projection)
+        assert all(handle.closed for handle in handles)
+
+    admitted = generations.read_native_runtime_generation(
+        coordinate, cargo_profile="dev-fast", target_triple=None, consume=consume
+    )
+    assert admitted is not None and admitted.records() == generation.records()
+    assert hashed == [generation.runtime_lib]
+    assert projections and all(handle.closed for handle in handles)
+    # A later action, including a symbol-cache hit, must admit current bytes.
+    generations.read_native_runtime_generation(
+        coordinate, cargo_profile="dev-fast", target_triple=None, consume=consume
+    )
+    assert hashed == [generation.runtime_lib, generation.runtime_lib]
+
+
+def test_generation_consumer_failure_does_not_mark_valid_store_corrupt(tmp_path):
+    coordinate = tmp_path / "dev-fast" / "libmolt_runtime.micro.a"
+    generation = publish(coordinate)
+    assert generation is not None
+
+    def consume(_generation, _capture):
+        raise generations.NativeRuntimeGenerationConsumerError("projection unavailable")
+
+    with pytest.raises(
+        generations.NativeRuntimeGenerationConsumerError, match="projection unavailable"
+    ):
+        generations.read_native_runtime_generation(
+            coordinate, cargo_profile="dev-fast", target_triple=None, consume=consume
+        )
+    assert read(coordinate).records() == generation.records()
+
+
+@pytest.mark.parametrize("reject", [False, True])
+def test_cold_generation_consumer_closes_before_selection_publication(
+    tmp_path, monkeypatch, reject
+):
+    from molt.cli import native_symbol_inspection
+
+    coordinate = tmp_path / "dev-fast" / "libmolt_runtime.micro.a"
+    source = tmp_path / "cargo.a"
+    write_test_static_archive(source)
+    handles = []
+    write = generations.atomic_write_bytes
+
+    def write_selection(path, payload, **kwargs):
+        assert handles and all(handle.closed for handle in handles)
+        return write(path, payload, **kwargs)
+
+    def consume(generation, capture):
+        # The continuation sees only the final location, never rename-blocking
+        # descriptors for staging. Its failure cannot publish a selection.
+        assert ".native-runtime-" not in str(generation.runtime_lib)
+        with native_symbol_inspection._open_native_symbol_artifact(
+            generation.runtime_lib, generation.members[0][1], capture=capture
+        ) as (opened, _identity):
+            handles.append(opened.stream)
+            if reject:
+                raise ValueError("consumer rejected generation")
+
+    monkeypatch.setattr(generations, "atomic_write_bytes", write_selection)
+    expectation = (
+        pytest.raises(ValueError, match="consumer rejected")
+        if reject
+        else contextlib.nullcontext()
+    )
+    with expectation:
+        result = generations.publish_native_runtime_generation(
+            coordinate,
+            source_archive=source,
+            cargo_stdout="",
+            cargo_stderr="note: native-static-libs: -lc\n",
+            cargo_profile="dev-fast",
+            target_triple=None,
+            build_identity=native_runtime_staticlib_identity(cargo_profile="dev-fast"),
+            cargo_environment=runtime_cargo_environment_inputs(),
+            inputs_are_current=lambda: True,
+            consume=consume,
+        )
+        assert result is not None
+    assert handles and all(handle.closed for handle in handles)
+    assert generations.native_runtime_generation_path(coordinate).exists() is not reject
 
 
 def test_native_selection_is_written_once_and_ignores_cargo_alias(tmp_path):

@@ -495,7 +495,7 @@ Interpretation:
   command still uses the shared test-suite guard, while `molt bench` applies the
   benchmark-family memory guard to benchmark child processes.
 - `tools/dev.py gates` executes the pyproject-owned CI-adjacent local gate
-  sequence: backend and TIR Clippy with `-D warnings`, `cargo deny check`,
+  sequence: backend and TIR Clippy with Cargo-owned warning denial (`--config 'build.warnings="deny"'`), `cargo deny check`,
   release-fast workspace build, native backend lib tests, compliance tests, then
   an explicit working-tree status check. It writes
   `logs/dev-gates-summary.json` with the guard limits, commands, return codes,
