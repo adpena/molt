@@ -1929,15 +1929,35 @@ only a small subset. Managed uv sync explicitly disables bytecode generation eve
 when ambient configuration requests it. Child commands apply the policy as argv:
 `-I` ignores inherited Python environment variables before site startup.
 
-The cost model is one installation capture, then O(captured bytes and filesystem
-members) per admission plus compilation of modules actually imported by that
-command. It removes O(all Python source bytes times three optimization variants)
-compilation, cache-file hashing, serialized cache nodes and cache storage. Source
-and native-byte hashing are still a linear startup floor. The accepted trade is
+The cost model is one installation capture, then filesystem membership and
+generation checks plus compilation of modules actually imported by each command.
+Standalone POSIX captures reuse the existing host file-digest cache only for an
+exact settled file generation; Windows retains fresh content hashing and handle
+ChangeTime. Direct captures remain fresh unless they explicitly select that
+authority. Metadata consumers still read and verify their required bytes. See
+the [shared digest cost model](../toolchain_fact_cache.md#python-capture-uses-the-same-file-digests),
+including its host-table load and age budget. Source-only publication removes
+O(all Python source bytes times three optimization variants) compilation,
+cache-file hashing, serialized cache nodes and cache storage. The accepted trade is
 additional per-process compilation for imported modules, measured against the
-existing cached reader before landing. It adds no cache server, persistent trust,
-metadata-only shortcut or emitted-program overhead. Full release acceptance
+existing cached reader before landing. It adds no cache server, whole-environment
+admission cache, metadata-only admission shortcut or emitted-program overhead. Full release acceptance
 remains separate from developer-loop measurements.
+
+Developer launch admission returns a request-bound result rather than serializing
+the complete captured environment for a caller that discards it. The selected
+child still captures live inputs, applies the full environment validator,
+validates checkout/Python/group selection and compares the published image, then
+closes its retained file/membership fences and capture context before emitting
+the result. The guardian enforces a response bound derived from the expected
+coordinates, exact schema and request equality, process-tree closure and its
+existing reader-source fences. This is an immediate operation result, not a
+proof receipt or reusable permission. Capture operations used by proof ingress
+continue to return complete identity and custody payloads. One canonical
+development-selection validator serves both the cheap metadata selector and
+live admission; the latter reads its published recipe once. Saved work is the
+large response encoding, pipe transfer, parent parse and redundant manifest
+validation. Full validator work moves to the child and is not removed.
 
 
 ### Clippy warning policy and cache reuse

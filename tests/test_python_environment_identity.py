@@ -103,6 +103,7 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     events = []
     realized = {"environment": "independent captured bytes"}
     payload = {"identity": realized} if with_custody else realized
+    (tmp_path / "checkout").mkdir()
 
     class Context:
         def __init__(self, *, hash_workers, digest_cache):
@@ -129,20 +130,17 @@ def test_published_admission_keeps_capture_context_until_final_verification(
         events.append("captured")
         return payload
 
-    def admit(root, observed):
+    def admit(root, observed, *, development_admission):
         assert root == tmp_path and observed is realized
-        assert events == [
-            "context-open",
-            "captured",
-            *(["intent"] if development else []),
-        ]
-        events.append("admitted")
-
-    def load(root, *, repo_root, python, groups):
-        assert root == tmp_path and repo_root == tmp_path / "checkout"
-        assert python == "3.14" and groups == ("bench", "dev")
         assert events == ["context-open", "captured"]
-        events.append("intent")
+        if development:
+            assert development_admission.repo_root == tmp_path / "checkout"
+            assert development_admission.python == "3.14"
+            assert development_admission.groups == ("bench", "dev")
+            events.append("intent")
+        else:
+            assert development_admission is None
+        events.append("admitted")
 
     arguments = [
         "identity",
@@ -171,7 +169,6 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
     monkeypatch.setattr(identity, "capture_current_python_environment", capture)
     monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
-    monkeypatch.setattr(source_build_environment, "load_development_environment", load)
     if verification_fails:
         with pytest.raises(
             PythonEnvironmentIdentityError, match="captured input changed"
@@ -189,6 +186,116 @@ def test_published_admission_keeps_capture_context_until_final_verification(
         "verified",
         "context-closed",
     ]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [[], ["--with-custody"], ["--runtime-session"], ["--wheel-tag-source", "tags.py"]],
+)
+def test_development_receipt_is_distinct_from_capture_and_session(
+    tmp_path, monkeypatch, extra
+):
+    arguments = ["identity", "--admit-development-environment", str(tmp_path)]
+    if extra:
+        arguments += [
+            "--admit-published-environment",
+            "--development-checkout",
+            str(tmp_path),
+        ]
+    monkeypatch.setattr(sys, "argv", [*arguments, *extra])
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize("fault", [None, "closure", "fence", "close"])
+def test_development_receipt_retains_full_validator_and_final_custody(
+    tmp_path, monkeypatch, capsys, fault
+):
+    from molt import source_build_environment
+    from tests.python_environment_test_support import realized_environment_manifest
+
+    root = tmp_path / ("a" * 64)
+    root.mkdir()
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    realized = realized_environment_manifest(runtime_identity_manifest(), [])
+    expected_projection = environment.immutable_environment_image(realized)
+    if fault == "closure":
+        realized["environment_closure_sha256"] = "0" * 64
+        # Published-image equality omits this field; only the existing full
+        # schema validator rejects this otherwise plausible admission defect.
+        assert environment.immutable_environment_image(realized) == expected_projection
+    events = []
+
+    class Context:
+        def __init__(self, *, hash_workers, digest_cache):
+            assert hash_workers == 1 and isinstance(digest_cache, files.FileDigestCache)
+
+        def protect_tree(self, selected):
+            assert isinstance(selected, Path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            events.append("closed")
+            if fault == "close":
+                raise PythonEnvironmentIdentityError("context close failed")
+
+        def verify(self):
+            events.append("verified")
+            if fault == "fence":
+                raise PythonEnvironmentIdentityError("late captured mutation")
+
+    def capture(selected, **_kwargs):
+        assert selected == root
+        events.append("captured")
+        return realized
+
+    def admit(selected, observed, *, development_admission):
+        assert selected == root and observed == realized
+        assert development_admission.repo_root == repo
+        assert development_admission.python is None
+        assert development_admission.groups == ("dev",)
+        events.append("admitted")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "identity",
+            "--admit-development-environment",
+            str(root),
+            "--admit-published-environment",
+            "--development-checkout",
+            str(repo),
+            "--development-group",
+            "dev",
+        ],
+    )
+    monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
+    monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
+    monkeypatch.setattr(identity, "capture_current_python_environment", capture)
+    monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
+    if fault is not None:
+        with pytest.raises(ValueError):
+            identity._main()
+        assert not capsys.readouterr().out
+        assert events[-1] == "closed"
+        if fault == "closure":
+            assert events == ["captured", "closed"]
+    else:
+        identity._main()
+        assert events == ["captured", "admitted", "verified", "closed"]
+        assert json.loads(capsys.readouterr().out) == {
+            "schema": "molt.development-environment-admission.v1",
+            "environment": str(root),
+            "environment_id": "a" * 64,
+            "checkout": str(repo),
+            "python": None,
+            "groups": ["dev"],
+        }
 
 
 @pytest.mark.parametrize("fault", ["missing", "populated", "symlink"])
@@ -555,8 +662,11 @@ def test_capture_refuses_cache_inside_tree_before_creating_it(tmp_path, indirect
     assert sorted(path.name for path in root.iterdir()) == ["a.py"]
 
 
+@pytest.mark.parametrize(
+    "mode", ["--capture-environment", "--admit-development-environment"]
+)
 def test_capture_entry_refuses_image_cache_before_capturing_runtime(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, mode
 ):
     from molt import toolchain_facts
 
@@ -568,7 +678,16 @@ def test_capture_entry_refuses_image_cache_before_capturing_runtime(
         "host_file_digest_cache",
         lambda: files.FileDigestCache(store, max_age_ns=10**18),
     )
-    monkeypatch.setattr(sys, "argv", ["identity", "--capture-environment", str(image)])
+    arguments = ["identity", mode, str(image)]
+    if mode == "--admit-development-environment":
+        arguments.extend(
+            [
+                "--admit-published-environment",
+                "--development-checkout",
+                str(tmp_path),
+            ]
+        )
+    monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
 
     def refuse(*_args, **_kwargs):
