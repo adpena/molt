@@ -30,7 +30,7 @@ from tests.integration_driver_fixture import (
 from tests.test_molt_dev import _commit_file, _git, _init_repo
 from tools import controller_source
 from tools import molt_dev, molt_dev_lanes as lanes
-from tools.molt_dev_change_ids import landing_representation
+from tools.molt_dev_change_ids import landing_representation, read_commit_records
 from tools.driver_errors import EXIT_OK, EXIT_FAIL, EXIT_USAGE, DriverError  # noqa: E402
 
 CHANGE_A = "I" + "a1" * 20
@@ -1149,7 +1149,120 @@ def test_lane_retire_refuses_an_amended_commit_without_a_change_id(
     assert worktree.is_dir()
 
 
-def test_landing_representation_rules(family: Path) -> None:
+@pytest.mark.parametrize("graph", ["empty", "unrelated", "crisscross"])
+def test_batched_commit_records_match_git_history_oracles(
+    tmp_path: Path, graph: str
+) -> None:
+    repo = tmp_path / "history"
+    _init_repo(repo)
+    base = _commit_file(repo, "base.txt", "base\n", "base")
+    tree = _git(repo, "rev-parse", f"{base}^{{tree}}").stdout.strip()
+
+    def commit(subject: str, *parents: str) -> str:
+        arguments = ["commit-tree", tree]
+        for parent in parents:
+            arguments.extend(("-p", parent))
+        return _git(repo, *arguments, input_text=subject + "\n").stdout.strip()
+
+    left = commit(f"left\n\nChange-Id: {CHANGE_A}", base)
+    right = commit(f"right\n\nChange-Id: {CHANGE_B}", base)
+    if graph == "empty":
+        upstream, tip = left, right
+    elif graph == "unrelated":
+        upstream, tip = left, commit("unrelated root")
+    else:
+        upstream = commit("left merge", left, right)
+        tip = commit("right merge", right, left)
+        assert set(_git(repo, "merge-base", "--all", upstream, tip).stdout.split()) == {
+            left,
+            right,
+        }
+
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str]) -> str:
+        calls.append(arguments)
+        return _git(repo, *arguments).stdout
+
+    records = read_commit_records(run, f"{upstream}...{tip}", cherry_right=True)
+    assert len(calls) == 1
+    # The legacy graph and cherry commands are independent of the batched
+    # pretty-format parser, including Git's treatment of empty/root commits.
+    expected_commits = set(_git(repo, "rev-list", f"{upstream}..{tip}").stdout.split())
+    assert {record.oid for record in records} == expected_commits
+    equivalent = {
+        line[2:]
+        for line in _git(repo, "cherry", upstream, tip).stdout.splitlines()
+        if line.startswith("- ")
+    }
+    assert {record.oid for record in records if record.patch_equivalent} == equivalent
+    for record in records:
+        expected = _git(repo, "cat-file", "commit", record.oid).stdout
+        headers, _, message = expected.partition("\n\n")
+        assert record.parents == tuple(
+            line.removeprefix("parent ")
+            for line in headers.splitlines()
+            if line.startswith("parent ")
+        )
+        assert record.subject == message.splitlines()[0]
+    represented = landing_representation(molt_dev.Git(repo), tip, upstream)
+    if graph == "unrelated":
+        assert represented.merge_base is None
+        assert represented.unrepresented == (tip,)
+    elif graph == "crisscross":
+        assert represented.merge_base in {left, right}
+        assert represented.unrepresented == (tip,), "a merge needs actual ancestry"
+    else:
+        assert represented.landed == (tip in equivalent)
+
+
+def test_commit_records_reject_a_truncated_git_frame(tmp_path: Path) -> None:
+    repo = tmp_path / "history"
+    _init_repo(repo)
+    tip = _commit_file(repo, "base.txt", "base\n", "base")
+
+    def truncated(arguments: list[str]) -> str:
+        actual = _git(repo, *arguments).stdout
+        assert actual.endswith("\0")
+        return actual[:-1]
+
+    with pytest.raises(DriverError, match="not NUL terminated"):
+        read_commit_records(truncated, f"{tip}^!")
+
+
+def test_commit_records_preserve_subjects_and_change_id_window(tmp_path: Path) -> None:
+    repo = tmp_path / "history"
+    _init_repo(repo)
+    base = _commit_file(repo, "base.txt", "base\n", f"base\n\nChange-Id: {CHANGE_A}")
+    upstream = _commit_file(repo, "upstream.txt", "upstream\n", "upstream")
+    tree = _git(repo, "rev-parse", f"{base}^{{tree}}").stdout.strip()
+    subject = "subject with \x1f and \x1e delimiters"
+    tip = _git(
+        repo,
+        "commit-tree",
+        tree,
+        "-p",
+        base,
+        input_text=f"{subject}\n\nChange-Id: {CHANGE_A}\nChange-Id: malformed\n",
+    ).stdout.strip()
+    records = read_commit_records(
+        lambda arguments: _git(repo, *arguments).stdout, f"{base}..{tip}"
+    )
+    assert len(records) == 1
+    assert records[0].subject == subject
+    assert records[0].parents == (base,)
+    assert records[0].change_ids == frozenset({CHANGE_A})
+    assert not records[0].patch_equivalent
+    # The matching trailer predates the selected merge base, and therefore
+    # cannot represent this new empty commit.
+    result = landing_representation(molt_dev.Git(repo), tip, upstream)
+    assert result.merge_base == base
+    assert result.unrepresented == (tip,)
+
+
+def test_landing_representation_rules(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     main = family / "molt-src"
     git = molt_dev.Git(main)
     worktree = _start(family, "rules")
@@ -1159,8 +1272,18 @@ def test_landing_representation_rules(family: Path) -> None:
     tip = _ref(worktree, "HEAD")
     assert tip is not None
 
+    commands: list[list[str]] = []
+    original_run = git._run
+
+    def observed(arguments, **kwargs):
+        commands.append(arguments)
+        return original_run(arguments, **kwargs)
+
+    monkeypatch.setattr(git, "_run", observed)
     before = landing_representation(git, tip, "origin/main")
     assert not before.landed and len(before.unrepresented) == 3
+    assert [command[0] for command in commands] == ["log", "merge-base", "log"]
+    assert "--cherry-mark" in commands[0] and "--right-only" in commands[0]
     _git(main, "pull", "-q", "--ff-only", "origin", "main")
     # Move main first, so the replay is a new commit, not the same object.
     _commit_file(main, "other.txt", "other\n", "main moved on")

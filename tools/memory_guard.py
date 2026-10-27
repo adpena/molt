@@ -1965,13 +1965,23 @@ def run_guarded(
         last_sample_cost_s = 0.0
         suite_custody_transfers = []
 
-        def transfer_receipted_daemon_instances(fresh, *, decisive: bool) -> None:
+        def transfer_receipted_daemon_instances(
+            fresh: Mapping[int, ProcessSample], *, watched: set[int], decisive: bool
+        ) -> None:
             # Windows Job closure owns every assigned instance; never advertise
             # a lease export which Job completion would immediately terminate.
             if (
                 not cleanup_orphans
                 or _process_model.is_windows_process_model()
                 or not child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
+            ):
+                return
+            # A transfer cannot release this guard's root group. Ordinary
+            # commands with no live owned group outside it have nothing to
+            # export, and must not contend on the shared adoption index.
+            if not any(
+                pid != tracker.root_pid and _sample_pgid(fresh[pid]) != tracker.root_pid
+                for pid in watched
             ):
                 return
             from molt import backend_daemon_suite_custody as suite_custody
@@ -2089,7 +2099,9 @@ def run_guarded(
             cargo_incremental_observations.update(latest_cargo_observations)
             record_sampling_cost(len(samples))
             # A snapshot that precedes a signal is the tree's last export.
-            transfer_receipted_daemon_instances(samples, decisive=before_signal)
+            transfer_receipted_daemon_instances(
+                samples, watched=watched, decisive=before_signal
+            )
             watched = tracker.update(samples)
             remembered_samples = samples
             remembered_watched = set(watched)
@@ -2224,7 +2236,7 @@ def run_guarded(
             # The poll's export gave up the adoption lock after its bound; the
             # export before a signal waits for it, so the kill spares a daemon
             # the suite adopted, as the timeout and cancellation kills do.
-            transfer_receipted_daemon_instances(samples, decisive=True)
+            transfer_receipted_daemon_instances(samples, watched=watched, decisive=True)
             watched = tracker.update(samples)
             terminate_owned_tree(
                 reason="rss_limit",
@@ -2442,13 +2454,19 @@ def run_guarded(
                 and not _process_model.is_windows_process_model()
                 and child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
             ):
-                transfer_receipted_daemon_instances(sampler(), decisive=True)
+                post_exit_samples = sampler()
+                transfer_receipted_daemon_instances(
+                    post_exit_samples,
+                    watched=tracker.update(post_exit_samples),
+                    decisive=True,
+                )
             if cleanup_orphans and not guard_interrupted:
                 try:
                     # One observation after the root's exit serves every
                     # cleanup decision, and the closure proof, until the
                     # guard signals a process. A signal retires it.
-                    post_exit_samples = sampler()
+                    if post_exit_samples is None:
+                        post_exit_samples = sampler()
                     tracked_orphans = cleanup_tracked_orphans(
                         proc.pid,
                         tracker=tracker,
