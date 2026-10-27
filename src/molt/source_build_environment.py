@@ -422,7 +422,11 @@ def _probe_source_build_python(
         probe_arguments = ["--capture-runtime"]
     else:
         probe_arguments = [
-            "--capture-environment",
+            (
+                "--admit-development-environment"
+                if development_admission is not None
+                else "--capture-environment"
+            ),
             str(root.resolve()),
             "--admit-virtualenv-bootstrap",
         ]
@@ -467,6 +471,17 @@ def _probe_source_build_python(
             f"cannot attest source-build {kind} content: "
             f"{detail or f'returncode={result.returncode}'}"
         )
+    receipt = (
+        _schema.DevelopmentEnvironmentAdmissionReceipt(root, development_admission)
+        if root is not None and development_admission is not None
+        else None
+    )
+    if receipt is not None and (
+        len(result.stdout.encode("utf-8")) > receipt.response_limit_bytes
+    ):
+        raise _schema.SourceBuildEnvironmentError(
+            "development admission response exceeds its request-bound size limit"
+        )
     try:
         payload = loads_exact(result.stdout)
     except (json.JSONDecodeError, ExactJsonError) as exc:
@@ -474,6 +489,9 @@ def _probe_source_build_python(
             f"source-build {kind} probe returned invalid JSON"
         ) from exc
     try:
+        if receipt is not None:
+            receipt.accept(payload)
+            return dict(receipt.payload())
         if capture_wheel_target:
             if not isinstance(payload, dict) or set(payload) != {
                 "runtime",
@@ -1026,10 +1044,27 @@ def _published_recipe(root: Path) -> tuple[dict[str, object], Mapping[str, objec
 
 
 def admit_published_environment(
-    root: Path, realized: Mapping[str, object]
+    root: Path,
+    realized: Mapping[str, object],
+    *,
+    development_admission: _schema.DevelopmentEnvironmentAdmission | None = None,
 ) -> Mapping[str, object]:
     """Use the existing admission capture; never spawn or rescan for this check."""
+    repo_root: Path | None = None
+    if development_admission is not None:
+        root, repo_root = _development_coordinates(
+            root, development_admission.repo_root
+        )
     custody, manifest = _published_recipe(root)
+    if development_admission is not None:
+        assert repo_root is not None
+        _validate_development_selection(
+            root,
+            repo_root=repo_root,
+            python=development_admission.python,
+            groups=development_admission.groups,
+            custody=custody,
+        )
     expected = _attested_environment(custody, realized)
     if expected != manifest:
         raise _schema.SourceBuildEnvironmentError(
@@ -1075,14 +1110,8 @@ def admit_development_environment(
     return root
 
 
-def load_development_environment(
-    root: Path,
-    *,
-    repo_root: Path,
-    python: str | None = None,
-    groups: tuple[str, ...] | None = None,
-) -> _schema.LockedSourceBuildEnvironment:
-    """Read an exact selection at a boundary, without claiming live admission."""
+def _development_coordinates(root: Path, repo_root: Path) -> tuple[Path, Path]:
+    """One physical-coordinate authority for selection and live admission."""
     # Normalize ordinary relative/dot coordinates without following aliases.
     # The physical comparison still refuses symlink indirection at admission.
     physical = root.resolve(strict=True)
@@ -1101,7 +1130,18 @@ def load_development_environment(
         raise _schema.SourceBuildEnvironmentError(
             "development image is outside its checkout generation namespace"
         )
-    custody, manifest = _published_recipe(root)
+    return root, repo_root
+
+
+def _validate_development_selection(
+    root: Path,
+    *,
+    repo_root: Path,
+    python: str | None,
+    groups: tuple[str, ...] | None,
+    custody: Mapping[str, object],
+) -> None:
+    """Validate one already-read recipe without opening its manifest again."""
     if groups is not None and custody["dependency_groups"] != sorted(set(groups)):
         raise _schema.SourceBuildEnvironmentError(
             "selected development image has different requested groups"
@@ -1137,6 +1177,21 @@ def load_development_environment(
             "selected image is not a development environment"
         )
     _validate_recipe_inputs(repo_root, custody)
+
+
+def load_development_environment(
+    root: Path,
+    *,
+    repo_root: Path,
+    python: str | None = None,
+    groups: tuple[str, ...] | None = None,
+) -> _schema.LockedSourceBuildEnvironment:
+    """Read an exact selection at a boundary, without claiming live admission."""
+    root, repo_root = _development_coordinates(root, repo_root)
+    custody, manifest = _published_recipe(root)
+    _validate_development_selection(
+        root, repo_root=repo_root, python=python, groups=groups, custody=custody
+    )
     return _schema.LockedSourceBuildEnvironment(
         root,
         environment_python_path(root),

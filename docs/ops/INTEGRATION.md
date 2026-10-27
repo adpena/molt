@@ -492,9 +492,18 @@ Existing process-state leases retain the selected generation until observed
 process closure, even when a newer generation is selected. Owner/use metadata
 stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
 retirement. Selection or publication alone is not release qualification.
-The selected capture child performs published-manifest admission before final
-input verification; the guardian remains isolated from site packages. Guardian
-startup and prefix lifetime follow the same fresh-namespace rule through
+The selected child performs published-manifest admission before final input
+verification; the guardian remains isolated from site packages. Developer launch
+admission uses a dedicated, bounded result carrying the exact physical image,
+recipe address and checkout/Python/group request. The selected child runs the
+same complete environment validator before its final fence and context closure;
+the guardian checks the exact result, closed process tree and reader-source
+fences. This result is immediate and is never cached as permission for another
+launch. Runtime and full environment captures, including proof-queue
+`--with-custody` captures with development intent, retain their full payloads.
+Development selection and live image comparison share one validated manifest
+snapshot; ordinary metadata-only selectors retain their distinct contract.
+Guardian startup and prefix lifetime follow the same fresh-namespace rule through
 [existing command and run custody](../agent/PROOF_QUEUE.md).
 Runtime and environment probes reuse the existing host file-digest cache on
 POSIX, while retaining current-path and final membership checks on every launch.
