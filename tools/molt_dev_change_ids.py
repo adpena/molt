@@ -242,7 +242,7 @@ def resolve_change_references(
     selected_commit: str,
     *,
     dry: bool,
-    assert_source: Callable[[GitPlumbing, str], None],
+    assert_source: Callable[[str], None],
 ) -> str:
     """Rewrite the landing's change citations and amend its last commit."""
 
@@ -280,6 +280,6 @@ def resolve_change_references(
     # The message is unchanged and already passed its commit-msg hook.
     git._run(["commit", "--amend", "--no-edit", "--no-verify", "--quiet"])
     amended = require_git_object_id(git.head_sha(), label="resolved integration commit")
-    assert_source(git, amended)
+    assert_source(amended)
     _ok(f"amended {git.short(selected_commit)} -> {git.short(amended)}")
     return amended

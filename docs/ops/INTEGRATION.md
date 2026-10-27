@@ -31,7 +31,12 @@ fail-loud, tested** countermeasure inside the driver.
 the whole pipeline without mutating anything. Use an exclusive clean checkout
 containing the intended committed source; preserve parallel WIP in its existing
 checkout. The driver checks source cleanliness and the selected HEAD at gate
-boundaries. These checks are not a continuous filesystem monitor.
+boundaries. Each fence reads both facts freshly through one porcelain-v2 status
+observation; branch headers are validated and dirty/rename records remain opaque.
+These checks are not a continuous filesystem monitor. Local tree enumeration and
+one-reference symbolic-ref queries use the canonical metadata probe with managed
+state retained through child closure. Assignment, deletion, documentation/pager
+launches and recorded-output commands retain full execution custody.
 
 ```
 controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  markers  →  gates  →  push  →  confirm  →  cleanup

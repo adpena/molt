@@ -219,6 +219,106 @@ def test_read_only_git_classifier_sees_through_inert_global_options() -> None:
 
 
 @pytest.mark.parametrize(
+    "arguments",
+    [
+        ["HEAD"],
+        ["-q", "HEAD"],
+        ["--quiet", "--short", "HEAD"],
+        ["--recurse", "HEAD"],
+        ["--no-recurse", "HEAD"],
+        ["HEAD", "--short"],
+        ["--", "HEAD"],
+        ["--quiet", "--short", "--", "refs/remotes/origin/HEAD"],
+    ],
+)
+def test_symbolic_ref_query_grammar_is_a_bounded_probe(arguments) -> None:
+    assert command_execution._is_bounded_metadata_probe(
+        ["git", "-C", "repo", "--no-pager", "symbolic-ref", *arguments]
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        [],
+        ["--short"],
+        [""],
+        ["--"],
+        ["HEAD", "refs/heads/main"],
+        ["--", "HEAD", "refs/heads/main"],
+        ["-d", "HEAD"],
+        ["--delete", "HEAD"],
+        ["-q", "--delete", "HEAD"],
+        ["-m", "reason", "HEAD", "refs/heads/main"],
+        ["-mreason", "HEAD"],
+        ["--unknown", "HEAD"],
+        ["--short=true", "HEAD"],
+        ["--", "HEAD", "--quiet"],
+        ["--", "--", "HEAD"],
+    ],
+)
+def test_symbolic_ref_mutation_and_malformed_forms_keep_the_guard(arguments) -> None:
+    assert not command_execution._is_bounded_metadata_probe(
+        ["git", "symbolic-ref", *arguments]
+    )
+
+
+@pytest.mark.parametrize(
+    "command,recorded,probe",
+    [
+        (["git", "symbolic-ref", "--quiet", "--short", "HEAD"], None, True),
+        (["git", "ls-tree", "-r", "--name-only", "HEAD"], None, True),
+        (["git", "symbolic-ref", "HEAD", "refs/heads/main"], None, False),
+        (["git", "symbolic-ref", "--delete", "HEAD"], None, False),
+        (["git", "-c", "core.pager=./hook", "ls-tree", "HEAD"], None, False),
+        (["git", "-c", "core.fsmonitor=./hook", "symbolic-ref", "HEAD"], None, False),
+        (["git", "symbolic-ref", "--help"], None, False),
+        (["git", "ls-tree", "--help"], None, False),
+        (["git", "symbolic-ref", "HEAD"], "stdout_capture_path", False),
+        (["git", "ls-tree", "HEAD"], "stderr_capture_path", False),
+    ],
+)
+def test_executor_routes_git_query_forms_without_weakening_recorded_custody(
+    monkeypatch, tmp_path, command, recorded, probe
+) -> None:
+    observed = []
+
+    def run(arguments, **kwargs):
+        observed.append((arguments, kwargs))
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(
+        command_execution,
+        "_process_guard_authority",
+        lambda _root: SimpleNamespace(run_completed_command=run),
+    )
+    executor = command_execution.CommandExecutor.for_file(__file__)
+    capture = {} if recorded is None else {recorded: tmp_path / "evidence"}
+    executor.run(command, capture_output=True, **capture)
+    ((arguments, kwargs),) = observed
+    assert arguments == command
+    assert kwargs["memory_guard_prefix"] == (None if probe else executor.prefix)
+    if recorded is not None:
+        assert kwargs[recorded] == tmp_path / "evidence"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["git", "log", "--help"],
+        ["git", "status", "--help"],
+        ["git", "-C", "repo", "ls-tree", "--help"],
+        ["git", "symbolic-ref", "--quiet", "--help"],
+        ["git", "worktree", "list", "--help"],
+        ["git", "config", "--get", "--help"],
+        ["git", "version", "--help"],
+    ],
+)
+def test_git_subcommand_help_keeps_pager_launch_guarded(command) -> None:
+    assert not command_execution._is_bounded_metadata_probe(command)
+
+
+@pytest.mark.parametrize(
     ("command", "expected"),
     [
         (["git", "fetch", "origin"], ("fetch", 1, None)),

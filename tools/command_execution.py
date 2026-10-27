@@ -67,6 +67,7 @@ _READ_ONLY_GIT_SUBCOMMANDS = frozenset(
         "grep",
         "log",
         "ls-files",
+        "ls-tree",
         "merge-base",
         "rev-list",
         "rev-parse",
@@ -85,6 +86,29 @@ _INERT_GIT_GLOBAL_OPTIONS = frozenset({"--no-optional-locks", "--no-pager"})
 _VERSION_FLAGS = frozenset({"--help", "--version", "-V", "-vV", "-version"})
 # Git's own version report. `git --help` stays guarded: it opens a pager.
 _GIT_VERSION_REQUESTS = frozenset({"--version", "version"})
+_SYMBOLIC_REF_QUERY_FLAGS = frozenset(
+    {"-q", "--quiet", "--short", "--recurse", "--no-recurse"}
+)
+
+
+def _is_git_symbolic_ref_query(arguments: Sequence[str]) -> bool:
+    """Admit only the one-ref read, never assignment or deletion.
+
+    https://git-scm.com/docs/git-symbolic-ref separates one-argument reads
+    from two-argument writes and the explicit deletion/reflog options.
+    """
+    options = True
+    operands = 0
+    for argument in arguments:
+        if options and argument == "--":
+            options = False
+        elif options and argument in _SYMBOLIC_REF_QUERY_FLAGS:
+            continue
+        elif not argument or argument.startswith("-"):
+            return False
+        else:
+            operands += 1
+    return operands == 1
 
 
 def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
@@ -103,7 +127,13 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
                 break
         if index >= len(command):
             return False
+        # Git also interprets `<subcommand> --help` as a documentation launch.
+        # Keep pager/man execution guarded, including read-only subcommands.
+        if "--help" in command[index:]:
+            return False
         subcommand = command[index]
+        if subcommand == "symbolic-ref":
+            return _is_git_symbolic_ref_query(command[index + 1 :])
         if subcommand in _READ_ONLY_GIT_SUBCOMMANDS | _GIT_VERSION_REQUESTS:
             return True
         if tuple(command[index : index + 2]) in _READ_ONLY_GIT_ACTIONS:

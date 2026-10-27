@@ -241,13 +241,19 @@ WIP_MARKER = "WIP-RECOVERY"
 # --------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class GitCheckoutObservation:
+    head: str
+    dirty_records: tuple[str, ...]
+
+
 @dataclass
 class Git:
     """A thin, fail-loud wrapper over `git -C <repo>` plumbing.
 
-    Every method returns plumbing output (stable IDs) or a boolean derived from
-    git's own EXIT CODE (e.g. merge-base --is-ancestor), never parsed from a
-    porcelain/text rendering. This is the hazard-5 discipline in code form.
+    Methods use stable plumbing IDs, machine-readable porcelain, or git's own
+    EXIT CODE (e.g. merge-base --is-ancestor), never human-oriented rendering.
+    This is the hazard-5 discipline in code form.
     """
 
     repo: Path
@@ -280,6 +286,48 @@ class Git:
 
     def head_sha(self) -> str:
         return self.rev_parse("HEAD")
+
+    def checkout_observation(self) -> GitCheckoutObservation:
+        """Observe HEAD and cleanliness together, freshly at every boundary.
+
+        Git's porcelain-v2 grammar puts branch headers before dirty entries:
+        https://git-scm.com/docs/git-status#_porcelain_format_version_2
+        After the first dirty entry, all NUL records are opaque: a rename's
+        original filename can itself look exactly like a branch header.
+        This observation is not a continuous source-mutation fence.
+        """
+        output = self._run(
+            [
+                *clean_checkout_status_arguments(
+                    porcelain_version="v2", null_terminated=True
+                ),
+                "--branch",
+                "--no-ahead-behind",
+            ]
+        ).stdout
+        if not output.endswith("\0"):
+            raise DriverError("integration source status is not NUL terminated")
+        records = output[:-1].split("\0")
+        head: str | None = None
+        dirty_records: tuple[str, ...] = ()
+        for index, record in enumerate(records):
+            if not record.startswith("# "):
+                dirty_records = tuple(records[index:])
+                break
+            name, _, value = record[2:].partition(" ")
+            if name != "branch.oid":
+                continue
+            if head is not None:
+                raise DriverError(
+                    "integration source status has duplicate HEAD headers"
+                )
+            try:
+                head = require_git_object_id(value, label="integration source HEAD")
+            except ValueError as exc:
+                raise DriverError(str(exc)) from exc
+        if head is None:
+            raise DriverError("integration source status has no HEAD header")
+        return GitCheckoutObservation(head, dirty_records)
 
     def symbolic_head(self) -> str | None:
         """The branch name HEAD points at, or None when detached."""
@@ -834,14 +882,14 @@ def _assert_integration_source(git: Git, commit: str) -> None:
     This is a boundary check, not a continuous filesystem monitor. Integration
     runs in an exclusive clean checkout; parallel work belongs in its own tree.
     """
-    if git.head_sha() != commit:
+    observation = git.checkout_observation()
+    if observation.head != commit:
         raise DriverError("integration source HEAD changed; refusing to publish")
-    dirty = git._run(list(clean_checkout_status_arguments(null_terminated=True))).stdout
-    if dirty:
+    if observation.dirty_records:
         raise DriverError(
             "integration requires a clean selected source checkout; preserve WIP "
             "in its existing checkout and integrate from an exclusive clean checkout:\n"
-            + dirty.replace("\0", "\n")
+            + "\n".join(observation.dirty_records)
         )
 
 
@@ -1209,7 +1257,7 @@ def _integrate_exclusive(
         upstream_before,
         selected_commit,
         dry=dry,
-        assert_source=_assert_integration_source,
+        assert_source=lambda commit: _assert_integration_source(git, commit),
     )
     if selected_commit != cited_commit:
         progress.unpublished_citation_amend = (selected_commit, cited_commit)
