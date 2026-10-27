@@ -45,31 +45,81 @@ CHANGE_ID_TRAILER = "Change-Id"
 CHANGE_ID = re.compile(r"I[0-9a-f]{40}")
 
 
-def commit_change_ids(
-    run_git: Callable[[list[str]], str], revision_range: str
-) -> list[tuple[str, frozenset[str]]]:
-    """Each commit of the range, newest first, with its well-formed Change-Ids."""
+@dataclass(frozen=True, slots=True)
+class GitCommitRecord:
+    """One Git history observation, including its original parent identities."""
 
-    output = run_git(
-        [
-            "log",
-            "-z",
-            f"--format=%H%x1f%(trailers:key={CHANGE_ID_TRAILER},valueonly,separator=%x1e)",
+    oid: str
+    parents: tuple[str, ...]
+    subject: str
+    change_ids: frozenset[str]
+    patch_equivalent: bool
+
+
+def read_commit_records(
+    run_git: Callable[[list[str]], str],
+    revision_range: str,
+    *,
+    cherry_right: bool = False,
+) -> list[GitCommitRecord]:
+    """Read history once; optionally mark the right side's patch equivalence.
+
+    ``cherry_right`` takes an upstream...tip symmetric difference. Git performs
+    its own patch comparison against the left side before omitting that side.
+    NUL fields keep subjects containing the trailer separator unambiguous.
+    """
+    marker = "%m" if cherry_right else "-"
+    arguments = [
+        "log",
+        "-z",
+        "--no-show-signature",
+        "--no-color",
+        "--no-decorate",
+        "--encoding=UTF-8",
+    ]
+    if cherry_right:
+        arguments.extend(("--cherry-mark", "--right-only"))
+    arguments.extend(
+        (
+            "--format=%H%x00%P%x00%s%x00"
+            f"%(trailers:key={CHANGE_ID_TRAILER},valueonly,separator=%x1e)%x00{marker}",
+            "--end-of-options",
             revision_range,
-        ]
+            "--",
+        )
     )
-    commits: list[tuple[str, frozenset[str]]] = []
-    for entry in output.split("\0"):
-        entry = entry.strip("\n")
-        if not entry:
-            continue
-        sha, _, trailers = entry.partition("\x1f")
+    output = run_git(arguments)
+    if not output:
+        return []
+    if not output.endswith("\0"):
+        raise DriverError("Git commit history is not NUL terminated")
+    fields = output[:-1].split("\0")
+    if len(fields) % 5:
+        raise DriverError("Git commit history has an incomplete record")
+    commits: list[GitCommitRecord] = []
+    for offset in range(0, len(fields), 5):
+        oid, parents, subject, trailers, mark = fields[offset : offset + 5]
+        # Git documents '+' for an unmatched cherry mark; side-aware walks
+        # expose '>' instead. Neither spelling claims patch equivalence.
+        if mark not in ({">", "+", "="} if cherry_right else {"-"}):
+            raise DriverError(f"Git commit history has an invalid marker: {mark!r}")
         ids = frozenset(
             value.strip()
             for value in trailers.split("\x1e")
             if CHANGE_ID.fullmatch(value.strip())
         )
-        commits.append((sha.strip(), ids))
+        commits.append(
+            GitCommitRecord(
+                oid=require_git_object_id(oid, label="history commit"),
+                parents=tuple(
+                    require_git_object_id(parent, label="history parent")
+                    for parent in parents.split()
+                ),
+                subject=subject,
+                change_ids=ids,
+                patch_equivalent=mark == "=",
+            )
+        )
     return commits
 
 
@@ -106,30 +156,28 @@ def landing_representation(
     Historical queue landings replayed lanes and amended their last commit,
     so an ordinary landed tip need not be an ancestor of upstream. It is represented
     when its ``Change-Id:`` trailer appears on an upstream commit (Gerrit's
-    rule), or when its patch-id matches one (``git cherry``'s rule). Both
-    searches cover only upstream's commits since the merge base. A merge can
+    rule), or when its patch-id matches one (``git cherry``'s rule). Change-Ids
+    use upstream's commits since the selected merge base; patch comparison
+    uses the symmetric difference, excluding every shared ancestor. A merge can
     introduce resolution changes absent from either parent: only its actual
     ancestry on upstream represents it, never a Change-Id or patch-id match.
     An empty ordinary commit needs a matching Change-Id or empty upstream commit.
 
-    Cost: one ``log`` of ``upstream..tip``, which is empty when the tip is on
-    upstream. Otherwise also one ``rev-list`` of its merges, one ``merge-base``,
-    one ``log`` of upstream since the merge base when an ordinary lane commit
-    carries a Change-Id, and one ``cherry`` when an ordinary commit has no
-    matching Change-Id. A Change-Id is ``I`` and 40 hex digits, the managed
-    commit-msg hook's format.
+    Cost: one right-only symmetric-difference ``log`` carries parents and Git's
+    patch-equivalence marks. If nonempty, one ``merge-base`` and at most one
+    upstream ``log`` resolve the existing Change-Id window. A Change-Id is ``I``
+    and 40 hex digits, the managed commit-msg hook's format.
     """
-    commits = commit_change_ids(
-        lambda arguments: git._run(arguments).stdout, f"{upstream}..{tip}"
+    commits = read_commit_records(
+        lambda arguments: git._run(arguments).stdout,
+        f"{upstream}...{tip}",
+        cherry_right=True,
     )
     if not commits:
         return LandingRepresentation(None, (), ())
-    shas = tuple(sha for sha, _ids in commits)
+    shas = tuple(commit.oid for commit in commits)
     # The range already excludes ancestors of upstream. Every remaining merge
     # must stay pending even if an ordinary upstream commit repeats its trailer.
-    merges = frozenset(
-        git._run(["rev-list", "--min-parents=2", f"{upstream}..{tip}"]).stdout.split()
-    )
     base = git._run(["merge-base", upstream, tip], check=False)
     if base.returncode == 1:
         return LandingRepresentation(None, shas, shas)  # Unrelated histories.
@@ -140,22 +188,21 @@ def landing_representation(
         )
     merge_base = base.stdout.strip()
     upstream_ids: frozenset[str] = frozenset()
-    if any(ids for sha, ids in commits if sha not in merges):
+    if any(commit.change_ids for commit in commits if len(commit.parents) < 2):
         upstream_ids = frozenset(
             change
-            for _commit, ids in commit_change_ids(
+            for commit in read_commit_records(
                 lambda arguments: git._run(arguments).stdout,
                 f"{merge_base}..{upstream}",
             )
-            for change in ids
+            for change in commit.change_ids
         )
-    pending = [sha for sha, ids in commits if sha in merges or not ids & upstream_ids]
-    if any(sha not in merges for sha in pending):
-        cherry = git._run(["cherry", upstream, tip]).stdout
-        on_upstream = {
-            line[2:].strip() for line in cherry.splitlines() if line.startswith("- ")
-        }
-        pending = [sha for sha in pending if sha in merges or sha not in on_upstream]
+    pending = [
+        commit.oid
+        for commit in commits
+        if len(commit.parents) > 1
+        or not (commit.change_ids & upstream_ids or commit.patch_equivalent)
+    ]
     return LandingRepresentation(merge_base, shas, tuple(pending))
 
 
@@ -173,9 +220,9 @@ def change_ids(
     """Change-Id -> commit for every commit of the range that carries one."""
 
     owners: dict[str, list[str]] = {}
-    for commit, ids in commit_change_ids(run_git, revision_range):
-        for value in ids:
-            owners.setdefault(value, []).append(commit)
+    for commit in read_commit_records(run_git, revision_range):
+        for value in commit.change_ids:
+            owners.setdefault(value, []).append(commit.oid)
     duplicated = sorted(
         change for change, commits in owners.items() if len(commits) > 1
     )

@@ -116,6 +116,24 @@ operation. An explicitly supplied sampler stays in use at timeout; cleanup
 captures the native host sampler before any caller substitution. Tests replace
 the actual authority, preserving private OS views and session-sentinel isolation.
 
+After root exit and enforcer shutdown, suite transfer and orphan cleanup share
+one host observation. Transfer changes birth-bound tracker custody and does not
+signal a process. Cleanup retains its fresh signal-time identity and host
+protection checks; any termination report invalidates the shared observation
+before subsequent cleanup or scratch closure. Final suite-receiver liveness
+still obtains fresh rows. An empty observation is valid and is not sampled
+again merely because it is empty. This saves one host-table read and its
+per-process Python objects for each terminal suite-lease check, independent of
+how many pytest workers or nested guards run. Exit census, Windows Job custody,
+interruption handling and explicit custom samplers retain their contracts.
+
+Transfer checks use the current tracker observation first. Only a live owned
+non-root PID in a non-root process group can be exported; a root-only command
+does not read or lock the shared suite adoption index. A child may move groups
+after an earlier poll, so historical group membership never supplies this
+negative decision. Receipt, creation-marker, complete-membership and receiver
+checks still decide every eligible transfer.
+
 ## Costs
 
 Per poll: O(watched pids + their children + declared pids) small syscalls,
