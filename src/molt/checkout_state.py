@@ -1248,16 +1248,38 @@ def checkout_state_decision(
     return None
 
 
-def checkout_state_gc_due(artifact_root: Path, *, now: float | None = None) -> bool:
-    """Whether the daily GC of ``artifact_root``'s checkout state is due."""
+@dataclass(frozen=True, slots=True)
+class CheckoutStateGcEpoch:
+    """Cadence and attempt identity from one observation of the daily stamp."""
+
+    generation_ns: int | None
+    due: bool
+
+    @property
+    def identity(self) -> str:
+        return "initial" if self.generation_ns is None else str(self.generation_ns)
+
+
+def checkout_state_gc_epoch(
+    artifact_root: Path, *, now: float | None = None
+) -> CheckoutStateGcEpoch | None:
+    """Unreadable cadence defers; a missing stamp names the initial epoch."""
     moment = time.time() if now is None else now
     try:
-        stamp = artifact_root.joinpath(*GC_STAMP).stat().st_mtime
+        stamp = artifact_root.joinpath(*GC_STAMP).stat()
     except FileNotFoundError:
-        return True
+        return CheckoutStateGcEpoch(None, True)
     except OSError:
-        return False
-    return not 0 <= moment - stamp < GC_INTERVAL_S
+        return None
+    return CheckoutStateGcEpoch(
+        stamp.st_mtime_ns, not 0 <= moment - stamp.st_mtime < GC_INTERVAL_S
+    )
+
+
+def checkout_state_gc_due(artifact_root: Path, *, now: float | None = None) -> bool:
+    """Whether the daily GC of ``artifact_root``'s checkout state is due."""
+    epoch = checkout_state_gc_epoch(artifact_root, now=now)
+    return epoch is not None and epoch.due
 
 
 @contextmanager

@@ -350,7 +350,7 @@ continue to read the host table. The 100 ms cadence is unchanged.
 
 ## Operation completion gaps (V1-12)
 
-Automatic checkout maintenance after result publication is a scheduling event,
+Automatic checkout maintenance dispatch after result publication is a scheduling event,
 not a process-tree closure receipt. Its independent per-root shared-use and
 exclusive-retirement authority is specified in [design 56](foundation/56_dx_buildspeed_tooling.md#26-checkout-state-retention-hf-313).
 Guard qualification still requires the actual terminal closure evidence.

@@ -83,6 +83,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -157,6 +158,10 @@ ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
 # pressure reclaim spares them within its protection window.
 CandidateKind = Literal[
     "checkout-state", "session-target", "lane", "quarantine", "cargo-target"
+]
+ReclaimOperation = Literal["gc", "pressure", "checkout-retirement"]
+ReclaimPhase = Literal[
+    "setup", "discovery", "planning", "retirement", "superseded-layouts"
 ]
 _LAST_USE_KINDS: frozenset[CandidateKind] = frozenset(
     {"checkout-state", "session-target", "lane", "cargo-target"}
@@ -583,6 +588,7 @@ def _delete_candidate(
     scope_roots: Sequence[Path],
     now_fn: Callable[[], float],
     eligible: Callable[[Candidate, float], str | None],
+    result: ReclaimResult,
 ) -> tuple[bool, str | None, str | None]:
     """Reobserve under exclusive mutation, then use the existing delete owner.
 
@@ -620,7 +626,7 @@ def _delete_candidate(
         reason = eligible(current, now_fn())
         if reason is not None:
             return False, None, reason
-        ok, error = delete_path(current.path)
+        ok, error = _timed_delete(current.path, result=result)
         return ok, None if ok else error, None
 
 
@@ -896,6 +902,7 @@ def _iter_quarantine_dirs(root: Path) -> list[Path]:
 
 @dataclass
 class ReclaimResult:
+    operation: ReclaimOperation
     root: str
     triggered: bool
     free_before: int
@@ -907,6 +914,12 @@ class ReclaimResult:
     mode: str = "apply"
     # Active guard records that blocked a candidate, with the next step.
     custody: list[dict] = field(default_factory=list)
+    # Monotonic collection time excludes result-log publication. Phase totals
+    # include their existing eligibility checks; deletion time is nested.
+    elapsed_s: float = 0.0
+    phase_elapsed_s: dict[ReclaimPhase, float] = field(default_factory=dict)
+    # Sum repeated attempts at the same exact path without another inventory.
+    deletion_elapsed_s: dict[str, float] = field(default_factory=dict)
 
     @property
     def reclaimed_bytes(self) -> int:
@@ -914,8 +927,12 @@ class ReclaimResult:
 
     def to_dict(self) -> dict:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "tool": "disk_guard",
+            "operation": self.operation,
+            "elapsed_s": self.elapsed_s,
+            "phase_elapsed_s": self.phase_elapsed_s,
+            "deletion_elapsed_s": self.deletion_elapsed_s,
             "root": self.root,
             "scope_roots": self.scope_roots,
             "mode": self.mode,
@@ -932,6 +949,22 @@ class ReclaimResult:
 
 def _default_free_fn(root: Path) -> Callable[[], int]:
     return lambda: shutil.disk_usage(root).free
+
+
+def _elapsed_since(started: float) -> float:
+    return max(0.0, time.monotonic() - started)
+
+
+def _timed_delete(path: Path, *, result: ReclaimResult) -> tuple[bool, str | None]:
+    """Measure the existing deletion primitive without changing its custody."""
+    started = time.monotonic()
+    try:
+        return delete_path(path)
+    finally:
+        key = str(path)
+        result.deletion_elapsed_s[key] = result.deletion_elapsed_s.get(
+            key, 0.0
+        ) + _elapsed_since(started)
 
 
 def ensure_free(
@@ -959,6 +992,7 @@ def ensure_free(
     error (recorded in ``errors``). This result describes reclamation only;
     build admission belongs to ``molt.disk_capacity.require_build_capacity``.
     """
+    started = time.monotonic()
     env = os.environ if env is None else env
     resolved_root = resolve_root(root, env=env)
     scope_roots = reclaim_roots(resolved_root)
@@ -974,6 +1008,7 @@ def ensure_free(
 
     free_before = free_fn()
     result = ReclaimResult(
+        operation="pressure",
         root=str(resolved_root),
         triggered=free_before < high_water,
         free_before=free_before,
@@ -981,12 +1016,17 @@ def ensure_free(
         scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
+    result.phase_elapsed_s["setup"] = _elapsed_since(started)
     if not result.triggered:
+        result.elapsed_s = _elapsed_since(started)
         if log:
             _write_log(resolved_root, result)
         return result
 
+    phase_started = time.monotonic()
     candidates = discover_candidates(resolved_root, cfg, roots=scope_roots)
+    result.phase_elapsed_s["discovery"] = _elapsed_since(phase_started)
+    phase_started = time.monotonic()
     plan = plan_reclaim(
         candidates,
         free_bytes=free_before,
@@ -1006,6 +1046,8 @@ def ensure_free(
         if why == "active-guard"
     )
 
+    result.phase_elapsed_s["planning"] = _elapsed_since(phase_started)
+    phase_started = time.monotonic()
     deadline = time.monotonic() + budget_s
     free_now = free_before
     for cand in plan.selected:
@@ -1040,6 +1082,7 @@ def ensure_free(
                 scope_roots=scope_roots,
                 now_fn=now_fn,
                 eligible=still_pressure_eligible,
+                result=result,
             )
             if skipped is not None:
                 result.skipped.append({"path": str(cand.path), "reason": skipped})
@@ -1051,7 +1094,9 @@ def ensure_free(
             {"path": str(cand.path), "kind": cand.kind, "est_bytes": max(0, cand.size)}
         )
         free_now = free_fn() if apply else free_now + max(0, cand.size)
+    result.phase_elapsed_s["retirement"] = _elapsed_since(phase_started)
     result.free_after = free_fn() if apply else free_now
+    result.elapsed_s = _elapsed_since(started)
     if log:
         _write_log(resolved_root, result)
     return result
@@ -1073,6 +1118,7 @@ def gc(
     lock or a protected path keeps a root. A second pass retires the build
     control of the targets this pass reclaimed.
     """
+    started = time.monotonic()
     env = os.environ if env is None else env
     resolved_root = resolve_root(root, env=env)
     scope_roots = reclaim_roots(resolved_root)
@@ -1082,6 +1128,7 @@ def gc(
     free_fn = _default_free_fn(resolved_root)
     free_before = free_fn()
     result = ReclaimResult(
+        operation="gc",
         root=str(resolved_root),
         triggered=True,
         free_before=free_before,
@@ -1089,19 +1136,25 @@ def gc(
         scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
+    result.phase_elapsed_s["setup"] = _elapsed_since(started)
+    phase_started = time.monotonic()
     protected = _protected_paths(scope_roots, env)
+    candidates = [
+        cand
+        for owner_root in scope_roots
+        for cand in _retention_candidates(
+            owner_root, scope_roots, now=now, limits=limits, config=cfg
+        )
+    ]
+    result.phase_elapsed_s["discovery"] = _elapsed_since(phase_started)
+    phase_started = time.monotonic()
     collectable = gc_plan(
-        [
-            cand
-            for owner_root in scope_roots
-            for cand in _retention_candidates(
-                owner_root, scope_roots, now=now, limits=limits, config=cfg
-            )
-        ],
+        candidates,
         now=now,
         min_idle_s=cfg.min_idle_s,
         protected=protected,
     )
+    result.phase_elapsed_s["planning"] = _elapsed_since(phase_started)
     collected_norms: set[str] = set()
 
     def reclaim(planned: list[Candidate]) -> None:
@@ -1143,6 +1196,7 @@ def gc(
                     scope_roots=scope_roots,
                     now_fn=now_fn,
                     eligible=still_gc_eligible,
+                    result=result,
                 )
                 if skipped is not None:
                     result.skipped.append({"path": str(cand.path), "reason": skipped})
@@ -1153,6 +1207,7 @@ def gc(
             collected_norms.add(_norm(cand.path))
             result.reclaimed.append({"path": str(cand.path), "kind": cand.kind})
 
+    phase_started = time.monotonic()
     reclaim(collectable)
     # A build-control root's owner is its Cargo target, so it is orphaned only
     # once that target is gone: a second pass retires the build control of
@@ -1189,6 +1244,8 @@ def gc(
                 if _norm(cand.path) not in collected_norms
             ]
         )
+    result.phase_elapsed_s["retirement"] = _elapsed_since(phase_started)
+    phase_started = time.monotonic()
     for owner_root in scope_roots:
         _retire_superseded_layouts(
             owner_root,
@@ -1200,7 +1257,9 @@ def gc(
             retired=collected_norms,
             protected=protected,
         )
+    result.phase_elapsed_s["superseded-layouts"] = _elapsed_since(phase_started)
     result.free_after = free_fn()
+    result.elapsed_s = _elapsed_since(started)
     if log:
         _write_log(resolved_root, result)
     return result
@@ -1320,7 +1379,7 @@ def _retire_superseded_layouts(
                 except ValueError as error:
                     result.errors.append(str(error))
                     continue
-                ok, error = delete_path(path)
+                ok, error = _timed_delete(path, result=result)
                 if not ok:
                     result.errors.append(f"{path}: {error}")
                     continue
@@ -1342,6 +1401,27 @@ def collect(
     the free target is met, as BuildKit keeps a minimum of free space.
     """
     return [gc(root=root, env=env), ensure_free(root=root, env=env)]
+
+
+def collect_due(
+    *,
+    root: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> list[ReclaimResult]:
+    """Collect one due daily attempt, retaining admission through completion.
+
+    The existing context owns the nonblocking lock, due recheck and start
+    stamp. A recent or competing attempt does no collection. Exceptions stay
+    visible to the owning worker; a returned result has left this context.
+    """
+    from molt.checkout_state import checkout_state_gc
+
+    environment = os.environ if env is None else env
+    resolved_root = resolve_root(root, env=environment)
+    with checkout_state_gc(resolved_root) as admitted:
+        if not admitted:
+            return []
+        return collect(root=resolved_root, env=environment)
 
 
 def _retention_candidates(
@@ -1415,12 +1495,14 @@ def reclaim_checkout_state(
     the target, its sessions or their build control, or a protected path
     still keeps a root.
     """
+    started = time.monotonic()
     env = os.environ if env is None else env
     checkout = checkout.expanduser().resolve()
     resolved_root = resolve_root(root, env=env)
     scope_roots = reclaim_roots(resolved_root)
     cfg = GuardConfig.from_env(env)
     result = ReclaimResult(
+        operation="checkout-retirement",
         root=str(resolved_root),
         triggered=True,
         free_before=0,
@@ -1428,6 +1510,8 @@ def reclaim_checkout_state(
         scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
+    result.phase_elapsed_s["setup"] = _elapsed_since(started)
+    phase_started = time.monotonic()
     protected = _protected_paths(scope_roots, env)
     roots_by_owner = {
         owner_root: sorted(
@@ -1436,6 +1520,8 @@ def reclaim_checkout_state(
         )
         for owner_root in scope_roots
     }
+    result.phase_elapsed_s["discovery"] = _elapsed_since(phase_started)
+    phase_started = time.monotonic()
     component = checkout_component(checkout)
     retired_targets: set[Path] = set()
     for owner_root, children in roots_by_owner.items():
@@ -1506,6 +1592,7 @@ def reclaim_checkout_state(
                     scope_roots=scope_roots,
                     now_fn=time.time,
                     eligible=still_retired,
+                    result=result,
                 )
                 if skipped is not None:
                     result.skipped.append(
@@ -1520,6 +1607,8 @@ def reclaim_checkout_state(
             )
             if owner.kind == "cargo-target":
                 retired_targets.add(candidate.path)
+    result.phase_elapsed_s["retirement"] = _elapsed_since(phase_started)
+    result.elapsed_s = _elapsed_since(started)
     return result
 
 
@@ -1557,9 +1646,18 @@ def _write_log(root: Path, result: ReclaimResult) -> Path | None:
         log_dir = root / LOG_RELDIR
         log_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime())
-        path = log_dir / f"disk_guard-{stamp}-{os.getpid()}.json"
-        path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
-        return path
+        # Exclusive creation preserves distinct phases and repeated invocations
+        # even when the same process finishes them in one clock second.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=log_dir,
+            prefix=f"disk_guard-{stamp}-{os.getpid()}-{result.operation}-",
+            suffix=".json",
+            delete=False,
+        ) as stream:
+            json.dump(result.to_dict(), stream, indent=2)
+            return Path(stream.name)
     except OSError:
         return None
 

@@ -17,7 +17,11 @@ import tempfile
 import time
 from pathlib import Path
 from typing import TextIO
-from collections.abc import Generator
+from collections.abc import Generator, Mapping, Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.molt_dev_controller import Controller
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -186,7 +190,12 @@ def python_command(*arguments: str) -> list[str]:
 
 
 def _detached_daemonize(
-    state: Path, command: list[str], cwd: Path, env: dict[str, str]
+    state: Path,
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    *,
+    controller: Controller | None = None,
 ) -> int:
     """Spawn one isolated supervisor without forking the live Python process.
 
@@ -195,29 +204,75 @@ def _detached_daemonize(
     the single cross-platform supervisor authority: it owns the session/process
     group, command log, child lifetime, and terminal rc record.
     """
+    from tools.molt_dev_controller import controller_for_source, controller_source_use
+
+    controller = controller or controller_for_source(_REPO_ROOT)
+    source_use = ExitStack()
+    if controller is not None:
+        source_use.enter_context(controller_source_use(controller))
+    # Failed handoff retains source until the existing process owner finishes
+    # waiting at exit. Its later registration executes before this callback.
+    atexit.register(source_use.close)
+    try:
+        pid = _start_detached_worker(state, command, cwd, env, controller=controller)
+    except BaseException as error:
+        if getattr(error, "owned_process", None) is None:
+            atexit.unregister(source_use.close)
+            source_use.close()
+        raise
+    atexit.unregister(source_use.close)
+    source_use.close()
+    return pid
+
+
+def _start_detached_worker(
+    state: Path,
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    *,
+    controller: Controller | None,
+) -> int:
     payload_path = state / "worker.json"
     token = os.urandom(16).hex()
+    payload: dict[str, object] = {"argv": command, "cwd": str(cwd), "use_token": token}
+    if controller is not None:
+        payload["controller"] = {"key": controller.key, "root": str(controller.root)}
     _atomic_write_text(
         payload_path,
-        json.dumps({"argv": command, "cwd": str(cwd), "use_token": token}, indent=2),
+        json.dumps(payload, indent=2),
     )
+    source = _REPO_ROOT if controller is None else controller.root
     worker = python_command(
-        str(Path(__file__).resolve()), "--detached-worker", str(payload_path)
+        str(source / "tools" / "molt_dev_detached.py"),
+        "--detached-worker" if controller is None else "--detached-controller-worker",
+        str(payload_path),
     )
+    if controller is not None and "-I" not in worker:
+        worker.insert(1, "-I")
+    if controller is not None:
+        # The supervisor is stdlib-only. An editable image's .pth/sitecustomize
+        # can import the caller's Molt before this immutable source binds, even
+        # under -I. Skip site initialization rather than replacing those modules.
+        worker.insert(1, "-S")
     with DetachedStateHandoff(
         _REPO_ROOT, env, cwd, worker, state / "state-use-ready.json", token
     ) as handoff:
-        handoff.process = _COMMANDS.start_owned(
-            worker,
-            cwd=str(cwd),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=_windows_hidden_creationflags() if os.name == "nt" else 0,
-            start_new_session=os.name != "nt",
-        )
+        # Own diagnostics before Python imports or worker entry can fail. The
+        # worker appends to this same log; a successful entry never erases its
+        # startup output. Launch admission already owns the fresh state tree.
+        with (state / "run.log").open("a", encoding="utf-8", buffering=1) as log:
+            handoff.process = _COMMANDS.start_owned(
+                worker,
+                cwd=str(cwd),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
+                creationflags=_windows_hidden_creationflags() if os.name == "nt" else 0,
+                start_new_session=os.name != "nt",
+            )
         try:
             handoff.wait_ready()
         except RuntimeError as error:
@@ -236,12 +291,31 @@ def _detached_daemonize(
         return pid
 
 
-def _detached_worker_main(payload_path: Path) -> int:
+def _detached_worker_main(
+    payload_path: Path, *, controller_required: bool = False
+) -> int:
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     state = payload_path.parent
     command = list(payload["argv"])
     cwd = Path(payload["cwd"])
+    source_use = ExitStack()
+    atexit.register(source_use.close)
     try:
+        from tools.molt_dev_controller import (
+            controller_for_source,
+            controller_source_use,
+        )
+
+        controller = controller_for_source(_REPO_ROOT)
+        descriptor = payload.get("controller")
+        if controller_required or descriptor is not None:
+            if controller is None or descriptor != {
+                "key": controller.key,
+                "root": str(controller.root),
+            }:
+                raise ValueError("detached controller source does not match its worker")
+        if controller is not None:
+            source_use.enter_context(controller_source_use(controller))
         env = os.environ.copy()
         with detached_command_use(
             _REPO_ROOT,
@@ -250,7 +324,7 @@ def _detached_worker_main(payload_path: Path) -> int:
             ready_path=state / "state-use-ready.json",
             use_token=payload["use_token"],
         ):
-            with (state / "run.log").open("w", encoding="utf-8", buffering=1) as log:
+            with (state / "run.log").open("a", encoding="utf-8", buffering=1) as log:
                 os.chdir(cwd)
                 rc = _exec_wait_rc(command, env, log)
     except Exception as exc:  # noqa: BLE001 - worker must record every death
@@ -260,10 +334,12 @@ def _detached_worker_main(payload_path: Path) -> int:
             # No rc may claim completion while a child wait is unresolved.
             return 0
         rc = 126
-    # The terminal record permits replacement of this state directory. Every
-    # owned cleanup and crash-log write must finish before that publication;
-    # this worker must never write into a later run's replacement directory.
+    # The terminal record permits replacement of this state directory. Child
+    # and managed-state cleanup and every crash-log write precede publication.
+    # Source use survives the write, then releases without touching this state.
     _atomic_write_text(state / "rc", str(rc))
+    atexit.unregister(source_use.close)
+    source_use.close()
     return 0
 
 
@@ -335,67 +411,100 @@ def _detached_launch_admission(state: Path, *, replace: bool) -> Generator[None]
         _release_file_lock(lock)
 
 
-def cmd_detached_run(args: argparse.Namespace) -> int:
-    command = list(args.argv or [])
-    if command and command[0] == "--":
-        command = command[1:]
-    if not command:
+def launch_detached(
+    state: Path,
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+    controller: Controller | None = None,
+    replace: bool = False,
+    environment_overrides: Sequence[str] = (),
+) -> int:
+    """Launch the existing supervisor with explicit environment and source custody."""
+    if isinstance(command, (str, bytes)) or not command:
         raise DriverError("detached-run: give the command after `--`", code=EXIT_USAGE)
-    state = _detached_state_dir(args.name, args.state_dir)
-    with _detached_launch_admission(state, replace=args.replace):
-        cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+    state = state.absolute()
+    cwd = cwd.resolve()
+    from tools.molt_dev_controller import controller_for_source
+
+    controller = controller or controller_for_source(_REPO_ROOT)
+    with _detached_launch_admission(state, replace=replace):
         if not cwd.is_dir():
             raise DriverError(
                 f"detached-run: --cwd {cwd} is not a directory", code=EXIT_USAGE
             )
-        env = dict(os.environ)
+        env = dict(environment)
         # Unbuffered IO so a group-kill cannot eat block-buffered progress (the
         # empty-log signature that made hazard 11 undiagnosable).
         env["PYTHONUNBUFFERED"] = "1"
-        for kv in args.env or []:
-            key, sep, value = kv.partition("=")
-            if not sep:
-                raise DriverError(
-                    f"detached-run: --env needs K=V, got {kv!r}", code=EXIT_USAGE
-                )
-            env[key] = value
         _atomic_write_text(
             state / "cmd.json",
             json.dumps(
                 {
-                    "argv": command,
+                    "argv": list(command),
                     "cwd": str(cwd),
                     "start_unix": time.time(),
-                    "env_overrides": list(args.env or []),
+                    "env_overrides": list(environment_overrides),
+                    "controller": (
+                        None
+                        if controller is None
+                        else {"key": controller.key, "root": str(controller.root)}
+                    ),
                 },
                 indent=2,
             ),
         )
-        daemon_pid = _detached_daemonize(state, command, cwd, env)
-        verify_argv = verify_command(args.name, state.parent, args.verify_min_age_hint)
-        _ok(f"detached {args.name!r} spawned: pid {daemon_pid}")
-        _say(f"    state: {state}")
-        _say(f"    log:   {state / 'run.log'}")
-        _say("    REQUIRED next step, in a LATER tool call (teardown of THIS call")
-        _say("    is exactly what hazard 11 is about):")
-        if os.name == "nt":
-            _say("    verify_argv (JSON argument array; launch without a shell):")
-            _say("      " + json.dumps(verify_argv))
-        else:
-            _say("    POSIX shell command:")
-            _say("      " + shlex.join(verify_argv))
-        if args.json:
-            print(
-                json.dumps(
-                    {
-                        "name": args.name,
-                        "pid": daemon_pid,
-                        "state_dir": str(state),
-                        "verify_argv": verify_argv,
-                    }
-                )
+        return _detached_daemonize(
+            state, list(command), cwd, env, controller=controller
+        )
+
+
+def cmd_detached_run(args: argparse.Namespace) -> int:
+    command = list(args.argv or [])
+    if command and command[0] == "--":
+        command = command[1:]
+    state = _detached_state_dir(args.name, args.state_dir)
+    env = dict(os.environ)
+    for kv in args.env or []:
+        key, sep, value = kv.partition("=")
+        if not sep:
+            raise DriverError(
+                f"detached-run: --env needs K=V, got {kv!r}", code=EXIT_USAGE
             )
-        return EXIT_OK
+        env[key] = value
+    daemon_pid = launch_detached(
+        state,
+        command,
+        cwd=Path(args.cwd) if args.cwd else Path.cwd(),
+        environment=env,
+        replace=args.replace,
+        environment_overrides=args.env or (),
+    )
+    verify_argv = verify_command(args.name, state.parent, args.verify_min_age_hint)
+    _ok(f"detached {args.name!r} spawned: pid {daemon_pid}")
+    _say(f"    state: {state}")
+    _say(f"    log:   {state / 'run.log'}")
+    _say("    REQUIRED next step, in a LATER tool call (teardown of THIS call")
+    _say("    is exactly what hazard 11 is about):")
+    if os.name == "nt":
+        _say("    verify_argv (JSON argument array; launch without a shell):")
+        _say("      " + json.dumps(verify_argv))
+    else:
+        _say("    POSIX shell command:")
+        _say("      " + shlex.join(verify_argv))
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "name": args.name,
+                    "pid": daemon_pid,
+                    "state_dir": str(state),
+                    "verify_argv": verify_argv,
+                }
+            )
+        )
+    return EXIT_OK
 
 
 def cmd_detached_verify(args: argparse.Namespace) -> int:
@@ -466,6 +575,10 @@ def cmd_detached_verify(args: argparse.Namespace) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--detached-worker":
         raise SystemExit(_detached_worker_main(Path(sys.argv[2])))
+    if len(sys.argv) == 3 and sys.argv[1] == "--detached-controller-worker":
+        raise SystemExit(
+            _detached_worker_main(Path(sys.argv[2]), controller_required=True)
+        )
     raise SystemExit(
         "molt_dev_detached.py is an internal module; use tools/molt_dev.py"
     )

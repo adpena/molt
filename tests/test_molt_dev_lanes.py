@@ -1846,3 +1846,315 @@ def test_lane_retirement_recovers_failed_final_record_write(
     assert lanes.cmd_lane_retire(_args(family, slug="receipt")) == molt_dev.EXIT_OK
     assert _record(family, "receipt")["status"] == disposition
     assert _record(family, "receipt")["lane_retired"]["tip"] == tip
+
+
+def _commit_candidate_controller_source(worktree: Path) -> str:
+    """Real committed source for the existing controller archive authority."""
+    from tools import molt_dev_controller as controller
+
+    for relative in controller.CONTROLLER_PATHS:
+        path = worktree / relative
+        if relative in {"tools", "src/molt", "config"}:
+            path /= "candidate-source.txt"
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            content = {
+                "src/sitecustomize.py": "# fixture source\n",
+                "uv.lock": 'version = 1\nrequires-python = ">=3.12"\n',
+                ".python-version": "3.12\n",
+            }.get(relative, "candidate source\n")
+            path.write_text(content, encoding="utf-8")
+    driver = worktree / "tools" / "molt_dev.py"
+    driver.write_text("# exact reviewed candidate driver\n", encoding="utf-8")
+    _git(worktree, "add", "--", *controller.CONTROLLER_PATHS)
+    return _commit_file(worktree, "candidate.txt", "candidate\n", "candidate source")
+
+
+@pytest.mark.parametrize("physical_source", ["checkout", "controller"])
+def test_candidate_runner_launch_uses_its_immutable_committed_source(
+    family, monkeypatch, physical_source
+):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from tests.process_guard_common import ModuleView, run_guarded_test_process
+    from molt.file_locks import _try_acquire_file_lock
+    from tools import molt_dev_controller as controller, molt_dev_queue as queue
+    from tools import molt_dev_detached as detached
+    from tools.venv_exec import venv_python
+
+    main = family / "molt-src"
+    candidate = _start(family, "controller-candidate")
+    tip = _commit_candidate_controller_source(candidate)
+    common = molt_dev._git_common_directory(main)
+    assert common is not None
+    paths = queue.queue_paths(main)
+    main_signal = main / "primary-owned.txt"
+    main_signal.write_text("unrelated dirty primary\n", encoding="utf-8")
+    poison = family / "poison-pythonpath"
+    poison.mkdir()
+    (poison / "candidate_runner_poison.py").write_text(
+        "raise RuntimeError('ambient candidate policy imported')\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(poison))
+    # The helper's real non-isolated-parent branch must not decide the
+    # immutable runner's isolation policy. Keep the selected interpreter.
+    monkeypatch.setattr(
+        detached,
+        "sys",
+        ModuleView(
+            sys, flags=SimpleNamespace(isolated=0, utf8_mode=sys.flags.utf8_mode)
+        ),
+    )
+    observed = []
+    synced = []
+
+    def sync_environment(root):
+        assert (
+            _try_acquire_file_lock(
+                root.parent.parent / "controller-use" / f"{root.name}.lock"
+            )
+            is None
+        )
+        environment_root = root / controller.ENVIRONMENT_NAME
+        # Stub only the canonical dependency provisioner's actuation. This
+        # real, empty venv is distinct from the caller's editable environment.
+        run_guarded_test_process(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                "-B",
+                "-m",
+                "venv",
+                "--without-pip",
+                str(environment_root),
+            ],
+            cwd=main,
+            check=True,
+        )
+        probe = run_guarded_test_process(
+            [
+                str(venv_python(environment_root)),
+                "-I",
+                "-B",
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib'))",
+            ],
+            cwd=main,
+            check=True,
+        )
+        packages = Path(probe.stdout.strip()).resolve()
+        assert packages.is_relative_to(environment_root.resolve())
+        (packages / "candidate_dependency_marker.py").write_text(
+            "VALUE = 'controller-only'\n", encoding="utf-8"
+        )
+        synced.append(root)
+
+    def launch(state, command, *, cwd, environment, controller):
+        assert cwd == main
+        assert command[0] == str(venv_python(controller.root / queue.ENVIRONMENT_NAME))
+        assert command[-1] == "--candidate-controller"
+        assert str(controller.driver) in command
+        prefix = command[: command.index(str(controller.driver))]
+        assert "-I" in prefix and "-B" in prefix
+        assert environment["PYTHONPATH"] == str(poison)
+        probe = run_guarded_test_process(
+            [
+                *prefix,
+                "-c",
+                "import importlib.util,json,sys,candidate_dependency_marker; "
+                "print(json.dumps([sys.flags.isolated,sys.dont_write_bytecode,"
+                "importlib.util.find_spec('candidate_runner_poison') is None,"
+                "candidate_dependency_marker.VALUE]))",
+            ],
+            env=environment,
+            cwd=cwd,
+            text=True,
+            check=True,
+        )
+        assert json.loads(probe.stdout) == [1, True, True, "controller-only"]
+        assert candidate not in controller.root.parents
+        record = json.loads(
+            (controller.root / ".molt-controller.json").read_text(encoding="utf-8")
+        )
+        assert record["commit"] == tip
+        assert (
+            controller.driver.read_text(encoding="utf-8")
+            == "# exact reviewed candidate driver\n"
+        )
+        assert (
+            _try_acquire_file_lock(
+                controller.root.parent.parent
+                / "controller-use"
+                / f"{controller.key}.lock"
+            )
+            is None
+        )
+        assert (controller.root / queue.ENVIRONMENT_NAME).is_dir()
+        observed.append(controller.root)
+        return 4321
+
+    monkeypatch.setattr(queue, "launch_detached", launch)
+    monkeypatch.setattr(
+        controller,
+        "_sync_environment",
+        sync_environment,
+    )
+    with ExitStack() as custody:
+        source_driver = candidate / "tools" / "molt_dev.py"
+        if physical_source == "controller":
+            selected = custody.enter_context(
+                controller.controller_source(candidate, common, tip)
+            )
+            source_driver = selected.driver
+            monkeypatch.setattr(
+                queue,
+                "controller_source",
+                lambda *_args: pytest.fail("existing source was re-extracted"),
+            )
+        facade = ModuleView(molt_dev, __file__=str(source_driver))
+        monkeypatch.setattr(queue, "_driver", lambda: facade)
+        queue._start_queue_runner(paths, main, _args(family, candidate_controller=True))
+    assert len(observed) == 1
+    assert synced == observed
+    assert main_signal.read_text(encoding="utf-8") == "unrelated dirty primary\n"
+    assert candidate.is_dir()
+
+
+@pytest.mark.parametrize("change", ["tracked", "untracked", "head-during-capture"])
+def test_candidate_runner_refuses_uncommitted_or_changed_source(
+    family, monkeypatch, change
+):
+    from contextlib import contextmanager
+    from tests.process_guard_common import ModuleView
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    candidate = _start(family, "candidate-source")
+    _commit_candidate_controller_source(candidate)
+    if change == "tracked":
+        (candidate / "tools" / "molt_dev.py").write_text(
+            "# dirty review work\n", encoding="utf-8"
+        )
+    elif change == "untracked":
+        (candidate / "not-committed.py").write_text(
+            "# pending review work\n", encoding="utf-8"
+        )
+    else:
+        publish = queue.controller_source
+
+        @contextmanager
+        def advance(*args):
+            with publish(*args) as selected:
+                _commit_file(candidate, "later.txt", "later\n", "advanced source")
+                yield selected
+
+        monkeypatch.setattr(queue, "controller_source", advance)
+    facade = ModuleView(molt_dev, __file__=str(candidate / "tools" / "molt_dev.py"))
+    monkeypatch.setattr(queue, "_driver", lambda: facade)
+    monkeypatch.setattr(
+        queue,
+        "launch_detached",
+        lambda *_a, **_k: pytest.fail("unadmitted source launched"),
+    )
+    with pytest.raises(DriverError, match="clean committed|changed during capture"):
+        queue._start_queue_runner(
+            queue.queue_paths(main), main, _args(family, candidate_controller=True)
+        )
+    assert candidate.is_dir()
+
+
+@pytest.mark.parametrize("advanced_after_publication", [False, True])
+def test_old_in_lane_runner_repins_after_unlock_and_retires_without_gates(
+    family, monkeypatch, advanced_after_publication
+):
+    from tests.process_guard_common import ModuleView
+    from tools import molt_dev_controller as controller, molt_dev_queue as queue
+
+    main = family / "molt-src"
+    _commit_candidate_controller_source(main)
+    _commit_file(main, "tools/proof_plan.toml", 'always = ["true"]\n', "policy")
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    first = _start(family, "legacy-runner")
+    second = _start(family, "second-lane")
+    first_tip = _commit_file(first, "first.txt", "first\n", "first lane")
+    second_tip = _commit_file(second, "second.txt", "second\n", "second lane")
+    paths = queue.queue_paths(main)
+    requests = [
+        queue.enqueue(
+            paths, head=first_tip, worktree=first, branch="lane/legacy-runner"
+        ),
+        queue.enqueue(
+            paths, head=second_tip, worktree=second, branch="lane/second-lane"
+        ),
+    ]
+    queue._write_plan(paths, [[request.id for request in requests]])
+    original_commands = queue._COMMANDS
+    monkeypatch.setattr(
+        queue, "_COMMANDS", ModuleView(original_commands, repo_root=first)
+    )
+    integrate = molt_dev.cmd_integrate
+    integrations = []
+
+    def integrate_once(args):
+        integrations.append(Path(args.repo))
+        return integrate(args)
+
+    monkeypatch.setattr(molt_dev, "cmd_integrate", integrate_once)
+    repins = []
+
+    def repin(args, argv):
+        assert queue._runner_lock_free(paths), "repin executed under runner lock"
+        assert Path.cwd() == main and Path(args.repo) == main
+        assert "--candidate-controller" not in argv
+        assert "--pinned-controller" not in argv
+        assert all(queue.read_result(paths, request.id) is None for request in requests)
+        assert [request.id for request in queue.pending(paths)] == [
+            request.id for request in requests
+        ]
+        assert paths.plan.is_file(), "pending retirement lost its batch plan"
+        assert first.is_dir() and second.is_dir()
+        if advanced_after_publication:
+            _commit_file(first, "later.txt", "unenrolled\n", "later lane work")
+        git = molt_dev.Git(main)
+        tip = git.rev_parse("origin/main")
+        common = molt_dev._git_common_directory(main)
+        assert common is not None
+        with controller.controller_source(main, common, tip) as surviving:
+            assert first not in surviving.root.parents
+            monkeypatch.setattr(
+                queue,
+                "_COMMANDS",
+                ModuleView(original_commands, repo_root=surviving.root),
+            )
+            published_args = _args(family)
+            handle = queue._take_runner_lock(paths)
+            assert handle is not None
+            try:
+                assert queue._land_one_batch(published_args, git, paths) is False
+            finally:
+                molt_dev._release_file_lock(handle)
+        repins.append(tip)
+        return molt_dev.EXIT_OK
+
+    monkeypatch.setattr(queue, "run_from_pinned_controller", repin)
+    args = molt_dev.build_parser().parse_args(
+        ["queue", "run", "--repo", str(main), "--candidate-controller"]
+    )
+    monkeypatch.chdir(main)
+    assert queue.cmd_queue_run(args) == molt_dev.EXIT_OK
+    assert len(integrations) == 1 and len(repins) == 1
+    first_result = queue.read_result(paths, requests[0].id)
+    second_result = queue.read_result(paths, requests[1].id)
+    assert first_result is not None and second_result is not None
+    assert second_result["status"] == "landed"
+    _assert_released(main, second)
+    if advanced_after_publication:
+        assert first_result["status"] == "landed_retirement_failed"
+        assert "advanced after enrollment" in first_result["detail"]
+        assert (first / "later.txt").read_text(encoding="utf-8") == "unenrolled\n"
+        assert _ref(main, "refs/heads/lane/legacy-runner") is not None
+    else:
+        assert first_result["status"] == "landed"
+        _assert_released(main, first)
+    assert not paths.plan.exists()

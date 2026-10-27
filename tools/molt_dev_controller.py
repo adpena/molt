@@ -24,13 +24,23 @@ import tarfile
 import tempfile
 import time
 import argparse
-from collections.abc import Sequence
+import atexit
+import re
+from contextlib import ExitStack, contextmanager
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
 from molt.process_environment import ProcessEnvironment
 from molt import process_guard
+from molt.file_locks import (
+    _FileLockHandle,
+    _acquire_file_lock,
+    _file_lock_owned_operation,
+    _release_file_lock,
+    _try_acquire_file_lock,
+)
 from tools.git_identity import require_git_object_id
 from tools import molt_dev_common
 from tools.molt_dev_common import _COMMANDS, EXIT_USAGE, DriverError, _say, _warn
@@ -57,7 +67,7 @@ RECORD_NAME = ".molt-controller.json"
 ENVIRONMENT_NAME = ".venv"
 STAGING_PREFIX = ".staging-"
 # Retention: the newest KEEP controllers stay; an older one retires only after
-# IDLE_S without use, which outlasts any landing that could still run it.
+# IDLE_S without use and no live shared source owner.
 KEEP = 4
 IDLE_S = 24 * 3600
 
@@ -72,8 +82,99 @@ class Controller:
         return self.root.joinpath(*DRIVER)
 
 
+_running_source_use: tuple[int, Controller, ExitStack] | None = None
+
+
 def controllers_root(common_dir: Path) -> Path:
     return common_dir / "molt" / "controllers"
+
+
+def _source_lock_path(root: Path) -> Path:
+    # Outside the replaceable source tree and the controller inventory.
+    key = root.name
+    if key.startswith(STAGING_PREFIX):
+        key = key[len(STAGING_PREFIX) :].split("-", 1)[0]
+    return root.parent.parent / "controller-use" / f"{key}.lock"
+
+
+def controller_for_source(root: Path) -> Controller | None:
+    """Admit an existing physical controller; ordinary checkouts return None."""
+    root = root.resolve()
+    marker = root / RECORD_NAME
+    if not marker.is_file():
+        return None
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"schema", "key", "commit"}
+            or record["schema"] != SCHEMA
+            or record["key"] != root.name
+            or re.fullmatch(r"[0-9a-f]{32}", root.name) is None
+        ):
+            raise ValueError("invalid controller source record")
+        require_git_object_id(record["commit"], label="controller source commit")
+    except (OSError, ValueError, TypeError) as error:
+        raise DriverError(f"cannot admit controller source {root}: {error}") from error
+    return Controller(key=root.name, root=root)
+
+
+def _admit_source_use(controller: Controller, handle: _FileLockHandle) -> None:
+    with _file_lock_owned_operation(
+        handle, expected_lock_path=_source_lock_path(controller.root), shared=True
+    ):
+        if controller_for_source(controller.root) != controller:
+            raise DriverError(
+                f"controller source is absent or changed: {controller.root}"
+            )
+        os.utime(controller.root / RECORD_NAME, None)
+
+
+@contextmanager
+def controller_source_use(
+    controller: Controller,
+) -> Generator[_FileLockHandle, None, None]:
+    """Hold one immutable controller through use, independently of its age."""
+    lock_path = _source_lock_path(controller.root)
+    handle = _acquire_file_lock(
+        lock_path,
+        shared=True,
+        timeout_s=None,
+        timeout_message=f"controller source stayed in retirement: {controller.root}",
+    )
+    try:
+        _admit_source_use(controller, handle)
+        yield handle
+    finally:
+        _release_file_lock(handle)
+
+
+@contextmanager
+def controller_source(
+    repo: Path, common_dir: Path, commit: str
+) -> Generator[Controller, None, None]:
+    """Publish/reuse exact committed source, without provisioning or retention.
+
+    The caller selects the admitted commit. This never fetches or interprets a
+    dirty working tree as the published policy.
+    """
+    require_git_object_id(commit, label="controller commit")
+    key = controller_key(repo, commit)
+    root = controllers_root(common_dir).resolve() / key
+    handle = _acquire_file_lock(
+        _source_lock_path(root),
+        shared=True,
+        timeout_s=None,
+        timeout_message=f"controller source stayed in retirement: {root}",
+    )
+    try:
+        if not (root / RECORD_NAME).is_file():
+            _extract(repo, commit, root, key)
+        controller = Controller(key=key, root=root)
+        _admit_source_use(controller, handle)
+        yield controller
+    finally:
+        _release_file_lock(handle)
 
 
 def _git_environment() -> ProcessEnvironment:
@@ -154,27 +255,31 @@ def _retire_idle(directory: Path, *, current: Path, now: float) -> None:
     entries.sort(reverse=True)
     for last_use, entry in entries[KEEP - 1 :]:
         if now - last_use >= IDLE_S:
+            handle = _try_acquire_file_lock(_source_lock_path(entry))
+            if handle is None:
+                continue
             try:
-                shutil.rmtree(entry)
+                with _file_lock_owned_operation(
+                    handle, expected_lock_path=_source_lock_path(entry)
+                ):
+                    marker = entry / RECORD_NAME
+                    fresh = (marker if marker.is_file() else entry).stat().st_mtime
+                    if now - fresh >= IDLE_S:
+                        shutil.rmtree(entry)
             except OSError as exc:
                 # Retention never decides a landing.
                 _warn(f"controller retention left {entry}: {exc}")
+            finally:
+                _release_file_lock(handle)
 
 
 def pinned_controller(repo: Path, common_dir: Path, commit: str) -> Controller:
     """The controller for main's commit, extracted once per tree set."""
 
-    require_git_object_id(commit, label="controller commit")
-    key = controller_key(repo, commit)
-    root = controllers_root(common_dir) / key
-    if not (root / RECORD_NAME).is_file():
-        _extract(repo, commit, root, key)
-    _sync_environment(root)
-    now = time.time()
-    # The record's mtime is the controller's last use.
-    os.utime(root / RECORD_NAME, (now, now))
-    _retire_idle(root.parent, current=root, now=now)
-    return Controller(key=key, root=root)
+    with controller_source(repo, common_dir, commit) as controller:
+        _sync_environment(controller.root)
+        _retire_idle(controller.root.parent, current=controller.root, now=time.time())
+        return controller
 
 
 def _uv_executable() -> str:
@@ -228,6 +333,19 @@ def verify_pinned_controller(key: str, *, driver_file: str, common_dir: Path) ->
             f"--pinned-controller {key} names {expected}, but this driver runs "
             f"from {driver_file}"
         )
+    # The actual controller owns its source as well as its launching parent.
+    # This closes the Windows redirector/startup handoff and survives the
+    # parent's later exit. Repeated validation does not accumulate handles.
+    global _running_source_use
+    controller = Controller(key=key, root=expected.resolve())
+    if _running_source_use is not None and _running_source_use[0] == os.getpid():
+        if _running_source_use[1] != controller:
+            raise DriverError("this process already owns a different controller source")
+        return
+    source_use = ExitStack()
+    source_use.enter_context(controller_source_use(controller))
+    atexit.register(source_use.close)
+    _running_source_use = (os.getpid(), controller, source_use)
 
 
 def add_pinned_controller_arguments(parser: argparse.ArgumentParser) -> None:
@@ -250,6 +368,15 @@ def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None
         if os.name == "nt" and key is not None:
             raise DriverError(
                 "pinned Windows controller has no original cwd", code=EXIT_USAGE
+            )
+        if key is not None:
+            driver = Path(driver_file).resolve()
+            if len(driver.parents) < 5:
+                raise DriverError(
+                    "controller driver has no pinned cache identity", code=EXIT_USAGE
+                )
+            verify_pinned_controller(
+                key, driver_file=driver_file, common_dir=driver.parents[4]
             )
         return
     if key is None:
@@ -287,11 +414,36 @@ def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None
 def run_controller(controller: Controller, argv: Sequence[str], *, repo: Path) -> int:
     """Hand this landing to the controller; never returns on POSIX."""
 
+    source_use = ExitStack()
+    handle = source_use.enter_context(controller_source_use(controller))
+    # A Windows guard can fail with unresolved child custody. Keep source until
+    # its registered child cleanup, which runs before this earlier callback.
+    atexit.register(source_use.close)
+    try:
+        result = _run_controller(controller, argv, repo=repo, source_handle=handle)
+    except BaseException:
+        if os.name == "posix":  # failed exec created no child
+            atexit.unregister(source_use.close)
+            source_use.close()
+        raise
+    atexit.unregister(source_use.close)
+    source_use.close()
+    return result
+
+
+def _run_controller(
+    controller: Controller,
+    argv: Sequence[str],
+    *,
+    repo: Path,
+    source_handle: _FileLockHandle,
+) -> int:
     repo = repo.resolve()
     interpreter = str(venv_python(controller.root / ENVIRONMENT_NAME))
     command = [
         interpreter,
         "-I",
+        "-B",
         str(controller.driver),
         *argv,
         "--repo",
@@ -304,7 +456,11 @@ def run_controller(controller: Controller, argv: Sequence[str], *, repo: Path) -
         stream.flush()
     if os.name == "posix":
         # One process: signals, the pid and the exit status stay the landing's own.
-        os.execv(interpreter, command)
+        from molt.process_spawn import forward_command
+
+        return forward_command(
+            command, env=os.environ, retained_shared_handles=(source_handle,)
+        )
     # Windows launchers retain their startup directory. Keep both this
     # waiting process and the selected venv redirector in the surviving cache;
     # only the actual pinned worker resumes the captured logical cwd.

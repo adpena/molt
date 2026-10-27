@@ -1318,7 +1318,9 @@ def test_the_running_interpreters_environment_is_never_reclaimed(tmp_path):
     assert len(reclaimed) == 4 and not roots["cargo-target"].exists()
 
 
-def test_dx_completion_collects_idle_state_without_collecting_its_environment(tmp_path):
+def test_dx_completion_dispatches_idle_state_without_collecting_its_environment(
+    tmp_path,
+):
     import time
 
     from molt import checkout_state
@@ -1335,8 +1337,14 @@ def test_dx_completion_collects_idle_state_without_collecting_its_environment(tm
     _last_used(gone_roots.values(), 3 * HOUR, now)
     code = (
         "import sys; from pathlib import Path\n"
-        f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
+        f"sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / 'src')!r}]\n"
         "from molt.dx import RunContext, collect_checkout_state_after_result\n"
+        "from molt import dx; from tools import disk_guard; from types import SimpleNamespace\n"
+        "def schedule(root, environment, *, cwd):\n"
+        " assert root == Path(sys.argv[2]) and cwd == Path(sys.argv[1])\n"
+        " disk_guard.collect_due(root=root, env=environment)\n"
+        " return root / 'fixture-maintenance'\n"
+        "dx._source_checkout_maintenance = lambda: SimpleNamespace(schedule=schedule)\n"
         "env = RunContext(Path(sys.argv[1]), session_prefix='t').canonical_env(\n"
         "    {'MOLT_EXT_ROOT': sys.argv[2], 'PATH': '/usr/bin:/bin'}, create_dirs=True)\n"
         "assert Path(sys.argv[3]).is_dir(), 'environment construction collected global state'\n"
@@ -1402,7 +1410,7 @@ def test_automatic_collection_requires_an_eligible_outer_completion(
     def forbidden():
         pytest.fail("ineligible completion loaded the collector")
 
-    monkeypatch.setattr(dx, "_source_disk_guard", forbidden)
+    monkeypatch.setattr(dx, "_source_checkout_maintenance", forbidden)
     dx.collect_checkout_state_after_result({**env, **extra}, cwd=tmp_path)
     assert not ext.joinpath(*checkout_state.GC_STAMP).exists()
 
@@ -1411,7 +1419,7 @@ def test_installed_completion_does_not_claim_source_collection(tmp_path, monkeyp
     from molt import checkout_state
 
     ext, _projects, env = _checkout_family(tmp_path)
-    monkeypatch.setattr(dx, "_source_disk_guard", lambda: None)
+    monkeypatch.setattr(dx, "_source_checkout_maintenance", lambda: None)
     dx.collect_checkout_state_after_result(env, cwd=tmp_path)
     assert not ext.joinpath(*checkout_state.GC_STAMP).exists()
 
@@ -1440,8 +1448,8 @@ def test_maintenance_selection_failure_is_reported_without_replacing_result(
     assert "checkout state GC failed: source unavailable" in capsys.readouterr().err
 
 
-def test_automatic_collection_reports_real_reclaim_errors_and_throttles_failure(
-    tmp_path, monkeypatch, capsys
+def test_due_collection_returns_real_reclaim_errors_and_throttles_failure(
+    tmp_path, monkeypatch
 ):
     import time
     from molt import checkout_state
@@ -1454,10 +1462,13 @@ def test_automatic_collection_reports_real_reclaim_errors_and_throttles_failure(
     gone.rmdir()
     _last_used(roots.values(), 3 * HOUR, time.time())
     monkeypatch.setattr(dg, "delete_path", lambda _path: (False, "fixture-denied"))
-    dx.collect_checkout_state_after_result(env, cwd=tmp_path)
-    diagnostics = capsys.readouterr().err
-    assert diagnostics.count("fixture-denied") == 3
-    assert "1 more error(s)" in diagnostics
+    results = dg.collect_due(root=ext, env=env)
+    errors = [error for result in results for error in result.errors]
+    assert errors and all(error.endswith(": fixture-denied") for error in errors)
+    failed_roots = [path for kind, path in roots.items() if kind != "build-control"]
+    assert {error.removesuffix(": fixture-denied") for error in errors} == _resolved(
+        failed_roots
+    )
     assert all(path.is_dir() for path in roots.values())
     assert not checkout_state.checkout_state_gc_due(ext)
 
@@ -1465,7 +1476,7 @@ def test_automatic_collection_reports_real_reclaim_errors_and_throttles_failure(
         pytest.fail("failed attempt was repeated before the next day")
 
     monkeypatch.setattr(dg, "collect", forbidden)
-    dx.collect_checkout_state_after_result(env, cwd=tmp_path)
+    assert dg.collect_due(root=ext, env=env) == []
 
 
 def test_daily_collection_admission_is_nonblocking_across_processes(tmp_path):
@@ -1499,6 +1510,7 @@ def test_daily_collection_admission_is_nonblocking_across_processes(tmp_path):
             os.utime(stamp, (1, 1))
             with checkout_state.checkout_state_gc(ext) as admitted:
                 assert admitted is False
+            assert dg.collect_due(root=ext, env={}) == []
             assert child.poll() is None
         finally:
             child.communicate("x", timeout=10)
@@ -1514,7 +1526,7 @@ def test_daily_collection_admission_is_nonblocking_across_processes(tmp_path):
 
 
 @pytest.mark.parametrize("owner", ["memory_guard", "dx_run", "nested_guarded_exec"])
-def test_outer_completion_publishes_payload_before_real_collection(
+def test_outer_completion_publishes_payload_before_maintenance_dispatch(
     tmp_path, monkeypatch, owner
 ):
     import argparse
@@ -1560,19 +1572,25 @@ def test_outer_completion_publishes_payload_before_real_collection(
                 "raise SystemExit(rc)\n"
             ),
         ]
-    original = dg.collect
+    from types import SimpleNamespace
+
     observations = []
 
-    def collect(**kwargs):
+    def schedule(root, environment, *, cwd):
         assert marker.read_text(encoding="utf-8") == "closed payload"
         if owner != "dx_run":
             payload = json.loads(summary.read_text(encoding="utf-8"))
             assert payload["returncode"] == 7
             assert payload["descendants_closed"] is True
         observations.append(owner)
-        return original(**kwargs)
+        assert root == ext
+        assert environment["MOLT_EXT_ROOT"] == str(ext)
+        dg.collect_due(root=root, env=environment)
+        return ext / "fixture-maintenance"
 
-    monkeypatch.setattr(dg, "collect", collect)
+    monkeypatch.setattr(
+        dx, "_source_checkout_maintenance", lambda: SimpleNamespace(schedule=schedule)
+    )
     if owner != "dx_run":
         result = memory_guard.main(
             [
@@ -1613,7 +1631,7 @@ def test_outer_completion_publishes_payload_before_real_collection(
         "cli-deploy",
     ],
 )
-def test_published_nonzero_result_collects_selected_root_alongside_live_use(
+def test_published_nonzero_result_dispatches_selected_root_alongside_live_use(
     tmp_path, monkeypatch, capsys, owner
 ):
     import time
@@ -1647,18 +1665,22 @@ def test_published_nonzero_result_collects_selected_root_alongside_live_use(
     valuable.write_bytes(b"ambient is not the selected root")
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient))
     marker = tmp_path / "payload-result"
-    original = dg.collect
+    from types import SimpleNamespace
+
     observations = []
 
-    def collect(**kwargs):
+    def schedule(root, environment, *, cwd):
         assert marker.read_text(encoding="utf-8") == "7"
         assert "published result 7" in capsys.readouterr().out
-        assert kwargs["root"] == ext
-        assert kwargs["env"]["MOLT_EXT_ROOT"] == str(ext)
+        assert root == ext
+        assert environment["MOLT_EXT_ROOT"] == str(ext)
         observations.append("publication precedes maintenance")
-        return original(**kwargs)
+        dg.collect_due(root=root, env=environment)
+        return ext / "fixture-maintenance"
 
-    monkeypatch.setattr(dg, "collect", collect)
+    monkeypatch.setattr(
+        dx, "_source_checkout_maintenance", lambda: SimpleNamespace(schedule=schedule)
+    )
 
     def payload():
         proc = run_guarded_test_process(
@@ -1698,7 +1720,6 @@ def test_published_nonzero_result_collects_selected_root_alongside_live_use(
 
         expected = 1
     else:
-        from types import SimpleNamespace
         from molt.cli import entrypoint, entrypoint_dispatch
 
         args = SimpleNamespace(command=owner.removeprefix("cli-"), json=True)
@@ -3341,3 +3362,214 @@ def test_a_miscomputed_layout_entry_never_deletes_outside_its_root(
     result = _gc(ext, env, time.time())
     assert stranger.exists()
     assert any("outside its root" in error for error in result.errors)
+
+
+def test_each_same_second_collection_log_survives(tmp_path, monkeypatch):
+    from tests.process_guard_common import ModuleView
+
+    monkeypatch.setattr(
+        dg, "time", ModuleView(dg.time, strftime=lambda *_args: "20261027T043000")
+    )
+    results = [
+        dg.ReclaimResult(
+            operation="gc",
+            root=str(tmp_path),
+            triggered=True,
+            free_before=10,
+            free_after=20,
+            reclaimed=[{"path": "first", "kind": "lane"}],
+        ),
+        dg.ReclaimResult(
+            operation="pressure",
+            root=str(tmp_path),
+            triggered=False,
+            free_before=20,
+            free_after=20,
+        ),
+        dg.ReclaimResult(
+            operation="gc",
+            root=str(tmp_path),
+            triggered=True,
+            free_before=20,
+            free_after=30,
+            reclaimed=[{"path": "second", "kind": "lane"}],
+        ),
+    ]
+    paths = []
+    for result in results:
+        path = dg._write_log(tmp_path, result)
+        assert path is not None
+        paths.append(path)
+    assert len(set(paths)) == 3
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    assert [record["operation"] for record in records] == ["gc", "pressure", "gc"]
+    assert [record["schema_version"] for record in records] == [2, 2, 2]
+    assert records[0]["reclaimed"] == [{"path": "first", "kind": "lane"}]
+    assert records[1]["triggered"] is False
+    assert records[2]["reclaimed"] == [{"path": "second", "kind": "lane"}]
+
+
+class _ElapsedClock:
+    def __init__(self):
+        self.value = 100.0
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
+@pytest.mark.parametrize("denied", [False, True])
+def test_pressure_result_attributes_independent_phase_and_delete_time(
+    tmp_path, monkeypatch, denied
+):
+    from tests.process_guard_common import ModuleView
+
+    now = 2_000_000.0
+    stale = tmp_path / "target" / "sessions" / "timed-root"
+    size = _make_dir(stale, size_bytes=40 * _GB, age_s=100_000, now=now)
+    volume = _SimulatedVolume(start_free=10 * _GB, sized={stale: size})
+    clock = _ElapsedClock()
+    monkeypatch.setattr(dg, "time", ModuleView(dg.time, monotonic=clock))
+    discover = dg.discover_candidates
+    plan = dg.plan_reclaim
+    remove = dg.delete_path
+
+    def delayed_discovery(*args, **kwargs):
+        clock.advance(2.0)
+        return discover(*args, **kwargs)
+
+    def delayed_plan(*args, **kwargs):
+        if kwargs["free_bytes"] == 10 * _GB:
+            clock.advance(3.0)
+        return plan(*args, **kwargs)
+
+    def delayed_delete(path):
+        clock.advance(7.0)
+        return (False, "fixture-denied") if denied else remove(path)
+
+    monkeypatch.setattr(dg, "discover_candidates", delayed_discovery)
+    monkeypatch.setattr(dg, "plan_reclaim", delayed_plan)
+    monkeypatch.setattr(dg, "delete_path", delayed_delete)
+    result = dg.ensure_free(
+        root=tmp_path,
+        env={},
+        config=_cfg(),
+        now_fn=lambda: now,
+        free_bytes_fn=volume,
+        log=False,
+    )
+    assert result.operation == "pressure"
+    assert result.elapsed_s == 12.0
+    assert result.phase_elapsed_s == {
+        "setup": 0.0,
+        "discovery": 2.0,
+        "planning": 3.0,
+        "retirement": 7.0,
+    }
+    assert result.deletion_elapsed_s == {str(stale.resolve()): 7.0}
+    if denied:
+        assert stale.is_dir()
+        assert result.reclaimed == []
+        assert result.errors == [f"{stale.resolve()}: fixture-denied"]
+    else:
+        assert not stale.exists()
+        assert _reclaimed(result) == {str(stale.resolve())}
+        assert result.errors == []
+
+
+@pytest.mark.parametrize(
+    "operation", ["gc", "checkout-retirement", "superseded-layouts"]
+)
+def test_all_retirement_consumers_measure_actual_deletions(
+    tmp_path, monkeypatch, operation
+):
+    import time
+    from molt import checkout_state
+    from tests.process_guard_common import ModuleView
+
+    checkout = None
+    if operation == "superseded-layouts":
+        ext, env, _target, expected, keep = _superseded_fixture(tmp_path)
+    else:
+        ext, projects, env = _checkout_family(tmp_path)
+        checkout = projects / "gone"
+        checkout.mkdir()
+        roots = _checkout_state(ext, checkout)
+        checkout_state.stamp_checkout_state(checkout, env)
+        checkout.rmdir()
+        _last_used(roots.values(), 3 * HOUR, time.time())
+        expected = list(roots.values())
+        keep = []
+    clock = _ElapsedClock()
+    remove = dg.delete_path
+    monkeypatch.setattr(dg, "time", ModuleView(dg.time, monotonic=clock))
+
+    def delayed_delete(path):
+        clock.advance(2.0)
+        return remove(path)
+
+    monkeypatch.setattr(dg, "delete_path", delayed_delete)
+    if operation == "checkout-retirement":
+        assert checkout is not None
+        result = dg.reclaim_checkout_state(checkout, root=ext, env=env)
+    else:
+        result = _gc(ext, env, time.time())
+    assert _reclaimed(result) == _resolved(expected)
+    assert result.deletion_elapsed_s == {str(path.resolve()): 2.0 for path in expected}
+    assert result.elapsed_s == 2.0 * len(expected)
+    phase = "superseded-layouts" if operation == "superseded-layouts" else "retirement"
+    assert result.phase_elapsed_s[phase] == result.elapsed_s
+    assert result.operation == (
+        "gc" if operation == "superseded-layouts" else operation
+    )
+    assert not any(path.exists() for path in expected)
+    assert all(path.exists() for path in keep)
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_due_collection_owns_real_admission_until_result_or_exception(
+    tmp_path, monkeypatch, failure
+):
+    from molt import checkout_state
+
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    expected = [
+        dg.ReclaimResult(
+            operation="gc",
+            root=str(root),
+            triggered=True,
+            free_before=0,
+            free_after=0,
+            errors=["retained fixture error"],
+        )
+    ]
+    called = []
+
+    def collect(*, root, env):
+        called.append(root)
+        assert env == {"fixture": "selected"}
+        stamp = root.joinpath(*checkout_state.GC_STAMP)
+        assert stamp.is_file() and not checkout_state.checkout_state_gc_due(root)
+        # Make the stamp due while the collection is still inside its lock.
+        # An implementation releasing admission before collection admits this.
+        os.utime(stamp, (1, 1))
+        with checkout_state.checkout_state_gc(root) as contender:
+            assert contender is False
+        if failure:
+            raise RuntimeError("collection fixture failed")
+        return expected
+
+    monkeypatch.setattr(dg, "collect", collect)
+    if failure:
+        with pytest.raises(RuntimeError, match="collection fixture failed"):
+            dg.collect_due(root=root, env={"fixture": "selected"})
+    else:
+        assert dg.collect_due(root=root, env={"fixture": "selected"}) is expected
+    assert called == [root.resolve()]
+    # The context has closed before returning or propagating the exception.
+    with checkout_state.checkout_state_gc(root) as admitted:
+        assert admitted is True
+    assert dg.collect_due(root=root, env={"fixture": "selected"}) == []
