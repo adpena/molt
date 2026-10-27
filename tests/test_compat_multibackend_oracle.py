@@ -34,6 +34,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from molt.cli.build_request import ParseCodec
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -159,6 +160,7 @@ def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):
     # This isolates the adapter's output boundary; it does not fake a compiled
     # WASM execution claim. The real guarded capture is exercised above.
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -212,6 +214,7 @@ def test_wasm_runtime_cwd_uses_owned_leaf_without_rebasing_inputs(
     data.write_text("explicit data", encoding="utf-8")
     environment["MOLT_CWD_PROBE_INPUT"] = str(data)
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -306,6 +309,7 @@ def test_adapter_child_receives_atomic_selected_capabilities(
         MOLT_CAPABILITY_TIER="none", MOLT_CAPABILITIES="poison.inherited"
     )
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -367,6 +371,7 @@ def test_wasm_host_warnings_are_retained_without_filtering_child_stderr(
     for name in ("NODE_NO_WARNINGS", "NODE_OPTIONS", "NODE_REDIRECT_WARNINGS"):
         environment.pop(name, None)
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -410,6 +415,7 @@ def test_wasm_host_warnings_are_retained_without_filtering_child_stderr(
 
 def test_wasm_host_warning_read_failure_cannot_pass(tmp_path, monkeypatch):
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -464,6 +470,7 @@ def test_cross_backend_comparison_uses_child_stream_not_guard_diagnostics():
 def test_backend_receipt_hashes_exact_child_bytes():
     stdout, stderr = b"\xff\r\n", b"\x00\xfe\r\n"
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -565,6 +572,7 @@ def test_adapter_test_supplied_directory_is_not_retired(tmp_path, monkeypatch):
         lambda _backend, _file, run, **_kwargs: run(tmp_path),
     )
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -705,6 +713,7 @@ class _FakeAdapter:
 def test_backend_execution_context_requires_canonical_target_authority() -> None:
     with pytest.raises(TypeError, match="TargetPythonVersion"):
         compat_backends.BackendExecutionContext(  # type: ignore[arg-type]
+            parse_codec="msgpack",
             molt_cli_python=sys.executable,
             target_python="3.14",
             build_profile="dev",
@@ -716,6 +725,7 @@ def test_backend_execution_context_requires_canonical_target_authority() -> None
         )
     with pytest.raises(ValueError, match="must be canonical"):
         compat_backends.BackendExecutionContext(
+            parse_codec="msgpack",
             molt_cli_python=sys.executable,
             target_python=TargetPythonVersion(3, 14, 1),
             build_profile="dev",
@@ -727,6 +737,7 @@ def test_backend_execution_context_requires_canonical_target_authority() -> None
         )
 
 
+@pytest.mark.parametrize("parse_codec", ("msgpack", "json", "cbor"))
 @pytest.mark.parametrize("target_python", ("3.13", "3.14"))
 @pytest.mark.parametrize("backend", ("wasm", "llvm", "luau", "native"))
 @pytest.mark.parametrize("stdlib_profile", (None, "micro", "full"))
@@ -734,11 +745,13 @@ def test_cross_backend_build_command_binds_target_python(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     target_python: str,
+    parse_codec: ParseCodec,
     backend: str,
     stdlib_profile: str | None,
 ) -> None:
     selected = str(tmp_path / "selected CLI python")
     monkeypatch.setenv("MOLT_DIFF_MOLT_PYTHON", "conflicting-ambient-python")
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
     original_import = builtins.__import__
 
     def import_without_harness_alias(
@@ -750,12 +763,14 @@ def test_cross_backend_build_command_binds_target_python(
 
     monkeypatch.setattr(builtins, "__import__", import_without_harness_alias)
     context = compat_backends.BackendExecutionContext(
+        parse_codec=parse_codec,
         molt_cli_python=selected,
         target_python=_parse_target_python_version(target_python),
         build_profile="release",
         capabilities="fs.read",
         environment={
             "MOLT_CAPABILITY_TIER": "none",
+            "MOLT_CODEC": "invalid-context-environment",
             "MOLT_DIFF_STDLIB_PROFILE": stdlib_profile or "",
         },
         budget=compat_backends.ItemBudget(
@@ -778,6 +793,8 @@ def test_cross_backend_build_command_binds_target_python(
 
     # JIT also uses this builder, with the native target and its tier arguments.
     assert command[:4] == [selected, "-m", "molt.cli", "build"]
+    assert command.count("--codec") == 1
+    assert command[command.index("--codec") + 1] == parse_codec
     assert command.count("--python-version") == 1
     assert command[command.index("--python-version") + 1] == target_python
     assert command[command.index("--build-profile") + 1] == "release"
@@ -793,6 +810,7 @@ def test_cross_backend_build_command_binds_target_python(
 def test_backend_execution_context_rejects_invalid_stdlib_profile() -> None:
     with pytest.raises(ValueError, match="MOLT_DIFF_STDLIB_PROFILE"):
         compat_backends.BackendExecutionContext(
+            parse_codec="msgpack",
             molt_cli_python=sys.executable,
             target_python=_parse_target_python_version("3.12"),
             build_profile="dev",
@@ -1074,6 +1092,7 @@ def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
     from molt.cli import run_tier
 
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -1611,6 +1630,7 @@ def test_all_adapters_preserve_phase_failure(
         lambda _backend, _file, run, **_kwargs: run(tmp_path),
     )
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -1675,6 +1695,7 @@ def test_all_adapters_preserve_phase_failure(
 
 def test_native_adapter_preserves_timeout():
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -1979,6 +2000,7 @@ def test_native_first_failure_is_terminal_and_preserves_selection(
         molt_diff, "_COMPAT_BACKEND_REGISTRY", compat_backends.build_registry(run)
     )
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -2404,6 +2426,7 @@ def test_native_failure_cannot_replace_the_selected_budget_or_outcome(
     )
     budget = compat_backends.ItemBudget.start(policy, ("native",))
     context = compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -2680,3 +2703,75 @@ def test_twins_with_the_pinned_status_but_other_output_fail(
     )
     assert record["resolved_status"] == "fail"
     assert record["reason_tag"] == "pinned_outcome_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(None, "msgpack"), ("json", "json"), ("cbor", "cbor")]
+)
+def test_all_backend_contexts_keep_one_admitted_codec(
+    fake_test_file, install_fake_registry, monkeypatch, raw, expected
+):
+    targets = ("native", "wasm", "llvm", "luau", "jit")
+    if raw is None:
+        monkeypatch.delenv("MOLT_CODEC", raising=False)
+    else:
+        monkeypatch.setenv("MOLT_CODEC", raw)
+    registry, native_contexts = install_fake_registry(
+        {target: compat_backends.BackendResult("42\n", "", 0) for target in targets}
+    )
+    select = molt_diff.parse_codec_from_input
+    selections = []
+
+    def select_once(value):
+        selections.append(value)
+        return select(value)
+
+    monkeypatch.setattr(molt_diff, "parse_codec_from_input", select_once)
+    result = molt_diff.diff_test(str(fake_test_file), targets=targets)
+    assert result["resolved_status"] == "pass"
+    assert selections == [raw]
+    context = native_contexts[0]
+    assert context.parse_codec == expected
+    for target in targets[1:]:
+        assert [_dispatch_view(c) for c in registry[target].contexts] == [
+            _dispatch_view(context)
+        ]
+
+
+def test_test_codec_override_precedes_inherited_selection(
+    fake_test_file, install_fake_registry, monkeypatch
+):
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
+    fake_test_file.write_text(
+        "# MOLT_ENV: MOLT_CODEC=json\nprint(42)\n", encoding="utf-8"
+    )
+    _, contexts = install_fake_registry(
+        {"native": compat_backends.BackendResult("42\n", "", 0)}
+    )
+    assert molt_diff.diff_test(str(fake_test_file))["resolved_status"] == "pass"
+    assert contexts[0].parse_codec == "json"
+
+
+@pytest.mark.parametrize("raw", ["", "invalid-codec"])
+def test_invalid_codec_is_one_failed_file_before_any_backend_dispatch(
+    fake_test_file, install_fake_registry, monkeypatch, capsys, raw
+):
+    targets = ("native", "wasm", "llvm", "luau", "jit")
+    registry, contexts = install_fake_registry(
+        {target: compat_backends.BackendResult("42\n", "", 0) for target in targets}
+    )
+    monkeypatch.setenv("MOLT_CODEC", raw)
+    monkeypatch.setattr(
+        molt_diff,
+        "run_cpython",
+        lambda *_a, **_k: pytest.fail("invalid codec ran the oracle"),
+    )
+    rows = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", rows.append)
+    result = molt_diff.diff_test(str(fake_test_file), targets=targets)
+    assert result["raw_status"] == result["resolved_status"] == "fail"
+    assert "parse_codec" in result["build_error"]
+    assert rows == [result]
+    assert "[FAIL]" in capsys.readouterr().out
+    assert contexts == []
+    assert all(not registry[target].contexts for target in targets[1:])

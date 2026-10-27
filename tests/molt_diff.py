@@ -17,6 +17,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 
+from msgspec import ValidationError
+
 # Make the repository root importable so the `tools` / `tests` packages resolve
 # regardless of the current working directory or how this harness is launched.
 # Running `python3 tests/molt_diff.py` puts `tests/` (the script directory) on
@@ -57,7 +59,7 @@ from molt.cli.backend_daemon_config import _backend_daemon_enabled  # noqa: E402
 from molt.cli.build_request import (  # noqa: E402
     BuildProfile,
     BuildRequest,
-    ParseCodec,
+    parse_codec_from_input,
     build_request_to_payload,
 )
 from molt import file_locks  # noqa: E402
@@ -1050,6 +1052,7 @@ def _backend_execution_context(
     return compat_backends.BackendExecutionContext(
         target_python=resolved_target,
         molt_cli_python=_resolve_molt_cli_python(),
+        parse_codec=parse_codec_from_input(env.get("MOLT_CODEC")),
         build_profile=build_profile,
         capabilities=_diff_capabilities(env),
         environment=env,
@@ -2384,26 +2387,6 @@ def _run_batch_compile_build(
     request_timeout: float,
     budget: compat_backends.ItemBudget,
 ) -> compat_backends.BackendResult:
-    diff_caps = _diff_capabilities(env)
-    try:
-        stdlib_profile = compat_backends.stdlib_profile_from_environment(env)
-        request = BuildRequest(
-            file_path=file_path,
-            profile=cast(BuildProfile, build_profile),
-            output=str(output_binary),
-            out_dir=str(output_root),
-            emit="bin",
-            cache=not no_cache and not rebuild,
-            respect_pythonpath=True,
-            python_version=target_python.short if target_python is not None else None,
-            stdlib_profile=stdlib_profile,
-            capabilities=diff_caps or None,
-        )
-        if "MOLT_CODEC" in env:
-            request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
-        params = build_request_to_payload(request)
-    except ValueError as exc:
-        return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
     build_cap = budget.policy.phase("native", "build")
     if build_cap is not None:
         request_timeout = (
@@ -2418,6 +2401,29 @@ def _run_batch_compile_build(
         )
     if budget.expired():
         return budget.exhausted_result(build_failed=True)
+    diff_caps = _diff_capabilities(env)
+    try:
+        stdlib_profile = compat_backends.stdlib_profile_from_environment(env)
+        request = BuildRequest(
+            file_path=file_path,
+            parse_codec=(
+                execution_context.parse_codec
+                if execution_context is not None
+                else parse_codec_from_input(env.get("MOLT_CODEC"))
+            ),
+            profile=cast(BuildProfile, build_profile),
+            output=str(output_binary),
+            out_dir=str(output_root),
+            emit="bin",
+            cache=not no_cache and not rebuild,
+            respect_pythonpath=True,
+            python_version=target_python.short if target_python is not None else None,
+            stdlib_profile=stdlib_profile,
+            capabilities=diff_caps or None,
+        )
+        params = build_request_to_payload(request)
+    except ValueError as exc:
+        return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
     client, start_error = _batch_compile_server_client(
         env,
         execution_context=execution_context,
@@ -3056,9 +3062,23 @@ def _run_molt_owned(
             build_cmd.append("--rebuild")
         if stdlib_profile is not None:
             build_cmd.extend(["--stdlib-profile", stdlib_profile])
-        codec = env.get("MOLT_CODEC")
-        if codec:
-            build_cmd.extend(["--codec", codec])
+        try:
+            codec = (
+                execution_context.parse_codec
+                if execution_context is not None
+                else parse_codec_from_input(env.get("MOLT_CODEC"))
+            )
+        except ValueError as exc:
+            _record_rss_metrics(
+                file_path,
+                build_metrics=None,
+                run_metrics=None,
+                build_rc=2,
+                run_rc=None,
+                status="build_failed",
+            )
+            return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
+        build_cmd.extend(["--codec", codec])
         build_timeout = budget.limit(build_timeout)
         if build_timeout == 0:
             return budget.exhausted_result(build_failed=True)
@@ -3808,14 +3828,21 @@ def diff_test(
         record["expect_molt_fail"] = expect_molt_fail
         record["expected_failure_reason"] = expect_fail_reason
         python_version = _python_exe_version(python_exe, budget=item_budget)
-        execution_context = _backend_execution_context(
-            file_path,
-            python_exe,
-            build_profile,
-            target_python,
-            metadata=meta,
-            budget=item_budget,
-        )
+        try:
+            execution_context = _backend_execution_context(
+                file_path,
+                python_exe,
+                build_profile,
+                target_python,
+                metadata=meta,
+                budget=item_budget,
+            )
+        except ValidationError as exc:
+            record["raw_status"] = record["resolved_status"] = "fail"
+            record["build_error"] = str(exc)
+            print(f"[FAIL] {file_path} (invalid build configuration)")
+            print(str(exc))
+            return
         record["compiler_target_python"] = execution_context.target_python.short
         host_tags = test_policy.current_platform_tags()
         architecture = test_policy.current_architecture()
@@ -4371,6 +4398,10 @@ def run_diff(
                     )
                 except compat_backends.ItemBudgetExpired as error:
                     build_result = error.result()
+                except ValidationError as error:
+                    build_result = compat_backends.BackendResult(
+                        None, str(error), 2, build_failed=True
+                    )
                 if build_result.guard_signal is not None:
                     defer_suite_signal(build_result.guard_signal, None)
                     print(build_result.stderr)

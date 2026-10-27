@@ -1416,6 +1416,7 @@ def test_native_resource_evidence_survives_build_and_run(
 
     monkeypatch.setattr(module, "_run_with_optional_time", run)
     context = module.compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=selected,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",

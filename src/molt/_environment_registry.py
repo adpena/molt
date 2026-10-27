@@ -1810,7 +1810,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_CODEC",
       "output_neutral": false,
       "owner": "tools/bench.py",
-      "summary": "Structured codec the bench, molt_diff and conformance harnesses pass to the build server and to `molt build --codec`; default msgpack when unset.",
+      "summary": "Structured codec explicitly passed by every differential backend, bench and conformance build through the canonical typed request input; unset pins msgpack independently of project configuration, and an empty or invalid value fails build admission.",
       "values": [
         "msgpack",
         "cbor",

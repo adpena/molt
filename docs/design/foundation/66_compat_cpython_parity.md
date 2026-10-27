@@ -63,6 +63,30 @@ release completed children on every failure while preserving a pending error.
 Complete lexical `tokenize` conformance, other versioned metadata and release
 matrix qualification remain separate obligations in the findings ledger.
 
+## One codec selection across build transports
+
+Differential, benchmark and conformance builds explicitly select their structured
+codec through `molt.cli.build_request.parse_codec_from_input`, which delegates to
+the existing strict `BuildRequest` decoder. `MOLT_CODEC` unset selects the
+request's declared `msgpack` default, including when a local project config
+selects another codec. An explicitly empty or invalid value is a build admission
+failure, reported per file before compiler dispatch. The ordinary CLI continues
+to resolve its explicit options and project configuration through its existing
+request resolver.
+
+After item-budget admission, the differential producer selects the codec once
+alongside the CLI interpreter in `BackendExecutionContext`. Native direct and
+batch builds, WASM, LLVM, Luau and JIT consume that same typed field; ambient
+variables cannot replace it. The context-free native entry, benchmark and
+conformance inputs use the same pure codec projection before dispatch. A
+terminal batch item or suite trip cannot initiate codec selection or batch startup.
+
+This adds one bounded request-decoder admission per selected input, allocating
+one input dictionary and one temporary request. Benchmark command projection
+also decodes its validated payload once to recover the typed codec for `--codec`.
+It adds no process, filesystem, cache or emitted-program work. Batch and direct
+command projections retain their existing request validation and build/run budgets.
+
 ## One authoritative execution attempt
 
 Every selected backend comparison runs once through the same adapter registry. Its first
@@ -72,6 +96,17 @@ a passing cell by disabling the daemon, ignoring caches, rebuilding, selecting
 a cold Cargo target or retrying an OOM serially. A batch request with an unknown
 outcome is terminal; resubmission could execute the compile twice. Startup ping
 and request custody retain their existing bounded transport and cleanup owners.
+
+A batch request's deadline covers lock admission, raw stdin writes and the
+response. A waiting caller acquires no child custody. A partial write or unknown
+response poisons the transport and is never retried. Stderr is drained into a
+bounded 8 KiB tail. Forced child closure, serialized descriptor closure and all
+reader joins precede releasing the child's use hold; an arbitrary teardown
+callback has its own budget, separate from the request deadline. The transport
+adds one steady reader thread and one `os.set_blocking` call per child, normally
+one `os.write` per request, and no guest work. Python 3.12 documents
+[nonblocking Windows pipe support](https://docs.python.org/3.12/library/os.html#os.set_blocking).
+These are structural costs, with no latency or throughput claim.
 
 This follows the ordinary single-attempt default in
 [Bazel](https://github.com/bazelbuild/bazel/blob/master/src/main/java/com/google/devtools/build/lib/exec/ExecutionOptions.java)

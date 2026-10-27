@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.cli.build_request import ParseCodec
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.verified_subset import load_verified_subset_policy
 
@@ -8,6 +9,7 @@ import os
 import queue
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -314,6 +316,7 @@ def test_native_adapter_preserves_first_failure_and_admitted_selection(
     monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
 
     context = module.compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -376,6 +379,7 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
     monkeypatch.setattr(module, "run_molt", timed_out)
     monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
     context = module.compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -880,12 +884,13 @@ def test_batch_compile_server_readline_timeout_is_hard_deadline() -> None:
     client = module._BatchCompileServerClient.__new__(module._BatchCompileServerClient)
     client._proc = _DummyProc()
     client._response_queue = queue.Queue()
+    client._closing = threading.Event()
 
     start = module.time.monotonic()
     with pytest.raises(TimeoutError):
-        client._readline(0.05)
+        client._readline(start + 0.05)
     elapsed = module.time.monotonic() - start
-    assert elapsed < 0.5
+    assert 0.04 <= elapsed < 0.5
 
 
 def test_shutdown_batch_compile_server_uses_force_close_path(monkeypatch) -> None:
@@ -984,6 +989,7 @@ def test_batch_singleton_keeps_selected_interpreter_and_budget(monkeypatch, mode
         0.0 if mode == "expired" else None,
     )
     context = module.compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=selected,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -1010,15 +1016,17 @@ def test_batch_singleton_keeps_selected_interpreter_and_budget(monkeypatch, mode
     assert closed == []
 
 
+@pytest.mark.parametrize("parse_codec", ["msgpack", "json", "cbor"])
 @pytest.mark.parametrize("stdlib_profile", [None, "full"])
 def test_run_batch_compile_build_preserves_selected_request_context(
-    monkeypatch, tmp_path: Path, stdlib_profile: str | None
+    monkeypatch, tmp_path: Path, stdlib_profile: str | None, parse_codec: ParseCodec
 ) -> None:
     module = _load_diff_module()
     seen_params: list[dict[str, object]] = []
     seen_environments = []
     starts = []
-    environment = {"MOLT_CODEC": "msgpack"}
+    environment = {"MOLT_CODEC": "invalid-environment"}
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
     if stdlib_profile is not None:
         environment["MOLT_DIFF_STDLIB_PROFILE"] = stdlib_profile
 
@@ -1049,6 +1057,7 @@ def test_run_batch_compile_build_preserves_selected_request_context(
         module.compat_backends.TimeoutPolicy.from_environment({}), None
     )
     context = module.compat_backends.BackendExecutionContext(
+        parse_codec=parse_codec,
         molt_cli_python="/selected/context python",
         target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
@@ -1077,7 +1086,7 @@ def test_run_batch_compile_build_preserves_selected_request_context(
     assert seen_environments == [environment]
     assert "env_overrides" not in seen_params[0]
     assert seen_params[0]["profile"] == "dev"
-    assert seen_params[0]["parse_codec"] == "msgpack"
+    assert seen_params[0]["parse_codec"] == parse_codec
     assert not {"codec", "type_hints", "type_facts", "backend"} & seen_params[0].keys()
     assert seen_params[0]["respect_pythonpath"] is True
     assert seen_params[0]["stdlib_profile"] == stdlib_profile
@@ -1276,6 +1285,7 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
     )
 
     context = module.compat_backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
@@ -1302,7 +1312,10 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
     result = module.run_molt_build_only(
         "tests/differential/basic/arith.py",
         "dev",
-        execution_context=context,
+        execution_context=None if failure_at == "invalid_request" else context,
+        extra_env=dict(context.environment)
+        if failure_at == "invalid_request"
+        else None,
     )
 
     if failure_at == "deadline":
@@ -1329,10 +1342,12 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
         assert environment == selected
 
 
+@pytest.mark.parametrize("parse_codec", ["msgpack", "json", "cbor"])
 def test_run_molt_build_only_uses_build_profile_flag(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, parse_codec: ParseCodec
 ) -> None:
     module = _load_diff_module()
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
     seen_cmds: list[list[str]] = []
     seen_envs: list[dict[str, str]] = []
     diff_root = tmp_path / "diff-root"
@@ -1368,6 +1383,7 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     context = module.compat_backends.BackendExecutionContext(
+        parse_codec=parse_codec,
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
@@ -1376,6 +1392,7 @@ def test_run_molt_build_only_uses_build_profile_flag(
         # layout would resolve the real checkout as its own artifact root.
         environment={
             "MOLT_CAPABILITY_TIER": "none",
+            "MOLT_CODEC": "invalid-context-environment",
             "MOLT_CACHE": str(tmp_path / "molt-cache"),
         },
         budget=module.compat_backends.ItemBudget(
@@ -1414,6 +1431,8 @@ def test_run_molt_build_only_uses_build_profile_flag(
             "3.14",
             "--capabilities",
             "fs,env,time,random",
+            "--codec",
+            parse_codec,
         ]
     ]
     diagnostics_path = Path(seen_envs[0]["MOLT_DIAGNOSTICS_FILE"])
@@ -1904,6 +1923,7 @@ def test_guest_backends_preserve_primary_and_cleanup_failure(
     # Ambient selection is deliberately incompatible with the supplied context.
     monkeypatch.setenv(output.ROOT_ENV, str(repo / "ambient-missing"))
     context = backends.BackendExecutionContext(
+        parse_codec="msgpack",
         molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
@@ -2959,3 +2979,113 @@ def test_log_close_failure_preserves_primary_or_is_fatal(
             str(path) in note and "log close refusal" in note
             for note in primary.__notes__
         )
+
+
+@pytest.mark.parametrize("raw", [None, "json", "cbor", "", "invalid-codec"])
+@pytest.mark.parametrize("batched", [False, True])
+def test_context_free_native_codec_admission_matches_both_build_transports(
+    monkeypatch, tmp_path, admitted_guest_environment, raw, batched
+):
+    from tools.batch_compile_client import (
+        BatchCompileRequestCustody,
+        BatchCompileResponse,
+    )
+
+    module = _load_diff_module()
+    repo, environment = admitted_guest_environment
+    monkeypatch.setattr(module, "_repo_root", lambda: repo)
+    if raw is None:
+        monkeypatch.delenv("MOLT_CODEC", raising=False)
+    else:
+        monkeypatch.setenv("MOLT_CODEC", raw)
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda _p: {})
+    monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: batched)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_record_rss_metrics", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "/selected/python")
+    seen = []
+
+    child = module.memory_guard.GuardedChildProcess(
+        11, 11, 11, ("/selected/python",), "fixture", 1000
+    )
+
+    class Client:
+        def request(self, op, *, params, env_overrides, timeout):
+            assert op == "build"
+            seen.append(params["parse_codec"])
+            return BatchCompileResponse(
+                {"ok": False, "returncode": 7, "stderr": "stop after selected build"},
+                BatchCompileRequestCustody(child, 2000, 7),
+            )
+
+    def start(*_a, **_k):
+        return Client(), None
+
+    def direct(command, **_kwargs):
+        assert command.count("--codec") == 1
+        seen.append(command[command.index("--codec") + 1])
+        return subprocess.CompletedProcess(command, 7, "", "stop after selected build")
+
+    monkeypatch.setattr(module, "_batch_compile_server_client", start)
+    monkeypatch.setattr(module, "_run_with_optional_time", direct)
+    result = module.run_molt_build_only(
+        "tests/differential/basic/arith.py",
+        "dev",
+        daemon_enabled=False,
+        extra_env=environment,
+    )
+    assert result.build_failed and not result.timed_out
+    if raw in ("", "invalid-codec"):
+        assert result.returncode == 2 and "parse_codec" in result.child_stderr
+        assert seen == []
+    else:
+        assert result.returncode == 7 and result.infrastructure_failure is None
+        assert "stop after selected build" in result.child_stderr
+        assert seen == ["msgpack" if raw is None else raw]
+
+
+@pytest.mark.parametrize("terminal", ["deadline", "suite-trip"])
+def test_terminal_batch_admission_does_not_select_a_codec(
+    monkeypatch, tmp_path, terminal
+):
+    module = _load_diff_module()
+    backends = module.compat_backends
+    budget = backends.ItemBudget(
+        backends.TimeoutPolicy.from_environment({}),
+        0.0 if terminal == "deadline" else None,
+    )
+    trip = backends.BackendResult.from_deadline(timeout=0, stderr="suite stopped")
+    monkeypatch.setattr(module.harness_outcomes, "read_suite_trip", lambda _env: None)
+    monkeypatch.setattr(
+        backends,
+        "suite_trip_outcome",
+        lambda _e: trip if terminal == "suite-trip" else None,
+    )
+    monkeypatch.setattr(
+        module,
+        "parse_codec_from_input",
+        lambda _value: pytest.fail("terminal admission selected codec"),
+    )
+    monkeypatch.setattr(
+        module,
+        "_batch_compile_server_client",
+        lambda *_a, **_k: pytest.fail("terminal admission started compiler"),
+    )
+    result = module._run_batch_compile_build(
+        env={"MOLT_CODEC": "invalid-codec"},
+        execution_context=None,
+        file_path="case.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "case",
+        build_profile="dev",
+        target_python=None,
+        no_cache=False,
+        rebuild=False,
+        request_timeout=1,
+        budget=budget,
+    )
+    assert result.build_failed and result.timed_out

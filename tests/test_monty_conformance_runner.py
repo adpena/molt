@@ -440,7 +440,10 @@ def test_compile_file_reports_batch_error_without_host_fallback(tmp_path: Path):
     assert not out.exists()
 
 
-def test_compile_file_rejects_invalid_codec_before_batch_startup(monkeypatch, tmp_path):
+@pytest.mark.parametrize("raw_codec", ["", "invalid-codec"])
+def test_compile_file_rejects_invalid_codec_before_batch_startup(
+    monkeypatch, tmp_path, raw_codec
+):
     def unexpected_start(*args, **kwargs):
         pytest.fail("invalid conformance configuration started the batch client")
 
@@ -449,7 +452,7 @@ def test_compile_file_rejects_invalid_codec_before_batch_startup(monkeypatch, tm
     )
     out = tmp_path / "program_molt"
     with run_molt_conformance.ConformanceBatchCompiler(
-        ["molt"], {"MOLT_CODEC": "invalid-codec"}
+        ["molt"], {"MOLT_CODEC": raw_codec}
     ) as compiler:
         result = run_molt_conformance.compile_file(
             compiler, tmp_path / "program.py", out
@@ -457,7 +460,9 @@ def test_compile_file_rejects_invalid_codec_before_batch_startup(monkeypatch, tm
 
     assert not result.ok and not result.timed_out
     assert "rc=2" in result.detail
-    assert "parse_codec" in result.detail and "invalid-codec" in result.detail
+    assert "parse_codec" in result.detail
+    if raw_codec:
+        assert raw_codec in result.detail
     assert not out.exists()
 
 
@@ -773,3 +778,20 @@ def test_preflight_keeps_the_warmup_budget_until_a_build_succeeds(
     warm = run_molt_conformance.WARMUP_TIMEOUT
     cold_free = run_molt_conformance.COMPILE_TIMEOUT
     assert budgets == [warm, warm, cold_free, cold_free]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(None, "msgpack"), ("json", "json"), ("cbor", "cbor")]
+)
+def test_conformance_codec_uses_supplied_input_not_ambient_config(
+    monkeypatch, tmp_path, raw, expected
+):
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
+    (tmp_path / "molt.toml").write_text('[build]\ncodec = "cbor"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    params = run_molt_conformance._molt_batch_build_params(
+        Path("case.py"), Path("case_molt"), {} if raw is None else {"MOLT_CODEC": raw}
+    )
+    assert params["parse_codec"] == expected
+    assert params["file_path"] == "case.py" and params["output"] == "case_molt"
+    assert params["target"] == "native" and params["profile"] == "release"
