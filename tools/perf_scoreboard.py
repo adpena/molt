@@ -1395,6 +1395,11 @@ def build_scoreboard_doc(
     Shape: ``benchmark -> target -> backend -> profile -> {cell fields}``.
     Adds the two-dimensional verdict breakdown + the provenance block.
     """
+    from tools.bench_evidence import workload_collection_problems
+
+    problems = workload_collection_problems([asdict(c) for c in cells])
+    if problems:
+        raise ScoreboardSchemaError("workload collection", problems)
     git_rev = _git_rev()
     nested: dict = {}
     for cell in cells:
@@ -1574,14 +1579,18 @@ def build_scoreboard_doc(
 
 def _resolve_benchmark_set(name: str, explicit: list[str] | None) -> list[Path]:
     if explicit:
-        return [_resolve_script(b) for b in explicit]
+        scripts = [_resolve_script(b) for b in explicit]
+        bench_suites.validate_benchmark_selection(scripts)
+        return scripts
     if name == "smoke":
         keys = bench_suites.SMOKE_BENCHMARKS
     elif name == "core":
         keys = bench_suites.BENCHMARKS
     else:
         raise SystemExit(f"unknown benchmark set: {name}")
-    return [_resolve_script(k) for k in keys]
+    scripts = [_resolve_script(k) for k in keys]
+    bench_suites.validate_benchmark_selection(scripts)
+    return scripts
 
 
 def _resolve_script(key: str) -> Path:
@@ -1591,9 +1600,10 @@ def _resolve_script(key: str) -> Path:
     cand = REPO_ROOT / key
     if cand.exists():
         return cand
-    cand2 = REPO_ROOT / "tests" / "benchmarks" / Path(key).name
-    if cand2.exists():
-        return cand2
+    if len(p.parts) == 1:
+        cand2 = REPO_ROOT / "tests" / "benchmarks" / p.name
+        if cand2.is_file():
+            return cand2
     raise SystemExit(f"benchmark not found: {key}")
 
 
@@ -1915,6 +1925,14 @@ def _merge_boards(
         shard_records.append(
             (src, prov.get("shard"), list(doc.get("benchmarks_run", [])))
         )
+    from tools.bench_evidence import workload_collection_problems
+
+    workload_problems = workload_collection_problems(
+        [asdict(c) for c in by_key.values()]
+    )
+    if workload_problems:
+        print("--merge: " + "; ".join(workload_problems), file=sys.stderr)
+        return 3
     shard_problem = _shard_coverage_problem(shard_records)
     if shard_problem is not None:
         print(f"--merge: {shard_problem}", file=sys.stderr)

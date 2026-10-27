@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 import pytest
 
 import tools.bench_dashboard as bench_dashboard
@@ -45,6 +46,7 @@ def test_dashboard_uses_valid_native_evidence() -> None:
 
 def _bound_dashboard_entry(speedup: float, runtime: str = "release-output") -> dict:
     return {
+        "workload": synthetic_workload("bench.py"),
         "molt_ok": True,
         "molt_time_s": 1.0 / speedup,
         "cpython_time_s": 1.0,
@@ -65,7 +67,12 @@ def _bound_dashboard_entry(speedup: float, runtime: str = "release-output") -> d
 
 
 def test_dashboard_refuses_unbound_baseline_and_preserves_raw_display() -> None:
-    entry = {"molt_ok": True, "molt_time_s": 0.5, "cpython_time_s": 1.0}
+    entry = {
+        "workload": synthetic_workload("bench.py"),
+        "molt_ok": True,
+        "molt_time_s": 0.5,
+        "cpython_time_s": 1.0,
+    }
     rows = bench_dashboard.build_rows({"bench.py": entry})
     assert rows[0]["speedup"] == 2.0 and rows[0]["molt_time"] == 0.5
     with pytest.raises(ValueError, match="selected profiles unbound"):
@@ -98,3 +105,26 @@ def test_dashboard_keeps_raw_evidence_for_asymmetric_mixed_cell_refusal(mixed_cu
     assert rows[0]["metric_evidence"] is current
     with pytest.raises(ValueError, match="mixed native/WASM metric cell"):
         bench_dashboard.compute_baseline_diff(rows, {"bench.py": baseline})
+
+
+def test_dashboard_validates_nonshared_workloads_when_comparing_metrics():
+    rows = bench_dashboard.build_rows({"bench.py": _bound_dashboard_entry(2.0)})
+    baseline = {
+        "bench.py": _bound_dashboard_entry(1.0),
+        "retired.py": {"molt_ok": True, "molt_speedup": 1.0},
+    }
+    with pytest.raises(ValueError, match="baseline retired.py.*workload"):
+        bench_dashboard.compute_baseline_diff(rows, baseline)
+
+
+def test_dashboard_keeps_added_removed_display_without_comparison_claim():
+    current = _bound_dashboard_entry(2.0)
+    current["workload"] = synthetic_workload("tests/benchmarks/bench.py")
+    rows = bench_dashboard.build_rows({"tests/benchmarks/bench.py": current})
+    diffs = bench_dashboard.compute_baseline_diff(
+        rows, {"bench.py": {"molt_ok": True, "molt_speedup": 1.0}}
+    )
+    assert [(d["name"], d["tag"], d["pct_change"]) for d in diffs] == [
+        ("tests/benchmarks/bench.py", "NEW", None),
+        ("bench.py", "REMOVED", None),
+    ]

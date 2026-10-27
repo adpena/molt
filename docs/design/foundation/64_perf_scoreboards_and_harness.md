@@ -798,3 +798,71 @@ what every commit did to speed, across the full matrix, with attribution." Once 
 exists and gates, the entire family of silent-perf-drift bugs is gone — and every
 *downstream* perf arc inherits a measurement plane sharp enough to name the missing IR fact
 it must add next.
+
+
+### Admitted benchmark source generations
+
+Every new scoreboard cell carries its exact workload identity: the selected
+entry, discovered local Python source bytes and topology, and benchmark-specific
+runtime and compiler arguments. The benchmark controller retains the existing
+stable-file custody while Molt and interpreter comparators use the original
+paths. It validates generations outside timed intervals and before publication;
+observed content, path or import-topology drift invalidates the result. The final
+atomic publication callback verifies topology/content and closes the retained
+file contexts, including their mandatory generation fences, before committing
+with the shared atomic writer. A pre-commit failure preserves prior output.
+Checkpoints remain non-authoritative while source custody is open. The short
+final-close-to-rename window is an observation limitation; legitimate changes
+after that admission boundary do not rewrite the recorded historical identity.
+Teardown after commit does not start a new source verdict. This is
+a path-generation contract, not loaded-byte attestation. It preserves ordinary
+`__file__`, sibling import and argv semantics without a temporary-source runner.
+
+The existing Python import-closure owner supplies dependency discovery and
+content-keyed analysis reuse. Runtime stdlib identity remains the interpreter
+and runtime owners' responsibility; undeclared runtime data and unresolvable
+dynamic imports are not silently promoted to captured Python source. Runtime
+arguments are those selected by the existing benchmark metadata authority.
+
+Duplicate source aliases and log-name collisions are rejected before builds.
+An external path cannot acquire a repository benchmark key through a substring
+or basename match. Board projection, sharding, merge, baseline comparison and
+history require exact workload identity. Historical cells without this evidence
+remain unqualified and cannot be refreshed by rewriting their schema or labels.
+
+Retained source handles cost O(source files); capture and content validation cost
+O(source bytes) at each consumer boundary. The existing import resolver may
+reuse unchanged AST analysis, but checks topology anew. These operations are
+outside guest timing and add no guest processes; their effects on cache state
+and cold build cost still require measurement. Evidence changes require the
+canonical methodology version/lock regeneration before qualification.
+
+The design follows [pyperf's retained metadata and unique benchmark names](https://pyperf.readthedocs.io/en/latest/api.html)
+and [LLVM test-suite's explicit input, verification and build/runtime separation](https://llvm.org/docs/TestSuiteGuide.html).
+Molt's source-generation and publication guarantees are owned by its shared file
+and Python-dependency authorities, not by either external harness.
+
+
+Regular native and WASM benchmark JSON producers carry the same admitted local
+Python-source workload record as the scoreboard. Their source generations stay
+held through measurement and close before the atomic result replacement. Shared
+baseline, diff, dashboard and trend comparisons require equal valid workloads,
+including comparisons of external-runtime-only metrics; matching names or
+profiles cannot substitute for source identity. Historical records and separate
+legacy harness formats without that contract remain displayable but cannot be
+compared under this policy. This does not attest loaded bytes or undeclared data,
+and does not upgrade noncanonical benchmark provenance or missing build-profile
+observations. Source checks run outside each measured child interval and still
+have controller/descriptor/IO costs that must be measured separately.
+
+
+
+Input collections are validated before matching benchmark keys, so a renamed
+historical basename cannot disappear from an acceptance gate as an empty match.
+Baseline and threshold gates refuse zero actual comparable measurement pairs;
+ordinary added/removed reports remain available without a performance verdict.
+Current producers consume their admitted Molt/run argument lists. WASM and the
+individual runner reject nonempty guest run arguments, which their current APIs
+do not execute; the legacy harness additionally checks its actual Molt command
+tail against the admitted list before either runtime starts. These refusals do
+not add a new argument parser or silently change the executed program.

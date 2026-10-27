@@ -297,6 +297,7 @@ def _grouped_table(
         leaf_key = str(cell.get(group_by[-1]))
         node[leaf_key] = {
             "benchmark": cell.get("benchmark"),
+            "workload": cell.get("workload"),
             "target": cell.get("target"),
             "backend": cell.get("backend"),
             "execution_host": cell.get("execution_host"),
@@ -331,6 +332,11 @@ def _cross_backend_divergences(
     where one backend lane has a stable warm RED that another lane does NOT. This
     is the "a native win never excuses a wasm regression" invariant — surfaced
     explicitly so a reader sees the asymmetry, not just per-lane reds."""
+    from tools.bench_evidence import workload_collection_problems
+
+    problems = workload_collection_problems(cells)
+    if problems:
+        raise ValueError("; ".join(problems))
     by_bp: dict[tuple[str, str], dict[str, float | None]] = {}
     for cell in cells:
         bench = str(cell.get("benchmark"))
@@ -368,6 +374,11 @@ def project(
     (git_rev, provenance, host, generated_at). ``board_authoritative`` is the
     source board's authoritative flag — a non-authoritative source can only emit
     ADVISORY warm verdicts (Rule 3)."""
+    from tools.bench_evidence import workload_collection_problems
+
+    workload_problems = workload_collection_problems(cells)
+    if workload_problems:
+        raise ValueError("; ".join(workload_problems))
     owned = projection.select(cells)
     from tools.perf_schema import board_execution_host_problems
 

@@ -62,6 +62,7 @@ from tools.bench_evidence import (  # noqa: E402
     native_molt_time,
     valid_positive_number,
     validated_runtime_samples,
+    workload_map_problems,
 )
 
 # ---------------------------------------------------------------------------
@@ -554,6 +555,10 @@ def compare_benchmarks(
                 )
             )
 
+    if not results:
+        raise ValueError(
+            "incompatible benchmark baseline: no comparable benchmark pairs"
+        )
     return results
 
 
@@ -574,6 +579,10 @@ def analyze_trends(
     # Collect all data points (baselines + current)
     all_data: list[dict[str, Any]] = [d for _, d in baselines]
     all_data.append(current)
+    for data in all_data:
+        errors = workload_map_problems(data.get("benchmarks", {}))
+        if errors:
+            raise ValueError("incompatible benchmark trend: " + "; ".join(errors))
 
     # Gather all benchmark names that appear in at least MIN_TREND_POINTS runs
     bench_names: set[str] = set()

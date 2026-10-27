@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 import datetime as dt
@@ -275,6 +277,7 @@ def _scoreboard_cell(
 ) -> dict[str, object]:
     return {
         "benchmark": benchmark,
+        "workload": synthetic_workload(benchmark),
         "target": "native",
         "backend": backend,
         "profile": gate.pa.CANONICAL_PERF_PROFILE,

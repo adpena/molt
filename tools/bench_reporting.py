@@ -7,16 +7,28 @@ from pathlib import Path
 from tools.bench_evidence import (
     comparable_run_metadata_errors,
     format_observed_build_profiles,
+    metric_is_comparable,
+    valid_positive_number,
 )
 
 
 MAX_FAILURE_DETAIL_RECORDS = 32
 
 
-def write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+def write_json(
+    path: Path, payload: dict, *, validate_inputs: Callable[[], None] | None = None
+) -> None:
+    from molt.file_publication import atomic_write_bytes, durable_replace
+
+    def commit(staged: Path, destination: Path) -> None:
+        if validate_inputs is not None:
+            validate_inputs()
+        durable_replace(staged, destination)
+
+    atomic_write_bytes(
+        path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        replace=commit,
     )
 
 
@@ -34,21 +46,31 @@ def compare_baseline(
         return [
             "incompatible benchmark baseline: "
             + "; ".join(metadata_errors)
-            + "; regenerate the baseline with matching benchmark timing settings and observed build profiles"
+            + "; regenerate the baseline with matching workload identity, timing settings and observed build profiles"
         ]
 
     regressions = []
+    compared = 0
     baseline_bench = baseline.get("benchmarks", {})
     for name, stats in current.get("benchmarks", {}).items():
-        current_ratio = stats.get("molt_cpython_ratio")
-        base_ratio = baseline_bench.get(name, {}).get("molt_cpython_ratio")
+        baseline_stats = baseline_bench.get(name, {})
+        if not (
+            metric_is_comparable(stats, "molt_cpython_ratio")
+            and metric_is_comparable(baseline_stats, "molt_cpython_ratio")
+        ):
+            continue
+        current_ratio = valid_positive_number(stats.get("molt_cpython_ratio"))
+        base_ratio = valid_positive_number(baseline_stats.get("molt_cpython_ratio"))
         if current_ratio is None or base_ratio is None:
             continue
+        compared += 1
         if current_ratio > base_ratio * (1 + max_regression):
             regressions.append(
                 f"{name}: ratio {current_ratio:.4f} > "
                 f"{base_ratio:.4f} * {1 + max_regression:.2f}"
             )
+    if not compared:
+        return ["incompatible benchmark baseline: no comparable benchmark pairs"]
     return regressions
 
 

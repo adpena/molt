@@ -32,7 +32,7 @@ TOOLS_ROOT = Path(__file__).resolve().parent
 
 from tools import perf_authority  # noqa: E402
 from tools.bench_evidence import (  # noqa: E402
-    comparable_build_profile_errors,
+    comparable_metric_errors,
     format_observed_build_profiles,
     native_molt_speedup,
     native_molt_time,
@@ -197,13 +197,6 @@ def compute_baseline_diff(rows: list[dict], baseline: dict) -> list[dict]:
         if base_speedup == 0:
             continue
 
-        errors = comparable_build_profile_errors(
-            {"benchmarks": {name: row["metric_evidence"]}},
-            {"benchmarks": {name: base_entry}},
-            metric="molt_speedup",
-        )
-        if errors:
-            raise ValueError("incompatible benchmark baseline: " + "; ".join(errors))
         pct = (cur_speedup - base_speedup) / base_speedup * 100
 
         if pct > 10:
@@ -237,6 +230,14 @@ def compute_baseline_diff(rows: list[dict], baseline: dict) -> list[dict]:
                 }
             )
 
+    if any(diff["pct_change"] is not None for diff in diffs):
+        errors = comparable_metric_errors(
+            {"benchmarks": {row["name"]: row["metric_evidence"] for row in rows}},
+            {"benchmarks": baseline_rows},
+            metric="molt_speedup",
+        )
+        if errors:
+            raise ValueError("incompatible benchmark baseline: " + "; ".join(errors))
     return diffs
 
 

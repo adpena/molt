@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from tools.bench_evidence import AdmittedBenchmarkWorkload
+
 import datetime as dt
 import json
 import sys
@@ -566,6 +569,7 @@ def capture_hot_only_profile(
 def run_hot_only_profiles(
     *,
     scripts: list[Path],
+    workloads: Mapping[Path, AdmittedBenchmarkWorkload],
     spec: "BackendSpec",
     profile: str,
     target_python_version: str,
@@ -584,6 +588,8 @@ def run_hot_only_profiles(
     """
     results: list[dict] = []
     for script in scripts:
+        workload = workloads[script]
+        workload.verify()
         key = bench_suites.canonical_benchmark_key(script)
         log_lines: list[str] = [f"# HOT-ONLY {key} | {spec.backend} | {profile}"]
         print(
@@ -599,7 +605,9 @@ def run_hot_only_profiles(
             inner_loops=inner_loops,
             log_lines=log_lines,
         )
+        workload.verify()
         cell: dict = {
+            "workload": workload.record,
             "benchmark": key,
             "target": spec.target,
             "backend": spec.backend,
@@ -623,7 +631,7 @@ def run_hot_only_profiles(
             continue
         primary: BaseException | None = None
         try:
-            run_args = bench.resolve_benchmark_run_args(str(script))
+            run_args = workload.record["run_args"]
             prof = capture_hot_only_profile(
                 Path(binary.path),
                 run_args=run_args,
@@ -639,6 +647,7 @@ def run_hot_only_profiles(
             raise
         finally:
             _release_binary(binary, primary)
+        workload.verify()
         cell["profile_result"] = prof
         results.append(cell)
         if prof.get("refused"):
@@ -671,6 +680,7 @@ def _emit_hot_only_board(
     quiescence: dict,
     cpython_version: str,
     out: str | None,
+    validate_inputs: Callable[[], None],
 ) -> int:
     """Write the #76 hot-only profile board (JSON) + print the attribution report.
 
@@ -709,7 +719,15 @@ def _emit_hot_only_board(
         ),
         "cells": hot_cells,
     }
-    out_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    from molt.file_publication import atomic_write_bytes, durable_replace
+
+    def commit(staged: Path, destination: Path) -> None:
+        validate_inputs()
+        durable_replace(staged, destination)
+
+    atomic_write_bytes(
+        out_path, (json.dumps(doc, indent=2) + "\n").encode("utf-8"), replace=commit
+    )
 
     # --- Report ----------------------------------------------------------
     print("\n" + "=" * 72)

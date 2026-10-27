@@ -16,7 +16,8 @@ import time
 import uuid
 from dataclasses import dataclass, field, replace
 from collections import deque
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import ExitStack
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,7 @@ from tools import harness_memory_guard  # noqa: E402
 from tools import memory_guard  # noqa: E402
 from tools import bench_suites  # noqa: E402
 from tools import bench_reporting  # noqa: E402
+from tools.bench_evidence import AdmittedBenchmarkWorkload, admit_benchmark_workload  # noqa: E402
 
 MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
@@ -1601,7 +1603,9 @@ def measure_molt_run(
     return RunSample(elapsed_s, res.stdout, res.stderr)
 
 
-def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
+def collect_samples(
+    measure_fn, samples, warmup=0, *, validate_inputs: Callable[[], None] | None = None
+) -> SampleBatch:
     # Warmup runs are discarded. They prime (1) the page cache for the binary
     # and its shared libs, and (2) on macOS the amfid/provenance cache for the
     # binary's cdhash — both keyed to the EXACT artifact path the measured runs
@@ -1611,7 +1615,11 @@ def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
     # and binary-size live in tools/output_startup_size_audit.py, not here.
     warmup_samples: list[RunSample] = []
     for _ in range(warmup):
+        if validate_inputs is not None:
+            validate_inputs()
         sample = measure_fn()
+        if validate_inputs is not None:
+            validate_inputs()
         if sample is None:
             return SampleBatch(
                 [],
@@ -1624,7 +1632,11 @@ def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
         warmup_samples.append(sample)
     measured: list[RunSample] = []
     for _ in range(samples):
+        if validate_inputs is not None:
+            validate_inputs()
         sample = measure_fn()
+        if validate_inputs is not None:
+            validate_inputs()
         if sample is None:
             return SampleBatch(
                 measured,
@@ -2021,6 +2033,7 @@ def bench_results(
     runtime_timeout_s,
     molt_build_profile,
     *,
+    workloads: Mapping[str, AdmittedBenchmarkWorkload],
     tty: bool,
     nuitka_cmd: str | None,
     pyodide_cmd: str | None,
@@ -2101,6 +2114,7 @@ def bench_results(
                         super_run,
                         runtime_timeout_s,
                         molt_build_profile,
+                        workload=workloads[script],
                         tty=tty,
                         base_env=base_env,
                         codon_root=codon_root,
@@ -2130,6 +2144,7 @@ def _bench_one(
     runtime_timeout_s,
     molt_build_profile,
     *,
+    workload: AdmittedBenchmarkWorkload,
     tty: bool,
     base_env: Mapping[str, str],
     codon_root: Path,
@@ -2145,9 +2160,12 @@ def _bench_one(
     runtime_batches: dict[str, SampleBatch] = {}
     stats = {}
     data = {}
-    name = os.path.basename(script)
+    if Path(script).expanduser().absolute() != workload.script:
+        raise ValueError("benchmark source differs from admitted workload")
+    workload.verify()
+    name = workload.record["entry"]
     reference_contract = benchmark_reference_contract(script)
-    run_args = resolve_benchmark_run_args(script)
+    run_args = workload.record["run_args"]
     for rt_name, cmd in runtimes.items():
         if not reference_contract.external_baselines:
             continue
@@ -2163,6 +2181,7 @@ def _bench_one(
             ),
             samples,
             warmup=warmup,
+            validate_inputs=workload.verify,
         )
         runtime_batches[rt_name] = batch
         sample_times = batch.times_s
@@ -2180,6 +2199,7 @@ def _bench_one(
     codon_ok = False
     codon_batch: SampleBatch | None = None
     if use_codon and reference_contract.external_baselines:
+        workload.verify()
         runner = _prepare_codon_runner(
             Path(script),
             codon_root,
@@ -2204,6 +2224,7 @@ def _bench_one(
                     ),
                     samples,
                     warmup=warmup,
+                    validate_inputs=workload.verify,
                 )
                 codon_ok = codon_batch.ok
                 if codon_ok:
@@ -2228,6 +2249,7 @@ def _bench_one(
     nuitka_ok = False
     nuitka_batch: SampleBatch | None = None
     if use_nuitka and reference_contract.external_baselines:
+        workload.verify()
         runner = _prepare_nuitka_runner(
             Path(script),
             nuitka_root,
@@ -2253,6 +2275,7 @@ def _bench_one(
                     ),
                     samples,
                     warmup=warmup,
+                    validate_inputs=workload.verify,
                 )
                 nuitka_ok = nuitka_batch.ok
                 if nuitka_ok:
@@ -2274,6 +2297,7 @@ def _bench_one(
     pyodide_ok = False
     pyodide_batch: SampleBatch | None = None
     if use_pyodide and reference_contract.external_baselines:
+        workload.verify()
         runner = _prepare_pyodide_runner(
             Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
         )
@@ -2290,6 +2314,7 @@ def _bench_one(
                 ),
                 samples,
                 warmup=warmup,
+                validate_inputs=workload.verify,
             )
             pyodide_ok = pyodide_batch.ok
             if pyodide_ok:
@@ -2302,11 +2327,12 @@ def _bench_one(
     molt_time: float | None = None
     molt_size: float | None = None
     molt_build: float | None = None
-    molt_args = molt_args_for_benchmark(script)
+    molt_args = workload.record["molt_args"]
     molt_ok = False
     molt_batch = SampleBatch([], False)
     molt_failure: MoltFailure | None = None
     build_observation: dict[str, Any] | None = None
+    workload.verify()
     molt_runner_result = prepare_molt_binary(
         script,
         molt_args,
@@ -2332,6 +2358,7 @@ def _bench_one(
                 ),
                 samples,
                 warmup=warmup,
+                validate_inputs=workload.verify,
             )
             molt_ok = molt_batch.ok
             molt_failure = molt_batch.failure
@@ -2456,7 +2483,9 @@ def _bench_one(
     def _optional_warmup_samples(batch: SampleBatch | None) -> list[float] | None:
         return batch.warmup_times_s if batch is not None else None
 
+    workload.verify()
     data[name] = {
+        "workload": workload.record,
         "cpython_time_s": cpython_time,
         "cpython_samples_s": _runtime_samples("cpython"),
         "cpython_warmup_samples_s": _runtime_warmup_samples("cpython"),
@@ -2547,6 +2576,11 @@ def _molt_failure_detail_records(
 
 
 def main():
+    with ExitStack() as workload_custody:
+        return _main(workload_custody)
+
+
+def _main(workload_custody: ExitStack):
     _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt benchmark suite.")
     parser.add_argument(
@@ -2682,6 +2716,24 @@ def main():
     use_pyodide = not args.no_pyodide
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
+    bench_suites.validate_benchmark_selection([Path(script) for script in benchmarks])
+    workloads = {
+        script: workload_custody.enter_context(
+            admit_benchmark_workload(
+                Path(script),
+                project_root=REPO_ROOT,
+                run_args=resolve_benchmark_run_args(script),
+                molt_args=molt_args_for_benchmark(script),
+            )
+        )
+        for script in benchmarks
+    }
+
+    def finish_workload_custody() -> None:
+        for workload in workloads.values():
+            workload.verify()
+        workload_custody.close()
+
     initial_cleanup_env = ProcessEnvironmentBuilder(
         _canonical_bench_env(_base_python_env(), create_dirs=False)
     )
@@ -2742,6 +2794,7 @@ def main():
         args.super,
         args.runtime_timeout_sec,
         args.molt_profile,
+        workloads=workloads,
         tty=use_tty,
         nuitka_cmd=args.nuitka_cmd,
         pyodide_cmd=args.pyodide_cmd,
@@ -2788,7 +2841,7 @@ def main():
     }
 
     _write_failure_details_jsonl(failure_details_path, failure_details)
-    write_json(json_out, payload)
+    write_json(json_out, payload, validate_inputs=finish_workload_custody)
     summary_out.parent.mkdir(parents=True, exist_ok=True)
     summary_out.write_text(_render_bench_summary_markdown(payload), encoding="utf-8")
 
