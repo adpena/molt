@@ -1461,6 +1461,8 @@ def test_due_collection_returns_real_reclaim_errors_and_throttles_failure(
     checkout_state.stamp_checkout_state(gone, env)
     gone.rmdir()
     _last_used(roots.values(), 3 * HOUR, time.time())
+    # This exercises retention errors, independently of the host's free space.
+    monkeypatch.setattr(dg, "_default_free_fn", lambda _root: lambda: 40 * _GB)
     monkeypatch.setattr(dg, "delete_path", lambda _path: (False, "fixture-denied"))
     results = dg.collect_due(root=ext, env=env)
     errors = [error for result in results for error in result.errors]
@@ -1893,7 +1895,7 @@ raise SystemExit(rc)
     assert proc.returncode == (0 if owner == "difftest" else 7), diagnostic
 
 
-def test_the_daily_collection_also_relieves_disk_pressure(tmp_path):
+def test_the_daily_collection_also_relieves_disk_pressure(tmp_path, monkeypatch):
     import time
 
     from molt import checkout_state
@@ -1909,6 +1911,8 @@ def test_the_daily_collection_also_relieves_disk_pressure(tmp_path):
     checkout_state.stamp_checkout_state(fresh, env)
     now = time.time()
     _last_used(idle_roots.values(), 3 * HOUR, now)
+    # Fix the measured input; thresholds below and above it select both paths.
+    monkeypatch.setattr(dg, "_default_free_fn", lambda _root: lambda: 40 * _GB)
     calm = dg.collect(root=ext, env=env)
     # Both owners exist and neither root is past the max age: the GC keeps
     # them, and the pressure pass does nothing above the high-water mark.
