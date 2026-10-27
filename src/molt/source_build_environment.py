@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from molt import python_environment_contract as _contract
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 import json
-import hashlib
 import os
 import shutil
 import subprocess
@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import cast
 
 from molt import source_build_environment_schema as _schema
+from molt.source_build_environment_selection import (
+    capture_source_build_inputs,
+    development_coordinates,
+    development_selection_record,
+    valid_declared_input_digests,
+)
 from molt.file_deletion import delete_path
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.toolchain_identity import stable_executable_probe
@@ -68,7 +74,7 @@ def _uv_identity(
         "uv", path=None if environ is None else environ.get("PATH", "")
     )
     if raw_uv is None:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "locked source-build environment provisioning requires uv on PATH"
         )
     uv = Path(raw_uv).resolve()
@@ -89,7 +95,7 @@ def _uv_identity(
     version = result.stdout.strip()
     if result.returncode != 0 or not version:
         detail = (result.stderr or result.stdout).strip()
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "cannot attest uv for locked source-build provisioning: "
             f"{detail or f'returncode={result.returncode}'}"
         )
@@ -110,7 +116,7 @@ def _declared_dependency_group(
             (repo_root / "pyproject.toml").read_text(encoding="utf-8")
         )
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"cannot read source-build dependency-group authority: {exc}"
         ) from exc
     groups = payload.get("dependency-groups")
@@ -118,7 +124,7 @@ def _declared_dependency_group(
     if not isinstance(requirements, list) or not all(
         isinstance(item, str) and item.strip() for item in requirements
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"source-build dependency group {dependency_group!r} is not declared"
         )
     normalized = tuple(item.strip() for item in requirements)
@@ -126,58 +132,16 @@ def _declared_dependency_group(
         try:
             requirement = Requirement(raw)
         except InvalidRequirement as exc:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"invalid requirement in source-build group {dependency_group!r}: "
                 f"{raw!r}: {exc}"
             ) from exc
         if requirement.url is not None:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"source-build dependency group {dependency_group!r} contains "
                 f"an unverifiable direct URL: {raw!r}"
             )
     return normalized
-
-
-def _editable_binding(repo_root: Path) -> dict[str, object]:
-    from molt.python_identity_common import _canonicalize_name
-
-    project_path = repo_root / "pyproject.toml"
-    project_bytes = project_path.read_bytes()
-    document = tomllib.loads(project_bytes.decode("utf-8"))
-    project = document.get("project", {})
-    if (
-        project.get("dynamic")
-        or not isinstance(project.get("name"), str)
-        or not isinstance(project.get("version"), str)
-    ):
-        raise _schema.SourceBuildEnvironmentError(
-            "development image requires declared static project metadata"
-        )
-    inputs = {"pyproject.toml": hashlib.sha256(project_bytes).hexdigest()}
-    for field in ("readme", "license"):
-        declaration = project.get(field)
-        filename = (
-            declaration
-            if isinstance(declaration, str) and field == "readme"
-            else declaration.get("file")
-            if isinstance(declaration, dict)
-            else None
-        )
-        if filename is not None:
-            path = (repo_root / filename).resolve(strict=True)
-            if not path.is_relative_to(repo_root):
-                raise _schema.SourceBuildEnvironmentError(
-                    "editable metadata input escapes source root"
-                )
-            inputs[path.relative_to(repo_root).as_posix()] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
-    return {
-        "source_root": str(repo_root),
-        "project": _canonicalize_name(project["name"]),
-        "version": project["version"],
-        "metadata_inputs": inputs,
-    }
 
 
 def _selected_python_recipe(
@@ -246,7 +210,7 @@ print(json.dumps(dict(implementation_name=sys.implementation.name,implementation
             encoding="utf-8",
         )
         if result.returncode != 0:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "cannot capture selected interpreter dependency markers"
             )
         markers = _schema.canonical_source_marker_environment(
@@ -256,15 +220,15 @@ print(json.dumps(dict(implementation_name=sys.implementation.name,implementation
         # observations. Bind all of them before any recipe can be constructed.
         runtime_version = str(runtime["version"])
         if request is not None and not request.matches_version(runtime_version):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"requested CPython {request.selector} differs from captured runtime {runtime_version}"
             )
         if selected.version != runtime_version:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "selected interpreter identity differs from captured runtime"
             )
         if not _schema._marker_environment_matches_runtime(markers, runtime):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "dependency markers differ from selected Python runtime"
             )
     return python, runtime, markers, wheel_target
@@ -289,7 +253,7 @@ def _environment_spec(
             for character in dependency_group
         )
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"invalid source-build dependency group {dependency_group!r}"
         )
     selected_groups = tuple(
@@ -302,7 +266,7 @@ def _environment_spec(
         )
     )
     if dependency_group is not None and dependency_group not in selected_groups:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "primary dependency group is absent from selection"
         )
     group_requirements = tuple(
@@ -319,12 +283,12 @@ def _environment_spec(
         or wheel_target.get("runtime_closure_sha256")
         != python_runtime["runtime_closure_sha256"]
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "wheel target differs from selected Python runtime"
         )
     markers = _schema.canonical_source_marker_environment(marker_environment)
     if not _schema._marker_environment_matches_runtime(markers, python_runtime):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "dependency markers differ from selected Python runtime"
         )
     try:
@@ -337,13 +301,16 @@ def _environment_spec(
             dependency_groups=selected_groups,
         )
     except PythonEnvironmentIdentityError as exc:
-        raise _schema.SourceBuildEnvironmentError(str(exc)) from exc
+        raise _contract.SourceBuildEnvironmentError(str(exc)) from exc
     uv, uv_payload = _uv_identity() if environ is None else _uv_identity(environ)
+    inputs = capture_source_build_inputs(repo_root, editable=editable)
     address_payload: _schema._SourceBuildAddress = {
-        "schema_version": _schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "producer_contract": _contract.source_build_environment_contract(),
+        "declared_inputs": inputs.digests,
+        "schema_version": _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_groups": list(selected_groups),
-        "editable_binding": _editable_binding(repo_root) if editable else None,
-        "bytecode_policy": _schema.IMAGE_BYTECODE_POLICY,
+        "editable_binding": inputs.editable_binding,
+        "bytecode_policy": _contract.IMAGE_BYTECODE_POLICY,
         "dependency_group_requirements": list(group_requirements),
         "lock_closure": lock_closure,
         "python_runtime": python_runtime,
@@ -367,7 +334,7 @@ def _environment_spec(
     return (
         root,
         python_executable,
-        root / _schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
         custody,
         uv,
     )
@@ -408,7 +375,6 @@ def _probe_source_build_python(
     source_root: Path | None = None,
     verifier: PythonIdentityVerifier,
     capture_wheel_target: bool = False,
-    development_selection: _schema.DevelopmentEnvironmentRequest | None = None,
 ) -> dict[str, object]:
     """One isolated bootstrap for recipe and realized-environment identities."""
 
@@ -422,26 +388,15 @@ def _probe_source_build_python(
         probe_arguments = ["--capture-runtime"]
     else:
         probe_arguments = [
-            (
-                "--select-development-environment"
-                if development_selection is not None
-                else "--capture-environment"
-            ),
+            "--capture-environment",
             str(root.resolve()),
+            "--admit-virtualenv-bootstrap",
         ]
-        if development_selection is None:
-            probe_arguments.append("--admit-virtualenv-bootstrap")
-    if development_selection is not None:
-        if root is None:
-            raise _schema.SourceBuildEnvironmentError(
-                "development selection requires an environment root"
-            )
-        probe_arguments.extend(development_selection.intent_arguments())
     if external_root is not None:
         probe_arguments.extend(("--admit-external-root", str(external_root)))
     if capture_wheel_target:
         if root is not None:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "wheel target requires runtime capture"
             )
         probe_arguments.extend(("--wheel-tag-source", str(packaging_tag_source())))
@@ -468,35 +423,16 @@ def _probe_source_build_python(
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        action = (
-            "validate source-build development selection"
-            if development_selection is not None
-            else f"attest source-build {kind} content"
-        )
-        raise _schema.SourceBuildEnvironmentError(
-            f"cannot {action}: {detail or f'returncode={result.returncode}'}"
-        )
-    receipt = (
-        _schema.DevelopmentEnvironmentSelectionReceipt(root, development_selection)
-        if root is not None and development_selection is not None
-        else None
-    )
-    if receipt is not None and (
-        len(result.stdout.encode("utf-8")) > receipt.response_limit_bytes
-    ):
-        raise _schema.SourceBuildEnvironmentError(
-            "development selection response exceeds its request-bound size limit"
+        raise _contract.SourceBuildEnvironmentError(
+            f"cannot attest source-build {kind} content: {detail or f'returncode={result.returncode}'}"
         )
     try:
         payload = loads_exact(result.stdout)
     except (json.JSONDecodeError, ExactJsonError) as exc:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"source-build {kind} probe returned invalid JSON"
         ) from exc
     try:
-        if receipt is not None:
-            receipt.accept(payload)
-            return dict(receipt.payload())
         if capture_wheel_target:
             if not isinstance(payload, dict) or set(payload) != {
                 "runtime",
@@ -518,7 +454,7 @@ def _probe_source_build_python(
             else validate_python_environment_identity(payload)
         )
     except PythonEnvironmentIdentityError as exc:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"source-build {kind} probe returned an invalid payload: {exc}"
         ) from exc
 
@@ -529,7 +465,7 @@ def _attested_environment(
     lock_closure = custody.get("lock_closure")
     python_runtime = custody.get("python_runtime")
     if not isinstance(lock_closure, Mapping) or not isinstance(python_runtime, Mapping):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "provisioned source-build environment has an incomplete recipe"
         )
     typed_lock_closure = cast(Mapping[str, object], lock_closure)
@@ -544,7 +480,7 @@ def _attested_environment(
             or project[0]["version"] != binding["version"]
             or project[0]["external_source"] is None
         ):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "development image has no exact editable project binding"
             )
         source = cast(Mapping[str, object], project[0]["external_source"])
@@ -555,7 +491,7 @@ def _attested_environment(
         if source.get("root") not in roots or (
             Path(str(roots[source["root"]])) / str(source["path"])
         ).resolve() != Path(str(binding["source_root"])):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "editable installation points to a different physical source root"
             )
         compared["distributions"] = [
@@ -565,7 +501,7 @@ def _attested_environment(
         not environment_matches_lock_closure(compared, typed_lock_closure)
         or realized.get("runtime") != python_runtime
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "provisioned source-build environment differs from its selected lock "
             "or CPython runtime closure"
         )
@@ -598,11 +534,11 @@ def _validated_active_attestation(
     try:
         active_root = Path(sys.prefix).resolve(strict=True)
     except OSError as exc:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"cannot resolve active source-build environment: {exc}"
         ) from exc
     if active_root != root.resolve():
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"active interpreter is not the locked source-build environment {root}"
         )
     manifest = _read_attestation(manifest_path)
@@ -610,7 +546,7 @@ def _validated_active_attestation(
         realized = _probe_environment_identity(Path(sys.executable), root)
     expected = _attested_environment(custody, realized)
     if manifest != expected:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"locked source-build environment attestation is stale or invalid: {manifest_path}"
         )
     return expected
@@ -624,10 +560,10 @@ def source_build_environment(
     active_manifest = None
     if active_root.parent == _source_build_custody_root(repo_root).resolve():
         active_manifest = _read_attestation(
-            active_root / _schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+            active_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
         )
         if active_manifest is None:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "locked source-build environment attestation is stale or invalid"
             )
         realized = _probe_environment_identity(Path(sys.executable), active_root)
@@ -648,7 +584,7 @@ def source_build_environment(
     active = Path(sys.prefix).resolve() == root.resolve()
     if not active and active_manifest is not None:
         if active_manifest.get("dependency_groups") == [dependency_group]:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "active source-build environment recipe/path differs from the requested dependency group"
             )
         # A request for another dependency group may re-exec into its own
@@ -669,7 +605,7 @@ def source_build_environment(
             or realized is None
             or _attested_environment(prior_custody, realized) != active_manifest
         ):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "active source-build environment attestation is stale or invalid"
             )
     if not active and provision:
@@ -729,12 +665,17 @@ def _validate_recipe_inputs(repo_root: Path, custody: Mapping[str, object]) -> N
         expected != closure
         or list(requirements) != custody["dependency_group_requirements"]
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "environment recipe differs from current declared lock inputs"
         )
     binding = custody.get("editable_binding")
-    if binding is not None and _editable_binding(repo_root) != binding:
-        raise _schema.SourceBuildEnvironmentError(
+    inputs = capture_source_build_inputs(repo_root, editable=binding is not None)
+    if inputs.digests != custody.get("declared_inputs"):
+        raise _contract.SourceBuildEnvironmentError(
+            "environment recipe differs from current declared input bytes"
+        )
+    if inputs.editable_binding != binding:
+        raise _contract.SourceBuildEnvironmentError(
             "editable installation binding/metadata differs from this checkout"
         )
 
@@ -798,10 +739,11 @@ def _provision_source_build_environment(
     absent_inputs = {path for path in input_paths if not path.exists()}
     missing_authority = absent_inputs.intersection(reader_inputs)
     if missing_authority:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "selected editable Python capture authority is missing: "
             + ", ".join(str(path) for path in sorted(missing_authority))
         )
+    source_inputs = capture_source_build_inputs(repo_root, editable=binding is not None)
     input_context = PythonFileCaptureContext()
     for path in input_paths:
         if path not in absent_inputs:
@@ -811,13 +753,14 @@ def _provision_source_build_environment(
 
     def verify_inputs() -> None:
         if any(path.exists() or path.is_symlink() for path in absent_inputs):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "environment recipe inputs changed during publication"
             )
         try:
+            source_inputs.verify()
             input_context.verify()
         except (OSError, ValueError) as exc:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "environment recipe inputs changed during publication"
             ) from exc
 
@@ -836,7 +779,7 @@ def _provision_source_build_environment(
         provisioning = _read_attestation(provisioning_path)
         expected_provisioning = _provisioning_record(custody)
         if provisioning_path.exists() and provisioning is None:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"malformed source-build provisioning record: {provisioning_path}"
             )
         complete_fields = {
@@ -858,7 +801,7 @@ def _provision_source_build_environment(
                     verify_inputs()
                     if provisioning is not None:
                         if provisioning != expected_provisioning:
-                            raise _schema.SourceBuildEnvironmentError(
+                            raise _contract.SourceBuildEnvironmentError(
                                 "complete source-build environment has a foreign "
                                 f"provisioning record: {provisioning_path}"
                             )
@@ -871,22 +814,22 @@ def _provision_source_build_environment(
                         active=False,
                     )
         if manifest_path.exists() or manifest_path.is_symlink():
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"published immutable environment failed admission and cannot be reprovisioned: {root}"
             )
         if root.exists():
             if provisioning != expected_provisioning:
-                raise _schema.SourceBuildEnvironmentError(
+                raise _contract.SourceBuildEnvironmentError(
                     "immutable source-build environment address exists without "
                     f"its exact attestation or sibling provisioning record: {root}"
                 )
             removed, error = delete_path(root)
             if not removed:
-                raise _schema.SourceBuildEnvironmentError(
+                raise _contract.SourceBuildEnvironmentError(
                     f"cannot recover unpublished source-build environment {root}: {error}"
                 )
         elif provisioning is not None and provisioning != expected_provisioning:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"foreign source-build provisioning record: {provisioning_path}"
             )
         root.parent.mkdir(parents=True, exist_ok=True)
@@ -937,18 +880,23 @@ def _provision_source_build_environment(
             environment=child_environment,
         )
         if result.returncode != 0:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "locked source-build environment provisioning failed: "
                 f"uv sync returned {result.returncode}"
             )
         if not python_executable.is_file():
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"uv sync did not create source-build Python: {python_executable}"
             )
         verify_inputs()
         # The published read namespace is empty. CPython compiles only modules
         # actually imported by a command; -B keeps this image immutable.
         environment_bytecode_prefix(root).mkdir(exist_ok=True)
+        if binding is not None:
+            write_exact(
+                root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION,
+                development_selection_record(root, custody),
+            )
         realized = capture()
         verify_inputs()
         manifest = _attested_environment(custody, realized)
@@ -970,9 +918,9 @@ def _provision_source_build_environment(
 
 
 def _published_recipe(root: Path) -> tuple[dict[str, object], Mapping[str, object]]:
-    manifest = _read_attestation(root / _schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST)
+    manifest = _read_attestation(root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST)
     if manifest is None:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             f"selected environment has no published image attestation: {root}"
         )
     recipe_keys = set(_schema._SourceBuildAddress.__annotations__)
@@ -982,18 +930,22 @@ def _published_recipe(root: Path) -> tuple[dict[str, object], Mapping[str, objec
         else "realized_environment"
     )
     if set(manifest) != recipe_keys | {"environment_id", field}:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "published environment manifest shape is invalid"
         )
     recipe = {key: manifest[key] for key in recipe_keys}
     if (
         type(recipe["schema_version"]) is not int
-        or recipe["schema_version"] != _schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
-        or recipe["bytecode_policy"] != _schema.IMAGE_BYTECODE_POLICY
+        or recipe["schema_version"] != _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
+        or recipe["bytecode_policy"] != _contract.IMAGE_BYTECODE_POLICY
+        or not _contract.source_build_environment_contract_matches(
+            recipe["producer_contract"]
+        )
+        or not valid_declared_input_digests(recipe["declared_inputs"])
         or manifest["environment_id"] != root.name
         or canonical_json_sha256(recipe) != root.name
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "published environment address/recipe is invalid"
         )
     from molt.python_uv_lock_identity import validate_uv_lock_group_closure
@@ -1002,21 +954,21 @@ def _published_recipe(root: Path) -> tuple[dict[str, object], Mapping[str, objec
     runtime = validate_python_runtime_identity(recipe["python_runtime"])
     wheel_target = cast(Mapping[str, object], closure["wheel_target"])
     if wheel_target["runtime_closure_sha256"] != runtime["runtime_closure_sha256"]:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "published wheel target differs from runtime recipe"
         )
     if (
         closure["dependency_groups"] != recipe["dependency_groups"]
         or closure["requirements"] != recipe["dependency_group_requirements"]
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "published environment selection differs from its closure"
         )
     if not _schema._marker_environment_matches_runtime(
         cast(Mapping[str, str], closure["marker_environment"]),
         runtime,
     ):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "published dependency markers differ from the selected runtime"
         )
     custody = {"environment_id": manifest["environment_id"], **recipe}
@@ -1027,7 +979,7 @@ def _published_recipe(root: Path) -> tuple[dict[str, object], Mapping[str, objec
             or set(projection) != {"image", "image_sha256"}
             or not isinstance(projection["image"], Mapping)
         ):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "published development image projection is invalid"
             )
         try:
@@ -1038,11 +990,11 @@ def _published_recipe(root: Path) -> tuple[dict[str, object], Mapping[str, objec
             AssertionError,
             PythonEnvironmentIdentityError,
         ) as exc:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "published development image projection is malformed"
             ) from exc
         if expected != manifest:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "published development image projection differs from its recipe"
             )
     return custody, manifest
@@ -1052,14 +1004,12 @@ def admit_published_environment(
     root: Path,
     realized: Mapping[str, object],
     *,
-    development_admission: _schema.DevelopmentEnvironmentRequest | None = None,
+    development_admission: _contract.DevelopmentEnvironmentRequest | None = None,
 ) -> Mapping[str, object]:
     """Use the existing admission capture; never spawn or rescan for this check."""
     repo_root: Path | None = None
     if development_admission is not None:
-        root, repo_root = _development_coordinates(
-            root, development_admission.repo_root
-        )
+        root, repo_root = development_coordinates(root, development_admission.repo_root)
     custody, manifest = _published_recipe(root)
     if development_admission is not None:
         assert repo_root is not None
@@ -1072,70 +1022,10 @@ def admit_published_environment(
         )
     expected = _attested_environment(custody, realized)
     if expected != manifest:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "published environment image differs from captured live bytes"
         )
     return manifest
-
-
-def select_development_environment(
-    root: Path,
-    *,
-    repo_root: Path,
-    python: str | None = None,
-    groups: tuple[str, ...],
-) -> Path:
-    """Validate ordinary launch selection in its equipped interpreter.
-
-    The bare guardian has no site dependencies. The child reads the existing
-    published recipe without capturing installed bytes; proof ingress owns
-    live-byte admission independently. This result is not a proof receipt.
-    """
-    root = Path(os.path.abspath(root))
-    if root.is_symlink() or root.resolve(strict=True) != root:
-        raise _schema.SourceBuildEnvironmentError(
-            "development image selection must be its physical root"
-        )
-    repo_root = repo_root.resolve(strict=True)
-    request = _schema.DevelopmentEnvironmentRequest(repo_root, python, groups)
-    with PythonFileCaptureContext() as context, PythonIdentityVerifier() as verifier:
-        for path in python_environment_identity.python_capture_authority_paths(
-            source_root=repo_root
-        ):
-            context.bind(path, path.lstat(), label="development selection reader")
-        context.verify()
-        _probe_source_build_python(
-            environment_python_path(root),
-            verifier=verifier,
-            root=root,
-            source_root=repo_root,
-            development_selection=request,
-        )
-        context.verify()
-    return root
-
-
-def _development_coordinates(root: Path, repo_root: Path) -> tuple[Path, Path]:
-    """One physical-coordinate authority for selection and live admission."""
-    # Normalize ordinary relative/dot coordinates without following aliases.
-    # The physical comparison still refuses symlink indirection at admission.
-    physical = root.resolve(strict=True)
-    lexical = Path(os.path.abspath(root))
-    repo_root = repo_root.resolve(strict=True)
-    if root.is_symlink() or physical != lexical:
-        raise _schema.SourceBuildEnvironmentError(
-            "development image selection must be its physical root"
-        )
-    root = lexical
-    if (
-        root.parent.name != checkout_component(repo_root)
-        or root.parent.parent.name != "development"
-        or root.parent.parent.parent.name != "build-environments"
-    ):
-        raise _schema.SourceBuildEnvironmentError(
-            "development image is outside its checkout generation namespace"
-        )
-    return root, repo_root
 
 
 def _validate_development_selection(
@@ -1148,7 +1038,7 @@ def _validate_development_selection(
 ) -> None:
     """Validate one already-read recipe without opening its manifest again."""
     if groups is not None and custody["dependency_groups"] != sorted(set(groups)):
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "selected development image has different requested groups"
         )
     if python is not None:
@@ -1159,27 +1049,27 @@ def _validate_development_selection(
 
         version = str(cast(Mapping[str, object], custody["python_runtime"])["version"])
         if not is_python_version_selector(python):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "an interpreter command requires explicit runtime selection before image reuse"
             )
         try:
             request = parse_python_interpreter_request(python)
         except ValueError as exc:
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 f"invalid Python interpreter request: {exc}"
             ) from exc
         if not request.matches_version(version):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "selected development image has a different requested Python"
             )
-    from molt.python_environment_custody import validate_managed_bytecode_prefix
+    from molt.python_environment_location import validate_managed_bytecode_prefix
 
     try:
         validate_managed_bytecode_prefix(root)
     except PythonEnvironmentIdentityError as exc:
-        raise _schema.SourceBuildEnvironmentError(str(exc)) from exc
+        raise _contract.SourceBuildEnvironmentError(str(exc)) from exc
     if custody.get("editable_binding") is None:
-        raise _schema.SourceBuildEnvironmentError(
+        raise _contract.SourceBuildEnvironmentError(
             "selected image is not a development environment"
         )
     _validate_recipe_inputs(repo_root, custody)
@@ -1193,7 +1083,7 @@ def load_development_environment(
     groups: tuple[str, ...] | None = None,
 ) -> _schema.LockedSourceBuildEnvironment:
     """Read an exact selection at a boundary, without claiming live admission."""
-    root, repo_root = _development_coordinates(root, repo_root)
+    root, repo_root = development_coordinates(root, repo_root)
     custody, manifest = _published_recipe(root)
     _validate_development_selection(
         root, repo_root=repo_root, python=python, groups=groups, custody=custody
@@ -1201,7 +1091,7 @@ def load_development_environment(
     return _schema.LockedSourceBuildEnvironment(
         root,
         environment_python_path(root),
-        root / _schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
         manifest,
         active=Path(sys.prefix).resolve() == root,
     )
@@ -1230,7 +1120,7 @@ def development_environment(
             selected_root = repo_root / selected_root
         image = load_development_environment(selected_root, repo_root=repo_root)
         if image.custody["dependency_groups"] != list(selected_groups):
-            raise _schema.SourceBuildEnvironmentError(
+            raise _contract.SourceBuildEnvironmentError(
                 "explicit development image has different requested groups"
             )
         selector = (
@@ -1249,11 +1139,11 @@ def development_environment(
             try:
                 request = parse_python_interpreter_request(selector)
             except ValueError as exc:
-                raise _schema.SourceBuildEnvironmentError(
+                raise _contract.SourceBuildEnvironmentError(
                     f"invalid Python interpreter request: {exc}"
                 ) from exc
             if not request.matches_version(version):
-                raise _schema.SourceBuildEnvironmentError(
+                raise _contract.SourceBuildEnvironmentError(
                     "explicit development image has a different requested Python"
                 )
         else:
@@ -1261,7 +1151,7 @@ def development_environment(
                 repo_root, selector, environment
             )
             if requested_runtime != image.custody["python_runtime"]:
-                raise _schema.SourceBuildEnvironmentError(
+                raise _contract.SourceBuildEnvironmentError(
                     "explicit development image has a different requested interpreter"
                 )
         return image

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt import python_environment_contract as _contract
 from molt.compilation_target import admit_target
 
 from molt.llvm_toolchain import capture_wasi_sdk_selection
@@ -14,7 +15,6 @@ import pytest
 from molt.process_environment import NameRule, ProcessEnvironment
 
 from molt import source_build_environment as build_environment
-from molt import source_build_environment_schema as build_environment_schema
 from molt.cli import source_extension_set_registry as registry_authority
 from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
 from tools.proof_queue_pkg import command_admission as admission
@@ -29,7 +29,7 @@ def producer_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     scripts.mkdir(parents=True)
     python = scripts / ("python.exe" if os.name == "nt" else "python")
     python.write_bytes(b"fixture interpreter; never executed")
-    manifest = root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    manifest = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     manifest.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         build_environment, "_source_build_custody_root", lambda _: root.parent

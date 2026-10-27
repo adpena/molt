@@ -84,6 +84,7 @@ if not __package__:
     _bootstrap_root = str(_selected_package.parent)
     sys.path.insert(0, _bootstrap_root)
 
+from molt import python_environment_contract as _contract  # noqa: E402
 from molt.python_identity_common import (  # noqa: E402
     PythonEnvironmentIdentityError as PythonEnvironmentIdentityError,
 )
@@ -101,7 +102,6 @@ def _parse_arguments():
         "--editable-project", nargs=2, metavar=("ENVIRONMENT", "PROJECT")
     )
     modes.add_argument("--capture-environment", type=Path, metavar="ROOT")
-    modes.add_argument("--select-development-environment", type=Path, metavar="ROOT")
     modes.add_argument("--capture-active-environment", action="store_true")
     parser.add_argument("--runtime-session", action="store_true")
     parser.add_argument("--wheel-tag-source", type=Path)
@@ -120,33 +120,12 @@ def _parse_arguments():
         args.development_checkout is not None
         or args.development_python is not None
         or args.development_group
-    ) and (
-        not (args.admit_published_environment or args.select_development_environment)
-        or args.development_checkout is None
-    ):
-        parser.error(
-            "development intent requires selection or admission and a checkout"
-        )
+    ) and (not args.admit_published_environment or args.development_checkout is None):
+        parser.error("development intent requires admission and a checkout")
     if args.admit_published_environment and (
         not (args.capture_environment or args.capture_active_environment)
     ):
         parser.error("published admission requires a read-only environment capture")
-    if args.select_development_environment is not None:
-        if args.development_checkout is None:
-            parser.error("development selection requires a checkout")
-        if (
-            args.with_custody
-            or args.runtime_session
-            or args.wheel_tag_source is not None
-            or args.hash_workers != 1
-            or args.admit_published_environment
-            or args.admit_virtualenv_bootstrap
-            or args.admit_site_bootstrap
-            or args.admit_external_root
-        ):
-            parser.error(
-                "development selection accepts no capture or admission options"
-            )
     if args.wheel_tag_source is not None and (
         not args.capture_runtime or args.with_custody or args.runtime_session
     ):
@@ -187,30 +166,25 @@ else:
         PYTHON_CAPTURE_SCHEMA as PYTHON_CAPTURE_SCHEMA,
         validate_python_capture as validate_python_capture,
     )
-    from molt.python_environment_custody import (  # noqa: E402
+    from molt.python_environment_custody import (
         PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA as PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA,
-        PYTHON_ENVIRONMENT_IDENTITY_SCHEMA as PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
         capture_current_python_environment,
         python_environment_executable_files as python_environment_executable_files,
         validate_python_environment_identity as validate_python_environment_identity,
         virtualenv_site_bootstrap_relative_paths as virtualenv_site_bootstrap_relative_paths,
     )
-    from molt.python_environment_location import (  # noqa: E402
-        PYTHON_ENVIRONMENT_LOCATION_SCHEMA as PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+    from molt.python_environment_location import (
         locate_current_python_environment as locate_current_python_environment,
         validate_python_environment_location as validate_python_environment_location,
     )
-    from molt.python_runtime_identity import (  # noqa: E402
+    from molt.python_runtime_identity import (
         PYTHON_RUNTIME_CAPABILITY_SCHEMA as PYTHON_RUNTIME_CAPABILITY_SCHEMA,
-        PYTHON_RUNTIME_IDENTITY_SCHEMA as PYTHON_RUNTIME_IDENTITY_SCHEMA,
         capture_current_python_runtime as capture_current_python_runtime,
         current_python_runtime_selection as current_python_runtime_selection,
         validate_python_runtime_identity as validate_python_runtime_identity,
     )
-    from molt.python_uv_lock_identity import (  # noqa: E402
+    from molt.python_uv_lock_identity import (
         PYTHON_MARKER_ENVIRONMENT_FIELDS as PYTHON_MARKER_ENVIRONMENT_FIELDS,
-        UV_LOCK_GROUP_CLOSURE_SCHEMA as UV_LOCK_GROUP_CLOSURE_SCHEMA,
         environment_matches_lock_closure as environment_matches_lock_closure,
         selected_uv_lock_group_closure as selected_uv_lock_group_closure,
         validate_uv_lock_group_closure as validate_uv_lock_group_closure,
@@ -478,6 +452,8 @@ def python_capture_authority_paths(
         "tool_releases",
         "path_custody",
         "python_environment_identity",
+        "python_environment_contract",
+        "source_build_environment_selection",
         "python_environment_location",
         "python_environment_custody",
         "python_external_custody",
@@ -569,27 +545,6 @@ def _main() -> None:
         payload = locate_current_python_environment()
     elif args.runtime_selection:
         payload = current_python_runtime_selection()
-    elif args.select_development_environment is not None:
-        from molt.source_build_environment import load_development_environment
-        from molt.source_build_environment_schema import (
-            DevelopmentEnvironmentRequest,
-            DevelopmentEnvironmentSelectionReceipt,
-        )
-
-        request = DevelopmentEnvironmentRequest(
-            args.development_checkout.resolve(strict=True),
-            args.development_python,
-            tuple(args.development_group),
-        )
-        image = load_development_environment(
-            args.select_development_environment,
-            repo_root=request.repo_root,
-            python=request.python,
-            groups=request.groups,
-        )
-        payload = dict(
-            DevelopmentEnvironmentSelectionReceipt(image.root, request).payload()
-        )
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
         from molt.toolchain_facts import host_file_digest_cache
@@ -635,12 +590,9 @@ def _main() -> None:
                     from molt.source_build_environment import (
                         admit_published_environment,
                     )
-                    from molt.source_build_environment_schema import (
-                        DevelopmentEnvironmentRequest,
-                    )
 
                     intent = (
-                        DevelopmentEnvironmentRequest(
+                        _contract.DevelopmentEnvironmentRequest(
                             args.development_checkout.resolve(strict=True),
                             args.development_python,
                             tuple(args.development_group),
@@ -654,7 +606,9 @@ def _main() -> None:
 
                 payload = capture_current_python_environment(
                     root,
-                    excluded_relative_paths=(SOURCE_BUILD_ENVIRONMENT_MANIFEST,),
+                    excluded_relative_paths=(
+                        _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+                    ),
                     admitted_site_bootstrap_paths=bootstrap,
                     admitted_external_roots=args.admit_external_root,
                     capture_context=context,

@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
+from molt import python_environment_contract as _contract
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import (
     identity_validator,
@@ -18,8 +19,7 @@ from molt.python_identity_common import (
     _valid_sha256,
 )
 
-UV_LOCK_GROUP_CLOSURE_SCHEMA = "molt.uv-lock-group-closure.v4"
-PYTHON_WHEEL_TARGET_SCHEMA = "molt.python-wheel-target.v1"
+
 # packaging's pure-Python tag implementation and its relative dependencies.
 # Load these exact bound bytes without adding a foreign site directory to sys.path.
 _TAG_SOURCE_MODULES = ("__init__", "_elffile", "_manylinux", "_musllinux", "tags")
@@ -107,7 +107,7 @@ def capture_python_wheel_target(
     }
     return validate_python_wheel_target(
         {
-            "schema": PYTHON_WHEEL_TARGET_SCHEMA,
+            "schema": _contract.PYTHON_WHEEL_TARGET_SCHEMA,
             "runtime_closure_sha256": runtime["runtime_closure_sha256"],
             "packaging_sources": source_files,
             "tags": tags,
@@ -120,7 +120,7 @@ def validate_python_wheel_target(payload: object) -> dict[str, object]:
         not isinstance(payload, dict)
         or set(payload)
         != {"schema", "runtime_closure_sha256", "packaging_sources", "tags"}
-        or payload.get("schema") != PYTHON_WHEEL_TARGET_SCHEMA
+        or payload.get("schema") != _contract.PYTHON_WHEEL_TARGET_SCHEMA
     ):
         raise PythonEnvironmentIdentityError("Python wheel target shape is invalid")
     sources = payload["packaging_sources"]
@@ -520,7 +520,7 @@ def selected_uv_lock_group_closure(
             }
         )
     material = {
-        "schema": UV_LOCK_GROUP_CLOSURE_SCHEMA,
+        "schema": _contract.UV_LOCK_GROUP_CLOSURE_SCHEMA,
         "lock_version": lock_version,
         "lock_revision": lock_revision,
         "requires_python": requires_python,
@@ -541,7 +541,7 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
     if (
         not isinstance(payload, dict)
         or set(payload) != _LOCK_CLOSURE_FIELDS
-        or payload.get("schema") != UV_LOCK_GROUP_CLOSURE_SCHEMA
+        or payload.get("schema") != _contract.UV_LOCK_GROUP_CLOSURE_SCHEMA
     ):
         raise PythonEnvironmentIdentityError("uv.lock group closure shape is invalid")
     payload = cast(dict[str, object], payload)

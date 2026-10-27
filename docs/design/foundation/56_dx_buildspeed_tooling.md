@@ -1911,7 +1911,7 @@ the perf arc depends on FACT-D to attribute regressions to passes.
 
 Managed images compile source on import rather than publishing caches for every
 installed and standard-library module at optimization levels 0, 1 and 2. The
-source-build address includes schema v8 and `cpython-source-only.v1`; old image
+source-build address includes schema v9 and `cpython-source-only.v1`; old image
 addresses and the eager-publication probe API are retired together. The existing
 publisher creates the empty physical cache prefix under its address lock, then
 performs one independent read-only capture. No generated executable caches means
@@ -1944,24 +1944,46 @@ existing cached reader before landing. It adds no cache server, whole-environmen
 admission cache, metadata-only admission shortcut or emitted-program overhead. Full release acceptance
 remains separate from developer-loop measurements.
 
-Ordinary developer launches use the existing metadata selection contract:
-physical image/checkout coordinates, published recipe, requested Python/groups,
-editable binding, declared inputs and the bytecode startup policy. A selected
-interpreter child reads that metadata for a site-free guardian and returns a
-bounded exact selection result. The parent retains reader-source fences and
-closed process custody. Ordinary execution makes no claim that every installed
-file was freshly admitted; proof and release ingress independently capture
-actual live bytes with complete identity and custody. The two roles share
-request coordinates and selection validation, while carrying distinct wire
-operations. A selection result cannot substitute for a proof capture.
+Ordinary developer launches read the publisher's generation-local
+`molt-development-selection.json` through the stdlib-only
+`source_build_environment_selection` authority. The schema-v9 recipe binds the
+complete producer contract and current raw declared-input digests: pyproject,
+lockfile, Python pin presence or absence, and declared README/license files. The
+existing editable binding also preserves resolved metadata targets, so moving
+an alias to identical bytes does not preserve a stale installation binding.
+Changing only Python-pin spelling selects a different immutable address.
 
-This removes the full environment traversal from an ordinary launch. Remaining
-cost is interpreter startup, reading and validating the published manifest and
-declared inputs, a small response, guard closure and the bounded reader-source
-fences. No whole-environment admission cache or installed-byte trust receipt is
-introduced. Cargo likewise treats its [registry dependencies as static](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html#special-considerations)
-during ordinary freshness checks; Molt retains exact live captures at proof and
-release boundaries rather than making that an ordinary-launch claim.
+Publication writes this bounded projection before capturing the installed image,
+so proof admission includes its actual bytes. The final full manifest remains
+the last publication write; ordinary selection refuses a provisional marker,
+missing/indirect final manifest, wrong physical namespace, changed inputs,
+wrong requested Python/groups, or a populated/indirect cache prefix. Its JSON
+read limit derives from current coordinates, metadata and group declarations,
+with a shared bounded runtime-version scalar allowance. Retired schema-v8
+images are preserved and require canonical ensure; there is no manifest fallback.
+
+The hot path launches no selection child, takes no publication lock, writes no
+receipt or cache, imports no package dependencies, and never decodes the full
+manifest or inventories installed/runtime files. Its cost scales with declared
+input bytes and paths plus a small JSON projection and physical/prefix checks.
+The cold publisher adds raw input hashing, one projection write and one captured
+file. This is an explicit ordinary-selection guarantee: it does not detect
+arbitrary tampering with full-manifest contents or certify current installed
+bytes. Proof and release ingress independently capture actual live bytes with
+complete identity/custody and exact published-image comparison. The obsolete
+selection child mode, receipt protocol and reader-source capture are deleted.
+
+This follows [uv's declared metadata cache inputs](https://docs.astral.sh/uv/concepts/cache/#dynamic-metadata)
+and Cargo's [ordinary registry freshness policy](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html#special-considerations).
+Molt retains exact live captures at proof and release boundaries. Measured
+ordinary-launch comparisons belong to their source/image-bound local evidence;
+this mechanism alone does not establish compiler throughput or release acceptance.
+
+Four alternating pairs on macOS arm64, using CPython 3.12.15 and the same
+42 locked packages in separate checkout-bound images, measured ordinary Python
+no-op launch medians of 0.746 seconds before and 0.229 seconds after (69% lower).
+Host load was not controlled; this includes launcher/payload startup and is
+not a compiler-throughput or release-acceptance measurement.
 
 Environment capture places read-only published-image checks immediately before
 its mandatory closing file/membership fence, instead of traversing every file
