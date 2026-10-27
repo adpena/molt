@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Protocol
 
 from tools.git_identity import changed_paths, require_git_object_id
-from tools.molt_dev_common import CandidateFailure, DriverError, _ok, _say, _step
+from tools.driver_errors import CandidateFailure, DriverError  # noqa: E402
+from tools.molt_dev_common import _ok, _say, _step  # noqa: E402
 
 CHANGE_REFERENCE = re.compile(rb"\bchange:(I[0-9a-f]{8,40})\b")
 # Citations resolve only in Markdown documents under docs/: code and tests may

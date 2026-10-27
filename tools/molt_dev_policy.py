@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from molt.process_environment import ProcessEnvironment
 from tools.dirty_tree_policy import is_ignored as _is_ignored
 from tools.git_identity import changed_paths
-from tools.molt_dev_common import EXIT_USAGE, CandidateFailure, DriverError
+from tools.driver_errors import EXIT_USAGE, CandidateFailure, DriverError  # noqa: E402
 
 if TYPE_CHECKING:
     from tools.molt_dev import Git

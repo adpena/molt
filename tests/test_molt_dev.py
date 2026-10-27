@@ -76,6 +76,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
+from tools import controller_source, detached_execution  # noqa: E402
 from tools import harness_memory_guard, memory_guard, molt_dev_gates  # noqa: E402
 from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402
 from tools.molt_dev_policy import (  # noqa: E402
@@ -84,11 +85,15 @@ from tools.molt_dev_policy import (  # noqa: E402
     PreparedGates,
     SelectedGate,
 )
-from tools.molt_dev_common import (  # noqa: E402
+from tools.driver_errors import (  # noqa: E402
+    EXIT_OK,
+    EXIT_FAIL,
+    EXIT_USAGE,
+    DriverError,
     CandidateFailure,
     GateFailure,
-    _run_fast_captured_command,
 )
+from tools.molt_dev_common import _run_fast_captured_command  # noqa: E402
 from tests.integration_driver_fixture import (  # noqa: E402
     GitFixture,
     clone_tree,
@@ -193,7 +198,7 @@ def test_completed_driver_failure_publishes_before_selected_maintenance(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "ambient"))
 
     def completed(_args):
-        raise drv.DriverError(
+        raise DriverError(
             "published failed differential",
             code=7,
             maintenance_selection=(tmp_path, selected),
@@ -525,7 +530,7 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
     # A hardlink copy can appear isolated for Git's atomic ref replacement;
     # exercise direct object-byte mutation as well, after the real push.
     new_tip = _commit_file(work, "private.txt", "private\n", "private mutation")
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
     assert _git(origin, "rev-parse", "HEAD").stdout.strip() == new_tip
     assert _git(_origin_seed, "rev-parse", "HEAD").stdout.strip() == initial
     wt = _worktree_off(work, "wt_isolated_artifacts")
@@ -533,7 +538,7 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
         molt_dev_retire.cleanup_worktree(
             drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
         )
-        == drv.EXIT_OK
+        == EXIT_OK
     )
     assert not wt.exists()
     relative = Path("objects") / initial[:2] / initial[2:]
@@ -635,7 +640,7 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
     env = _gate_caller_env(hostile)
     if selection == "worktree-main":
         _make_gate_venv(main_repo / ".venv", "main must not run")
-        with pytest.raises(drv.DriverError, match="development image not selected"):
+        with pytest.raises(DriverError, match="development image not selected"):
             drv.run_gate(
                 "python -c 'raise SystemExit(0)'",
                 repo,
@@ -729,7 +734,7 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
             )
             == 0
         )
-        with pytest.raises(drv.DriverError, match="requires structured argv"):
+        with pytest.raises(DriverError, match="requires structured argv"):
             drv._gate_environment(
                 "echo before && " + _gate_shell_command("python", "-I", "-c", "pass"),
                 repo,
@@ -737,7 +742,7 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
                     repo, ProcessEnvironment(env), requires_python=True
                 ),
             )
-        with pytest.raises(drv.DriverError, match="cache prefix conflicts"):
+        with pytest.raises(DriverError, match="cache prefix conflicts"):
             drv._gate_environment(
                 "echo before && "
                 + _gate_shell_command(
@@ -856,7 +861,7 @@ def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, sele
         if selector == "MOLT_VENV"
         else "managed development image refused"
     )
-    with pytest.raises(drv.DriverError, match=message):
+    with pytest.raises(DriverError, match=message):
         drv.run_gate(
             "echo should-not-run > launched.txt",
             repo,
@@ -876,7 +881,7 @@ def test_run_gate_invalid_worktree_venv_does_not_fall_back_to_main(drv, tmp_path
     work = tmp_path / "work"
     _git(main, "worktree", "add", "-q", "-b", "gate-test", str(work))
     (work / ".venv").mkdir()
-    with pytest.raises(drv.DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development image not selected"):
         drv.run_gate(
             ("python", "-c", "raise SystemExit(0)"),
             work,
@@ -893,7 +898,7 @@ def test_run_gate_missing_project_venv_refuses_python_but_allows_generic_shell(
     drv, tmp_path
 ):
     env = _gate_caller_env(tmp_path / "absent")
-    with pytest.raises(drv.DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development image not selected"):
         drv.run_gate(
             'python -c "raise SystemExit(0)"',
             tmp_path,
@@ -934,7 +939,7 @@ def test_run_gate_missing_selected_python_alias_never_uses_host_path(drv, tmp_pa
     env = _gate_caller_env(tmp_path / "unused")
     env["MOLT_VENV"] = str(selected)
     with pytest.raises(
-        drv.DriverError, match="virtualenv command 'python3' not executable"
+        DriverError, match="virtualenv command 'python3' not executable"
     ):
         drv.run_gate(
             'python3 -c "raise SystemExit(0)"',
@@ -955,7 +960,7 @@ def test_run_gate_quoted_windows_python_requires_project_environment(
         "_run_live_gate",
         lambda *args, **kwargs: pytest.fail("host shell launched"),
     )
-    with pytest.raises(drv.DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development image not selected"):
         drv.run_gate(
             f'{head} -c "raise SystemExit(0)"',
             tmp_path,
@@ -1255,7 +1260,7 @@ gates = []
 toolchains = ["python"]
 pytest_select = [{{k="pure", targets=["tests/test_a.py"], toolchains={toolchains}}}]
 """
-    with pytest.raises(drv.DriverError, match=r"pytest_select\[0\].*toolchains"):
+    with pytest.raises(DriverError, match=r"pytest_select\[0\].*toolchains"):
         GateConfig.parse(source, "invalid selector prerequisites", root=tmp_path)
 
 
@@ -1277,7 +1282,7 @@ globs = ["**"]
 gates = []
 pytest = [{json.dumps(target)}]
 """
-    with pytest.raises(drv.DriverError, match=message):
+    with pytest.raises(DriverError, match=message):
         GateConfig.parse(source, "invalid batch", root=tmp_path)
 
 
@@ -1335,7 +1340,7 @@ def test_gate_driver_rejects_malformed_declared_pytest_unit_before_admission(drv
         'pytest = ["tests/test_x.py"]\n'
         f"pytest_worker_memory_gb = {unit}\n"
     )
-    with pytest.raises(drv.DriverError, match="invalid local gate policy"):
+    with pytest.raises(DriverError, match="invalid local gate policy"):
         GateConfig.parse(source, "invalid worker unit")
 
 
@@ -1371,7 +1376,7 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
         str(selected),
         literal,
     ]
-    with pytest.raises(drv.DriverError, match="development image not selected"):
+    with pytest.raises(DriverError, match="development image not selected"):
         drv.run_gate(
             command,
             tmp_path,
@@ -1458,14 +1463,14 @@ gates = ["echo shared", "echo b-only"]
 def test_gate_manifest_rejects_bad_toml(drv, tmp_path):
     bad = tmp_path / "bad.toml"
     bad.write_text("[[rule]]\nname = 5\nglobs = []\ngates = []\n", encoding="utf-8")
-    with pytest.raises(drv.DriverError):
+    with pytest.raises(DriverError):
         GateConfig.load(bad)
 
 
 def test_gate_manifest_missing_is_usage_error(drv, tmp_path):
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         GateConfig.load(tmp_path / "does_not_exist.toml")
-    assert exc.value.code == drv.EXIT_USAGE
+    assert exc.value.code == EXIT_USAGE
 
 
 # --------------------------------------------------------------------------
@@ -1478,7 +1483,7 @@ def test_verify_push_confirms_landed_tip(drv, origin_and_clone):
     tip = _commit_file(work, "a.py", "print(1)\n", "feat: a")
     _git(work, "push", "-q", "origin", "main")
     ns = _ns(drv, repo=str(work), remote="origin", branch="main", tip=tip, json=False)
-    assert drv.cmd_verify_push(ns) == drv.EXIT_OK
+    assert drv.cmd_verify_push(ns) == EXIT_OK
 
 
 def test_verify_push_catches_non_landed_tip(drv, origin_and_clone):
@@ -1487,7 +1492,7 @@ def test_verify_push_catches_non_landed_tip(drv, origin_and_clone):
     origin, work = origin_and_clone
     tip = _commit_file(work, "a.py", "print(1)\n", "feat: a (unpushed)")
     ns = _ns(drv, repo=str(work), remote="origin", branch="main", tip=tip, json=False)
-    assert drv.cmd_verify_push(ns) == drv.EXIT_FAIL
+    assert drv.cmd_verify_push(ns) == EXIT_FAIL
 
 
 # --------------------------------------------------------------------------
@@ -1511,7 +1516,7 @@ def test_integrate_detects_dropped_commit(drv, origin_and_clone):
     assert git.patch_id(upstream) != pre[dropped]
     # Model a replay that discarded the source: candidate equals upstream.
     # Neither that candidate nor the pinned incoming span contains its patch.
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         drv._verify_no_dropped_commits(
             git, [dropped], pre, f"{upstream}..{upstream}", f"{dropped}..{upstream}"
         )
@@ -1538,7 +1543,7 @@ def test_integrate_accepts_already_upstream_by_patch_id(
     _git(other, "push", "-q", "origin", "main")
 
     commands = _record_driver_git_commands(drv, monkeypatch)
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
     assert git.head_sha() == upstream
     assert git.commits_in_range(f"{upstream}..HEAD") == []
     assert not git.is_ancestor(source, upstream)
@@ -1620,7 +1625,7 @@ def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path, monkeypatc
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_OK
+    assert rc == EXIT_OK
     assert removal_cwds == [main.resolve()]
     assert not wt.exists()
     assert (main / "README.md").read_bytes() == original_readme
@@ -1649,7 +1654,7 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_OK
+    assert rc == EXIT_OK
     assert retired == [(wt, True)], "daemons retire while their checkout still exists"
     assert not wt.exists()
 
@@ -1684,7 +1689,7 @@ def test_cleanup_retires_the_checkouts_state_with_it(
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_OK
+    assert rc == EXIT_OK
     assert not wt.exists()
     assert not target.exists() and not uv_environment.exists()
     assert sibling_target.is_dir() and sibling_uv.is_dir()
@@ -1942,7 +1947,7 @@ def test_the_guest_release_never_aborts_a_cleanup(
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_OK
+    assert rc == EXIT_OK
     assert not wt.exists()
     assert f"Linux VMs may keep files of {wt}" in capsys.readouterr().err
 
@@ -1967,7 +1972,7 @@ def test_failed_worktree_removal_keeps_the_checkouts_state(
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_FAIL
+    assert rc == EXIT_FAIL
     assert wt.is_dir() and target.is_dir() and uv_environment.is_dir()
     # The roots were bound while the checkout existed, so a later removal of
     # the checkout lets the disk guard reclaim them.
@@ -2081,7 +2086,7 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
         rc = molt_dev_retire.cleanup_worktree(
             drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
         )
-        assert rc == (drv.EXIT_OK if removal_succeeds else drv.EXIT_FAIL)
+        assert rc == (EXIT_OK if removal_succeeds else EXIT_FAIL)
     else:
         real = drift_harvest._git
 
@@ -2153,7 +2158,7 @@ def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
     rc = molt_dev_retire.cleanup_worktree(
         git, wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_FAIL
+    assert rc == EXIT_FAIL
     assert wt.exists()  # NOT removed
 
 
@@ -2165,7 +2170,7 @@ def test_cleanup_refuses_dirty_tracked(drv, origin_and_clone, tmp_path):
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_FAIL
+    assert rc == EXIT_FAIL
     assert wt.exists()
 
 
@@ -2183,7 +2188,7 @@ def test_cleanup_refuses_runtime_generation_churn(drv, origin_and_clone, tmp_pat
     rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
-    assert rc == drv.EXIT_FAIL
+    assert rc == EXIT_FAIL
     assert wt.exists()
 
 
@@ -2197,13 +2202,13 @@ def test_cleanup_force_requires_matching_sha(drv, origin_and_clone, tmp_path):
     rc_wrong = molt_dev_retire.cleanup_worktree(
         git, wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha="0" * 40
     )
-    assert rc_wrong == drv.EXIT_FAIL
+    assert rc_wrong == EXIT_FAIL
     assert wt.exists()
     # Correct force sha (the real HEAD) -> abandon proceeds.
     rc_right = molt_dev_retire.cleanup_worktree(
         git, wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=head
     )
-    assert rc_right == drv.EXIT_OK
+    assert rc_right == EXIT_OK
     assert not wt.exists()
 
 
@@ -2217,7 +2222,7 @@ def test_cleanup_refuses_main_worktree(drv, origin_and_clone, tmp_path):
         drv.DEFAULT_IGNORE_GLOBS,
         force_sha=None,
     )
-    assert rc == drv.EXIT_FAIL
+    assert rc == EXIT_FAIL
     assert main_clone.exists()
 
 
@@ -2247,7 +2252,7 @@ def test_secure_wip_captures_staged_and_unstaged(drv, origin_and_clone):
         ignore=None,
         include_untracked=False,
     )
-    assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
+    assert drv.cmd_secure_wip(ns) == EXIT_OK
     head_after = git.head_sha()
     assert head_after != head_before
 
@@ -2283,7 +2288,7 @@ def test_secure_wip_honors_ignore_set(drv, origin_and_clone):
         ignore=(CUSTOM_IGNORED_PATH,),
         include_untracked=False,
     )
-    assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
+    assert drv.cmd_secure_wip(ns) == EXIT_OK
     files = set(_git(work, "show", "--name-only", "--format=", "HEAD").stdout.split())
     assert "README.md" in files
     assert CUSTOM_IGNORED_PATH not in files  # excluded
@@ -2305,7 +2310,7 @@ def test_secure_wip_excludes_untracked_by_default(drv, origin_and_clone):
         ignore=None,
         include_untracked=False,
     )
-    assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
+    assert drv.cmd_secure_wip(ns) == EXIT_OK
     files = set(_git(work, "show", "--name-only", "--format=", "HEAD").stdout.split())
     assert "README.md" in files
     assert "scratch.txt" not in files
@@ -2328,7 +2333,7 @@ def test_secure_wip_dry_run_does_not_commit(drv, origin_and_clone):
         ignore=None,
         include_untracked=False,
     )
-    assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
+    assert drv.cmd_secure_wip(ns) == EXIT_OK
     assert git.head_sha() == head_before  # no commit made
 
 
@@ -2344,7 +2349,7 @@ def test_secure_wip_clean_tree_is_noop(drv, origin_and_clone):
         ignore=None,
         include_untracked=False,
     )
-    assert drv.cmd_secure_wip(ns) == drv.EXIT_OK
+    assert drv.cmd_secure_wip(ns) == EXIT_OK
     assert git.head_sha() == head_before
 
 
@@ -2415,9 +2420,9 @@ def test_marker_parse_and_check(drv, tmp_path):
 
 
 def test_marker_parse_rejects_bad_spec(drv):
-    with pytest.raises(drv.DriverError):
+    with pytest.raises(DriverError):
         drv.Marker.parse("contains:onlypath-no-needle")
-    with pytest.raises(drv.DriverError):
+    with pytest.raises(DriverError):
         drv.Marker.parse("garbage:foo")
 
 
@@ -2433,7 +2438,7 @@ def test_integrate_marker_mismatch_fails(drv, origin_and_clone):
         marker=["contains:impl.py::NONEXISTENT_TOKEN"],
         no_push=True,
     )
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         drv.cmd_integrate(ns)
     assert "content marker" in str(exc.value)
     # And origin is untouched (no push happened).
@@ -2458,7 +2463,7 @@ def test_integrate_marker_mismatch_via_main_returns_fail(drv, origin_and_clone):
             "contains:impl.py::NONEXISTENT_TOKEN",
         ]
     )
-    assert rc == drv.EXIT_FAIL
+    assert rc == EXIT_FAIL
 
 
 # --------------------------------------------------------------------------
@@ -2503,7 +2508,7 @@ def test_integrate_resolves_change_citations_to_rebased_commits(drv, origin_and_
     _git(work, "commit", "-q", "--no-verify", "-m", "ledger")
     _advance_origin(origin, work)
 
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
 
     landed = _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
     assert landed == _git(work, "rev-parse", "HEAD").stdout.strip()
@@ -2551,7 +2556,7 @@ def test_integrate_refuses_unresolved_change_citations_before_gates(
     origin_before = _git(work, "ls-remote", "origin", "refs/heads/main").stdout
     head_before = _git(work, "rev-parse", "HEAD").stdout.strip()
 
-    with pytest.raises(drv.DriverError, match=message) as caught:
+    with pytest.raises(DriverError, match=message) as caught:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
 
     assert "executed=0" in str(caught.value)
@@ -2615,7 +2620,7 @@ def test_integrate_marker_match_passes(drv, origin_and_clone):
         marker=["exists:impl.py", "contains:impl.py::return 1"],
         no_push=True,  # stop before push so the test stays local
     )
-    assert drv.cmd_integrate(ns) == drv.EXIT_OK
+    assert drv.cmd_integrate(ns) == EXIT_OK
 
 
 # --------------------------------------------------------------------------
@@ -2639,19 +2644,19 @@ def test_probe_file_and_pid(drv, tmp_path):
 
 def test_probe_missing_file_is_nonzero(drv, tmp_path):
     ns = _ns(drv, file=[str(tmp_path / "nope.log")], pid=None, json=False)
-    assert drv.cmd_probe(ns) == drv.EXIT_FAIL
+    assert drv.cmd_probe(ns) == EXIT_FAIL
 
 
 def test_probe_live_pid_is_zero(drv):
     ns = _ns(drv, file=None, pid=[os.getpid()], json=False)
-    assert drv.cmd_probe(ns) == drv.EXIT_OK
+    assert drv.cmd_probe(ns) == EXIT_OK
 
 
 def test_probe_requires_target(drv):
     ns = _ns(drv, file=None, pid=None, json=False)
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         drv.cmd_probe(ns)
-    assert exc.value.code == drv.EXIT_USAGE
+    assert exc.value.code == EXIT_USAGE
 
 
 # --------------------------------------------------------------------------
@@ -2925,7 +2930,7 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
         )
         for index in (1, 2)
     ]
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
     if cause == "gate exit":
         assert isinstance(exc.value, GateFailure)
@@ -3192,7 +3197,7 @@ def test_gate_adapter_refuses_unsafe_or_missing_guard_outcomes(
         gates.append(
             SelectedGate(command=("gate", "2"), toolchains=("python",), concurrent=True)
         )
-    with pytest.raises(molt_dev.DriverError) as caught:
+    with pytest.raises(DriverError) as caught:
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
     assert not isinstance(caught.value, CandidateFailure)
     if concurrent:
@@ -3298,7 +3303,7 @@ def test_gate_adapter_admits_windows_helper_only_from_selected_policy(
     if admitted:
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
     else:
-        with pytest.raises(molt_dev.DriverError) as caught:
+        with pytest.raises(DriverError) as caught:
             molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
         assert not isinstance(caught.value, CandidateFailure)
     if concurrent:
@@ -3332,7 +3337,7 @@ def test_captured_gate_refuses_missing_or_mismatched_guard_result(
         "guarded_completed_process",
         lambda *args, **kwargs: result,
     )
-    with pytest.raises(molt_dev.DriverError) as caught:
+    with pytest.raises(DriverError) as caught:
         molt_dev_common._run_captured_gate(
             ("synthetic-gate",),
             repo=tmp_path,
@@ -3727,7 +3732,7 @@ def test_a_gate_runner_error_keeps_its_streams_in_the_receipt(drv, tmp_path):
     def run_captured_gate(command, repo, environment, cancelled, streams=None):
         if command[1] == "raises":
             streams[0].write_text("partial\n", encoding="utf-8")
-            raise drv.DriverError("the runner lost its child")
+            raise DriverError("the runner lost its child")
         return _gate_outcome(0, "", "", None)
 
     gates = [
@@ -3735,7 +3740,7 @@ def test_a_gate_runner_error_keeps_its_streams_in_the_receipt(drv, tmp_path):
         SelectedGate(command=("pytest", "ok"), toolchains=("python",), pytest=True),
     ]
     runtime = _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate)
-    with pytest.raises(drv.DriverError, match="the runner lost its child"):
+    with pytest.raises(DriverError, match="the runner lost its child"):
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 8)
     heavy = json.loads((tmp_path / "receipt.heavy.json").read_text(encoding="utf-8"))
     record = next(r for r in heavy["commands"] if r["id"] == "local.gate.1")
@@ -3818,7 +3823,7 @@ def test_integrate_full_push_and_confirm(
         no_push=False,
         expected_upstream=upstream if pin_upstream else None,
     )
-    assert drv.cmd_integrate(ns) == drv.EXIT_OK
+    assert drv.cmd_integrate(ns) == EXIT_OK
     _assert_no_patch_diff_work(commands)
     assert not any(args[0] == "rebase" for args in commands)
     assert git.head_sha() == tip
@@ -3854,7 +3859,7 @@ def test_integrate_dry_run_mutates_nothing(
         dry_run=True,
         no_push=False,
     )
-    assert drv.cmd_integrate(ns) == drv.EXIT_OK
+    assert drv.cmd_integrate(ns) == EXIT_OK
     assert git.head_sha() == head_before
     assert _git(work, "rev-parse", "origin/main").stdout.strip() == origin_before
     _assert_no_patch_diff_work(commands)
@@ -3884,7 +3889,7 @@ def test_integrate_no_rebase_rejects_head_drift_before_selection(
 
     monkeypatch.setattr(drv.Git, "commits_in_range", move_head)
     commands = _record_driver_git_commands(drv, monkeypatch)
-    with pytest.raises(drv.DriverError, match="source HEAD changed"):
+    with pytest.raises(DriverError, match="source HEAD changed"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     assert changed
     assert _git(work, "rev-parse", "HEAD").stdout.strip() != captured
@@ -3899,7 +3904,7 @@ def test_integrate_nothing_to_do_is_green(drv, origin_and_clone):
     # HEAD already on origin/main -> integrate is a green no-op.
     origin, work = origin_and_clone
     ns = _integrate_ns(drv, repo=str(work), no_push=True)
-    assert drv.cmd_integrate(ns) == drv.EXIT_OK
+    assert drv.cmd_integrate(ns) == EXIT_OK
 
 
 @pytest.mark.parametrize(
@@ -3944,6 +3949,7 @@ import json
 import sys
 from pathlib import Path
 from tools import molt_dev
+from tools.driver_errors import DriverError
 
 assert Path(molt_dev.__file__).resolve() == Path(sys.argv[3]).resolve()
 def exclusive(args, *, progress):
@@ -3954,7 +3960,7 @@ try:
     code = molt_dev.cmd_integrate(argparse.Namespace(
         repo=sys.argv[1], dry_run=False, pinned_controller=None, wait_for_lock=False
     ))
-except molt_dev.DriverError as error:
+except DriverError as error:
     result = {"busy": True, "message": str(error)}
 else:
     result = {"busy": False, "code": code}
@@ -3992,10 +3998,10 @@ print(json.dumps(result))
         )
         # Any admitted exclusive body would be able to fetch and run gates.
         assert not entered.exists()
-        return drv.EXIT_OK
+        return EXIT_OK
 
     monkeypatch.setattr(drv, "_integrate_exclusive", exclusive)
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
     lock_path = work / ".git" / "molt-integrate.lock"
     identity = lock_path.stat()
     assert contend() == {"busy": False, "code": 73}
@@ -4028,7 +4034,7 @@ def _publish_controller_stub(work: Path, role: str) -> str:
     locked = _run_fast_captured_command([uv, "lock", "--offline", "--quiet"], cwd=work)
     assert locked.returncode == 0, locked.stderr
     _git(work, "add", "--", "pyproject.toml", ".python-version", "uv.lock")
-    # Every controller path exists on main (molt_dev_controller.CONTROLLER_PATHS).
+    # Every controller path exists on main (controller_source.CONTROLLER_PATHS).
     _commit_file(work, "config/tool_releases.toml", "", "config")
     _commit_file(work, "src/molt/__init__.py", "", "molt package")
     # This stand-in has an empty package and no startup behavior; real driver
@@ -4101,9 +4107,9 @@ def test_landing_commands_run_main_pinned_controller_not_the_candidate(
 
         assert report["argv"][-2] == "--controller-state-handoff"
         handoff = ExecStateHandoff.from_json(report["argv"][-1])
-        from tools import molt_dev_controller as controller
+        from tools import controller_source
 
-        assert controller._source_lock_path(root) in {
+        assert controller_source.source_lock_path(root) in {
             item.path for item in handoff.descriptors
         }
         assert report["argv"][:-2] == expected_argv
@@ -4182,7 +4188,7 @@ def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
         timeout=300,
     )
     output = result.stdout + result.stderr
-    assert result.returncode == molt_dev.EXIT_OK, output
+    assert result.returncode == EXIT_OK, output
     events = [
         json.loads(line)
         for line in result.stdout.splitlines()
@@ -4226,8 +4232,8 @@ def test_lane_start_and_retire_run_through_mains_controller_by_default(
     returncode, output = lane("start", "handoff", "--root", str(work.parent / "lanes"))
     (controller,) = (work / ".git" / "molt" / "controllers").iterdir()
     assert f"pinned controller {controller.name}" in output, output
-    assert returncode in {molt_dev.EXIT_OK, molt_dev.EXIT_FAIL}, output
-    if returncode == molt_dev.EXIT_FAIL:
+    assert returncode in {EXIT_OK, EXIT_FAIL}, output
+    if returncode == EXIT_FAIL:
         # Only the inputs the fixture lacks may fail; a failed start prints
         # failures alone, so any other input's name means it failed.
         assert "the lane exists; finish provisioning" in output, output
@@ -4240,7 +4246,7 @@ def test_lane_start_and_retire_run_through_mains_controller_by_default(
     assert worktree.is_dir()
 
     returncode, output = lane("retire", "handoff")
-    assert returncode == molt_dev.EXIT_OK, output
+    assert returncode == EXIT_OK, output
     assert f"pinned controller {controller.name}" in output, output
     # A slot lane's retirement keeps the slot, detached, for the next lane
     # (HF-491).
@@ -4269,7 +4275,7 @@ def test_main_without_a_controller_refuses_before_any_gate(origin_and_clone, tmp
         env=ProcessEnvironment(env),
         timeout=60,
     )
-    assert result.returncode == molt_dev.EXIT_FAIL
+    assert result.returncode == EXIT_FAIL
     assert "git rev-parse" in result.stdout + result.stderr
     assert "integration-policy" not in result.stdout, "no gate may run"
     assert not (work / ".git" / "molt" / "controllers").exists()
@@ -4278,17 +4284,17 @@ def test_main_without_a_controller_refuses_before_any_gate(origin_and_clone, tmp
 def test_pinned_controller_claim_must_match_this_process(drv, origin_and_clone):
     _, work = origin_and_clone
     key = "0" * 32
-    with pytest.raises(drv.DriverError, match="has no record"):
+    with pytest.raises(DriverError, match="has no record"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), pinned_controller=key))
     record = work / ".git" / "molt" / "controllers" / key / ".molt-controller.json"
     record.parent.mkdir(parents=True)
     record.write_text("{}\n", encoding="utf-8")
-    with pytest.raises(drv.DriverError, match="but this driver runs from"):
+    with pytest.raises(DriverError, match="but this driver runs from"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), pinned_controller=key))
 
 
 def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
-    from tools import molt_dev_controller as controller
+    from tools import controller_source, molt_dev_controller as controller
 
     now = 10_000_000.0
     day = 24 * 3600.0
@@ -4296,7 +4302,7 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
     def entry(name: str, age: float) -> Path:
         root = tmp_path / name
         root.mkdir()
-        record = root / controller.RECORD_NAME
+        record = root / controller_source.RECORD_NAME
         record.write_text("{}\n", encoding="utf-8")
         os.utime(record, (now - age, now - age))
         return root
@@ -4332,33 +4338,35 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
 
 
 def _controller_source_fixture(tmp_path, key="a" * 32):
-    from tools import molt_dev_controller as controller
+    from tools import controller_source
 
     root = tmp_path / "molt" / "controllers" / key
     root.mkdir(parents=True)
-    (root / controller.RECORD_NAME).write_text(
-        json.dumps({"schema": controller.SCHEMA, "key": key, "commit": "1" * 40}),
+    (root / controller_source.RECORD_NAME).write_text(
+        json.dumps(
+            {"schema": controller_source.SCHEMA, "key": key, "commit": "1" * 40}
+        ),
         encoding="utf-8",
     )
-    return controller.Controller(key=key, root=root.resolve())
+    return controller_source.Controller(key=key, root=root.resolve())
 
 
 def test_controller_source_use_excludes_aged_retirement_and_staging(
     tmp_path, monkeypatch
 ):
-    from tools import molt_dev_controller as controller
+    from tools import controller_source, molt_dev_controller as controller
 
     selected = _controller_source_fixture(tmp_path)
     staging = selected.root.with_name(
-        controller.STAGING_PREFIX + selected.key + "-fixture"
+        controller_source.STAGING_PREFIX + selected.key + "-fixture"
     )
     staging.mkdir()
     (staging / "partial-source").write_bytes(b"not published")
     monkeypatch.setattr(controller, "KEEP", 1)
     now = time.time()
     old = now - 2 * controller.IDLE_S
-    with controller.controller_source_use(selected):
-        os.utime(selected.root / controller.RECORD_NAME, (old, old))
+    with controller_source.controller_source_use(selected):
+        os.utime(selected.root / controller_source.RECORD_NAME, (old, old))
         os.utime(staging, (old, old))
         controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
         assert selected.driver.parent.parent.is_dir()
@@ -4371,17 +4379,17 @@ def test_controller_source_use_excludes_aged_retirement_and_staging(
 def test_controller_source_publishes_committed_policy_without_environment(
     origin_and_clone, monkeypatch
 ):
-    from tools import molt_dev_controller as controller
+    from tools import controller_source, molt_dev_controller as controller
     from molt.file_locks import _try_acquire_file_lock
 
     _, work = origin_and_clone
-    for path in controller.CONTROLLER_PATHS:
+    for path in controller_source.CONTROLLER_PATHS:
         target = work / path
         if path in {"tools", "src/molt", "config"}:
             target /= "source.txt"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("published source\n", encoding="utf-8")
-    _git(work, "add", "--", *controller.CONTROLLER_PATHS)
+    _git(work, "add", "--", *controller_source.CONTROLLER_PATHS)
     _git(work, "commit", "-q", "--no-verify", "-m", "published source fixture")
     commit = _git(work, "rev-parse", "HEAD").stdout.strip()
     (work / "tools/source.txt").write_text("dirty caller\n", encoding="utf-8")
@@ -4395,13 +4403,14 @@ def test_controller_source_publishes_committed_policy_without_environment(
         "_retire_idle",
         lambda *a, **kw: pytest.fail("source acquisition swept controllers"),
     )
-    with controller.controller_source(work, work / ".git", commit) as selected:
+    with controller_source.controller_source(work, work / ".git", commit) as selected:
         assert (selected.root / "tools/source.txt").read_text(
             encoding="utf-8"
         ) == "published source\n"
         assert not (selected.root / controller.ENVIRONMENT_NAME).exists()
         assert (
-            _try_acquire_file_lock(controller._source_lock_path(selected.root)) is None
+            _try_acquire_file_lock(controller_source.source_lock_path(selected.root))
+            is None
         )
     assert (work / "tools/source.txt").read_text(encoding="utf-8") == "dirty caller\n"
 
@@ -4410,12 +4419,12 @@ def test_controller_source_publishes_committed_policy_without_environment(
     os.name != "posix", reason="POSIX controller uses process-preserving exec"
 )
 def test_controller_exec_retains_source_without_an_extra_process(tmp_path):
-    from tools import molt_dev_controller as controller
+    from tools import controller_source
     from tests.process_guard_common import run_custody_subject_process
 
     selected = _controller_source_fixture(tmp_path)
     selected.driver.parent.mkdir()
-    lock_path = controller._source_lock_path(selected.root)
+    lock_path = controller_source.source_lock_path(selected.root)
     selected.driver.write_text(
         "import fcntl, os, sys\n"
         f"with open({str(lock_path)!r}, 'rb') as lock:\n"
@@ -4428,10 +4437,10 @@ def test_controller_exec_retains_source_without_an_extra_process(tmp_path):
     )
     code = (
         "import os, sys\nfrom pathlib import Path\n"
-        "from tools import molt_dev_controller as controller\n"
+        "from tools import controller_source, molt_dev_controller as controller\n"
         "controller.venv_python = lambda _: Path(sys.executable)\n"
         "os.environ['EXPECTED_CONTROLLER_PID'] = str(os.getpid())\n"
-        f"controller.run_controller(controller.Controller({selected.key!r}, Path({str(selected.root)!r})), [], repo=Path.cwd())\n"
+        f"controller.run_controller(controller_source.Controller({selected.key!r}, Path({str(selected.root)!r})), [], repo=Path.cwd())\n"
     )
     result = run_custody_subject_process(
         [sys.executable, "-B", "-c", code],
@@ -4447,7 +4456,7 @@ def test_controller_exec_retains_source_without_an_extra_process(tmp_path):
 def test_detached_controller_worker_retains_source_through_terminal_publication(
     tmp_path, monkeypatch
 ):
-    from tools import molt_dev_controller as controller, molt_dev_detached as detached
+    from tools import controller_source
     from molt.file_locks import _try_acquire_file_lock
 
     selected = _controller_source_fixture(tmp_path)
@@ -4465,22 +4474,26 @@ def test_detached_controller_worker_retains_source_through_terminal_publication(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(detached, "_REPO_ROOT", selected.root)
-    real_write = detached._atomic_write_text
+    monkeypatch.setattr(detached_execution, "_REPO_ROOT", selected.root)
+    real_write = detached_execution._atomic_write_text
     observed = []
     (state / "run.log").write_text("startup diagnostic retained\n", encoding="utf-8")
 
     def write(path, value):
         if path.name == "rc":
             assert (
-                _try_acquire_file_lock(controller._source_lock_path(selected.root))
+                _try_acquire_file_lock(
+                    controller_source.source_lock_path(selected.root)
+                )
                 is None
             )
             observed.append(value)
         return real_write(path, value)
 
-    monkeypatch.setattr(detached, "_atomic_write_text", write)
-    assert detached._detached_worker_main(payload, controller_required=True) == 0
+    monkeypatch.setattr(detached_execution, "_atomic_write_text", write)
+    assert (
+        detached_execution._detached_worker_main(payload, controller_required=True) == 0
+    )
     assert observed == ["9"]
     assert (state / "state-use-ready.json").is_file()
     assert (
@@ -4490,7 +4503,7 @@ def test_detached_controller_worker_retains_source_through_terminal_publication(
     )
     from molt.file_locks import _release_file_lock
 
-    handle = _try_acquire_file_lock(controller._source_lock_path(selected.root))
+    handle = _try_acquire_file_lock(controller_source.source_lock_path(selected.root))
     assert handle is not None
     _release_file_lock(handle)
 
@@ -4498,7 +4511,6 @@ def test_detached_controller_worker_retains_source_through_terminal_publication(
 def test_detached_controller_worker_rejects_source_substitution_before_ready(
     tmp_path, monkeypatch
 ):
-    from tools import molt_dev_detached as detached
 
     selected = _controller_source_fixture(tmp_path)
     state = tmp_path / "worker"
@@ -4515,30 +4527,31 @@ def test_detached_controller_worker_rejects_source_substitution_before_ready(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(detached, "_REPO_ROOT", selected.root)
+    monkeypatch.setattr(detached_execution, "_REPO_ROOT", selected.root)
     monkeypatch.setattr(
-        detached,
+        detached_execution,
         "_exec_wait_rc",
         lambda *a: pytest.fail("substituted source ran a child"),
     )
-    assert detached._detached_worker_main(payload, controller_required=True) == 0
+    assert (
+        detached_execution._detached_worker_main(payload, controller_required=True) == 0
+    )
     assert not (state / "state-use-ready.json").exists()
     assert (state / "rc").read_text(encoding="utf-8") == "126"
 
 
 def test_detached_preentry_failure_keeps_startup_trace(tmp_path):
-    from tools import molt_dev_detached as detached
 
     selected = _controller_source_fixture(tmp_path)
-    entry = selected.root / "tools" / "molt_dev_detached.py"
+    entry = selected.root / "tools" / "detached_execution.py"
     entry.parent.mkdir(parents=True, exist_ok=True)
     entry.write_text(
         "raise RuntimeError('independent failure before worker entry')\n",
         encoding="utf-8",
     )
     state = tmp_path / "failed-startup"
-    with pytest.raises(detached.DriverError, match="worker exited 1"):
-        detached.launch_detached(
+    with pytest.raises(DriverError, match="worker exited 1"):
+        detached_execution.launch_detached(
             state,
             ["must-not-run"],
             cwd=selected.root,
@@ -4556,7 +4569,7 @@ def test_detached_preentry_failure_keeps_startup_trace(tmp_path):
 def test_detached_published_source_survives_caller_removal_and_idle_retention(
     tmp_path, driver_seed, monkeypatch
 ):
-    from tools import molt_dev_controller as controller, molt_dev_detached as detached
+    from tools import controller_source, molt_dev_controller as controller
 
     selected = _controller_source_fixture(tmp_path)
     copy_driver_trees(selected.root, seed=driver_seed)
@@ -4578,8 +4591,8 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
         "assert release.exists(), 'test release deadline'\n"
     )
     state = tmp_path / "maintenance"
-    with controller.controller_source_use(selected):
-        detached.launch_detached(
+    with controller_source.controller_source_use(selected):
+        detached_execution.launch_detached(
             state,
             [sys.executable, "-I", "-B", "-c", code],
             cwd=selected.root,
@@ -4596,7 +4609,7 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
         # keep this controller while the detached command remains alive.
         now = time.time()
         old = now - 2 * controller.IDLE_S
-        os.utime(selected.root / controller.RECORD_NAME, (old, old))
+        os.utime(selected.root / controller_source.RECORD_NAME, (old, old))
         monkeypatch.setattr(controller, "KEEP", 1)
         controller._retire_idle(selected.root.parent, current=tmp_path, now=now)
         assert selected.driver.exists()
@@ -4677,7 +4690,7 @@ def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
     heads = [_lane(work, name, {f"{name}.py": f"{name} = 1\n"}) for name in "abc"]
     paths, requests = _enqueue(drv, work, *heads)
 
-    assert _run_queue(drv, work) == drv.EXIT_OK
+    assert _run_queue(drv, work) == EXIT_OK
 
     assert _statuses(paths, requests) == ["landed"] * 3
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
@@ -4788,7 +4801,7 @@ def test_queue_direct_materialization_keeps_hooks_and_enrolled_tree(
         "ancestry-error": "cannot establish enrolled lane's upstream ancestry",
         "extra-parent": "enrolled source tree",
     }[hook]
-    with pytest.raises(drv.DriverError, match=diagnostic):
+    with pytest.raises(DriverError, match=diagnostic):
         queue.build_candidate(run, upstream, requests)
     if hook == "extra-parent":
         assert _git(work, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[
@@ -4853,7 +4866,7 @@ def test_queue_preserves_source_merges_and_resolves_their_citations(
         monkeypatch.setattr(drv, "cmd_integrate", advance_before_integration)
     commands = _record_driver_git_commands(drv, monkeypatch)
 
-    assert _run_queue(drv, work) == drv.EXIT_OK
+    assert _run_queue(drv, work) == EXIT_OK
 
     assert _statuses(paths, requests) == ["landed"]
     _git(work, "fetch", "-q", "origin")
@@ -4900,7 +4913,7 @@ def test_queue_bisects_a_failed_batch_and_lands_the_rest(
     )
     paths, requests = _enqueue(drv, work, *heads)
 
-    assert _run_queue(drv, work) == drv.EXIT_OK
+    assert _run_queue(drv, work) == EXIT_OK
 
     assert _statuses(paths, requests) == ["landed", "landed", "failed", "landed"]
     # The runner's own output names the failed request and why, not only its
@@ -4925,7 +4938,7 @@ def test_queue_leaves_a_conflicting_lane_out_of_its_batch(
     third = _lane(work, "third", {"third.txt": "third\n"})
     paths, requests = _enqueue(drv, work, first, second, third)
 
-    assert _run_queue(drv, work) == drv.EXIT_OK
+    assert _run_queue(drv, work) == EXIT_OK
 
     assert _statuses(paths, requests) == ["landed", "conflict", "landed"]
     _git(work, "fetch", "-q", "origin")
@@ -4959,7 +4972,7 @@ def test_queue_rebuilds_a_batch_when_main_moves_under_it(
     head = _lane(work, "a", {"a.py": "a = 1\n"})
     paths, requests = _enqueue(drv, work, head)
 
-    assert _run_queue(drv, work) == drv.EXIT_OK
+    assert _run_queue(drv, work) == EXIT_OK
 
     assert _statuses(paths, requests) == ["landed"]
     assert {"a.py", "moved.txt"} <= _origin_tree(work)
@@ -5002,7 +5015,7 @@ def test_land_runs_static_gates_in_the_lane_before_queueing(
 
     monkeypatch.setattr(GateConfig, "prepare", recorded_admission)
 
-    assert _land_without_runner(drv, monkeypatch, lane) == drv.EXIT_OK
+    assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
     assert admitted and all("PYTHONPYCACHEPREFIX" in env for env in admitted)
 
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
@@ -5038,9 +5051,7 @@ def test_land_no_precheck_queues_without_running_gates(
     head = _lane(work, "skip", {"b.py": "b = 2\n"})
     lane = work.parent / "lane-skip"
 
-    assert _land_without_runner(drv, monkeypatch, lane, "--no-precheck") == (
-        drv.EXIT_OK
-    )
+    assert _land_without_runner(drv, monkeypatch, lane, "--no-precheck") == (EXIT_OK)
 
     assert not counter.exists()
     assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
@@ -5083,7 +5094,7 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
         if result.returncode
         else ""
     )
-    assert result.returncode == molt_dev.EXIT_OK, (
+    assert result.returncode == EXIT_OK, (
         result.stdout + result.stderr + runner_diagnostics
     )
     assert "landed in" in result.stderr
@@ -5113,7 +5124,7 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
     monkeypatch.setattr(queue, "_AWAIT_POLL_MIN_S", 0.01)
     monkeypatch.setattr(queue, "_AWAIT_POLL_MAX_S", 0.01)
 
-    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
+    assert queue._await_landing(paths, request.id) == EXIT_FAIL
     assert queue._runner_exited_without(paths, request.id) == runner
 
 
@@ -5151,7 +5162,7 @@ def test_land_wait_looks_again_at_a_doubling_interval(tmp_path, monkeypatch):
 
     install_module_view(monkeypatch, "time", time, queue, sleep=wait)
 
-    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_OK
+    assert queue._await_landing(paths, request.id) == EXIT_OK
     # From 0.05 s, each wait doubles, up to one second.
     assert waits == pytest.approx([0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0])
 
@@ -5333,7 +5344,7 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
         monkeypatch.setattr(queue, "_AWAIT_POLL_MIN_S", 0.01)
         monkeypatch.setattr(queue, "_AWAIT_POLL_MAX_S", 0.01)
 
-        assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
+        assert queue._await_landing(paths, request.id) == EXIT_FAIL
         assert not (runner / "rc").exists()
         assert queue._runner_exited_without(paths, request.id) == runner
         # The kernel still lists the supervisor: the wait saw a zombie, unreaped.
@@ -5456,7 +5467,7 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
     args = drv.build_parser().parse_args(
         ["queue", "status", "--repo", str(tmp_path), "--recent", str(recent)]
     )
-    assert args.func(args) == drv.EXIT_OK
+    assert args.func(args) == EXIT_OK
     report = original_loads(capsys.readouterr().out)
     expected = sorted(
         records.values(),
@@ -5489,7 +5500,7 @@ def test_queue_status_rejects_negative_recent_before_queue_access(
     monkeypatch.setattr(queue, "queue_paths", unexpected_queue_access)
     assert (
         drv.main(["queue", "status", "--repo", str(tmp_path), "--recent", recent])
-        == drv.EXIT_USAGE
+        == EXIT_USAGE
     )
     output = capsys.readouterr()
     assert "--recent must be non-negative" in output.err
@@ -5515,7 +5526,7 @@ def test_queue_status_preserves_selected_result_parse_errors(
 def test_queue_status_rejects_noninteger_recent(drv, capsys):
     with pytest.raises(SystemExit) as error:
         drv.build_parser().parse_args(["queue", "status", "--recent", "many"])
-    assert error.value.code == drv.EXIT_USAGE
+    assert error.value.code == EXIT_USAGE
     assert "invalid int value" in capsys.readouterr().err
 
 
@@ -5582,7 +5593,7 @@ def test_integrate_lock_released_on_every_exclusive_exit(
             file_locks._release_file_lock(unexpected)
             pytest.fail("exclusive body entered without its integration lock")
         if outcome == "driver-error":
-            raise drv.DriverError("independent integration failure")
+            raise DriverError("independent integration failure")
         if outcome == "interrupt":
             raise KeyboardInterrupt("independent integration interruption")
         return 73
@@ -5592,7 +5603,7 @@ def test_integrate_lock_released_on_every_exclusive_exit(
     if outcome == "success":
         assert drv.cmd_integrate(args) == 73
     elif outcome == "driver-error":
-        with pytest.raises(drv.DriverError, match="independent integration failure"):
+        with pytest.raises(DriverError, match="independent integration failure"):
             drv.cmd_integrate(args)
     else:
         with pytest.raises(
@@ -5638,7 +5649,7 @@ def test_integrate_lock_covers_fetch_gates_push_confirmation_and_cleanup(
 
     def cleanup(*args, **kwargs):
         require_held("cleanup")
-        return drv.EXIT_OK
+        return EXIT_OK
 
     monkeypatch.setattr(drv.Git, "_run", git_run)
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
@@ -5647,7 +5658,7 @@ def test_integrate_lock_covers_fetch_gates_push_confirmation_and_cleanup(
     monkeypatch.setattr(molt_dev_retire, "cleanup_worktree", cleanup)
     assert (
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), cleanup_worktree=True))
-        == drv.EXIT_OK
+        == EXIT_OK
     )
     assert observed == ["fetch", "gate", "push", "fetch", "cleanup"]
     handle = file_locks._try_acquire_file_lock(lock_path, create=False)
@@ -5675,7 +5686,7 @@ def test_integrate_gates_build_into_the_checkouts_cargo_target(
         return 0
 
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
     assert targets
     for target, env in targets:
         if explicit:
@@ -5714,7 +5725,7 @@ def test_integration_progress_preserves_gate_outcomes(
             if outcome == "interrupt":
                 raise KeyboardInterrupt("independent interrupted child")
             if outcome == "exception":
-                raise drv.DriverError("independent launch failure")
+                raise DriverError("independent launch failure")
             if outcome == "nonzero":
                 return 7
         return 0
@@ -5739,7 +5750,7 @@ def test_integration_progress_preserves_gate_outcomes(
         with pytest.raises(KeyboardInterrupt, match="independent interrupted child"):
             drv.cmd_integrate(args)
     elif outcome in {"exception", "nonzero"}:
-        with pytest.raises(drv.DriverError):
+        with pytest.raises(DriverError):
             drv.cmd_integrate(args)
     else:
         try:
@@ -5861,8 +5872,7 @@ def test_integrate_dry_run_never_resolves_or_acquires_integration_lock(
     monkeypatch.setattr(drv, "_try_acquire_file_lock", forbidden)
     commands = _record_driver_git_commands(drv, monkeypatch)
     assert (
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), dry_run=True))
-        == drv.EXIT_OK
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), dry_run=True)) == EXIT_OK
     )
     assert not lock_path.exists()
     assert not any(args[0] in {"fetch", "push", "rebase"} for args in commands)
@@ -6032,7 +6042,7 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     assert payload == argv[6:]
     assert not molt_dev.molt_dev_controller.runs_from_pinned_controller(parsed)
     rc = drv.main(argv)
-    assert rc == drv.EXIT_OK
+    assert rc == EXIT_OK
     state = state_root / "ok-run"
     assert _wait_done(drv, capsys, "ok-run", state_root)["rc"] == 0
     # Unbuffered log captured the child's stdout despite daemonization.
@@ -6043,7 +6053,7 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     recorded = _json.loads((state / "cmd.json").read_text(encoding="utf-8"))
     assert recorded["argv"][0] == sys.executable
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "ok-run", state_root))
-    assert vrc == drv.EXIT_OK
+    assert vrc == EXIT_OK
     assert verdict["status"] == "done" and verdict["rc"] == 0
 
 
@@ -6151,7 +6161,7 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
         env=verify_env,
         timeout=120,
     )
-    assert missing_root.returncode != drv.EXIT_OK
+    assert missing_root.returncode != EXIT_OK
     assert "no state" in missing_root.stderr
     assert str(verify_temp / "molt_dev_detached" / "hinted") in missing_root.stderr
     # Execute the actual returned argv unchanged, from the other environment
@@ -6159,7 +6169,7 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
     completed = run_guarded_test_process(
         argv, cwd=unrelated_cwd, env=verify_env, timeout=120
     )
-    assert completed.returncode == drv.EXIT_OK, completed.stdout + completed.stderr
+    assert completed.returncode == EXIT_OK, completed.stdout + completed.stderr
     assert "DONE rc=0" in completed.stderr
     assert (state / "pid").read_bytes() == pid_before
     assert (state / "cmd.json").read_bytes() == command_before
@@ -6187,7 +6197,7 @@ def test_detached_python_child_preserves_startup_policy_without_writes(
     )
     parent = (
         "import json, subprocess, sys; sys.path.insert(0, sys.argv[1]); "
-        "from tools.molt_dev_detached import python_command; "
+        "from tools.detached_execution import python_command; "
         "result = subprocess.check_output(python_command('-S', '-c', sys.argv[2], sys.argv[3]), text=True, encoding='utf-8'); "
         "print(json.dumps({'child': result, 'prefix': sys.pycache_prefix}))"
     )
@@ -6240,7 +6250,7 @@ def test_detached_verify_argv_preserves_interpreter_isolation(
         monkeypatch,
         "sys",
         sys,
-        detached,
+        detached_execution,
         flags=SimpleNamespace(isolated=isolated, utf8_mode=1),
         pycache_prefix="/selected bytecode",
     )
@@ -6267,7 +6277,9 @@ def test_detached_verify_argv_preserves_interpreter_isolation(
 def test_detached_runner_never_forks_the_live_python_process(drv):
     """Detachment stays safe under memory-guard and free-threaded callers."""
     source = (
-        Path(drv.__file__).with_name("molt_dev_detached.py").read_text(encoding="utf-8")
+        Path(drv.__file__)
+        .with_name("detached_execution.py")
+        .read_text(encoding="utf-8")
     )
     assert "os.fork(" not in source
     assert "start_new_session" in source
@@ -6285,7 +6297,7 @@ def test_detached_run_nonzero_rc_is_loud(drv, tmp_path, capsys):
     )
     assert _wait_done(drv, capsys, "fail-run", state_root)["rc"] == 7
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "fail-run", state_root))
-    assert vrc == drv.EXIT_FAIL
+    assert vrc == EXIT_FAIL
     assert verdict["status"] == "done" and verdict["rc"] == 7
 
 
@@ -6301,7 +6313,7 @@ def test_detached_daemon_survives_spawner_and_runs_in_new_session(
             [sys.executable, "-c", "import time; time.sleep(2); print('woke')"],
         )
     )
-    assert rc == drv.EXIT_OK  # spawner returned while the daemon still runs
+    assert rc == EXIT_OK  # spawner returned while the daemon still runs
     state = state_root / "sleeper"
     assert not (state / "rc").exists()  # still running -> detachment is real
     sid_text = (state / "sid").read_text(encoding="utf-8").strip()
@@ -6313,10 +6325,10 @@ def test_detached_daemon_survives_spawner_and_runs_in_new_session(
     vrc, verdict = _verify_json(
         drv, capsys, _dv_ns(drv, "sleeper", state_root, min_age_s=0.0)
     )
-    assert vrc == drv.EXIT_OK and verdict["status"] == "running"
+    assert vrc == EXIT_OK and verdict["status"] == "running"
     assert _wait_done(drv, capsys, "sleeper", state_root)["rc"] == 0
     vrc2, verdict2 = _verify_json(drv, capsys, _dv_ns(drv, "sleeper", state_root))
-    assert vrc2 == drv.EXIT_OK and verdict2["status"] == "done"
+    assert vrc2 == EXIT_OK and verdict2["status"] == "done"
 
 
 def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path, capsys):
@@ -6334,7 +6346,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path, caps
     # A second spawn under the same name must REFUSE (never kill), even
     # with --replace (replace only clears DEAD state).
     for replace in (False, True):
-        with pytest.raises(drv.DriverError, match="RUNNING"):
+        with pytest.raises(DriverError, match="RUNNING"):
             drv.cmd_detached_run(
                 _dr_ns(
                     drv,
@@ -6348,7 +6360,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path, caps
     assert drv.probe_pid(live_pid)["alive"]
     assert _wait_done(drv, capsys, "dup", state_root)["rc"] == 0
     # After completion: same name still refuses WITHOUT --replace...
-    with pytest.raises(drv.DriverError, match="--replace"):
+    with pytest.raises(DriverError, match="--replace"):
         drv.cmd_detached_run(
             _dr_ns(drv, "dup", state_root, [sys.executable, "-c", "print('x')"])
         )
@@ -6362,7 +6374,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path, caps
             replace=True,
         )
     )
-    assert rc == drv.EXIT_OK
+    assert rc == EXIT_OK
     assert _wait_done(drv, capsys, "dup", state_root)["rc"] == 0
     assert "second" in (state / "run.log").read_text(encoding="utf-8")
 
@@ -6377,7 +6389,7 @@ def test_detached_verify_detects_died_silent(drv, tmp_path, capsys):
     vrc, verdict = _verify_json(
         drv, capsys, _dv_ns(drv, "ghost", tmp_path / "detached")
     )
-    assert vrc == drv.EXIT_FAIL
+    assert vrc == EXIT_FAIL
     assert verdict["status"] == "died-silent"
 
 
@@ -6394,15 +6406,15 @@ def test_detached_verify_too_young_is_not_trusted(drv, tmp_path, capsys):
     vrc, verdict = _verify_json(
         drv, capsys, _dv_ns(drv, "young", state_root, min_age_s=9999.0)
     )
-    assert vrc == drv.EXIT_FAIL
+    assert vrc == EXIT_FAIL
     assert verdict["status"] == "too-young"
     assert _wait_done(drv, capsys, "young", state_root)["rc"] == 0
 
 
 def test_detached_run_missing_command_is_usage_error(drv, tmp_path):
-    with pytest.raises(drv.DriverError) as exc_info:
+    with pytest.raises(DriverError) as exc_info:
         drv.cmd_detached_run(_dr_ns(drv, "noop", tmp_path / "detached", []))
-    assert exc_info.value.code == drv.EXIT_USAGE
+    assert exc_info.value.code == EXIT_USAGE
 
 
 def test_detached_run_exec_failure_records_sentinel_rc(drv, tmp_path, capsys):
@@ -6419,7 +6431,7 @@ def test_detached_run_exec_failure_records_sentinel_rc(drv, tmp_path, capsys):
     assert _wait_done(drv, capsys, "noexec", state_root)["rc"] == 127
     assert "exec failed" in (state / "run.log").read_text(encoding="utf-8")
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "noexec", state_root))
-    assert vrc == drv.EXIT_FAIL
+    assert vrc == EXIT_FAIL
     assert verdict["status"] == "done" and verdict["rc"] == 127
 
 
@@ -6453,9 +6465,9 @@ def test_difftest_toolchain_env_preserves_existing_pythonpath(
 def test_difftest_toolchain_env_passthrough_and_bad_kv(drv, tmp_path):
     env = drv._difftest_toolchain_env(tmp_path, "s", ["MOLT_TRACE_X=1"])
     assert env["MOLT_TRACE_X"] == "1"
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         drv._difftest_toolchain_env(tmp_path, "s", ["NOEQUALS"])
-    assert exc.value.code == drv.EXIT_USAGE
+    assert exc.value.code == EXIT_USAGE
 
 
 def _difftest_ns(drv, program, root):
@@ -6471,18 +6483,18 @@ def test_difftest_refuses_non_molt_root(drv, tmp_path):
     prog.write_text("print('hi')\n", encoding="utf-8")
     not_a_checkout = tmp_path / "empty"
     not_a_checkout.mkdir()
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         drv.cmd_difftest(_difftest_ns(drv, prog, not_a_checkout))
-    assert exc.value.code == drv.EXIT_USAGE
+    assert exc.value.code == EXIT_USAGE
     assert "not a molt checkout" in str(exc.value)
 
 
 def test_difftest_refuses_missing_program(drv):
     """A missing program file refuses before any build (root is the real repo
     so the root check passes and the program check fires)."""
-    with pytest.raises(drv.DriverError) as exc:
+    with pytest.raises(DriverError) as exc:
         drv.cmd_difftest(_difftest_ns(drv, REPO_ROOT / "does-not-exist.py", REPO_ROOT))
-    assert exc.value.code == drv.EXIT_USAGE
+    assert exc.value.code == EXIT_USAGE
     assert "not found" in str(exc.value)
 
 
@@ -6565,7 +6577,7 @@ def test_difftest_roots_relative_output_dir_before_safe_run(drv, tmp_path, monke
             "tmp/difftest-rel",
         ]
     )
-    assert drv.cmd_difftest(ns) == drv.EXIT_OK
+    assert drv.cmd_difftest(ns) == EXIT_OK
 
     run_cmds = [cmd for cmd in captured if str(root / "tools" / "safe_run.py") in cmd]
     assert len(run_cmds) == 1
@@ -6654,10 +6666,10 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
         drv, repo=str(work), remote=remote, expected_upstream=expected, no_push=True
     )
     if attributed:
-        with pytest.raises(drv.DriverError, match=r"gate failed \(exit 1\)"):
+        with pytest.raises(DriverError, match=r"gate failed \(exit 1\)"):
             drv.cmd_integrate(ns)
     else:
-        assert drv.cmd_integrate(ns) == drv.EXIT_OK
+        assert drv.cmd_integrate(ns) == EXIT_OK
     output = capfd.readouterr()
     assert kept_gate_stdout(output.out)[0] == "selected-upstream-path-gates-passed\n"
     if attributed:
@@ -6681,7 +6693,7 @@ def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
         "run_captured_gate",
         _captured_gate(lambda *args: pytest.fail("invalid gate ran")),
     )
-    with pytest.raises(drv.DriverError, match="unknown local gate placeholder"):
+    with pytest.raises(DriverError, match="unknown local gate placeholder"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
 
 
@@ -6718,7 +6730,7 @@ def test_integration_source_observation_is_fresh_and_uses_one_status(
     path.write_text("changed\n", encoding="utf-8")
     if kind == "staged":
         _git(work, "add", "--", path.name)
-    with pytest.raises(drv.DriverError, match="clean selected source"):
+    with pytest.raises(DriverError, match="clean selected source"):
         drv._assert_integration_source(git, commit)
     assert commands == [expected, expected]
     assert clean.dirty_records == ()  # A prior observation never changes or refreshes.
@@ -6750,7 +6762,7 @@ def test_integration_source_observation_keeps_rename_paths_opaque(
     assert observed.dirty_records[0].startswith("2 R.")
     assert observed.dirty_records[0].endswith(" renamed target")
     assert observed.dirty_records[1] == original
-    with pytest.raises(drv.DriverError, match="clean selected source"):
+    with pytest.raises(DriverError, match="clean selected source"):
         drv._assert_integration_source(git, commit)
 
 
@@ -6763,7 +6775,7 @@ def test_integration_source_observation_reports_head_drift_before_dirt(
     _commit_file(work, "tracked.txt", "committed change\n", "new source")
     (work / "untracked.txt").write_text("dirty\n", encoding="utf-8")
     commands = _record_driver_git_commands(drv, monkeypatch)
-    with pytest.raises(drv.DriverError, match="source HEAD changed"):
+    with pytest.raises(DriverError, match="source HEAD changed"):
         drv._assert_integration_source(drv.Git(work), before)
     assert len(commands) == 1
     assert "status" in commands[0]
@@ -6794,7 +6806,7 @@ def test_integration_source_observation_refuses_invalid_head_headers(
         return subprocess.CompletedProcess(args, 0, output, "")
 
     monkeypatch.setattr(drv.Git, "_run", status)
-    with pytest.raises(drv.DriverError, match="integration source"):
+    with pytest.raises(DriverError, match="integration source"):
         drv.Git(tmp_path).checkout_observation()
     assert len(calls) == 1
 
@@ -6837,7 +6849,7 @@ def test_integrate_refuses_dirty_selected_source(drv, origin_and_clone, kind):
     if kind == "staged":
         _git(work, "add", path.name)
     _git(work, "config", "status.showUntrackedFiles", "no")
-    with pytest.raises(drv.DriverError, match="clean selected source"):
+    with pytest.raises(DriverError, match="clean selected source"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     assert path.read_text(encoding="utf-8").startswith(
         "always" if kind == "policy" else "uncommitted"
@@ -6863,7 +6875,7 @@ def test_integrate_refuses_gate_source_or_head_drift(
         )
     _commit_integration_policy(work, [command])
     original = _git(work, "rev-parse", "origin/main").stdout.strip()
-    with pytest.raises(drv.DriverError, match="HEAD changed|clean selected source"):
+    with pytest.raises(DriverError, match="HEAD changed|clean selected source"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     assert (
         _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
@@ -6882,7 +6894,7 @@ def test_integrate_block_refuses_a_gate_that_dirties_the_source(
     _commit_integration_policy(work, [dirty, "echo clean"])
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
     original = _git(work, "rev-parse", "origin/main").stdout.strip()
-    with pytest.raises(drv.DriverError, match="clean selected source") as exc:
+    with pytest.raises(DriverError, match="clean selected source") as exc:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     # A dirtied source has no single culprit; the queue must not bisect on it.
     assert not isinstance(exc.value, CandidateFailure)
@@ -6898,7 +6910,7 @@ def test_integrate_uses_original_policy_despite_replace_ref(drv, origin_and_clon
     passing = _commit_integration_policy(work, ["echo replacement-must-not-run"])
     _git(work, "checkout", "--detach", failing)
     _git(work, "replace", failing, passing)
-    with pytest.raises(drv.DriverError, match="gate failed.*19"):
+    with pytest.raises(DriverError, match="gate failed.*19"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     # The replacement ref remains operator-owned; admission does not delete it.
     assert _git(work, "replace", "-l").stdout.strip() == failing
@@ -6915,7 +6927,7 @@ def test_integrate_preserves_foreign_hook_and_both_rejection_streams(
     hook.write_bytes(content)
     hook.chmod(0o755)
     original = _git(work, "rev-parse", "origin/main").stdout.strip()
-    with pytest.raises(drv.DriverError, match="PUSH NOT CONFIRMED"):
+    with pytest.raises(DriverError, match="PUSH NOT CONFIRMED"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     captured = capsys.readouterr()
     output = captured.out + captured.err
@@ -6939,7 +6951,7 @@ def test_integrate_claim_refuses_advanced_upstream_without_rebase(
     _git(other, "config", "user.name", "Other")
     winner = _commit_file(other, "claim.txt", "theirs\n", "competing claim")
     _git(other, "push", "origin", "main")
-    with pytest.raises(drv.DriverError, match="expected upstream changed"):
+    with pytest.raises(DriverError, match="expected upstream changed"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), expected_upstream=checked))
     assert _git(work, "rev-parse", "HEAD").stdout.strip() == local
     assert (work / "claim.txt").read_text(encoding="utf-8") == "mine\n"
@@ -6967,7 +6979,7 @@ def test_integrate_pushes_captured_commit_when_foreign_hook_moves_head(
         encoding="utf-8",
     )
     hook.chmod(0o755)
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
     assert _git(work, "rev-parse", "HEAD").stdout.strip() != selected
     assert (
         _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
@@ -6987,7 +6999,7 @@ def test_integrate_remote_race_after_gates_is_not_rebased_or_force_pushed(
     winner = _commit_file(other, "winner.txt", "winner\n", "winner")
     policy = shlex.join(["git", "-C", str(other), "push", "origin", "main"])
     selected = _commit_integration_policy(work, [policy])
-    with pytest.raises(drv.DriverError, match="PUSH NOT CONFIRMED"):
+    with pytest.raises(DriverError, match="PUSH NOT CONFIRMED"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     assert _git(work, "rev-parse", "HEAD").stdout.strip() == selected
     assert (
@@ -7010,7 +7022,7 @@ def test_integrate_clean_rebase_runs_committed_policy(
     _git(other, "push", "origin", "main")
     commands = _record_driver_git_commands(drv, monkeypatch)
     deadlines = _record_process_deadlines(monkeypatch)
-    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
     selected = _git(work, "rev-parse", "HEAD").stdout.strip()
     assert selected != source
     # A landing's Git plumbing waits out a host stall: a deadline on a 5 ms
@@ -7045,13 +7057,12 @@ def test_integrate_clean_rebase_runs_committed_policy(
 def test_landing_local_git_reads_carry_no_wall_clock_deadline(
     drv, origin_and_clone, monkeypatch
 ):
-    from tools import molt_dev_controller
 
     _, work = origin_and_clone
     deadlines = _record_process_deadlines(monkeypatch)
     head = drv.Git(work).rev_parse("HEAD")
     assert drv._git_common_directory(work) is not None
-    assert molt_dev_controller._git_bytes(work, "rev-parse", "HEAD").strip() == (
+    assert controller_source._git_bytes(work, "rev-parse", "HEAD").strip() == (
         head.encode("ascii")
     )
     reads = [(argv, deadline) for argv, deadline in deadlines if argv[0] == "git"]
@@ -7244,7 +7255,7 @@ def test_integrate_classifies_raw_paths_without_git_quote_escaping(
         "path policy",
     )
     _commit_file(work, 'src/a"b.py', "pass\n", "quoted source path")
-    with pytest.raises(drv.DriverError, match="gate failed.*23"):
+    with pytest.raises(DriverError, match="gate failed.*23"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
 
 
@@ -7268,7 +7279,7 @@ def test_integrate_rename_runs_both_source_and_destination_rules(drv, origin_and
     assert _git(work, "diff", "--name-status", "origin/main..HEAD").stdout.startswith(
         "R100"
     )
-    with pytest.raises(drv.DriverError, match="gate failed.*29"):
+    with pytest.raises(DriverError, match="gate failed.*29"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
     assert _git(work, "show", "origin/main:native/owner.rs").stdout == "same body\n"
 
@@ -7324,7 +7335,7 @@ version_pattern = '^ok$'
         "run_captured_gate",
         _captured_gate(lambda *args: pytest.fail("gate ran before admission")),
     )
-    with pytest.raises(drv.DriverError) as caught:
+    with pytest.raises(DriverError) as caught:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     message = str(caught.value)
     for expected in ("one", "two", "OSError", "local.always.0", "executed=0"):
@@ -7391,7 +7402,7 @@ def test_integrate_selected_output_capacity_refuses_before_gate_prefix(
         "run_captured_gate",
         _captured_gate(lambda *args: pytest.fail("expensive prefix started")),
     )
-    with pytest.raises(drv.DriverError, match="capacity failed; executed=0") as caught:
+    with pytest.raises(DriverError, match="capacity failed; executed=0") as caught:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     assert str(target) in str(caught.value)
     assert str(build) in str(caught.value)
@@ -7423,7 +7434,7 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
 
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
     if gate_rc:
-        with pytest.raises(drv.DriverError, match="gate failed \\(exit 19\\)"):
+        with pytest.raises(DriverError, match="gate failed \\(exit 19\\)"):
             drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     else:
         assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
@@ -7509,7 +7520,7 @@ def test_integrate_capacity_observer_failure_preserves_gate_result(
     monkeypatch.setattr(disk_capacity, "probe_capacity", observe)
     monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
     if gate_rc:
-        with pytest.raises(drv.DriverError, match="gate failed \\(exit 19\\)"):
+        with pytest.raises(DriverError, match="gate failed \\(exit 19\\)"):
             drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     else:
         assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
@@ -7572,8 +7583,7 @@ version_pattern = '^selected-checkout-tool$'
         "selected checkout tool projection",
     )
     assert (
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
-        == drv.EXIT_OK
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == EXIT_OK
     )
     # The gate itself proved the projection: it ran the selected checkout's
     # `cat`. The integrating process keeps its own PATH.
@@ -7625,7 +7635,7 @@ toolchains = ["unrelated"]
         ),
     )
     assert prepared.fingerprints == {}
-    with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
+    with pytest.raises(DriverError, match="lack declared prerequisite custody"):
         cfg.select(["src/one.py"], extra=["unknown executable"])
 
 
@@ -7655,7 +7665,7 @@ def test_integrate_missing_committer_refuses_before_rebase(
         return real_run(self, args, **kwargs)
 
     monkeypatch.setattr(drv.Git, "_run", run)
-    with pytest.raises(drv.DriverError, match="configured Git committer"):
+    with pytest.raises(DriverError, match="configured Git committer"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     assert ["var", "GIT_COMMITTER_IDENT"] in calls
     assert not any(args and args[0] == "rebase" for args in calls)
@@ -7749,7 +7759,7 @@ python_versions = "supported-targets"
             lambda *args: pytest.fail("gate began before selected catalog admission")
         ),
     )
-    with pytest.raises(drv.DriverError) as caught:
+    with pytest.raises(DriverError) as caught:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     assert set(observed) == {"uv", "target-pythons.3.12", "target-pythons.3.15"}
     assert "local.always.0" in str(caught.value)
@@ -7858,7 +7868,7 @@ toolchains = ["extra"]
         if isinstance(gate.command, tuple) and "-k" in gate.command
     )
     assert selected.toolchains == ("first",)
-    with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
+    with pytest.raises(DriverError, match="lack declared prerequisite custody"):
         cfg.select(["src/a.py"], extra=["undeclared"])
 
 
@@ -7931,8 +7941,7 @@ toolchains = ["sdk"]
         },
     )
     assert (
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
-        == drv.EXIT_OK
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == EXIT_OK
     )
     assert json.loads(outputs[0].read_text(encoding="utf-8")) == [
         user_flags if explicit_sdk_flags else None,
@@ -7980,7 +7989,6 @@ def _assert_detached_retirement_binding(roots, available):
 
 
 def test_detached_ack_holds_idle_managed_roots_through_actual_child(tmp_path):
-    from tools import molt_dev_detached as detached
 
     environment, roots, state = _detached_managed_environment(tmp_path)
     child_ready, release = tmp_path / "child-ready", tmp_path / "release"
@@ -7994,7 +8002,7 @@ def test_detached_ack_holds_idle_managed_roots_through_actual_child(tmp_path):
         "assert release.exists(), 'test release deadline'\n",
         encoding="utf-8",
     )
-    pid = detached._detached_daemonize(
+    pid = detached_execution._detached_daemonize(
         state, [sys.executable, str(script)], tmp_path, environment
     )
     try:
@@ -8043,11 +8051,10 @@ def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
     import atexit
     import gc
     import weakref
-    from tools import molt_dev_detached as detached
 
     environment, roots, state = _detached_managed_environment(tmp_path)
     (state / "state-use-ready.json").write_text('{"stale": true}', encoding="utf-8")
-    start = detached._COMMANDS.start_owned
+    start = detached_execution._COMMANDS.start_owned
     process = None
 
     def child(self, command, **kwargs):
@@ -8055,10 +8062,12 @@ def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
         process = start([sys.executable, "-c", HUNG_CHILD_SOURCE], env=environment)
         return process
 
-    monkeypatch.setattr(type(detached._COMMANDS), "start_owned", child)
+    monkeypatch.setattr(type(detached_execution._COMMANDS), "start_owned", child)
     try:
-        with pytest.raises(detached.DriverError, match="invalid use handoff") as caught:
-            detached._detached_daemonize(state, ["unused"], tmp_path, environment)
+        with pytest.raises(DriverError, match="invalid use handoff") as caught:
+            detached_execution._detached_daemonize(
+                state, ["unused"], tmp_path, environment
+            )
         stack_ref = weakref.ref(caught.value.state_use)
         handoff = caught.value.state_owner
         assert caught.value.owned_process is process
@@ -8077,7 +8086,6 @@ def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
 
 
 def test_detached_spawn_failure_releases_prelaunch_use(tmp_path, monkeypatch):
-    from tools import molt_dev_detached as detached
 
     environment, roots, state = _detached_managed_environment(tmp_path)
 
@@ -8085,9 +8093,9 @@ def test_detached_spawn_failure_releases_prelaunch_use(tmp_path, monkeypatch):
         _assert_detached_retirement_binding(roots, False)
         raise FileNotFoundError("independent detached launch refusal")
 
-    monkeypatch.setattr(type(detached._COMMANDS), "start_owned", refuse)
+    monkeypatch.setattr(type(detached_execution._COMMANDS), "start_owned", refuse)
     with pytest.raises(FileNotFoundError, match="independent detached launch refusal"):
-        detached._detached_daemonize(state, ["unused"], tmp_path, environment)
+        detached_execution._detached_daemonize(state, ["unused"], tmp_path, environment)
     _assert_detached_retirement_binding(roots, True)
 
 
@@ -8103,7 +8111,7 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
     release = tmp_path / "release-worker"
     children = []
     owner = None
-    start = detached._COMMANDS.start_owned
+    start = detached_execution._COMMANDS.start_owned
     command = [sys.executable, "-c", "print('replacement completed')"]
     args = _dr_ns(drv, "retry", state_root, command)
 
@@ -8140,9 +8148,11 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
         children.append(process)
         return process
 
-    monkeypatch.setattr(detached, "_COMMANDS", SimpleNamespace(start_owned=launch))
+    monkeypatch.setattr(
+        detached_execution, "_COMMANDS", SimpleNamespace(start_owned=launch)
+    )
     try:
-        with pytest.raises(detached.DriverError, match="invalid use handoff") as caught:
+        with pytest.raises(DriverError, match="invalid use handoff") as caught:
             detached.cmd_detached_run(args)
         owner = caught.value.state_owner
         assert caught.value.owned_process is children[0]
@@ -8153,7 +8163,7 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
             path.name: path.read_bytes() for path in state.iterdir() if path.is_file()
         }
         for replace in (False, True):
-            with pytest.raises(detached.DriverError, match="INCOMPLETE"):
+            with pytest.raises(DriverError, match="INCOMPLETE"):
                 detached.cmd_detached_run(
                     _dr_ns(drv, "retry", state_root, command, replace=replace)
                 )
@@ -8171,19 +8181,19 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
             # identity or death (Windows may delegate to a different PID).
             (state / "pid").write_text(str(children[0].pid), encoding="utf-8")
             for replace in (False, True):
-                with pytest.raises(detached.DriverError, match="INCOMPLETE"):
+                with pytest.raises(DriverError, match="INCOMPLETE"):
                     detached.cmd_detached_run(
                         _dr_ns(drv, "retry", state_root, command, replace=replace)
                     )
             assert len(children) == 1
         else:
-            with pytest.raises(detached.DriverError, match="--replace"):
+            with pytest.raises(DriverError, match="--replace"):
                 detached.cmd_detached_run(args)
             assert (
                 detached.cmd_detached_run(
                     _dr_ns(drv, "retry", state_root, command, replace=True)
                 )
-                == detached.EXIT_OK
+                == EXIT_OK
             )
             ready = json.loads(
                 (state / "state-use-ready.json").read_text(encoding="utf-8")
@@ -8224,10 +8234,10 @@ def test_probe_unknown_never_admits_replacement_or_reports_death(
     result = probe.probe_pid(pid)
     assert result["alive"] is None and "unavailable" in result["detail"]
     ns = _ns(drv, file=None, pid=[pid], json=True)
-    assert drv.cmd_probe(ns) == drv.EXIT_FAIL
+    assert drv.cmd_probe(ns) == EXIT_FAIL
     assert json.loads(capsys.readouterr().out)[0]["alive"] is None
     ns.json = False
-    assert drv.cmd_probe(ns) == drv.EXIT_FAIL
+    assert drv.cmd_probe(ns) == EXIT_FAIL
     assert "alive=unknown" in capsys.readouterr().err
 
     state_root = tmp_path / "detached"
@@ -8244,9 +8254,9 @@ def test_probe_unknown_never_admits_replacement_or_reports_death(
     )
     before = {p.name: p.read_bytes() for p in state.iterdir()}
     rc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "unknown", state_root))
-    assert rc == drv.EXIT_FAIL and verdict["status"] == "unknown"
+    assert rc == EXIT_FAIL and verdict["status"] == "unknown"
     assert "unavailable" in verdict["detail"]
-    with pytest.raises(detached.DriverError, match="INCOMPLETE"):
+    with pytest.raises(DriverError, match="INCOMPLETE"):
         detached.cmd_detached_run(
             _dr_ns(drv, "unknown", state_root, ["must-not-launch"], replace=True)
         )
@@ -8258,7 +8268,6 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
     tmp_path, monkeypatch, cleanup_fails
 ):
     from contextlib import contextmanager
-    from tools import molt_dev_detached as detached
 
     state = tmp_path / "worker"
     state.mkdir()
@@ -8280,7 +8289,7 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
         ),
         encoding="utf-8",
     )
-    real_use = detached.detached_command_use
+    real_use = detached_execution.detached_command_use
     observations = []
 
     @contextmanager
@@ -8295,8 +8304,8 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
         if cleanup_fails:
             raise OSError("independent owner cleanup failure")
 
-    monkeypatch.setattr(detached, "detached_command_use", closing_use)
-    assert detached._detached_worker_main(payload) == 0
+    monkeypatch.setattr(detached_execution, "detached_command_use", closing_use)
+    assert detached_execution._detached_worker_main(payload) == 0
     assert observations == [("finished", False)]
     assert (state / "rc").read_text(encoding="utf-8") == (
         "126" if cleanup_fails else "0"
@@ -8326,7 +8335,7 @@ def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_
     molt_dev_controller._sync_environment(cache)
     (cache / ".molt-controller.json").write_text(
         json.dumps(
-            {"schema": molt_dev_controller.SCHEMA, "key": key, "commit": "1" * 40}
+            {"schema": controller_source.SCHEMA, "key": key, "commit": "1" * 40}
         ),
         encoding="utf-8",
     )
@@ -8339,7 +8348,7 @@ import json, os, sys, tempfile
 from pathlib import Path
 sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
 from tools import molt_dev as actual
-from tools import molt_dev_controller as controller
+from tools import controller_source, molt_dev_controller as controller
 from tools import molt_dev_retire
 
 assert Path(actual.__file__).resolve() == Path(__file__).resolve()
@@ -8394,14 +8403,14 @@ import os, sys
 from pathlib import Path
 from types import SimpleNamespace
 sys.path[:0] = [{str(cache / "src")!r}, {str(cache)!r}]
-from tools import molt_dev_controller as controller
+from tools import controller_source, molt_dev_controller as controller
 os.chdir({str(wt)!r})
 assert Path.cwd() == Path({str(wt)!r})
 os.environ.update(CARGO_TARGET_DIR="relative-target", CARGO_HOME="relative-cargo-home", TMPDIR="relative-tmp", TMP="relative-tmp", TEMP="relative-tmp")
 os.environ["MOLT_SOURCE_ROOT"] = os.path.relpath({str(cache)!r}, Path.cwd())
 real_os = controller.os
 controller.os = SimpleNamespace(**{{key: getattr(real_os, key) for key in dir(real_os) if key != "name"}}, name="nt")
-rc = controller.run_controller(controller.Controller({key!r}, Path({str(cache)!r})),
+rc = controller.run_controller(controller_source.Controller({key!r}, Path({str(cache)!r})),
     ["integrate", "--repo", ".", "--marker", "exists:unchanged-relative", "--no-push"], repo=Path("."))
 assert Path.cwd() == Path({str(cache)!r})
 assert rc == {outcome}
@@ -8506,7 +8515,6 @@ print("lazy-temporary-state")
 def test_detached_observed_pre_ack_death_publishes_failure_before_replacement(
     tmp_path, monkeypatch
 ):
-    from tools import molt_dev_detached as detached
     from tools.command_execution import CommandExecutor
 
     original = CommandExecutor.start_owned
@@ -8522,14 +8530,14 @@ def test_detached_observed_pre_ack_death_publishes_failure_before_replacement(
     monkeypatch.setattr(CommandExecutor, "start_owned", exit_before_ack)
     state = tmp_path / "startup-state"
     state.mkdir()
-    with pytest.raises(detached.DriverError, match="worker exited 17"):
-        detached._detached_daemonize(
+    with pytest.raises(DriverError, match="worker exited 17"):
+        detached_execution._detached_daemonize(
             state, [sys.executable, "-c", "pass"], tmp_path, dict(os.environ)
         )
     assert len(children) == 1 and children[0].poll() == 17
     assert (state / "pid").read_text(encoding="utf-8") == str(children[0].pid)
     assert (state / "rc").read_text(encoding="utf-8") == "17"
-    with detached._detached_launch_admission(state, replace=True):
+    with detached_execution._detached_launch_admission(state, replace=True):
         assert list(state.iterdir()) == []
 
 
@@ -8566,7 +8574,7 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
         )  # fmt: skip
         return args.func(args)
 
-    assert withdraw(second.id, second.id) == drv.EXIT_OK
+    assert withdraw(second.id, second.id) == EXIT_OK
     assert started == [(paths, work.resolve(), "origin", "main")]
     result = queue.read_result(paths, second.id)
     assert result["status"] == queue.LandingStatus.WITHDRAWN
@@ -8577,7 +8585,7 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
         second.id
     ]
     # All or nothing: one unknown id withdraws nothing.
-    with pytest.raises(drv.DriverError, match="no-such-request"):
+    with pytest.raises(DriverError, match="no-such-request"):
         withdraw(third.id, "no-such-request")
     assert queue.read_result(paths, third.id) is None
     # A runner holds the lock for each batch; nothing is withdrawn under it.
@@ -8585,13 +8593,13 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
     handle = drv._try_acquire_file_lock(paths.runner_lock)
     assert handle is not None
     try:
-        assert withdraw(third.id) == drv.EXIT_FAIL
+        assert withdraw(third.id) == EXIT_FAIL
     finally:
         drv._release_file_lock(handle)
     assert queue.pending(paths) == [first, third]
     # The last pending requests close; no runner starts for an empty queue.
     started.clear()
-    assert withdraw(first.id, third.id) == drv.EXIT_OK
+    assert withdraw(first.id, third.id) == EXIT_OK
     assert queue.pending(paths) == [] and started == []
 
 
@@ -8935,7 +8943,7 @@ def test_empty_gate_demand_preserves_explicit_selection_refusal(
     gates, _ = config.select(["source.py"])
     environment = _gate_caller_env(tmp_path / "host")
     environment[selector] = str(tmp_path / "missing explicit image")
-    with pytest.raises(drv.DriverError):
+    with pytest.raises(DriverError):
         config.prepare(
             gates,
             baseline=environment,
@@ -9006,7 +9014,7 @@ version_pattern = '^Python 3\\.'
     # after preparation must refuse before the next child can overwrite output.
     image.manifest_path.write_text("{}\n", encoding="utf-8")
     output.write_text("must survive", encoding="utf-8")
-    with pytest.raises(drv.DriverError, match="managed development image refused"):
+    with pytest.raises(DriverError, match="managed development image refused"):
         drv.run_gate(command, repo, context)
     assert output.read_text(encoding="utf-8") == "must survive"
 
@@ -9051,9 +9059,7 @@ def test_runtime_only_gate_demand_keeps_target_failure_without_source_image(
         "_resolve_repo_venv",
         lambda *args: pytest.fail("source image selected for target runtime"),
     )
-    with pytest.raises(
-        drv.DriverError, match="independent target runtime probe failure"
-    ):
+    with pytest.raises(DriverError, match="independent target runtime probe failure"):
         config.prepare(
             gates,
             baseline=_gate_caller_env(tmp_path / "host"),
@@ -9100,7 +9106,7 @@ def test_controller_repins_release_previous_sources_and_command_images(tmp_path)
 import argparse, json, os, sys, time
 from pathlib import Path
 sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
-from tools import molt_dev_controller as controller
+from tools import controller_source, molt_dev_controller as controller
 from molt.checkout_state import checkout_state_retirement
 roots = [Path(item) for item in {roots!r}]
 images = [Path(item) for item in {[str(root) for root in images]!r}]
@@ -9120,7 +9126,7 @@ with open({str(report)!r}, 'a') as output:
 if args.stage < 3:
     next_root = roots[args.stage]
     controller.venv_python = lambda _: Path(interpreters[args.stage])
-    controller.run_controller(controller.Controller(next_root.name, next_root),
+    controller.run_controller(controller_source.Controller(next_root.name, next_root),
                               [str(args.stage + 1)], repo=Path(args.repo))
     raise AssertionError('POSIX exec returned')
 # These independent exclusive admissions catch retained historical command
@@ -9145,10 +9151,10 @@ assert roots[2].exists(), 'active controller source retired'
     launch = f"""
 import os, sys
 from pathlib import Path
-from tools import molt_dev_controller as controller
+from tools import controller_source, molt_dev_controller as controller
 os.environ['EXPECTED_CONTROLLER_PID'] = str(os.getpid())
 controller.venv_python = lambda _: Path({interpreters[0]!r})
-controller.run_controller(controller.Controller({selected[0].key!r}, Path({roots[0]!r})),
+controller.run_controller(controller_source.Controller({selected[0].key!r}, Path({roots[0]!r})),
                           ['1'], repo=Path({str(target_owner)!r}))
 """
     env = dict(os.environ)
@@ -9167,3 +9173,28 @@ controller.run_controller(controller.Controller({selected[0].key!r}, Path({roots
     ]
     assert [item["stage"] for item in stages] == [1, 2, 3]
     assert len({item["pid"] for item in stages}) == 1
+
+
+def test_detached_missing_published_entry_refuses_before_state_mutation(
+    tmp_path, monkeypatch
+):
+    selected = _controller_source_fixture(tmp_path)
+    state = tmp_path / "missing-entry-state"
+    monkeypatch.setattr(
+        type(detached_execution._COMMANDS),
+        "start_owned",
+        lambda *args, **kwargs: pytest.fail(
+            "missing immutable entry launched a process"
+        ),
+    )
+    before = set(tmp_path.rglob("*"))
+    with pytest.raises(DriverError, match="detached_execution"):
+        detached_execution.launch_detached(
+            state,
+            ["must-not-run"],
+            cwd=selected.root,
+            environment=dict(os.environ),
+            controller=selected,
+        )
+    assert not state.exists()
+    assert set(tmp_path.rglob("*")) == before, "refusal created state or a launch lock"

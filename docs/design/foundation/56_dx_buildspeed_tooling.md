@@ -625,6 +625,11 @@ fetch, environment installation or controller retention sweep participates in
 this selection. A missing worker contract defers visibly without daily admission.
 The source context may publish a missing exact controller through the existing
 archive owner; it does not synchronize that controller's Python environment.
+The source cache and detached worker have lightweight canonical owners in
+`tools/controller_source.py` and `tools/detached_execution.py`; integration and
+maintenance use these same implementations without importing the CLI driver.
+The detached owner rejects a selected snapshot missing its worker entry before
+creating launch state.
 A pinned completion resolves published Git identity through its admitted physical
 controller/common-directory binding; the source snapshot has no `.git`, and
 neither ambient cwd nor dirty caller files select policy.

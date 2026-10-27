@@ -33,14 +33,14 @@ def schedule(root: Path, environment: Mapping[str, str], *, cwd: Path) -> Path |
     epoch = checkout_state_gc_epoch(root)
     if epoch is None or not epoch.due:
         return None
-    from tools.molt_dev_common import DriverError
-    from tools.molt_dev_controller import (
+    from tools.driver_errors import DriverError
+    from tools.controller_source import (
         _git_bytes,
         controller_source,
         controller_for_source,
         controllers_root,
     )
-    from tools.molt_dev_detached import launch_detached
+    from tools.detached_execution import launch_detached
     from tools.git_identity import require_git_object_id
 
     state = root / "logs" / "disk_guard" / "automatic" / f"gc-{epoch.identity}"
