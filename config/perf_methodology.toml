@@ -4,11 +4,11 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-# Version 11 adopts the current WASM execution ABI and typed error domains.
-# Refusing incompatible deployments and preserving resolver/OS failures changes
-# execution verdicts; version 10 boards retain their original comparison class.
-version = 11
-content_sha256 = "5f14dd4c47af7dca1a4b9413a1b65562892739ba9312458c3b5b085a7bf6d912"
+# Version 12 retires the inactive frontend codec option and its setup/cache
+# partition and bounds batch admission, pipe writes and response waiting with
+# one deadline. Cold build measurements and failure verdicts can change.
+version = 12
+content_sha256 = "f48f669fe34808461141bdbfcde3da3781fd00b8ade84d820e02f37c51d9800e"
 
 [[methodology]]
 path = "tools/safe_run.py"

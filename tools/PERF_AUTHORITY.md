@@ -14,6 +14,14 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v12 removes the inactive frontend codec option from benchmark setup
+and cache partitions. Batch request admission, pipe writes and response waiting
+share one deadline through the existing compiler service. These can change cold
+build measurements or failure verdicts; v11 boards retain their original
+comparison class. This version change makes no performance-equivalence claim.
+The [frontend and transport contract](../docs/design/foundation/66_compat_cpython_parity.md)
+owns those boundaries.
+
 Methodology v11 includes current WASM deployment admission and typed resolver/OS
 error domains. The runner refuses incompatible manifests before loading modules
 and preserves resolver-versus-OS failure outcomes. These change execution
