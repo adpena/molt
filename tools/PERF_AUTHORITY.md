@@ -244,6 +244,20 @@ classification and dependency reduction, not a new end-to-end timing comparison.
 Unfiltered consumers that build native fixtures keep their prerequisites, and
 writer serialization, pytest-session limits and memory envelopes are unchanged.
 
+Integration source fences obtain HEAD and cleanliness in one fresh porcelain-v2
+status observation. Closed one-reference symbolic-ref queries and tree reads use
+the existing metadata path, preserving managed-state leases and keeping mutations,
+pager launches and recorded-output executions guarded. Two alternating before/after
+pairs of the real queue-bisection test on macOS arm64 kept all 42 source fences and
+five gate executions while reducing Git commands from 334 to 292. Median test-call
+time was 10.43 seconds before and 9.41 seconds after; process wall time was 14.03
+and 12.31 seconds. These two-sample medians are observations of one local workflow,
+not full compiler-loop, cross-platform or release performance qualification.
+A separate warmed metadata replay over 20 branch/tree reads measured median 0.659
+seconds before and 0.236 seconds after, with exact known outputs in both paths.
+Freshness and source mutation refusal remain part of correctness; command-count
+reduction does not authorize a cached HEAD or worktree verdict.
+
 `tools/opt_explorer.py` explains a number before anyone optimizes it. It never
 publishes a performance result.
 
