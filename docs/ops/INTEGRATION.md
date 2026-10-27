@@ -496,6 +496,13 @@ The selected capture child performs published-manifest admission before final
 input verification; the guardian remains isolated from site packages. Guardian
 startup and prefix lifetime follow the same fresh-namespace rule through
 [existing command and run custody](../agent/PROOF_QUEUE.md).
+Runtime and environment probes reuse the existing host file-digest cache on
+POSIX, while retaining current-path and final membership checks on every launch.
+Windows keeps fresh hashing and handle ChangeTime checks. The digest store must
+remain outside interpreter, active import and inventoried trees; a conflicting
+`MOLT_CACHE` is refused before cache files are created there. This changes neither
+published semantic identities nor command admission; see the
+[shared digest contract and costs](../design/toolchain_fact_cache.md#python-capture-uses-the-same-file-digests).
 Standalone capture probes emit UTF-8 diagnostics before package admission,
 including through redirected Windows streams. Importing the facade leaves the
 caller's streams unchanged.
