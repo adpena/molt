@@ -710,23 +710,41 @@ self-gate that runs `tests/test_molt_dev.py`), and CI/pyproject wiring. Local
 rules have one closed field set; unknown or retired policy fields fail
 admission rather than becoming unused promises.
 
-Unfiltered pytest targets from selected rules share one invocation, so
-interpreter, guard and collection startup are paid once. The largest declared
-owning target envelope sizes the host-derived worker count, and the invocation
-receives the union of its contributing rules' declared toolchains. Literal
-targets retain first-occurrence order and parameter IDs; file/directory requests
-and explicitly requested children remain in one collection. Each `-k`/`-m`
-selection stays separate.
+Unfiltered pytest requests share a cohort when their toolchain prerequisites and
+Cargo target effects match. `cargo_target_access` declares `shared`, `isolated`
+(private fixture-owned targets), or `none` (no target mutation), independently of
+tool availability. A rule's `pytest_cargo_target_access` specializes its ordinary
+pytest requests; an explicit `pytest_select` may declare its own effect. Without
+an annotation, an explicit Cargo requirement remains `shared`; other commands
+are `none`. Unknown effects and target access without Cargo are rejected.
+Deduplicated commands and overlapping file/node requests retain the strongest
+contributing effect (`shared` before `isolated` before `none`). Literal requests,
+parameter IDs, filters and prerequisite admission remain unchanged. Each
+`-k`/`-m` selection stays separate. The largest owning target envelope still sizes
+each cohort's host-derived worker count.
+
+Shared-target writers retain one serial chain. Audited private-target or
+non-mutating pytest cohorts may overlap that chain within the same executor's
+session, worker and memory limits; failure cancellation and source fences still
+cover the whole block. This follows [Cargo's separate target-directory storage](https://doc.rust-lang.org/cargo/reference/build-cache.html)
+and the existing [LLVM lit private test-output convention](https://llvm.org/docs/CommandGuide/lit.html).
+The declaration adds constant work per command and linear union work per selected
+request, with no subprocess, filesystem scan or new scheduler. Receipts and the
+generated policy projection carry the resolved effect. The frontend/cache pytest
+cohort declares `isolated` because its fake-Cargo publication fixture writes a
+private target; its separate Rust verifier remains `shared`. Browser VFS pytest
+requests declare `none`. This contract itself claims no measured speedup.
+
 The repository pytest configuration reports only the ten slowest durations
 above 0.25 seconds, including setup and teardown, to expose stragglers.
 
 After aggregate prerequisite admission, the driver checks current capacity on
-the output volumes of gate owners explicitly declaring Cargo before executing
+the shared output volumes of gates declaring shared Cargo target access before executing
 any gate. Transitive Cargo availability for read-only metadata is not a build
 requirement. Python-only
 and dry-run plans acquire no new disk requirement. This is readiness against
 the existing floor: remaining campaign growth is unknown and no bytes are
-reserved. Canonical probes before and after Cargo-capable gates retain signed
+reserved. Canonical probes before and after shared-target gates retain signed
 raw free-byte changes; these are interval observations, not exclusive gate
 allocations. Diagnostic probe failure cannot replace the original gate result.
 Actual child output admission remains mandatory. This development telemetry

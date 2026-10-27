@@ -387,6 +387,8 @@ def new_receipt(
 
 
 def command_record(command: ReceiptCommand) -> dict[str, Any]:
+    from tools.proof_plan import CargoTargetAccess
+
     return {
         "id": command.id,
         "family": command.family,
@@ -396,6 +398,9 @@ def command_record(command: ReceiptCommand) -> dict[str, Any]:
         "dependencies": list(command.dependencies),
         "tiers": list(command.data["tiers"]),
         "resource_class": command.data["resource_class"],
+        "cargo_target_access": CargoTargetAccess.resolve(
+            command.data.get("toolchains", ()), command.data.get("cargo_target_access")
+        ).value,
         "timeout_budget": command.data.get("timeout_budget"),
         "timeout_seconds": int(command.data["timeout_seconds"]),
         "timeout_env": list(command.data.get("timeout_env", [])),

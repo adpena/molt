@@ -474,8 +474,8 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
         f"python tools/check_changed_clippy.py --base {upstream}",
     }
     commands = {
-        command
-        for command, _tools in proof_plan.local_gate_commands(
+        declaration.command
+        for declaration in proof_plan.local_gate_commands(
             {"always": PLAN.always, "rule": PLAN.local_rules},
             memory_units=proof_plan.PytestMemoryUnits(
                 (c.data for c in PLAN.commands), root=proof_plan.ROOT
@@ -502,7 +502,11 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     )
     assert bound == f"echo {upstream}..HEAD"
     assert [gate.command for gate in commands] == [raw]
-    assert cfg.prerequisites == {"local.always.0": (raw, ())}
+    assert cfg.prerequisites == {
+        "local.always.0": proof_plan.LocalGateDeclaration(
+            raw, (), proof_plan.CargoTargetAccess.NONE
+        )
+    }
     selected, _ = cfg.select(["feature.rs"], extra=[raw])
     prepared = cfg.prepare(
         selected,
@@ -600,7 +604,8 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
         {"rule": [rule]},
         memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
-    command, tools = commands[f"local.{rule['name']}.pytest"]
+    declaration = commands[f"local.{rule['name']}.pytest"]
+    command, tools = declaration.command, declaration.toolchains
     assert shlex.split(command) == [
         "python",
         "-m",
@@ -679,9 +684,10 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
         memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     for index, entry in enumerate(rule["pytest_select"]):
-        (key,) = set(entry) - {"targets", "toolchains"}
+        (key,) = set(entry) - {"targets", "toolchains", "cargo_target_access"}
         selected = [] if key == "all" else [f"-{key}", entry[key]]
-        command, tools = commands[f"local.{rule['name']}.pytest-select-{index}"]
+        declaration = commands[f"local.{rule['name']}.pytest-select-{index}"]
+        command, tools = declaration.command, declaration.toolchains
         assert shlex.split(command) == [
             "python",
             "-m",
@@ -742,15 +748,19 @@ def test_local_selector_projection_preserves_command_and_owned_prerequisites() -
         {"rule": [rule]},
         memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
-    assert commands["local.fixture.0"] == ("cargo check", ("python", "cargo"))
+    assert commands["local.fixture.0"] == proof_plan.LocalGateDeclaration(
+        "cargo check", ("python", "cargo"), proof_plan.CargoTargetAccess.SHARED
+    )
     prefix = "python -m pytest -q -n auto --molt-worker-memory-gb=2.5"
-    assert commands["local.fixture.pytest-select-0"] == (
+    assert commands["local.fixture.pytest-select-0"] == proof_plan.LocalGateDeclaration(
         prefix + " -k pure tests/test_proof_plan.py",
         ("python",),
+        proof_plan.CargoTargetAccess.NONE,
     )
-    assert commands["local.fixture.pytest-select-1"] == (
+    assert commands["local.fixture.pytest-select-1"] == proof_plan.LocalGateDeclaration(
         prefix + " -m compiled tests/test_proof_plan.py",
         ("python", "cargo"),
+        proof_plan.CargoTargetAccess.SHARED,
     )
 
 
@@ -780,10 +790,11 @@ def test_explicit_unfiltered_pytest_cohort_keeps_full_scope_and_cargo_custody():
     assert selection.select == ()
     assert selection.targets == (target,)
     assert selection.toolchains == ("python", "uv", "cargo")
-    command, declared = proof_plan.local_gate_commands(
+    declaration = proof_plan.local_gate_commands(
         {"rule": [rule]},
         memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )["local.unfiltered.pytest-select-0"]
+    command, declared = declaration.command, declaration.toolchains
     assert shlex.split(command) == [
         "python",
         "-m",
@@ -1133,7 +1144,7 @@ def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv(
         {"rule": [{"name": "literal", "gates": [], "pytest": [target]}]},
         memory_units=units,
     )
-    assert shlex.split(projected["local.literal.pytest"][0])[-1] == target
+    assert shlex.split(projected["local.literal.pytest"].command)[-1] == target
     assert proof_plan.bind_local_gate_command(argv, upstream_commit="a" * 40) is argv
 
 
@@ -11189,3 +11200,186 @@ def test_ci_selection_transport_joins_real_selection_zip_and_receipt_owners(
         assert downloaded == [101, 102]
         assert observed_runs == ([42] if fault == "final-read-source-mutation" else [])
         assert source.read_bytes() == b"VALUE = 2\n"
+
+
+@pytest.mark.parametrize("value", [False, 0, "private", "SHARED", [], {}])
+def test_local_cargo_target_access_rejects_unknown_effects(value):
+    rule = {
+        "name": "effects",
+        "toolchains": ["python", "cargo"],
+        "gates": [],
+        "cargo_target_access": value,
+    }
+    with pytest.raises(ValueError, match="cargo_target_access"):
+        proof_plan.local_gate_commands(
+            {"rule": [rule]},
+            memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
+        )
+
+
+def test_local_cargo_target_effects_preserve_tools_commands_and_projection():
+    from tools.proof_plan import CargoTargetAccess
+
+    targets = ["tests/test_proof_plan.py"]
+    base = {
+        "name": "effects",
+        "toolchains": ["python", "cargo"],
+        "gates": ["cargo check"],
+        "pytest": targets,
+        "pytest_select": [
+            {"all": True, "targets": targets, "cargo_target_access": "isolated"}
+        ],
+    }
+    units = proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT)
+    before = proof_plan.local_gate_commands({"rule": [base]}, memory_units=units)
+    after = proof_plan.local_gate_commands(
+        {"rule": [{**base, "pytest_cargo_target_access": "none"}]}, memory_units=units
+    )
+    assert {key: (row.command, row.toolchains) for key, row in before.items()} == {
+        key: (row.command, row.toolchains) for key, row in after.items()
+    }
+    assert [row.cargo_target_access for row in after.values()] == [
+        CargoTargetAccess.SHARED,
+        CargoTargetAccess.NONE,
+        CargoTargetAccess.ISOLATED,
+    ]
+    with pytest.raises(ValueError, match="explicit cargo"):
+        proof_plan.local_gate_commands(
+            {"rule": [{**base, "toolchains": ["python"]}]}, memory_units=units
+        )
+    projection = json.loads(gen_proof_plan._json_projection(PLAN))["local"]
+    assert (
+        projection["cargo_target_access"]["local.frontend-ir-assembly.pytest"]
+        == "isolated"
+    )
+    assert projection["cargo_target_access"]["local.frontend-ir-assembly.0"] == "shared"
+    assert (
+        projection["cargo_target_access"]["local.frontend-ir-assembly.pytest-select-0"]
+        == "none"
+    )
+
+
+def test_local_cargo_target_effects_union_overlapping_requests_and_extra_owners(
+    tmp_path,
+):
+    from tools.molt_dev_policy import GateConfig
+    from tools.proof_plan import CargoTargetAccess
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_a.py").write_text("def test_a(): pass\n", encoding="utf-8")
+    config = GateConfig.parse(
+        "\n".join(
+            [
+                "[[rule]]",
+                'name="reader"',
+                'globs=["src/**"]',
+                'gates=["same-command"]',
+                'toolchains=["python", "cargo"]',
+                'cargo_target_access="none"',
+                'pytest=["tests/test_a.py"]',
+                "[[rule]]",
+                'name="writer"',
+                'globs=["src/**"]',
+                'gates=["same-command"]',
+                'toolchains=["python", "cargo"]',
+                'pytest=["tests/test_a.py::test_a"]',
+            ]
+        ),
+        "effects",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["src/changed"], extra=["same-command"])
+    assert len(gates) == 2
+    assert all(gate.cargo_target_access is CargoTargetAccess.SHARED for gate in gates)
+    assert gates[1].command[-2:] == ("tests/test_a.py", "tests/test_a.py::test_a")
+    assert all(gate.toolchains == ("python", "cargo") for gate in gates)
+
+
+def test_receipt_projects_admitted_cargo_target_effect():
+    from tools import proof_receipts
+    from tools.molt_dev_gates import _local_command
+    from tools.molt_dev_policy import SelectedGate
+    from tools.proof_plan import CargoTargetAccess
+
+    for effect in CargoTargetAccess:
+        gate = SelectedGate(
+            ("python", "fixture.py"),
+            ("python", "cargo"),
+            pytest=True,
+            cargo_target_access=effect,
+        )
+        command = _local_command(1, gate, "local-fixture")
+        record = proof_receipts.command_record(command)
+        assert record["cargo_target_access"] == effect.value
+        assert record["argv"] == ["python", "fixture.py"]
+
+
+def test_local_cargo_target_effect_splits_only_disjoint_requests(tmp_path):
+    from tools.molt_dev_policy import GateConfig
+    from tools.proof_plan import CargoTargetAccess
+
+    (tmp_path / "tests").mkdir()
+    for name in ("reader", "writer"):
+        (tmp_path / "tests" / f"test_{name}.py").write_text(
+            "def test_case(): pass\n", encoding="utf-8"
+        )
+    source = "\n".join(
+        "\n".join(
+            [
+                "[[rule]]",
+                f'name="{name}"',
+                'globs=["src/**"]',
+                "gates=[]",
+                'toolchains=["python", "cargo"]',
+                f'pytest_cargo_target_access="{effect}"',
+                f'pytest=["tests/test_{name}.py"]',
+            ]
+        )
+        for name, effect in (("reader", "none"), ("writer", "shared"))
+    )
+    gates, _ = GateConfig.parse(source, "effects", root=tmp_path).select(
+        ["src/changed"]
+    )
+    assert [gate.command[-1] for gate in gates] == [
+        "tests/test_reader.py",
+        "tests/test_writer.py",
+    ]
+    assert [gate.cargo_target_access for gate in gates] == [
+        CargoTargetAccess.NONE,
+        CargoTargetAccess.SHARED,
+    ]
+    assert all(gate.toolchains == ("python", "cargo") for gate in gates)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "src/molt/build_record.py",
+        "src/molt/input_report.py",
+        "src/molt/build_output_selection.py",
+        "src/molt/cli/build_command.py",
+        "src/molt/cli/build_output_layout.py",
+        "tests/test_build_record.py",
+        "tests/cli/test_build_early_cutoff.py",
+        "tests/cli/test_compiler_source_root.py",
+        "tests/test_tool_releases.py",
+    ],
+)
+def test_build_early_cutoff_owns_producers_and_fixture_consumers(changed):
+    from tools.molt_dev_policy import GateConfig
+    from tools.proof_plan import CargoTargetAccess
+
+    config = GateConfig.load(PLAN.path)
+    owner = next(rule for rule in config.rules if rule.name == "build-early-cutoff")
+    gates, matched = replace(config, rules=[owner], always=[]).select([changed])
+    assert matched == [owner]
+    assert len(gates) == 1
+    gate = gates[0]
+    assert gate.command[-4:] == (
+        "tests/test_build_record.py",
+        "tests/cli/test_build_early_cutoff.py",
+        "tests/cli/test_compiler_source_root.py",
+        "tests/test_tool_releases.py",
+    )
+    assert gate.toolchains == ("python",)
+    assert gate.cargo_target_access is CargoTargetAccess.NONE

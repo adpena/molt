@@ -19,6 +19,8 @@ from pathlib import Path
 import re
 
 from molt.cli.config_resolution import AUTO_STDLIB_PROFILE
+from molt import input_report
+from molt.build_output_selection import BuildOutputSelection, select_output_path
 from molt.default_paths import (
     _default_molt_bin,
     _default_molt_cache,
@@ -353,21 +355,20 @@ def _resolve_output_path(
     *,
     out_dir: Path | None,
     project_root: Path,
+    record_native_binary: bool = False,
 ) -> Path:
+    if record_native_binary and input_report.active():
+        selection = BuildOutputSelection.capture(
+            output, default, out_dir=out_dir, project_root=project_root
+        )
+        input_report.report_build_output(selection.to_dict())
+        path = selection.path
+    else:
+        path = select_output_path(
+            output, default, out_dir=out_dir, project_root=project_root
+        )
     if not output:
         _mkdir_resilient(default.parent)
-        return default
-    path = Path(output).expanduser()
-    if not path.is_absolute():
-        base = out_dir if out_dir is not None else project_root
-        path = base / path
-    if output.endswith(os.sep) or (os.altsep and output.endswith(os.altsep)):
-        return path / default.name
-    try:
-        if path.exists() and path.is_dir():
-            return path / default.name
-    except OSError:
-        pass
     return path
 
 
@@ -558,6 +559,7 @@ def _resolve_build_output_layout(
                 bin_root / f"{output_base}_molt",
                 out_dir=out_dir_path,
                 project_root=project_root,
+                record_native_binary=True,
             )
     for path in (output_artifact, output_binary):
         if path is not None and path.parent != Path("."):

@@ -323,11 +323,16 @@ def test_a_missing_pinned_executable_is_an_input_to_build_reuse(
     output = tmp_path / "app"
     output.write_bytes(b"compiled output")
     record = build_record.record_path(tmp_path / "state", "a" * 64)
-    assert build_record.write_record(record, "a" * 64, ledger, output=output) is None
-    assert build_record.check(record, "a" * 64, output) is None
+    from molt.build_output_selection import BuildOutputSelection
+
+    selection = BuildOutputSelection.capture(
+        str(output), output, out_dir=None, project_root=tmp_path
+    )
+    assert build_record.write_record(record, "a" * 64, ledger, output=selection) is None
+    assert isinstance(build_record.check(record, "a" * 64), build_record.BuildRecordHit)
     discovery.executable.write_bytes(payload)
     assert tool_releases.discover_tool(release, toolchain_root) is not None
-    assert build_record.check(record, "a" * 64, output) is not None
+    assert isinstance(build_record.check(record, "a" * 64), str)
 
 
 def test_download_that_disagrees_with_the_pin_is_refused(
