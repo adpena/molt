@@ -758,14 +758,19 @@ def _bytecode_disposition(
     return _BytecodeDisposition.OWNED
 
 
-def _validate_managed_bytecode_prefix(root: Path) -> None:
+def _validate_managed_bytecode_prefix(
+    root: Path, tree_by_path: Mapping[str, Mapping[str, object]]
+) -> None:
     """Managed readers compile imported sources; no executable cache is shipped."""
     prefix = environment_bytecode_prefix(root)
+    relative = prefix.relative_to(root).as_posix()
     if (
         not prefix.is_dir()
         or prefix.is_symlink()
         or _is_junction(prefix)
         or any(prefix.iterdir())
+        or tree_by_path.get(relative, {}).get("kind") != "directory"
+        or any(path.startswith(relative + "/") for path in tree_by_path)
     ):
         raise PythonEnvironmentIdentityError(
             "managed source-only image requires a physical empty bytecode prefix"
@@ -1032,8 +1037,6 @@ def _capture_current_python_environment(
     managed = (
         canonical_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST
     ).exists() or environment_provisioning_record_path(canonical_root).exists()
-    if managed:
-        _validate_managed_bytecode_prefix(canonical_root)
     excluded = frozenset(
         unicodedata.normalize("NFC", Path(value).as_posix())
         for value in excluded_relative_paths
@@ -1046,6 +1049,11 @@ def _capture_current_python_environment(
     )
     tree_entries = cast(list[Mapping[str, object]], tree["entries"])
     tree_by_path = {str(row["path"]): row for row in tree_entries}
+    if managed:
+        # Validate the same snapshot the attestation will bind. A write before
+        # inventory cannot become an admitted baseline; later writes fail its
+        # retained membership/generation fence.
+        _validate_managed_bytecode_prefix(canonical_root, tree_by_path)
     source_paths_by_key = {
         _portable_path_key(path): path
         for path in tree_by_path

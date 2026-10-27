@@ -2652,23 +2652,92 @@ def test_managed_source_only_prefix_refuses_executable_caches(tmp_path, fault):
         except OSError:
             pytest.skip("directory symlinks unavailable")
     if fault == "none":
-        environment._validate_managed_bytecode_prefix(root)
+        environment._validate_managed_bytecode_prefix(
+            root, {"bytecode": {"kind": "directory"}}
+        )
     else:
         with pytest.raises(PythonEnvironmentIdentityError, match="physical empty"):
-            environment._validate_managed_bytecode_prefix(root)
+            environment._validate_managed_bytecode_prefix(
+                root, {"bytecode": {"kind": "directory"}}
+            )
 
 
 def test_managed_empty_prefix_membership_retains_final_fence(tmp_path):
     root = tmp_path / "image"
     prefix = location.environment_bytecode_prefix(root)
     prefix.mkdir(parents=True)
-    environment._validate_managed_bytecode_prefix(root)
+    environment._validate_managed_bytecode_prefix(
+        root, {"bytecode": {"kind": "directory"}}
+    )
     with files.PythonFileCaptureContext() as context:
         pool = files._FileNodePool(capture_context=context)
         files._stable_tree_inventory(root, root_id="image", label="image", pool=pool)
         (prefix / "late.pyc").write_bytes(b"late executable input")
         with pytest.raises(PythonEnvironmentIdentityError, match="changed"):
             context.verify()
+
+
+@pytest.mark.parametrize("leave_present", [True, False])
+def test_managed_capture_refuses_cache_inserted_at_inventory_boundary(
+    tmp_path, leave_present
+):
+    import venv
+
+    root = tmp_path / "image"
+    venv.EnvBuilder(with_pip=False).create(root)
+    (root / "bytecode").mkdir()
+    provisional = location.environment_provisioning_record_path(root)
+    provisional.parent.mkdir()
+    provisional.write_text("{}", encoding="utf-8")
+    # The marker selects the managed namespace policy. No attestation is claimed;
+    # the real capture must refuse this input before it could be published.
+    code = """
+import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from molt import python_environment_identity as identity
+from molt import python_environment_custody as environment
+root=Path(sys.argv[2])
+original=environment._scan_environment_tree
+def scan(*args,**kwargs):
+    cache=root/'bytecode'/'inserted.pyc'
+    cache.write_bytes(b'new executable input')
+    result=original(*args,**kwargs)
+    if sys.argv[3]=='remove':
+        cache.unlink()
+    return result
+environment._scan_environment_tree=scan
+try:
+    identity.capture_current_python_environment(root,admitted_external_roots=(Path(sys.argv[1]).parent,))
+except ValueError as error:
+    print(json.dumps({'refused':str(error)}))
+else:
+    print(json.dumps({'accepted':True}))
+"""
+    with identity.PythonIdentityVerifier() as verifier:
+        command = [
+            str(location.environment_python_path(root)),
+            *identity.python_identity_verifier_arguments(verifier.prefix),
+            "-c",
+            code,
+            str(Path(__file__).resolve().parents[1] / "src"),
+            str(root),
+            "keep" if leave_present else "remove",
+        ]
+        result = verifier.run(
+            command,
+            memory_guard_prefix=_COMMANDS.prefix,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert (
+            "managed source-only image requires a physical empty bytecode prefix"
+            in json.loads(result.stdout).get("refused", "")
+        )
 
 
 @pytest.mark.parametrize(
