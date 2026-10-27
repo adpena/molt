@@ -49,7 +49,7 @@ def synthetic_workload(
     }
 
 
-def measure_admitted_cell(measure, **kwargs):
+def measure_admitted_cell(measure, *, project_root: Path, **kwargs):
     """Exercise the real source admission around existing measurement fixtures."""
     from tools.bench_evidence import admit_benchmark_workload
 
@@ -59,9 +59,7 @@ def measure_admitted_cell(measure, **kwargs):
         source.write_text("print(1)\n", encoding="utf-8")
     with admit_benchmark_workload(
         source,
-        # The actual benchmark source remains in this repository while custody
-        # tests independently substitute the build/artifact checkout coordinate.
-        project_root=Path(__file__).resolve().parents[2],
+        project_root=project_root,
         run_args=measure.bench.resolve_benchmark_run_args(str(source)),
         molt_args=measure.bench_suites.molt_args_for_benchmark(source),
     ) as workload:
