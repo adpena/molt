@@ -704,37 +704,33 @@ def test_batch_unresolved_reader_retains_streams_and_use(tmp_path, monkeypatch):
 
 def test_batch_nonblocking_setup_failure_closes_child_and_use(tmp_path, monkeypatch):
     checkout, environment, roots, script = _managed_batch_environment(tmp_path)
-    processes = []
-    original_popen = subprocess.Popen
-
-    def capture(*args, **kwargs):
-        process = original_popen(*args, **kwargs)
-        processes.append(process)
-        return process
 
     def refuse(fd, blocking):
         assert blocking is False
         raise OSError("independent nonblocking setup refusal")
 
     install_module_view(
-        monkeypatch, "subprocess", subprocess, batch_compile_client, Popen=capture
-    )
-    install_module_view(
         monkeypatch, "os", os, batch_compile_client, set_blocking=refuse
     )
-    with pytest.raises(OSError, match="independent nonblocking setup refusal"):
-        BatchCompileServerClient(
-            [sys.executable, str(script)],
-            cwd=checkout,
-            env=environment,
-            memory_guard_prefix=None,
+    client = BatchCompileServerClient.__new__(BatchCompileServerClient)
+    try:
+        with pytest.raises(OSError, match="independent nonblocking setup refusal"):
+            BatchCompileServerClient.__init__(
+                client,
+                [sys.executable, str(script)],
+                cwd=checkout,
+                env=environment,
+                memory_guard_prefix=None,
+            )
+        process = client._proc
+        assert process is not None and process.poll() is not None
+        assert all(
+            stream is not None and stream.closed
+            for stream in (process.stdin, process.stdout, process.stderr)
         )
-    assert len(processes) == 1 and processes[0].poll() is not None
-    assert all(
-        stream.closed
-        for stream in (processes[0].stdin, processes[0].stdout, processes[0].stderr)
-    )
-    _assert_batch_retirement(roots, True)
+        _assert_batch_retirement(roots, True)
+    finally:
+        client.close(force=True, timeout=5)
 
 
 def test_batch_partial_writes_preserve_ascii_json_and_unicode(monkeypatch, bare_client):
