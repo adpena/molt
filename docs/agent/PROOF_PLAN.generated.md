@@ -390,7 +390,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `checkout-output-custody` | 14 | 0 |
 | `fresh-guard-observer` | 2 | 0 |
 | `host-entrypoint-imports` | 13 | 0 |
-| `host-capacity` | 11 | 0 |
+| `host-capacity` | 15 | 0 |
 | `guard-marker-custody` | 10 | 0 |
 | `process-environment-consumers` | 9 | 0 |
 | `build-control-paths` | 6 | 0 |

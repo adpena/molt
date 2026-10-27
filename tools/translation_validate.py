@@ -669,7 +669,8 @@ def _build_parser() -> argparse.ArgumentParser:
               MOLT_TV_JOBS           Parallel jobs (default: 4)
               MOLT_TV_PYTHON         Explicit target CPython command override
               MOLT_EXT_ROOT          Artifact root for build artifacts/cache/tmp
-              MOLT_SCRATCH_STORAGE   Scratch storage: disk, memory, or a RAM disk
+              MOLT_SCRATCH_STORAGE   Scratch: disk, disk:/absolute/existing/dir,
+                                     memory (/dev/shm), or a mounted RAM disk path
               MOLT_DIFF_TMPDIR       Temp directory root
         """),
     )

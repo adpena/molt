@@ -5180,13 +5180,17 @@ pytest = [
 [[rule]]
 name = "host-capacity"
 toolchains = ["python"]
-description = "The one host CPU and memory authority and the probes its consumers read."
+description = "Host CPU/memory admission, guarded child lifecycle and scratch custody through their consumers."
 globs = [
   "src/molt/host_capacity.py",
   "src/molt/pytest_capacity_plugin.py",
   "tools/pytest_profile.py",
   "tools/memory_guard.py",
+  "tools/memory_guard_core/process_custody.py",
+  "src/molt/temporary_artifacts.py",
   "tools/memory_guard_core/memory_limits.py",
+  "tests/test_temporary_artifacts.py",
+  "tests/test_memory_guard_tool.py",
   "tools/ci_resource_env.py",
   "tests/test_host_capacity.py",
   "tests/test_pytest_capacity_plugin.py",
@@ -5202,6 +5206,8 @@ pytest = [
   "tests/cli/test_cli_frontend_parallel_authority.py",
   "tests/tools/test_ci_resource_env.py",
   "tests/test_memory_guard_tool.py",
+  "tests/test_temporary_artifacts.py",
+  "tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
 ]
 
 # --- Guard marker custody and observation -------------------------------

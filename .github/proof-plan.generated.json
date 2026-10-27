@@ -9777,7 +9777,7 @@
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
-      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py",
+      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py tests/test_temporary_artifacts.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_import_file.py",
       "local.host-fact-test-isolation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_toolchain_facts.py::test_default_fact_store_cannot_pollute_the_host_namespace",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
@@ -11180,14 +11180,18 @@
         "command_ids": [
           "local.host-capacity.pytest"
         ],
-        "description": "The one host CPU and memory authority and the probes its consumers read.",
+        "description": "Host CPU/memory admission, guarded child lifecycle and scratch custody through their consumers.",
         "gates": [],
         "globs": [
           "src/molt/host_capacity.py",
           "src/molt/pytest_capacity_plugin.py",
           "tools/pytest_profile.py",
           "tools/memory_guard.py",
+          "tools/memory_guard_core/process_custody.py",
+          "src/molt/temporary_artifacts.py",
           "tools/memory_guard_core/memory_limits.py",
+          "tests/test_temporary_artifacts.py",
+          "tests/test_memory_guard_tool.py",
           "tools/ci_resource_env.py",
           "tests/test_host_capacity.py",
           "tests/test_pytest_capacity_plugin.py",
@@ -11202,7 +11206,9 @@
           "tests/tools/test_pytest_profile.py",
           "tests/cli/test_cli_frontend_parallel_authority.py",
           "tests/tools/test_ci_resource_env.py",
-          "tests/test_memory_guard_tool.py"
+          "tests/test_memory_guard_tool.py",
+          "tests/test_temporary_artifacts.py",
+          "tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup"
         ],
         "toolchains": [
           "python"
