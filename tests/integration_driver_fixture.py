@@ -24,6 +24,9 @@ session's temporary files. ``clone_tree`` shares file blocks where the
 filesystem can (APFS, btrfs, XFS) and copies elsewhere, and
 ``shared_session_tree`` builds an immutable seed once per session for every
 xdist worker instead of once per worker.
+``driver_history_seed`` also shares the committed driver history between
+integration and claim tests. Prepared repository pairs retain private mutable
+copies of source, Git objects, refs, indexes and config; only file blocks share.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import os
 import shutil
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -169,6 +173,75 @@ def clone_file(
 def clone_tree(source: Path, destination: Path) -> None:
     """Copy a directory tree the way ``clone_file`` copies one file."""
     shutil.copytree(source, destination, symlinks=True, copy_function=clone_file)
+
+
+@dataclass(frozen=True, slots=True)
+class GitFixture:
+    """A private origin and its prepared main checkout; neither uses alternates."""
+
+    origin: Path
+    work: Path
+
+    @property
+    def remote_url(self) -> str:
+        """A sibling-relative Git path that survives atomic seed publication."""
+        return Path(os.path.relpath(self.origin, start=self.work)).as_posix()
+
+
+def _fixture_git(repo: Path, *arguments: str) -> None:
+    result = _run_fast_captured_command(["git", "-C", str(repo), *arguments])
+    if result.returncode:
+        raise RuntimeError(f"fixture git {arguments!r}: {result.stderr}")
+
+
+def publish_git_fixture(fixture: GitFixture) -> None:
+    """Publish committed history and prepare tracking once, before seed sharing."""
+    _fixture_git(
+        fixture.work, "clone", "--bare", "-q", str(fixture.work), str(fixture.origin)
+    )
+    _fixture_git(fixture.origin, "config", "--remove-section", "remote.origin")
+    # A relative remote survives shared_session_tree's atomic staging rename.
+    _fixture_git(fixture.work, "remote", "add", "origin", fixture.remote_url)
+    _fixture_git(fixture.work, "fetch", "-q", "origin")
+    _fixture_git(fixture.work, "branch", "-q", "--set-upstream-to=origin/main", "main")
+    _fixture_git(
+        fixture.work,
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    )
+
+
+def copy_git_fixture(seed: GitFixture, destination: GitFixture) -> None:
+    """Copy prepared history and files independently, then bind the private remote.
+
+    Git's local clone can hardlink objects. Our CoW/copy authority instead keeps
+    direct object writes, indexes, refs, config and source mutations private.
+    Tracking refs already describe the immutable seed's published main; each
+    subject's real fetch/rebase/push still runs in its test.
+    """
+    clone_tree(seed.origin, destination.origin)
+    clone_tree(seed.work, destination.work)
+    _fixture_git(
+        destination.work, "remote", "set-url", "origin", destination.remote_url
+    )
+
+
+def build_driver_history(root: Path, driver: Path) -> None:
+    """Commit the complete driver once for every real-controller test family."""
+    fixture = GitFixture(root / "origin.git", root / "work")
+    copy_driver_trees(fixture.work, seed=driver)
+    _fixture_git(fixture.work, "init", "-q", "-b", "main")
+    _fixture_git(fixture.work, "config", "user.email", "dev@molt.test")
+    _fixture_git(fixture.work, "config", "user.name", "Molt Dev")
+    _fixture_git(fixture.work, "config", "commit.gpgsign", "false")
+    (fixture.work / "tools/proof_plan.toml").write_text(
+        'always = ["echo integration-policy"]\n', encoding="utf-8"
+    )
+    (fixture.work / "README.md").write_text("seed\n", encoding="utf-8")
+    _fixture_git(fixture.work, "add", "-A", "--", ".")
+    _fixture_git(fixture.work, "commit", "-q", "--no-verify", "-m", "seed: main driver")
+    publish_git_fixture(fixture)
 
 
 def shared_session_tree(
