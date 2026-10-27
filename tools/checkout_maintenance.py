@@ -170,44 +170,16 @@ def _schedule(
     return state
 
 
-def main(
-    argv: list[str] | None = None,
-    *,
-    operation: Literal["checkout", "cache"] = "checkout",
-) -> int:
+def maintenance_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the common captured scope without loading collection policy."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--policy-cwd", required=True, type=Path)
-    args = parser.parse_args(argv)
-    if operation == "cache":
-        from molt.cache_eviction import automatic_retention
-        from molt.default_paths import CLI_CACHE_RETENTION_INTERVAL_SECONDS
+    return parser.parse_args(argv)
 
-        result = automatic_retention(
-            ProcessEnvironment(os.environ),
-            cache_root=args.root,
-            min_interval_seconds=CLI_CACHE_RETENTION_INTERVAL_SECONDS,
-            wait_for_lock=True,
-        )
-        print(
-            json.dumps(
-                {
-                    "schema": "molt.cache-maintenance.v1",
-                    "root": str(args.root),
-                    "policy_cwd": str(args.policy_cwd),
-                    "result": result,
-                }
-            ),
-            flush=True,
-        )
-        return int(
-            result is not None
-            and (
-                result.get("status") == "failed"
-                or bool(result.get("entries_failed"))
-                or bool(result.get("source_record_maintenance_failed"))
-            )
-        )
+
+def main(argv: list[str] | None = None) -> int:
+    args = maintenance_arguments(argv)
     from tools.disk_guard import collect_due
 
     results = collect_due(root=args.root, env=ProcessEnvironment(os.environ))

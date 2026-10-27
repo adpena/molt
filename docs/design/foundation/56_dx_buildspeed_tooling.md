@@ -634,6 +634,8 @@ Source CLI builds use the same retained supervisor for a due user-cache sweep.
 One prune-lock timestamp observation names its attempt under the selected
 cache's `logs/cache_retention/automatic`; `tools/cache_maintenance.py` enters
 the existing `automatic_retention` policy with the daily CLI interval. The
+cache-policy imports live only in that worker; the shared scheduler and its
+proof execution identity do not import the compiler's cache consumers. The
 pruner alone admits and stamps the attempt, protects live entries and installed
 home/bin state, and reports partial failures as a nonzero worker result.
 A retained worker waits for a contended

@@ -323,13 +323,13 @@ def test_cache_dispatch_refuses_old_published_worker_before_admission(
 def test_cache_worker_keeps_partial_failure_nonzero(
     tmp_path, monkeypatch, capsys, report
 ):
-    from molt import cache_eviction
+    from tools import cache_maintenance
 
-    monkeypatch.setattr(cache_eviction, "automatic_retention", lambda *_a, **_k: report)
+    monkeypatch.setattr(
+        cache_maintenance, "automatic_retention", lambda *_a, **_k: report
+    )
     assert (
-        maintenance.main(
-            ["--root", str(tmp_path), "--policy-cwd", str(tmp_path)], operation="cache"
-        )
+        cache_maintenance.main(["--root", str(tmp_path), "--policy-cwd", str(tmp_path)])
         == 1
     )
     assert json.loads(capsys.readouterr().out)["result"] == report
