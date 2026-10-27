@@ -103,6 +103,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -171,7 +172,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parameter_bindings: dict[str, str]
-    parse_codec: Any
     python_binding_index: PythonBindingIndex | None
     python_class_body_context: Any
     python_frame_context_active: Any
@@ -204,7 +204,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def __init__(
         self,
-        parse_codec: Literal["msgpack", "cbor", "json"] = ...,
         type_hint_policy: Literal["ignore", "trust", "check"] = ...,
         *,
         source_path: str | None = ...,

@@ -2358,11 +2358,15 @@ def _native_build_capture_fixture(
     operation="c",
     registered_command=None,
     environment_updates=None,
+    project_sdk_availability=False,
 ):
     """Real capture boundary with independent C/C++ driver transcripts."""
     from tools import proof_plan
 
-    native_images = (
+    compile_only_wasi = (
+        registered_command is not None and "wasi-clippy" in registered_command
+    )
+    native_images = compile_only_wasi or (
         registered_command is not None and "wasi-lifecycle" in registered_command
     )
     tools = {}
@@ -2445,7 +2449,7 @@ def _native_build_capture_fixture(
         ):
             manifest = Path(command[command.index("--manifest-path") + 1])
             source = (manifest.parent / "main.rs").read_text(encoding="utf-8")
-            if registered_command is not None:
+            if registered_command is not None and not compile_only_wasi:
                 # These actual child operations are Cargo test images. A
                 # transcript must not report success for the old BIN probe.
                 assert "--lib" in command and "--bin" not in command
@@ -2453,6 +2457,8 @@ def _native_build_capture_fixture(
             if (
                 registered_command is not None
                 and "wasi-lifecycle" in registered_command
+                and "link-arg=--export-table"
+                in kwargs["env"].get("CARGO_ENCODED_RUSTFLAGS", "")
             ):
                 expected = (
                     '#[link(name = ":crt1-command.o", kind = "static", modifiers = "-bundle")]\n'
@@ -2467,7 +2473,23 @@ def _native_build_capture_fixture(
                         "fixture: WASI command CRT declaration missing or wrong",
                     )
             else:
-                assert "#[link(" not in source, "pure Rust zlib owns its bundled CRT"
+                assert "#[link(" not in source, (
+                    "pure Rust providers own their bundled CRT"
+                )
+                if not compile_only_wasi:
+                    flags = kwargs["env"].get("CARGO_ENCODED_RUSTFLAGS", "")
+                    flags += " " + kwargs["env"].get(
+                        "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS", ""
+                    )
+                    assert "link-self-contained=no" not in flags
+                    assert "CARGO_TARGET_WASM32_WASIP1_LINKER" not in kwargs["env"]
+            if (
+                "--profile" in command
+                and command[command.index("--profile") + 1] == "check"
+            ):
+                assert "#[link(" not in source
+                assert "--test" not in command[command.index("--") + 1 :]
+                return subprocess.CompletedProcess(command, 0, "", "")
             selected = kwargs["env"].get(
                 "CARGO_TARGET_WASM32_WASIP1_LINKER", "rust-lld"
             )
@@ -2525,65 +2547,51 @@ def _native_build_capture_fixture(
     ):
         # Preserve the real RuntimeCargoPlan SDK/ABI/resource projection. Its
         # expensive compiler discovery uses the existing pytest-owned plan.
-        from dataclasses import replace
-        from types import MappingProxyType
         from molt.cli import runtime_cargo_plan as plans
-        from molt.cli.cargo_resource_custody import CargoExecutableCustody
-        from molt.cli.cargo_search_path import (
-            cargo_search_path,
-            derives_cargo_search_path,
-        )
         from tests.runtime_build_identity_helper import (
             RuntimeFixtureRoot,
             runtime_cargo_plan,
         )
 
         def plan(root, *, env, cargo_command, **kwargs):
-            selected = runtime_cargo_plan(
+            return runtime_cargo_plan(
                 root,
                 fixture_root=RuntimeFixtureRoot(tmp_path),
                 env=env,
                 cargo_command=cargo_command,
+                cargo=tools["cargo"],
+                rustc=tools["rustc"],
                 **kwargs,
             )
-            tool_paths = {
-                **selected.tools,
-                "cargo": tools["cargo"],
-                "rustc": tools["rustc"],
-            }
-            projected = {"RUSTC": str(tools["rustc"])}
-            if derives_cargo_search_path():
-                # The plan derives Cargo's PATH from its selected tools, so
-                # substituted tools carry their own directories into it.
-                projected["PATH"] = cargo_search_path(
-                    selected.environment,
-                    (*tool_paths.values(), *selected.wrappers.values()),
-                )
-            projected_env = selected.environment.updated(projected)
-            custody = tuple(
-                CargoExecutableCustody.capture(
-                    row.label, tool_paths[row.label.removeprefix("tool/")]
-                )
-                if row.label in {"tool/cargo", "tool/rustc"}
-                else row
-                for row in selected.executable_custody
-            )
-            selected = replace(
-                selected,
-                command=tuple(cargo_command),
-                tools=MappingProxyType(tool_paths),
-                rustc=tools["rustc"],
-                environment=projected_env,
-                executable_custody=custody,
-            ).with_build_directory()
-            selected.verify()
-            return selected
 
         monkeypatch.setattr(plans, "resolve_runtime_cargo_plan", plan)
     if environment_updates:
         environment.update(environment_updates)
+    if project_sdk_availability:
+        from molt import llvm_toolchain
+        from tests.runtime_build_identity_helper import (
+            RuntimeFixtureRoot,
+            provisioned_wasi_sdk_fixture,
+        )
+
+        installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+        monkeypatch.setattr(
+            llvm_toolchain,
+            "selected_wasi_sdk_installation",
+            lambda *_args, **_kwargs: installation,
+        )
+        projection = proof_plan.project_toolchains(
+            proof_plan.ProofPlan.load().toolchain_policies,
+            ("wasi-clang", "wasm-ld"),
+            environ=environment,
+            root=Path(__file__).resolve().parents[2],
+        )
+        assert not projection.missing
+        environment.update(projection.delta)
+        assert "CARGO_TARGET_WASM32_WASIP1_LINKER" not in environment
+        assert "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS" not in environment
     captured_target = None
-    if environment_updates:
+    if registered_command is not None or environment_updates:
         from tools.proof_queue_pkg.command_identity import _rust_target
         from tools.proof_queue_pkg import command_admission
 
@@ -4192,18 +4200,22 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
     selection = toolchain_capture.validate_rust_link_selection(
         identity, command_argv=command, full_capture=True
     )
-    for member in toolchain_capture.rust_link_selections(selection):
-        assert [row["unit"] for row in member["units"]] == ["target", "host-proc-macro"]
-        assert all(
-            row["artifact_selection"]["link_required"] for row in member["units"]
-        )
-        assert all("documenter" not in row["flag_context"] for row in member["units"])
     args = command_admission.runtime_gate_arguments(
         command_admission.envelope_for_command(registered_command)
     )
+    for member in toolchain_capture.rust_link_selections(selection):
+        assert [row["unit"] for row in member["units"]] == ["target", "host-proc-macro"]
+        assert [
+            row["artifact_selection"]["link_required"] for row in member["units"]
+        ] == (
+            [False, True]
+            if args is not None and args.policy == "wasi-clippy"
+            else [True, True]
+        )
+        assert all("documenter" not in row["flag_context"] for row in member["units"])
     if args is not None:
         expected = (
-            ["runtime", "host"]
+            ["runtime", "host", "provider"]
             if args.policy == "wasi-lifecycle"
             else ["provider"]
             if args.policy == "zlib-wasi"
@@ -4214,6 +4226,7 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
             assert [row["selection"]["target"] for row in selection["operations"]] == [
                 "wasm32-wasip1",
                 "x86_64-unknown-linux-gnu",
+                "wasm32-wasip1",
             ]
             assert [
                 row["selection"]["target"] for row in selection["native_build"]
@@ -4227,6 +4240,13 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
             assert str(_tools["linker"]) in {
                 row["path"] for row in identity["process_images"]
             }
+        elif args.policy == "wasi-clippy":
+            operation = selection["operations"][0]
+            assert operation["selection"]["target"] == "wasm32-wasip1"
+            assert operation["native_required"] == {"target": ["c"]}
+            assert all(
+                unit["startup"] is None for unit in operation["selection"]["units"]
+            )
     assert selection["admitted_command"] == registered_command
     assert selection["producer_command"] == command
     before = list(calls)
@@ -4363,9 +4383,30 @@ def test_clippy_capture_owns_selected_plugin_and_sibling_driver(
         ),
         "process_images": toolchain_capture.clippy_component_images(paths),
     }
-    toolchain_capture.validate_clippy_selection(
-        identity, required=True, expected_paths=paths
-    )
+    from tools.proof_queue_pkg import command_admission
+
+    for command in (
+        ["cargo", "clippy", "--lib"],
+        _runtime_gate_registered_command("wasi-clippy"),
+    ):
+        assert toolchain_capture.command_requires_clippy(
+            command_admission.envelope_for_command(command)
+        )
+        toolchain_capture.validate_clippy_selection(
+            identity, required=True, expected_paths=paths
+        )
+        with pytest.raises(ValueError, match="missing its component closure"):
+            toolchain_capture.validate_clippy_selection(
+                {"version": version}, required=True
+            )
+    for command in (
+        ["cargo", "check", "--lib"],
+        _runtime_gate_registered_command("wasi-lifecycle"),
+        _runtime_gate_registered_command("zlib-wasi"),
+    ):
+        assert not toolchain_capture.command_requires_clippy(
+            command_admission.envelope_for_command(command)
+        )
     captured = {(row["role"], row["path"]) for row in identity["process_images"]}
     assert ("cargo-clippy", custody_spelling(tools["cargo-clippy"])) in captured
     assert ("clippy-driver", custody_spelling(tools["clippy-driver"])) in captured
@@ -4698,6 +4739,211 @@ def _runtime_gate_registered_command(policy):
 @pytest.mark.parametrize(
     "mutation",
     [
+        None,
+        "missing-sdk",
+        "foreign-sdk",
+        "source-target",
+        "unresolved-producer",
+        "missing-warning-policy",
+        "allow-warning-policy",
+        "old-cargo-warning-policy",
+    ],
+)
+def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
+    tmp_path, monkeypatch, mutation
+):
+    from copy import deepcopy
+
+    registered = _runtime_gate_registered_command("wasi-clippy")
+    identity, tools, _env, command, calls = _native_build_capture_fixture(
+        tmp_path,
+        monkeypatch,
+        registered_command=registered,
+        environment_updates={"RUSTFLAGS": "--cfg explicit_user_flags"},
+        project_sdk_availability=True,
+    )
+    raw = identity["link_selection"]
+    assert raw["schema"] == "molt.proof-runtime-gate-rust-selection.v2"
+    assert raw["admitted_command"] == registered
+    assert raw["producer_command"] == command
+    assert raw["native_required"] == {"target": ["c"]}
+    assert len(raw["operations"]) == 1
+    operation = raw["operations"][0]
+    source_command = [
+        str(tools["cargo"]),
+        "clippy",
+        "--config",
+        'build.warnings="deny"',
+        "--locked",
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+        "-p",
+        "molt-runtime",
+        "-p",
+        "molt-tir",
+    ]
+    assert operation["source_command"] == source_command
+    assert operation["role"] == "runtime"
+    assert operation["environment"] == "runtime-wasi"
+    assert operation["c_units"] == "managed-wasi"
+    projection = operation["projection"]
+    assert projection["tools"]["cargo"] == str(tools["cargo"])
+    assert projection["tools"]["cc"].endswith(native_executable_name("clang"))
+    assert "link-self-contained=no" in projection["rustflags"]
+    assert "link-arg=--export-table" not in projection["rustflags"]
+    assert "explicit_user_flags" in projection["rustflags"]
+    child = operation["selection"]
+    assert child["producer_command"][0] == str(tools["cargo"])
+    assert child["producer_command"][1] == "clippy"
+    assert child["producer_command"] != registered
+    assert "--" not in child["producer_command"]
+    assert child["producer_command"].count('build.warnings="deny"') == 1
+    assert any(
+        value.startswith("build.build-dir=") for value in child["producer_command"]
+    )
+    assert child["target"] == "wasm32-wasip1"
+    target, host_macro = child["units"]
+    assert target["artifact_selection"]["link_required"] is False
+    assert target["artifact_selection"]["test_harness"] is False
+    assert target["startup"] is host_macro["startup"] is None
+    assert target["process_image_refs"] == []
+    native = raw["native_build"]
+    assert len(native) == 1
+    assert native[0]["selection"]["target"] == "wasm32-wasip1"
+    assert "--target=wasm32-wasip1" in native[0]["selection"]["compilers"]["c"]
+    before = list(calls)
+    toolchain_capture.validate_rust_link_selection(
+        identity, command_argv=command, full_capture=True
+    )
+    toolchain_capture.revalidate_rust_selection_sources(raw)
+    assert calls == before
+    if mutation is None:
+        return
+    changed = deepcopy(identity)
+    operation = changed["link_selection"]["operations"][0]
+    if mutation == "missing-sdk":
+        operation["projection"] = None
+    elif mutation == "foreign-sdk":
+        operation["projection"]["sdk"]["sdk"] = str(tmp_path / "unadmitted-sdk")
+    elif mutation == "source-target":
+        source = operation["source_command"]
+        source[source.index("--target") + 1] = "x86_64-unknown-linux-gnu"
+    elif mutation == "unresolved-producer":
+        child = operation["selection"]
+        child["producer_command"] = source_command
+        child["command_semantics_sha256"] = canonical_json_sha256(source_command)
+    elif mutation == "old-cargo-warning-policy":
+        # 1.96 supports resource-keyed build directories, but cannot establish
+        # the newer deny-warnings policy. Every SDK/argv/pin remains valid.
+        operation["selection"]["cargo_version"] = "cargo 1.96.0 (123456789 2026-06-01)"
+    elif mutation in {"missing-warning-policy", "allow-warning-policy"}:
+        child = operation["selection"]
+        producer = child["producer_command"]
+        policy_index = producer.index('build.warnings="deny"')
+        assert producer[policy_index - 1] == "--config"
+        # Keep all tool/output pins and SDK/dependency facts. Only Cargo's
+        # warning policy is missing or weakened in the executed command.
+        unresolved = list(producer)
+        if mutation == "missing-warning-policy":
+            del unresolved[policy_index - 1 : policy_index + 1]
+        else:
+            unresolved[policy_index] = 'build.warnings="allow"'
+        child["producer_command"] = unresolved
+        child["admitted_command"] = ["cargo", *unresolved[1:]]
+        digest = canonical_json_sha256(unresolved)
+        child["command_semantics_sha256"] = digest
+        for unit in child["units"]:
+            unit["command_semantics_sha256"] = digest
+            unit["flag_context"]["command"] = list(unresolved)
+        assert operation["source_command"] == source_command
+        assert operation["projection"] == raw["operations"][0]["projection"]
+    changed.pop("identity_sha256")
+    changed["identity_sha256"] = canonical_json_sha256(changed)
+    with pytest.raises(
+        ValueError,
+        match="runtime Cargo child command differs from its operation"
+        if mutation in {"missing-warning-policy", "allow-warning-policy"}
+        else r"runtime Cargo requires Cargo 1\.97 or newer for warning denial"
+        if mutation == "old-cargo-warning-policy"
+        else None,
+    ):
+        toolchain_capture.validate_rust_link_selection(
+            changed, command_argv=command, full_capture=True
+        )
+    assert calls == before
+
+
+def test_managed_wasi_clippy_refuses_forwarded_arguments_before_planning(
+    tmp_path, monkeypatch
+):
+    from molt.cli import runtime_cargo_plan
+    from tools.runtime_test_gate_plan import CargoOperation
+
+    def forbidden_plan(*_args, **_kwargs):
+        pytest.fail(
+            "unsupported forwarded Clippy arguments must refuse before planning"
+        )
+
+    monkeypatch.setattr(
+        runtime_cargo_plan, "resolve_runtime_cargo_plan", forbidden_plan
+    )
+    operation = CargoOperation(
+        "runtime",
+        (
+            "cargo",
+            "clippy",
+            "--target",
+            "wasm32-wasip1",
+            "--lib",
+            "--",
+            "-D",
+            "warnings",
+        ),
+        "runtime-wasi",
+        "managed-wasi",
+    )
+    with pytest.raises(ValueError, match="does not admit forwarded compiler arguments"):
+        toolchain_capture.resolve_runtime_gate_cargo_operation(
+            operation, cwd=tmp_path, env={}, compiler_host=None
+        )
+
+
+def test_mixed_wasi_driver_projects_sdk_only_to_its_c_owning_operation(
+    tmp_path, monkeypatch
+):
+    identity, _tools, env, command, _calls = _native_build_capture_fixture(
+        tmp_path,
+        monkeypatch,
+        registered_command=_runtime_gate_registered_command("wasi-lifecycle"),
+        environment_updates={"RUSTFLAGS": "--cfg explicit_user_flags"},
+        project_sdk_availability=True,
+    )
+    assert "MOLT_WASI_SYSROOT" in env and "MOLT_WASM_LD" in env
+    assert "CARGO_TARGET_WASM32_WASIP1_LINKER" not in env
+    assert "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS" not in env
+    runtime, host, provider = identity["link_selection"]["operations"]
+    assert "link-self-contained=no" in runtime["projection"]["rustflags"]
+    assert "link-arg=--export-table" in runtime["projection"]["rustflags"]
+    assert runtime["selection"]["units"][0]["startup"]["kind"] == "wasi-command"
+    for operation in (host, provider):
+        assert operation["projection"] is None
+        target, host_macro = operation["selection"]["units"]
+        assert target["startup"] is host_macro["startup"] is None
+        assert target["flag_context"]["selected_flags"] == [
+            "--cfg",
+            "explicit_user_flags",
+        ]
+        # Cargo excludes target Rust flags from host proc-macro compilation.
+        assert host_macro["flag_context"]["selected_flags"] == []
+    toolchain_capture.validate_rust_link_selection(
+        identity, command_argv=command, full_capture=True
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
         "missing",
         "extra",
         "role",
@@ -4830,6 +5076,13 @@ def test_runtime_gate_rust_operation_receiver_rejects_incomplete_or_mutated_plan
         "host-startup",
         "test-harness",
         "startup-target",
+        "provider-C",
+        "runtime-C-lost",
+        "host-C-lost",
+        "provider-omitted",
+        "provider-duplicate",
+        "provider-foreign",
+        "provider-managed",
     ],
 )
 def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
@@ -4845,11 +5098,21 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
     assert [operation["selection"]["target"] for operation in raw["operations"]] == [
         "wasm32-wasip1",
         "x86_64-unknown-linux-gnu",
+        "wasm32-wasip1",
     ]
     assert [row["selection"]["units"] for row in raw["native_build"]] == [
         {"target": ["c"]},
         {"target": ["c"]},
     ]
+    assert [row["native_required"] for row in raw["operations"]] == [
+        {"target": ["c"]},
+        {"target": ["c"]},
+        {},
+    ]
+    provider = raw["operations"][2]
+    assert provider["role"] == "provider" and provider["environment"] == "cargo"
+    assert provider["c_units"] == "none" and provider["projection"] is None
+    assert "molt-runtime-platform" in provider["source_command"]
     wasi, host = raw["native_build"]
     assert "--target=wasm32-wasip1" in wasi["selection"]["compilers"]["c"]
     assert host["selection"]["target"] == "x86_64-unknown-linux-gnu"
@@ -4925,6 +5188,23 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
         target_unit["artifact_selection"]["test_harness"] = False
     elif mutation == "startup-target":
         raw["operations"][0]["selection"]["target"] = "x86_64-unknown-linux-gnu"
+    elif mutation == "provider-C":
+        raw["operations"][2]["native_required"] = {"target": ["c"]}
+    elif mutation == "runtime-C-lost":
+        raw["operations"][0]["native_required"] = {}
+    elif mutation == "host-C-lost":
+        raw["operations"][1]["native_required"] = {}
+    elif mutation == "provider-omitted":
+        raw["operations"].pop()
+    elif mutation == "provider-duplicate":
+        raw["operations"].append(deepcopy(raw["operations"][2]))
+    elif mutation == "provider-foreign":
+        raw["operations"][2]["source_command"][
+            raw["operations"][2]["source_command"].index("-p") + 1
+        ] = "molt-runtime"
+    elif mutation == "provider-managed":
+        raw["operations"][2]["projection"] = deepcopy(projection)
+
     with pytest.raises(ValueError):
         toolchain_capture.validate_rust_link_selection(
             changed, command_argv=command, full_capture=True
@@ -5004,7 +5284,17 @@ def test_runtime_gate_lifecycle_uses_real_libtest_command_startup(
         monkeypatch,
         registered_command=_runtime_gate_registered_command("wasi-lifecycle"),
     )
-    runtime, host = identity["link_selection"]["operations"]
+    runtime, host, provider = identity["link_selection"]["operations"]
+    assert [operation["role"] for operation in (runtime, host, provider)] == [
+        "runtime",
+        "host",
+        "provider",
+    ]
+    for operation in (runtime, host, provider):
+        assert [unit["unit"] for unit in operation["selection"]["units"]] == [
+            "target",
+            "host-proc-macro",
+        ]
     abi = WasiCAbiProjection.decode(runtime["projection"]["c_abi"])
     target, proc_macro = runtime["selection"]["units"]
     declaration = (
@@ -5025,7 +5315,15 @@ def test_runtime_gate_lifecycle_uses_real_libtest_command_startup(
     assert proc_macro["startup"] is None
     assert proc_macro["artifact_selection"]["test_harness"] is False
     assert all(unit["startup"] is None for unit in host["selection"]["units"])
-    assert len([argv for argv in calls if "link-args" in argv]) == 4
+    assert provider["projection"] is None
+    assert provider["environment"] == "cargo"
+    assert all(unit["startup"] is None for unit in provider["selection"]["units"])
+    assert (
+        provider["selection"]["units"][0]["artifact_selection"]["test_harness"] is True
+    )
+    # Shared metadata/configuration capture does not reuse link-selection probes:
+    # each of the three operations proves its target and host proc-macro link.
+    assert len([argv for argv in calls if "link-args" in argv]) == 6
     before = len(calls)
     crt.write_bytes(crt.read_bytes() + b"changed startup")
     with pytest.raises(ValueError, match="WASI command startup changed"):

@@ -40,8 +40,8 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, installed: bool) -> None
             "PATH": os.pathsep.join((str(Path("/llvm/bin")), environ["PATH"])),
         }
 
-    def wasm_delta(_installation, *, environ, rust_target):
-        assert rust_target == "wasm32-wasip1"
+    def wasm_delta(_installation, *, environ, rust_target=None):
+        assert rust_target is None
         del environ
         return {"WASI_SDK_PATH": "/wasi/sdk", "CC_wasm32_wasip1": "/wasi/bin/clang"}
 
@@ -255,9 +255,9 @@ def test_llvm_projection_matches_what_ci_exports(tmp_path: Path) -> None:
     assert projected == exported
 
 
-@pytest.mark.parametrize("rust_target", SDK_CARGO_TARGETS)
+@pytest.mark.parametrize("rust_target", [None, *SDK_CARGO_TARGETS])
 def test_wasm_projection_sets_only_the_keys_its_selection_clear_removes(
-    tmp_path: Path, rust_target: str
+    tmp_path: Path, rust_target: str | None
 ) -> None:
     # clear_wasm_toolchain_selection removes wasm_toolchain_environment_keys();
     # a projected key outside that set would leak into tests that select
@@ -267,3 +267,90 @@ def test_wasm_projection_sets_only_the_keys_its_selection_clear_removes(
         install, environ={}, rust_target=rust_target
     )
     assert set(projected) <= set(llvm_toolchain.wasm_toolchain_environment_keys())
+
+
+@pytest.mark.parametrize("explicit_target_flags", [False, True])
+def test_generic_sdk_projection_keeps_rust_only_provider_startup_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_target_flags: bool
+) -> None:
+    from functools import partial
+
+    from molt.cli import runtime_cargo_plan as plans
+    from tests.runtime_build_identity_helper import runtime_cargo_plan
+    from tools.proof_queue_pkg.toolchain_capture import (
+        resolve_runtime_gate_cargo_operation,
+    )
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    fixture_root = RuntimeFixtureRoot(tmp_path)
+    installation = provisioned_wasi_sdk_fixture(fixture_root)
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "selected_wasi_sdk_installation",
+        lambda _root, *, environ, cwd=None: installation,
+    )
+    target_flags = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"
+    target_linker = "CARGO_TARGET_WASM32_WASIP1_LINKER"
+    baseline = {"PATH": os.environ.get("PATH", ""), "RUSTFLAGS": "--cfg user_preserved"}
+    if explicit_target_flags:
+        baseline[target_flags] = "--cfg explicit_target_preserved"
+        baseline[target_linker] = str(tmp_path / "explicit-user-linker")
+    original_baseline = dict(baseline)
+    original_process = dict(os.environ)
+    # Keep the real SDK projection: faking this delta would hide the original
+    # outer-command leak into the provider that deliberately owns no C ABI.
+    delta = toolchain_env.toolchain_environment(
+        PLAN,
+        PLAN.toolchain_closure(["wasi-clang", "wasm-ld"]),
+        environ=baseline,
+    )
+    environment = {**baseline, **delta}
+    assert target_flags not in delta
+    assert target_linker not in delta
+    assert environment.get(target_flags) == baseline.get(target_flags)
+    assert environment.get(target_linker) == baseline.get(target_linker)
+    assert "CARGO_ENCODED_RUSTFLAGS" not in environment
+    assert environment["RUSTFLAGS"] == "--cfg user_preserved"
+    assert environment["WASI_SDK_PATH"] == str(installation.sdk)
+
+    # The existing fixture retains the real RuntimeCargoPlan and ABI/resource
+    # checks, replacing compiler discovery with pytest-owned tool images only.
+    monkeypatch.setattr(
+        plans,
+        "resolve_runtime_cargo_plan",
+        partial(runtime_cargo_plan, fixture_root=fixture_root),
+    )
+    operations = cargo_operations(
+        "wasi-lifecycle",
+        "dev-fast",
+        cargo="cargo",
+        compiler_host="x86_64-unknown-linux-gnu",
+    )
+    selected = {
+        operation.role: resolve_runtime_gate_cargo_operation(
+            operation,
+            cwd=tmp_path,
+            env=environment,
+            compiler_host="x86_64-unknown-linux-gnu",
+        )
+        for operation in operations
+    }
+    runtime_command, runtime_environment, runtime_plan = selected["runtime"]
+    assert runtime_plan is not None
+    assert runtime_command[runtime_command.index("-p") + 1] == "molt-runtime"
+    assert "link-self-contained=no" in runtime_plan.rustflags
+    assert "link-arg=--export-table" in runtime_plan.rustflags
+    assert "user_preserved" in runtime_plan.rustflags
+    assert runtime_environment[target_linker] == str(installation.wasm_ld)
+    for role in ("host", "provider"):
+        command, child_environment, plan = selected[role]
+        assert command == list(
+            next(row.command for row in operations if row.role == role)
+        )
+        assert plan is None
+        assert dict(child_environment) == environment
+        assert child_environment.get(target_flags) == baseline.get(target_flags)
+        assert child_environment.get(target_linker) == baseline.get(target_linker)
+        assert "CARGO_ENCODED_RUSTFLAGS" not in child_environment
+    assert dict(os.environ) == original_process
+    assert baseline == original_baseline

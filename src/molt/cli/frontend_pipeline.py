@@ -69,7 +69,6 @@ from molt.compiler_analysis.python_imports import ModuleExecutionKind
 from molt.cli.build_request import (
     BuildProfile,
     EmitMode,
-    ParseCodec,
     TypeHintPolicy,
 )
 from molt.cli.models import (
@@ -1054,7 +1053,6 @@ def _prepare_frontend_pipeline(
     prepared_build_roots: _PreparedBuildRoots,
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     profile: BuildProfile,
     json_output: bool,
@@ -1281,7 +1279,6 @@ def _prepare_frontend_pipeline(
         module_graph=compile_module_graph,
         module_source_catalog=prepared_frontend_analysis.module_source_catalog,
         project_root=prepared_build_roots.project_root,
-        parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         type_facts=prepared_frontend_lowering_config.type_facts,
         enable_phi=prepared_frontend_lowering_config.enable_phi,

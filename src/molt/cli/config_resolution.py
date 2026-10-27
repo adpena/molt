@@ -160,6 +160,10 @@ def _resolve_build_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "build configuration 'fallback' was removed; unsupported constructs fail at compile time"
         )
+    if "codec" in build_config:
+        raise ValueError(
+            "build configuration 'codec' was removed; runtime codec packages select their own parsers"
+        )
     return build_config
 
 

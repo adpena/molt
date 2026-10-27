@@ -1,12 +1,16 @@
 # MOLT_ENV: MOLT_CAPABILITIES=net
-"""Purpose: differential coverage for socket dns failure parity."""
+"""Purpose: resolver errors retain one canonical class through both socket modules."""
 
 import socket
+import _socket
 
 
-try:
-    socket.getaddrinfo("no-such-host.invalid", 80)
-except Exception as exc:
-    print(type(exc).__name__)
-    if isinstance(exc, socket.gaierror):
-        print(isinstance(exc.errno, int))
+# AI_NUMERICHOST makes this failure deterministic and avoids external DNS.
+for module in (socket, _socket):
+    try:
+        module.getaddrinfo("not-a-numeric-address.invalid", 80, 0, 0, 0, socket.AI_NUMERICHOST)
+    except socket.gaierror as exc:
+        print("resolver", type(exc) is socket.gaierror, type(exc) is _socket.gaierror)
+        print("resolver_code", exc.errno == socket.EAI_NONAME, isinstance(exc.strerror, str))
+    else:
+        print("unexpected-success")

@@ -11,10 +11,67 @@ from typing import ClassVar
 
 import pytest
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 
 ARROW_BYTES = b"ARROW1"
+
+
+def test_browser_loaders_reject_incompatible_receiver_before_fetch_or_compile(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser version admission")
+    root = Path(__file__).resolve().parents[1]
+    script = tmp_path / "reject_receiver_version.mjs"
+    script.write_text(
+        "import {loadMoltWasm, resolveMoltWasmUrls} from "
+        + json.dumps((root / "wasm/browser_host.js").as_uri())
+        + ";\nimport {loadMoltBrowserEmbed} from "
+        + json.dumps((root / "wasm/browser_embed.js").as_uri())
+        + ";\n"
+        + r"""
+import assert from 'node:assert/strict';
+let fetches = 0, compiles = 0;
+globalThis.fetch = async () => {
+  fetches++;
+  throw new Error('module fetch attempted before receiver admission');
+};
+WebAssembly.compile = async () => {
+  compiles++;
+  throw new Error('module compile attempted before receiver admission');
+};
+WebAssembly.instantiate = async () => {
+  compiles++;
+  throw new Error('module instantiate attempted before receiver admission');
+};
+let cases = 0;
+for (const mode of ['linked', 'split-runtime']) {
+  for (const version of [undefined, null, 0, 1, 2, 4, 99, true, false, '3', 3.5]) {
+    const descriptor = {path: 'must-not-fetch.wasm', size: 8, sha256: '0'.repeat(64)};
+    const manifest = {version, mode, abi: {runtime_imports: {names: []}},
+      modules: mode === 'linked' ? {linked: descriptor} : {app: descriptor, runtime: descriptor}};
+    const manifestUrl = 'https://example.invalid/manifest.json';
+    const expected = /Molt deployment manifest version must be 3/;
+    assert.throws(() => resolveMoltWasmUrls(manifest, manifestUrl), expected);
+    await assert.rejects(() => loadMoltWasm({manifest, manifestUrl}), expected);
+    await assert.rejects(() => loadMoltBrowserEmbed({manifest,
+      baseUrl: 'https://example.invalid/'}), expected);
+    assert.equal(fetches, 0);
+    assert.equal(compiles, 0);
+    cases++;
+  }
+}
+console.log(JSON.stringify({cases, fetches, compiles}));
+""",
+        encoding="utf-8",
+    )
+    result = _run_wasm_test_process(
+        ["node", str(script)], role="tool", cwd=root, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"cases": 22, "fetches": 0, "compiles": 0}
 
 
 class _DbHostHandler(BaseHTTPRequestHandler):
@@ -240,6 +297,7 @@ await rejected(
 );
 
 const linkedManifest = {{
+  version: {WASM_EXECUTION_MANIFEST_VERSION},
   mode: 'linked',
   abi: {{ runtime_imports: {{ names: [] }} }},
   modules: {{ linked: descriptor }},
@@ -266,6 +324,7 @@ await rejected(
   /linked browser manifest module is unavailable/,
 );
 const splitManifest = {{
+  version: {WASM_EXECUTION_MANIFEST_VERSION},
   mode: 'split-runtime',
   abi: {{ runtime_imports: {{ names: [] }} }},
   modules: {{ app: descriptor, runtime: descriptor }},
@@ -294,6 +353,7 @@ console.log('module-integrity-ok');
     )
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -332,6 +392,7 @@ def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -394,6 +455,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -437,6 +499,7 @@ def test_browser_host_direct_mode_run_bootstraps_split_runtime_once(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -499,6 +562,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -544,6 +608,7 @@ def test_browser_host_direct_mode_import_stat_constants(tmp_path: Path) -> None:
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -606,6 +671,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -658,6 +724,7 @@ def test_browser_host_direct_mode_can_invoke_export_with_host_args(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -771,6 +838,7 @@ console.log(JSON.stringify(result));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -823,6 +891,7 @@ def test_browser_host_direct_mode_can_invoke_export_with_host_args_split_runtime
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -961,6 +1030,7 @@ console.log(JSON.stringify(result));
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1013,6 +1083,7 @@ def test_browser_host_direct_mode_scalar_and_none_results_do_not_poison_next_exp
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1086,6 +1157,7 @@ try {{
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1129,6 +1201,7 @@ def test_browser_host_direct_mode_import_asyncio_iov_max(tmp_path: Path) -> None
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1191,6 +1264,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1230,6 +1304,7 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1247,6 +1322,7 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1292,6 +1368,7 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1310,6 +1387,7 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
     run_env["MOLT_CAPABILITY_TIER"] = "full"
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1356,6 +1434,7 @@ def test_browser_direct_run_wasm_namedtuple_replace(tmp_path: Path) -> None:
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1373,6 +1452,7 @@ def test_browser_direct_run_wasm_namedtuple_replace(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1429,6 +1509,7 @@ def test_browser_direct_run_wasm_slots_function_field_roundtrip(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1446,6 +1527,7 @@ def test_browser_direct_run_wasm_slots_function_field_roundtrip(
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1486,6 +1568,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1503,6 +1586,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1544,6 +1628,7 @@ def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1561,6 +1646,7 @@ def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1610,6 +1696,7 @@ def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> N
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1627,6 +1714,7 @@ def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> N
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1669,6 +1757,7 @@ def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> 
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1686,6 +1775,7 @@ def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> 
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1727,6 +1817,7 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1744,6 +1835,7 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
     run_env = os.environ.copy()
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
+        role="guest-host",
         cwd=root,
         env=run_env,
         capture_output=True,
@@ -1800,6 +1892,7 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
             "--out-dir",
             str(tmp_path),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1843,6 +1936,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1868,6 +1962,7 @@ def test_browser_host_module_urls_are_manifest_relative_without_sibling_guessing
 import {{ resolveMoltWasmUrls }} from '{browser_host_uri}';
 
 const split = resolveMoltWasmUrls({{
+  version: {WASM_EXECUTION_MANIFEST_VERSION},
   mode: 'split-runtime',
   modules: {{
     app: {{ path: 'modules/app-prod.wasm' }},
@@ -1875,6 +1970,7 @@ const split = resolveMoltWasmUrls({{
   }},
 }}, 'https://example.com/releases/v9/manifest.json');
 const linked = resolveMoltWasmUrls({{
+  version: {WASM_EXECUTION_MANIFEST_VERSION},
   mode: 'linked',
   modules: {{ linked: {{ path: 'artifacts/program.wasm' }} }},
 }}, 'https://example.com/releases/v9/manifest.json');
@@ -1886,6 +1982,7 @@ console.log(JSON.stringify({{ split, linked }}));
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,

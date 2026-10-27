@@ -1,4 +1,4 @@
-"""Pure invocation and Cargo-operation authority for the runtime test gate."""
+"""Pure invocation and Cargo-operation authority for the runtime proof driver."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ import argparse
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Literal, Mapping, Sequence, get_args
 from molt import host_capacity
 
 WASI_TARGET = "wasm32-wasip1"
 OBSERVER_FEATURE = "l7-attestation-probe"
 RuntimeGatePolicy = Literal[
-    "semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"
+    "semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi", "wasi-clippy"
 ]
 
 
@@ -57,7 +57,7 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", default="release-output")
     parser.add_argument(
         "--policy",
-        choices=("semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"),
+        choices=get_args(RuntimeGatePolicy),
         default="semantic",
     )
     parser.add_argument(
@@ -95,10 +95,59 @@ class CargoOperation:
         # the native Wasmtime host also has C build dependencies. zlib is Rust.
         return {} if self.c_units == "none" else {"target": ["c"]}
 
-    def admits_native_requirements(self, declared: Mapping[str, Sequence[str]]) -> bool:
+    def project_native_requirements(
+        self, declared: Mapping[str, Sequence[str]]
+    ) -> dict[str, list[str]]:
         if self.c_units == "none":
-            return not declared
-        return "c" in declared.get("target", ())
+            return {}
+        if "c" not in declared.get("target", ()):
+            raise ValueError("runtime Cargo operation lacks its C source declaration")
+        return {unit: list(languages) for unit, languages in declared.items()}
+
+
+def project_native_requirements(
+    operations: Sequence[CargoOperation], declared: Mapping[str, Sequence[str]]
+) -> tuple[dict[str, list[str]], ...]:
+    """Bind outer C custody once, then project only actual C-owning operations."""
+    if declared and not any(operation.native_requirements for operation in operations):
+        raise ValueError(
+            "runtime Cargo policy has no operation owning declared C units"
+        )
+    return tuple(
+        operation.project_native_requirements(declared) for operation in operations
+    )
+
+
+def lint_cargo_operation(
+    policy: RuntimeGatePolicy,
+    profile: str,
+    *,
+    cargo: str,
+) -> CargoOperation | None:
+    """Project the declared lint operation without resolving unrelated host units."""
+    if policy != "wasi-clippy":
+        return None
+    if profile != "dev":
+        raise ValueError("wasi-clippy requires the original default dev profile")
+    return CargoOperation(
+        "runtime",
+        (
+            cargo,
+            "clippy",
+            "--config",
+            'build.warnings="deny"',
+            "--locked",
+            "--target",
+            WASI_TARGET,
+            "--lib",
+            "-p",
+            "molt-runtime",
+            "-p",
+            "molt-tir",
+        ),
+        "runtime-wasi",
+        "managed-wasi",
+    )
 
 
 def cargo_operations(
@@ -109,6 +158,9 @@ def cargo_operations(
     compiler_host: str | None = None,
 ) -> tuple[CargoOperation, ...]:
     """Construct the actual child commands before any build or artifact effect."""
+    lint = lint_cargo_operation(policy, profile, cargo=cargo)
+    if lint is not None:
+        return (lint,)
     base = (cargo, "test", "--locked", "--profile", profile)
     tail = ("--no-run", "--message-format=json")
     if policy == "zlib-wasi":
@@ -170,6 +222,21 @@ def cargo_operations(
                 ),
                 "cargo",
                 "native",
+            ),
+            CargoOperation(
+                "provider",
+                (
+                    *base,
+                    "-p",
+                    "molt-runtime-platform",
+                    "--lib",
+                    "--target",
+                    WASI_TARGET,
+                    "--no-default-features",
+                    *tail,
+                ),
+                "cargo",
+                "none",
             ),
         )
     if policy not in {"semantic", "allocation-observer"}:

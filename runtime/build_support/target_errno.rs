@@ -96,12 +96,27 @@ impl Declaration {
     pub fn byte_len(&self) -> usize {
         (HEADER_WORDS + ROW_WORDS * (self.raw.len() + self.public.len())) * 4
     }
+    pub fn add_native_error_symbols(&mut self, names: &[&str]) -> Result<(), String> {
+        let mut seen = BTreeSet::new();
+        if names.is_empty() || names.len() > 256 {
+            return Err("invalid native error symbol inventory extent".into());
+        }
+        for &name in names {
+            if !c_identifier(name) || name.ends_with('_') || name.len() < 2 || !seen.insert(name) {
+                return Err(format!("invalid native error symbol: {name:?}"));
+            }
+        }
+        self.raw.extend(names.iter().map(|name| (*name).to_owned()));
+        self.raw.sort();
+        self.raw.dedup();
+        Ok(())
+    }
     pub fn c_source(&self) -> String {
         // Namespace selection must precede stdint.h as well as errno.h:
         // either may include the libc feature-selection header.
         let mut out = String::from(include_str!("errno_feature_visibility.h"));
         out.push_str(
-            "#include <stdint.h>\n#include <errno.h>\n#ifdef _WIN32\n#include <winsock2.h>\n#endif\n_Static_assert(sizeof(uint32_t) == 4, \"errno word width\");\n_Static_assert(sizeof(int) == 4, \"errno C int width\");\n",
+            "#include <stdint.h>\n#include <errno.h>\n#ifdef _WIN32\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#else\n#include <netdb.h>\n#endif\n_Static_assert(sizeof(uint32_t) == 4, \"errno word width\");\n_Static_assert(sizeof(int) == 4, \"errno C int width\");\n",
         );
         for name in &self.raw {
             out.push_str(&format!("#ifdef {name}\n_Static_assert((int64_t)({name}) >= INT32_MIN && (int64_t)({name}) <= INT32_MAX, \"errno value width: {name}\");\n#endif\n"));
@@ -282,6 +297,35 @@ pub fn native_record(
 }
 
 impl Declaration {
+    pub fn native_error_rust_source(
+        &self,
+        values: &Values,
+        names: &[&str],
+    ) -> Result<String, String> {
+        if values.raw.len() != self.raw.len() || values.public.len() != self.public.len() {
+            return Err("native error values differ from declaration extent".into());
+        }
+        let mut out = String::from("// @generated from selected target C headers; do not edit.\n");
+        let mut present = Vec::new();
+        for &name in names {
+            let index = self
+                .raw
+                .binary_search_by(|candidate| candidate.as_str().cmp(name))
+                .map_err(|_| format!("native error symbol was not evaluated: {name}"))?;
+            let value = values.raw[index];
+            out.push_str(&format!("pub const {name}: Option<i32> = {value:?};\n"));
+            if let Some(value) = value.filter(|_| name.starts_with("EAI_")) {
+                present.push((name, value));
+            }
+        }
+        out.push_str("pub const EAI_CONSTANTS: &[(&str, i64)] = &[\n");
+        for (name, value) in present {
+            out.push_str(&format!("({name:?}, {value}),\n"));
+        }
+        out.push_str("];\n");
+        Ok(out)
+    }
+
     pub fn rust_source(&self, values: &Values) -> Result<String, String> {
         if values.raw.len() != self.raw.len() || values.public.len() != self.public.len() {
             return Err("errno values differ from declaration extent".into());

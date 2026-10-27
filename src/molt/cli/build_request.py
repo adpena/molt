@@ -19,7 +19,6 @@ from molt.compilation_target import (
     validate_target,
 )
 
-ParseCodec = Literal["msgpack", "cbor", "json"]
 BuildProfile = Literal["dev", "release"]
 # "jit" publishes a JIT image, one executable file the development JIT runner
 # (molt-jit) starts, instead of an AOT executable; `molt run --tier jit`
@@ -38,7 +37,6 @@ class FactGraphRequest:
 class BuildRequest:
     file_path: str | None
     target: Target = TargetKind.NATIVE
-    parse_codec: ParseCodec = "msgpack"
     type_hint_policy: TypeHintPolicy = "check"
     type_facts_path: str | None = None
     pgo_profile: str | None = None

@@ -1,6 +1,7 @@
-const ENOSYS = 38;
-const EINVAL = 22;
-const ETIMEDOUT = 110;
+import './synthetic_errno_generated.js';
+
+// Molt env imports consume the generated synthetic POSIX domain.
+const { ENOSYS, EINVAL, ETIMEDOUT } = globalThis.MoltSyntheticErrno.errno;
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 

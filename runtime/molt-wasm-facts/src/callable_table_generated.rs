@@ -7,4 +7,5 @@ pub(crate) const CALLABLE_TABLE_SECTION_NAME: &str = "molt.callable_table";
 pub(crate) const CALLABLE_TABLE_SECTION_VERSION: u32 = 1;
 pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = "molt.callable_table.layout";
 pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = 1;
+pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = 3;
 pub(crate) const CALLABLE_TABLE_VALUE_TYPE_FORMAT: u32 = 1;

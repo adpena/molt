@@ -23,6 +23,178 @@ from tests.python_environment_test_support import (
 from tests.process_guard_common import install_module_view
 
 
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "schema",
+        "environment",
+        "environment_id",
+        "checkout",
+        "python",
+        "groups",
+        "extra",
+        "missing",
+        "full-capture",
+    ],
+)
+def test_development_selection_uses_exact_bounded_result(
+    verifier, monkeypatch, tmp_path, fault
+):
+    root = tmp_path / ("a" * 64)
+    root.mkdir()
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    request = authority_schema.DevelopmentEnvironmentRequest(repo, "3.12", ("dev",))
+    expected = {
+        "schema": "molt.development-environment-selection.v1",
+        "environment": str(root),
+        "environment_id": "a" * 64,
+        "checkout": str(repo),
+        "python": "3.12",
+        "groups": ["dev"],
+    }
+    received = dict(expected)
+    if fault == "extra":
+        received["unrequested"] = True
+    elif fault == "missing":
+        del received["python"]
+    elif fault == "full-capture":
+        received = {"schema": "molt.python-environment.v7", "tree": {}}
+    elif fault is not None:
+        received[fault] = [] if fault == "groups" else "wrong-coordinate"
+
+    def run(argv, **kwargs):
+        assert "--select-development-environment" in argv
+        assert "--capture-environment" not in argv
+        assert "--admit-published-environment" not in argv
+        assert "--admit-virtualenv-bootstrap" not in argv
+        assert argv[argv.index("--development-checkout") + 1] == str(repo)
+        assert kwargs["timeout"] == 120
+        return guard_result_for_test(
+            argv, 0, json.dumps(received), "", descendants_closed=True
+        )
+
+    monkeypatch.setattr(authority.process_guard, "run_completed_command", run)
+    if fault is None:
+        assert (
+            authority._probe_source_build_python(
+                Path("selected-python"),
+                verifier=verifier,
+                root=root,
+                development_selection=request,
+            )
+            == expected
+        )
+        from molt.python_capture import validate_python_capture
+        from molt.python_identity_common import PythonEnvironmentIdentityError
+
+        with pytest.raises(PythonEnvironmentIdentityError, match="capture envelope"):
+            validate_python_capture(expected)
+    else:
+        with pytest.raises(
+            authority_schema.SourceBuildEnvironmentError, match="receipt"
+        ):
+            authority._probe_source_build_python(
+                Path("selected-python"),
+                verifier=verifier,
+                root=root,
+                development_selection=request,
+            )
+
+
+def test_development_result_bound_precedes_json_decode(verifier, monkeypatch, tmp_path):
+    root = tmp_path / ("a" * 64)
+    root.mkdir()
+    request = authority_schema.DevelopmentEnvironmentRequest(tmp_path, None, ())
+    limit = authority_schema.DevelopmentEnvironmentSelectionReceipt(
+        root, request
+    ).response_limit_bytes
+    monkeypatch.setattr(
+        authority.process_guard,
+        "run_completed_command",
+        lambda argv, **_kwargs: guard_result_for_test(
+            argv, 0, " " * (limit + 1), "", descendants_closed=True
+        ),
+    )
+
+    def refuse_decode(*_args, **_kwargs):
+        raise AssertionError("oversized response reached the JSON decoder")
+
+    monkeypatch.setattr(authority, "loads_exact", refuse_decode)
+    with pytest.raises(
+        authority_schema.SourceBuildEnvironmentError, match="size limit"
+    ):
+        authority._probe_source_build_python(
+            Path("selected-python"),
+            verifier=verifier,
+            root=root,
+            development_selection=request,
+        )
+
+
+def test_development_result_bound_accounts_for_escaped_coordinates(tmp_path):
+    prefix = tmp_path.joinpath(*(["λ🐍" * 20] * 20))
+    root = prefix / ("a" * 64)
+    request = authority_schema.DevelopmentEnvironmentRequest(
+        prefix / "checkout", None, ()
+    )
+    receipt = authority_schema.DevelopmentEnvironmentSelectionReceipt(root, request)
+    encoded = json.dumps(receipt.payload(), ensure_ascii=True).encode("utf-8")
+    assert len(encoded) > 4096
+    assert receipt.response_limit_bytes >= len(encoded)
+    receipt.accept(json.loads(encoded))
+
+
+def test_live_development_admission_reads_one_recipe_and_preserves_empty_groups(
+    tmp_path, monkeypatch
+):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    repo = tmp_path / "checkout"
+    image = materialize_development_environment(
+        repo, tmp_path / "artifacts", groups=("dev",)
+    )
+    realized = image.custody["realized_image"]["image"]
+    reads = []
+    read = authority._read_attestation
+
+    def observed(path):
+        reads.append(path)
+        return read(path)
+
+    monkeypatch.setattr(authority, "_read_attestation", observed)
+    request = authority_schema.DevelopmentEnvironmentRequest(
+        repo.resolve(), None, ("dev",)
+    )
+    admitted = authority.admit_published_environment(
+        image.root, realized, development_admission=request
+    )
+    assert admitted == image.custody
+    assert reads == [image.manifest_path]
+    # An unconstrained metadata read is distinct from exact empty admission.
+    assert authority.load_development_environment(
+        image.root, repo_root=repo, groups=None
+    )
+    with pytest.raises(
+        authority_schema.SourceBuildEnvironmentError, match="requested groups"
+    ):
+        authority.admit_published_environment(
+            image.root,
+            realized,
+            development_admission=authority_schema.DevelopmentEnvironmentRequest(
+                repo, None, ()
+            ),
+        )
+    (image.root / "bytecode" / "late.pyc").write_bytes(b"unselected cache")
+    with pytest.raises(
+        authority_schema.SourceBuildEnvironmentError, match="physical empty"
+    ):
+        authority.load_development_environment(image.root, repo_root=repo)
+
+
 @pytest.mark.slow
 def test_cross_checkout_probe_admits_selected_editable_reader_and_refuses_foreign_home(
     tmp_path,

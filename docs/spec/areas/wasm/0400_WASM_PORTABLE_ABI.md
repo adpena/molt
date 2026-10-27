@@ -580,3 +580,227 @@ These will remain as custom `molt:runtime/*` imports alongside WASI interfaces.
 - [Bytecode Alliance Component Model docs](https://component-model.bytecodealliance.org/)
 - [WASI Preview 2 specification](https://github.com/WebAssembly/WASI)
 - [wasmtime Component Model guide](https://docs.wasmtime.dev/api/wasmtime/component/)
+
+### Host error domains and socket coordinates
+
+Molt `env` host imports use the declared synthetic POSIX errno domain consumed
+by guest Python `errno` and `OSError` subclasses. Raw
+`wasi_snapshot_preview1` uses its separate positive WASI errno enum. Resolver
+errors use the distinct declared EAI namespace. The ABI manifest owns ordered
+synthetic errno and resolver declarations, and the existing ABI generator emits
+shared runtime-platform Rust and JavaScript projections. Alias publication order
+is preserved; `EWOULDBLOCK` precedes `EAGAIN`, so reverse errno11 names EAGAIN.
+The replaced handwritten synthetic table is removed.
+
+Rust host internals carry closed `GuestErrno` and `GuestResolverError` types
+through native adoption. They become integers at host return/payload boundaries;
+these types cannot be substituted for one another. A host failure status is
+negative errno, while `connect_ex` and `SO_ERROR` carry positive errno values.
+Successful statuses, handles and bytecounts keep their existing representations.
+Native OS numbers are converted when errors enter this protocol. Resolver
+imports use the existing i32 result: zero succeeds, negative values carry
+`System(GuestErrno)`, and positive values carry `Resolver(GuestResolverError)`.
+Thus +9 is gaierror(EAI_SERVICE), while -9 is OSError(EBADF). Negative ENOMEM
+with a larger output length retains the existing capacity-retry contract.
+EAI_SYSTEM and EAI_MAX remain public sentinel metadata and are never encodable
+resolver failures; unknown codes and i32::MIN fail protocol admission. Raw WASI callbacks consume the distinct raw preview1
+projection and never the synthetic table.
+
+The same manifest owns the existing WASM socket constant coordinate. Guest
+family, option, resolver and message-flag inputs are translated through finite
+native plans; native Python constant publication remains target specific.
+Unknown socket options/families/flag bits return the declared protocol error
+before a native call. `SO_ERROR` translates both its guest option coordinate
+and the positive native error payload. Unsupported transport/capability cells
+remain explicit; numeric normalization alone does not qualify DNS, ancillary
+messages, AF_UNIX or every host platform.
+
+Conversions add no syscall, lock, process, IPC or allocation to a successful
+operation. Input plans perform a bounded finite match; error adoption performs
+a bounded native-code mapping. Generated JS constants are immutable startup
+data. This follows explicit error-domain conversion in
+[Wasmtime's preview1 adapter](https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasi/src/p1.rs)
+and preserves the retry/error-class behavior described by
+[PEP3151](https://peps.python.org/pep-3151/) and
+[CPython's selector loop](https://github.com/python/cpython/blob/v3.12.15/Lib/asyncio/selector_events.py).
+
+The generated socket identities include closed option, address-family, type,
+protocol, shutdown and flag categories. Native conversion matches every variant;
+adding a declared variant exposes stale consumers at Rust compilation. Message
+input flags and `recvmsg` result flags have separate roles, so publishing a
+result bit cannot silently admit it as input. Native result bits are converted
+to the guest coordinate before publication. The raw WASI declaration is consumed by the browser preview1 implementations
+and the typed selected-WASI-SDK error ingress. It consolidates former browser
+literal constants and does not define Molt env errors.
+
+
+Native errno, Winsock and EAI values come from the existing selected-target C
+object probe. A name-only projection of the same ABI declaration extends that probe; there is
+one compilation and no target execution. The SDK owns numeric values, aliases
+and presence. Native socket constant publication and native resolver error
+classification consume that same projection. `NativeResolverCode` preserves
+nonzero vendor SDK codes for native Python; only the WASM host performs a
+fallible projection to the closed guest resolver enum. A native EAI_SYSTEM
+failure captures OS errno immediately and raises ordinary OSError. Other native
+resolver failures use the canonical builtin socket.gaierror class and original
+SDK code. The Python facades preserve exception objects and never infer classes
+from overlapping errno numbers. The existing class-aware exception allocation
+kernel owns arguments, allocation and recording.
+
+Node's [pinned libuv getaddrinfo boundary](https://github.com/nodejs/node/blob/v26.12.1/deps/uv/src/unix/getaddrinfo.c)
+turns EAI_SYSTEM into the actual OS error. Its
+[DNSException producer](https://github.com/nodejs/node/blob/v26.12.1/lib/internal/errors.js)
+exposes ordinary error identities or resolver identities (ENOTFOUND represents
+NONAME/NODATA). The host adopts that identity once; numeric-only libuv errors use
+node:util.getSystemErrorName. An opaque EAI_SYSTEM or unknown external resolver
+identity cannot recover the underlying OS error. It produces a bounded worker
+diagnostic and the existing RPC lifecycle's Failed notification; the waiting
+import traps rather than publishing a fabricated errno. Pending/Ready/Failed
+are declared once for both ends. No resolver payload signature changes.
+
+The native error projection exposes 123 optional symbolic identities, all
+ordinary errno/Winsock names already present in the existing 214-symbol raw
+snapshot. Fifteen EAI records add 180 record bytes plus native networking header
+reads to the existing cold compile. There is no extra compiler invocation,
+process, runtime map, or success-path allocation. Socket linger uses socket2's
+typed Duration operations; only the existing eight-byte guest payload is
+encoded locally. Other preexisting opaque socket-option payloads retain their
+admitted platform semantics and require separate platform qualification.
+
+This matches the separation in
+[Wasmtime's typed network errors](https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasi/src/p2/host/network.rs),
+the [WASI sockets error-code contract](https://github.com/WebAssembly/wasi-sockets/blob/v0.2.0/wit/network.wit),
+and [CPython's resolver exception boundary](https://github.com/python/cpython/blob/v3.12.15/Modules/socketmodule.c).
+Molt preserves its published synthetic numbering and env import signatures;
+this migration does not change to the component-model ABI. Source conversion
+alone does not qualify every OS/architecture, DNS backend, reverse-lookup,
+ancillary-message or opaque socket payload cell. Owning local proof cells
+exercise native conversion, actual host SO_ERROR, signed resolver collisions,
+Python exception identity and Node/browser import projections.
+
+
+Raw SDK errno ingress is distinct from host-import failure status. The shared
+I/O adapter adopts actual WASI std::io raw errors into GuestErrno while retaining
+the original SDK error for its diagnostic text. Host-import failures already
+carry GuestErrno and remain typed until exception construction; they never
+become an SDK std::io::Error. This closes the former raw44 (WASI ENOENT) versus
+guest44 collision. Every ordinary preview1 errno has a semantic guest
+projection. Raw ENOTCAPABLE deliberately adopts guest EACCES, a lossy
+capability-denial disposition declared in the ABI; unknown raw errors adopt
+the declared EIO policy. Existing guest ESHUTDOWN has no WASI SDK errno and is
+marked explicitly unrepresentable. The preserved locale-safe strerror donor
+owns any future synthetic-to-SDK text query; no English error-message table or
+unused reverse converter is introduced here.
+
+The added ordinary guest errno values follow the fixed Linux-compatible
+protocol in Linux v6.18's
+[errno-base.h](https://raw.githubusercontent.com/torvalds/linux/v6.18/include/uapi/asm-generic/errno-base.h)
+and [errno.h](https://github.com/torvalds/linux/blob/v6.18/include/uapi/asm-generic/errno.h).
+Native selected SDK numbers remain independent of those guest protocol values.
+The same C snapshot supplies optional native E*, WSA* and EAI* symbols. Symbolic
+Winsock declarations replace copied numeric metadata, and SDK presence replaces
+platform-availability booleans. Public native errno publication order and
+version policy remain owned by the existing native declaration.
+
+Node [worker cloning](https://nodejs.org/api/worker_threads.html#considerations-when-cloning-objects-with-prototypes-classes-and-accessors)
+turns Buffers into Uint8Array objects. The existing socket worker's five text
+input sites adopt zero-byte-copy Buffer views before UTF8 decoding. Failed RPCs
+reuse the same shared payload and length word for at most 256 UTF8 diagnostic
+bytes before notification; the receiving import validates that bound and
+throws the typed refusal with the actual diagnostic. Resolver calls reserve a
+minimum 256-byte payload when the caller supplies less; there is still one
+shared-buffer allocation and one IPC request, and ordinary 4096-byte resolver
+calls add no storage. Stderr remains best-effort observability rather than the
+failure protocol.
+
+
+### Deployment semantic compatibility
+
+Linked and split Molt deployments use execution manifest version 3. The version
+is declared once in the existing WASM ABI manifest and projected into the
+Python producer, shared Rust facts and Node/browser ABI assets. Host entry
+loaders reject old or absent versions before fetching/reading a module or
+instantiating it. This closes the unchanged-signature resolver status migration:
+a version 2 receiver cannot interpret version 3 positive resolver failures as its
+old negative-errno protocol. Module size/SHA integrity alone does not prove that
+semantic compatibility. Existing runtime provider/source identities still own
+cache and explicit prebuilt-runtime admission; no second digest or custom
+section is introduced. Callable table version 1, browser asset schema 2 and snapshot
+metadata template version 2 are distinct contracts and keep their current versions.
+
+Browser embed URLs must identify the modules named by the current manifest,
+and their fetched bytes undergo the same shared descriptor/size/SHA admission
+as the full browser host. There is no unversioned raw-byte/module loader path.
+Rust's explicit WASI-command mode remains separate. It admits the existing raw
+`molt_call_indirectN` table-dispatch protocol only after checking its canonical
+names, function signatures and exported wasm32 funcref table, before any core
+start. These calls transport raw i64 values rather than resolver/OS statuses;
+callable-table publication version 1 is not a command compatibility handshake.
+Every other Molt host service, runtime or native import requires the current
+deployment manifest, including when mixed with valid indirect calls. Molt
+applications must enter through their manifest.
+
+The Rust host requires the existing runtime export `molt_main_exit_status:
+() -> i64` before either linked or split guest core start. After a normal
+`molt_main` return it calls this reporter exactly once, on the canonical runtime
+instance and while the runtime execution lease remains entered. The runtime owns
+uncaught-exception display, `sys.excepthook`, `SystemExit`, and consumption of the
+original pending exception; the host does not reconstruct or print it again.
+The raw carrier must fit `u32`, whose bits are then interpreted as `i32`, matching
+the native runtime exit ABI. Zero means successful return; a nonzero application
+exit remains distinct from WASI `proc_exit`. Execution leave, runtime shutdown,
+and host resource closure complete before the host exits with that status.
+Pre-main pending failures and guest traps retain their existing failure paths;
+they do not call the reporter. A fresh pending exception during execution leave
+still fails before shutdown, rather than triggering a second report. This uses
+the existing export and deployment version, without a new status schema.
+
+The Rust host's explicit `--wasi-command-manifest PATH` selector admits SDK
+services for a WASI command through that same current version 3 reader, module
+size and SHA authority. It requires one `linked` module, no runtime provider or
+other module role, and `entry.module=linked`, `entry.function=_start`. This is an
+explicit execution input binding, not a new manifest mode: a positional manifest
+continues to select Molt application startup. The admitted bytes and compiled
+module remain one private owner through import planning, and another module
+cannot borrow that permission. The command retains its own table dispatch,
+core start, exported `_start`, guest arguments and `proc_exit` behavior, without
+Molt application entry/shutdown calls. Raw `--wasi-command` retains its existing
+SDK refusal, including for a valid precompiled module.
+
+`--precompile --wasi-command-manifest PATH` uses the same input selection and
+protects both source and manifest against destination collisions. It compiles
+once without instantiating or running either start function; execution still
+performs ordinary import/signature and command entrypoint admission. Native
+container identity and schema are unchanged. The real WASI libtest producer
+copies each already captured compiler image once into its existing retained
+Cargo test artifact owner, publishes the current manifest last, and preserves
+both on failure. This adds one image-sized write and manifest serialization per
+image, not a second compiler or native compilation. Admission hashes the owned
+source once; the captured source buffer retires before execution. The runtime
+and platform test roots use the same producer and host loader with their actual
+independent errno and lifecycle assertions.
+
+Workers preserve static module compilation. The CLI passes its already-built
+in-memory manifest to its split worker generator inside the existing deployment
+publication; fixed lexical app/runtime files are the same manifest-bound files
+bundled atomically by the compiler/deployer. The standalone worker generator
+requires a current adjacent linked manifest and hashes its selected file once
+before emission, derives its default filename from the descriptor, and embeds
+only the existing version/mode/module identity fields. Opaque arbitrary Module
+bindings are unsupported. Dynamic static-content bytes must match that embedded
+descriptor before compilation. Version checks are constant-time; new linked
+generation admission costs one file hash, and dynamic content costs one WebCrypto
+hash over the bytes already fetched. Shared existing bridge/ABI script bytes are
+inlined once in the simple worker rather than adding another validator or cache.
+Static imports retain their platform compilation and add no per-request hash.
+These checks establish admission; applicable Workers/platform execution remains
+a separate qualification coordinate.
+
+The Worker branches supply an admitted WebAssembly.Module and use the direct
+Instance result specified by the
+[WebAssembly JavaScript API](https://www.w3.org/TR/wasm-js-api-2/#dom-webassembly-instantiate).
+The existing byte-input loaders retain their corresponding byte-input result
+shape. This is the platform overload contract, with no wrapper or alternate
+runtime lane. Deployment version admission is enforced by current hosts;
+deployments require their matching runner assets rather than an older runner
+that did not enforce manifest versions.

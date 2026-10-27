@@ -5,9 +5,15 @@ use std::sync::OnceLock;
 
 #[derive(Debug, Deserialize)]
 struct RuntimeManifest {
-    version: u32,
     mode: String,
     modules: RuntimeManifestModules,
+    entry: Option<RuntimeManifestEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeManifestEntry {
+    module: String,
+    function: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -15,6 +21,8 @@ struct RuntimeManifestModules {
     app: Option<RuntimeManifestModule>,
     runtime: Option<RuntimeManifestModule>,
     linked: Option<RuntimeManifestModule>,
+    #[serde(flatten)]
+    other: HashMap<String, JsonValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,12 +130,31 @@ impl ModuleSource {
 pub(super) enum ExecutionRequest {
     MoltApplication { manifest: Option<String> },
     WasiCommand { module: String },
+    WasiCommandManifest { manifest: String },
 }
 
 #[derive(Debug)]
 pub(super) enum ResolvedExecution {
     MoltApplication(ResolvedExecutionModules),
     WasiCommand { module: ModuleSource },
+    WasiCommandManifest(ResolvedWasiCommandManifest),
+}
+
+/// Constructed only after the current manifest and its selected bytes agree.
+#[derive(Debug)]
+pub(super) struct ResolvedWasiCommandManifest {
+    manifest_path: PathBuf,
+    module: ModuleSource,
+}
+
+impl ResolvedWasiCommandManifest {
+    pub(super) fn manifest_path(&self) -> &Path {
+        &self.manifest_path
+    }
+
+    pub(super) fn module(&self) -> &ModuleSource {
+        &self.module
+    }
 }
 
 pub(super) fn select_manifest_path(
@@ -182,7 +209,7 @@ fn resolve_manifest_module(
     Ok(source)
 }
 
-pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedExecutionModules> {
+fn read_execution_manifest(arg: Option<String>) -> Result<(PathBuf, RuntimeManifest)> {
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     let env_path = env::var_os("MOLT_WASM_MANIFEST_PATH").map(PathBuf::from);
     let manifest_path =
@@ -199,15 +226,21 @@ pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedE
             manifest_path.display()
         )
     })?;
-    let manifest: RuntimeManifest = serde_json::from_slice(&manifest_bytes).with_context(|| {
-        format!(
-            "failed to decode runtime manifest: {}",
-            manifest_path.display()
-        )
-    })?;
-    if manifest.version != 2 {
-        bail!("runtime manifest must use version 2");
+    let value: JsonValue =
+        serde_json::from_slice(&manifest_bytes).context("failed to decode runtime manifest")?;
+    let expected = molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
+    if value.get("version").and_then(JsonValue::as_u64) != Some(u64::from(expected)) {
+        bail!(
+            "Molt deployment manifest version must be {expected}; rebuild this deployment with the current Molt compiler"
+        );
     }
+    let manifest: RuntimeManifest =
+        serde_json::from_value(value).context("failed to decode runtime manifest fields")?;
+    Ok((manifest_path, manifest))
+}
+
+pub(super) fn resolve_execution_modules(arg: Option<String>) -> Result<ResolvedExecutionModules> {
+    let (manifest_path, manifest) = read_execution_manifest(arg)?;
     let (main, runtime, linked) = match manifest.mode.as_str() {
         "linked" => (
             resolve_manifest_module(&manifest_path, manifest.modules.linked.as_ref(), "linked")?,
@@ -245,6 +278,41 @@ pub(super) fn resolve_execution(request: ExecutionRequest) -> Result<ResolvedExe
             Ok(ResolvedExecution::WasiCommand {
                 module: ModuleSource::read(PathBuf::from(module), "WASI command", None)?,
             })
+        }
+        ExecutionRequest::WasiCommandManifest { manifest } => {
+            if manifest.is_empty() {
+                bail!("--wasi-command-manifest path is empty");
+            }
+            let (manifest_path, manifest) = read_execution_manifest(Some(manifest))?;
+            if manifest.mode != "linked"
+                || manifest.modules.app.is_some()
+                || manifest.modules.runtime.is_some()
+                || !manifest.modules.other.is_empty()
+            {
+                bail!(
+                    "manifest-bound WASI command requires one linked module and no runtime provider"
+                );
+            }
+            let entry = manifest
+                .entry
+                .as_ref()
+                .context("manifest-bound WASI command requires entry.module=linked and entry.function=_start")?;
+            if entry.module != "linked" || entry.function != "_start" {
+                bail!(
+                    "manifest-bound WASI command requires entry.module=linked and entry.function=_start"
+                );
+            }
+            let module = resolve_manifest_module(
+                &manifest_path,
+                manifest.modules.linked.as_ref(),
+                "linked",
+            )?;
+            Ok(ResolvedExecution::WasiCommandManifest(
+                ResolvedWasiCommandManifest {
+                    manifest_path,
+                    module,
+                },
+            ))
         }
     }
 }

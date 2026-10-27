@@ -1775,14 +1775,34 @@ mod tests {
         }];
         finalize_simple_ir_drops(&mut funcs, &tti);
         let ops = &funcs[0].ops;
+        // This oracle claims the no-error execution. Handler layout is not
+        // return identity: follow the canonical CFG's ordinary successors,
+        // leaving its separately represented exception edges untaken.
+        let cfg = crate::tir::cfg::CFG::build(ops);
+        let mut normal_ops = Vec::new();
+        let mut visited = vec![false; cfg.blocks.len()];
+        let mut block = cfg.entry;
+        loop {
+            assert!(!visited[block], "normal finalizer path must terminate");
+            visited[block] = true;
+            let range = &cfg.blocks[block];
+            normal_ops.extend(ops[range.start_op..range.end_op].iter());
+            match cfg.successors[block].as_slice() {
+                [] => break,
+                [next] => block = *next,
+                successors => panic!("normal finalizer path is ambiguous: {successors:?}"),
+            }
+        }
+        let ops = normal_ops;
         let warn_idx = ops
             .iter()
             .position(|op| op.kind == "warn_stderr")
             .expect("side effect must remain in the lowered body");
         let ret_idx = ops
-            .iter()
-            .position(|op| op.kind == "ret_void")
+            .len()
+            .checked_sub(1)
             .expect("function must still return");
+        assert_eq!(ops[ret_idx].kind, "ret_void");
         let list_idx = ops
             .iter()
             .position(|op| op.kind == "list_new")

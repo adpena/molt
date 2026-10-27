@@ -4232,11 +4232,7 @@ def project_toolchains(
                 "python3 tools/provision_wasi_sdk.py"
             )
         else:
-            apply(
-                wasm_toolchain_environment_delta(
-                    installation, environ=env, rust_target="wasm32-wasip1"
-                )
-            )
+            apply(wasm_toolchain_environment_delta(installation, environ=env))
     for name in kinds.get("runtime-tool-release", ()):
         # It runs through molt.tool_releases on its runtime, never PATH.
         tool = str(policies[name].data["executable"])

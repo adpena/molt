@@ -101,6 +101,7 @@ def _parse_arguments():
         "--editable-project", nargs=2, metavar=("ENVIRONMENT", "PROJECT")
     )
     modes.add_argument("--capture-environment", type=Path, metavar="ROOT")
+    modes.add_argument("--select-development-environment", type=Path, metavar="ROOT")
     modes.add_argument("--capture-active-environment", action="store_true")
     parser.add_argument("--runtime-session", action="store_true")
     parser.add_argument("--wheel-tag-source", type=Path)
@@ -119,12 +120,33 @@ def _parse_arguments():
         args.development_checkout is not None
         or args.development_python is not None
         or args.development_group
-    ) and (not args.admit_published_environment or args.development_checkout is None):
-        parser.error("development intent requires published admission and a checkout")
+    ) and (
+        not (args.admit_published_environment or args.select_development_environment)
+        or args.development_checkout is None
+    ):
+        parser.error(
+            "development intent requires selection or admission and a checkout"
+        )
     if args.admit_published_environment and (
         not (args.capture_environment or args.capture_active_environment)
     ):
         parser.error("published admission requires a read-only environment capture")
+    if args.select_development_environment is not None:
+        if args.development_checkout is None:
+            parser.error("development selection requires a checkout")
+        if (
+            args.with_custody
+            or args.runtime_session
+            or args.wheel_tag_source is not None
+            or args.hash_workers != 1
+            or args.admit_published_environment
+            or args.admit_virtualenv_bootstrap
+            or args.admit_site_bootstrap
+            or args.admit_external_root
+        ):
+            parser.error(
+                "development selection accepts no capture or admission options"
+            )
     if args.wheel_tag_source is not None and (
         not args.capture_runtime or args.with_custody or args.runtime_session
     ):
@@ -547,6 +569,27 @@ def _main() -> None:
         payload = locate_current_python_environment()
     elif args.runtime_selection:
         payload = current_python_runtime_selection()
+    elif args.select_development_environment is not None:
+        from molt.source_build_environment import load_development_environment
+        from molt.source_build_environment_schema import (
+            DevelopmentEnvironmentRequest,
+            DevelopmentEnvironmentSelectionReceipt,
+        )
+
+        request = DevelopmentEnvironmentRequest(
+            args.development_checkout.resolve(strict=True),
+            args.development_python,
+            tuple(args.development_group),
+        )
+        image = load_development_environment(
+            args.select_development_environment,
+            repo_root=request.repo_root,
+            python=request.python,
+            groups=request.groups,
+        )
+        payload = dict(
+            DevelopmentEnvironmentSelectionReceipt(image.root, request).payload()
+        )
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
         from molt.toolchain_facts import host_file_digest_cache
@@ -583,6 +626,32 @@ def _main() -> None:
                 bootstrap = list(args.admit_site_bootstrap)
                 if args.admit_virtualenv_bootstrap:
                     bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
+
+                def check_published_identity(realized: Mapping[str, object]) -> None:
+                    # The source-bound guardian has no site dependencies. This
+                    # selected-image child already captured their exact bytes;
+                    # keep recipe/lock/WHEEL checks in their existing owner and
+                    # imports after the capture's loaded-native-image census.
+                    from molt.source_build_environment import (
+                        admit_published_environment,
+                    )
+                    from molt.source_build_environment_schema import (
+                        DevelopmentEnvironmentRequest,
+                    )
+
+                    intent = (
+                        DevelopmentEnvironmentRequest(
+                            args.development_checkout.resolve(strict=True),
+                            args.development_python,
+                            tuple(args.development_group),
+                        )
+                        if args.development_checkout is not None
+                        else None
+                    )
+                    admit_published_environment(
+                        root, realized, development_admission=intent
+                    )
+
                 payload = capture_current_python_environment(
                     root,
                     excluded_relative_paths=(SOURCE_BUILD_ENVIRONMENT_MANIFEST,),
@@ -590,33 +659,12 @@ def _main() -> None:
                     admitted_external_roots=args.admit_external_root,
                     capture_context=context,
                     with_custody=args.with_custody,
+                    final_checks=(
+                        check_published_identity
+                        if args.admit_published_environment
+                        else None
+                    ),
                 )
-                if args.admit_published_environment:
-                    # The source-bound guardian has no site dependencies. This
-                    # selected-image child already captured their exact bytes;
-                    # keep all recipe/lock/WHEEL checks in their existing owner.
-                    from molt.source_build_environment import (
-                        admit_published_environment,
-                    )
-
-                    realized = (
-                        cast(dict[str, object], payload["identity"])
-                        if args.with_custody
-                        else payload
-                    )
-                    if args.development_checkout is not None:
-                        from molt.source_build_environment import (
-                            load_development_environment,
-                        )
-
-                        load_development_environment(
-                            root,
-                            repo_root=args.development_checkout,
-                            python=args.development_python,
-                            groups=tuple(args.development_group),
-                        )
-                    admit_published_environment(root, realized)
-                    context.verify()
             if args.runtime_session:
                 _serve_runtime_session(
                     payload, context, requests=sys.stdin, responses=sys.stdout

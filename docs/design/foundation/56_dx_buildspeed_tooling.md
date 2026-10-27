@@ -186,7 +186,7 @@ replayed run prints exactly what a computed run prints.
 This follows [Ruff's per-file cache](https://docs.astral.sh/ruff/settings/#cache-dir),
 [Go's content-addressed build and test cache](https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching),
 [Bazel's action cache](https://bazel.build/remote/caching) and
-[Cargo's fingerprints](https://doc.rust-lang.org/nightly/nightly-rustc/cargo/core/compiler/fingerprint/index.html).
+[Cargo's fingerprints](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html).
 Two measured choices differ. Ruff keys a file by its metadata; records key by
 content. Reading and hashing the 57 MB of tracked Python costs about 0.3 s of CPU
 on this host, and a content key is safe to share across worktrees and cannot
@@ -1929,15 +1929,51 @@ only a small subset. Managed uv sync explicitly disables bytecode generation eve
 when ambient configuration requests it. Child commands apply the policy as argv:
 `-I` ignores inherited Python environment variables before site startup.
 
-The cost model is one installation capture, then O(captured bytes and filesystem
-members) per admission plus compilation of modules actually imported by that
-command. It removes O(all Python source bytes times three optimization variants)
-compilation, cache-file hashing, serialized cache nodes and cache storage. Source
-and native-byte hashing are still a linear startup floor. The accepted trade is
+The cost model is one installation capture, then filesystem membership and
+generation checks plus compilation of modules actually imported by each command.
+Standalone POSIX captures reuse the existing host file-digest cache only for an
+exact settled file generation; Windows retains fresh content hashing and handle
+ChangeTime. Direct captures remain fresh unless they explicitly select that
+authority. Metadata consumers still read and verify their required bytes. See
+the [shared digest cost model](../toolchain_fact_cache.md#python-capture-uses-the-same-file-digests),
+including its host-table load and age budget. Source-only publication removes
+O(all Python source bytes times three optimization variants) compilation,
+cache-file hashing, serialized cache nodes and cache storage. The accepted trade is
 additional per-process compilation for imported modules, measured against the
-existing cached reader before landing. It adds no cache server, persistent trust,
-metadata-only shortcut or emitted-program overhead. Full release acceptance
+existing cached reader before landing. It adds no cache server, whole-environment
+admission cache, metadata-only admission shortcut or emitted-program overhead. Full release acceptance
 remains separate from developer-loop measurements.
+
+Ordinary developer launches use the existing metadata selection contract:
+physical image/checkout coordinates, published recipe, requested Python/groups,
+editable binding, declared inputs and the bytecode startup policy. A selected
+interpreter child reads that metadata for a site-free guardian and returns a
+bounded exact selection result. The parent retains reader-source fences and
+closed process custody. Ordinary execution makes no claim that every installed
+file was freshly admitted; proof and release ingress independently capture
+actual live bytes with complete identity and custody. The two roles share
+request coordinates and selection validation, while carrying distinct wire
+operations. A selection result cannot substitute for a proof capture.
+
+This removes the full environment traversal from an ordinary launch. Remaining
+cost is interpreter startup, reading and validating the published manifest and
+declared inputs, a small response, guard closure and the bounded reader-source
+fences. No whole-environment admission cache or installed-byte trust receipt is
+introduced. Cargo likewise treats its [registry dependencies as static](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html#special-considerations)
+during ordinary freshness checks; Molt retains exact live captures at proof and
+release boundaries rather than making that an ordinary-launch claim.
+
+Environment capture places read-only published-image checks immediately before
+its mandatory closing file/membership fence, instead of traversing every file
+and directory again after capture returns. Standalone capture and full custody
+output always pass that finalization boundary. Runtime, wheel-target and
+retained-session fences serve distinct intervals and remain separate. The
+saving is one complete metadata/membership pass per published-image capture,
+with one direct callable invocation and no new cache or persistent state.
+Cold capture still reads the same inputs and bytes. This follows
+[Cargo's completion-bound fingerprint update](https://doc.rust-lang.org/stable/nightly-rustc/cargo/compiler/fingerprint/index.html#fingerprint-calculation)
+in placing acceptance after required work; Molt also retains exact
+file-generation and membership checks at that boundary.
 
 
 ### Clippy warning policy and cache reuse

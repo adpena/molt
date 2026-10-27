@@ -218,7 +218,7 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    identity checks, covering digest propagation and failure without unrelated suites.
    Editing source-closure tests does not compile the compression provider; edits
    to that provider still run its compiled native/WASI gates and source oracles.
-   Managed Python gates select the admitted image's read-only ordinary bytecode
+   Managed Python gates select the admitted image's read-only empty bytecode
    namespace before startup and disable bytecode writes. Verifiers use a
    separate fresh empty namespace; see [checkout provisioning](#checkout-provisioning).
    No gate result is
@@ -492,9 +492,27 @@ Existing process-state leases retain the selected generation until observed
 process closure, even when a newer generation is selected. Owner/use metadata
 stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
 retirement. Selection or publication alone is not release qualification.
-The selected capture child performs published-manifest admission before final
-input verification; the guardian remains isolated from site packages. Guardian
-startup and prefix lifetime follow the same fresh-namespace rule through
+Ordinary `venv_exec` launches validate their published recipe, physical checkout
+namespace, Python/group intent, editable binding, current declared inputs and
+physical empty bytecode prefix through the canonical metadata selector. A bounded child in the
+selected interpreter supplies the selector's package dependencies to a guardian
+that has no site dependencies. Its exact request-bound result carries the
+physical image, recipe address and checkout/Python/group coordinates; the
+parent retains process closure and reader-source fences. This immediate
+selection result is never proof or reusable live-byte admission. Ordinary
+launches do not certify every installed file's current bytes.
+
+Proof and release ingress independently capture their declared live execution
+closure. Full environment captures with development intent retain complete
+identity and custody payloads and exact published-image comparison. Selection
+and proof admission share one selection validator and one manifest snapshot per
+operation. Environment capture places read-only published-image checks before
+one mandatory closing file/membership fence. Plain identities and full custody
+envelopes pass that fence before returning; schema validation retains its
+existing producer and receiver boundaries. Failed checks or late mutations
+produce no successful result. Runtime, wheel-target
+and retained-session verification keep their existing boundaries.
+Guardian startup and prefix lifetime follow the same fresh-namespace rule through
 [existing command and run custody](../agent/PROOF_QUEUE.md).
 Runtime and environment probes reuse the existing host file-digest cache on
 POSIX, while retaining current-path and final membership checks on every launch.

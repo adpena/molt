@@ -50,6 +50,30 @@ def test_registered_named_lanes_validate_and_are_distinct() -> None:
         # root may ride in a registered argv.
         assert not any(value.startswith("tmp/") for value in lane.argv)
 
+    # These actual public consumers share one target owner. Native TLS remains
+    # an explicit target exclusion rather than a silently skipped WASM case.
+    shared_error_cases = {
+        "tests/differential/stdlib/socket_constants_errors.py",
+        "tests/differential/stdlib/socket_dns_failure_parity.py",
+        "tests/differential/stdlib/io_isatty_regular_file.py",
+    }
+    native_tls = "tests/differential/stdlib/asyncio_tls_open_connection_invalid_host_intrinsic.py"
+    changed_cases = shared_error_cases | {native_tls}
+    for target, expected in (
+        ("native", changed_cases),
+        ("wasm", shared_error_cases),
+    ):
+        lane = PLAN.named_lane(f"runtime.public-consumers.{target}")
+        assert len(lane.differential_cases) == len(set(lane.differential_cases))
+        assert set(lane.differential_cases) & changed_cases == expected
+        assert all(case in lane.argv for case in expected)
+        assert lane.argv[lane.argv.index("--target") + 1] == target
+        assert lane.data["timeout_seconds"] == 9000
+    assert (
+        native_tls
+        not in PLAN.named_lane("runtime.public-consumers.wasm").differential_cases
+    )
+
 
 @pytest.mark.parametrize("lane_id", [lane.id for lane in PLAN.named_lanes])
 def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> None:

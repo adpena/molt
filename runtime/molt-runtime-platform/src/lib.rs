@@ -10,11 +10,17 @@ pub mod msghdr;
 pub mod path_text;
 pub mod randomness;
 pub mod socket_constants;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_error_codes {
+    include!(concat!(env!("OUT_DIR"), "/native_error_codes.rs"));
+}
 pub mod stat_support;
+pub mod synthetic_errno;
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 pub mod userdb;
 pub mod utils;
 pub mod uuid_support;
+pub mod wasm_socket_abi;
 #[cfg(windows)]
 pub mod windows_abi;
 

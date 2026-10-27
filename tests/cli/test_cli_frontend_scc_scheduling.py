@@ -285,7 +285,6 @@ def test_a2_worker_applies_phase_timeout_per_module(tmp_path, monkeypatch) -> No
             "source_lease": _ModuleSourceLease.inline(
                 module_path, source
             ).worker_payload(),
-            "parse_codec": "msgpack",
             "type_hint_policy": "ignore",
             "module_is_namespace": False,
             "module_execution_kind": "imported",
@@ -370,7 +369,6 @@ def _make_execution_context(
             }
         ),
         project_root=None,
-        parse_codec=None,
         type_hint_policy=None,
         type_facts=None,
         enable_phi=False,

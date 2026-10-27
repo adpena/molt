@@ -48,6 +48,11 @@ OUT_WASM_FACTS_CALLABLE_TABLE_RS = (
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 OUT_JS_ABI = ROOT / "wasm/wasm_abi_generated.json"
 OUT_JS_CALLABLE_TABLE_ABI = ROOT / "wasm/callable_table_abi_generated.js"
+OUT_JS_WASI_ERRNO = ROOT / "wasm/wasi_errno_generated.js"
+OUT_SYNTHETIC_ERRNO_RS = (
+    ROOT / "runtime/molt-runtime-platform/src/synthetic_errno_generated.rs"
+)
+OUT_JS_SYNTHETIC_ERRNO = ROOT / "wasm/synthetic_errno_generated.js"
 INTRINSICS_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 BUILTIN_CALLABLES = ROOT / "src/molt/builtin_callables.py"
 RUNTIME_ROOT = ROOT / "runtime"
@@ -59,4 +64,13 @@ WASM_ABI_GEN_CACHE = scratch_dir(ROOT, "wasm_abi_gen_cache")
 REMOVED_GENERATED_FILES = (
     ROOT / "runtime/wasm_poll_callables.inc",
     ROOT / "runtime/wasm_runtime_callables.inc",
+)
+
+OUT_WASM_SOCKET_ABI_RS = (
+    ROOT / "runtime/molt-runtime-platform/src/wasm_socket_abi_generated.rs"
+)
+OUT_JS_SOCKET_ABI = ROOT / "wasm/socket_abi_generated.js"
+
+OUT_NATIVE_ERROR_NAMES_RS = (
+    ROOT / "runtime/molt-runtime-platform/native_error_names_generated.rs"
 )

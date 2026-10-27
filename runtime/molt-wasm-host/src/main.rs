@@ -1,5 +1,7 @@
 use base64::Engine as Base64Engine;
 use base64::engine::general_purpose::STANDARD;
+use guest_errno::{GuestErrno, GuestResolverError};
+use molt_runtime_platform::{synthetic_errno as guest_errno, wasm_socket_abi as guest_socket_abi};
 #[cfg(test)]
 use molt_wasm_host::sha256_hex;
 use rmpv::Value as MsgpackValue;
@@ -56,7 +58,9 @@ use entrypoint::*;
 use indexed::*;
 use isolate_host::*;
 use path_resolver::*;
-use precompiled::{ModuleRole, load_or_compile_module, precompile_execution};
+use precompiled::{
+    LoadedWasiCommandManifest, ModuleRole, load_or_compile_module, precompile_execution,
+};
 use process_host::{ProcessManager, define_process_host};
 use runtime_bridge::*;
 use socket_host::define_socket_host;
@@ -94,27 +98,6 @@ const CANCEL_POLL_BATCH: usize = 256;
 const IO_EVENT_READ: u32 = 1;
 const IO_EVENT_WRITE: u32 = 1 << 1;
 const IO_EVENT_ERROR: u32 = 1 << 2;
-#[cfg(unix)]
-const HOST_AF_INET: i32 = libc::AF_INET;
-#[cfg(windows)]
-const HOST_AF_INET: i32 = winsock::AF_INET as i32;
-#[cfg(unix)]
-const HOST_AF_INET6: i32 = libc::AF_INET6;
-#[cfg(windows)]
-const HOST_AF_INET6: i32 = winsock::AF_INET6 as i32;
-#[cfg(unix)]
-const HOST_AF_UNIX: i32 = libc::AF_UNIX;
-#[cfg(windows)]
-const HOST_AF_UNIX: i32 = winsock::AF_UNIX as i32;
-
-#[cfg(unix)]
-const HOST_SHUT_RD: i32 = libc::SHUT_RD;
-#[cfg(windows)]
-const HOST_SHUT_RD: i32 = winsock::SD_RECEIVE;
-#[cfg(unix)]
-const HOST_SHUT_WR: i32 = libc::SHUT_WR;
-#[cfg(windows)]
-const HOST_SHUT_WR: i32 = winsock::SD_SEND;
 
 #[cfg(unix)]
 const HOST_POLLIN: i16 = libc::POLLIN;
@@ -271,6 +254,13 @@ fn parse_host_args(args: impl IntoIterator<Item = String>) -> Result<ParsedHostA
                 execution = Some(ExecutionRequest::WasiCommand { module });
                 break;
             }
+            "--wasi-command-manifest" => {
+                let manifest = args
+                    .next()
+                    .context("--wasi-command-manifest requires a manifest path argument")?;
+                execution = Some(ExecutionRequest::WasiCommandManifest { manifest });
+                break;
+            }
             _ => {
                 execution = Some(ExecutionRequest::MoltApplication {
                     manifest: Some(flag),
@@ -304,30 +294,34 @@ fn parse_host_args(args: impl IntoIterator<Item = String>) -> Result<ParsedHostA
 }
 
 fn validate_execution_imports(
-    is_wasi_command: bool,
-    use_linked: bool,
-    needs_runtime: bool,
-) -> Result<()> {
-    if is_wasi_command && needs_runtime {
-        bail!("WASI command module must not import molt_runtime");
+    kind: LoadedGuestKind<'_>,
+    module: &Module,
+    runtime: Option<&Module>,
+) -> Result<Vec<(String, FuncType)>> {
+    if let LoadedGuestKind::MoltApplication { linked } = kind {
+        let needs_runtime = has_runtime_imports(module);
+        if linked && needs_runtime {
+            bail!("linked wasm still imports molt_runtime; link step incomplete");
+        }
+        if !linked && !needs_runtime {
+            bail!("split-runtime app does not import molt_runtime");
+        }
     }
-    if !is_wasi_command && use_linked && needs_runtime {
+    if matches!(kind, LoadedGuestKind::WasiCommandManifest(_)) && has_runtime_imports(module) {
         bail!("linked wasm still imports molt_runtime; link step incomplete");
     }
-    if !is_wasi_command && !use_linked && !needs_runtime {
-        bail!("split-runtime app does not import molt_runtime");
-    }
-    Ok(())
+    plan_call_indirect_imports(module, runtime, kind)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LoadedGuestKind {
+#[derive(Clone, Copy, Debug)]
+enum LoadedGuestKind<'a> {
     MoltApplication { linked: bool },
     WasiCommand,
+    WasiCommandManifest(&'a LoadedWasiCommandManifest),
 }
 
 struct LoadedGuestOptions<'a> {
-    kind: LoadedGuestKind,
+    kind: LoadedGuestKind<'a>,
     vfs_envs: &'a [(String, String)],
     guest_args: &'a [String],
     wasm_table_base: Option<u64>,
@@ -345,15 +339,14 @@ fn execute_loaded_guest(
         guest_args,
         wasm_table_base,
     } = options;
-    let (is_wasi_command, use_linked) = match kind {
-        LoadedGuestKind::MoltApplication { linked } => (false, linked),
-        LoadedGuestKind::WasiCommand => (true, true),
-    };
-    let needs_runtime = has_runtime_imports(output_module);
-    validate_execution_imports(is_wasi_command, use_linked, needs_runtime)?;
+    let indirect_calls = validate_execution_imports(kind, output_module, runtime_module)?;
+    let is_wasi_command = matches!(
+        kind,
+        LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_)
+    );
 
     match kind {
-        LoadedGuestKind::WasiCommand => {
+        LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_) => {
             if runtime_module.is_some() {
                 bail!("WASI command mode must not provide a Molt runtime module");
             }
@@ -380,10 +373,6 @@ fn execute_loaded_guest(
         }
     }
     let runtime_imports = RuntimeImportPlan::new(output_module, runtime_module)?;
-    // Admit the complete Molt indirect-call family before either core start.
-    // Other imports are checked against the real host linker below.
-    let indirect_calls =
-        plan_call_indirect_imports(output_module, runtime_module, is_wasi_command)?;
     let output_mem = memory_limits(output_module);
     let output_table = table_limits(output_module);
     let runtime_mem = runtime_module.and_then(memory_limits);
@@ -497,7 +486,7 @@ fn execute_loaded_guest(
     )?;
 
     let registry = store.data().call_indirect.clone();
-    define_call_indirect_imports(&mut linker, &mut store, &indirect_calls, is_wasi_command)?;
+    define_call_indirect_imports(&mut linker, &mut store, &indirect_calls, kind)?;
 
     let mut lifetime = None;
     let result = (|| {
@@ -601,10 +590,13 @@ fn main() -> Result<()> {
     .try_init()
     .context("initialize host diagnostics")?;
     let termination = run()?;
-    if let GuestTermination::WasiExit(status) = termination
-        && status != 0
-    {
-        std::process::exit(status);
+    match termination {
+        GuestTermination::Returned => {}
+        GuestTermination::ApplicationExit(status) | GuestTermination::WasiExit(status) => {
+            if status != 0 {
+                std::process::exit(status);
+            }
+        }
     }
     Ok(())
 }
@@ -622,8 +614,10 @@ fn run() -> Result<GuestTermination> {
                 "usage: molt-wasm-host [--bundle <path>] [--vfs-tmp-quota <MB>] [manifest.json] \
                  | molt-wasm-host [--bundle <path>] [--vfs-tmp-quota <MB>] \
                  --wasi-command <module.wasm> [guest args...] \
+                 | molt-wasm-host --wasi-command-manifest <manifest.json> [guest args...] \
                  | molt-wasm-host --precompile [manifest.json] \
-                 | molt-wasm-host --precompile --wasi-command <module.wasm>"
+                 | molt-wasm-host --precompile --wasi-command <module.wasm> \
+                 | molt-wasm-host --precompile --wasi-command-manifest <manifest.json>"
             );
             return Ok(GuestTermination::Returned);
         }
@@ -663,6 +657,26 @@ fn run() -> Result<GuestTermination> {
             linked,
         }) => (Some(manifest_path), main, runtime, linked, false),
         ResolvedExecution::WasiCommand { module } => (None, module, None, true, true),
+        ResolvedExecution::WasiCommandManifest(command) => {
+            let engine = build_engine()?;
+            let command = command.load(&engine)?;
+            log::debug!(
+                "WASI command manifest: {:?}; verified source: {}",
+                command.manifest_path(),
+                molt_wasm_host::sha256_digest_hex(command.source_sha256())
+            );
+            return execute_loaded_guest(
+                &engine,
+                command.module(),
+                None,
+                LoadedGuestOptions {
+                    kind: LoadedGuestKind::WasiCommandManifest(&command),
+                    vfs_envs: &vfs_envs,
+                    guest_args: &guest_args,
+                    wasm_table_base: None,
+                },
+            );
+        }
     };
     let wasm_table_base = if is_wasi_command {
         None

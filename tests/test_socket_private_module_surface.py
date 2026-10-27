@@ -165,3 +165,174 @@ def test__socket_public_surface_matches_expected_shape() -> None:
     assert "socket" in names
     assert "SocketType" in names
     assert checks == {"behavior": "True", "private_handles_hidden": "True"}
+
+
+_RESOLVER_PROBE = f"""
+import importlib.util
+import socket as oracle
+import sys
+from tests.stdlib_intrinsic_registry import install_registry
+
+
+# CPython's actual module exception objects provide an independent identity and
+# OSError-layout oracle. The fixture supplies the real lookup boundary once.
+classes = {{"gaierror": oracle.gaierror, "herror": oracle.herror}}
+lookups = []
+
+
+def lookup(name):
+    lookups.append(name)
+    return classes[name]
+
+
+def forbidden(*args, **kwargs):
+    raise AssertionError("unexercised socket intrinsic was invoked")
+
+
+current_error = None
+
+
+def resolver(*args):
+    raise current_error
+
+
+behavior = {{name: forbidden for name in (
+    'molt_os_close',
+    'molt_os_dup',
+    'molt_os_get_inheritable',
+    'molt_os_set_inheritable',
+    'molt_socket_accept',
+    'molt_socket_bind',
+    'molt_socket_clone',
+    'molt_socket_close',
+    'molt_socket_cmsg_len',
+    'molt_socket_cmsg_space',
+    'molt_socket_connect',
+    'molt_socket_connect_ex',
+    'molt_socket_detach',
+    'molt_socket_drop',
+    'molt_socket_fileno',
+    'molt_socket_getblocking',
+    'molt_socket_gethostname',
+    'molt_socket_getpeername',
+    'molt_socket_getprotobyname',
+    'molt_socket_getservbyname',
+    'molt_socket_getservbyport',
+    'molt_socket_getsockname',
+    'molt_socket_getsockopt',
+    'molt_socket_gettimeout',
+    'molt_socket_has_dualstack_ipv6',
+    'molt_socket_htonl',
+    'molt_socket_htons',
+    'molt_socket_if_indextoname',
+    'molt_socket_if_nameindex',
+    'molt_socket_if_nametoindex',
+    'molt_socket_inet_ntop',
+    'molt_socket_inet_pton',
+    'molt_socket_listen',
+    'molt_socket_new',
+    'molt_socket_ntohl',
+    'molt_socket_ntohs',
+    'molt_socket_reader_drop',
+    'molt_socket_reader_new',
+    'molt_socket_reader_read',
+    'molt_socket_reader_readline',
+    'molt_socket_reader_readline_limit',
+    'molt_socket_recv',
+    'molt_socket_recv_fds',
+    'molt_socket_recv_into',
+    'molt_socket_recvfrom',
+    'molt_socket_recvfrom_into',
+    'molt_socket_recvmsg',
+    'molt_socket_recvmsg_into',
+    'molt_socket_send',
+    'molt_socket_send_fds',
+    'molt_socket_sendall',
+    'molt_socket_sendfile',
+    'molt_socket_sendmsg',
+    'molt_socket_sendmsg_afalg',
+    'molt_socket_sendto',
+    'molt_socket_sethostname',
+    'molt_socket_setsockopt',
+    'molt_socket_settimeout',
+    'molt_socket_shutdown',
+    'molt_socketpair',
+)}}
+behavior.update({{
+    "molt_builtin_class_lookup": lookup,
+    "molt_socket_constants": lambda: {{
+        "AF_INET": 2, "SOCK_STREAM": 1, "MSG_PEEK": 2,
+        "EAI_NONAME": 8, "EAI_SERVICE": 9, "EAI_SYSTEM": 11,
+    }},
+    "molt_socket_has_ipv6": lambda: False,
+    "molt_socket_getaddrinfo": resolver,
+    "molt_socket_getnameinfo": resolver,
+    "molt_socket_gethostbyname": resolver,
+    "molt_socket_gethostbyname_ex": resolver,
+    "molt_socket_gethostbyaddr": resolver,
+    "molt_socket_getfqdn": resolver,
+}})
+install_registry(behavior)
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+public = load("socket", {str(STDLIB_ROOT / "socket.py")!r})
+private = load("_molt_resolver_socket", {str(STDLIB_ROOT / "_socket.py")!r})
+assert lookups == ["gaierror", "herror"]
+assert public.gaierror is private.gaierror is oracle.gaierror
+assert public.herror is private.herror is oracle.herror
+
+calls = {{
+    "getaddrinfo": ("host", 80),
+    "getnameinfo": (("127.0.0.1", 80), 0),
+    "gethostbyname": ("host",),
+    "gethostbyaddr": ("host",),
+    "gethostbyname_ex": ("host",),
+}}
+for module in (public, private):
+    for name, args in calls.items():
+        for supplied in (
+            oracle.gaierror(9, "resolver service"),
+            oracle.gaierror(8, "resolver name"),
+            OSError(9, "ordinary bad descriptor"),
+            BlockingIOError(11, "ordinary pending operation"),
+            oracle.herror(2, "host lookup"),
+        ):
+            current_error = supplied
+            try:
+                getattr(module, name)(*args)
+            except OSError as caught:
+                assert caught is supplied, (module.__name__, name, type(caught))
+                assert caught.errno == supplied.errno
+                assert caught.strerror == supplied.strerror
+            else:
+                raise AssertionError((module.__name__, name, "missing error"))
+for supplied in (oracle.gaierror(9, "resolver"), OSError(9, "system")):
+    current_error = supplied
+    try:
+        public.getfqdn("host")
+    except OSError as caught:
+        assert caught is supplied
+    else:
+        raise AssertionError("getfqdn swallowed intrinsic error")
+print("canonical resolver identities and domains preserved")
+"""
+
+
+def test_socket_resolver_errors_preserve_canonical_identity_and_collisions() -> None:
+    proc = run_surface_test_process(
+        [sys.executable, "-c", _RESOLVER_PROBE],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert proc.stdout == "canonical resolver identities and domains preserved\n"

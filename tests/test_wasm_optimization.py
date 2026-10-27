@@ -79,6 +79,7 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )

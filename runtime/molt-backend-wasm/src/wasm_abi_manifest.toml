@@ -8162,3 +8162,731 @@ name = "os_stat_result_type"
 type = 0
 runtime_name = "molt_os_stat_result_type"
 callable_arity = 0
+
+# Raw preview1/WASI SDK errno, used by actual preview1 callbacks and typed
+# selected-WASI-SDK std::io ingress. Molt env host errors use the separate
+# synthetic_errno declaration below.
+[wasi_errno]
+E2BIG = 1
+EACCES = 2
+EADDRINUSE = 3
+EADDRNOTAVAIL = 4
+EAFNOSUPPORT = 5
+EAGAIN = 6
+EALREADY = 7
+EBADF = 8
+EBADMSG = 9
+EBUSY = 10
+ECANCELED = 11
+ECHILD = 12
+ECONNABORTED = 13
+ECONNREFUSED = 14
+ECONNRESET = 15
+EDEADLK = 16
+EDESTADDRREQ = 17
+EDOM = 18
+EDQUOT = 19
+EEXIST = 20
+EFAULT = 21
+EFBIG = 22
+EHOSTUNREACH = 23
+EIDRM = 24
+EILSEQ = 25
+EINPROGRESS = 26
+EINTR = 27
+EINVAL = 28
+EIO = 29
+EISCONN = 30
+EISDIR = 31
+ELOOP = 32
+EMFILE = 33
+EMLINK = 34
+EMSGSIZE = 35
+EMULTIHOP = 36
+ENAMETOOLONG = 37
+ENETDOWN = 38
+ENETRESET = 39
+ENETUNREACH = 40
+ENFILE = 41
+ENOBUFS = 42
+ENODEV = 43
+ENOENT = 44
+ENOEXEC = 45
+ENOLCK = 46
+ENOLINK = 47
+ENOMEM = 48
+ENOMSG = 49
+ENOPROTOOPT = 50
+ENOSPC = 51
+ENOSYS = 52
+ENOTCONN = 53
+ENOTDIR = 54
+ENOTEMPTY = 55
+ENOTRECOVERABLE = 56
+ENOTSOCK = 57
+ENOTSUP = 58
+ENOTTY = 59
+ENXIO = 60
+EOVERFLOW = 61
+EOWNERDEAD = 62
+EPERM = 63
+EPIPE = 64
+EPROTO = 65
+EPROTONOSUPPORT = 66
+EPROTOTYPE = 67
+ERANGE = 68
+EROFS = 69
+ESPIPE = 70
+ESRCH = 71
+ESTALE = 72
+ETIMEDOUT = 73
+ETXTBSY = 74
+EXDEV = 75
+ENOTCAPABLE = 76
+
+# Names libc defines as another code.
+[wasi_errno_alias]
+EOPNOTSUPP = "ENOTSUP"
+EWOULDBLOCK = "EAGAIN"
+
+# Molt env-host/Python synthetic errno, in Python publication order.
+# This is distinct from the positive raw WASI preview1 errno table above.
+
+[[synthetic_errno]]
+name = "EACCES"
+value = 13
+windows_socket_name = "WSAEACCES"
+
+[[synthetic_errno]]
+name = "EALREADY"
+value = 114
+windows_socket_name = "WSAEALREADY"
+
+[[synthetic_errno]]
+name = "EAFNOSUPPORT"
+value = 97
+windows_socket_name = "WSAEAFNOSUPPORT"
+
+[[synthetic_errno]]
+name = "EBADF"
+value = 9
+windows_socket_name = "WSAEBADF"
+
+[[synthetic_errno]]
+name = "ECHILD"
+value = 10
+
+[[synthetic_errno]]
+name = "ECONNABORTED"
+value = 103
+windows_socket_name = "WSAECONNABORTED"
+
+[[synthetic_errno]]
+name = "ECONNREFUSED"
+value = 111
+windows_socket_name = "WSAECONNREFUSED"
+
+[[synthetic_errno]]
+name = "ECONNRESET"
+value = 104
+windows_socket_name = "WSAECONNRESET"
+
+[[synthetic_errno]]
+name = "EEXIST"
+value = 17
+
+[[synthetic_errno]]
+name = "EHOSTUNREACH"
+value = 113
+windows_socket_name = "WSAEHOSTUNREACH"
+
+[[synthetic_errno]]
+name = "EINPROGRESS"
+value = 115
+windows_socket_name = "WSAEINPROGRESS"
+
+[[synthetic_errno]]
+name = "EINTR"
+value = 4
+windows_socket_name = "WSAEINTR"
+
+[[synthetic_errno]]
+name = "EIO"
+value = 5
+
+[[synthetic_errno]]
+name = "ELOOP"
+value = 40
+
+[[synthetic_errno]]
+name = "EROFS"
+value = 30
+
+[[synthetic_errno]]
+name = "EISCONN"
+value = 106
+windows_socket_name = "WSAEISCONN"
+
+[[synthetic_errno]]
+name = "EISDIR"
+value = 21
+
+[[synthetic_errno]]
+name = "EINVAL"
+value = 22
+windows_socket_name = "WSAEINVAL"
+
+[[synthetic_errno]]
+name = "ENOENT"
+value = 2
+
+[[synthetic_errno]]
+name = "ENOMEM"
+value = 12
+
+[[synthetic_errno]]
+name = "ENOSYS"
+value = 38
+
+[[synthetic_errno]]
+name = "ENOTDIR"
+value = 20
+
+[[synthetic_errno]]
+name = "EPERM"
+value = 1
+
+[[synthetic_errno]]
+name = "EPIPE"
+value = 32
+
+[[synthetic_errno]]
+name = "EPROTOTYPE"
+value = 91
+windows_socket_name = "WSAEPROTOTYPE"
+
+[[synthetic_errno]]
+name = "ESRCH"
+value = 3
+
+[[synthetic_errno]]
+name = "ETIMEDOUT"
+value = 110
+windows_socket_name = "WSAETIMEDOUT"
+
+[[synthetic_errno]]
+name = "EWOULDBLOCK"
+alias = "EAGAIN"
+windows_socket_name = "WSAEWOULDBLOCK"
+
+[[synthetic_errno]]
+name = "ESHUTDOWN"
+value = 108
+# WASI preview1 has no SDK errno for this existing guest value.
+wasi_sdk = false
+windows_socket_name = "WSAESHUTDOWN"
+
+[[synthetic_errno]]
+name = "EAGAIN"
+value = 11
+
+[[synthetic_errno]]
+name = "EFAULT"
+value = 14
+windows_socket_name = "WSAEFAULT"
+
+[[synthetic_errno]]
+name = "EOVERFLOW"
+value = 75
+
+[[synthetic_errno]]
+name = "EADDRINUSE"
+value = 98
+windows_socket_name = "WSAEADDRINUSE"
+
+[[synthetic_errno]]
+name = "EADDRNOTAVAIL"
+value = 99
+windows_socket_name = "WSAEADDRNOTAVAIL"
+
+[[synthetic_errno]]
+name = "ENOPROTOOPT"
+value = 92
+windows_socket_name = "WSAENOPROTOOPT"
+
+[[synthetic_errno]]
+name = "ENOTCONN"
+value = 107
+windows_socket_name = "WSAENOTCONN"
+
+[[synthetic_errno]]
+name = "ENOTSOCK"
+value = 88
+windows_socket_name = "WSAENOTSOCK"
+
+[[synthetic_errno]]
+name = "EOPNOTSUPP"
+value = 95
+windows_socket_name = "WSAEOPNOTSUPP"
+
+[[synthetic_errno]]
+name = "EPROTONOSUPPORT"
+value = 93
+windows_socket_name = "WSAEPROTONOSUPPORT"
+
+[[synthetic_errno]]
+name = "ESPIPE"
+value = 29
+
+[[synthetic_errno]]
+name = "EMSGSIZE"
+value = 90
+windows_socket_name = "WSAEMSGSIZE"
+
+[[synthetic_errno]]
+name = "ENETDOWN"
+value = 100
+windows_socket_name = "WSAENETDOWN"
+
+[[synthetic_errno]]
+name = "ENETUNREACH"
+value = 101
+windows_socket_name = "WSAENETUNREACH"
+
+[[synthetic_errno]]
+name = "ENETRESET"
+value = 102
+windows_socket_name = "WSAENETRESET"
+
+[[synthetic_errno]]
+name = "ENOBUFS"
+value = 105
+windows_socket_name = "WSAENOBUFS"
+
+[[synthetic_errno]]
+name = "EDESTADDRREQ"
+value = 89
+windows_socket_name = "WSAEDESTADDRREQ"
+
+[[synthetic_errno]]
+name = "ENOTSUP"
+alias = "EOPNOTSUPP"
+
+# Resolver status has its own namespace and native conversion.
+
+[[resolver_error]]
+name = "EAI_AGAIN"
+role = "resolver"
+value = 2
+
+[[resolver_error]]
+name = "EAI_FAIL"
+role = "resolver"
+value = 4
+
+[[resolver_error]]
+name = "EAI_FAMILY"
+role = "resolver"
+value = 5
+
+[[resolver_error]]
+name = "EAI_NONAME"
+role = "resolver"
+value = 8
+
+[[resolver_error]]
+name = "EAI_SERVICE"
+role = "resolver"
+value = 9
+
+[[resolver_error]]
+name = "EAI_SOCKTYPE"
+role = "resolver"
+value = 10
+
+[[resolver_error]]
+name = "EAI_BADFLAGS"
+role = "resolver"
+value = 3
+
+[[resolver_error]]
+name = "EAI_MEMORY"
+role = "resolver"
+value = 6
+
+[[resolver_error]]
+name = "EAI_SYSTEM"
+role = "system_sentinel"
+value = 11
+
+[[resolver_error]]
+name = "EAI_OVERFLOW"
+role = "resolver"
+value = 14
+
+[[resolver_error]]
+name = "EAI_ADDRFAMILY"
+role = "resolver"
+value = 1
+
+[[resolver_error]]
+name = "EAI_NODATA"
+role = "resolver"
+# Microsoft aliases NONAME; MinGW and POSIX SDKs may distinguish NODATA.
+native_alias_prefer = "EAI_NONAME"
+value = 7
+
+[[resolver_error]]
+name = "EAI_BADHINTS"
+role = "resolver"
+value = 12
+
+[[resolver_error]]
+name = "EAI_PROTOCOL"
+role = "resolver"
+value = 13
+
+[[resolver_error]]
+name = "EAI_MAX"
+role = "metadata_sentinel"
+value = 15
+
+# Existing public WASM socket ABI coordinate; native publication is independent.
+
+[[wasm_socket_constant]]
+name = "AF_UNIX"
+kind = "address_family"
+value = 1
+
+[[wasm_socket_constant]]
+name = "AF_INET"
+kind = "address_family"
+value = 2
+
+[[wasm_socket_constant]]
+name = "AF_INET6"
+kind = "address_family"
+value = 10
+
+[[wasm_socket_constant]]
+name = "SOCK_STREAM"
+kind = "socket_type"
+value = 1
+
+[[wasm_socket_constant]]
+name = "SOCK_DGRAM"
+kind = "socket_type"
+value = 2
+
+[[wasm_socket_constant]]
+name = "SOCK_RAW"
+kind = "socket_type"
+value = 3
+
+[[wasm_socket_constant]]
+name = "SOL_SOCKET"
+kind = "level"
+value = 1
+
+[[wasm_socket_constant]]
+name = "SO_REUSEADDR"
+kind = "option"
+value = 2
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "SO_KEEPALIVE"
+kind = "option"
+value = 9
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "SO_SNDBUF"
+kind = "option"
+value = 7
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "SO_RCVBUF"
+kind = "option"
+value = 8
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "SO_ERROR"
+kind = "option"
+value = 4
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "SO_LINGER"
+kind = "option"
+value = 13
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "SO_BROADCAST"
+kind = "option"
+value = 6
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "SO_REUSEPORT"
+kind = "option"
+value = 15
+option_level = "SOL_SOCKET"
+
+[[wasm_socket_constant]]
+name = "IPPROTO_TCP"
+kind = "protocol"
+value = 6
+
+[[wasm_socket_constant]]
+name = "IPPROTO_UDP"
+kind = "protocol"
+value = 17
+
+[[wasm_socket_constant]]
+name = "IPPROTO_IPV6"
+kind = "protocol"
+value = 41
+
+[[wasm_socket_constant]]
+name = "IPV6_V6ONLY"
+kind = "option"
+value = 26
+option_level = "IPPROTO_IPV6"
+
+[[wasm_socket_constant]]
+name = "TCP_NODELAY"
+kind = "option"
+value = 1
+option_level = "IPPROTO_TCP"
+
+[[wasm_socket_constant]]
+name = "SHUT_RD"
+kind = "shutdown"
+value = 0
+
+[[wasm_socket_constant]]
+name = "SHUT_WR"
+kind = "shutdown"
+value = 1
+
+[[wasm_socket_constant]]
+name = "SHUT_RDWR"
+kind = "shutdown"
+value = 2
+
+[[wasm_socket_constant]]
+name = "AI_PASSIVE"
+kind = "resolver_flag"
+value = 1
+
+[[wasm_socket_constant]]
+name = "AI_CANONNAME"
+kind = "resolver_flag"
+value = 2
+
+[[wasm_socket_constant]]
+name = "AI_NUMERICHOST"
+kind = "resolver_flag"
+value = 4
+
+[[wasm_socket_constant]]
+name = "AI_NUMERICSERV"
+kind = "resolver_flag"
+value = 1024
+
+[[wasm_socket_constant]]
+name = "NI_NUMERICHOST"
+kind = "nameinfo_flag"
+value = 1
+
+[[wasm_socket_constant]]
+name = "NI_NUMERICSERV"
+kind = "nameinfo_flag"
+value = 2
+
+[[wasm_socket_constant]]
+name = "MSG_PEEK"
+kind = "message_flag"
+value = 2
+
+[[wasm_socket_constant]]
+name = "MSG_DONTWAIT"
+kind = "message_flag"
+value = 64
+
+[[wasm_socket_constant]]
+name = "AF_UNSPEC"
+kind = "address_family"
+value = 0
+
+[[wasm_socket_constant]]
+name = "IPPROTO_IP"
+kind = "protocol"
+value = 0
+
+# Result-only flags produced by recvmsg; they do not admit new input flags.
+
+[[wasm_socket_constant]]
+name = "MSG_TRUNC"
+kind = "message_result_flag"
+value = 32
+
+[[wasm_socket_constant]]
+name = "MSG_CTRUNC"
+kind = "message_result_flag"
+value = 8
+
+[[wasm_socket_constant]]
+name = "MSG_EOR"
+kind = "message_result_flag"
+value = 128
+
+[[wasm_socket_constant]]
+name = "MSG_OOB"
+kind = "message_result_flag"
+value = 1
+
+# Existing i32 host result: negative system errno, positive resolver error.
+[resolver_status]
+encoding = "signed-i32-v1"
+
+[[synthetic_errno]]
+name = "ENOSPC"
+value = 28
+
+# Ordinary WASI errno ingress preserves this fixed guest POSIX domain.
+
+[[synthetic_errno]]
+name = "E2BIG"
+value = 7
+
+[[synthetic_errno]]
+name = "EBADMSG"
+value = 74
+
+[[synthetic_errno]]
+name = "EBUSY"
+value = 16
+
+[[synthetic_errno]]
+name = "ECANCELED"
+value = 125
+
+[[synthetic_errno]]
+name = "EDEADLK"
+value = 35
+
+[[synthetic_errno]]
+name = "EDOM"
+value = 33
+
+[[synthetic_errno]]
+name = "EDQUOT"
+value = 122
+
+[[synthetic_errno]]
+name = "EFBIG"
+value = 27
+
+[[synthetic_errno]]
+name = "EIDRM"
+value = 43
+
+[[synthetic_errno]]
+name = "EILSEQ"
+value = 84
+
+[[synthetic_errno]]
+name = "EMFILE"
+value = 24
+
+[[synthetic_errno]]
+name = "EMLINK"
+value = 31
+
+[[synthetic_errno]]
+name = "EMULTIHOP"
+value = 72
+
+[[synthetic_errno]]
+name = "ENAMETOOLONG"
+value = 36
+
+[[synthetic_errno]]
+name = "ENFILE"
+value = 23
+
+[[synthetic_errno]]
+name = "ENODEV"
+value = 19
+
+[[synthetic_errno]]
+name = "ENOEXEC"
+value = 8
+
+[[synthetic_errno]]
+name = "ENOLCK"
+value = 37
+
+[[synthetic_errno]]
+name = "ENOLINK"
+value = 67
+
+[[synthetic_errno]]
+name = "ENOMSG"
+value = 42
+
+[[synthetic_errno]]
+name = "ENOTEMPTY"
+value = 39
+
+[[synthetic_errno]]
+name = "ENOTRECOVERABLE"
+value = 131
+
+[[synthetic_errno]]
+name = "ENOTTY"
+value = 25
+
+[[synthetic_errno]]
+name = "ENXIO"
+value = 6
+
+[[synthetic_errno]]
+name = "EOWNERDEAD"
+value = 130
+
+[[synthetic_errno]]
+name = "EPROTO"
+value = 71
+
+[[synthetic_errno]]
+name = "ERANGE"
+value = 34
+
+[[synthetic_errno]]
+name = "ESTALE"
+value = 116
+
+[[synthetic_errno]]
+name = "ETXTBSY"
+value = 26
+
+[[synthetic_errno]]
+name = "EXDEV"
+value = 18
+
+# Explicit adoption dispositions; no synthetic ENOTCAPABLE number exists.
+[errno_adoption]
+unknown = "EIO"
+
+[wasi_errno_disposition]
+ENOTCAPABLE = "EACCES"
+
+# Semantic host/runtime ABI of linked and split deployment manifests.
+[deployment_manifest]
+version = 3

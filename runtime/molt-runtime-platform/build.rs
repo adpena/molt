@@ -10,6 +10,9 @@ use std::path::PathBuf;
 mod c_codegen;
 #[path = "../build_support/target_errno.rs"]
 mod target_errno;
+mod native_error_names {
+    include!("native_error_names_generated.rs");
+}
 
 fn required(name: &str) -> String {
     env::var(name).unwrap_or_else(|_| panic!("missing Cargo {name}"))
@@ -27,8 +30,11 @@ fn main() {
     let manifest = PathBuf::from(required("CARGO_MANIFEST_DIR"));
     let declaration_path = manifest.join("errno_symbols.tsv");
     let declaration_text = fs::read_to_string(&declaration_path).expect("read errno declaration");
-    let declaration = target_errno::Declaration::parse(&declaration_text)
+    let mut declaration = target_errno::Declaration::parse(&declaration_text)
         .expect("valid native errno declaration");
+    declaration
+        .add_native_error_symbols(native_error_names::NATIVE_ERROR_NAMES)
+        .expect("valid generated native resolver symbol inventory");
     let shape = target_errno::NativeTarget::from_cargo(
         &required("CARGO_CFG_TARGET_ARCH"),
         &required("CARGO_CFG_TARGET_OS"),
@@ -53,6 +59,13 @@ fn main() {
             .expect("render native errno publication"),
     )
     .expect("write native errno publication");
+    fs::write(
+        out.join("native_error_codes.rs"),
+        declaration
+            .native_error_rust_source(&values, native_error_names::NATIVE_ERROR_NAMES)
+            .expect("render native resolver code publication"),
+    )
+    .expect("write native resolver code publication");
     // Actual-C controls use the same Cargo-selected host/target coordinate.
     fs::write(out.join("errno_target.txt"), &target).expect("write errno test target");
     for (name, value) in [
@@ -68,6 +81,7 @@ fn main() {
     }
     for path in [
         declaration_path,
+        manifest.join("native_error_names_generated.rs"),
         manifest.join("../build_support/target_errno.rs"),
         manifest.join("../build_support/errno_feature_visibility.h"),
         manifest.join("../build_support/c_codegen.rs"),

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli import cargo_capabilities
+
 from tests import runtime_descendant_test_support as support
 from tools import run_runtime_test_gate as gate
 
@@ -817,27 +819,51 @@ def test_cargo_build_timeout_keeps_real_partial_streams(monkeypatch, tmp_path):
         stop_test_processes_carrying(marker)
 
 
-@pytest.mark.parametrize("output_owner", ["explicit", "queue", "proof-plan"])
+@pytest.mark.parametrize("policy", ["semantic", "allocation-observer"])
+@pytest.mark.parametrize(
+    "output_owner", ["explicit", "queue", "default", "external", "relative-external"]
+)
 def test_default_profile_is_shipping_before_build(
-    monkeypatch, tmp_path, output_owner, selected_cargo
+    monkeypatch, tmp_path, output_owner, selected_cargo, policy, capsys
 ):
+    import json
+
     # Observe typed build argv without compiling or publishing a synthetic pass.
     seen = []
-    source = tmp_path / "source"
+    source = tmp_path / "molt-src"
     source.mkdir()
     scratch = tmp_path / "queue-scratch"
+    external = tmp_path / "external artifacts"
     monkeypatch.setattr(gate, "ROOT", source)
-    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
-    argv = []
+    for name in (
+        "MOLT_PROOF_SCRATCH_ROOT",
+        "MOLT_EXT_ROOT",
+        "MOLT_CI_EPHEMERAL_CUSTODY_ROOT",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", "disk")
+    argv = ["--policy", policy]
     if output_owner == "explicit":
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
         monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
         expected_root = tmp_path / "explicit-receipts"
-        argv = ["--receipt-root", str(expected_root)]
+        argv += ["--receipt-root", str(expected_root)]
     elif output_owner == "queue":
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
         monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
         expected_root = scratch / "runtime-gate-runs"
+    elif output_owner in {"external", "relative-external"}:
+        monkeypatch.setenv(
+            "MOLT_EXT_ROOT",
+            str(external) if output_owner == "external" else "../external artifacts",
+        )
+        expected_root = external / "tmp/runtime-gate-runs"
     else:
-        expected_root = source / "proof-receipts/evidence/runtime-gate-runs"
+        # No Git fixture claims a family layout here. DX owns the default's
+        # opaque namespace; the public contract is retained output outside ROOT.
+        expected_root = None
     monkeypatch.setattr(
         gate.truth, "git_source_identity", lambda: {"schema": "molt.git-source.v1"}
     )
@@ -868,18 +894,80 @@ def test_default_profile_is_shipping_before_build(
     assert gate.main(argv) == 1
     command = seen[0]
     assert command[command.index("--profile") + 1] == "release-output"
-    runs = list(expected_root.iterdir())
-    assert len(runs) == 1
-    assert {path.name for path in runs[0].iterdir()} == {
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "failed"
+    assert summary["error"] == "RuntimeError: Cargo compilation failed with 1"
+    receipt = Path(summary["receipt"])
+    assert receipt.name == "aggregate.json" and receipt.is_absolute()
+    run = receipt.parent
+    assert not run.resolve().is_relative_to(source.resolve())
+    if expected_root is None:
+        assert run.parent.name == "runtime-gate-runs"
+    else:
+        # Explicit roots retain their independent exact-path/precedence oracles.
+        assert run.parent == expected_root
+        assert list(expected_root.iterdir()) == [run]
+    assert {path.name for path in run.iterdir()} == {
         "aggregate.json",
         "build.stdout.jsonl",
         "build.stderr.log",
         "cargo.metadata.json",
     }
-    if output_owner != "proof-plan":
-        assert list(source.iterdir()) == []
+    aggregate = json.loads(receipt.read_text(encoding="utf-8"))
+    assert aggregate["policy"] == policy and aggregate["status"] == "failed"
+    assert aggregate["build_returncode"] == 1
+    assert aggregate["error"] == "RuntimeError: Cargo compilation failed with 1"
+    assert (run / "build.stdout.jsonl").read_bytes() == b""
+    assert (run / "build.stderr.log").read_bytes() == b"intentional stopped build"
+    assert json.loads((run / "cargo.metadata.json").read_text(encoding="utf-8")) == {
+        "packages": []
+    }
+    assert list(source.iterdir()) == []
     if output_owner == "explicit":
         assert not scratch.exists()
+    if output_owner in {"explicit", "queue", "default"}:
+        assert not external.exists()
+
+
+@pytest.mark.parametrize(
+    "policy,dispatcher",
+    [
+        ("wasi-clippy", "run_compile_only_lint"),
+        ("zlib-wasi", "run_zlib_wasi"),
+        ("wasi-lifecycle", "run_wasi_lifecycle"),
+    ],
+)
+def test_policy_receipts_use_external_scratch_without_checkout_outputs(
+    monkeypatch, tmp_path, policy, dispatcher
+):
+    source = tmp_path / "molt-src"
+    source.mkdir()
+    external = tmp_path / "selected artifacts"
+    monkeypatch.setattr(gate, "ROOT", source)
+    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", "disk")
+    observed = []
+
+    def stop_before_build(args, run, aggregate):
+        observed.append(run)
+        assert args.policy == policy
+        (run / "partial-build.log").write_bytes(b"retained failure witness\x00\xff")
+        raise RuntimeError("independent stopped policy build")
+
+    monkeypatch.setattr(gate, dispatcher, stop_before_build)
+    assert gate.main(["--policy", policy]) == 1
+    (run,) = observed
+    assert run.parent == external / "tmp/runtime-gate-runs"
+    import json
+
+    receipt = json.loads((run / "aggregate.json").read_text(encoding="utf-8"))
+    assert receipt["policy"] == policy and receipt["status"] == "failed"
+    assert receipt["error"] == "RuntimeError: independent stopped policy build"
+    assert (
+        run / "partial-build.log"
+    ).read_bytes() == b"retained failure witness\x00\xff"
+    assert list(source.iterdir()) == []
 
 
 def test_build_rustflags_cannot_override_shipping_assertions():
@@ -1361,6 +1449,17 @@ def test_feature_only_performance_probes_are_unrun_without_changing_default_poli
         "host_changed_after",
         "abi_changed_after",
         "instrumented_abi",
+        "platform_missing",
+        "platform_duplicate",
+        "platform_foreign",
+        "platform_not_wasm",
+        "platform_changed_before",
+        "platform_changed_after",
+        "consumer_changed_before",
+        "consumer_changed_after",
+        "swapped_handoff",
+        "second_child_failure",
+        "duplicate_invocation",
     ],
 )
 def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
@@ -1370,6 +1469,8 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     from types import SimpleNamespace
     from molt.cli import runtime_cargo_plan, runtime_tool_selection
 
+    runtime_consumer = "actual_wasi_runtime_lifecycle_cases_through_production_host"
+    platform_consumer = "actual_wasi_platform_errno_cases_through_production_host"
     # This policy executes the native production host, not Node. Preserve an
     # unrelated Node setting rather than imposing the counter policy on it.
     inherited_node_options = "--require=/unused-by-native-host.cjs"
@@ -1377,6 +1478,8 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
 
     wasm = tmp_path / "molt_runtime.wasm"
     wasm.write_bytes(b"\x00asm\x01\x00\x00\x00fixture")
+    platform = tmp_path / "molt_runtime_platform.wasm"
+    platform.write_bytes(b"\x00asm\x01\x00\x00\x00platform")
     native = support.make_image(tmp_path / "host")
     production_host = support.make_image(tmp_path / "molt-wasm-host")
     host = "aarch64-unknown-linux-gnu"
@@ -1392,13 +1495,14 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                 "source": None,
                 "manifest_path": str(gate.ROOT / "runtime" / name / "Cargo.toml"),
             }
-            for name in ("molt-runtime", "molt-wasm-host")
+            for name in ("molt-runtime", "molt-wasm-host", "molt-runtime-platform")
         ]
     )
     records = {}
     for package, name, kind, image in (
         ("molt-runtime", "molt_runtime", "rlib", wasm),
         ("molt-wasm-host", "wasi_runtime_lifecycle", "test", native),
+        ("molt-runtime-platform", "molt_runtime_platform", "lib", platform),
     ):
         records[package] = [
             {
@@ -1431,6 +1535,15 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         host_record["package_id"] = "molt-runtime"
     elif mutation == "host_wrong_kind":
         host_record["target"]["kind"] = ["rlib"]
+    provider = records["molt-runtime-platform"]
+    if mutation == "platform_missing":
+        provider.clear()
+    elif mutation == "platform_duplicate":
+        provider.append(deepcopy(provider[0]))
+    elif mutation == "platform_foreign":
+        provider[0]["package_id"] = "molt-runtime"
+    elif mutation == "platform_not_wasm":
+        platform.write_bytes(b"native platform image")
     emitted = records["molt-runtime"]
     if mutation == "missing":
         emitted.clear()
@@ -1448,6 +1561,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         abi_artifact["features"].append("allocation-observer")
     emitted.append(abi_artifact)
     original_sha = support.sha256(wasm.read_bytes())
+    platform_sha = support.sha256(platform.read_bytes())
     original_host_sha = support.sha256(production_host.read_bytes())
     monkeypatch.setattr(gate.truth, "host_target", lambda: host)
     source_reads = 0
@@ -1457,6 +1571,10 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         source_reads += 1
         if mutation == "host_changed_before" and source_reads == 2:
             production_host.write_bytes(b"changed")
+        if mutation == "platform_changed_before" and source_reads == 2:
+            platform.write_bytes(b"changed platform")
+        if mutation == "consumer_changed_before" and source_reads == 2:
+            native.write_bytes(b"changed integration consumer")
         return (
             dict(support.SOURCE, head="changed")
             if mutation == "source" and source_reads > 1
@@ -1474,8 +1592,18 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     resolved = []
 
     def plan(
-        root, *, env, cargo_command, requested_target, host_target, rustflags_transform
+        root,
+        *,
+        env,
+        cargo_command,
+        requested_target,
+        host_target,
+        rustflags_transform,
+        required_cargo_capabilities,
     ):
+        assert required_cargo_capabilities == (
+            cargo_capabilities.CargoCapability.BUILD_DIRECTORY,
+        )
         assert env["NODE_OPTIONS"] == inherited_node_options
         # Exercise the real planner's executable-selection boundary, while its
         # SDK/configuration/compiler work remains outside this host unit test.
@@ -1540,28 +1668,31 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                 )
             else:
                 children.append(argv)
-                assert kwargs["env"]["MOLT_WASI_LIBTEST_ARTIFACT"] == str(wasm)
-                assert kwargs["env"]["MOLT_WASI_LIBTEST_SHA256"] == original_sha
+                consumer = runtime_consumer if len(children) == 1 else platform_consumer
+                selected_image = kwargs["env"]["MOLT_WASI_LIBTEST_ARTIFACT"]
+                selected_sha, selected_case = {
+                    str(wasm): (original_sha, runtime_consumer),
+                    str(platform): (platform_sha, platform_consumer),
+                }[selected_image]
+                assert kwargs["env"]["MOLT_WASI_LIBTEST_SHA256"] == selected_sha
                 split = argv.index("--")
                 assert argv[split + 1] == str(native)
                 args = argv[split + 2 :]
                 assert args == [
                     "--exact",
-                    gate.WASI_CONSUMER,
+                    consumer,
                     "--ignored",
                     "--test-threads=1",
                     "--nocapture",
                 ]
-                assert (
-                    argv[argv.index("--require-passed-test") + 1] == gate.WASI_CONSUMER
-                )
+                assert argv[argv.index("--require-passed-test") + 1] == consumer
                 directory = Path(argv[argv.index("--receipt-dir") + 1])
                 names = (
                     []
                     if mutation == "zero"
                     else ["different"]
                     if mutation == "wrong_case"
-                    else [gate.WASI_CONSUMER]
+                    else [selected_case]
                 )
                 receipt = support.binary_receipt(
                     directory,
@@ -1571,26 +1702,45 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
                     args=args,
                     retained_root=Path(argv[argv.index("--retained-root") + 1]),
                     run_id=argv[argv.index("--run-id") + 1],
-                    invocation="wasi-consumer",
-                    statuses={gate.WASI_CONSUMER: "ignored"}
-                    if mutation == "ignored"
-                    else None,
+                    invocation="wasi-consumer-1"
+                    if mutation == "duplicate_invocation"
+                    else f"wasi-consumer-{len(children)}",
+                    statuses={consumer: "ignored"} if mutation == "ignored" else None,
                 )
                 receipt["required_passed_tests"] = (
-                    [] if mutation == "wrong_required" else [gate.WASI_CONSUMER]
+                    [] if mutation == "wrong_required" else [consumer]
                 )
                 gate.runner.write_receipt(directory / "receipt.json", receipt)
+                if mutation == "platform_changed_after" and len(children) == 2:
+                    platform.write_bytes(b"changed platform")
+                if mutation == "consumer_changed_after" and len(children) == 2:
+                    native.write_bytes(b"changed integration consumer")
                 if mutation == "changed_after":
                     wasm.write_bytes(b"changed")
                 if mutation == "host_changed_after":
                     production_host.write_bytes(b"changed")
                 if mutation == "abi_changed_after":
                     Path(abi_artifact["filenames"][-1]).write_bytes(b"replacement ABI")
-                if mutation == "child_failure":
+                if mutation == "child_failure" or (
+                    mutation == "second_child_failure" and len(children) == 2
+                ):
                     result.returncode = 1
             return result
 
     monkeypatch.setattr(gate, "COMMANDS", Commands())
+    if mutation == "swapped_handoff":
+        execute = gate.execute_child
+
+        def swap_platform_handoff(*args, environment, **kwargs):
+            if environment["MOLT_WASI_LIBTEST_ARTIFACT"] == str(platform):
+                environment = dict(
+                    environment,
+                    MOLT_WASI_LIBTEST_ARTIFACT=str(wasm),
+                    MOLT_WASI_LIBTEST_SHA256=original_sha,
+                )
+            return execute(*args, environment=environment, **kwargs)
+
+        monkeypatch.setattr(gate, "execute_child", swap_platform_handoff)
     root = tmp_path / "receipts"
     code = gate.main(
         [
@@ -1608,10 +1758,16 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     assert len(resolved) == 1
     assert "--lib" in builds[0][0] and "--no-default-features" in builds[0][0]
     assert builds[0][0][builds[0][0].index("--features") + 1] == "stdlib_micro"
-    if len(builds) == 2:
+    if len(builds) >= 2:
         assert builds[1][0][builds[1][0].index("--target") + 1] == host
         assert "link-arg=--export-table" not in builds[1][1].get(
             "CARGO_ENCODED_RUSTFLAGS", ""
+        )
+    if len(builds) == 3:
+        assert builds[2][0][builds[2][0].index("-p") + 1] == "molt-runtime-platform"
+        assert "--features" not in builds[2][0]
+        assert builds[2][1].get("CARGO_ENCODED_RUSTFLAGS") == os.environ.get(
+            "CARGO_ENCODED_RUSTFLAGS"
         )
     if mutation:
         assert code == 1 and aggregate["status"] == "failed"
@@ -1632,13 +1788,40 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
             "host_wrong_kind",
             "host_changed_before",
             "instrumented_abi",
+            "platform_missing",
+            "platform_duplicate",
+            "platform_foreign",
+            "platform_not_wasm",
+            "platform_changed_before",
+            "consumer_changed_before",
         }:
             assert not children
     else:
         assert code == 0 and aggregate["status"] == "success"
-        assert len(builds) == 2 and len(children) == 1
-        assert aggregate["passed_test_count"] == 1
-        assert aggregate["wasi_handoff"]["MOLT_WASI_LIBTEST_SHA256"] == original_sha
+        assert len(builds) == 3 and len(children) == 2
+        assert aggregate["passed_test_count"] == 2
+        assert aggregate["wasi_handoffs"] == [
+            {
+                "consumer": runtime_consumer,
+                "target": "molt_runtime",
+                "environment": {
+                    "MOLT_WASI_LIBTEST_ARTIFACT": str(wasm),
+                    "MOLT_WASI_LIBTEST_SHA256": original_sha,
+                },
+            },
+            {
+                "consumer": platform_consumer,
+                "target": "molt_runtime_platform",
+                "environment": {
+                    "MOLT_WASI_LIBTEST_ARTIFACT": str(platform),
+                    "MOLT_WASI_LIBTEST_SHA256": platform_sha,
+                },
+            },
+        ]
+        assert (
+            aggregate["images"]["molt_runtime_platform"]["build"]["executable_sha256"]
+            == platform_sha
+        )
         assert (
             aggregate["images"]["molt_runtime"]["build"]["executable_sha256"]
             == original_sha
@@ -1652,6 +1835,32 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         assert (
             "ABI allocation features contradict semantic policy" in aggregate["error"]
         )
+
+    if mutation in {"second_child_failure", "duplicate_invocation", "swapped_handoff"}:
+        assert len(children) == 2
+        assert (
+            aggregate["images"]["wasi_runtime_lifecycle"]["children"][runtime_consumer][
+                "returncode"
+            ]
+            == 0
+        )
+
+    if mutation in {"platform_missing", "platform_duplicate"}:
+        assert (
+            "requires exactly one molt_runtime_platform artifact" in aggregate["error"]
+        )
+    elif mutation == "platform_foreign":
+        assert "foreign package authority" in aggregate["error"]
+    elif mutation == "platform_changed_before":
+        assert "source/image changed before handoff" in aggregate["error"]
+    elif mutation == "platform_changed_after":
+        assert "source/image changed during execution" in aggregate["error"]
+    elif mutation in {
+        "second_child_failure",
+        "duplicate_invocation",
+        "swapped_handoff",
+    }:
+        assert platform_consumer in aggregate["error"]
 
 
 # Independent names from the provider's actual normal-width test modules;
@@ -2099,6 +2308,21 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
                         "wasi_runtime_lifecycle",
                     ],
                 ),
+                (
+                    "provider",
+                    "cargo",
+                    "none",
+                    [
+                        "-p",
+                        "molt-runtime-platform",
+                        "--lib",
+                        "--target",
+                        "wasm32-wasip1",
+                        "--no-default-features",
+                        "--no-run",
+                        "--message-format=json",
+                    ],
+                ),
             ],
         ),
     ],
@@ -2127,8 +2351,196 @@ def test_runtime_cargo_operation_contract_has_exact_commands_and_c_ownership(
         for role, environment, c_units, tail in expected
     ]
     assert [item.native_requirements for item in operations] == [
-        {} if policy == "zlib-wasi" else {"target": ["c"]} for _ in expected
+        {} if c_units == "none" else {"target": ["c"]} for _, _, c_units, _ in expected
     ]
+
+
+def test_wasi_clippy_uses_the_existing_compile_only_cargo_operation():
+    from tools import proof_plan
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    (operation,) = cargo_operations("wasi-clippy", "dev", cargo="/selected/cargo")
+    assert (operation.role, operation.environment, operation.c_units) == (
+        "runtime",
+        "runtime-wasi",
+        "managed-wasi",
+    )
+    assert list(operation.command) == [
+        "/selected/cargo",
+        "clippy",
+        "--config",
+        'build.warnings="deny"',
+        "--locked",
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+        "-p",
+        "molt-runtime",
+        "-p",
+        "molt-tir",
+    ]
+    assert operation.native_requirements == {"target": ["c"]}
+    assert (
+        proof_plan.clippy_diagnostic_format_error(("cargo", *operation.command[1:]))
+        is None
+    )
+    with pytest.raises(ValueError):
+        cargo_operations("wasi-clippy", "dev-fast", cargo="/selected/cargo")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "cargo-failure",
+        "fake-json-success",
+        "empty-output",
+        "human-words",
+        "plan-changed",
+    ],
+)
+def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
+    monkeypatch, tmp_path, selected_cargo, mutation
+):
+    import json
+    from types import SimpleNamespace
+    from molt.cli import runtime_cargo_plan
+
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(gate, "ROOT", source)
+    monkeypatch.setenv("RUSTFLAGS", "--cfg explicit_user_flags")
+    monkeypatch.setattr(gate.truth, "git_source_identity", lambda: support.SOURCE)
+    monkeypatch.setattr(gate.truth, "host_target", lambda: "aarch64-apple-darwin")
+    submitted = [
+        selected_cargo,
+        "clippy",
+        "--config",
+        'build.warnings="deny"',
+        "--locked",
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+        "-p",
+        "molt-runtime",
+        "-p",
+        "molt-tir",
+    ]
+    actual = [
+        *submitted,
+        "--config",
+        'build.build-dir="/owned/selected-build"',
+    ]
+    flags = ("--cfg", "explicit_user_flags", "-C", "link-self-contained=no")
+    checked, builds = [], []
+
+    def verify():
+        checked.append("verified")
+        if mutation == "plan-changed" and builds:
+            raise RuntimeError("selected Cargo input changed during execution")
+
+    def plan(
+        root,
+        *,
+        env,
+        cargo_command,
+        requested_target,
+        host_target,
+        rustflags_transform,
+        required_cargo_capabilities,
+    ):
+        assert required_cargo_capabilities == (
+            cargo_capabilities.CargoCapability.BUILD_DIRECTORY,
+            cargo_capabilities.CargoCapability.WARNINGS_DENY,
+        )
+        assert root == source and list(cargo_command) == submitted
+        assert requested_target == "wasm32-wasip1"
+        assert host_target is None
+        assert rustflags_transform is None
+        assert env["RUSTFLAGS"] == "--cfg explicit_user_flags"
+        return SimpleNamespace(
+            command=tuple(actual),
+            environment=dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(flags)),
+            rustflags=flags,
+            verify=verify,
+        )
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            assert list(argv) == actual, (
+                "execute the admitted plan, not its source argv"
+            )
+            assert checked and not builds
+            assert kwargs["cwd"] == source
+            assert kwargs["timeout"] == 1200
+            assert kwargs["env"]["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(flags)
+            assert "link-arg=--export-table" not in flags
+            builds.append(list(argv))
+            assert Path(kwargs["stdout_capture_path"]).name == "build.stdout.log"
+            assert Path(kwargs["stderr_capture_path"]).name == "build.stderr.log"
+            assert kwargs["capture_tail_bytes"] is None
+            output = "ordinary Cargo output, not JSON\n"
+            if mutation == "fake-json-success":
+                output = '{"reason":"build-finished","success":true}\n'
+            elif mutation == "empty-output":
+                output = ""
+            elif mutation == "human-words":
+                output = "error appears in a package path, not an exit status\n"
+            Path(kwargs["stdout_capture_path"]).write_text(output, encoding="utf-8")
+            Path(kwargs["stderr_capture_path"]).write_text(
+                "lint diagnostic\n", encoding="utf-8"
+            )
+            return SimpleNamespace(
+                stdout=output,
+                stderr="lint diagnostic\n",
+                returncode=101
+                if mutation in {"cargo-failure", "fake-json-success"}
+                else 0,
+            )
+
+    def forbidden_runtime(*_args, **_kwargs):
+        pytest.fail("compile-only Clippy cannot claim libtest or guest execution")
+
+    monkeypatch.setattr(runtime_cargo_plan, "resolve_runtime_cargo_plan", plan)
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    monkeypatch.setattr(
+        gate, "loads_exact", lambda *_a, **_k: pytest.fail("lint verdict parsed output")
+    )
+    monkeypatch.setattr(gate, "execute_child", forbidden_runtime)
+    monkeypatch.setattr(gate.runner, "listed_tests", forbidden_runtime)
+    receipt_root = tmp_path / "receipts"
+    result = gate.main(
+        [
+            "--policy",
+            "wasi-clippy",
+            "--profile",
+            "dev",
+            "--build-timeout-seconds",
+            "1200",
+            "--receipt-root",
+            str(receipt_root),
+        ]
+    )
+    aggregate = json.loads(
+        next(receipt_root.glob("*/aggregate.json")).read_text(encoding="utf-8")
+    )
+    assert builds == [actual]
+    assert aggregate["source_command"] == submitted
+    assert aggregate["build_command"] == actual
+    assert aggregate["resolved_rustflags"] == list(flags)
+    assert aggregate["build_returncode"] == (
+        101 if mutation in {"cargo-failure", "fake-json-success"} else 0
+    )
+    assert (result, aggregate["status"]) == (
+        (0, "success")
+        if mutation in {None, "empty-output", "human-words"}
+        else (1, "failed")
+    )
+    assert aggregate["images"] == {}
+    assert "passed_test_count" not in aggregate
+    assert "build_finished" not in aggregate
+    if mutation in {None, "empty-output", "human-words"}:
+        assert len(checked) >= 2, "the source plan must close after compilation"
 
 
 @pytest.mark.parametrize(
@@ -2149,16 +2561,31 @@ def test_runtime_cargo_operation_contract_refuses_unknown_or_incomplete_policy(
 
 
 def test_runtime_cargo_operation_c_declaration_preserves_supersets_and_roles():
-    from tools.runtime_test_gate_plan import cargo_operations
+    from tools.runtime_test_gate_plan import (
+        cargo_operations,
+        project_native_requirements,
+    )
 
-    (native,) = cargo_operations("semantic", "release-output", cargo="cargo")
-    assert native.admits_native_requirements({"target": ["c", "c++"]})
-    assert not native.admits_native_requirements({})
-    assert not native.admits_native_requirements({"host": ["c"]})
-    assert not native.admits_native_requirements({"target": ["c++"]})
-    (provider,) = cargo_operations("zlib-wasi", "dev-fast", cargo="cargo")
-    assert provider.admits_native_requirements({})
-    assert not provider.admits_native_requirements({"target": ["c"]})
+    native = cargo_operations("semantic", "release-output", cargo="cargo")
+    assert project_native_requirements(native, {"target": ["c", "c++"]}) == (
+        {"target": ["c", "c++"]},
+    )
+    for declaration in ({}, {"host": ["c"]}, {"target": ["c++"]}):
+        with pytest.raises(ValueError, match="C source declaration"):
+            project_native_requirements(native, declaration)
+    provider = cargo_operations("zlib-wasi", "dev-fast", cargo="cargo")
+    assert project_native_requirements(provider, {}) == ({},)
+    with pytest.raises(ValueError, match="no operation owning"):
+        project_native_requirements(provider, {"target": ["c"]})
+    mixed = cargo_operations(
+        "wasi-lifecycle", "dev-fast", cargo="cargo", compiler_host="host"
+    )
+    declaration = {"target": ["c", "c++"], "host": ["c"]}
+    assert project_native_requirements(mixed, declaration) == (
+        declaration,
+        declaration,
+        {},
+    )
 
 
 @pytest.mark.parametrize(

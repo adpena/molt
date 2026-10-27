@@ -76,6 +76,7 @@ def _build_file_wasm(
     try:
         return _run_wasm_test_process(
             cmd,
+            role="tool",
             cwd=root,
             env=env,
             timeout=build_timeout,

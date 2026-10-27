@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import os
 import sys
 from pathlib import Path
@@ -762,7 +764,11 @@ def test_wasm_build_uses_admitted_scratch_and_closes_failed_owners(
             wasm.write_bytes(b"independent artifact")
             manifest.write_text(
                 json.dumps(
-                    {"mode": "linked", "modules": {"linked": {"path": wasm.name}}}
+                    {
+                        "version": WASM_EXECUTION_MANIFEST_VERSION,
+                        "mode": "linked",
+                        "modules": {"linked": {"path": wasm.name}},
+                    }
                 ),
                 encoding="utf-8",
             )
@@ -1415,7 +1421,11 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
         manifest = root / "manifest.json"
         manifest.write_text(
             json.dumps(
-                {"mode": "linked", "modules": {"linked": {"path": linked.name}}}
+                {
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "mode": "linked",
+                    "modules": {"linked": {"path": linked.name}},
+                }
             ),
             encoding="utf-8",
         )

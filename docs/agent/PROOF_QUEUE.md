@@ -43,6 +43,64 @@ Cargo's [artifact messages](https://doc.rust-lang.org/cargo/reference/external-t
 bind observed images to that plan; a successful process exit alone does not.
 These are development proof contracts and add no work to emitted programs.
 
+Both Linux and Mac unit surface-contract owners declare pinned Node for the
+generated Worker tests that compile and instantiate tiny Wasm modules. The
+existing Python-unit setup provisions Node once per selected matrix cell that
+declares it. This adds Node setup and capture to those unit cells without a
+Cargo dependency or build. WASI SDK, optimizer and validator setup remain in the
+dedicated compiled cell; command and job budgets are unchanged.
+
+The dedicated `macos-arm64-py312-compiled` matrix cell retains its whole resource and WASM files, its
+non-slow selection and its 600-second body. Its 1200-second prerequisite projects
+the existing WASM host recipe and builds both actual native resource witness
+inputs and the selected heavy-WASM source/layout inputs sequentially. Shared
+test materializers own the source bytes; linked, split and CLI-run command
+constructors preserve their actual profiles and environments. Final-IR
+reachability and the existing runtime provider select and admit each runtime
+pair. The tests retain their independent oracles, native `molt run` capability
+policy and runtime-product admission. Guest profile defaults and iteration
+profile overrides remain separate. A generic hello build or a raw Cargo
+runtime cannot substitute for these source-selected generations.
+
+The prerequisite's child guards share one elapsed-time budget and retain source
+bytes and build JSON outside temporary scratch. Published WASM products also
+remain under the artifact root for exact-input diagnostics. Preparation builds
+applications as well as runtime pairs; the body still performs its normal build
+and admission. This deliberately repeats frontend/cache work and application
+generation to reuse the existing supported compiler path. For N selected build
+coordinates and K derived runtime identities, that cost scales with their source
+graphs and application bytes; the existing provider deduplicates equal runtime
+identities. There is no second feature planner, cache or guest run in preparation.
+Actual cold preparation, body and whole-job time and memory must be measured;
+successful preparation alone is not semantic execution acceptance.
+
+The Mac semantic body explicitly sets `MOLT_WASM_COMPILE_FAST=1`, using the
+host's existing Cranelift optimization-off policy. This can reduce compilation
+time at the expense of guest throughput; the original complete body must still
+pass. Wasmtime's [fast-compilation guide](https://docs.wasmtime.dev/examples-fast-compilation.html)
+describes the compilation/execution tradeoff, precompilation, compilation caching
+and parallel compilation. Choosing Molt's existing flag for these semantic
+witnesses is a local policy decision, not a new Wasmtime backend or product
+default. The full Linux `wasm.integration.host-boundaries` owner retains the
+default optimizing host policy. A Mac fast-policy pass does not qualify the
+large default-optimization Mac coordinate. No host cache or telemetry is added.
+
+The worker estimate is 20 GiB: the retained
+execution with the earlier 10 GiB estimate observed a 17.98 GiB worker subtree
+and exceeded the 24 GiB aggregate guard with two workers. The canonical capacity
+planner now admits one worker under that grant; its minimum of one does not
+prove a worker fits a smaller hosted runner. No case, timeout or memory limit
+is relaxed. The compiled prerequisite and body run in their own existing
+Python-unit matrix job, so ordinary unit partitions do not divide their memory
+slice. Local Mac family execution requires an explicit `--matrix-cell` because
+both tooling and compiled cells match that host. The additional job repeats
+setup and environment provisioning; its 43-minute budget, hosted capacity and
+cold completion still require actual qualification. The standard arm64
+[`macos-14` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+declares 7 GB of memory. Local execution under an equal byte cap can establish
+that bounded memory cell; runner speed, cold setup and hosted acceptance still
+require the real CI receipt.
+
 LLVM's local and registered unit proof uses the same complete implementation
 image and checked driver target under `release-fast`. Build, test, link and
 Clippy share that profile. The unused string-based LLVM PGO prototype is removed;
@@ -72,6 +130,18 @@ must name a file with an extension, or libuv would append `.com` or `.exe`.
 Rust tool identity resolves the selected physical component before reuse. A change
 to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit
 physical Rust tools do not require a rustup proxy.
+
+The managed `wasi-clippy` operation uses Cargo's `build.warnings="deny"` with
+human diagnostics, preserving its typed WASI SDK, package and capability plan.
+[The pinned Cargo JSON-output limitation](https://github.com/rust-lang/cargo/issues/17519)
+precludes JSON diagnostics for warning enforcement. The existing runtime driver
+retains raw lint output in `build.stdout.log` and `build.stderr.log`; guarded
+Cargo exit status, plan closure and unchanged source decide the result. It does
+not parse human text or claim libtest/guest execution. Artifact-producing policies
+retain complete compiler JSON and their existing parsers/capture names. This adds
+no subprocess, probe, compiler flag variant or cache; it retires lint-only JSON
+parsing and its diagnostic completion field. Warning policy follows
+[Cargo configuration](https://doc.rust-lang.org/cargo/reference/config.html#buildwarnings).
 
 Clippy commands additionally capture the selected `cargo-clippy` launcher and
 its sibling `clippy-driver`, including physical components behind Rustup proxies.
@@ -219,11 +289,28 @@ This classification adds no guest instrumentation. Kernel notifications do not
 identify a writer, and inotify does not directly report mmap stores; this is
 bounded event custody, not proof against every possible external writer.
 
-WASI Cargo library links use the selected SDK's raw linker with Rust's
-self-contained C runtime disabled. C and C++ compilation retain their selected
-driver roles and driver argument grammar. Command and reactor startup objects
-belong only to their respective executable producers; runtime libraries do not
-receive a startup object. Proof-tool selection binds the SDK compiler and its
+Declaring WASI SDK tools publishes tool availability, without selecting a Rust
+command's libc or startup. Each Cargo operation that owns target C sources
+selects its target C ABI explicitly; a pure-Rust sibling keeps Cargo's ordinary
+WASI startup. This follows [Rust's WASI target contract](https://doc.rust-lang.org/stable/rustc/platform-support/wasm32-wasip1.html),
+which separates self-contained Rust builds from external C interoperability.
+The existing Cargo operation driver also owns the compile-only `wasi-clippy`
+policy. Its operation retains the default dev profile, library package scope
+and cold deadline. Warning denial uses Cargo's `build.warnings="deny"` setting,
+following [Clippy's recommendation](https://doc.rust-lang.org/stable/clippy/usage.html#elevating-warning-to-errors).
+The selected Cargo must support that setting (1.97 or newer), admitted through
+the same capability/version authority as resource-keyed build directories.
+Managed Clippy refuses forwarded compiler arguments: its workspace wrapper also
+runs host build scripts, so target ABI flags cannot travel in that lane.
+Changed-package lint selection reads the same operation. Successful completion
+requires Cargo's terminal success record and command status; it does not qualify
+a runtime or guest test cell.
+
+Molt runtime WASI C-ABI library links use the selected SDK's raw linker with
+Rust's self-contained C runtime disabled. C and C++ compilation retain their
+selected driver roles and driver argument grammar. Command and reactor startup
+objects belong only to their respective executable producers; runtime libraries
+do not receive a startup object. Proof-tool selection binds the SDK compiler and its
 resource generation separately from the native LLVM compiler. Selection,
 resource capture, identity checks and proof instrumentation run in development
 and compiler tooling, outside emitted guest execution.
@@ -234,6 +321,14 @@ plan. The selected native search context resolves the original SDK object;
 neither dependency flags nor production runtime libraries acquire that entry
 point. The lifecycle gate must link and execute this image through the actual
 production host before claiming a passing WASI lifecycle cell.
+
+That same policy also owns the platform crate's separate pure-Rust WASI libtest.
+It uses Cargo's ordinary WASI command startup and proves Molt's conversion of
+Rust standard-library errors into guest errno on WASI. The runtime image remains
+the managed SDK C-ABI witness. Both images execute through the existing
+manifest-bound production-host command path, with separate captured image
+identities and exact Rust-owned test rosters. The pure-Rust operation acquires no
+C-tool requirement.
 
 Compiler-producing commands declare the helpers their target and profile can
 execute. Native stripping and WASM optimization reuse the compiler's existing
@@ -323,8 +418,17 @@ CAS before publication. Original argv, image paths and raw descendant records
 stay unchanged; historical readers validate retained bytes against those recorded
 execution identities. A copy is evidence, never a claim that the copy was run.
 The runtime gate's compiler-only build records also retain its explicitly observed
-WASI guest, production host and emitted ABI dynamic-library files. Generic truth
-receipts retain executed images and admitted self-image streams; they do not claim
+WASI guest, production host and emitted ABI dynamic-library files. All runtime
+gate policies put their run directories under the existing canonical
+`proof_scratch_root/runtime-gate-runs`: queue-issued scratch wins, otherwise DX
+selects scratch from `MOLT_EXT_ROOT` and the checkout's custody layout. An explicit
+`--receipt-root` remains operator-owned. Native semantic/allocation, WASI lifecycle,
+provider and compile-only lint records share this output owner; none defaults to
+creating a `proof-receipts` directory in the source checkout. CI diagnostics use
+the same `build-control.outputs.proof_scratch_root` projection, including
+interrupted aggregate/child/CAS evidence, without changing strict proof receipt
+locations. Generic truth receipts retain executed images and admitted self-image
+streams; they do not claim
 a complete replay closure of every loader dependency. Mixed test stdout is never
 used to discover extra files for retention. L7/list cost reports remain advisory
 measurements bound to recorded fingerprints, without retained-executable replay;

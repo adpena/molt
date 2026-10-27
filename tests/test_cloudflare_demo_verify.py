@@ -12,6 +12,7 @@ from molt.wasm_artifact import (
     wasm_callable_table_manifest_summary,
 )
 from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+from tests.wasm_execution_manifest import split_wasm_execution_manifest
 
 
 EMPTY_CALLABLE_WASM = attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00")
@@ -58,6 +59,50 @@ def test_extract_live_url_prefers_workers_dev_url() -> None:
     )
 
 
+def test_cloudflare_bundle_rejects_incompatible_execution_version(
+    tmp_path: Path,
+) -> None:
+    from tools import cloudflare_demo_verify as verify
+
+    (tmp_path / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
+    for filename in ("app.wasm", "molt_runtime.wasm"):
+        (tmp_path / filename).write_bytes(EMPTY_CALLABLE_WASM)
+    config = tmp_path / "wrangler.jsonc"
+    config.write_text(
+        json.dumps(
+            {
+                "name": "molt-version-admission",
+                "main": "worker.js",
+                "compatibility_date": "2026-03-28",
+                "no_bundle": True,
+                "find_additional_modules": True,
+                "rules": [
+                    {"type": "ESModule", "globs": ["**/*.js"], "fallthrough": False},
+                    {
+                        "type": "CompiledWasm",
+                        "globs": ["**/*.wasm"],
+                        "fallthrough": False,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = split_wasm_execution_manifest(EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM)
+    path = tmp_path / "manifest.json"
+    for version in ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0]:
+        manifest = dict(original)
+        if version == "missing":
+            del manifest["version"]
+        else:
+            manifest["version"] = version
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(
+            RuntimeError, match="Molt deployment manifest version must be 3"
+        ):
+            verify.validate_bundle_contract(tmp_path, config)
+
+
 def test_validate_bundle_contract_accepts_split_runtime_layout(
     tmp_path: Path,
 ) -> None:
@@ -71,13 +116,10 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
-                "version": 2,
-                "mode": "split-runtime",
+                **split_wasm_execution_manifest(
+                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
+                ),
                 "abi": MANIFEST_ABI,
-                "modules": {
-                    "app": {"path": "app.wasm", "size": 1},
-                    "runtime": {"path": "molt_runtime.wasm", "size": 1},
-                },
             }
         )
         + "\n",
@@ -136,13 +178,10 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
-                "version": 2,
-                "mode": "split-runtime",
+                **split_wasm_execution_manifest(
+                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
+                ),
                 "abi": MANIFEST_ABI,
-                "modules": {
-                    "app": {"path": "app.wasm", "size": 1},
-                    "runtime": {"path": "molt_runtime.wasm", "size": 1},
-                },
             }
         )
         + "\n",
@@ -194,12 +233,9 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
-                "version": 2,
-                "mode": "split-runtime",
-                "modules": {
-                    "app": {"path": "app.wasm", "size": 1},
-                    "runtime": {"path": "molt_runtime.wasm", "size": 1},
-                },
+                **split_wasm_execution_manifest(
+                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
+                ),
             }
         )
         + "\n",
@@ -247,13 +283,10 @@ def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
-                "version": 2,
-                "mode": "split-runtime",
+                **split_wasm_execution_manifest(
+                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
+                ),
                 "abi": MANIFEST_ABI,
-                "modules": {
-                    "app": {"path": "app.wasm", "size": 1},
-                    "runtime": {"path": "molt_runtime.wasm", "size": 1},
-                },
             }
         )
         + "\n",

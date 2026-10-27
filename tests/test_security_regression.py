@@ -6,6 +6,11 @@ and revision string sanitisation.
 
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import (
+    EMPTY_WASM_MODULE,
+    write_wasm_execution_manifest,
+)
+
 import json
 import pytest
 
@@ -24,6 +29,9 @@ class TestGenerateWorkerInjectionPrevention:
         from tools.generate_worker import generate_worker
 
         output = tmp_path / "worker.js"
+        module = tmp_path / "worker_linked.wasm"
+        module.write_bytes(EMPTY_WASM_MODULE)
+        write_wasm_execution_manifest(tmp_path, linked=module)
         generate_worker(output, ["fs.read'; alert(1); //"])
         content = output.read_text(encoding="utf-8")
         # json.dumps produces double-quoted strings; a raw single-quote
@@ -36,6 +44,9 @@ class TestGenerateWorkerInjectionPrevention:
         from tools.generate_worker import generate_worker
 
         output = tmp_path / "worker.js"
+        module = tmp_path / "worker_linked.wasm"
+        module.write_bytes(EMPTY_WASM_MODULE)
+        write_wasm_execution_manifest(tmp_path, linked=module)
         generate_worker(output, ["fs.read`${evil}`"])
         content = output.read_text(encoding="utf-8")
         assert json.dumps(["fs.read`${evil}`"]) in content
@@ -44,6 +55,9 @@ class TestGenerateWorkerInjectionPrevention:
         from tools.generate_worker import generate_worker
 
         output = tmp_path / "worker.js"
+        module = tmp_path / "worker_linked.wasm"
+        module.write_bytes(EMPTY_WASM_MODULE)
+        write_wasm_execution_manifest(tmp_path, linked=module)
         generate_worker(output, ["<script>alert(1)</script>"])
         content = output.read_text(encoding="utf-8")
         assert json.dumps(["<script>alert(1)</script>"]) in content
@@ -55,6 +69,9 @@ class TestGenerateWorkerInjectionPrevention:
 
         caps = ["fs.read", "net"]
         output = tmp_path / "worker.js"
+        module = tmp_path / "worker_linked.wasm"
+        module.write_bytes(EMPTY_WASM_MODULE)
+        write_wasm_execution_manifest(tmp_path, linked=module)
         generate_worker(output, caps)
         content = output.read_text(encoding="utf-8")
         assert json.dumps(caps) in content

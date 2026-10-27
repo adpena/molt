@@ -5,6 +5,8 @@ from typing import Iterable, Mapping
 
 from molt._wasm_abi_generated import (
     WASM_CALL_INDIRECT_IMPORTS,
+    WASM_SYNTHETIC_ERRNO,
+    WASM_WASI_PREVIEW1_ERRNO,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_DEFAULT_APP_TABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
@@ -16,6 +18,10 @@ from molt._wasm_abi_generated import (
     wasm_runtime_import_name,
 )
 from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
+from molt.wasm_artifact import (
+    require_current_wasm_execution_manifest,
+    wasm_execution_manifest_module_descriptor,
+)
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_canonical_import_name,
@@ -224,6 +230,7 @@ def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
 
 def _generate_split_worker_js(
     *,
+    deployment_manifest: Mapping[str, object],
     resolved_capability_policy: ResolvedRuntimePolicy,
     shared_memory_initial_pages: int,
     shared_table_initial: int,
@@ -237,6 +244,17 @@ def _generate_split_worker_js(
     CDN independently of the app module.  Both modules share linear memory
     through WASI imports.
     """
+    require_current_wasm_execution_manifest(deployment_manifest)
+    if deployment_manifest.get("mode") != "split-runtime":
+        raise ValueError("split worker requires a split-runtime deployment manifest")
+    for role, filename in (("app", "app.wasm"), ("runtime", "molt_runtime.wasm")):
+        descriptor = wasm_execution_manifest_module_descriptor(
+            deployment_manifest, role
+        )
+        if descriptor["path"] != filename:
+            raise ValueError(
+                "split worker requires compiler-owned fixed lexical module paths"
+            )
     runtime_import_names = tuple(
         dict.fromkeys(
             (
@@ -301,15 +319,32 @@ import runtimeModule from "./molt_runtime.wasm";
 import appModule from "./app.wasm";
 
 const {
+  requireMoltDeploymentManifest,
   bindRuntimeFunctionImports,
   callableTableFromModule,
   callableTableSignature,
   runtimeExceptionPending,
   verifyCallableTableEntries,
 } = globalThis.MoltWasmLoaderBridge;
+const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
 const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
 const appCallableTable = callableTableFromModule(appModule, "app wasm");
+
+// The ABI generator owns both protocols. Allocate immutable views once per module.
+const GUEST_ERRNO = Object.freeze(__MOLT_SYNTHETIC_ERRNO__);
+const WASI_ERRNO = Object.freeze(__MOLT_WASI_PREVIEW1_ERRNO__);
+const { ENOSYS, EINVAL, EBADF, ENOENT, ENOSPC, EROFS, EISDIR, ENOTDIR, ESPIPE } = GUEST_ERRNO;
+const {
+  EBADF: WASI_ERRNO_BADF,
+  EINVAL: WASI_ERRNO_INVAL,
+  EISDIR: WASI_ERRNO_ISDIR,
+  ENOENT: WASI_ERRNO_NOENT,
+  ENOSYS: WASI_ERRNO_NOSYS,
+  ENOTDIR: WASI_ERRNO_NOTDIR,
+  EROFS: WASI_ERRNO_ROFS,
+  ESPIPE: WASI_ERRNO_SPIPE,
+} = WASI_ERRNO;
 
 class ProcExit { constructor(code) { this.code = code; } }
 
@@ -354,7 +389,7 @@ export default {
     const writeErrno = (err, fallback) => {
       if (err && typeof err.message === "string") {
         if (err.message.startsWith("ENOENT")) return ENOENT;
-        if (err.message.startsWith("ENOSPC")) return 28;
+        if (err.message.startsWith("ENOSPC")) return ENOSPC;
         if (err.message.startsWith("EINVAL")) return EINVAL;
       }
       return fallback;
@@ -373,15 +408,6 @@ export default {
     ];
     const envEncoded = envVars.map(e => encoder.encode(e + "\\0"));
     const envTotalSize = envEncoded.reduce((s, e) => s + e.length, 0);
-    const ENOSYS = 38;
-    const EINVAL = 22;
-    const EBADF = 9;
-    const ENOENT = 2;
-    const ENOSPC = 28;
-    const EROFS = 30;
-    const EISDIR = 21;
-    const ENOTDIR = 20;
-    const ESPIPE = 29;
     const QNAN = 0x7ff8000000000000n;
     const TAG_NONE = 0x0003000000000000n;
     const NONE_BITS = QNAN | TAG_NONE;
@@ -407,14 +433,6 @@ export default {
     const WASI_WHENCE_SET = 0;
     const WASI_WHENCE_CUR = 1;
     const WASI_WHENCE_END = 2;
-    const WASI_ERRNO_BADF = 8;
-    const WASI_ERRNO_INVAL = 28;
-    const WASI_ERRNO_ISDIR = 31;
-    const WASI_ERRNO_NOENT = 44;
-    const WASI_ERRNO_NOSYS = 52;
-    const WASI_ERRNO_NOTDIR = 54;
-    const WASI_ERRNO_ROFS = 69;
-    const WASI_ERRNO_SPIPE = 70;
     const wasiFiles = new Map();
     const wasiPreopens = [
       { fd: 3, path: "/bundle" },
@@ -1139,53 +1157,53 @@ export default {
       molt_time_timezone_host()  { return 0n; },
       molt_time_local_offset_host() { return 0n; },
       molt_getpid_host()         { return 1n; },
-      molt_socket_clone_host()   { return -1n; },
-      molt_socket_detach_host()  { return -1n; },
-      molt_socket_accept_host()  { return -1n; },
-      molt_socket_new_host()     { return -1n; },
-      molt_time_tzname_host()    { return -1; },
-      molt_process_write_host()  { return -1; },
-      molt_process_close_stdin_host() { return -1; },
-      molt_socket_wait_host()    { return -1; },
+      molt_socket_clone_host()   { return -BigInt(ENOSYS); },
+      molt_socket_detach_host()  { return -BigInt(ENOSYS); },
+      molt_socket_accept_host()  { return -BigInt(ENOSYS); },
+      molt_socket_new_host()     { return -BigInt(ENOSYS); },
+      molt_time_tzname_host()    { return -ENOSYS; },
+      molt_process_write_host()  { return -ENOSYS; },
+      molt_process_close_stdin_host() { return -ENOSYS; },
+      molt_socket_wait_host()    { return -ENOSYS; },
       molt_db_exec_host()        { return -1; },
       molt_db_query_host()       { return -1; },
-      molt_ws_recv_host()        { return -1; },
-      molt_ws_send_host()        { return -1; },
-      molt_ws_close_host()       { return -1; },
+      molt_ws_recv_host()        { return -ENOSYS; },
+      molt_ws_send_host()        { return -ENOSYS; },
+      molt_ws_close_host()       { return -ENOSYS; },
       molt_socket_poll_host()    { return 0; },
       molt_ws_poll_host()        { return 0; },
-      molt_process_terminate_host() { return -1; },
+      molt_process_terminate_host() { return -ENOSYS; },
       molt_os_close_host()       { return 0; },
-      molt_process_kill_host()   { return -1; },
-      molt_process_wait_host()   { return -1; },
-      molt_process_spawn_host()  { return -1; },
-      molt_process_stdio_host()  { return -1; },
-      molt_socket_bind_host()    { return -1; },
+      molt_process_kill_host()   { return -ENOSYS; },
+      molt_process_wait_host()   { return -ENOSYS; },
+      molt_process_spawn_host()  { return -ENOSYS; },
+      molt_process_stdio_host()  { return -ENOSYS; },
+      molt_socket_bind_host()    { return -ENOSYS; },
       molt_socket_close_host()   { return 0; },
-      molt_socket_connect_host() { return -1; },
-      molt_socket_connect_ex_host() { return -1; },
-      molt_socket_getaddrinfo_host() { return -1; },
-      molt_socket_gethostname_host() { return -1; },
-      molt_socket_getpeername_host() { return -1; },
-      molt_socket_getservbyname_host() { return -1; },
-      molt_socket_getservbyport_host() { return -1; },
-      molt_socket_getsockname_host() { return -1; },
-      molt_socket_getsockopt_host() { return -1; },
+      molt_socket_connect_host() { return -ENOSYS; },
+      molt_socket_connect_ex_host() { return -ENOSYS; },
+      molt_socket_getaddrinfo_host() { return -ENOSYS; },
+      molt_socket_gethostname_host() { return -ENOSYS; },
+      molt_socket_getpeername_host() { return -ENOSYS; },
+      molt_socket_getservbyname_host() { return -ENOSYS; },
+      molt_socket_getservbyport_host() { return -ENOSYS; },
+      molt_socket_getsockname_host() { return -ENOSYS; },
+      molt_socket_getsockopt_host() { return -ENOSYS; },
       molt_socket_has_ipv6_host() { return 0; },
-      molt_socket_listen_host()  { return -1; },
-      molt_socket_recv_host()    { return -1; },
-      molt_socket_recvfrom_host() { return -1; },
-      molt_socket_recvmsg_host() { return -1; },
-      molt_socket_send_host()    { return -1; },
-      molt_socket_sendmsg_host() { return -1; },
-      molt_socket_sendto_host()  { return -1; },
-      molt_socket_setsockopt_host() { return -1; },
-      molt_socket_shutdown_host() { return -1; },
-      molt_socket_socketpair_host() { return -1; },
+      molt_socket_listen_host()  { return -ENOSYS; },
+      molt_socket_recv_host()    { return -ENOSYS; },
+      molt_socket_recvfrom_host() { return -ENOSYS; },
+      molt_socket_recvmsg_host() { return -ENOSYS; },
+      molt_socket_send_host()    { return -ENOSYS; },
+      molt_socket_sendmsg_host() { return -ENOSYS; },
+      molt_socket_sendto_host()  { return -ENOSYS; },
+      molt_socket_setsockopt_host() { return -ENOSYS; },
+      molt_socket_shutdown_host() { return -ENOSYS; },
+      molt_socket_socketpair_host() { return -ENOSYS; },
       molt_db_host_poll()        { return 0; },
       molt_process_host_poll()   { return 0; },
-      molt_ws_connect_host()     { return -1; },
-      [WEBGPU_DISPATCH_HOST_IMPORT]: () => -38,
+      molt_ws_connect_host()     { return -ENOSYS; },
+      [WEBGPU_DISPATCH_HOST_IMPORT]: () => -ENOSYS,
     };
 
     for (const indirectName of callIndirectImportNames) {
@@ -1321,6 +1339,20 @@ export default {
     return (
         worker_js.replace(
             "__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages)
+        )
+        .replace(
+            "__MOLT_DEPLOYMENT_MANIFEST__",
+            json.dumps(
+                {
+                    key: deployment_manifest[key]
+                    for key in ("version", "mode", "modules")
+                },
+                sort_keys=True,
+            ),
+        )
+        .replace("__MOLT_SYNTHETIC_ERRNO__", json.dumps(dict(WASM_SYNTHETIC_ERRNO)))
+        .replace(
+            "__MOLT_WASI_PREVIEW1_ERRNO__", json.dumps(dict(WASM_WASI_PREVIEW1_ERRNO))
         )
         .replace("__MOLT_RESOLVED_POLICY_ENV__", resolved_policy_env_json)
         .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))

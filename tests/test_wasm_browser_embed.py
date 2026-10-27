@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import split_wasm_execution_manifest
+
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import hashlib
 import json
 import os
@@ -195,7 +199,11 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
             + _wasm_section(10, _wasm_vec(runtime_bodies))
         )
     (tmp_path / "app.wasm").write_bytes(app)
+    (tmp_path / "molt_runtime.wasm").write_bytes((tmp_path / "exact.wasm").read_bytes())
     worker = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            app, (tmp_path / "molt_runtime.wasm").read_bytes()
+        ),
         resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
@@ -285,7 +293,7 @@ console.log('four hosts: exact identity, startup binding, complete missing-expor
         encoding="utf-8",
     )
     run = _run_wasm_test_process(
-        ["node", str(script)], cwd=root, env=os.environ, timeout=30
+        ["node", str(script)], role="guest-host", cwd=root, env=os.environ, timeout=30
     )
     assert run.returncode == 0, run.stderr
     assert "four hosts: exact identity" in run.stdout
@@ -334,7 +342,7 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
     )
 
     return {
-        "version": 2,
+        "version": WASM_EXECUTION_MANIFEST_VERSION,
         "mode": "split-runtime",
         "shared_memory_initial_pages": 1,
         "shared_table_initial": 1,
@@ -523,6 +531,7 @@ console.log(JSON.stringify(imports));
 
     run = _run_wasm_test_process(
         ["node", str(script), str(wasm_path)],
+        role="tool",
         cwd=root,
         env=os.environ,
         timeout=30,
@@ -568,6 +577,7 @@ console.log(JSON.stringify(imports));
 
     run = _run_wasm_test_process(
         ["node", str(script), str(wasm_path)],
+        role="tool",
         cwd=root,
         env=os.environ,
         timeout=30,
@@ -705,6 +715,7 @@ try {{
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             env=os.environ,
             timeout=30,
@@ -779,6 +790,7 @@ try {{
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             env=os.environ,
             timeout=30,
@@ -859,6 +871,7 @@ console.log(JSON.stringify(Array.from(output)));
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -925,6 +938,7 @@ console.log(imports[symbol](35n).toString());
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -990,6 +1004,7 @@ console.log(imports[symbol]().toString(16));
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1055,6 +1070,7 @@ try {{
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1121,6 +1137,7 @@ console.log(imports[symbol](37n).toString());
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1175,6 +1192,7 @@ try {{
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1240,6 +1258,7 @@ try {{
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1287,6 +1306,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
             "--out-dir",
             str(package_dir),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1446,6 +1466,7 @@ try {{
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1460,3 +1481,89 @@ try {{
         }
     finally:
         server.shutdown()
+
+
+def test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate(
+    tmp_path: Path,
+) -> None:
+    """Actual Wasm imports distinguish preview1 EBADF8 from Molt ENOSYS38."""
+    root = Path(__file__).resolve().parents[1]
+    types = [
+        _wasm_func_type([0x7F, 0x7F], [0x7F]),
+        _wasm_func_type([0x7E], [0x7F]),
+        _wasm_func_type([], [0x7F]),
+    ]
+    raw = b"\x00" + _wasm_i32_const(99) + _wasm_i32_const(64) + b"\x10\x00\x0b"
+    molt = b"\x00" + _wasm_i64_const(-1) + b"\x10\x01\x0b"
+    app = attested_empty_callable_table(
+        b"\x00asm\x01\x00\x00\x00"
+        + _wasm_section(1, _wasm_vec(types))
+        + _wasm_section(
+            2,
+            _wasm_vec(
+                [
+                    _wasm_import_func("wasi_snapshot_preview1", "fd_prestat_get", 0),
+                    _wasm_import_func("env", "molt_socket_close_host", 1),
+                    _wasm_import_memory("env", "memory", 1),
+                ]
+            ),
+        )
+        + _wasm_section(3, _wasm_vec([_wasm_u32(2), _wasm_u32(2)]))
+        + _wasm_section(
+            7,
+            _wasm_vec(
+                [
+                    _wasm_export("raw_errno", 0, 2),
+                    _wasm_export("molt_errno", 0, 3),
+                    _wasm_export("memory", 2, 0),
+                ]
+            ),
+        )
+        + _wasm_section(
+            10,
+            _wasm_vec(
+                [
+                    _wasm_u32(len(raw)) + raw,
+                    _wasm_u32(len(molt)) + molt,
+                ]
+            ),
+        )
+    )
+    runtime = _runtime_lifetime_wasm()
+    manifest = _webgpu_embed_manifest(app, runtime)
+    manifest["target_features"] = {
+        "authority": "target_feature_manifest",
+        "profile": "wasm-browser",
+        "required_host_imports": {"webgpu": []},
+        "browser_probes": {"webgpu": {"required": False}},
+    }
+    (tmp_path / "app.wasm").write_bytes(app)
+    (tmp_path / "molt_runtime.wasm").write_bytes(runtime)
+    handler = type("_ErrnoEmbedHandler", (_StaticDirHandler,), {"root": tmp_path})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        script = tmp_path / "errno_domains.mjs"
+        uri = (root / "wasm/browser_embed.js").as_uri()
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
+        script.write_text(
+            f"import {{loadMoltBrowserEmbed}} from {json.dumps(uri)};\n"
+            f"const embed = await loadMoltBrowserEmbed({{baseUrl:{json.dumps(base)},manifest:{json.dumps(manifest)}}});\n"
+            "try { console.log(JSON.stringify([embed.execute(() => embed.appInstance.exports.raw_errno()),"
+            "embed.execute(() => embed.appInstance.exports.molt_errno())])); } finally { embed.dispose(); }\n",
+            encoding="utf-8",
+        )
+        result = _run_wasm_test_process(
+            ["node", str(script)],
+            role="guest-host",
+            cwd=root,
+            env=os.environ,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [8, -38]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

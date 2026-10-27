@@ -28,7 +28,7 @@ from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import frontend_integration as _frontend_integration
 from molt.cli import frontend_worker as _frontend_worker
-from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
+from molt.cli.build_request import BuildProfile, TypeHintPolicy
 from molt.cli.models import (
     _FrontendIntegrationState,
     _FrontendLayerPlan,
@@ -83,7 +83,6 @@ class _FrontendLayerExecutionContext:
     module_graph: Mapping[str, Path]
     module_source_catalog: _ModuleSourceCatalog
     project_root: Path | None
-    parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
     type_facts: TypeFacts | None
     enable_phi: bool
@@ -142,7 +141,6 @@ def _prepare_frontend_execution(
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path,
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -191,7 +189,6 @@ def _prepare_frontend_execution(
         module_graph=module_graph,
         module_source_catalog=module_source_catalog,
         project_root=project_root,
-        parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         type_facts=type_facts,
         enable_phi=enable_phi,
@@ -227,7 +224,6 @@ def _prepare_frontend_execution(
         module_source_catalog=module_source_catalog,
         generated_module_source_paths=generated_module_source_paths,
         project_root=project_root,
-        parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         type_facts=type_facts,
         enable_phi=enable_phi,
@@ -461,7 +457,6 @@ def _run_frontend_parallel_layer_batches(
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
-    parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
@@ -512,7 +507,6 @@ def _run_frontend_parallel_layer_batches(
                 module_source_catalog=module_source_catalog,
                 project_root=project_root,
                 known_classes_snapshot=known_classes_snapshot,
-                parse_codec=parse_codec,
                 type_hint_policy=type_hint_policy,
                 type_facts=type_facts,
                 enable_phi=enable_phi,
@@ -894,7 +888,6 @@ def _run_frontend_layer(
                 module_graph=execution_context.module_graph,
                 module_source_catalog=execution_context.module_source_catalog,
                 project_root=execution_context.project_root,
-                parse_codec=execution_context.parse_codec,
                 type_hint_policy=execution_context.type_hint_policy,
                 type_facts=execution_context.type_facts,
                 enable_phi=execution_context.enable_phi,

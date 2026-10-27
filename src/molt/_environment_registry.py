@@ -1804,20 +1804,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "msgpack",
-      "kind": "enum",
-      "name": "MOLT_CODEC",
-      "output_neutral": false,
-      "owner": "tools/bench.py",
-      "summary": "Structured codec the bench, molt_diff and conformance harnesses pass to the build server and to `molt build --codec`; default msgpack when unset.",
-      "values": [
-        "msgpack",
-        "cbor",
-        "json"
-      ]
-    },
-    {
       "audience": "user",
       "default": "",
       "kind": "string",

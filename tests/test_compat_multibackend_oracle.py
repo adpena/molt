@@ -21,6 +21,7 @@ deterministic regression that the divergence logic itself is correct.
 from __future__ import annotations
 
 import inspect
+import builtins
 from dataclasses import fields, replace
 import hashlib
 import multiprocessing
@@ -158,6 +159,7 @@ def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):
     # This isolates the adapter's output boundary; it does not fake a compiled
     # WASM execution claim. The real guarded capture is exercised above.
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -210,6 +212,7 @@ def test_wasm_runtime_cwd_uses_owned_leaf_without_rebasing_inputs(
     data.write_text("explicit data", encoding="utf-8")
     environment["MOLT_CWD_PROBE_INPUT"] = str(data)
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -303,6 +306,7 @@ def test_adapter_child_receives_atomic_selected_capabilities(
         MOLT_CAPABILITY_TIER="none", MOLT_CAPABILITIES="poison.inherited"
     )
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities=declared,
@@ -363,6 +367,7 @@ def test_wasm_host_warnings_are_retained_without_filtering_child_stderr(
     for name in ("NODE_NO_WARNINGS", "NODE_OPTIONS", "NODE_REDIRECT_WARNINGS"):
         environment.pop(name, None)
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -405,6 +410,7 @@ def test_wasm_host_warnings_are_retained_without_filtering_child_stderr(
 
 def test_wasm_host_warning_read_failure_cannot_pass(tmp_path, monkeypatch):
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -458,6 +464,7 @@ def test_cross_backend_comparison_uses_child_stream_not_guard_diagnostics():
 def test_backend_receipt_hashes_exact_child_bytes():
     stdout, stderr = b"\xff\r\n", b"\x00\xfe\r\n"
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -558,6 +565,7 @@ def test_adapter_test_supplied_directory_is_not_retired(tmp_path, monkeypatch):
         lambda _backend, _file, run, **_kwargs: run(tmp_path),
     )
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -697,6 +705,7 @@ class _FakeAdapter:
 def test_backend_execution_context_requires_canonical_target_authority() -> None:
     with pytest.raises(TypeError, match="TargetPythonVersion"):
         compat_backends.BackendExecutionContext(  # type: ignore[arg-type]
+            molt_cli_python=sys.executable,
             target_python="3.14",
             build_profile="dev",
             capabilities="",
@@ -707,6 +716,7 @@ def test_backend_execution_context_requires_canonical_target_authority() -> None
         )
     with pytest.raises(ValueError, match="must be canonical"):
         compat_backends.BackendExecutionContext(
+            molt_cli_python=sys.executable,
             target_python=TargetPythonVersion(3, 14, 1),
             build_profile="dev",
             capabilities="",
@@ -718,7 +728,7 @@ def test_backend_execution_context_requires_canonical_target_authority() -> None
 
 
 @pytest.mark.parametrize("target_python", ("3.13", "3.14"))
-@pytest.mark.parametrize("backend", ("wasm", "llvm", "luau"))
+@pytest.mark.parametrize("backend", ("wasm", "llvm", "luau", "native"))
 @pytest.mark.parametrize("stdlib_profile", (None, "micro", "full"))
 def test_cross_backend_build_command_binds_target_python(
     monkeypatch: pytest.MonkeyPatch,
@@ -727,8 +737,20 @@ def test_cross_backend_build_command_binds_target_python(
     backend: str,
     stdlib_profile: str | None,
 ) -> None:
-    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
+    selected = str(tmp_path / "selected CLI python")
+    monkeypatch.setenv("MOLT_DIFF_MOLT_PYTHON", "conflicting-ambient-python")
+    original_import = builtins.__import__
+
+    def import_without_harness_alias(
+        name, globals=None, locals=None, fromlist=(), level=0
+    ):
+        if name == "molt_diff":
+            pytest.fail("backend selection must not import the running harness")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_harness_alias)
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=selected,
         target_python=_parse_target_python_version(target_python),
         build_profile="release",
         capabilities="fs.read",
@@ -754,6 +776,9 @@ def test_cross_backend_build_command_binds_target_python(
         context,
     )
 
+    # JIT also uses this builder, with the native target and its tier arguments.
+    assert command[:4] == [selected, "-m", "molt.cli", "build"]
+
     assert command.count("--python-version") == 1
     assert command[command.index("--python-version") + 1] == target_python
     assert command[command.index("--build-profile") + 1] == "release"
@@ -769,6 +794,7 @@ def test_cross_backend_build_command_binds_target_python(
 def test_backend_execution_context_rejects_invalid_stdlib_profile() -> None:
     with pytest.raises(ValueError, match="MOLT_DIFF_STDLIB_PROFILE"):
         compat_backends.BackendExecutionContext(
+            molt_cli_python=sys.executable,
             target_python=_parse_target_python_version("3.12"),
             build_profile="dev",
             capabilities="",
@@ -1049,6 +1075,7 @@ def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
     from molt.cli import run_tier
 
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -1062,6 +1089,7 @@ def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
 
     def guarded(command, **kwargs):
         if kwargs["prefix"] == "MOLT_COMPAT_JIT_BUILD":
+            assert command[0] == context.molt_cli_python
             assert command[command.index("--output") + 1] == str(image)
             image.write_text("#!/bin/molt-jit --image\n", encoding="utf-8")
             payload = {"data": {"artifacts": {"runner": "/bin/molt-jit"}}}
@@ -1268,6 +1296,10 @@ def test_all_backends_receive_one_explicit_untrusted_test_context(
         "# MOLT_ENV: MOLT_CAPABILITIES=net\nprint(42)\n",
         encoding="utf-8",
     )
+    selected_cli_python = "/selected/context CLI python"
+    monkeypatch.setattr(
+        molt_diff, "_resolve_molt_cli_python", lambda: selected_cli_python
+    )
     monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
     monkeypatch.setenv("MOLT_CAPABILITIES", "poison.inherited")
     retired_overrides = {
@@ -1299,6 +1331,7 @@ def test_all_backends_receive_one_explicit_untrusted_test_context(
     assert status == "pass"
     assert len(native_contexts) == 1
     context = native_contexts[0]
+    assert context.molt_cli_python == selected_cli_python
     for target in targets[1:]:
         assert [_dispatch_view(c) for c in registry[target].contexts] == [
             _dispatch_view(context)
@@ -1578,8 +1611,8 @@ def test_all_adapters_preserve_phase_failure(
         "_with_adapter_scratch",
         lambda _backend, _file, run, **_kwargs: run(tmp_path),
     )
-    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -1643,6 +1676,7 @@ def test_all_adapters_preserve_phase_failure(
 
 def test_native_adapter_preserves_timeout():
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -1946,6 +1980,7 @@ def test_native_first_failure_is_terminal_and_preserves_selection(
         molt_diff, "_COMPAT_BACKEND_REGISTRY", compat_backends.build_registry(run)
     )
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -2370,6 +2405,7 @@ def test_native_failure_cannot_replace_the_selected_budget_or_outcome(
     )
     budget = compat_backends.ItemBudget.start(policy, ("native",))
     context = compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",

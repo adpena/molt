@@ -40,6 +40,7 @@ pub(super) fn add_function() -> TirFunction {
 }
 
 mod basic_roundtrip;
+mod block_order;
 mod bool_ops;
 mod entry_transport;
 mod loop_guards;

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
+import json
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 if TYPE_CHECKING:
     from packaging.requirements import Requirement
 
 from molt.exact_json import canonical_json_sha256
-from molt.python_identity_common import PythonEnvironmentIdentityError
+from molt.python_identity_common import PythonEnvironmentIdentityError, _valid_sha256
 from molt.python_environment_custody import validate_python_environment_identity
 from molt.python_runtime_identity import validate_python_runtime_identity
 from molt.python_environment_location import (
@@ -69,16 +71,15 @@ class _SourceBuildCustody(_SourceBuildAddress):
 
 
 @dataclass(frozen=True)
-class DevelopmentEnvironmentAdmission:
-    """Operation intent carried into the existing selected-image capture."""
+class DevelopmentEnvironmentRequest:
+    """Checkout/Python/group intent, independent of selection or proof role."""
 
     repo_root: Path
     python: str | None
     groups: tuple[str, ...]
 
-    def probe_arguments(self) -> tuple[str, ...]:
+    def intent_arguments(self) -> tuple[str, ...]:
         return (
-            "--admit-published-environment",
             "--development-checkout",
             str(self.repo_root),
             *(() if self.python is None else ("--development-python", self.python)),
@@ -88,6 +89,59 @@ class DevelopmentEnvironmentAdmission:
                 for value in ("--development-group", group)
             ),
         )
+
+
+class _DevelopmentSelectionResult(StrEnum):
+    COMPLETE = "molt.development-environment-selection.v1"
+
+
+class _DevelopmentSelectionPayload(TypedDict):
+    schema: Literal[_DevelopmentSelectionResult.COMPLETE]
+    environment: str
+    environment_id: str
+    checkout: str
+    python: str | None
+    groups: list[str]
+
+
+@dataclass(frozen=True)
+class DevelopmentEnvironmentSelectionReceipt:
+    """Immediate metadata selection, never live-byte admission or proof."""
+
+    root: Path
+    request: DevelopmentEnvironmentRequest
+
+    def __post_init__(self) -> None:
+        if (
+            not self.root.is_absolute()
+            or not self.request.repo_root.is_absolute()
+            or not _valid_sha256(self.root.name)
+        ):
+            raise SourceBuildEnvironmentError(
+                "invalid development selection coordinates"
+            )
+
+    def payload(self) -> _DevelopmentSelectionPayload:
+        return {
+            "schema": _DevelopmentSelectionResult.COMPLETE,
+            "environment": str(self.root),
+            "environment_id": self.root.name,
+            "checkout": str(self.request.repo_root),
+            "python": self.request.python,
+            "groups": list(self.request.groups),
+        }
+
+    @property
+    def response_limit_bytes(self) -> int:
+        # Derive the bound from actual coordinates, including escaped Unicode
+        # and long Windows paths; do not impose an arbitrary path-length limit.
+        return len(json.dumps(self.payload(), ensure_ascii=True).encode("utf-8")) + 1024
+
+    def accept(self, payload: object) -> None:
+        if type(payload) is not dict or payload != self.payload():
+            raise SourceBuildEnvironmentError(
+                "development selection receipt differs from its exact request"
+            )
 
 
 @dataclass(frozen=True)

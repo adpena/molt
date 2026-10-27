@@ -949,6 +949,7 @@ def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
         module, "_shutdown_batch_compile_server", lambda **k: shutdown.append(True)
     )
     result = module._run_batch_compile_build(
+        execution_context=None,
         env=environment,
         file_path="fixture.py",
         output_root=tmp_path,
@@ -1005,6 +1006,7 @@ def test_batch_admission_preserves_prior_suite_trip_without_launch(
 
     monkeypatch.setattr(module, "_batch_compile_server_client", forbidden)
     result = module._run_batch_compile_build(
+        execution_context=None,
         env={module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV: str(marker)},
         file_path="fixture.py",
         output_root=tmp_path,
@@ -1369,7 +1371,12 @@ def test_native_resource_evidence_survives_build_and_run(
     monkeypatch.setattr(
         module, "_diff_batch_compile_server_enabled", lambda: source == "batch"
     )
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
+    selected = str(tmp_path / "context CLI python")
+    monkeypatch.setattr(
+        module,
+        "_resolve_molt_cli_python",
+        lambda: pytest.fail("native execution must keep its context interpreter"),
+    )
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1400,12 +1407,16 @@ def test_native_resource_evidence_survives_build_and_run(
         "_run_batch_compile_build",
         lambda **k: module.compat_backends.BackendResult.from_process(result("build")),
     )
-    monkeypatch.setattr(
-        module,
-        "_run_with_optional_time",
-        lambda command, **k: result("build" if "molt.cli" in command else "run"),
-    )
+
+    def run(command, *, env, timeout, time_path):
+        active_phase = "build" if "molt.cli" in command else "run"
+        if active_phase == "build":
+            assert command[0] == selected
+        return result(active_phase)
+
+    monkeypatch.setattr(module, "_run_with_optional_time", run)
     context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python=selected,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",

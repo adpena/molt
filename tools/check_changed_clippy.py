@@ -3,9 +3,9 @@
 
 CI runs Clippy with Cargo-owned warning denial in all integration tiers, but no
 landing gate did, so lints reached main unseen (HF-318). This gate closes that
-path. The pre-push `cargo clippy` commands in tools/proof_plan.toml stay the one
-authority for features, targets and profiles; the gate runs each command whose
-packages the change reaches. An equivalent declared host cell supplies its own
+path. The pre-push lint commands in tools/proof_plan.toml and their canonical Cargo
+operations stay the authority for features, targets and profiles; the gate runs
+each registered command whose packages the change reaches. An equivalent declared host cell supplies its own
 identity and execution budget; commands without one remain unchanged:
 
 * a changed path inside a workspace member touches that member, and the change
@@ -60,6 +60,9 @@ from molt.cargo_workspace import (  # noqa: E402
     workspace_member_packages,
 )
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.proof_command_argv import _basename  # noqa: E402
+from tools.proof_queue_pkg import command_admission  # noqa: E402
+from tools.runtime_test_gate_plan import lint_cargo_operation  # noqa: E402
 from molt.cli.cargo_source_closure import cargo_locked_dependency_projection  # noqa: E402
 from tools.git_identity import (  # noqa: E402
     branch_changed_paths,
@@ -329,18 +332,38 @@ def dependency_reach(
         return reach(workspace, (*paths, "Cargo.lock"))
 
 
-def clippy_packages(command: ProofCommand) -> frozenset[str] | None:
-    """Packages a workspace clippy command lints; None means every member."""
+def clippy_argv(command: ProofCommand) -> tuple[str, ...] | None:
+    """Project lint scope while keeping the registered execution command intact."""
     argv = command.argv
-    flags = argv[2 : argv.index("--")] if "--" in argv else argv[2:]
-    if "--workspace" in flags:
+    if _basename(argv[0]) in {"cargo", "cargo.exe"}:
+        invocation = command_admission.parse_cargo_invocation(argv)
+        return argv if invocation.subcommand == "clippy" else None
+    if "cargo" not in command.toolchains:
         return None
-    packages: set[str] = set()
-    for index, flag in enumerate(flags):
-        if flag in {"-p", "--package"}:
-            packages.add(flags[index + 1])
-        elif flag.startswith("--package="):
-            packages.add(flag.removeprefix("--package="))
+    envelope = command_admission.envelope_for_command(argv)
+    arguments = command_admission.runtime_gate_arguments(envelope)
+    if arguments is None:
+        return None
+    operation = lint_cargo_operation(arguments.policy, arguments.profile, cargo="cargo")
+    if operation is None:
+        return None
+    invocation = command_admission.parse_cargo_invocation(operation.command)
+    if invocation.subcommand != "clippy":
+        raise ValueError(f"{command.id}: lint operation does not invoke Cargo clippy")
+    return operation.command
+
+
+def clippy_packages(command: ProofCommand) -> frozenset[str] | None:
+    """Packages a workspace clippy operation lints; None means every member."""
+    argv = clippy_argv(command)
+    if argv is None:
+        raise ValueError(f"{command.id}: command has no Cargo clippy operation")
+    invocation = command_admission.parse_cargo_invocation(argv)
+    if "--workspace" in invocation.flags:
+        return None
+    packages = {
+        value for name, value in invocation.option_values if name == "--package"
+    }
     if not packages:
         raise ValueError(
             f"{command.id}: a clippy command must name --workspace, -p or a cwd"
@@ -376,7 +399,7 @@ def local_clippy_commands(plan: ProofPlan) -> tuple[ProofCommand, ...]:
         if (cell.data["os"], cell.data["arch"]) == host
     }
     clippy = tuple(
-        command for command in plan.commands if command.argv[:2] == ("cargo", "clippy")
+        command for command in plan.commands if clippy_argv(command) is not None
     )
     host_commands: dict[str, list[ProofCommand]] = {}
     for command in clippy:
@@ -450,7 +473,13 @@ def run(command: ProofCommand, plan: ProofPlan) -> int:
         toolchain_environment(plan, plan.required_toolchains(command), environ=env)
     )
     cwd = ROOT / str(command.data.get("cwd", "."))
-    admit_cargo_build(command.argv, cwd=cwd, env=env)
+    operation = clippy_argv(command)
+    if operation is None:
+        raise ValueError(f"{command.id}: command has no Cargo clippy operation")
+    if operation == command.argv:
+        admit_cargo_build(operation, cwd=cwd, env=env)
+    # A registered driver admits its actual Cargo operation after resolving
+    # its managed C ABI; do not feed Python argv to Cargo admission here.
     # The plan's timeout is CI's, which starts from a restored warm cache. A
     # landing's first clippy in a checkout target is cold, so the gate takes
     # the Cargo execution policy's cold budget when it is the larger one.

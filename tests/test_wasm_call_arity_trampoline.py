@@ -50,7 +50,6 @@ def test_wasm_call_arity_trampoline(tmp_path: Path) -> None:
         root,
         src,
         tmp_path,
-        extra_args=["--codec", "json"],
     )
     run = run_wasm_linked(root, output_wasm)
     assert run.returncode == 0, run.stderr

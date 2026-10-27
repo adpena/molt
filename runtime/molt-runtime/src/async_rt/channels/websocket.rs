@@ -40,8 +40,8 @@ use tungstenite::{Message, WebSocket, connect};
 mod tls_native;
 #[cfg(molt_has_net_io)]
 use tls_native::{
-    tls_client_connect_native, tls_client_from_fd_native, tls_server_from_fd_native,
-    tls_server_ssl_attr_string,
+    TlsConnectError, tls_client_connect_native, tls_client_from_fd_native,
+    tls_server_from_fd_native, tls_server_ssl_attr_string,
 };
 
 pub struct MoltWebSocket {
@@ -708,9 +708,10 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
             }
             name
         };
-        match tls_client_connect_native(&host, port_raw as u16, &server_name) {
+        match tls_client_connect_native(_py, host_bits, port_raw as u16, &server_name) {
             Ok(stream_ptr) => opaque_handle_bits(stream_ptr),
-            Err(err) => raise_os_error::<u64>(_py, err, "connect"),
+            Err(TlsConnectError::PendingPython) => MoltObject::none().bits(),
+            Err(TlsConnectError::Io(err)) => raise_os_error::<u64>(_py, err, "connect"),
         }
     })
 }

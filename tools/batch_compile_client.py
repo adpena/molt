@@ -94,6 +94,14 @@ class BatchCompileServerClient:
         self._guard_sentinel = None
         self._force_close: Callable[[subprocess.Popen[str]], None] | None = None
         self._response_reader: threading.Thread | None = None
+        self._stderr_reader: threading.Thread | None = None
+        self._stderr_tail = b""
+        self._stderr_error: Exception | None = None
+        self._request_lock = threading.Lock()
+        self._closing = threading.Event()
+        self._closed = False
+        self._next_id = 1
+        self._response_queue: queue.Queue[str | BaseException | None] = queue.Queue()
         self._state_use = contextlib.ExitStack()
         self._poisoned = False
         atexit.register(self.close)
@@ -178,12 +186,17 @@ class BatchCompileServerClient:
                     else guard._process_model.process_started_at_ns(process.pid)
                 ),
             )
-            self._request_lock = threading.Lock()
-            self._next_id = 1
-            self._poisoned = False
-            self._response_queue: queue.Queue[str | BaseException | None] = (
-                queue.Queue()
+            if process.stdin is None:
+                raise RuntimeError("batch compile server stdin pipe unavailable")
+            # Writes below use the descriptor directly; never buffer a partial
+            # protocol line in TextIOWrapper where flush could outlive its budget.
+            os.set_blocking(process.stdin.fileno(), False)
+            self._stderr_reader = threading.Thread(
+                target=self._stderr_reader_loop,
+                name=f"{reader_name}-stderr",
+                daemon=True,
             )
+            self._stderr_reader.start()
             self._response_reader = threading.Thread(
                 target=self._stdout_reader_loop,
                 name=reader_name,
@@ -220,26 +233,76 @@ class BatchCompileServerClient:
         except Exception as exc:
             self._response_queue.put(exc)
 
-    def _readline(self, timeout: float) -> str:
-        deadline = time.monotonic() + max(0.01, timeout)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("batch compile server response timed out")
+    def _stderr_reader_loop(self) -> None:
+        stderr = self._require_process().stderr
+        if stderr is None:
+            return
+        try:
+            while chunk := os.read(stderr.fileno(), 4096):
+                # One reader publishes immutable snapshots. Diagnostics must
+                # never wait for stderr EOF, nor retain an unbounded transcript.
+                self._stderr_tail = (self._stderr_tail + chunk)[-8192:]
+        except Exception as exc:
+            self._stderr_error = exc
+
+    def _request_remaining(
+        self, deadline: float, phase: str, *, allow_closing: bool
+    ) -> float:
+        if self._closing.is_set() and not allow_closing:
+            raise RuntimeError("batch compile server is closing")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"batch compile server {phase} timed out")
+        return remaining
+
+    def _write_request(
+        self, payload: bytes, deadline: float, *, allow_closing: bool
+    ) -> None:
+        stdin = self._require_process().stdin
+        if stdin is None:
+            raise RuntimeError("batch compile server stdin pipe unavailable")
+        pending = memoryview(payload)
+        while pending:
+            remaining = self._request_remaining(
+                deadline, "request write", allow_closing=allow_closing
+            )
             try:
-                item = self._response_queue.get(timeout=remaining)
-            except queue.Empty as exc:
-                raise TimeoutError("batch compile server response timed out") from exc
+                written = os.write(stdin.fileno(), pending)
+            except BlockingIOError:
+                # Pipe readiness selectors are not portable to Windows. This
+                # bounded wait also lets forced close wake the active writer.
+                if allow_closing:
+                    time.sleep(min(remaining, 0.01))
+                else:
+                    self._closing.wait(min(remaining, 0.01))
+                continue
+            except InterruptedError:
+                continue
+            if written <= 0:
+                raise OSError("batch compile stdin write made no progress")
+            pending = pending[written:]
+
+    def _readline(self, deadline: float, *, allow_closing: bool = False) -> str:
+        while True:
+            remaining = self._request_remaining(
+                deadline, "response", allow_closing=allow_closing
+            )
+            try:
+                item = self._response_queue.get(timeout=min(remaining, 0.05))
+            except queue.Empty:
+                continue
             if isinstance(item, BaseException):
                 raise RuntimeError(
                     "batch compile server response reader failed"
                 ) from item
             if item is None:
-                error_detail = ""
                 stderr = self._require_process().stderr
-                if stderr is not None:
-                    with contextlib.suppress(Exception):
-                        error_detail = stderr.read().strip()
+                encoding = stderr.encoding if stderr is not None else "utf-8"
+                error_detail = self._stderr_tail.decode(
+                    encoding or "utf-8", errors="replace"
+                ).strip()
+                if self._stderr_error is not None:
+                    error_detail += f" (stderr reader failed: {self._stderr_error})"
                 raise RuntimeError(
                     "batch compile server closed response pipe"
                     + (f": {error_detail}" if error_detail else "")
@@ -254,13 +317,24 @@ class BatchCompileServerClient:
         env_overrides: Mapping[str, str] | None = None,
         timeout: float,
     ) -> BatchCompileResponse:
-        with self._request_lock:
+        deadline = time.monotonic() + max(0.0, timeout)
+        if self._closing.is_set():
+            raise RuntimeError("batch compile server is closing")
+        if not self._request_lock.acquire(
+            timeout=max(0.0, deadline - time.monotonic())
+        ):
+            # No exclusive admission: do not attribute another request's work
+            # to this caller or poison its still-synchronized server.
+            raise TimeoutError("batch compile server request admission timed out")
+        try:
+            if self._closing.is_set():
+                raise RuntimeError("batch compile server is closing")
             # One persistent server, one active request. This boundary also
             # excludes suite evidence published for an earlier request.
             request_started_at_ns = time.monotonic_ns()
             try:
                 response = self._request(
-                    op, params=params, env_overrides=env_overrides, timeout=timeout
+                    op, params=params, env_overrides=env_overrides, deadline=deadline
                 )
             except Exception as exc:
                 setattr(
@@ -280,6 +354,8 @@ class BatchCompileServerClient:
                     self.child_process, request_started_at_ns, returncode
                 ),
             )
+        finally:
+            self._request_lock.release()
 
     def _request(
         self,
@@ -287,8 +363,10 @@ class BatchCompileServerClient:
         *,
         params: dict[str, object] | None = None,
         env_overrides: Mapping[str, str] | None = None,
-        timeout: float,
+        deadline: float,
+        allow_closing: bool = False,
     ) -> dict[str, object]:
+        self._request_remaining(deadline, "request", allow_closing=allow_closing)
         if self._poisoned:
             raise RuntimeError(
                 "batch compile server protocol state is unsynchronized; restart required"
@@ -305,15 +383,22 @@ class BatchCompileServerClient:
             request["params"] = params
         if env_overrides is not None:
             request["env_overrides"] = dict(env_overrides)
-        payload = json.dumps(request, sort_keys=True) + "\n"
+        payload = (
+            json.dumps(request, sort_keys=True, ensure_ascii=True) + "\n"
+        ).encode("ascii")
         try:
-            stdin.write(payload)
-            stdin.flush()
-        except OSError as exc:
-            raise RuntimeError(f"failed to write batch compile request: {exc}") from exc
-        try:
-            raw = self._readline(timeout)
-        except (RuntimeError, TimeoutError):
+            try:
+                self._write_request(payload, deadline, allow_closing=allow_closing)
+            except TimeoutError:
+                raise
+            except OSError as exc:
+                raise RuntimeError(
+                    f"failed to write batch compile request: {exc}"
+                ) from exc
+            raw = self._readline(deadline, allow_closing=allow_closing)
+        except BaseException:
+            # Even a failed write can leave a prefix of the line in the server.
+            # Reusing that connection would destroy request/response correlation.
             self._poisoned = True
             raise
         try:
@@ -334,18 +419,20 @@ class BatchCompileServerClient:
                 op=op,
                 raw_response=raw,
             )
-        if response.get("id") != req_id:
+        actual_id = response.get("id")
+        if type(actual_id) is not int or actual_id != req_id:
             self._poisoned = True
             raise BatchCompileProtocolError(
                 "batch compile response id mismatch",
                 expected_id=req_id,
-                actual_id=response.get("id"),
+                actual_id=actual_id,
                 op=op,
                 raw_response=raw,
             )
         return response
 
     def force_close(self) -> None:
+        self._closing.set()
         process = self._proc
         if process is None:
             return
@@ -367,25 +454,58 @@ class BatchCompileServerClient:
             )
 
     def close(self, *, force: bool = False, timeout: float = 60.0) -> None:
-        process = self._proc
-        if process is not None:
-            if not force and not self._poisoned and process.poll() is None:
-                with contextlib.suppress(Exception):
-                    self.request("shutdown", timeout=timeout)
+        self._closing.set()
+        if self._closed:
+            return
+        deadline = time.monotonic() + max(0.0, timeout)
+        acquired = False
+        try:
+            if not force and not self._poisoned:
+                acquired = self._request_lock.acquire(
+                    timeout=max(0.0, deadline - time.monotonic())
+                )
+                if acquired and not self._closed:
+                    process = self._proc
+                    if process is not None and process.poll() is None:
+                        with contextlib.suppress(Exception):
+                            # External admission is closed, but shutdown remains
+                            # one serialized request under the same lock.
+                            self._request(
+                                "shutdown", deadline=deadline, allow_closing=True
+                            )
+            # Forced close must stop the child before waiting for an active
+            # writer. The existing closure callback has its own teardown budget.
             self.force_close()
-            reader = self._response_reader
-            if reader is not None and reader.ident is not None:
-                reader.join(timeout=min(timeout, 0.35))
-                if reader.is_alive():
-                    raise RuntimeError(
-                        "batch reader closure unresolved; use owner retained"
-                    )
-        if self._guard_sentinel is not None:
-            self._guard_sentinel.__exit__(None, None, None)
-            self._guard_sentinel = None
-        if process is not None:
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
-        self._state_use.close()
-        atexit.unregister(self.close)
+            cleanup_deadline = time.monotonic() + min(max(0.0, timeout), 0.35)
+            if not acquired:
+                acquired = self._request_lock.acquire(
+                    timeout=max(0.0, cleanup_deadline - time.monotonic())
+                )
+            if not acquired:
+                raise RuntimeError(
+                    "batch request closure unresolved; use owner retained"
+                )
+            if self._closed:
+                return
+            for reader in (self._response_reader, self._stderr_reader):
+                if reader is not None and reader.ident is not None:
+                    reader.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+                    if reader.is_alive():
+                        raise RuntimeError(
+                            "batch reader closure unresolved; use owner retained"
+                        )
+            if self._guard_sentinel is not None:
+                self._guard_sentinel.__exit__(None, None, None)
+                self._guard_sentinel = None
+            process = self._proc
+            if process is not None:
+                # Neither writer nor readers may still use these descriptors.
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+            self._state_use.close()
+            self._closed = True
+            atexit.unregister(self.close)
+        finally:
+            if acquired:
+                self._request_lock.release()

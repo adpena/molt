@@ -14,6 +14,19 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v12 removes the inactive frontend codec option from benchmark setup
+and cache partitions. Batch request admission, pipe writes and response waiting
+share one deadline through the existing compiler service. These can change cold
+build measurements or failure verdicts; v11 boards retain their original
+comparison class. This version change makes no performance-equivalence claim.
+The [frontend and transport contract](../docs/design/foundation/66_compat_cpython_parity.md)
+owns those boundaries.
+
+Methodology v11 includes current WASM deployment admission and typed resolver/OS
+error domains. The runner refuses incompatible manifests before loading modules
+and preserves resolver-versus-OS failure outcomes. These change execution
+verdicts, so v10 boards remain historical in their original comparison class.
+
 Methodology v10 separates requested profile labels from the build producer's
 observed compiler/runtime selections. Baseline and trend comparisons refuse
 missing or different observations, including historical records labelled
@@ -218,6 +231,20 @@ namespace's final membership fence. Borrowed Python environments retain their
 ordinary cache validation. The [image contract](../docs/ops/INTEGRATION.md)
 owns these boundaries; timing the removed eager builder does not measure the
 current image policy.
+
+The retired schema-v7 Python image publisher derived three ordinary bytecode variants per
+source. One publication action retained trusted derivation hashes for its fresh
+receiver capture, eliminating duplicate compilation while preserving full input
+and output reads. It also retained CPython-derived destinations and created each
+parent directory once. Two alternating before/after pairs on macOS arm64 over
+3,383 real sources and 10,149 byte-identical caches measured publication plus
+fresh source/cache inventory and verification at median 16.28 seconds before and
+10.19 seconds after (37% lower). Median process peak memory rose from 155.3 to
+156.4 MiB; source/code buffers remained bounded to one module and the action table
+scaled with cache variants. This component excludes full environment/runtime
+inventory, dependency installation and process startup; it does not measure the
+entire dev loop. Cold publication also removed one child and JSON round trip.
+These historical schema-v7 measurements do not qualify the current source-only policy.
 
 Automatic checkout retention uses the existing detached supervisor and immutable
 controller source, retaining source and interpreter use through terminal
@@ -857,7 +884,7 @@ observation. A new Molt metric requires a declared policy. Exact native triples
 and all admitted WASM/WASI intents preserve their target distinctions; no
 runtime profile is inferred from a metric name or target.
 
-Methodology v10 governs the shared comparison policy and each comparison
+The current methodology governs the shared comparison policy and each comparison
 verdict owner (`bench_reporting`, `bench_diff`, `bench_dashboard`,
 `perf_regression` and the legacy harness), including the target-admission
 dependencies. They are not unlocked report-formatting mechanics. The canonical

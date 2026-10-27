@@ -130,6 +130,483 @@ def test_run_native_test_process_preserves_check_semantics(monkeypatch) -> None:
         raise AssertionError("expected CalledProcessError")
 
 
+@pytest.mark.parametrize("helper", ["_run_molt", "_run_python"])
+def test_resource_witness_preserves_the_original_guard_timeout(
+    monkeypatch, helper: str
+) -> None:
+    from tests import test_resource_enforcement_e2e as resource_witness
+
+    guarded_result = object()
+    error = subprocess.TimeoutExpired(
+        ["selected-child"],
+        180,
+        output="compiler reached link\n",
+        stderr="child blocked\n",
+    )
+    error.add_note("molt.test-process-timeout.v1: original closed guard receipt")
+    setattr(error, "guarded_result", guarded_result)
+    sources: list[Path] = []
+
+    def timed_out(args, *, capture_output, text, timeout, env=None):
+        source = Path(args[-1])
+        assert source.read_text(encoding="utf-8") == "print('witness')"
+        assert capture_output and text and timeout == 180
+        sources.append(source)
+        raise error
+
+    monkeypatch.setattr(resource_witness, "run_native_test_process", timed_out)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        getattr(resource_witness, helper)("print('witness')", timeout=180)
+    assert caught.value is error
+    assert caught.value.stdout == "compiler reached link\n"
+    assert caught.value.stderr == "child blocked\n"
+    assert caught.value.__notes__ == [
+        "molt.test-process-timeout.v1: original closed guard receipt"
+    ]
+    assert getattr(caught.value, "guarded_result") is guarded_result
+    assert len(sources) == 1 and not sources[0].exists()
+
+
+@pytest.mark.parametrize("kind", ["child", "feedback"])
+def test_prepared_native_environment_matches_actual_run_policy(
+    monkeypatch, tmp_path: Path, kind: str
+) -> None:
+    from molt.cli import script_commands
+    from tools import prepare_compiled_contracts as preparation
+    from tests.resource_enforcement_witnesses import (
+        child_resource_witness,
+        feedback_destination_witness,
+    )
+
+    monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
+    monkeypatch.setenv("MOLT_RUNTIME_BUILD_PROFILE", "dev-fast")
+    monkeypatch.setenv("MOLT_BACKEND_PROFILE", "release")
+    witness = (
+        child_resource_witness("/selected/python λ")
+        if kind == "child"
+        else feedback_destination_witness(tmp_path / "canary λ.json")
+    )
+    source = tmp_path / "witness.py"
+    source.write_text(
+        "# MOLT_ENV: MOLT_BACKEND_PROFILE=dev\n" + witness.source, encoding="utf-8"
+    )
+    root = preparation._REPO_ROOT
+    monkeypatch.setattr(script_commands, "compiler_source_root", lambda: root)
+    monkeypatch.setattr(
+        script_commands._build_inputs,
+        "_resolve_wrapper_build_entry",
+        lambda **kwargs: (object(), None),
+    )
+    observed = {}
+
+    def stop_at_build(**kwargs):
+        observed.update(kwargs)
+        return None, 0.0, 71
+
+    monkeypatch.setattr(script_commands, "_run_wrapper_build", stop_at_build)
+    assert (
+        script_commands.run_script(
+            str(source), None, [], environment_overrides=witness.environment
+        )
+        == 71
+    )
+    cwd, environment = preparation.native_build_environment(
+        source, witness, compiler_root=root
+    )
+    assert dict(environment) == dict(observed["env"])
+    assert cwd == observed["project_root"]
+    assert observed["build_args"] == []
+    assert environment["MOLT_RUNTIME_BUILD_PROFILE"] == "dev-fast"
+    assert environment["MOLT_BACKEND_PROFILE"] == "dev"
+    if kind == "child":
+        assert witness.environment["MOLT_RESOURCE_MAX_MEMORY"] == "64M"
+        assert environment["MOLT_RESOURCE_MAX_MEMORY"] == "67108864"
+    else:
+        assert environment["MOLT_CAPABILITY_TIER"] == "none"
+        assert environment["MOLT_CAPABILITIES"] == "env.write"
+        assert environment["MOLT_RUNTIME_FEEDBACK"] == "0"
+
+
+def _compiled_preparation_result(args, **kwargs):
+    """A build boundary double that materializes its advertised output/streams."""
+    if "molt.cli" in args:
+        source = next(Path(arg) for arg in args if str(arg).endswith(".py"))
+        assert source.is_file()
+        output = source
+        if "--out-dir" in args:
+            directory = Path(args[args.index("--out-dir") + 1])
+            directory.mkdir(parents=True, exist_ok=True)
+            output = directory / (
+                "output.wasm" if "--split-runtime" in args else "output_linked.wasm"
+            )
+            output.write_bytes(b"\0asm\x01\0\0\0")
+            if "--split-runtime" in args:
+                (directory / "manifest.json").write_text("{}", encoding="utf-8")
+        payload = {"status": "ok", "data": {"output": str(output)}}
+    else:
+        payload = {}
+    stdout = json.dumps(payload)
+    for key, content in (("stdout_capture_path", stdout), ("stderr_capture_path", "")):
+        if path := kwargs.get(key):
+            Path(path).write_text(content, encoding="utf-8")
+    return subprocess.CompletedProcess(args, 0, stdout, "")
+
+
+def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+    from tools import prepare_compiled_contracts as preparation
+
+    plan = preparation.proof_plan.ProofPlan.load()
+    host = next(row for row in plan.commands if row.id == "wasm.build.host")
+    # Change the canonical recipe: the preparer must project it rather than a
+    # private copy. There is no real compiler or process launch in this control.
+    changed = replace(host, data={**host.data, "argv": [*host.argv, "--verbose"]})
+    plan = replace(
+        plan,
+        commands=tuple(changed if row.id == host.id else row for row in plan.commands),
+    )
+    monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    times = iter(
+        [0.0, 1.0, 200.0, 500.0, 550.0, 600.0, 650.0, 700.0, 750.0, 800.0, 850.0, 900.0]
+    )
+    monkeypatch.setattr(preparation, "monotonic", lambda: next(times))
+    calls = []
+    source_paths = []
+
+    def record(args, **kwargs):
+        calls.append((tuple(args), kwargs))
+        if "molt.cli" in args:
+            source = next(Path(arg) for arg in args if str(arg).endswith(".py"))
+            source_paths.append(source)
+            assert source.is_file()
+        return _compiled_preparation_result(args, **kwargs)
+
+    monkeypatch.setattr(
+        preparation._COMMANDS.__class__,
+        "run",
+        lambda self, args, **kw: record(args, **kw),
+    )
+    output = tmp_path / "evidence"
+    preparation.prepare(plan, output)
+    assert calls[0][0] == (*host.argv, "--verbose")
+    assert [kw["timeout"] for _, kw in calls] == [
+        1199.0,
+        1000.0,
+        700.0,
+        650.0,
+        600.0,
+        550.0,
+        500.0,
+        450.0,
+        400.0,
+        350.0,
+        300.0,
+    ]
+    assert all(kw["check"] and kw["capture_output"] for _, kw in calls)
+    for args, _ in calls[1:3]:
+        assert args[:5] == (
+            preparation.sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            "--json",
+        )
+        assert len(args) == 6  # No guessed profile, tier or features.
+    child = (output / "child-policy.py").read_text(encoding="utf-8")
+    feedback = (output / "feedback.py").read_text(encoding="utf-8")
+    assert "import subprocess" in child and repr(preparation.sys.executable) in child
+    assert "start_new_session=extended" in child
+    assert 'os.putenv("MOLT_RUNTIME_FEEDBACK", "1")' in feedback
+    assert 'os.environ["MOLT_RUNTIME_FEEDBACK_FILE"]' in feedback
+    assert all(not source.exists() for source in source_paths)
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in output.glob("wasm-*/command.json")
+    ]
+    assert {Path(record["source"]).parent.name for record in records} == {
+        "wasm-syntax-run",
+        "wasm-asyncio-linked",
+        "wasm-finder-linked",
+        "wasm-finder-split",
+        "wasm-final-tir-linked",
+        "wasm-final-tir-split",
+        "wasm-zipimport-linked",
+        "wasm-smtplib-linked",
+    }
+    for record in records:
+        retained = Path(record["retained_sources"])
+        assert (retained / Path(record["source"]).name).is_file()
+        payload = json.loads(
+            (retained.parent / "build.json").read_text(encoding="utf-8")
+        )
+        assert Path(payload["data"]["output"]).is_file()
+        assert not Path(record["products"]).is_relative_to(
+            Path(record["source"]).parent
+        )
+        assert "--runtime-feature" not in record["argv"]
+
+
+@pytest.mark.parametrize("stage", [0, 1, 2, 3, 10])
+@pytest.mark.parametrize("failure", ["timeout", "exit"])
+def test_compiled_preparation_preserves_failure_and_never_runs_later_stage(
+    monkeypatch, tmp_path: Path, stage: int, failure: str
+) -> None:
+    from tools import prepare_compiled_contracts as preparation
+
+    plan = preparation.proof_plan.ProofPlan.load()
+    monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    error = (
+        subprocess.TimeoutExpired(["selected-child"], 17, output="out", stderr="err")
+        if failure == "timeout"
+        else subprocess.CalledProcessError(
+            9, ["selected-child"], output="out", stderr="err"
+        )
+    )
+    receipt = object()
+    setattr(error, "guarded_result", receipt)
+    error.add_note("original closed guard")
+    calls = []
+    sources = []
+
+    def run(self, args, **kwargs):
+        calls.append(tuple(args))
+        if "molt.cli" in args:
+            sources.append(next(Path(arg) for arg in args if str(arg).endswith(".py")))
+        if len(calls) == stage + 1:
+            raise error
+        return _compiled_preparation_result(args, **kwargs)
+
+    monkeypatch.setattr(preparation._COMMANDS.__class__, "run", run)
+    with pytest.raises(type(error)) as caught:
+        preparation.prepare(plan, tmp_path / "evidence")
+    assert caught.value is error
+    assert caught.value.stdout == "out" and caught.value.stderr == "err"
+    assert getattr(caught.value, "guarded_result") is receipt
+    assert caught.value.__notes__ == ["original closed guard"]
+    assert len(calls) == stage + 1
+    assert all(not source.exists() for source in sources)
+    if stage >= 3:
+        retained = list((tmp_path / "evidence").glob("wasm-*/sources/*.py"))
+        assert retained, "failed WASM build must retain its actual source inputs"
+
+
+def test_compiled_preparation_uses_changed_linked_and_split_command_authorities(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tools import prepare_compiled_contracts as preparation
+    from tests.wasm_runtime_heavy_witnesses import heavy_wasm_witness
+
+    selected = preparation.WasmTestBuildCommand(
+        ("changed-authority", "--new-contract"),
+        tmp_path,
+        {"authority": "changed"},
+        tmp_path / "published",
+    )
+    calls = []
+
+    def linked(root, source, output, *, extra_args):
+        calls.append((root, source, output, extra_args))
+        return selected
+
+    def split(source, output, *, extra_args):
+        calls.append((source, output, extra_args))
+        return selected
+
+    monkeypatch.setattr(preparation, "wasm_linked_build_command", linked)
+    monkeypatch.setattr(preparation, "wasm_split_build_command", split)
+    root, source, output = tmp_path / "root", tmp_path / "entry.py", tmp_path / "out"
+    assert (
+        preparation.wasm_build_command(
+            root, heavy_wasm_witness("finder"), source, output
+        )
+        is selected
+    )
+    assert (
+        preparation.wasm_build_command(
+            root, heavy_wasm_witness("finder", "split"), source, output
+        )
+        is selected
+    )
+    assert calls == [
+        (root, source, output, ["--no-trusted", "--json"]),
+        (source, output, ["--build-profile", "dev", "--no-trusted", "--json"]),
+    ]
+
+
+def test_compiled_policy_retains_budgets_and_default_linux_host_coverage() -> None:
+    from tools import prepare_compiled_contracts as preparation
+
+    plan = preparation.proof_plan.ProofPlan.load()
+    rows = {row.id: row for row in plan.commands}
+    owner = rows["python.unit.compiled-contracts.prepare.macos"]
+    body = rows["python.unit.compiled-contracts.macos"]
+    linux = rows["wasm.integration.host-boundaries"]
+    assert owner.data["timeout_seconds"] == 1200
+    assert body.data["timeout_seconds"] == 600
+    assert body.data["env"] == {"MOLT_WASM_COMPILE_FAST": "1"}
+    assert "MOLT_WASM_COMPILE_FAST" not in linux.data.get("env", {})
+    assert body.data["pytest"] == [
+        "tests/test_resource_enforcement_e2e.py",
+        "tests/test_wasm_runtime_heavy_regressions.py",
+    ]
+    assert "tests/test_wasm_runtime_heavy_regressions.py" in linux.data["pytest"]
+    assert set(plan.required_toolchains(body)) <= set(plan.required_toolchains(owner))
+    family = next(family for family in plan.families if family.name == "python_unit")
+    assert family.data["timeout_minutes"] == 43
+
+
+def test_compiled_preparation_refuses_missing_wasm_toolchain_before_children(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+    from tools import prepare_compiled_contracts as preparation
+
+    plan = preparation.proof_plan.ProofPlan.load()
+    owner = next(
+        row
+        for row in plan.commands
+        if row.id == "python.unit.compiled-contracts.prepare.macos"
+    )
+    changed = replace(
+        owner,
+        data={
+            **owner.data,
+            "toolchains": [tool for tool in owner.toolchains if tool != "wasm-tools"],
+        },
+    )
+    plan = replace(
+        plan,
+        commands=tuple(changed if row.id == owner.id else row for row in plan.commands),
+    )
+    monkeypatch.setattr(
+        preparation._COMMANDS.__class__,
+        "run",
+        lambda *args, **kwargs: pytest.fail("missing WASM closure launched a child"),
+    )
+    with pytest.raises(ValueError, match="WASM toolchain closure"):
+        preparation.prepare(plan, tmp_path / "evidence")
+    assert not (tmp_path / "evidence").exists()
+
+
+@pytest.mark.parametrize("budget", [None, "600", "1201", "nan"])
+def test_compiled_preparation_refuses_missing_or_changed_owner_budget(
+    monkeypatch, tmp_path: Path, budget: str | None
+) -> None:
+    from tools import prepare_compiled_contracts as preparation
+
+    if budget is None:
+        monkeypatch.delenv(PROOF_COMMAND_TIMEOUT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, budget)
+    monkeypatch.setattr(
+        preparation._COMMANDS.__class__,
+        "run",
+        lambda *args, **kwargs: pytest.fail("invalid budget launched a child"),
+    )
+    with pytest.raises(ValueError):
+        preparation.prepare(
+            preparation.proof_plan.ProofPlan.load(), tmp_path / "evidence"
+        )
+    assert not (tmp_path / "evidence").exists()
+
+
+def test_compiled_preparation_elapsed_host_time_cannot_reset_child_budget(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tools import prepare_compiled_contracts as preparation
+
+    monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
+    times = iter([0.0, 1.0, 1201.0])
+    monkeypatch.setattr(preparation, "monotonic", lambda: next(times))
+    calls = []
+
+    def run(self, args, **kwargs):
+        calls.append(tuple(args))
+        return subprocess.CompletedProcess(args, 0, "{}", "")
+
+    monkeypatch.setattr(preparation._COMMANDS.__class__, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        preparation.prepare(
+            preparation.proof_plan.ProofPlan.load(), tmp_path / "evidence"
+        )
+    assert len(calls) == 1
+    assert caught.value.timeout == 1200
+    assert "molt.cli" in caught.value.cmd
+
+
+def test_compiled_preparation_rejects_invalid_runtime_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tools import prepare_compiled_contracts as preparation
+    from tests.resource_enforcement_witnesses import feedback_destination_witness
+
+    monkeypatch.setenv("MOLT_RESOURCE_MAX_DURATION_MS", "invalid")
+    source = tmp_path / "feedback.py"
+    witness = feedback_destination_witness(tmp_path / "canary.json")
+    source.write_text(witness.source, encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid capability policy"):
+        preparation.native_build_environment(
+            source, witness, compiler_root=preparation._REPO_ROOT
+        )
+
+
+@pytest.mark.parametrize("mutation", ["dependency", "toolchain"])
+def test_compiled_preparation_rejects_unprojected_host_requirements(
+    monkeypatch, tmp_path: Path, mutation: str
+) -> None:
+    from dataclasses import replace
+    from tools import prepare_compiled_contracts as preparation
+
+    plan = preparation.proof_plan.ProofPlan.load()
+    host = next(row for row in plan.commands if row.id == "wasm.build.host")
+    data = dict(host.data)
+    if mutation == "dependency":
+        data["dependencies"] = ["wasm.build.backend"]
+    else:
+        data["toolchains"] = [*host.toolchains, "rustfmt"]
+    changed = replace(host, data=data)
+    plan = replace(
+        plan,
+        commands=tuple(changed if row.id == host.id else row for row in plan.commands),
+    )
+    monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
+    monkeypatch.setattr(
+        preparation._COMMANDS.__class__,
+        "run",
+        lambda *args, **kwargs: pytest.fail("unprojected host requirement launched"),
+    )
+    with pytest.raises(ValueError, match="host"):
+        preparation.prepare(plan, tmp_path / "evidence")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["{}", "not json", '{"status":"ok","data":{"output":"/missing/compiled-witness"}}'],
+)
+def test_compiled_preparation_zero_exit_does_not_replace_build_contract(
+    monkeypatch, tmp_path: Path, payload: str
+) -> None:
+    from tools import prepare_compiled_contracts as preparation
+
+    monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
+    calls = []
+
+    def run(self, args, **kwargs):
+        calls.append(tuple(args))
+        return subprocess.CompletedProcess(args, 0, payload, "")
+
+    monkeypatch.setattr(preparation._COMMANDS.__class__, "run", run)
+    with pytest.raises(ValueError):
+        preparation.prepare(
+            preparation.proof_plan.ProofPlan.load(), tmp_path / "evidence"
+        )
+    assert len(calls) == 2
+
+
 def _bytes_result(command, returncode=0, *, stdout=b"", stderr=b"", **kwargs):
     return native_process_guard.harness_memory_guard.GuardedCompletedProcess(
         command,

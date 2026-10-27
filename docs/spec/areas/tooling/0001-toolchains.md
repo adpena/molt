@@ -85,9 +85,24 @@ it is not interchangeable with the runtime's unbundled downstream archive policy
 Generic DX and CI SDK setup publish tool availability and the C ABI receipt,
 without selecting a Rust target's libc, CRT or linker. The SDK projection takes
 an optional explicit Rust target; no target preserves caller settings without
-adding target link flags. Runtime Cargo plans select their actual target, and
-proof commands declaring the SDK select its WASI C ABI. Direct Cargo C-provider
-environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
+adding target link flags. Runtime Cargo plans select their actual target. Proof
+commands retain that selection per Cargo operation: an admitted WASI operation
+with declared target C sources uses the same plan. WASI lint and lifecycle
+commands use this operation driver; merely declaring an SDK tool does not
+select a C ABI for pure-Rust siblings. The existing operation record retains the selected SDK, ABI, source
+command and actual launch plan through capture, validation and execution.
+This follows [Rust's target contract](https://doc.rust-lang.org/stable/rustc/platform-support/wasm32-wasip1.html):
+Rust supplies its own WASI startup unless external C interoperability is selected.
+The extra planning work occurs in compiler/proof tooling, with no guest cost.
+Managed Clippy uses Cargo's warning-denial configuration (Cargo 1.97 or newer),
+rather than forwarding target compiler options through Clippy's workspace
+wrapper. Target SDK flags remain in Cargo's target compilation lane; host build
+scripts retain their host ABI. The shared Cargo capability gate admits both
+resource-keyed build directories and warning denial from one captured version
+probe. `molt.cli.cargo_capabilities` owns this admission; runtime planning and
+proof receivers consume it directly. The original warning-failure policy,
+package scope and deadline remain.
+Direct Cargo C-provider environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
 --wasi-rust-target <target> --wasi-sdk <install> --github-env <path>`, with target
 `wasm32-wasip1` or `wasm32-unknown-unknown`. Native flags are untouched.
 For direct Cargo, global `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` override Cargo's
