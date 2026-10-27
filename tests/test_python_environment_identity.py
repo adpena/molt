@@ -88,7 +88,7 @@ def test_development_admission_requires_complete_operation_intent(
     with pytest.raises(SystemExit) as caught:
         identity._parse_arguments()
     assert caught.value.code == 2
-    assert "development intent requires selection or admission and a checkout" in (
+    assert "development intent requires admission and a checkout" in (
         capsys.readouterr().err
     )
 
@@ -199,104 +199,47 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     ]
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        None,
-        ["--admit-published-environment"],
-        ["--with-custody"],
-        ["--runtime-session"],
-        ["--wheel-tag-source", "tags.py"],
-        ["--hash-workers", "2"],
-        ["--admit-virtualenv-bootstrap"],
-        ["--admit-site-bootstrap", "sitecustomize"],
-        ["--admit-external-root", "external"],
-        ["--capture-active-environment"],
-    ],
-)
-def test_development_selection_rejects_capture_roles_and_requires_checkout(
-    tmp_path, monkeypatch, capsys, extra
-):
-    arguments = ["identity", "--select-development-environment", str(tmp_path)]
-    if extra is not None:
-        arguments += ["--development-checkout", str(tmp_path), *extra]
-    monkeypatch.setattr(sys, "argv", arguments)
-    with pytest.raises(SystemExit) as caught:
-        identity._parse_arguments()
-    assert caught.value.code == 2
-    assert not capsys.readouterr().out
-
-
-@pytest.mark.parametrize("metadata_refused", [False, True])
-def test_development_selection_uses_metadata_owner_without_capture(
-    tmp_path, monkeypatch, capsys, metadata_refused
-):
-    from molt import input_report, source_build_environment, toolchain_facts
-    from molt.source_build_environment_schema import LockedSourceBuildEnvironment
-
-    root = tmp_path / ("a" * 64)
-    root.mkdir()
-    repo = tmp_path / "checkout"
-    repo.mkdir()
-    calls = []
-    image = LockedSourceBuildEnvironment(
-        root,
-        root / "bin/python",
-        root / "manifest.json",
-        {},
-        active=False,
-    )
-
-    def load(selected, *, repo_root, python, groups):
-        calls.append((selected, repo_root, python, groups))
-        if metadata_refused:
-            raise PythonEnvironmentIdentityError("metadata selection refused")
-        return image
-
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("ordinary selection entered byte capture authority")
-
+def test_retired_development_selection_mode_is_rejected(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "identity",
+            "--capture-active-environment",
             "--select-development-environment",
-            str(root),
-            "--development-checkout",
-            str(repo),
-            "--development-python",
-            "3.14",
-            "--development-group",
-            "bench",
-            "--development-group",
-            "dev",
+            "image",
         ],
     )
-    monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
-    monkeypatch.setattr(input_report, "worker_initializer", lambda _: None)
-    monkeypatch.setattr(source_build_environment, "load_development_environment", load)
-    monkeypatch.setattr(files, "PythonFileCaptureContext", refuse)
-    monkeypatch.setattr(toolchain_facts, "host_file_digest_cache", refuse)
-    monkeypatch.setattr(identity, "capture_current_python_environment", refuse)
-    monkeypatch.setattr(identity, "validate_python_environment_identity", refuse)
-    if metadata_refused:
-        with pytest.raises(
-            PythonEnvironmentIdentityError, match="metadata selection refused"
-        ):
-            identity._main()
-        assert not capsys.readouterr().out
-    else:
-        identity._main()
-        assert json.loads(capsys.readouterr().out) == {
-            "schema": "molt.development-environment-selection.v1",
-            "environment": str(root),
-            "environment_id": "a" * 64,
-            "checkout": str(repo),
-            "python": "3.14",
-            "groups": ["bench", "dev"],
-        }
-    assert calls == [(root, repo, "3.14", ("bench", "dev"))]
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_development_request_keeps_proof_role_explicit(monkeypatch):
+    from molt.python_environment_contract import DevelopmentEnvironmentRequest
+
+    request = DevelopmentEnvironmentRequest(Path("checkout"), "3.14", ("dev",))
+    arguments = request.intent_arguments()
+    assert "--admit-published-environment" not in arguments
+    assert "--with-custody" not in arguments
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "identity",
+            "--capture-active-environment",
+            "--with-custody",
+            "--admit-published-environment",
+            *arguments,
+        ],
+    )
+    parsed = identity._parse_arguments()
+    assert parsed.capture_active_environment and parsed.with_custody
+    assert parsed.admit_published_environment
+    assert parsed.development_checkout == Path("checkout")
+    assert parsed.development_python == "3.14"
+    assert parsed.development_group == ["dev"]
 
 
 @pytest.mark.parametrize("with_custody", [False, True])

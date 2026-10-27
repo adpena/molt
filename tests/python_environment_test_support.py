@@ -12,6 +12,7 @@ from typing import Iterable, Sequence, Mapping
 
 import venv
 
+from molt import python_environment_contract as _contract
 from molt import python_environment_identity
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 from molt import source_build_environment_schema
@@ -45,7 +46,7 @@ def environment_location_manifest(
 ) -> dict[str, object]:
     """Build the current closed locator contract from explicit fixture facts."""
     material = {
-        "schema": python_environment_identity.PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
+        "schema": _contract.PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
         "prefix": str(prefix),
         "selected_executable": str(selected_executable),
         "base_executable": str(base_executable),
@@ -139,7 +140,7 @@ def runtime_identity_manifest(*, python: str | None = None) -> dict[str, object]
         "edges": [],
     }
     material = {
-        "schema": python_environment_identity.PYTHON_RUNTIME_IDENTITY_SCHEMA,
+        "schema": _contract.PYTHON_RUNTIME_IDENTITY_SCHEMA,
         "implementation": "cpython",
         "version": version,
         "cache_tag": cache_tag,
@@ -188,11 +189,10 @@ def runtime_identity_manifest(*, python: str | None = None) -> dict[str, object]
 def wheel_target_manifest(
     runtime: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    from molt.python_uv_lock_identity import PYTHON_WHEEL_TARGET_SCHEMA
 
     selected = runtime_identity_manifest() if runtime is None else runtime
     return {
-        "schema": PYTHON_WHEEL_TARGET_SCHEMA,
+        "schema": _contract.PYTHON_WHEEL_TARGET_SCHEMA,
         "runtime_closure_sha256": selected["runtime_closure_sha256"],
         "packaging_sources": {
             name + ".py": {"size": 1, "sha256": "e" * 64}
@@ -211,7 +211,7 @@ def lock_closure_manifest(
     """Return one production-validated locked dependency-group closure."""
 
     material = {
-        "schema": python_environment_identity.UV_LOCK_GROUP_CLOSURE_SCHEMA,
+        "schema": _contract.UV_LOCK_GROUP_CLOSURE_SCHEMA,
         "lock_version": 1,
         "lock_revision": 3,
         "requires_python": ">=3.12",
@@ -403,7 +403,7 @@ def realized_environment_manifest(
     ]
     entries.sort(key=lambda row: (str(row["path"]).casefold(), str(row["path"])))
     material = {
-        "schema": python_environment_identity.PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
+        "schema": _contract.PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
         "implementation": "cpython",
         "version": runtime["version"],
         "cache_tag": runtime["cache_tag"],
@@ -515,10 +515,16 @@ def build_environment_manifest(
     assert isinstance(selected_executable_path, str)
     realized_executable = Path(selected_executable_path).name
     address = {
-        "schema_version": source_build_environment_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "producer_contract": _contract.source_build_environment_contract(),
+        "declared_inputs": {
+            "pyproject.toml": "a" * 64,
+            "uv.lock": "b" * 64,
+            ".python-version": None,
+        },
+        "schema_version": _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_groups": [dependency_group],
         "editable_binding": None,
-        "bytecode_policy": source_build_environment_schema.IMAGE_BYTECODE_POLICY,
+        "bytecode_policy": _contract.IMAGE_BYTECODE_POLICY,
         "dependency_group_requirements": selected_requirements,
         "lock_closure": lock_closure,
         "python_runtime": runtime,
@@ -670,11 +676,19 @@ def materialize_development_environment(
         marker_environment=markers,
         dependency_groups=groups,
     )
+    from molt.source_build_environment_selection import (
+        capture_source_build_inputs,
+        development_selection_record,
+    )
+
+    inputs = capture_source_build_inputs(repo_root, editable=True)
     recipe = {
-        "schema_version": source_build_environment_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "producer_contract": _contract.source_build_environment_contract(),
+        "declared_inputs": inputs.digests,
+        "schema_version": _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_groups": list(groups),
-        "editable_binding": owner._editable_binding(repo_root),
-        "bytecode_policy": source_build_environment_schema.IMAGE_BYTECODE_POLICY,
+        "editable_binding": inputs.editable_binding,
+        "bytecode_policy": _contract.IMAGE_BYTECODE_POLICY,
         "dependency_group_requirements": list(requirements),
         "lock_closure": closure,
         "python_runtime": runtime,
@@ -688,9 +702,7 @@ def materialize_development_environment(
         / checkout_component(repo_root)
         / identity
     )
-    manifest_path = (
-        root / source_build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
-    )
+    manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     if not manifest_path.exists():
         if runnable:
             create_test_venv(root)
@@ -848,8 +860,14 @@ def materialize_development_environment(
         manifest = owner._attested_environment(
             {"environment_id": identity, **recipe}, realized
         )
-        manifest_path = (
-            root / source_build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+        manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+        (root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
+            json.dumps(
+                development_selection_record(
+                    root, {"environment_id": identity, **recipe}
+                )
+            ),
+            encoding="utf-8",
         )
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     if select:

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
+from molt import python_environment_contract as _contract
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 from molt.cargo_execution_policy import (
@@ -1956,18 +1957,19 @@ class DxProject:
         *,
         python: str | None,
     ) -> ProcessEnvironment:
-        from molt.source_build_environment import load_development_environment
-        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+        from molt.source_build_environment_selection import (
+            read_development_environment_selection,
+        )
 
         selected = self.uv_project_env_dir(env)
         try:
-            image = load_development_environment(
+            image = read_development_environment_selection(
                 selected,
                 repo_root=self.root,
                 python=python,
                 groups=self.dependency_groups(),
             )
-        except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
+        except (OSError, ValueError, _contract.SourceBuildEnvironmentError) as exc:
             raise DxConfigError(str(exc)) from exc
         return self.projected_uv_run_env(env, root=image.root)
 

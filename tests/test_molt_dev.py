@@ -9010,9 +9010,13 @@ version_pattern = '^Python 3\\.'
         str(image.root),
         str(image.root / "bytecode"),
     ]
-    # The context is a plan, not reusable physical admission. A changed recipe
-    # after preparation must refuse before the next child can overwrite output.
-    image.manifest_path.write_text("{}\n", encoding="utf-8")
+    # The context is a plan. Corrupt its actual ordinary selection record after
+    # preparation: the next child must refuse before overwriting output.
+    from molt import python_environment_contract as contract
+
+    (image.root / contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
+        "{}\n", encoding="utf-8"
+    )
     output.write_text("must survive", encoding="utf-8")
     with pytest.raises(DriverError, match="managed development image refused"):
         drv.run_gate(command, repo, context)

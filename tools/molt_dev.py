@@ -155,6 +155,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt import python_environment_contract as _contract  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 
@@ -571,13 +572,14 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
         return venv_exec.resolve_venv(repo_root=repo, env=env)
     from molt import checkout_provisioning
     from molt.dx import DxConfigError, DxProject
-    from molt.source_build_environment import load_development_environment
-    from molt.source_build_environment_schema import SourceBuildEnvironmentError
+    from molt.source_build_environment_selection import (
+        read_development_environment_selection,
+    )
 
     try:
         if env.get("UV_PROJECT_ENVIRONMENT", "").strip():
             selected = venv_exec.resolve_venv(repo_root=repo, env=env)
-            return load_development_environment(
+            return read_development_environment_selection(
                 selected, repo_root=repo, groups=DxProject(repo).dependency_groups()
             ).root
         spec = checkout_provisioning.checkout_input(
@@ -589,7 +591,7 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
     except (
         checkout_provisioning.ProvisioningError,
         DxConfigError,
-        SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         venv_exec.VenvExecError,
         OSError,
         ValueError,
@@ -638,16 +640,22 @@ def _validate_gate_image(repo: Path, context: GateEnvironment) -> None:
         return
     if context.managed:
         from molt.dx import DxConfigError, DxProject
-        from molt.source_build_environment import load_development_environment
-        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+        from molt.source_build_environment_selection import (
+            read_development_environment_selection,
+        )
 
         try:
-            load_development_environment(
+            read_development_environment_selection(
                 context.python_root,
                 repo_root=repo,
                 groups=DxProject(repo).dependency_groups(),
             )
-        except (DxConfigError, SourceBuildEnvironmentError, OSError, ValueError) as exc:
+        except (
+            DxConfigError,
+            _contract.SourceBuildEnvironmentError,
+            OSError,
+            ValueError,
+        ) as exc:
             raise DriverError(f"managed development image refused: {exc}") from exc
     try:
         venv_exec.venv_python(context.python_root)

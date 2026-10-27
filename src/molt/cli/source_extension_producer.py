@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt import python_environment_contract as _contract
 from molt.compilation_target import admit_target
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
@@ -71,7 +72,6 @@ from molt.cli.source_extensions import (
 )
 from molt.source_build_environment_schema import (
     LockedSourceBuildEnvironment,
-    SourceBuildEnvironmentError,
     active_source_build_requirements,
     canonical_source_marker_environment,
 )
@@ -577,7 +577,7 @@ def _source_build_requirements(
     marker_environment = canonical_source_marker_environment()
     try:
         active = active_source_build_requirements(originals, marker_environment)
-    except SourceBuildEnvironmentError as exc:
+    except _contract.SourceBuildEnvironmentError as exc:
         raise SourceExtensionProducerError(str(exc)) from exc
     if not active:
         raise SourceExtensionProducerError(

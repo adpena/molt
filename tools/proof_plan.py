@@ -51,6 +51,7 @@ from tools.command_execution import (  # noqa: E402
     GUARD_CANCELLATION_OBSERVATION_SECONDS,
 )
 from tools import proof_receipts, toolchain_probe  # noqa: E402
+from molt import python_environment_contract as _contract  # noqa: E402
 from molt import host_capacity  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
@@ -3679,10 +3680,7 @@ def validate_selected_python_runtime(
         PYTHON_CAPTURE_SCHEMA,
         validate_python_capture,
     )
-    from molt.python_runtime_identity import (
-        PYTHON_RUNTIME_IDENTITY_SCHEMA,
-        PYTHON_RUNTIME_SELECTION_SCHEMA,
-    )
+    from molt.python_runtime_identity import PYTHON_RUNTIME_SELECTION_SCHEMA
 
     if set(selected) != {
         "launch_argv",
@@ -3724,7 +3722,7 @@ def validate_selected_python_runtime(
         or startup["selected_executable"].get("lexical") != launch[0]
         or startup["selected_executable"].get("present") is not True
         or not isinstance(runtime, dict)
-        or runtime.get("schema") != PYTHON_RUNTIME_IDENTITY_SCHEMA
+        or runtime.get("schema") != _contract.PYTHON_RUNTIME_IDENTITY_SCHEMA
         or startup.get("platform")
         != {
             key: runtime.get(key)

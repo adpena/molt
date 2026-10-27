@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt import python_environment_contract as _contract
 from molt.compilation_target import admit_target
 
 import hashlib
@@ -1329,6 +1330,11 @@ def _locked_environment_spec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, Path, Path, dict[str, object], Path]:
+    # Keep real declared-input reads independent of the synthetic live capture.
+    (tmp_path / "pyproject.toml").write_text(
+        "[dependency-groups]\nsource-build-numpy=['ninja==1.13.0']\n", encoding="utf-8"
+    )
+    (tmp_path / "uv.lock").write_text("version=1\n", encoding="utf-8")
     # State-machine fixtures provide the fresh live capture independently.
     monkeypatch.setattr(
         build_environment, "_validate_recipe_inputs", lambda *_args, **_kwargs: None
@@ -1349,7 +1355,7 @@ def _locked_environment_spec(
     return (
         root,
         python,
-        root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
         custody,
         tmp_path / "uv.exe",
     )
@@ -1358,9 +1364,7 @@ def _locked_environment_spec(
 def test_source_build_environment_rejects_resealed_float_schema_version() -> None:
     payload = _build_environment_manifest(["ninja==1.13.0"])
     custody = payload["custody"]
-    custody["schema_version"] = float(
-        build_environment_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
-    )
+    custody["schema_version"] = float(_contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION)
     custody["environment_id"] = canonical_json_sha256(
         {
             key: value
@@ -1428,8 +1432,7 @@ def test_source_build_environment_address_is_worktree_neutral(
     assert "worktrees" not in str(first_spec[0])
     custody = first_spec[3]
     assert (
-        custody["schema_version"]
-        == build_environment_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
+        custody["schema_version"] == _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
     )
     address_payload = {key: custody[key] for key in custody if key != "environment_id"}
     assert custody["environment_id"] == canonical_json_sha256(address_payload)
@@ -1452,7 +1455,7 @@ def test_source_build_environment_failed_sync_leaves_only_provisional_record(
     )
 
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="provisioning failed.*returned 7",
     ):
         build_environment.source_build_environment(
@@ -1492,7 +1495,7 @@ def test_source_build_environment_keeps_provisional_record_when_deletion_refuses
         lambda *_args, **_kwargs: pytest.fail("failed recovery must not start sync"),
     )
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="cannot recover unpublished.*independent deletion refusal",
     ):
         build_environment._provision_source_build_environment(
@@ -1538,7 +1541,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
 
     monkeypatch.setattr(build_environment, "_run_uv_sync", run)
 
-    with pytest.raises(build_environment_schema.SourceBuildEnvironmentError):
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
         build_environment.source_build_environment(
             tmp_path, "source-build-numpy", provision=True
         )
@@ -1583,7 +1586,7 @@ def test_source_build_environment_rejects_foreign_unattested_root(
         if path.is_file()
     }
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match=(
             "exact attestation or sibling provisioning record"
             if foreign_payload is None
@@ -1619,7 +1622,7 @@ def test_source_build_environment_rejects_foreign_sibling_record(
     )
 
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="foreign source-build provisioning record",
     ):
         build_environment.source_build_environment(
@@ -1639,7 +1642,7 @@ def test_source_build_environment_rejects_malformed_sibling_record(
     )
 
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="malformed source-build provisioning record",
     ):
         build_environment.source_build_environment(
@@ -1872,7 +1875,7 @@ def test_requested_dev_group_reaches_publication_without_exclusion(
     )
     if exclude_requested_dev:
         with pytest.raises(
-            build_environment_schema.SourceBuildEnvironmentError,
+            _contract.SourceBuildEnvironmentError,
             match="differs from its selected lock",
         ):
             build_environment._provision_source_build_environment(
@@ -1919,7 +1922,7 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
     monkeypatch.setattr(build_environment, "_run_uv_sync", run)
 
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="differs from its selected lock",
     ):
         build_environment.source_build_environment(
@@ -1958,7 +1961,7 @@ def test_active_source_build_environment_rejects_mutated_ambient_content(
     )
 
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="attestation is stale or invalid",
     ):
         build_environment.source_build_environment(tmp_path, "source-build-numpy")
@@ -1972,6 +1975,21 @@ def active_source_namespace_case(
     payload = _build_environment_manifest(
         ["ninja==1.13.0"], dependency_group="source-build-numpy"
     )
+    # Keep declared-input identity real while runtime/lock observations retain
+    # their independent synthetic oracle for this single-capture state machine.
+    files = {
+        "pyproject.toml": b"[dependency-groups]\nsource-build-numpy=['ninja==1.13.0']\nsource-build-scipy=['ninja==1.13.0']\n",
+        "uv.lock": b"version=1\n",
+    }
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+    payload["custody"]["declared_inputs"] = {
+        **{name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+        ".python-version": None,
+    }
+    from tests.python_environment_test_support import reseal_build_environment_custody
+
+    reseal_build_environment_custody(payload)
     custody = payload["custody"]
     realized = custody["realized_environment"]
     namespace = tmp_path / "build-environments/source-extension"
@@ -1980,9 +1998,9 @@ def active_source_namespace_case(
     executable = active_root / realized["selected_executable"]["path"]
     executable.parent.mkdir(parents=True, exist_ok=True)
     executable.write_bytes(b"synthetic-python")
-    (
-        active_root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
-    ).write_text(json.dumps(custody), encoding="utf-8")
+    (active_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+        json.dumps(custody), encoding="utf-8"
+    )
     probes: list[tuple[Path, Path]] = []
 
     def capture(python: Path, root: Path) -> dict[str, object]:
@@ -2052,7 +2070,7 @@ def test_active_namespace_single_capture_rejects_manifest_drift(
     corruption: str,
 ) -> None:
     payload, active_root, probes = active_source_namespace_case
-    path = active_root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    path = active_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     if corruption == "missing":
         path.unlink()
     else:
@@ -2062,7 +2080,7 @@ def test_active_namespace_single_capture_rejects_manifest_drift(
         else:
             persisted["realized_environment"]["environment_closure_sha256"] = "0" * 64
         path.write_text(json.dumps(persisted), encoding="utf-8")
-    with pytest.raises(build_environment_schema.SourceBuildEnvironmentError):
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
         build_environment.source_build_environment(tmp_path, "source-build-numpy")
     assert probes == (
         []
@@ -2087,15 +2105,15 @@ def test_active_namespace_rejects_same_group_recipe_or_path_drift(
     else:
         wrong_root = active_root.parent / ("0" * 64)
         wrong_root.mkdir()
-        (
-            wrong_root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
-        ).write_text(json.dumps(payload["custody"]), encoding="utf-8")
+        (wrong_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+            json.dumps(payload["custody"]), encoding="utf-8"
+        )
         # The fixture gave build_environment a private sys view.
         sys_view = build_environment.sys
         assert isinstance(sys_view, ModuleView)
         monkeypatch.setattr(sys_view, "prefix", str(wrong_root))
         active_root = wrong_root
-    with pytest.raises(build_environment_schema.SourceBuildEnvironmentError):
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
         build_environment.source_build_environment(tmp_path, "source-build-numpy")
     assert probes == [(Path(build_environment.sys.executable), active_root)]
 
@@ -2264,7 +2282,7 @@ def _producer_boundary_environment(tmp_path: Path, *, active: bool):
     return build_environment_schema.LockedSourceBuildEnvironment(
         root=root,
         python_executable=python,
-        manifest_path=root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        manifest_path=root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
         custody={},
         active=active,
     )
@@ -2506,9 +2524,7 @@ def test_prepared_producer_rejects_prerequisite_drift_without_any_mutation(
         assert provision is False
         events.append("environment")
         if failure == "stale":
-            raise build_environment_schema.SourceBuildEnvironmentError(
-                "stale fixture attestation"
-            )
+            raise _contract.SourceBuildEnvironmentError("stale fixture attestation")
         return environment
 
     def verify_source(*args, **kwargs):
@@ -4197,7 +4213,7 @@ def test_published_invalid_image_is_not_recovered_as_provisional(tmp_path, monke
         ),
     )
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="published immutable environment failed admission",
     ):
         build_environment.source_build_environment(
@@ -4211,7 +4227,7 @@ def test_source_build_environment_refuses_input_rewrite_with_restored_bytes_and_
 ):
     spec = _locked_environment_spec(tmp_path, monkeypatch)
     declared = tmp_path / "pyproject.toml"
-    declared.write_bytes(b"original input bytes")
+    original = declared.read_bytes()
     before = declared.stat()
     realized = _realized_environment_manifest(
         spec[3]["python_runtime"], [("ninja", "1.13.0")]
@@ -4229,13 +4245,13 @@ def test_source_build_environment_refuses_input_rewrite_with_restored_bytes_and_
         spec[1].parent.mkdir(parents=True)
         spec[1].write_bytes(b"synthetic interpreter, never executed")
         declared.write_bytes(b"intermediate replacement")
-        declared.write_bytes(b"original input bytes")
+        declared.write_bytes(original)
         os.utime(declared, ns=(before.st_atime_ns, before.st_mtime_ns))
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(build_environment, "_run_uv_sync", sync)
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="recipe inputs changed during publication",
     ):
         build_environment.source_build_environment(
@@ -4254,8 +4270,11 @@ def test_editable_publication_refuses_selected_reader_rewrite(
     spec = _locked_environment_spec(tmp_path, monkeypatch)
     selected = tmp_path / "selected"
     copy_python_capture_authority(selected)
+    (selected / "uv.lock").write_text("version=1\n", encoding="utf-8")
     (selected / "README.md").write_text("selected project metadata\n", encoding="utf-8")
-    spec[3]["editable_binding"] = build_environment._editable_binding(selected)
+    spec[3]["editable_binding"] = build_environment.capture_source_build_inputs(
+        selected, editable=True
+    ).editable_binding
     reader = selected / "src/molt/python_environment_custody.py"
     original = reader.read_bytes()
     before = reader.stat()
@@ -4286,7 +4305,7 @@ def test_editable_publication_refuses_selected_reader_rewrite(
     monkeypatch.setattr(build_environment, "_run_uv_sync", sync)
     monkeypatch.setattr(build_environment, "_probe_environment_identity", capture)
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="recipe inputs changed during publication",
     ):
         build_environment._provision_source_build_environment(
@@ -4307,8 +4326,11 @@ def test_editable_publication_refuses_missing_selected_reader_without_fallback(
     spec = _locked_environment_spec(tmp_path, monkeypatch)
     selected = tmp_path / "selected"
     copy_python_capture_authority(selected)
+    (selected / "uv.lock").write_text("version=1\n", encoding="utf-8")
     (selected / "README.md").write_text("selected project metadata\n", encoding="utf-8")
-    spec[3]["editable_binding"] = build_environment._editable_binding(selected)
+    spec[3]["editable_binding"] = build_environment.capture_source_build_inputs(
+        selected, editable=True
+    ).editable_binding
     (selected / "src/molt/python_environment_identity.py").unlink()
     monkeypatch.setattr(
         build_environment,
@@ -4316,7 +4338,7 @@ def test_editable_publication_refuses_missing_selected_reader_without_fallback(
         lambda *_args, **_kwargs: pytest.fail("missing reader must precede sync"),
     )
     with pytest.raises(
-        build_environment_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="selected editable Python capture authority is missing",
     ):
         build_environment._provision_source_build_environment(

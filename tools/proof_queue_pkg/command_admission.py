@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from typing import Literal, Mapping, Sequence, cast
 
+from molt import python_environment_contract as _contract  # noqa: E402
 from molt.compilation_target import target_name
 from molt.compilation_target import admit_target
 from molt.exact_json import canonical_json_bytes
@@ -1383,9 +1384,7 @@ def prepared_named_lane_command(
 
 
 def _locked_python_environment_root(executable: str) -> Path:
-    from molt.source_build_environment_schema import (
-        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-    )
+
     from molt.source_build_environment import _source_build_custody_root
 
     selected = Path(executable)
@@ -1400,7 +1399,9 @@ def _locked_python_environment_root(executable: str) -> Path:
         or re.fullmatch(r"[0-9a-f]{64}", environment_root.name) is None
         or environment_root.parent.resolve()
         != _source_build_custody_root(_REPO_ROOT).resolve()
-        or not (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).is_file()
+        or not (
+            environment_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+        ).is_file()
     ):
         raise ValueError(
             "prepared proof requires a content-addressed locked source-build interpreter"

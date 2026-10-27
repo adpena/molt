@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from molt import python_environment_contract as _contract  # noqa: E402
 from molt.llvm_toolchain import (
     capture_wasi_sdk_selection,
     llvm_toolchain_environment_name,
@@ -38,11 +39,9 @@ from molt.python_environment_identity import (
     validate_python_capture,
     validate_python_environment_location,
 )
-from molt.source_build_environment_schema import DevelopmentEnvironmentRequest
+
 from molt.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
-from molt.python_environment_location import (
-    SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-)
+
 from molt.python_capture import captured_file_for_node
 from molt.python_runtime_identity import runtime_explicit_file_node
 from molt.cargo_execution_policy import cargo_native_dependency_environment_name
@@ -671,7 +670,7 @@ def _development_admission(
     env: Mapping[str, str],
     *,
     source_root: Path,
-) -> DevelopmentEnvironmentRequest | None:
+) -> _contract.DevelopmentEnvironmentRequest | None:
     """Recover managed wrapper intent without importing semantic dependencies."""
     from molt.dx import DxProject
 
@@ -683,7 +682,7 @@ def _development_admission(
         return None
     if kind not in {"venv", "uv-project"}:
         return None
-    return DevelopmentEnvironmentRequest(
+    return _contract.DevelopmentEnvironmentRequest(
         source_root,
         str(wrapper["python"]) if kind == "uv-project" else None,
         DxProject(source_root).dependency_groups(),
@@ -696,7 +695,7 @@ def _python_probe_command(
     verifier_bytecode_prefix: Path,
     source_root: Path,
     admit_published_environment: bool,
-    development_admission: DevelopmentEnvironmentRequest | None = None,
+    development_admission: _contract.DevelopmentEnvironmentRequest | None = None,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
 ) -> list[str]:
@@ -855,7 +854,7 @@ def _python_identity(
         and checkout_state_kind_of(prefix, prefix.parents[3]) == "python-environment"
     )
     published_admission = (
-        managed or (prefix / SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists()
+        managed or (prefix / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).exists()
     )
     # Selection ran the exact uv/py launcher before arming. Repeating uv run
     # here can sync or close its writable environment lock before full capture

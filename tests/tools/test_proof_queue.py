@@ -30,6 +30,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import proof_command_argv, proof_plan
+from molt import python_environment_contract as _contract
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.process_environment import NameRule, ProcessEnvironment
 from molt.python_interpreter import parse_python_invocation
@@ -2529,7 +2530,7 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
     )
     selection = _selected_python_capture_fixture(tmp_path, prefix=prefix)
     if publication == "manifest":
-        (prefix / command_identity.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+        (prefix / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
             "{}", encoding="utf-8"
         )
     project = tmp_path / "project"
@@ -2722,7 +2723,14 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         for group in groups
         for requirement in publisher._declared_dependency_group(source, group)
     )
-    binding = publisher._editable_binding(source) if development else None
+    from molt.source_build_environment_selection import (
+        capture_source_build_inputs,
+        development_selection_record,
+        read_development_environment_selection,
+    )
+
+    inputs = capture_source_build_inputs(source, editable=development)
+    binding = inputs.editable_binding
     closure = selected_uv_lock_group_closure(
         source,
         None,
@@ -2732,11 +2740,13 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         dependency_groups=groups,
     )
     recipe = {
-        "schema_version": image_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "producer_contract": _contract.source_build_environment_contract(),
+        "declared_inputs": inputs.digests,
+        "schema_version": _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_groups": list(groups),
         "dependency_group_requirements": list(requirements),
         "editable_binding": binding,
-        "bytecode_policy": image_schema.IMAGE_BYTECODE_POLICY,
+        "bytecode_policy": _contract.IMAGE_BYTECODE_POLICY,
         "lock_closure": closure,
         "python_runtime": runtime,
         "uv": {
@@ -2865,6 +2875,10 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     # The source-only publisher captures the actual immutable installation.
     # Its empty prefix is part of the exact tree; no eager cache writer exists.
     (root / "bytecode").mkdir(exist_ok=True)
+    if development:
+        (root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
+            json.dumps(development_selection_record(root, custody)), encoding="utf-8"
+        )
     realized = publisher._probe_environment_identity(
         executable,
         root,
@@ -2873,7 +2887,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     )
     assert realized["runtime"] == runtime
     manifest = publisher._attested_environment(custody, realized)
-    manifest_path = root / image_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     manifest_bytes = json.dumps(manifest).encode()
     manifest_path.write_bytes(manifest_bytes)
     provisional.unlink()
@@ -3005,9 +3019,9 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         # A controller imported from checkout A explicitly admits image B
         # through B's selected reader, with a separate external-source grant.
         assert (
-            publisher.select_development_environment(
+            read_development_environment_selection(
                 root, repo_root=source, groups=groups
-            )
+            ).root
             == root
         )
         from tests.python_environment_test_support import copy_python_capture_authority
@@ -3019,24 +3033,35 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         assert selected_reader.read_bytes() == foreign_reader.read_bytes()
         original_declaration = declaration.read_bytes()
         declaration.write_text(str(foreign / "src") + "\n", encoding="utf-8")
-        with pytest.raises(
-            image_schema.SourceBuildEnvironmentError,
-            match="package source admission failed",
-        ) as refused_home:
-            publisher.select_development_environment(
+        # Ordinary selection does not inspect installed .pth bytes. The real
+        # proof consumer must independently refuse their changed source binding.
+        assert (
+            read_development_environment_selection(
                 root, repo_root=source, groups=groups
-            )
-        assert str(source / "src/molt") in str(refused_home.value)
-        assert str(foreign / "src/molt") in str(refused_home.value)
+            ).root
+            == root
+        )
+        refused_home = read()
+        assert refused_home.returncode != 0
+        assert "package source admission failed" in refused_home.stderr
+        assert str(source / "src/molt") in refused_home.stderr
+        assert str(foreign / "src/molt") in refused_home.stderr
         declaration.write_bytes(original_declaration)
         selected_reader_bytes = selected_reader.read_bytes()
         selected_reader.unlink()
         try:
-            with pytest.raises(FileNotFoundError) as missing_reader:
-                publisher.select_development_environment(
+            assert (
+                read_development_environment_selection(
                     root, repo_root=source, groups=groups
-                )
-            assert str(selected_reader) in str(missing_reader.value)
+                ).root
+                == root
+            )
+            missing_reader = read()
+            assert missing_reader.returncode != 0
+            assert (
+                "No module named 'molt.python_environment_identity'"
+                in missing_reader.stderr
+            )
         finally:
             selected_reader.write_bytes(selected_reader_bytes)
         native = read("native")
@@ -3100,7 +3125,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         refused = direct_wrapper()
         assert refused.returncode != 0 and not refused.stdout
         assert (
-            "selected Python does not satisfy uv.lock requires-python" in refused.stderr
+            "development selection record differs from current intent/inputs"
+            in refused.stderr
         )
         lock_path.write_bytes(original_lock)
 
@@ -11964,9 +11990,6 @@ def test_proof_queue_named_lane_can_detach_runner(
     # This test owns dispatch only. Prepared-environment custody is exercised
     # by named-lane tests; provisioning packages here leaks real checkout state.
     from molt import source_build_environment as environment_authority
-    from molt.source_build_environment_schema import (
-        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-    )
 
     environment_root = tmp_path / "environments" / ("a" * 64)
     prepared_python = environment_root / (
@@ -11974,7 +11997,7 @@ def test_proof_queue_named_lane_can_detach_runner(
     )
     prepared_python.parent.mkdir(parents=True)
     prepared_python.write_bytes(b"prepared fixture image")
-    (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+    (environment_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
         "{}", encoding="utf-8"
     )
     monkeypatch.setattr(
