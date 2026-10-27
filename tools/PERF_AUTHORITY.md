@@ -214,20 +214,23 @@ identity consumers, and the selector consumer, closing missing producer triggers
 compile zlib, while provider edits keep both compiled gates and source oracles.
 These are verified obligation changes, not an end-to-end latency comparison.
 
-Immutable Python image publication derives three ordinary bytecode variants per
-source. One publication action retains trusted derivation hashes for its fresh
+The retired schema-v7 Python image publisher derived three ordinary bytecode variants per
+source. One publication action retained trusted derivation hashes for its fresh
 receiver capture, eliminating duplicate compilation while preserving full input
-and output reads. It also retains CPython-derived destinations and creates each
+and output reads. It also retained CPython-derived destinations and created each
 parent directory once. Two alternating before/after pairs on macOS arm64 over
 3,383 real sources and 10,149 byte-identical caches measured publication plus
 fresh source/cache inventory and verification at median 16.28 seconds before and
 10.19 seconds after (37% lower). Median process peak memory rose from 155.3 to
-156.4 MiB; source/code buffers remain bounded to one module and the action table
-scales with cache variants. This component excludes full environment/runtime
+156.4 MiB; source/code buffers remained bounded to one module and the action table
+scaled with cache variants. This component excludes full environment/runtime
 inventory, dependency installation and process startup; it does not measure the
-entire dev loop. Cold publication also removes one child and JSON round trip.
-Incoming and existing-image admission still derive caches independently. The
-[publication contract](../docs/ops/INTEGRATION.md) owns the exact proof lifetime.
+entire dev loop. Cold publication also removed one child and JSON round trip.
+Under that policy, incoming and existing-image admission derived caches
+independently. These measurements describe the retired eager publisher. Managed
+images now use source-only publication and an empty bytecode read namespace;
+[checkout provisioning](../docs/ops/INTEGRATION.md#checkout-provisioning) owns that
+contract. The measurements above do not qualify its performance.
 
 WASM policy separates typed build intent, target placement, effective captured
 Cargo incrementality and shared publication. The ordinary nonincremental default

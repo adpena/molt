@@ -197,7 +197,7 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    identity checks, covering digest propagation and failure without unrelated suites.
    Editing source-closure tests does not compile the compression provider; edits
    to that provider still run its compiled native/WASI gates and source oracles.
-   Managed Python gates select the admitted image's read-only ordinary bytecode
+   Managed Python gates select the admitted image's read-only empty bytecode
    namespace before startup and disable bytecode writes. Verifiers use a
    separate fresh empty namespace; see [checkout provisioning](#checkout-provisioning).
    No gate result is
@@ -412,7 +412,7 @@ main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 `molt.checkout_provisioning` owns a checkout's lock-declared inputs.
 `python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
 hand from an existing bootstrap interpreter. Managed Python uses the existing
-source-build publisher and schema 7 recipe at
+source-build publisher's recipe at
 `<artifact_root>/build-environments/development/<checkout_component>/<recipe_sha>`.
 The recipe binds the selected interpreter, lock closure, dependency groups and
 editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`
