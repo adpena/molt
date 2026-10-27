@@ -7379,7 +7379,7 @@ def test_terminal_transfer_and_cleanup_share_observation_until_a_signal(
     sample_custody = memory_guard.sample_processes_custody
 
     def release_observed_child(samples):
-        if pid_file.exists() and int(pid_file.read_text()) in samples:
+        if pid_file.exists() and int(pid_file.read_text(encoding="utf-8")) in samples:
             release.touch()
         return samples
 
@@ -7408,7 +7408,7 @@ def test_terminal_transfer_and_cleanup_share_observation_until_a_signal(
     script = (
         "import subprocess, sys, time\nfrom pathlib import Path\n"
         f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}, {marker!r}])\n"
-        f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+        f"Path({str(pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
         f"while not Path({str(moved)!r}).exists(): time.sleep(0.01)\n"
         if orphan
         else "pass\n"
