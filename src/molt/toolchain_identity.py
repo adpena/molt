@@ -883,24 +883,51 @@ class FileDigestCache:
             raise StableRegularFileError(
                 f"{label} is not one stable regular file: {path}"
             )
+        recorded = self.lookup(path, expected_path_stat=metadata, label=label)
+        if recorded is not None:
+            return recorded
+        identity = stable_regular_file_identity(
+            path, label=label, expected_path_stat=metadata
+        )
+        self.remember(identity)
+        return identity
+
+    def lookup(
+        self, path: Path, *, expected_path_stat: os.stat_result, label: str
+    ) -> StableRegularFileIdentity | None:
+        """Look up a captured snapshot; its owner retains the closing fence.
+
+        Never select newer path metadata here. A miss must be hashed against
+        the same supplied observation, and a hit must still pass its owner's
+        current-path and publication fences.
+        """
+        if os.name == "nt":
+            return None
+        if not stat.S_ISREG(expected_path_stat.st_mode):
+            raise StableRegularFileError(
+                f"{label} is not one stable regular file: {path}"
+            )
         key = os.fspath(path)
-        token = _stat_identity(metadata)
+        token = _stat_identity(expected_path_stat)
         recorded = self._rows().get(key)
         if recorded is not None and recorded[0] == token:
             if recorded[2] < self._started_ns - self._max_age_ns // 2:
                 self._pending[key] = (token, recorded[1])
             return _regular_file_identity(
-                path, metadata, metadata.st_ctime_ns, recorded[1]
+                path, expected_path_stat, expected_path_stat.st_ctime_ns, recorded[1]
             )
-        identity = stable_regular_file_identity(
-            path, label=label, expected_path_stat=metadata
-        )
-        if identity._stat_identity == token and (
-            max(metadata.st_mtime_ns, metadata.st_ctime_ns)
+        return None
+
+    def remember(self, identity: StableRegularFileIdentity) -> None:
+        """Stage one completed capture under the existing racy-window policy."""
+        if os.name != "nt" and (
+            max(identity._stat_identity[4], identity._stat_identity[5])
             < self._started_ns - DIGEST_RACY_WINDOW_NS
         ):
-            self._pending[key] = (token, identity.sha256)
-        return identity
+            self._pending[os.fspath(identity.path)] = (
+                identity._stat_identity,
+                identity.sha256,
+            )
 
     def flush(self) -> None:
         """Record this process's new digests and drop rows past the age budget."""
@@ -1092,7 +1119,10 @@ def verify_stable_regular_file_identity(
 
 
 def verify_stable_regular_file_metadata(
-    identity: StableRegularFileVersion, *, label: str
+    identity: StableRegularFileVersion,
+    *,
+    label: str,
+    expected_path_stat: os.stat_result | None = None,
 ) -> None:
     """Compare one POSIX path stat with a captured generation.
 
@@ -1102,6 +1132,11 @@ def verify_stable_regular_file_metadata(
     """
     if os.name == "nt":
         raise ValueError("Windows file metadata needs a handle ChangeTime query")
+    if expected_path_stat is not None and (
+        _stat_identity(expected_path_stat) != identity._stat_identity
+        or expected_path_stat.st_ctime_ns != identity._content_change_time_ns
+    ):
+        raise ValueError(f"{label} changed since identity capture: {identity.path}")
     try:
         metadata = identity.path.lstat()
     except OSError as exc:

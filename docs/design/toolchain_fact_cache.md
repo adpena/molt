@@ -98,6 +98,44 @@ project root to address a build-state root with; and the digest cache that
 proves tool bytes already lives there under the same budget and lock
 family.
 
+### Python capture uses the same file digests
+
+Standalone runtime and environment capture probes also use the host
+`FileDigestCache`; they do not keep a second digest database or cache a whole
+environment's admission. `lookup` accepts the inventory's exact observed
+generation. A miss hashes through the existing no-follow handle against that
+same observation. A hit still passes current-path verification, including every
+hardlink alias, and the final file and directory-membership fences. A changed
+ctime invalidates a same-size rewrite even when its mtime is restored. Windows
+continues to hash fresh content and query handle ChangeTime.
+
+The capture coordinator alone reads the cache and stages completed identities;
+hash workers never touch SQLite. New digests reach the shared cache only after
+successful file and membership verification. Inventory hash telemetry counts
+actual inventory hashing, so a fully warm capture reports zero hashed files and bytes.
+Direct `PythonFileCaptureContext` callers retain fresh capture unless they
+explicitly supply this same cache authority. Runtime, environment and runtime
+session probe modes share the cache policy and reader-authority closure.
+
+On POSIX, closing metadata fences use the existing one-`lstat` authority rather
+than reopening every file. Content reads still use their retained handles and
+digest checks. The cache store must be outside interpreter, active import and
+inventoried trees; an overlapping `MOLT_CACHE` refuses before creating cache
+files in those trees. No arbitrary cache directory is excluded from an input
+inventory.
+
+Warm capture costs one read of the existing host digest table, whose load scales
+with all its retained rows, and metadata and membership observations proportional
+to the selected files and directories. It does not rehash unchanged files for
+inventory identity; metadata consumers still read and verify required bytes.
+It writes no digest rows until new captures or age renewal make the cache dirty.
+Cold capture additionally reads the selected bytes and commits one batch of new
+digests. The existing age budget and racy-window policy remain authoritative.
+This follows the incremental-input approach used by
+[Cargo](https://doc.rust-lang.org/cargo/reference/build-cache.html) and
+[uv](https://docs.astral.sh/uv/concepts/cache/), while retaining Molt's stronger
+ctime and closing-snapshot checks.
+
 ### Keys per probe class
 
 Every key carries the tools, argv, cwd and the typed environment subset

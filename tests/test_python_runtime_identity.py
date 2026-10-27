@@ -417,19 +417,27 @@ def test_platform_identity_makes_no_native_load_or_process_requests() -> None:
         "    observing = False\n"
         "print(json.dumps(requests))\n"
     )
-    completed = run_custody_subject_process(
-        [
-            sys.executable,
-            "-I",
-            "-c",
-            f"import sys; sys.path[:0] = [{str(Path(runtime.__file__).parents[1])!r}]\n{program}",
-        ],
-        timeout=60.0,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
+    from molt.python_environment_identity import (
+        PythonIdentityVerifier,
+        python_identity_verifier_arguments,
     )
+
+    with PythonIdentityVerifier() as verifier:
+        completed = verifier.run(
+            [
+                sys.executable,
+                *python_identity_verifier_arguments(verifier.prefix),
+                "-c",
+                f"import sys; sys.path[:0] = [{str(Path(runtime.__file__).parents[1])!r}]\n{program}",
+            ],
+            memory_guard_prefix="MOLT_PYTEST",
+            timeout=60.0,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        assert not list(verifier.prefix.iterdir())
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == []
