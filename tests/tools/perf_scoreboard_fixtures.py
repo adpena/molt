@@ -59,7 +59,9 @@ def measure_admitted_cell(measure, **kwargs):
         source.write_text("print(1)\n", encoding="utf-8")
     with admit_benchmark_workload(
         source,
-        project_root=measure.REPO_ROOT,
+        # The actual benchmark source remains in this repository while custody
+        # tests independently substitute the build/artifact checkout coordinate.
+        project_root=Path(__file__).resolve().parents[2],
         run_args=measure.bench.resolve_benchmark_run_args(str(source)),
         molt_args=measure.bench_suites.molt_args_for_benchmark(source),
     ) as workload:
