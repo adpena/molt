@@ -33,7 +33,9 @@ pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 @pytest.mark.parametrize("platform", ["linux", "macos", "windows"])
 def test_native_release_rust_remap_keeps_one_encoded_token(tmp_path, platform):
     work = tmp_path / "work = with spaces"
-    paths = dict.fromkeys(native_build._TOOL_ROLES, tmp_path / "tool")
+    paths = dict.fromkeys(
+        {"cargo", "rustc", "cc", "ar", "linker", "linker_backend"}, tmp_path / "tool"
+    )
     paths["linker_backend"] = tmp_path / "linker-backend"
     environment = {"SYSTEMROOT": str(tmp_path)}
     native_build._select_build_tools(
@@ -42,6 +44,7 @@ def test_native_release_rust_remap_keeps_one_encoded_token(tmp_path, platform):
         work=work,
         triple="x86_64-pc-windows-msvc" if platform == "windows" else "test-target",
         platform=platform,
+        component=native_build.component_plan("linux", "x86_64")["compiler"],
     )
     flags = native_build.FlagStringRule.CARGO_ENCODED.decode(
         environment["CARGO_ENCODED_RUSTFLAGS"]
@@ -148,14 +151,9 @@ def native_build_fixture(
             "cargo",
             "rustc",
             "cc",
-            "cxx",
             "ar",
-            "ranlib",
             "linker",
             "linker_backend",
-            "cmake",
-            "ninja",
-            *(("nasm",) if (platform, arch) == ("windows", "x86_64") else ()),
         )
     }
     tools["cargo"]["version"] = "cargo 1.96.1 (fixture 2026-01-01)"
@@ -166,7 +164,7 @@ def native_build_fixture(
         "source_date_epoch": epoch,
         "target": {"platform": platform, "arch": arch, "rust_target": triple},
         "policy": {
-            "revision": 2,
+            "revision": 3,
             "rust_channel": "1.96.1",
             "platform_versions": {
                 "msvc": "14.44",
@@ -424,20 +422,18 @@ def test_msvc_release_path_maps_are_effective_across_build_roots(tmp_path):
     librarian = shutil.which("lib.exe", path=env["PATH"])
     linker = shutil.which("link.exe", path=env["PATH"])
     assert cmake is not None and ninja is not None, (
-        "native release requires CMake/Ninja"
+        "this C/C++ compiler-boundary control requires CMake/Ninja"
     )
     # Cargo/Rust are not executed by this compiler-boundary control.
     assert librarian is not None and linker is not None, (
         "native release requires MSVC tools"
     )
-    paths = dict.fromkeys(native_build._TOOL_ROLES, Path(sys.executable))
+    paths = dict.fromkeys(
+        {"cargo", "rustc", "cc", "ar", "linker", "linker_backend"}, Path(sys.executable)
+    )
     paths.update(
         cc=Path(compiler),
-        cxx=Path(compiler),
-        cmake=Path(cmake),
-        ninja=Path(ninja),
         ar=Path(librarian),
-        ranlib=Path(librarian),
         linker=Path(linker),
     )
     objects = []
@@ -458,14 +454,17 @@ def test_msvc_release_path_maps_are_effective_across_build_roots(tmp_path):
             work=work,
             triple=RUST_TARGET_BY_COORDINATE[current_host_coordinate()],
             platform="windows",
+            component=native_build.component_plan("windows", "x86_64")["compiler"],
         )
         selected = ProcessEnvironment(selected)
+        # CL owns the common path policy. The fixture deliberately applies its
+        # C flags to both languages and to CMake; production components declare C.
         # Decode at the real cc-rs boundary, then execute its compiler argv.
         # Distinct names keep the C and C++ object outputs independently owned.
         outputs = []
-        for path, flag_name in zip(files, ("CFLAGS", "CXXFLAGS"), strict=True):
+        for path in files:
             output = work / (path.suffix[1:] + ".obj")
-            flags = native_build.FlagStringRule.cc(selected).decode(selected[flag_name])
+            flags = native_build.FlagStringRule.cc(selected).decode(selected["CFLAGS"])
             result = run_guarded_test_process(
                 [compiler, "/nologo", "/c", *flags, str(path), "/Fo" + str(output)],
                 cwd=work,
@@ -507,7 +506,7 @@ def test_msvc_release_path_maps_are_effective_across_build_roots(tmp_path):
             ),
             "-DCMAKE_CXX_FLAGS="
             + " ".join(
-                native_build.FlagStringRule.cc(selected).decode(selected["CXXFLAGS"])
+                native_build.FlagStringRule.cc(selected).decode(selected["CFLAGS"])
             ),
             "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
             "-DCMAKE_BUILD_TYPE=Release",
@@ -535,7 +534,9 @@ def test_msvc_release_path_maps_are_effective_across_build_roots(tmp_path):
 
 
 def test_release_refuses_msvc_environment_flag_overflow(tmp_path):
-    paths = dict.fromkeys(native_build._TOOL_ROLES, tmp_path / "tool")
+    paths = dict.fromkeys(
+        {"cargo", "rustc", "cc", "ar", "linker", "linker_backend"}, tmp_path / "tool"
+    )
     # Windows counts UTF-16 units, so this is over the limit even though the
     # Python string has fewer than 1024 code points. No compiler may truncate it.
     with pytest.raises(ValueError, match="MSVC CL.*1024"):
@@ -545,6 +546,7 @@ def test_release_refuses_msvc_environment_flag_overflow(tmp_path):
             work=tmp_path / ("\U0001f600" * 600),
             triple="x86_64-pc-windows-msvc",
             platform="windows",
+            component=native_build.component_plan("windows", "x86_64")["compiler"],
         )
 
 
@@ -595,12 +597,13 @@ def test_receipt_rejects_self_consistent_rust_channel_not_selected_by_source(
         )
 
 
-def test_native_build_receipt_rejects_the_retired_python_bound_schema(
-    tmp_path, snapshot
-):
+@pytest.mark.parametrize(
+    "schema", ["molt.release-native-build.v4", "molt.release-native-build.v6"]
+)
+def test_native_build_receipt_rejects_retired_contracts(tmp_path, snapshot, schema):
     receipt = native_build_fixture(tmp_path, snapshot)
     assert "python" not in receipt["tools"] and "build_python" not in receipt
-    receipt["schema"] = "molt.release-native-build.v4"
+    receipt["schema"] = schema
     with pytest.raises(ValueError, match="schema"):
         native_build.validate_receipt(receipt)
 
@@ -608,12 +611,13 @@ def test_native_build_receipt_rejects_the_retired_python_bound_schema(
 @pytest.mark.parametrize(
     "platform,arch,missing",
     [
-        ("linux", "x86_64", "cmake"),
-        ("macos", "arm64", "ninja"),
-        ("windows", "x86_64", "nasm"),
+        ("linux", "x86_64", "ar"),
+        ("macos", "arm64", "ar"),
+        ("windows", "x86_64", "cl.exe"),
+        ("windows", "arm64", "lib.exe"),
     ],
 )
-def test_dependency_tools_fail_by_name_before_build(
+def test_required_native_c_tools_fail_by_name_before_build(
     tmp_path, monkeypatch, platform, arch, missing
 ):
     def resolve(name, *, environment, label):
@@ -622,8 +626,113 @@ def test_dependency_tools_fail_by_name_before_build(
         return tmp_path / name
 
     monkeypatch.setattr(native_build, "resolve_executable", resolve)
-    with pytest.raises(ValueError, match=f"{missing}.*required native dependency tool"):
-        native_build._tool_paths(tmp_path, {}, platform=platform, arch=arch)
+    with pytest.raises(ValueError, match="required native dependency tool") as error:
+        native_build._tool_paths(
+            tmp_path,
+            {},
+            platform=platform,
+            components=native_build.component_plan(platform, arch),
+        )
+    assert missing in str(error.value)
+
+
+@pytest.mark.parametrize("platform,arch", tuple(RUST_TARGET_BY_COORDINATE))
+@pytest.mark.parametrize("role", ["compiler", "wasm_facts", "launcher", "worker"])
+def test_component_owns_native_c_selection_and_environment(
+    tmp_path, monkeypatch, platform, arch, role
+):
+    observed = []
+    forbidden = {"clang++", "ranlib", "cmake", "ninja", "nasm"}
+    native_c = role in {"compiler", "worker"}  # Actual selected dependency sources.
+    if not native_c:
+        forbidden.update({"ar", "lib.exe", "cl.exe"})
+
+    def resolve(name, *, environment, label):
+        assert name not in forbidden, name
+        observed.append(name)
+        return tmp_path / name
+
+    monkeypatch.setattr(native_build, "resolve_executable", resolve)
+    monkeypatch.setattr(
+        native_build, "resolve_rustup_proxy", lambda path, *_a, **_k: path
+    )
+    monkeypatch.setattr(
+        native_build,
+        "_COMMANDS",
+        SimpleNamespace(
+            check_output=lambda *_a, **_k: str(tmp_path / "linker-backend"),
+        ),
+    )
+    plan = native_build.component_plan(platform, arch)[role]
+    assert plan["cargo_native_units"] == ({"target": ["c"]} if native_c else {})
+    paths = native_build._tool_paths(
+        tmp_path,
+        {},
+        platform=platform,
+        components={role: plan},
+    )
+    expected = {"cargo", "rustc", "linker", "linker_backend"}
+    if native_c:
+        expected.update({"cc", "ar"})
+    assert set(paths) == expected
+    env = {"SYSTEMROOT": str(tmp_path)}
+    native_build._select_build_tools(
+        env,
+        paths,
+        work=tmp_path,
+        triple=plan["target"],
+        platform=platform,
+        component=plan,
+    )
+    assert {"CXX", "RANLIB", "CMAKE", "CMAKE_GENERATOR", "NASM", "CXXFLAGS"}.isdisjoint(
+        env
+    )
+    assert ("CC" in env) is native_c and ("AR" in env) is native_c
+    assert ("CFLAGS" in env) is native_c
+    if native_c:
+        assert env["CC"] == str(paths["cc"])
+        assert env["AR"] == str(paths["ar"])
+    assert "CARGO_ENCODED_RUSTFLAGS" in env
+
+
+@pytest.mark.parametrize("mutation", ["omit", "add", "foreign-language", "extra-tool"])
+def test_native_receipt_rejects_resealed_component_capability_drift(
+    tmp_path, snapshot, mutation
+):
+    receipt = native_build_fixture(tmp_path, snapshot)
+    components = receipt["policy"]["components"]
+    if mutation == "omit":
+        components["compiler"]["cargo_native_units"] = {}
+    elif mutation == "add":
+        components["launcher"]["cargo_native_units"] = {"target": ["c"]}
+    elif mutation == "foreign-language":
+        components["worker"]["cargo_native_units"] = {"target": ["c++"]}
+    else:
+        receipt["tools"]["cmake"] = dict(receipt["tools"]["cc"])
+    with pytest.raises(ValueError, match="profile/features|tool roles"):
+        native_build.validate_receipt(receipt)
+
+
+@pytest.mark.parametrize("role", ["compiler", "launcher"])
+def test_component_tool_path_order_is_canonical(tmp_path, role):
+    order = ("cargo", "rustc", "linker", "linker_backend")
+    if role == "compiler":
+        order += ("cc", "ar")
+    paths = {name: tmp_path / name / "tool" for name in reversed(order)}
+    env = {}
+    native_build._select_build_tools(
+        env,
+        paths,
+        work=tmp_path,
+        triple="aarch64-unknown-linux-gnu",
+        platform="linux",
+        component=native_build.component_plan("linux", "aarch64")[role],
+    )
+    assert env["PATH"].split(os.pathsep) == [
+        *(str(tmp_path / name) for name in order),
+        "/usr/bin",
+        "/bin",
+    ]
 
 
 @pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "llvm", "binary"])

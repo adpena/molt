@@ -66,28 +66,30 @@ permission to omit cells or raise every timeout without diagnosis.
    pins. Admission requires the complete source-bound E1-E4 evidence closure.
 2. One Linux job builds the pure-Python wheel. It builds twice from independent
    `git archive` exports and admits exactly one byte-identical wheel.
-3. Every target independently builds `molt-worker`, the production compiler and
-   the native `molt` launcher twice through `tools/release/native_build.py`.
+3. Every target independently builds `molt-worker`, the production compiler,
+   `molt-wasm-facts` and the native `molt` launcher twice through
+   `tools/release/native_build.py`.
    `build_compiler.py` is its public entry point. Each invocation materializes
    the exact Git snapshot, uses a fresh Cargo home and target directory, pins
    the native compiler/linker executables, strips ambient build overrides and
    checks source and tool identities again after building. The worker uses
-   `release-output`; the compiler and launcher use the independent `release`
-   profile. Each output publishes its three binaries and `native-build.json`
+   `release-output`; the compiler, WASM facts tool and launcher use the independent
+   `release` profile. Each output publishes its four binaries and `native-build.json`
    atomically; an existing output cannot be reused or replaced. Candidate
    admission requires different output roots, equal location-neutral receipts
    (source inventory, epoch, target, profiles, features, native tool bytes and
    the admitted LLVM SDK input identity),
-   matching binary architectures, and byte identity for all three binaries.
+   matching binary architectures, and byte identity for all four binaries.
    Build Python uses the existing runtime identity admission and is checked
    again before publication. The installed consumer binds its worker bytes and
    shipped source inventory back to the admitted native receipt. Native-build
-   receipt v3 adds the pinned LLVM release, policy-source digest, exact static
+   receipt v7 retains the pinned LLVM release, policy-source digest, exact static
    archive closure, configuration executable and captured SDK resource identity.
    Source and release compiler builds share the same SDK admission owner. The
-   production feature tuple includes `llvm` with `llvm22-1-force-static`; keeping
-   the base `llvm22-1` feature preserves the existing pin parser. This statically
-   links LLVM, while system C/C++ dependencies remain subject to platform binary
+   production feature tuple includes `llvm` with `llvm22-1-no-llvm-linking`;
+   llvm-sys owns its C wrappers and the admitted Molt link plan owns static LLVM
+   linkage. The base `llvm22-1` feature retains the existing pin parser. System
+   C/C++ dependencies remain subject to platform binary
    compatibility admission. Installed consumers do not need an LLVM SDK.
    Full-SDK setup uses the existing package provisioner on Linux and the pinned
    source bootstrap on macOS and Windows, including their existing resource and
@@ -99,9 +101,16 @@ permission to omit cells or raise every timeout without diagnosis.
    admission reads the original `rust-toolchain.toml` Git blob with replacement
    objects disabled. `--build-root` selects a configuration-free build parent;
    its default is `RUNNER_TEMP` or the system temporary root, and a rejection
-   names the interfering Cargo configuration. The narrowed tool search requires
-   native CMake and Ninja, plus NASM on Windows x86_64 for aws-lc-sys. Missing
-   dependencies fail before building and must be provisioned explicitly.
+   names the interfering Cargo configuration. The component command plan owns
+   native-language requirements before tool selection. Compiler LLVM wrappers
+   and worker SQLite/psm units require C and an independent archiver; launcher
+   and WASM facts commands receive only Rust/linker controls. Receipt v7 binds
+   those declarations and their exact tool union. The selected graphs require
+   no C++ compilation, CMake, Ninja, separate ranlib or NASM. Conservative lockfile
+   membership does not enable an optional dependency. LLVM's admitted C++ ABI
+   and static-system inputs retain their separate linkage authority, and SDK
+   source provisioning retains its own build tools. The retired fixed-tool v6
+   receipt is refused. Missing selected tools fail before Cargo starts.
    `tools/release/runtime_cells.py` twice materializes the tagged commit with the
    canonical Git snapshot and produces every runtime cell the guest surface can
    select from the eleven logical lanes in `config/release_acceptance_matrix.toml`.
@@ -310,7 +319,7 @@ recalculate artifact digests.
 `vendor/llvm/LICENSE.TXT` retains the exact notice from the source-pinned LLVM
 release. Bundle production copies it to `share/molt/LLVM-LICENSE.TXT`, and the
 platform wheel projects the same tree. The SBOM projects one SDK package per
-release host from the admitted native-build v6 input record, including upstream
+release host from the admitted native-build v7 input record, including upstream
 source digest, static link closure and location-neutral SDK byte identity.
 Selected static system archives have separate SPDX package entries with
 `NOASSERTION` license expressions. Linux release manufacturing requires
