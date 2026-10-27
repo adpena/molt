@@ -38,16 +38,16 @@ from tests.process_guard_common import install_module_view
         "full-capture",
     ],
 )
-def test_development_admission_uses_exact_bounded_result(
+def test_development_selection_uses_exact_bounded_result(
     verifier, monkeypatch, tmp_path, fault
 ):
     root = tmp_path / ("a" * 64)
     root.mkdir()
     repo = tmp_path / "checkout"
     repo.mkdir()
-    request = authority_schema.DevelopmentEnvironmentAdmission(repo, "3.12", ("dev",))
+    request = authority_schema.DevelopmentEnvironmentRequest(repo, "3.12", ("dev",))
     expected = {
-        "schema": "molt.development-environment-admission.v1",
+        "schema": "molt.development-environment-selection.v1",
         "environment": str(root),
         "environment_id": "a" * 64,
         "checkout": str(repo),
@@ -65,8 +65,10 @@ def test_development_admission_uses_exact_bounded_result(
         received[fault] = [] if fault == "groups" else "wrong-coordinate"
 
     def run(argv, **kwargs):
-        assert "--admit-development-environment" in argv
+        assert "--select-development-environment" in argv
         assert "--capture-environment" not in argv
+        assert "--admit-published-environment" not in argv
+        assert "--admit-virtualenv-bootstrap" not in argv
         assert argv[argv.index("--development-checkout") + 1] == str(repo)
         assert kwargs["timeout"] == 120
         return guard_result_for_test(
@@ -80,10 +82,15 @@ def test_development_admission_uses_exact_bounded_result(
                 Path("selected-python"),
                 verifier=verifier,
                 root=root,
-                development_admission=request,
+                development_selection=request,
             )
             == expected
         )
+        from molt.python_capture import validate_python_capture
+        from molt.python_identity_common import PythonEnvironmentIdentityError
+
+        with pytest.raises(PythonEnvironmentIdentityError, match="capture envelope"):
+            validate_python_capture(expected)
     else:
         with pytest.raises(
             authority_schema.SourceBuildEnvironmentError, match="receipt"
@@ -92,15 +99,15 @@ def test_development_admission_uses_exact_bounded_result(
                 Path("selected-python"),
                 verifier=verifier,
                 root=root,
-                development_admission=request,
+                development_selection=request,
             )
 
 
 def test_development_result_bound_precedes_json_decode(verifier, monkeypatch, tmp_path):
     root = tmp_path / ("a" * 64)
     root.mkdir()
-    request = authority_schema.DevelopmentEnvironmentAdmission(tmp_path, None, ())
-    limit = authority_schema.DevelopmentEnvironmentAdmissionReceipt(
+    request = authority_schema.DevelopmentEnvironmentRequest(tmp_path, None, ())
+    limit = authority_schema.DevelopmentEnvironmentSelectionReceipt(
         root, request
     ).response_limit_bytes
     monkeypatch.setattr(
@@ -122,17 +129,17 @@ def test_development_result_bound_precedes_json_decode(verifier, monkeypatch, tm
             Path("selected-python"),
             verifier=verifier,
             root=root,
-            development_admission=request,
+            development_selection=request,
         )
 
 
 def test_development_result_bound_accounts_for_escaped_coordinates(tmp_path):
     prefix = tmp_path.joinpath(*(["λ🐍" * 20] * 20))
     root = prefix / ("a" * 64)
-    request = authority_schema.DevelopmentEnvironmentAdmission(
+    request = authority_schema.DevelopmentEnvironmentRequest(
         prefix / "checkout", None, ()
     )
-    receipt = authority_schema.DevelopmentEnvironmentAdmissionReceipt(root, request)
+    receipt = authority_schema.DevelopmentEnvironmentSelectionReceipt(root, request)
     encoded = json.dumps(receipt.payload(), ensure_ascii=True).encode("utf-8")
     assert len(encoded) > 4096
     assert receipt.response_limit_bytes >= len(encoded)
@@ -159,7 +166,7 @@ def test_live_development_admission_reads_one_recipe_and_preserves_empty_groups(
         return read(path)
 
     monkeypatch.setattr(authority, "_read_attestation", observed)
-    request = authority_schema.DevelopmentEnvironmentAdmission(
+    request = authority_schema.DevelopmentEnvironmentRequest(
         repo.resolve(), None, ("dev",)
     )
     admitted = authority.admit_published_environment(
@@ -177,10 +184,15 @@ def test_live_development_admission_reads_one_recipe_and_preserves_empty_groups(
         authority.admit_published_environment(
             image.root,
             realized,
-            development_admission=authority_schema.DevelopmentEnvironmentAdmission(
+            development_admission=authority_schema.DevelopmentEnvironmentRequest(
                 repo, None, ()
             ),
         )
+    (image.root / "bytecode" / "late.pyc").write_bytes(b"unselected cache")
+    with pytest.raises(
+        authority_schema.SourceBuildEnvironmentError, match="physical empty"
+    ):
+        authority.load_development_environment(image.root, repo_root=repo)
 
 
 @pytest.mark.slow
