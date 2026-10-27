@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::dominators::executable_reverse_postorder;
 use crate::tir::function::TirFunction;
 
 pub(super) fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<BlockId> {
@@ -25,64 +26,38 @@ pub(super) fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId
 }
 
 // ---------------------------------------------------------------------------
-// RPO traversal
+// Executable block order and suspension layout
 // ---------------------------------------------------------------------------
 
-pub(super) fn reverse_postorder(
+pub(super) fn lowering_block_order(
     func: &TirFunction,
     state_yield_resume_after: &HashMap<BlockId, BlockId>,
 ) -> Vec<BlockId> {
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut postorder: Vec<BlockId> = Vec::new();
-    let mut stack: Vec<(BlockId, bool)> = vec![(func.entry_block, false)];
-
-    while let Some((bid, processed)) = stack.pop() {
-        if processed {
-            postorder.push(bid);
-            continue;
-        }
-        if visited.contains(&bid) {
-            continue;
-        }
-        visited.insert(bid);
-        stack.push((bid, true));
-
-        if let Some(block) = func.blocks.get(&bid) {
-            // Push successors in reverse order for correct DFS.
-            let succs = match &block.terminator {
-                Terminator::StateDispatch { default, .. } => vec![*default],
-                _ => block.terminator.successors(),
-            };
-            for succ in succs.into_iter().rev() {
-                if !visited.contains(&succ) {
-                    stack.push((succ, false));
-                }
-            }
-        }
-    }
-
-    postorder.reverse();
+    // The shared order includes exception transfers. Appending their cleanup
+    // blocks by allocation ID would place suffix-first release chains backward
+    // in the output and manufacture redispatch edges in an otherwise acyclic CFG.
+    let postorder = executable_reverse_postorder(func);
     let mut ordered: Vec<BlockId> = Vec::with_capacity(postorder.len());
     let mut emitted: HashSet<BlockId> = HashSet::new();
     for bid in postorder {
-        if emitted.insert(bid) {
-            ordered.push(bid);
-        }
-        if let Some(&resume_bid) = state_yield_resume_after.get(&bid)
-            && emitted.insert(resume_bid)
-        {
-            ordered.push(resume_bid);
+        // Keep a suspension chain adjacent even when full RPO visits saved-state
+        // cases in reverse order. This follows only the existing layout relation,
+        // not CFG successors. First placement wins for shared/cyclic resumes;
+        // explicit state_targets, not adjacency, remain the execution authority.
+        let mut next = Some(bid);
+        while let Some(block) = next {
+            if !emitted.insert(block) {
+                break;
+            }
+            ordered.push(block);
+            next = state_yield_resume_after.get(&block).copied();
         }
     }
-    let mut postorder = ordered;
 
-    // Append any blocks not reachable via normal control flow (e.g. exception
-    // handler blocks only reachable via check_exception implicit edges, or
-    // state-machine resume blocks only reachable via state_switch dispatch).
-    // These must still appear in the output so the native backend can create
-    // state_blocks for their labels.
+    // Preserve non-executable region/state metadata deterministically. Actual
+    // exception and resume destinations already participated in the shared order.
     if (func.has_exception_handling || func.has_state_machine())
-        && postorder.len() < func.blocks.len()
+        && ordered.len() < func.blocks.len()
     {
         let mut unreachable: Vec<BlockId> = func
             .blocks
@@ -92,10 +67,10 @@ pub(super) fn reverse_postorder(
             .collect();
         // Sort for deterministic output.
         unreachable.sort_by_key(|bid| bid.0);
-        postorder.extend(unreachable);
+        ordered.extend(unreachable);
     }
 
-    postorder
+    ordered
 }
 
 /// Reducibility probe for structured-loop body/exit polarity.
