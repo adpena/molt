@@ -4924,6 +4924,7 @@ globs = [
   "tools/command_execution.py",
   "tools/molt_dev.py",
   "tools/checkout_maintenance.py",
+  "tools/cache_maintenance.py",
   "tools/controller_source.py",
   "tools/detached_execution.py",
   "tools/driver_errors.py",
@@ -4963,6 +4964,7 @@ toolchains = ["python", "git"]
 description = "Published maintenance policy, captured reclaim scope and terminal error propagation."
 globs = [
   "tools/checkout_maintenance.py",
+  "tools/cache_maintenance.py",
   "tests/tools/test_checkout_maintenance.py",
   "src/molt/dx.py",
   "src/molt/checkout_state.py",

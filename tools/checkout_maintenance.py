@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 from collections.abc import Mapping
+from typing import Literal
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -33,6 +34,35 @@ def schedule(root: Path, environment: Mapping[str, str], *, cwd: Path) -> Path |
     epoch = checkout_state_gc_epoch(root)
     if epoch is None or not epoch.due:
         return None
+    return _schedule(
+        root, environment, cwd=cwd, epoch=epoch.identity, operation="checkout"
+    )
+
+
+def schedule_cache(
+    root: Path, environment: Mapping[str, str], *, cwd: Path, epoch: str
+) -> Path:
+    """Dispatch a due CLI cache sweep through the same retained supervisor.
+
+    The caller observed the cache's prune stamp; only the canonical pruner
+    admits the attempt and applies policy under its existing prune lock. This
+    retained worker waits for contention instead of consuming a busy epoch.
+    """
+    if epoch != "initial" and (not epoch.isascii() or not epoch.isdecimal()):
+        raise ValueError("invalid cache retention epoch")
+    return _schedule(
+        root.resolve(strict=True), environment, cwd=cwd, epoch=epoch, operation="cache"
+    )
+
+
+def _schedule(
+    root: Path,
+    environment: Mapping[str, str],
+    *,
+    cwd: Path,
+    epoch: str,
+    operation: Literal["checkout", "cache"],
+) -> Path:
     from tools.driver_errors import DriverError
     from tools.controller_source import (
         _git_bytes,
@@ -43,15 +73,28 @@ def schedule(root: Path, environment: Mapping[str, str], *, cwd: Path) -> Path |
     from tools.detached_execution import launch_detached
     from tools.git_identity import require_git_object_id
 
-    state = root / "logs" / "disk_guard" / "automatic" / f"gc-{epoch.identity}"
+    directory = "disk_guard" if operation == "checkout" else "cache_retention"
+    prefix = "gc" if operation == "checkout" else "prune"
+    state = root / "logs" / directory / "automatic" / f"{prefix}-{epoch}"
     if state.exists():
         raise RuntimeError(
             f"maintenance epoch already has custody at {state}; "
             "inspect run.log/rc with detached-verify before recovery"
         )
     captured = dict(environment)
-    captured["MOLT_EXT_ROOT"] = str(root)
+    if operation == "checkout":
+        captured["MOLT_EXT_ROOT"] = str(root)
     policy_cwd = cwd.resolve()
+    if operation == "cache":
+        from molt.default_paths import _default_molt_bin, _default_molt_home
+
+        # Resolve protected installation state against the original command,
+        # before the worker moves to source that survives checkout retirement.
+        captured["MOLT_CACHE"] = str(root)
+        captured["MOLT_HOME"] = str(
+            _default_molt_home(environ=captured, cwd=policy_cwd)
+        )
+        captured["MOLT_BIN"] = str(_default_molt_bin(environ=captured, cwd=policy_cwd))
     # These two protected-target inputs belong to the completed command's cwd.
     for key in ("CARGO_TARGET_DIR", "MOLT_DIFF_CARGO_TARGET_DIR"):
         if raw := captured.get(key, "").strip():
@@ -86,7 +129,15 @@ def schedule(root: Path, environment: Mapping[str, str], *, cwd: Path) -> Path |
             label="published maintenance source",
         )
         with controller_source(repository, common_dir, published) as controller:
-            entrypoint = controller.root / "tools" / "checkout_maintenance.py"
+            entrypoint = (
+                controller.root
+                / "tools"
+                / (
+                    "checkout_maintenance.py"
+                    if operation == "checkout"
+                    else "cache_maintenance.py"
+                )
+            )
             if not entrypoint.is_file():
                 raise RuntimeError(
                     f"published controller {controller.key} has no automatic "
@@ -119,11 +170,16 @@ def schedule(root: Path, environment: Mapping[str, str], *, cwd: Path) -> Path |
     return state
 
 
-def main(argv: list[str] | None = None) -> int:
+def maintenance_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the common captured scope without loading collection policy."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--policy-cwd", required=True, type=Path)
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = maintenance_arguments(argv)
     from tools.disk_guard import collect_due
 
     results = collect_due(root=args.root, env=ProcessEnvironment(os.environ))

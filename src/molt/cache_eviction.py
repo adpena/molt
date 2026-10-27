@@ -42,6 +42,7 @@ from molt.file_publication import (
 )
 
 from molt.file_locks import (
+    _acquire_file_lock,
     _file_lock_owned_operation,
     _release_file_lock,
     _try_acquire_file_lock,
@@ -855,21 +856,36 @@ def _prune(
     dry_run: bool,
     automatic: bool = False,
     automatic_interval_seconds: float = AUTOMATIC_PRUNE_INTERVAL_SECONDS,
+    wait_for_lock: bool = False,
     environ: Mapping[str, str] | None = None,
 ) -> PruneCompleted | PruneSkipped:
-    """Serialize inventory/eviction across every entry point without waiting.
+    """Serialize inventory/eviction; foreground callers never wait.
 
     The persistent control lock records automatic attempts and completed sweeps.
     Automatic callers coalesce here before inventory, including failed attempts,
     and skip a sweep that any caller ran within ``automatic_interval_seconds``.
     Explicit sweeps are unthrottled; dry runs do not write retention control
     or payload state. SQLite may use its own WAL read-coordination sidecars.
+    One retained background worker may wait for the same lock and recheck
+    cadence after admission; it cannot leave a terminal busy epoch stranded.
     """
     if automatic and dry_run:
         raise ValueError("automatic cache retention cannot be a dry run")
+    if wait_for_lock and not automatic:
+        raise ValueError(
+            "only a supervised automatic worker may wait for the prune lock"
+        )
     lock_path = shared_cache_lock_path(cache_root, "prune")
     try:
-        handle = _try_acquire_file_lock(lock_path, create=not dry_run)
+        handle = (
+            _acquire_file_lock(
+                lock_path,
+                timeout_s=None,
+                timeout_message="cache retention lock stayed busy",
+            )
+            if wait_for_lock
+            else _try_acquire_file_lock(lock_path, create=not dry_run)
+        )
     except FileNotFoundError:
         if not dry_run:
             raise
@@ -882,6 +898,13 @@ def _prune(
         )
     if handle is None:
         return {"status": "busy", "cache_root": str(cache_root)}
+
+    def stamp_attempt() -> None:
+        handle.file.seek(0)
+        handle.file.write(str(time.time()).encode("ascii"))
+        handle.file.truncate()
+        handle.file.flush()
+
     try:
         with _file_lock_owned_operation(handle, expected_lock_path=lock_path):
             if automatic:
@@ -897,22 +920,26 @@ def _prune(
                         return {"status": "recent", "cache_root": str(cache_root)}
                 # Persist admission before inventory so a failed or interrupted
                 # sweep is not immediately repeated by another completed proof.
-                handle.file.seek(0)
-                handle.file.write(str(now).encode("ascii"))
-                handle.file.truncate()
-                handle.file.flush()
-            result = _prune_locked(
-                cache_root,
-                max_bytes=max_bytes,
-                max_age_days=max_age_days,
-                dry_run=dry_run,
-                environ=environ,
-            )
+                stamp_attempt()
+            try:
+                result = _prune_locked(
+                    cache_root,
+                    max_bytes=max_bytes,
+                    max_age_days=max_age_days,
+                    dry_run=dry_run,
+                    environ=environ,
+                )
+            except BaseException as error:
+                if automatic:
+                    try:
+                        stamp_attempt()
+                    except BaseException as stamp_error:
+                        error.add_note(
+                            f"cache retention completion stamp failed: {stamp_error!r}"
+                        )
+                raise
             if not dry_run:
-                handle.file.seek(0)
-                handle.file.write(str(time.time()).encode("ascii"))
-                handle.file.truncate()
-                handle.file.flush()
+                stamp_attempt()
             return result
     finally:
         _release_file_lock(handle)
@@ -952,6 +979,7 @@ def automatic_retention(
     *,
     cache_root: Path | None = None,
     min_interval_seconds: float = AUTOMATIC_PRUNE_INTERVAL_SECONDS,
+    wait_for_lock: bool = False,
 ) -> dict[str, object] | None:
     """Apply the budget to one cache root once, as an automatic caller.
 
@@ -963,6 +991,8 @@ def automatic_retention(
     checkouts, and a sweep any caller ran within ``min_interval_seconds`` skips
     this one. ``MOLT_CACHE_PRUNE=0`` disables it. Ordinary retention errors are
     returned as diagnostics, never raised into the caller's result.
+    A retained background worker passes ``wait_for_lock`` so contention keeps
+    its one owned attempt pending instead of consuming an unstamped epoch.
     """
     if environ.get("MOLT_CACHE_PRUNE", "1") == "0":
         return None
@@ -980,6 +1010,7 @@ def automatic_retention(
             dry_run=False,
             automatic=True,
             automatic_interval_seconds=min_interval_seconds,
+            wait_for_lock=wait_for_lock,
             environ=environ,
         )
         # Callers keep bounded diagnostics, not a second cache inventory; the
