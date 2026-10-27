@@ -1054,16 +1054,12 @@ class CargoCapability(Enum):
     BUILD_DIRECTORY = ((1, 91, 0), "resource-keyed build directories")
     WARNINGS_DENY = ((1, 97, 0), "warning denial")
 
-    def __init__(
-        self, minimum_version: tuple[int, int, int], description: str
-    ) -> None:
+    def __init__(self, minimum_version: tuple[int, int, int], description: str) -> None:
         self.minimum_version = minimum_version
         self.description = description
 
 
-def require_cargo_capability_version(
-    version: str, capability: CargoCapability
-) -> None:
+def require_cargo_capability_version(version: str, capability: CargoCapability) -> None:
     """Admit a typed Cargo capability from its captured version banner."""
     banner = version.partition("\n")[0].rstrip("\r")
     match = re.fullmatch(r"cargo (\d+)\.(\d+)\.(\d+)(?:[-+ ][^\r\n]*)?", banner)
