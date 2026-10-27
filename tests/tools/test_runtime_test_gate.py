@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli import cargo_capabilities
+
 from tests import runtime_descendant_test_support as support
 from tools import run_runtime_test_gate as gate
 
@@ -1419,7 +1421,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         required_cargo_capabilities,
     ):
         assert required_cargo_capabilities == (
-            runtime_cargo_plan.CargoCapability.BUILD_DIRECTORY,
+            cargo_capabilities.CargoCapability.BUILD_DIRECTORY,
         )
         assert env["NODE_OPTIONS"] == inherited_node_options
         # Exercise the real planner's executable-selection boundary, while its
@@ -2265,8 +2267,8 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
         required_cargo_capabilities,
     ):
         assert required_cargo_capabilities == (
-            runtime_cargo_plan.CargoCapability.BUILD_DIRECTORY,
-            runtime_cargo_plan.CargoCapability.WARNINGS_DENY,
+            cargo_capabilities.CargoCapability.BUILD_DIRECTORY,
+            cargo_capabilities.CargoCapability.WARNINGS_DENY,
         )
         assert root == source and list(cargo_command) == submitted
         assert requested_target == "wasm32-wasip1"

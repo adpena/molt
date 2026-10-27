@@ -62,7 +62,8 @@ from tools.proof_queue_pkg.process_image_capture import (
 
 
 if TYPE_CHECKING:
-    from molt.cli.runtime_cargo_plan import CargoCapability, RuntimeCargoPlan
+    from molt.cli.cargo_capabilities import CargoCapability
+    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
     from molt.wasi_sdk_identity import WasiCAbiProjection
     from tools.proof_queue_pkg import command_admission
     from tools.runtime_test_gate_plan import CargoOperation
@@ -2590,7 +2591,7 @@ RUNTIME_GATE_RUST_SELECTION_SCHEMA = "molt.proof-runtime-gate-rust-selection.v2"
 def _runtime_gate_cargo_capabilities(
     invocation: command_admission.CargoInvocation,
 ) -> tuple[CargoCapability, ...]:
-    from molt.cli.runtime_cargo_plan import CargoCapability
+    from molt.cli.cargo_capabilities import CargoCapability
 
     return (
         CargoCapability.BUILD_DIRECTORY,
@@ -4009,7 +4010,7 @@ def _validate_runtime_gate_rust_selection(
         )
         selection = row["selection"]
         if operation.environment == "runtime-wasi" and isinstance(selection, Mapping):
-            from molt.cli.runtime_cargo_plan import (
+            from molt.cli.cargo_capabilities import (
                 require_cargo_capability_version,
             )
 

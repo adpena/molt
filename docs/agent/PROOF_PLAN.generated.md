@@ -400,7 +400,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `host-fact-test-isolation` | 2 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
-| `runtime-cargo-input-custody` | 55 | 0 |
+| `runtime-cargo-input-custody` | 56 | 0 |
 | `native-test-failure-diagnostics` | 5 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |

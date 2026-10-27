@@ -5321,6 +5321,7 @@ toolchains = ["python", "cargo"]
 description = "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody."
 globs = [
   "src/molt/cli/cargo_build_reads.py",
+  "src/molt/cli/cargo_capabilities.py",
   "src/molt/cli/cargo_environment_inputs.py",
   "src/molt/cli/cargo_search_path.py",
   "src/molt/cli/product_store.py",
