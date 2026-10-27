@@ -222,8 +222,9 @@ def test_msvc_activation_preserves_batch_path_with_spaces(tmp_path, monkeypatch)
     assert Path(env["VSINSTALLDIR"]) == install
 
 
+@pytest.mark.parametrize("names", [None, ("clang", "ar", "ld")])
 def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, names
 ):
     developer = tmp_path / "Xcode/Contents/Developer"
     sdk = developer / "SDKs/MacOSX.sdk"
@@ -232,7 +233,10 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
     (sdk / "SDKSettings.json").write_bytes(settings)
     actual = developer / "Toolchains/XcodeDefault.xctoolchain/usr/bin"
     actual.mkdir(parents=True)
-    for name in ("clang", "clang++", "ar", "ranlib", "ld"):
+    selected_names = (
+        ("clang", "clang++", "ar", "ranlib", "ld") if names is None else names
+    )
+    for name in selected_names:
         (actual / name).write_bytes(name.encode())
     calls = []
     # The selectors are real files: the toolchain facts key each answer by
@@ -259,7 +263,11 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
         return subprocess.CompletedProcess(argv, 0, stdout + "\n", "")
 
     monkeypatch.setattr(platform_tools.process_guard, "run_completed_command", query)
-    selection = platform_tools.select_darwin_toolchain({"PATH": str(selectors)})
+    options = {} if names is None else {"names": names}
+    selection = platform_tools.select_darwin_toolchain(
+        {"PATH": str(selectors)}, **options
+    )
+    assert set(selection.tools) == set(selected_names)
     assert set(selection.tools.values()) == set(actual.iterdir())
     assert selection.versions() == {
         "sdk": "15.4",
@@ -269,10 +277,22 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
     assert selection.environment()["MACOSX_DEPLOYMENT_TARGET"] == "15.4"
     before = len([argv for argv, _ in calls if "--print-path" in argv])
     pinned = {**selection.environment(), "PATH": str(selectors)}
-    assert selection == platform_tools.select_darwin_toolchain(pinned)
+    assert selection == platform_tools.select_darwin_toolchain(pinned, **options)
     assert len([argv for argv, _ in calls if "--print-path" in argv]) == before
     (sdk / "SDKSettings.json").write_bytes(b'{"Version":"15.4","changed":true}')
-    assert selection != platform_tools.select_darwin_toolchain(pinned)
+    assert selection != platform_tools.select_darwin_toolchain(pinned, **options)
+
+
+@pytest.mark.parametrize("names", [(), ("clang", "clang"), ("foreign",)])
+def test_darwin_tool_selection_rejects_invalid_demands_before_discovery(
+    monkeypatch, names
+):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("invalid tool demands must not discover the SDK")
+
+    monkeypatch.setattr(platform_tools, "_darwin_developer_directory", forbidden)
+    with pytest.raises(ValueError, match="nonempty unique declared selection"):
+        platform_tools.select_darwin_toolchain({}, names=names)
 
 
 @pytest.mark.parametrize("developer_override", [False, True])

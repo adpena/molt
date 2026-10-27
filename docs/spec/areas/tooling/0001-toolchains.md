@@ -1400,6 +1400,27 @@ The production compiler enables `llvm`, retains the `llvm22-1` pin, and uses
 wrappers. The optional `molt-llvm-link/native-link` dependency owns native linkage
 once; ordinary workspace checks leave it inactive and require no SDK.
 
+The native release component plan declares those target C units alongside its
+package, binary, profile and features. The worker also declares C for bundled
+SQLite and psm. Launcher and WASM facts components declare no native C units.
+Native-build receipt v7 binds the declarations and exactly their Rust/linker
+and C/compiler-archiver tool union; its receiver refuses missing, extra or
+substituted demands and the retired fixed-tool v6 contract. C selection and
+reproducible C flags belong only to consuming component commands. No selected
+component requires C++ compilation, CMake, Ninja, separate ranlib or NASM.
+Optional dependencies elsewhere in the conservative lock graph confer no build
+capability. SDK source builds keep their own prerequisites; LLVM C++ ABI linkage
+continues through the existing admitted link plan.
+
+Native release production requests only its required Darwin SDK executables
+(currently Clang, archiver and linker). Full C/C++ toolchain consumers retain
+their complete selection through the same SDK owner. This removes unrelated
+discovery and native-image reads without adding a cache or a second selector.
+The distinction follows [Cargo build-script compilation and linkage](https://doc.rust-lang.org/cargo/reference/build-scripts.html)
+and the pinned [cc-rs compiler/archiver contract](https://docs.rs/cc/1.9.0/cc/):
+cc-rs updates its archives through the selected archiver and does not invoke
+the separate ranlib selector itself.
+
 SDK usability and compiler delivery are distinct contracts. The SDK verifier and
 proof capture retain the raw ordered `llvm-config --libnames --link-static` and
 `--system-libs --link-static` closure and its C++ link probe. The compiler's
