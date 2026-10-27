@@ -62,18 +62,15 @@ from molt.path_custody import host_path_is_within
 from molt.portable_paths import portable_path_component
 from molt.file_locks import FileLockTimeout, _acquire_file_lock, _release_file_lock
 from molt.process_environment import ProcessEnvironment
+from tools.driver_errors import EXIT_FAIL, EXIT_OK, EXIT_USAGE, DriverError  # noqa: E402
 from tools.molt_dev_common import (
     _COMMANDS,
-    EXIT_FAIL,
-    EXIT_OK,
-    EXIT_USAGE,
-    DriverError,
     _fail,
     _ok,
     _run_fast_captured_command,
     _say,
     _step,
-)
+)  # noqa: E402
 from tools import drift_harvest, molt_dev_controller, molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
 from tools.git_identity import immutable_git_environment

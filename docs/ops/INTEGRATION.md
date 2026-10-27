@@ -61,7 +61,10 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    ordinary invocations again use main's pinned controller, whose tree identity
    now includes the new projection. `--dry-run` always runs in-process. Every
    progress event names its `controller`. The four most recently used
-   controllers stay; an older one retires after a day without use.
+   controllers stay; an older one retires after a day without use and only
+   while its exclusive source-use lock is available. Shared controller source
+   use covers normal exec/startup and detached child closure, so a long-lived
+   worker retains the source it executes.
 
    On Windows, the waiting Molt launcher and selected venv redirector start in
    the surviving controller cache. The pinned worker validates its physical

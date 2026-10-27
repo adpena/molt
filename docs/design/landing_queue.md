@@ -161,6 +161,14 @@ The code that decides whether a change lands is never the change.
   that main cannot prepare. The complete selected gates remain mandatory;
   this is an explicit bootstrap, never a post-failure retry policy. Follow the
   [canonical integration contract](../../ops/INTEGRATION.md#the-driver-lifecycle-integrate).
+  The adopted queue runner and supervisor execute from the exact clean committed
+  candidate's immutable controller source and its canonically synchronized
+  dependency environment. Isolated startup keeps editable caller hooks out of
+  the adopted driver. Source use overlaps acknowledged
+  startup and terminal publication, so retiring the lane cannot remove their
+  code. An older in-lane runner leaves retirement pending, releases its queue
+  lock and hands already-published requests to the surviving main controller;
+  exact enrolled custody closes there without repeating gates.
   Once landed, the next default invocation uses main's newly pinned controller.
   A landing's progress stream and
   receipt record which controller ran; a lane command prints it
@@ -170,7 +178,10 @@ The code that decides whether a change lands is never the change.
 - **Cost.** Two `git rev-parse` calls and one no-op `uv sync` per landing. A
   new controller tree costs one extraction (1.5 s, 33 MB) and one environment
   build from the warm uv cache (0.8 s, 35 MB). Retention keeps the four most
-  recently used controllers.
+  recently used controllers. Shared source use protects controller startup and
+  execution; retention requires an exclusive lock and a fresh age check.
+  Automatic checkout maintenance reuses this same source publisher and detached
+  supervisor, with its own retained terminal result.
 - **Status.** Implemented 2026-10-20. A first stdlib-only design ran the
   driver as `python -I -S`; the end-to-end landing test found that worktree
   cleanup imports `msgspec`, so the controller pins main's dependencies as

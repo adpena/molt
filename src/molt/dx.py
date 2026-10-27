@@ -378,16 +378,16 @@ def _disk_guard_disabled(env: Mapping[str, str]) -> bool:
     }
 
 
-def _source_disk_guard():  # noqa: ANN202 - tools.disk_guard loads lazily
-    """The checkout's `tools/disk_guard.py`, or None for an installed compiler."""
+def _source_checkout_maintenance():  # noqa: ANN202 - source tools load lazily
+    """The source scheduling adapter, or None for an installed compiler."""
     tools_dir = compiler_source_root() / "tools"
-    if not (tools_dir / "disk_guard.py").is_file():
+    if not (tools_dir / "checkout_maintenance.py").is_file():
         return None
     if str(tools_dir.parent) not in sys.path:
         sys.path.insert(0, str(tools_dir.parent))
-    from tools import disk_guard  # noqa: PLC0415 - lazy, development only
+    from tools import checkout_maintenance  # noqa: PLC0415 - lazy, development only
 
-    return disk_guard
+    return checkout_maintenance
 
 
 def prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
@@ -452,37 +452,22 @@ def collect_checkout_state_after_result(env: Mapping[str, str], *, cwd: Path) ->
         ext_root = configured_artifact_root(env, relative_to=cwd)
         if ext_root is None:
             return
-        from molt.checkout_state import checkout_state_gc, checkout_state_gc_due
+        from molt.checkout_state import checkout_state_gc_due
 
         if not checkout_state_gc_due(ext_root):
             return
         if not ext_root.is_dir():
             return
-        disk_guard = _source_disk_guard()
-        if disk_guard is None:
+        scheduler = _source_checkout_maintenance()
+        if scheduler is None:
             return
-        with checkout_state_gc(ext_root) as admitted:
-            if not admitted:
-                return
-            results = disk_guard.collect(root=ext_root, env=env)
+        state = scheduler.schedule(ext_root, env, cwd=cwd)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"molt: checkout state GC failed: {str(exc)[:512]}", file=sys.stderr)
         return
-    error_count = 0
-    for result in results:
-        for error in result.errors:
-            error_count += 1
-            if error_count <= 3:
-                print(f"molt: checkout state GC failed: {error[:512]}", file=sys.stderr)
-    if error_count > 3:
+    if state is not None:
         print(
-            f"molt: checkout state GC: {error_count - 3} more error(s)", file=sys.stderr
-        )
-    reclaimed = sum(len(result.reclaimed) for result in results)
-    if reclaimed:
-        print(
-            f"molt: reclaimed {reclaimed} idle root(s) or replaced layout "
-            f"entries under {ext_root}",
+            f"molt: checkout maintenance evidence: {state} (run.log/rc)",
             file=sys.stderr,
         )
 
