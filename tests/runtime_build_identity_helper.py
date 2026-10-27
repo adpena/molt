@@ -707,12 +707,18 @@ def runtime_cargo_plan(
     fixture_root: RuntimeFixtureRoot,
     env: Mapping[str, str],
     cargo_command: Sequence[str],
+    cargo: Path | None = None,
+    rustc: Path | None = None,
     requested_target: str | None = None,
     environment_transform=None,
     rustflags_transform=None,
     **_kwargs: object,
 ) -> RuntimeCargoPlan:
-    """Live plan with immutable source input and pytest-owned generated tools."""
+    """Live plan with immutable source input and pytest-owned generated tools.
+
+    Select fixture compiler images before PATH, custody and command pinning.
+    Existing callers use the selected Python image for both tool roles.
+    """
     root = project_root.resolve()
     fixtures = _fixture_path(fixture_root)
     environment = ProcessEnvironmentBuilder(env)
@@ -722,7 +728,8 @@ def runtime_cargo_plan(
             environment_transform(MappingProxyType(environment)), rule=environment.rule
         )
     host = "x86_64-unknown-linux-gnu"
-    executable = Path(sys.executable)
+    cargo_executable = Path(sys.executable) if cargo is None else cargo
+    rustc_executable = Path(sys.executable) if rustc is None else rustc
     profiles = {
         "profile": {
             name: {"inherits": parent}
@@ -741,7 +748,7 @@ def runtime_cargo_plan(
     )
     if rustflags_transform is not None:
         flags = rustflags_transform(flags)
-    environment["RUSTC"] = str(executable)
+    environment["RUSTC"] = str(rustc_executable)
     wrappers = {}
     for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
         selected = environment.get(name, "")
@@ -753,7 +760,7 @@ def runtime_cargo_plan(
             environment[name] = ""
     wasi = None
     installation = None
-    tool_paths = {"cargo": executable, "rustc": executable}
+    tool_paths = {"cargo": cargo_executable, "rustc": rustc_executable}
     if requested_target in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
         from molt.llvm_toolchain import (
             selected_wasi_sdk_installation,
@@ -860,7 +867,7 @@ def runtime_cargo_plan(
         ProcessEnvironment(environment),
         requested_target or host,
         host,
-        executable,
+        rustc_executable,
         tools,
         MappingProxyType(wrappers),
         flags,

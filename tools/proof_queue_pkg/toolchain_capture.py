@@ -3862,9 +3862,18 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
         or re.fullmatch(r"[0-9a-f]{64}", directory.name) is None
     ):
         raise ValueError("runtime Cargo intermediate output escaped its captured base")
+    command = operation.command
+    forwarded = invocation.compiler_arguments()
+    if forwarded:
+        # RuntimeCargoPlan also normalizes its final compiler lane, without
+        # repeating the dependency lane's SDK search directories.
+        command = (
+            *command[: command.index("--") + 1],
+            *abi.rustflags(forwarded, include_search=False),
+        )
     return list(
         cargo_argv._pin_cargo_command(
-            operation.command,
+            command,
             {name: Path(value) for name, value in tools.items()},
             {name: Path(value) for name, value in wrappers.items()},
             WASI_TARGET,

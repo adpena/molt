@@ -2547,59 +2547,22 @@ def _native_build_capture_fixture(
     ):
         # Preserve the real RuntimeCargoPlan SDK/ABI/resource projection. Its
         # expensive compiler discovery uses the existing pytest-owned plan.
-        from dataclasses import replace
-        from types import MappingProxyType
         from molt.cli import runtime_cargo_plan as plans
-        from molt.cli.cargo_resource_custody import CargoExecutableCustody
-        from molt.cli.cargo_search_path import (
-            cargo_search_path,
-            derives_cargo_search_path,
-        )
         from tests.runtime_build_identity_helper import (
             RuntimeFixtureRoot,
             runtime_cargo_plan,
         )
 
         def plan(root, *, env, cargo_command, **kwargs):
-            selected = runtime_cargo_plan(
+            return runtime_cargo_plan(
                 root,
                 fixture_root=RuntimeFixtureRoot(tmp_path),
                 env=env,
                 cargo_command=cargo_command,
+                cargo=tools["cargo"],
+                rustc=tools["rustc"],
                 **kwargs,
             )
-            tool_paths = {
-                **selected.tools,
-                "cargo": tools["cargo"],
-                "rustc": tools["rustc"],
-            }
-            projected = {"RUSTC": str(tools["rustc"])}
-            if derives_cargo_search_path():
-                # The plan derives Cargo's PATH from its selected tools, so
-                # substituted tools carry their own directories into it.
-                projected["PATH"] = cargo_search_path(
-                    selected.environment,
-                    (*tool_paths.values(), *selected.wrappers.values()),
-                )
-            projected_env = selected.environment.updated(projected)
-            custody = tuple(
-                CargoExecutableCustody.capture(
-                    row.label, tool_paths[row.label.removeprefix("tool/")]
-                )
-                if row.label in {"tool/cargo", "tool/rustc"}
-                else row
-                for row in selected.executable_custody
-            )
-            selected = replace(
-                selected,
-                command=(str(tool_paths["cargo"]), *selected.command[1:]),
-                tools=MappingProxyType(tool_paths),
-                rustc=tools["rustc"],
-                environment=projected_env,
-                executable_custody=custody,
-            ).with_build_directory()
-            selected.verify()
-            return selected
 
         monkeypatch.setattr(plans, "resolve_runtime_cargo_plan", plan)
     if environment_updates:
@@ -4775,7 +4738,14 @@ def _runtime_gate_registered_command(policy):
 
 @pytest.mark.parametrize(
     "mutation",
-    [None, "missing-sdk", "foreign-sdk", "source-target", "unresolved-producer"],
+    [
+        None,
+        "missing-sdk",
+        "foreign-sdk",
+        "source-target",
+        "unresolved-producer",
+        "unresolved-final-mode",
+    ],
 )
 def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
     tmp_path, monkeypatch, mutation
@@ -4827,6 +4797,15 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
     assert child["producer_command"][0] == str(tools["cargo"])
     assert child["producer_command"][1] == "clippy"
     assert child["producer_command"] != registered
+    separator = child["producer_command"].index("--")
+    assert child["producer_command"][separator + 1 :] == [
+        "-D",
+        "warnings",
+        "-C",
+        "link-self-contained=no",
+        "-C",
+        "linker-flavor=wasm-ld",
+    ]
     assert any(
         value.startswith("build.build-dir=") for value in child["producer_command"]
     )
@@ -4861,9 +4840,30 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
         child = operation["selection"]
         child["producer_command"] = source_command
         child["command_semantics_sha256"] = canonical_json_sha256(source_command)
+    elif mutation == "unresolved-final-mode":
+        child = operation["selection"]
+        producer = child["producer_command"]
+        separator = producer.index("--")
+        # Preserve every tool/output pin and dependency flag. Only the final
+        # crate's SDK modes are absent, as in the plausible unnormalized plan.
+        unresolved = [*producer[: separator + 1], "-D", "warnings"]
+        child["producer_command"] = unresolved
+        child["admitted_command"] = ["cargo", *unresolved[1:]]
+        digest = canonical_json_sha256(unresolved)
+        child["command_semantics_sha256"] = digest
+        for unit in child["units"]:
+            unit["command_semantics_sha256"] = digest
+            unit["flag_context"]["command"] = list(unresolved)
+        assert operation["source_command"] == source_command
+        assert operation["projection"] == raw["operations"][0]["projection"]
     changed.pop("identity_sha256")
     changed["identity_sha256"] = canonical_json_sha256(changed)
-    with pytest.raises(ValueError):
+    with pytest.raises(
+        ValueError,
+        match="runtime Cargo child command differs from its operation"
+        if mutation == "unresolved-final-mode"
+        else None,
+    ):
         toolchain_capture.validate_rust_link_selection(
             changed, command_argv=command, full_capture=True
         )
