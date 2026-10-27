@@ -224,9 +224,11 @@ def test_admitted_cache_generation_retains_custody_across_selection_and_eviction
     binding = generation_module.bind_runtime_wasm_codegen(admitted, None)
     pinned = binding.generation
     expected = tmp_path / "expected.json"
-    generation_module.RuntimeWasmExpectedPair(shared_identity, reloc_identity).write(
-        expected
-    )
+    generation_module.RuntimeWasmExpectedPair(
+        shared_identity,
+        reloc_identity,
+        generation_module.RuntimeWasmReceiptRole.SOURCE_BUILD,
+    ).write(expected)
 
     def link_admission():
         return wasm_link._verify_runtime_generation(
@@ -282,18 +284,29 @@ def test_pair_cache_rejects_cross_identity_and_single_artifact_tamper(
     )
     cached_shared, _cached_reloc, manifest = cache._cached_pair_paths(shared_identity)
     payload = json.loads(manifest.read_text(encoding="utf-8"))
-    immutable_reloc = manifest.parent / payload["receipts"]["reloc"]["member"]
+    immutable_reloc = (
+        manifest.parent / payload["product"]["receipts"]["reloc"]["member"]
+    )
+    assert (
+        cache.admit_runtime_wasm_pair_from_shared_cache(
+            shared_identity=shared_identity,
+            reloc_identity=reloc_identity,
+            environment=ProcessEnvironment(os.environ),
+        )
+        is not None
+    )
+    # Check identity rejection before damaging the otherwise valid member bytes.
+    assert not cache.admit_runtime_wasm_pair_from_shared_cache(
+        shared_identity=shared_identity,
+        reloc_identity=_identity("reloc", "other"),
+        environment=ProcessEnvironment(os.environ),
+    )
     immutable_reloc.write_bytes(b"tampered")
 
     dest = tmp_path / "dest"
     assert not cache.admit_runtime_wasm_pair_from_shared_cache(
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
-        environment=ProcessEnvironment(os.environ),
-    )
-    assert not cache.admit_runtime_wasm_pair_from_shared_cache(
-        shared_identity=shared_identity,
-        reloc_identity=_identity("reloc", "other"),
         environment=ProcessEnvironment(os.environ),
     )
     assert not cached_shared.exists()
@@ -448,4 +461,44 @@ def test_shared_cache_checks_exact_observation_before_admission(
     assert (
         admitted.shared.read_bytes() == b"shared"
         and admitted.reloc.read_bytes() == b"reloc"
+    )
+
+
+def test_shared_source_cache_refuses_bare_installed_product(tmp_path):
+    from molt.cli.runtime_wasm_generation import read_runtime_wasm_product
+
+    shared = tmp_path / "molt_runtime.wasm"
+    reloc = tmp_path / "molt_runtime_reloc.wasm"
+    shared.write_bytes(b"shared")
+    reloc.write_bytes(b"reloc")
+    identities = _identity("shared"), _identity("reloc")
+    assert (
+        cache.publish_runtime_wasm_pair_to_shared_cache(
+            shared=shared,
+            reloc=reloc,
+            shared_identity=identities[0],
+            reloc_identity=identities[1],
+            cargo_environment=runtime_cargo_environment_inputs(),
+        )
+        is None
+    )
+    _, _, manifest = cache._cached_pair_paths(identities[0])
+    envelope = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest.write_text(json.dumps(envelope["product"]), encoding="utf-8")
+    # Independent product reader confirms intact family and final member bytes.
+    assert (
+        read_runtime_wasm_product(
+            manifest,
+            expected_shared_identity=identities[0],
+            expected_reloc_identity=identities[1],
+        )
+        is not None
+    )
+    assert (
+        cache.admit_runtime_wasm_pair_from_shared_cache(
+            shared_identity=identities[0],
+            reloc_identity=identities[1],
+            environment=ProcessEnvironment(os.environ),
+        )
+        is None
     )

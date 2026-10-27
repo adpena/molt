@@ -4,6 +4,176 @@ use crate::call_function_obj_vec;
 use crate::object::builders::{alloc_list, alloc_tuple};
 
 #[test]
+fn raw_function_allocation_publishes_specialized_binder_policy() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let pointer = crate::object::builders::alloc_function_obj(
+                py,
+                fn_addr!(crate::molt_object_new_bound),
+                1,
+            );
+            assert!(!pointer.is_null());
+            assert!(frame_binding::function_requires_binder_flag(pointer));
+            let function = MoltObject::from_ptr(pointer).bits();
+            let result =
+                crate::call::function::call_function_obj1(py, function, MoltObject::none().bits());
+            assert!(
+                exception_pending(py),
+                "object.__new__ needs a type receiver"
+            );
+            crate::molt_exception_clear();
+            dec_ref_bits(py, result);
+            dec_ref_bits(py, function);
+        }
+    });
+}
+
+#[test]
+fn direct_code_attachment_publishes_signature_binder_policy() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = MoltObject::from_ptr(crate::alloc_string(py, b"keyword")).bits();
+            let names = MoltObject::from_ptr(alloc_tuple(py, &[name])).bits();
+            let positional = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+            let source = metadata_function(
+                py,
+                none_of_one as *const (),
+                1,
+                &[
+                    (b"__molt_arg_names__", positional),
+                    (b"__molt_kwonly_names__", names),
+                ],
+                false,
+            );
+            let code = crate::builtins::functions::molt_function_get_code(source);
+            assert!(!exception_pending(py));
+            assert!(!obj_from_bits(code).is_none());
+            let pointer = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::provenance::abi::expose_function_address(none_of_one as *const ()),
+                1,
+            );
+            assert!(!pointer.is_null());
+            let function = MoltObject::from_ptr(pointer).bits();
+            assert!(!frame_binding::function_requires_binder_flag(pointer));
+            assert!(crate::object::layout::function_set_code_bits(
+                py, pointer, code
+            ));
+            assert!(frame_binding::function_requires_binder_flag(pointer));
+            let code_pointer = obj_from_bits(code).as_ptr().unwrap();
+            assert_eq!(
+                crate::object::layout::code_published_execution_kind(code_pointer),
+                None
+            );
+            let none = MoltObject::none().bits();
+            let zero = MoltObject::from_int(0).bits();
+            // Both functions observe this code before its execution kind is
+            // sealed. Neither writer may replace the shared signature.
+            assert!(
+                crate::object::layout::code_set_signature_bits(
+                    py,
+                    code_pointer,
+                    names,
+                    zero,
+                    positional,
+                    none,
+                    none,
+                )
+                .is_err()
+            );
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            let replacement = crate::object::layout::prepare_code_signature(
+                py,
+                [names, zero, positional, none, none],
+            )
+            .unwrap();
+            assert!(
+                crate::object::layout::prepare_function_code_bits(
+                    py,
+                    pointer,
+                    code,
+                    None,
+                    Some(replacement),
+                )
+                .is_err()
+            );
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            assert_eq!(
+                crate::object::layout::code_kwonly_names_bits(code_pointer),
+                names
+            );
+            assert!(frame_binding::function_requires_binder_flag(
+                obj_from_bits(source).as_ptr().unwrap(),
+            ));
+            assert!(frame_binding::function_requires_binder_flag(pointer));
+            // This is an exact machine-arity call, but Python's published
+            // signature rejects the positional argument. A stale false flag
+            // would enter none_of_one and silently return None.
+            let result = crate::call::function::call_function_obj1(
+                py,
+                function,
+                MoltObject::from_int(17).bits(),
+            );
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            dec_ref_bits(py, result);
+            for bits in [function, code, source, positional, names, name] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn public_keyword_defaults_publish_binder_policy_before_the_next_call() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            use crate::object::function_metadata::{FunctionMetadataField as Field, write_public};
+            let name = MoltObject::from_ptr(crate::alloc_string(py, b"value")).bits();
+            let names = MoltObject::from_ptr(alloc_tuple(py, &[name])).bits();
+            let function = metadata_function(
+                py,
+                none_of_one as *const (),
+                1,
+                &[(b"__molt_arg_names__", names)],
+                false,
+            );
+            let pointer = obj_from_bits(function).as_ptr().unwrap();
+            let defaults = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
+            // Presence, including an empty mapping, requires binding. Public
+            // mutation must publish both true and false before another call.
+            for (replacement, requires_binding) in [(Some(defaults), true), (None, false)] {
+                write_public(py, pointer, Field::KeywordDefaults, replacement).unwrap();
+                assert_eq!(
+                    frame_binding::function_requires_binder_flag(pointer),
+                    requires_binding,
+                );
+                assert_eq!(
+                    frame_binding::function_raw_positional_call_needs_binding(py, pointer, 1),
+                    requires_binding,
+                );
+                let result = crate::call::function::call_function_obj1(
+                    py,
+                    function,
+                    MoltObject::from_int(17).bits(),
+                );
+                assert!(!exception_pending(py));
+                assert!(obj_from_bits(result).is_none());
+                dec_ref_bits(py, result);
+            }
+            for bits in [defaults, function, names, name] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
 fn call_bind_builtin_full_binding_preserves_callee_owned_alias_return() {
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
@@ -107,6 +277,42 @@ fn call_bind_builtin_default_padded_argv_preserves_callee_owned_alias_return() {
         );
 
         dec_ref_bits(_py, result_bits);
+        unsafe {
+            use crate::object::function_metadata::{FunctionMetadataField as Field, write_public};
+            let empty = MoltObject::from_ptr(alloc_tuple(_py, &[])).bits();
+            let value = MoltObject::from_int(29).bits();
+            let replacement = MoltObject::from_ptr(alloc_tuple(_py, &[value])).bits();
+            for (defaults, needs_binding) in [
+                (Some(empty), false),
+                (None, false),
+                (Some(replacement), true),
+            ] {
+                write_public(_py, func_ptr, Field::Defaults, defaults).unwrap();
+                assert_eq!(
+                    frame_binding::function_requires_full_binding(_py, func_ptr),
+                    needs_binding,
+                );
+                assert_eq!(
+                    frame_binding::function_raw_positional_call_needs_binding(_py, func_ptr, 1),
+                    needs_binding,
+                );
+                let result = crate::call::function::call_function_obj1(
+                    _py,
+                    func_bits,
+                    MoltObject::from_int(5).bits(),
+                );
+                if needs_binding {
+                    assert!(!exception_pending(_py));
+                    assert_eq!(result, value);
+                } else {
+                    assert!(exception_pending(_py));
+                    crate::molt_exception_clear();
+                }
+                dec_ref_bits(_py, result);
+            }
+            dec_ref_bits(_py, empty);
+            dec_ref_bits(_py, replacement);
+        }
         dec_ref_bits(_py, func_bits);
     });
 }
@@ -144,7 +350,7 @@ fn specialized_builtin_binding_owns_raw_admission_with_or_without_trampolines() 
                 for trampoline in [0, 1] {
                     // A non-callable trampoline is deliberate: missing
                     // receivers must be rejected before dispatch reaches it.
-                    crate::object::layout::function_set_trampoline_ptr(ptr, trampoline);
+                    crate::object::layout::function_set_trampoline_ptr(py, ptr, trampoline);
                     assert!(
                         crate::call::bind::builtin_args::builtin_call_binding(py, ptr).is_some(),
                         "{name} must retain specialized binding with trampoline {trampoline}"
@@ -179,7 +385,7 @@ fn specialized_builtin_binding_owns_raw_admission_with_or_without_trampolines() 
                     crate::molt_exception_clear();
                     dec_ref_bits(py, result);
                 }
-                crate::object::layout::function_set_trampoline_ptr(ptr, original);
+                crate::object::layout::function_set_trampoline_ptr(py, ptr, original);
                 dec_ref_bits(py, bits);
             }
         }
@@ -377,7 +583,7 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                         };
                         // The bad trampoline is a bite check: rejected public
                         // arguments must never enter executable transport.
-                        crate::object::layout::function_set_trampoline_ptr(pointer, 1);
+                        crate::object::layout::function_set_trampoline_ptr(py, pointer, 1);
                         for form in [CallForm::Stack, CallForm::Expanded] {
                             let builder = match form {
                                 CallForm::Stack => arguments::molt_callargs_new(
@@ -422,6 +628,7 @@ fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
                             crate::molt_exception_clear();
                         }
                         crate::object::layout::function_set_trampoline_ptr(
+                            py,
                             pointer,
                             original_trampoline,
                         );

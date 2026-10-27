@@ -9,6 +9,9 @@ Export names the files of the store entry this checkout's inputs select.
 Import publishes copies into the importing host's store. Each import passes
 the admission a build applies, against inputs captured in the importing
 checkout, so a transport never derives or trusts a layout of its own.
+The transported native link member is the complete source-build envelope,
+including exact Cargo observations; a shipped product alone cannot transfer
+source-build cache authority.
 """
 
 from __future__ import annotations

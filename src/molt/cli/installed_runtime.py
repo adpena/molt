@@ -5,8 +5,8 @@ wheel) is a compiler distribution, not a runtime build environment. Its signed
 ``release-compiler-source.json`` declares every shipped native staticlib and
 WASM runtime pair as a typed cell. User compilation selects exactly one declared
 cell from typed build parameters and admits the bundle bytes through the
-canonical receipts: the native-link dependency manifest and the immutable WASM
-generation manifest. Their ``RuntimeBuildIdentity`` must agree with the cell
+canonical product receipts: the native-link product and the immutable WASM
+product manifest. Their ``RuntimeBuildIdentity`` must agree with the cell
 key (target, profile, tier/features, SIMD/freestanding, C-API surface). Native
 cells also ship the archive-derived callable projection code generation
 consumes, so installed compilation never runs a symbol reader. One
@@ -46,9 +46,9 @@ from molt.cli.native_link_custody import (
 )
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
-    NativeLinkManifestFacts,
+    NativeLinkProductFacts,
     native_link_dependency_manifest_path,
-    validate_native_link_dependency_manifest,
+    validate_native_link_product_manifest,
 )
 from molt.cli.runtime_features import runtime_fingerprint_features_for_profile
 from molt.cli.runtime_identity_schema import (
@@ -63,12 +63,12 @@ from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_features
 from molt.cli.runtime_wasm_build_support import wasm_runtime_simd_enabled
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmGeneration,
-    hydrate_runtime_wasm_generation,
-    read_runtime_wasm_generation,
-    runtime_wasm_generation_identities,
+    hydrate_runtime_wasm_product,
+    read_runtime_wasm_product,
+    runtime_wasm_product_identities,
     runtime_wasm_generation_path,
-    _generation_record_descriptors,
-    _validate_generation_payload,
+    _product_record_descriptors,
+    _validate_product_payload,
 )
 from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
@@ -554,7 +554,7 @@ def _require_features(
 def _shipped_native_identity(
     cell: InstalledRuntimeCell, archive: StableRegularFileIdentity
 ) -> tuple[
-    NativeLinkManifestFacts, StableRegularFileIdentity, StableRegularFileIdentity | None
+    NativeLinkProductFacts, StableRegularFileIdentity, StableRegularFileIdentity | None
 ]:
     """Observe the canonical receipt once against the already-admitted archive."""
     receipt, payload = cell.bundle_json("native_link_manifest")
@@ -562,7 +562,7 @@ def _shipped_native_identity(
         raise _runtime_contract.InstalledRuntimeError(
             "installed native-link manifest is not adjacent to its archive"
         )
-    facts = validate_native_link_dependency_manifest(
+    facts = validate_native_link_product_manifest(
         cast(Mapping[str, object], payload),
         runtime_identity=artifact_content_identity(archive.path, observed=archive),
         context=str(receipt.path),
@@ -608,7 +608,7 @@ def _admit_retained_native(
     source_archive: StableRegularFileIdentity,
     source_receipt: StableRegularFileIdentity,
     source_projection: StableRegularFileIdentity,
-    facts: NativeLinkManifestFacts,
+    facts: NativeLinkProductFacts,
     callable_semantic_digest: str,
     custody_admission: NativeLinkCustodyAdmission | None = None,
 ) -> _runtime_contract.InstalledNativeAdmission:
@@ -654,7 +654,7 @@ def _retain_native(
     archive: StableRegularFileIdentity,
     manifest: StableRegularFileIdentity,
     projection: StableRegularFileIdentity,
-    facts: NativeLinkManifestFacts,
+    facts: NativeLinkProductFacts,
     callable_semantic_digest: str,
     custody_identity: StableRegularFileIdentity | None,
 ) -> _runtime_contract.InstalledNativeAdmission:
@@ -848,7 +848,7 @@ def _shipped_wasm_identities(
     cell: InstalledRuntimeCell, value: object
 ) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
     try:
-        shared, reloc = runtime_wasm_generation_identities(value)
+        shared, reloc = runtime_wasm_product_identities(value)
     except ValueError as exc:
         raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} WASM generation receipts are invalid"
@@ -904,7 +904,7 @@ def admit_installed_wasm_runtime(
         payload = _freeze_json(payload)
         shared_identity, reloc_identity = _shipped_wasm_identities(cell, payload)
         _require_link_features(cell, required_link_features)
-        descriptors = _generation_record_descriptors(
+        descriptors = _product_record_descriptors(
             manifest.path,
             payload,
             expected_shared_identity=shared_identity,
@@ -934,13 +934,13 @@ def admit_installed_wasm_runtime(
         root = cell.retained_root
         dest_shared = root / _SHARED_RUNTIME_NAME
         dest_reloc = root / _RELOC_RUNTIME_NAME
-        retained = read_runtime_wasm_generation(
+        retained = read_runtime_wasm_product(
             runtime_wasm_generation_path(dest_shared),
             expected_shared_identity=shared_identity,
             expected_reloc_identity=reloc_identity,
         )
         if retained is None:
-            source = _validate_generation_payload(
+            source = _validate_product_payload(
                 manifest.path,
                 payload,
                 expected_shared_identity=shared_identity,
@@ -965,7 +965,7 @@ def admit_installed_wasm_runtime(
                     )
                 cell.require_signed_member(role, member)
             root.mkdir(parents=True, exist_ok=True)
-            retained = hydrate_runtime_wasm_generation(
+            retained = hydrate_runtime_wasm_product(
                 source_manifest=manifest.path,
                 dest_shared=dest_shared,
                 dest_reloc=dest_reloc,

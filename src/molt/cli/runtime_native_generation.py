@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import tempfile
-from typing import TypeVar, cast
+from typing import TypeVar
 
 from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
@@ -134,9 +134,7 @@ def _capture_generation(
         runtime_build_identity=identity,
     )
     members = [("runtime_archive", archive), ("native_link_manifest", manifest_file)]
-    custody = native_link_custody_archive_path(
-        runtime_lib, cast(Mapping[str, object], manifest["custody"])
-    )
+    custody = native_link_custody_archive_path(runtime_lib, manifest.custody)
     if custody is not None:
         members.append(
             (
@@ -150,7 +148,7 @@ def _capture_generation(
         runtime_lib,
         identity,
         tuple(members),
-        CargoEnvironmentInputs.from_dict(manifest["cargo_environment"]),
+        manifest.cargo_environment,
     )
     if expected_records is not None and generation.records() != expected_records:
         raise ValueError("native runtime generation members differ from selection")

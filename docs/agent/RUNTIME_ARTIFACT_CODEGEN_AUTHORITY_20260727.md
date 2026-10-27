@@ -48,6 +48,17 @@ overrides also serve `wasm-release`. `dev-release` retains the release policy
 with symbols. Do not copy inherited fields into child profiles: test effective
 policy and preserve target-specific artifact selection instead.
 
+The established hot runtime family is `molt-runtime`, `molt-runtime-core`,
+`molt-lang-obj-model`, and `molt-runtime-collections`. All four use optimization
+level 2 and debug level 0 in `dev`, inherited by `dev-fast` and Cargo's built-in
+`test` profile. Compiler crates retain their separate level-1 iteration policy;
+debug assertions and overflow checks remain enabled. This completes the dev
+family that release and size profiles already cover. A runtime source rebuild
+pays optimization once; subsequent user-code edits reuse the admitted runtime
+generation. Shipping and WASM size policies retain their own effective settings.
+This uses [Cargo's package overrides and inheritance](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides),
+with tests over effective parent/child settings rather than copied child tables.
+
 Build storage is an optimization target alongside wall clock and peak memory.
 Measure prerequisite footprint (toolchains, SDKs and dependencies), additional
 peak working storage for cold and warm builds, final retained outputs, reusable

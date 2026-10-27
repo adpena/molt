@@ -9,6 +9,8 @@ backend without running Cargo.
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import hashlib
 import shutil
 import subprocess
 import time
@@ -18,6 +20,7 @@ import pytest
 from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.exact_json import canonical_json_sha256
 from tests.cli.backend_generation_test_support import selected_backend
 from tests.cli.native_toolchain_test_support import (
     BACKEND_FEATURES,
@@ -288,8 +291,6 @@ def test_export_renews_both_entries_before_it_reads_them(
     publication's eviction could remove them during the export's read; the
     export renews them to now before it reads.
     """
-    import json
-
     from molt.cli import product_store
 
     producer = checkout(tmp_path, monkeypatch, "producer")
@@ -313,3 +314,32 @@ def test_export_renews_both_entries_before_it_reads_them(
         ledger = json.loads((store.root / ".product-store.json").read_bytes())
         assert ledger["last_used"][identity] > aged + 60
         assert store.entry(identity).is_dir()
+
+
+@pytest.mark.parametrize("mutation", ["bare-product", "missing-observation"])
+def test_resealed_shipped_product_is_not_a_source_toolchain_transfer(
+    tmp_path, monkeypatch, mutation
+):
+    files = _exported(tmp_path, monkeypatch)
+    manifest = files[transfer.NATIVE_LINK_MANIFEST_ROLE]
+    source = json.loads(manifest.read_text(encoding="utf-8"))
+    payload = source["product"] if mutation == "bare-product" else dict(source)
+    if mutation == "missing-observation":
+        del payload["cargo_environment"]
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    selection = files[transfer.RUNTIME_SELECTION_ROLE]
+    receipt = json.loads(selection.read_text(encoding="utf-8"))
+    for member in receipt["members"]:
+        if member["role"] == transfer.NATIVE_LINK_MANIFEST_ROLE:
+            member["size"] = manifest.stat().st_size
+            member["sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    receipt["generation"] = canonical_json_sha256(
+        {key: value for key, value in receipt.items() if key != "generation"}
+    )
+    selection.write_text(json.dumps(receipt), encoding="utf-8")
+    consumer = checkout(tmp_path, monkeypatch, "consumer")
+    consumer.activate(monkeypatch)
+    with pytest.raises(transfer.NativeToolchainTransferError, match="source manifest"):
+        transfer.import_native_toolchain(consumer.selection, files)
+    assert not consumer.runtime_store.root.exists()
+    assert not consumer.backend_store.root.exists()

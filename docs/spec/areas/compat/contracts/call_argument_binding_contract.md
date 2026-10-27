@@ -180,6 +180,36 @@ opcode families and the spelling-only memoryview builtin export are removed.
 
 ### Native callable publication, binding, and namespaces
 
+The function header's binder-required flag is exact for both true and false.
+Raw allocation, code attachment, trampoline publication, public metadata writes
+and native-convention changes publish it from the canonical binding shape.
+Publication completes before displaced references or inline-cache edges can
+invoke finalizers. The trampoline writer requires the runtime token, as the
+other metadata writers do. Exact positional calls read the flag and arity;
+debug builds check the stored projection at publication instead of rescanning
+the full signature and builtin table on each call. Inline-cache admission uses
+the same flag and one fresh positional-default count; absent and empty defaults
+have count zero, replaced tuples contribute their current length, and malformed
+metadata retains full binding. Argument errors retain the
+ordinary binder and remain catchable.
+
+A code signature becomes immutable at its first callable-identity or
+execution-kind publication. Replaying the same signature edges is idempotent;
+changing them raises `TypeError` before either the signature or attached
+functions change. Setup producers initialize signatures before attachment.
+Explicit prepared code-signature publication and direct setup setters share
+this admission, so shared code cannot silently stale an attached function's
+binder flag.
+
+Builtin selection observes an admitted function's key and trampoline once in
+an ephemeral typed identity and uses the existing native/WASM symbol matcher.
+It does not register the function again or repeat pointer admission for each
+candidate. Arbitrary callable and bound-method admission retain their checks.
+The observation ends with that callback-free policy selection; metadata
+mutation requires a new observation. Cold publication derives the bounded
+binding shape; the exact-call check has constant cost and adds no allocation,
+process, filesystem or persistent-cache work.
+
 Native executable storage and Python callable identity are separate. The
 `NativeCallableKind` declaration assigns an actual `builtin_function_or_method`,
 `builtin_method` (C `METH_METHOD`), `method_descriptor`, `wrapper_descriptor`,

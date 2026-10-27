@@ -142,7 +142,10 @@ uv run --python 3.12 molt compare examples/hello.py
 ```
 
 `molt run` defaults to `dev`; `molt build` defaults to `release`. Both accept
-`--profile dev|release` and `--release`. Source-checkout WASM runtime builds keep
+`--profile dev|release` and `--release`. Dev builds optimize the established hot
+runtime family while retaining runtime checks; see the
+[profile policy](docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md#build-storage-and-profile-inheritance).
+Source-checkout WASM runtime builds keep
 their nonincremental default for both profiles; explicit iteration and Cargo
 controls are described in [build-time controls](docs/OPERATIONS.md#build-time).
 For explicit output paths and Windows,

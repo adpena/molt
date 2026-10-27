@@ -11,6 +11,17 @@ under the [release authority](../../../../packaging/PACKAGING.md). This local
 matrix does not replace the advertised target, version, profile, or command
 coverage required there.
 
+The local runtime semantic gate uses the registered `dev-fast` invocation also
+used by macOS CI. It keeps the complete semantic image set, default features,
+parallel test partition and isolated lifecycle witnesses owned by
+`tools/runtime_test_gate_plan.py`; its parallel remainder sizes to the host.
+Admission requires observed assertion and overflow checks enabled and refuses
+contradictory explicit compiler/profile controls; a requested label alone is
+not correctness-tier evidence.
+Shipping CI retains the `release-output` invocation, including release-only
+pointer/optimization behavior. Passing the local tier does not establish that
+shipping-profile qualification. See the [integration contract](../../../ops/INTEGRATION.md).
+
 ## Global Rules
 - Run commands from repo root.
 - Use `uv run --python ...`; do not call `.venv` interpreters directly.

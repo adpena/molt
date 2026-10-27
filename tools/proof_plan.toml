@@ -4226,7 +4226,6 @@ globs = [
   "src/molt/cli/app_export_contract.py",
   "tools/check_ir_structure.py",
   "tests/cli/test_app_export_contract.py",
-  "tests/cli/test_runtime_wasm_single_compile.py",
   "tests/tools/test_check_ir_structure.py",
   "src/molt/cli/function_references.py",
   "tools/representation_report.py",
@@ -4717,7 +4716,6 @@ globs = [
   "tests/cli/test_extension_wheel_retained_inputs.py",
   "tests/cli/test_python_module_names.py",
   "tests/cli/test_source_extension_*.py",
-  "tests/tools/test_native_link_benchmark.py",
   "tests/tools/test_scientific_stack_versions.py",
   "src/molt/source_build_environment*.py",
   "src/molt/source_build_requirements.py",
@@ -4807,8 +4805,6 @@ globs = [
   "tests/cli/test_extension_wheel_retained_inputs.py",
   "tests/cli/test_python_module_names.py",
   "tests/cli/test_source_extension_*.py",
-  "tests/test_proof_plan.py",
-  "tests/tools/test_native_link_benchmark.py",
   "tests/tools/test_scientific_stack_versions.py",
   "src/molt/source_build_environment*.py",
   "src/molt/source_build_requirements.py",
@@ -4832,6 +4828,16 @@ pytest = [
   "tests/tools/test_python_custody_bootstrap.py",
   "tests/tools/test_scientific_stack_versions.py",
 ]
+
+# The benchmark tool consumes both extension production and proof policy;
+# changing its test alone does not change either producer's inputs.
+[[rule]]
+name = "native-link-benchmark-tests"
+toolchains = ["python", "uv"]
+description = "Native-link benchmark fixture and admission oracles without unrelated extension production."
+globs = ["tests/tools/test_native_link_benchmark.py"]
+gates = []
+pytest = ["tests/tools/test_native_link_benchmark.py"]
 
 # --- Differential / suite-honesty surface --------------------------------
 [[rule]]
@@ -5555,6 +5561,72 @@ pytest = [
   "tests/tools/test_memory_graph.py",
 ]
 
+# Native transfer and its Nightly transport share the production admission
+# owners below. Their leaf edits need no CI topology simulation; shared CI and
+# Nightly orchestration inputs retain all three consumers in ci-wiring.
+[[rule]]
+name = "native-toolchain-transfer"
+toolchains = ["python"]
+description = "Native source-generation transfer, Nightly bundle admission and preparation consumer."
+globs = [
+  "src/molt/cli/native_toolchain_transfer.py",
+  "tools/nightly_runtime_bundle.py",
+  "tests/cli/test_native_toolchain_transfer.py",
+  "tests/tools/test_nightly_runtime_bundle.py",
+  "tests/cli/native_toolchain_test_support.py",
+  "tests/cli/backend_generation_test_support.py",
+  "tests/cli/native_link_test_support.py",
+  "tests/compiler_identity_helper.py",
+  "tests/runtime_build_identity_helper.py",
+  "src/molt/backend_executable_names.py",
+  "src/molt/compilation_target.py",
+  "src/molt/cli/backend_binary.py",
+  "src/molt/cli/backend_generation.py",
+  "src/molt/cli/cache_fingerprints.py",
+  "src/molt/cli/backend_compile.py",
+  "src/molt/cli/build_inputs.py",
+  "src/molt/cli/cargo_profiles.py",
+  "src/molt/cli/cargo_environment_inputs.py",
+  "src/molt/cli/compiler_identity.py",
+  "src/molt/cli/native_link_custody.py",
+  "src/molt/cli/native_link_manifest.py",
+  "src/molt/cli/product_store.py",
+  "src/molt/cli/runtime_identity_schema.py",
+  "src/molt/cli/runtime_fingerprints.py",
+  "src/molt/cli/runtime_build_identity.py",
+  "src/molt/cli/static_archive_identity.py",
+  "src/molt/cli/runtime_native_build.py",
+  "src/molt/cli/runtime_native_generation.py",
+  "src/molt/cli/runtime_paths.py",
+  "src/molt/cli/rust_cpu_policy.py",
+  "src/molt/artifact_publication.py",
+  "src/molt/exact_json.py",
+  "src/molt/portable_paths.py",
+  "src/molt/toolchain_identity.py",
+  "src/molt/ustar.py",
+  "tools/command_execution.py",
+  "tools/git_identity.py",
+  "tools/import_file.py",
+]
+gates = []
+pytest = [
+  "tests/cli/test_native_toolchain_transfer.py",
+  "tests/tools/test_nightly_runtime_bundle.py",
+  "tests/tools/test_nightly_prepare.py",
+]
+
+# ProofPlan's mixed test file includes real offline Cargo execution. Keep its
+# whole-file invocation explicit so shared CI selection uses the identical cohort.
+[[rule]]
+name = "proof-plan-tests"
+toolchains = ["python", "uv", "cargo"]
+description = "Complete ProofPlan parser, selection, executor and real Cargo custody tests."
+globs = ["tests/test_proof_plan.py"]
+gates = []
+pytest_select = [
+  { all = true, targets = ["tests/test_proof_plan.py"], toolchains = ["python", "uv", "cargo"] },
+]
+
 # --- CI workflow / pyproject lint wiring ---------------------------------
 [[rule]]
 name = "ci-wiring"
@@ -5586,8 +5658,6 @@ globs = [
   "config/nightly_shard_profile.json",
   "tools/nightly_prepare.py",
   "tools/nightly_profile_feedback.py",
-  "tools/nightly_runtime_bundle.py",
-  "src/molt/cli/native_toolchain_transfer.py",
   "tools/nightly_shard_profile.py",
   "tools/nightly_sharding.py",
   "tools/check_reproducible_build.py",
@@ -5603,10 +5673,8 @@ globs = [
   "tools/resource_pressure.py",
   "tests/tools/test_nightly_prepare.py",
   "tests/tools/test_nightly_profile_feedback.py",
-  "tests/tools/test_nightly_runtime_bundle.py",
   "tests/tools/test_nightly_shard_profile.py",
   "tests/tools/test_nightly_sharding.py",
-  "tests/test_proof_plan.py",
   "tests/test_ci_workflow_topology.py",
   "tests/test_ci_cargo_cache.py",
   "tools/ci_cargo_cache.py",
@@ -5621,8 +5689,10 @@ globs = [
   "tests/tools/test_ci_resource_env.py",
 ]
 gates = []
+pytest_select = [
+  { all = true, targets = ["tests/test_proof_plan.py"], toolchains = ["python", "uv", "cargo"] },
+]
 pytest = [
-  "tests/test_proof_plan.py",
   "tests/test_ci_workflow_topology.py",
   "tests/test_dependabot_config.py",
   "tests/test_ci_cargo_cache.py",
@@ -5632,6 +5702,7 @@ pytest = [
   "tests/tools/test_ci_resource_env.py",
   "tests/tools/test_fuzz_compiler_cli.py",
   "tests/tools/test_formal_correspondence_truth.py",
+  "tests/cli/test_native_toolchain_transfer.py",
   "tests/tools/test_nightly_prepare.py",
   "tests/tools/test_nightly_profile_feedback.py",
   "tests/tools/test_nightly_runtime_bundle.py",
@@ -6274,7 +6345,7 @@ pytest = [
 [[rule]]
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
-description = "Runtime/object-model Rust: one Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed."
+description = "Runtime/object-model Rust: one dev-fast Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed; release-output qualification remains in CI."
 globs = [
   "runtime/molt-runtime/**/*.rs",
   "runtime/molt-obj-model/**/*.rs",
@@ -6283,7 +6354,7 @@ globs = [
   "runtime/**/Cargo.toml",
 ]
 gates = [
-  "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
+  "python tools/run_runtime_test_gate.py --profile dev-fast --build-timeout-seconds 6300 --child-timeout-seconds 120",
 ]
 
 [[rule]]

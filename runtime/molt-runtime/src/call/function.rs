@@ -3155,6 +3155,7 @@ mod tests {
             // Publish a distinct variadic trampoline entry in the trampoline slot.
             unsafe {
                 crate::object::layout::function_set_trampoline_ptr(
+                    _py,
                     func_ptr,
                     trampoline_returns_first_argv as *const () as usize as u64,
                 );
@@ -3212,6 +3213,7 @@ mod tests {
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
             unsafe {
                 crate::object::layout::function_set_trampoline_ptr(
+                    _py,
                     func_ptr,
                     adopting_trampoline as *const () as usize as u64,
                 );
@@ -3659,6 +3661,7 @@ mod tests {
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
             unsafe {
                 crate::object::layout::function_set_trampoline_ptr(
+                    _py,
                     func_ptr,
                     adopting_trampoline as *const () as usize as u64,
                 );
