@@ -24,6 +24,10 @@ programs constantly.
 - [Bazel Skyframe](https://bazel.build/reference/skyframe#evaluation) distinguishes
   file content, symlink resolution and directory membership. A read without a
   registered dependency can make an incremental result incorrect.
+- [Bazel's action cache](https://bazel.build/remote/caching) binds actions to
+  inputs, output names, commands and environment. Molt likewise records the
+  output selected by the successful action; a request spelling alone does not
+  determine the output of a directory or package-entry build.
 - git: the racy-git rule; a file changed within one timestamp tick of the
   index cannot be trusted by stat alone.
 - [Cargo build directories](https://doc.rust-lang.org/cargo/reference/config.html#buildbuild-dir)
@@ -196,7 +200,8 @@ obtain lengths from different Windows metadata structures. Directory allocation
 length is not a namespace generation. Regular-file lengths remain exact, and
 the existing timestamp race rule and namespace mutation controls still apply.
 
-Record schema v6 rejects earlier records whose inputs could be incomplete.
+Record schema v7 rejects earlier records whose inputs or output selection could
+be incomplete.
 Reporting adds O(captured paths + visited directories + selectors) facts and
 JSONL bytes through the existing flushed worker log, plus exact lookup probes.
 An inactive recorder retains its existing cheap reporting branch. These are
@@ -228,7 +233,27 @@ protocol. Discovery and qualification use the same local memo, with one call
 per distinct command in each phase. These are bounded mechanism measurements,
 not cross-platform build-performance acceptance.
 
-**Refusals.** No record for non-native targets, directory outputs, requests
+**Output selection.** Native binary records support default, absolute, relative
+and directory destinations, including `--out-dir`. The actual output layout
+reports its default name, project/out-dir context and selected coordinate through
+the existing input ledger. The request key and recorded entry, configuration and
+project/import topology bind that context. A hit reruns the same side-effect-free
+path selector and checks the resolved destination before checking the published
+binary. It does not resolve or parse the entry again, guess a script stem, or
+construct a second output-path policy. Package `__main__` naming stays with the
+existing entry authority.
+
+Absence and a regular file share the explicit-file selection branch, so the
+first publication can record without mistaking its new binary for a changed
+input. A destination becoming a directory, or a symlink redirecting an output
+to another coordinate, invalidates the record. Output directories and artifact
+claims are created only by the existing build layout, never by record checking.
+This adds one small selection record and bounded path checks; the existing
+source, tool, environment, output-token and racy-input checks remain unchanged.
+JSON and diagnostics still execute the pipeline because they request additional
+result data or fresh measurements.
+
+**Refusals.** No record for non-native targets, requests
 that publish more than one binary (JSON results, diagnostics, IR, linked or
 split output, snapshots, audit logs), non-default codegen backends, BOLT,
 file-naming inputs whose loaders do not report (type facts, PGO profiles,
@@ -251,7 +276,7 @@ record. An `rsync -a` keeps an old mtime but cannot keep ctime.
 A changed token on a file with a recorded digest falls back to a digest
 compare. A hit when the output still holds the binary the build published
 does nothing else: there is no artifact store and no copy. Malformed JSON,
-including valid JSON scalars and arrays, is a cache miss. The v6 record key
+including valid JSON scalars and arrays, is a cache miss. The v7 record key
 retires records missing captured tool and isolated-Python inputs, including
 source-only bytecode records and records produced under inferred write ownership. There is no compatibility reader for the retired contracts.
 

@@ -19,6 +19,7 @@ tail.
 from __future__ import annotations
 
 from tools.molt_dev_policy import GateEnvironment
+from tools.proof_plan import CargoTargetAccess
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -65,6 +66,9 @@ class Gate(Protocol):
 
     @property
     def concurrent(self) -> bool: ...
+
+    @property
+    def cargo_target_access(self) -> CargoTargetAccess | None: ...
 
     @property
     def collection_command(self) -> tuple[str, ...] | None: ...
@@ -429,7 +433,7 @@ def observe_gate_capacity(
 def gate_resource_class(gate: Gate) -> str:
     """The plan resource class one landing gate is admitted in. A pytest
     session counts against the session limit even when its rules declare
-    Cargo; `_cargo_chain` keeps every Cargo-bearing gate off the others."""
+    Cargo; `_cargo_chain` serializes only shared-target writers."""
     if gate.pytest:
         return PYTEST_GATE_RESOURCE_CLASS
     if "cargo" in gate.toolchains:
@@ -438,14 +442,16 @@ def gate_resource_class(gate: Gate) -> str:
 
 
 def _cargo_chain(commands: list[_LocalGateCommand]) -> list[_LocalGateCommand]:
-    """Each gate that may build with Cargo waits for the previous one in
-    declared order: they share one target, and a pytest session that builds
-    is still admitted as a pytest session. The executor runs a dependent only
-    after its dependency passes, so the first failure still wins."""
+    """Serialize shared-target writers without chaining tool availability.
+
+    Isolated targets retain their child-owned output admission. Every pytest
+    cohort still consumes its session and memory capacity; failure cancellation
+    covers independent cohorts as well as this shared-target chain.
+    """
     chained: list[_LocalGateCommand] = []
     previous: str | None = None
     for command in commands:
-        if "cargo" in command.gate.toolchains:
+        if command.gate.cargo_target_access is CargoTargetAccess.SHARED:
             if previous is not None:
                 command = replace(command, dependencies=(previous,))
             previous = command.id
@@ -465,8 +471,8 @@ def run_selected_gates(
     The read-only checks run as before: the leading always gates as one
     executor block, then each rule check in declared order. A failing check
     therefore stops every build before it starts. The heavy gates (Cargo and
-    pytest) then share one executor block: Cargo gates run one at a time on
-    their shared target while pytest sessions run beside them, each sized
+    pytest) then share one executor block: shared-target writers run one at a
+    time while independent pytest sessions run beside them, each sized
     within the exported memory slice. The first observed failure within a
     phase halts the landing and cancels its remaining gates through their guards.
     """
@@ -515,7 +521,11 @@ def _run_serial_gate(
     phase = "collection" if collection else "gate"
     shown = display(cmd)
     runtime.check_source()
-    paths = () if collection else runtime.cargo_outputs.get(gate.toolchains, ())
+    paths = (
+        ()
+        if collection or gate.cargo_target_access is not CargoTargetAccess.SHARED
+        else runtime.cargo_outputs.get(gate.toolchains, ())
+    )
     required = runtime.capacity_requirements.get(gate.toolchains, 0)
     before = (
         runtime.observe_capacity(
@@ -649,6 +659,7 @@ def _memory_slice(plan: _LocalGatePlan, classes: dict[str, int]) -> int | None:
 def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
     cmd = gate.command
     argv = ("/bin/sh", "-c", cmd) if isinstance(cmd, str) else tuple(cmd)
+    assert isinstance(gate.cargo_target_access, CargoTargetAccess)
     return _LocalGateCommand(
         id=f"local.{'always' if gate.concurrent else 'gate'}.{ordinal}",
         family=LOCAL_GATE_FAMILY,
@@ -656,6 +667,8 @@ def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
             "cell": cell,
             "tiers": ["local-integration"],
             "resource_class": gate_resource_class(gate),
+            "toolchains": list(gate.toolchains),
+            "cargo_target_access": gate.cargo_target_access.value,
             # Local always gates keep their unbounded deadline.
             "timeout_budget": "none",
             "timeout_seconds": 0,
@@ -730,7 +743,11 @@ def _run_executor_block(
             "gate_started", **gate_details(command.ordinal, command.gate)
         )
         shown = display(command.gate.command)
-        paths = runtime.cargo_outputs.get(command.gate.toolchains, ())
+        paths = (
+            runtime.cargo_outputs.get(command.gate.toolchains, ())
+            if command.gate.cargo_target_access is CargoTargetAccess.SHARED
+            else ()
+        )
         required = runtime.capacity_requirements.get(command.gate.toolchains, 0)
         started = time.monotonic()
         streams, stream_error = prepare_gate_streams(

@@ -76,14 +76,19 @@ def test_each_new_source_marker_invalidates_ancestor_project_selection(
     output = tmp_path / "app"
     output.write_bytes(b"compiled for ancestor project")
     record = tmp_path / "record.json"
-    assert build_record.write_record(record, "key", ledger, output=output) is None
-    assert build_record.check(record, "key", output) is None
+    from molt.build_output_selection import BuildOutputSelection
+
+    selection = BuildOutputSelection.capture(
+        str(output), output, out_dir=None, project_root=tmp_path
+    )
+    assert build_record.write_record(record, "key", ledger, output=selection) is None
+    assert isinstance(build_record.check(record, "key"), build_record.BuildRecordHit)
 
     # All parent directories already existed when the root was selected;
     # adding only this leaf changes which project's configuration is used.
     missing.write_text("", encoding="utf-8")
     assert project_roots._find_project_root(entry) == nested
-    assert build_record.check(record, "key", output) is not None
+    assert isinstance(build_record.check(record, "key"), str)
 
 
 def test_installed_metadata_never_borrows_a_containing_git_checkout(

@@ -26,10 +26,11 @@ from pathlib import Path
 from typing import Any
 
 from molt import file_publication, input_report
+from molt.build_output_selection import BuildOutputSelection
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import ProbeOutcome, StatToken, resolved_probe, stat_token
 
-_SCHEMA = "molt-build-record-v6"
+_SCHEMA = "molt-build-record-v7"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -93,6 +94,7 @@ class InputLedger:
     # ("file" | "directory", absolute path) seen by the audit
     # hook; resolved against the excluded roots when the record is written.
     observed: set[tuple[str, str]] = field(default_factory=set)
+    output_selection: BuildOutputSelection | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def file(
@@ -133,6 +135,17 @@ class InputLedger:
     def observe(self, entry: tuple[str, str]) -> None:
         with self._lock:
             self.observed.add(entry)
+
+    def build_output(self, selection: object) -> None:
+        try:
+            selected = BuildOutputSelection.from_dict(selection)
+        except (TypeError, ValueError) as exc:
+            self.refuse(f"unreportable build output: {exc}")
+            return
+        with self._lock:
+            if self.output_selection is not None and self.output_selection != selected:
+                self.refusals.append("build selected more than one native output")
+            self.output_selection = selected
 
     def racy_inputs(self) -> list[str]:
         """Inputs whose content changed within the racy window of the
@@ -386,7 +399,7 @@ def _first_change(
 
 
 def write_record(
-    path: Path, key: str, ledger: InputLedger, *, output: Path
+    path: Path, key: str, ledger: InputLedger, *, output: BuildOutputSelection
 ) -> str | None:
     """Publish the record of a build that produced ``output``.
 
@@ -412,13 +425,17 @@ def write_record(
     changed = _first_change(files, directories, probes)
     if changed is not None:
         return f"input changed during the build: {changed}"
-    output_token = stat_token(output)
+    try:
+        output.verify()
+    except (OSError, ValueError) as exc:
+        return str(exc)
+    output_token = stat_token(output.path)
     if output_token is None or not stat.S_ISREG(output_token[2]):
-        return f"output {output} is not a regular file"
+        return f"output {output.path} is not a regular file"
     payload = {
         "schema": _SCHEMA,
         "key": key,
-        "output": [os.fspath(output), list(output_token)],
+        "output": {"selection": output.to_dict(), "token": list(output_token)},
         "files": files,
         "directories": directories,
         "probes": probes,
@@ -436,8 +453,13 @@ def write_record(
     return None
 
 
-def check(path: Path, key: str, output: Path) -> str | None:
-    """None when the recorded build is current, else the first difference.
+@dataclass(frozen=True, slots=True)
+class BuildRecordHit:
+    output: Path
+
+
+def check(path: Path, key: str) -> BuildRecordHit | str:
+    """The verified output when current, otherwise the first difference.
 
     Current means every recorded input matches and ``output`` still holds the
     binary that build published. Never raises.
@@ -450,11 +472,11 @@ def check(path: Path, key: str, output: Path) -> str | None:
             return "unreadable record: expected a JSON object"
         if payload.get("schema") != _SCHEMA or payload.get("key") != key:
             return "no record for this request"
-        recorded_output, output_token = payload["output"]
-        if recorded_output != os.fspath(output) or stat_token(output) != tuple(
-            output_token
-        ):
-            return f"output {output} changed"
+        recorded_output = payload["output"]
+        selection = BuildOutputSelection.from_dict(recorded_output["selection"])
+        selection.verify()
+        if stat_token(selection.path) != tuple(recorded_output["token"]):
+            return f"output {selection.path} changed"
         changed = _first_change(
             payload["files"], payload["directories"], payload["probes"]
         )
@@ -462,7 +484,7 @@ def check(path: Path, key: str, output: Path) -> str | None:
             return changed
         if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
             os.utime(path)
-        return None
+        return BuildRecordHit(selection.path)
     except FileNotFoundError:
         return "no record for this request"
     except (

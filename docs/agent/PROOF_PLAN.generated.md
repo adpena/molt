@@ -17,7 +17,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 406 |
-| Local path rules | 35 | 101 |
+| Local path rules | 35 | 102 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
@@ -350,6 +350,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 ## Local integration families
 
+Local commands declare Cargo target access independently of toolchain availability: `shared` writers serialize, while audited `isolated` fixture targets and `none` (no target mutation) may overlap within the existing resource limits. Unannotated Cargo remains `shared`. Overlapping requests retain their strongest effect; the JSON projection records each resolved command effect.
+
 | Rule | Input globs | Commands |
 |---|---:|---:|
 | `browser-loader-deployment` | 12 | 0 |
@@ -402,6 +404,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `host-fact-test-isolation` | 2 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
+| `build-early-cutoff` | 9 | 0 |
 | `runtime-cargo-input-custody` | 55 | 0 |
 | `native-test-failure-diagnostics` | 3 | 0 |
 | `rust-toolchain` | 11 | 1 |
