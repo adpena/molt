@@ -2162,6 +2162,175 @@ def test_runtime_cargo_operation_contract_has_exact_commands_and_c_ownership(
     ]
 
 
+def test_wasi_clippy_uses_the_existing_compile_only_cargo_operation():
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    (operation,) = cargo_operations("wasi-clippy", "dev", cargo="/selected/cargo")
+    assert (operation.role, operation.environment, operation.c_units) == (
+        "runtime",
+        "runtime-wasi",
+        "managed-wasi",
+    )
+    assert list(operation.command) == [
+        "/selected/cargo",
+        "clippy",
+        "--locked",
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+        "-p",
+        "molt-runtime",
+        "-p",
+        "molt-tir",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings",
+    ]
+    assert operation.native_requirements == {"target": ["c"]}
+    with pytest.raises(ValueError):
+        cargo_operations("wasi-clippy", "dev-fast", cargo="/selected/cargo")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "cargo-failure",
+        "missing-finish",
+        "failed-finish",
+        "duplicate-finish",
+        "compiler-error",
+        "plan-changed",
+    ],
+)
+def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
+    monkeypatch, tmp_path, selected_cargo, mutation
+):
+    import json
+    from types import SimpleNamespace
+    from molt.cli import runtime_cargo_plan
+
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(gate, "ROOT", source)
+    monkeypatch.setenv("RUSTFLAGS", "--cfg explicit_user_flags")
+    monkeypatch.setattr(gate.truth, "git_source_identity", lambda: support.SOURCE)
+    monkeypatch.setattr(gate.truth, "host_target", lambda: "aarch64-apple-darwin")
+    submitted = [
+        selected_cargo,
+        "clippy",
+        "--locked",
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+        "-p",
+        "molt-runtime",
+        "-p",
+        "molt-tir",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings",
+    ]
+    separator = submitted.index("--")
+    actual = [
+        *submitted[:separator],
+        "--config",
+        'build.build-dir="/owned/selected-build"',
+        *submitted[separator:],
+    ]
+    flags = ("--cfg", "explicit_user_flags", "-C", "link-self-contained=no")
+    checked, builds = [], []
+
+    def verify():
+        checked.append("verified")
+        if mutation == "plan-changed" and builds:
+            raise RuntimeError("selected Cargo input changed during execution")
+
+    def plan(
+        root, *, env, cargo_command, requested_target, host_target, rustflags_transform
+    ):
+        assert root == source and list(cargo_command) == submitted
+        assert requested_target == "wasm32-wasip1"
+        assert host_target is None
+        assert rustflags_transform is None
+        assert env["RUSTFLAGS"] == "--cfg explicit_user_flags"
+        return SimpleNamespace(
+            command=tuple(actual),
+            environment=dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(flags)),
+            rustflags=flags,
+            verify=verify,
+        )
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            assert list(argv) == actual, (
+                "execute the admitted plan, not its source argv"
+            )
+            assert checked and not builds
+            assert kwargs["cwd"] == source
+            assert kwargs["timeout"] == 1200
+            assert kwargs["env"]["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(flags)
+            assert "link-arg=--export-table" not in flags
+            builds.append(list(argv))
+            rows = [
+                {"reason": "build-finished", "success": mutation != "failed-finish"}
+            ]
+            if mutation == "missing-finish":
+                rows.clear()
+            elif mutation == "duplicate-finish":
+                rows *= 2
+            elif mutation == "compiler-error":
+                rows.insert(
+                    0, {"reason": "compiler-message", "message": {"level": "error"}}
+                )
+            output = "\n".join(json.dumps(row) for row in rows) + "\n"
+            Path(kwargs["stdout_capture_path"]).write_text(output, encoding="utf-8")
+            Path(kwargs["stderr_capture_path"]).write_text(
+                "lint diagnostic\n", encoding="utf-8"
+            )
+            return SimpleNamespace(
+                stdout=output,
+                stderr="lint diagnostic\n",
+                returncode=101 if mutation == "cargo-failure" else 0,
+            )
+
+    def forbidden_runtime(*_args, **_kwargs):
+        pytest.fail("compile-only Clippy cannot claim libtest or guest execution")
+
+    monkeypatch.setattr(runtime_cargo_plan, "resolve_runtime_cargo_plan", plan)
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    monkeypatch.setattr(gate, "execute_child", forbidden_runtime)
+    monkeypatch.setattr(gate.runner, "listed_tests", forbidden_runtime)
+    receipt_root = tmp_path / "receipts"
+    result = gate.main(
+        [
+            "--policy",
+            "wasi-clippy",
+            "--profile",
+            "dev",
+            "--build-timeout-seconds",
+            "1200",
+            "--receipt-root",
+            str(receipt_root),
+        ]
+    )
+    aggregate = json.loads(next(receipt_root.glob("*/aggregate.json")).read_text())
+    assert builds == [actual]
+    assert aggregate["source_command"] == submitted
+    assert aggregate["build_command"] == actual
+    assert aggregate["resolved_rustflags"] == list(flags)
+    assert aggregate["build_returncode"] == (101 if mutation == "cargo-failure" else 0)
+    assert (result, aggregate["status"]) == (
+        (0, "success") if mutation is None else (1, "failed")
+    )
+    assert aggregate["images"] == {}
+    assert "passed_test_count" not in aggregate
+    if mutation is None:
+        assert len(checked) >= 2, "the source plan must close after compilation"
+
+
 @pytest.mark.parametrize(
     "policy,profile,host",
     [

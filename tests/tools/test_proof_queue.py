@@ -21436,6 +21436,57 @@ def test_clippy_configured_selectors_require_bound_cargo_context(
 
 
 @pytest.mark.parametrize(
+    "key", ["SYSROOT", "CLIPPY_CONF_DIR", "CLIPPY_ARGS", "RUSTC_WORKSPACE_WRAPPER"]
+)
+@pytest.mark.parametrize("forced", [False, True])
+def test_wasi_clippy_driver_configured_selectors_keep_the_cargo_component_boundary(
+    tmp_path, key, forced
+):
+    from tools.proof_queue_pkg import cargo_output_environment
+
+    command = list(
+        next(
+            row.argv
+            for row in proof_plan.ProofPlan.load().commands
+            if row.id == "rust.clippy.wasi32"
+        )
+    )
+    assert "tools/run_runtime_test_gate.py" in command
+    assert command[command.index("--policy") + 1] == "wasi-clippy"
+    envelope = command_admission.envelope_for_command(command)
+    assert toolchain_capture.command_requires_clippy(envelope)
+    config = tmp_path / ".cargo" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        f'[env]\n{key} = {{ value = "external-selection", force = {str(forced).lower()} }}\n',
+        encoding="utf-8",
+    )
+    environment = {"CARGO_HOME": str(tmp_path / "cargo-home")}
+    kwargs = dict(
+        outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope),
+        cwd=tmp_path,
+        env=environment,
+    )
+    if forced or key in {"SYSROOT", "CLIPPY_CONF_DIR"}:
+        with pytest.raises(ValueError, match=f"defines env.{key}"):
+            execution_environment._require_cargo_build_tool_environment_context(
+                envelope, **kwargs
+            )
+    else:
+        # cargo-clippy's already supplied launcher values outrank these defaults.
+        execution_environment._require_cargo_build_tool_environment_context(
+            envelope, **kwargs
+        )
+    ordinary = command_admission.envelope_for_command(["cargo", "check"])
+    execution_environment._require_cargo_build_tool_environment_context(
+        ordinary,
+        outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(ordinary),
+        cwd=tmp_path,
+        env=environment,
+    )
+
+
+@pytest.mark.parametrize(
     "name",
     [
         "MOLT_LLVM_PREFIX",

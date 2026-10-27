@@ -7370,21 +7370,30 @@
     },
     {
       "argv": [
-        "cargo",
-        "clippy",
-        "--locked",
-        "--target",
-        "wasm32-wasip1",
-        "--lib",
-        "-p",
-        "molt-runtime",
-        "-p",
-        "molt-tir",
-        "--",
-        "-D",
-        "warnings"
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "python",
+        "tools/run_runtime_test_gate.py",
+        "--policy",
+        "wasi-clippy",
+        "--profile",
+        "dev",
+        "--build-timeout-seconds",
+        "1200"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-rust-wasi-dev",
       "dependencies": [],
       "family": "rust",
@@ -7398,8 +7407,11 @@
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
       "toolchains": [
+        "python",
+        "uv",
         "rustc",
         "cargo",
+        "wasi-clang",
         "wasm-ld"
       ]
     },

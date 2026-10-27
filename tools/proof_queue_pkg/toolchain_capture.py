@@ -62,8 +62,10 @@ from tools.proof_queue_pkg.process_image_capture import (
 
 
 if TYPE_CHECKING:
+    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
     from molt.wasi_sdk_identity import WasiCAbiProjection
     from tools.proof_queue_pkg import command_admission
+    from tools.runtime_test_gate_plan import CargoOperation
 
 
 CAPTURE_SCHEMA = "molt.proof-toolchain-capture.v1"
@@ -194,10 +196,19 @@ def _run_rust_link_probe(
 
 def command_requires_clippy(envelope: Mapping[str, object]) -> bool:
     from tools.proof_queue_pkg import command_admission
+    from tools.runtime_test_gate_plan import lint_cargo_operation
 
     if "cargo" not in envelope.get("toolchains", []):
         return False
     invocation = command_admission.cargo_invocation_for_envelope(envelope)
+    if invocation is None:
+        args = command_admission.runtime_gate_arguments(envelope)
+        if args is None:
+            return False
+        operation = lint_cargo_operation(args.policy, args.profile, cargo="cargo")
+        if operation is None:
+            return False
+        invocation = command_admission.parse_cargo_invocation(operation.command)
     return invocation is not None and invocation.subcommand == "clippy"
 
 
@@ -2576,20 +2587,32 @@ def _require_stable_cargo_version(version: object) -> None:
 RUNTIME_GATE_RUST_SELECTION_SCHEMA = "molt.proof-runtime-gate-rust-selection.v2"
 
 
-def resolve_runtime_gate_cargo_operation(operation, *, cwd, env, compiler_host):
+def resolve_runtime_gate_cargo_operation(
+    operation: CargoOperation,
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    compiler_host: str | None,
+) -> tuple[list[str], ProcessEnvironment, RuntimeCargoPlan | None]:
     """Resolve the one declared runtime-CABI operation through its existing owner."""
     if operation.environment != "runtime-wasi":
         return list(operation.command), ProcessEnvironment(env), None
     from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+    from tools.proof_queue_pkg import command_admission
     from tools.runtime_test_gate_plan import WASI_TARGET
 
+    invocation = command_admission.parse_cargo_invocation(operation.command)
     plan = resolve_runtime_cargo_plan(
         cwd,
         env=env,
         cargo_command=operation.command,
         requested_target=WASI_TARGET,
         host_target=compiler_host,
-        rustflags_transform=lambda flags: (*flags, "-C", "link-arg=--export-table"),
+        rustflags_transform=(
+            (lambda flags: (*flags, "-C", "link-arg=--export-table"))
+            if invocation.subcommand == "test"
+            else None
+        ),
     )
     plan.verify()
     return list(plan.command), plan.environment, plan
@@ -2721,7 +2744,15 @@ def _capture_runtime_gate_rust_operations(
             rustc_version=rustc_version,
             _capture_cache=capture_cache,
             _captured_images=images,
-            wasi_command_abi=None if plan is None else plan.wasi_c_abi,
+            wasi_command_abi=(
+                plan.wasi_c_abi
+                if plan is not None
+                and command_admission.parse_cargo_invocation(
+                    operation.command
+                ).subcommand
+                == "test"
+                else None
+            ),
         )
         images.extend(child_images)
         selected_native = select_cargo_native_units(
@@ -3743,6 +3774,7 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
     from molt.cli import cargo_command as cargo_argv
     from molt.wasi_sdk_identity import WasiCAbiProjection
     from molt.rust_toolchain import rust_flag_spans
+    from tools.proof_queue_pkg import command_admission
     from tools.runtime_test_gate_plan import WASI_TARGET
 
     if not isinstance(projection, Mapping) or set(projection) != {
@@ -3801,8 +3833,12 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
     flags = projection["rustflags"]
     if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
         raise ValueError("managed Rust flag projection is malformed")
-    if tuple(flags) != abi.rustflags(flags) or not any(
-        span.codegen == "link-arg=--export-table" for span in rust_flag_spans(flags)
+    invocation = command_admission.parse_cargo_invocation(operation.command)
+    if tuple(flags) != abi.rustflags(flags) or (
+        invocation.subcommand == "test"
+        and not any(
+            span.codegen == "link-arg=--export-table" for span in rust_flag_spans(flags)
+        )
     ):
         raise ValueError("runtime WASI operation lost its C ABI or table-export flags")
     forced = projection["forced_environment"]
@@ -3998,6 +4034,10 @@ def _validate_runtime_gate_rust_selection(
             wasi_command_abi=(
                 None
                 if row["projection"] is None
+                or command_admission.parse_cargo_invocation(
+                    operation.command
+                ).subcommand
+                != "test"
                 else WasiCAbiProjection.decode(row["projection"]["c_abi"])
             ),
         )

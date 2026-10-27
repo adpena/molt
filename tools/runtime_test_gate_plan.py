@@ -1,4 +1,4 @@
-"""Pure invocation and Cargo-operation authority for the runtime test gate."""
+"""Pure invocation and Cargo-operation authority for the runtime proof driver."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ import argparse
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Literal, Mapping, Sequence, get_args
 from molt import host_capacity
 
 WASI_TARGET = "wasm32-wasip1"
 OBSERVER_FEATURE = "l7-attestation-probe"
 RuntimeGatePolicy = Literal[
-    "semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"
+    "semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi", "wasi-clippy"
 ]
 
 
@@ -57,7 +57,7 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", default="release-output")
     parser.add_argument(
         "--policy",
-        choices=("semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"),
+        choices=get_args(RuntimeGatePolicy),
         default="semantic",
     )
     parser.add_argument(
@@ -118,6 +118,40 @@ def project_native_requirements(
     )
 
 
+def lint_cargo_operation(
+    policy: RuntimeGatePolicy,
+    profile: str,
+    *,
+    cargo: str,
+) -> CargoOperation | None:
+    """Project the declared lint operation without resolving unrelated host units."""
+    if policy != "wasi-clippy":
+        return None
+    if profile != "dev":
+        raise ValueError("wasi-clippy requires the original default dev profile")
+    return CargoOperation(
+        "runtime",
+        (
+            cargo,
+            "clippy",
+            "--locked",
+            "--target",
+            WASI_TARGET,
+            "--lib",
+            "-p",
+            "molt-runtime",
+            "-p",
+            "molt-tir",
+            "--message-format=json",
+            "--",
+            "-D",
+            "warnings",
+        ),
+        "runtime-wasi",
+        "managed-wasi",
+    )
+
+
 def cargo_operations(
     policy: RuntimeGatePolicy,
     profile: str,
@@ -126,6 +160,9 @@ def cargo_operations(
     compiler_host: str | None = None,
 ) -> tuple[CargoOperation, ...]:
     """Construct the actual child commands before any build or artifact effect."""
+    lint = lint_cargo_operation(policy, profile, cargo=cargo)
+    if lint is not None:
+        return (lint,)
     base = (cargo, "test", "--locked", "--profile", profile)
     tail = ("--no-run", "--message-format=json")
     if policy == "zlib-wasi":

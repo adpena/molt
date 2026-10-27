@@ -85,9 +85,16 @@ it is not interchangeable with the runtime's unbundled downstream archive policy
 Generic DX and CI SDK setup publish tool availability and the C ABI receipt,
 without selecting a Rust target's libc, CRT or linker. The SDK projection takes
 an optional explicit Rust target; no target preserves caller settings without
-adding target link flags. Runtime Cargo plans select their actual target, and
-proof commands declaring the SDK select its WASI C ABI. Direct Cargo C-provider
-environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
+adding target link flags. Runtime Cargo plans select their actual target. Proof
+commands retain that selection per Cargo operation: an admitted WASI operation
+with declared target C sources uses the same plan. WASI lint and lifecycle
+commands use this operation driver; merely declaring an SDK tool does not
+select a C ABI for pure-Rust siblings. The existing operation record retains the selected SDK, ABI, source
+command and actual launch plan through capture, validation and execution.
+This follows [Rust's target contract](https://doc.rust-lang.org/stable/rustc/platform-support/wasm32-wasip1.html):
+Rust supplies its own WASI startup unless external C interoperability is selected.
+The extra planning work occurs in compiler/proof tooling, with no guest cost.
+Direct Cargo C-provider environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
 --wasi-rust-target <target> --wasi-sdk <install> --github-env <path>`, with target
 `wasm32-wasip1` or `wasm32-unknown-unknown`. Native flags are untouched.
 For direct Cargo, global `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` override Cargo's

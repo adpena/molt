@@ -3494,6 +3494,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "rust.clippy.wasi32"
+cargo_native_units = { target = ["c"] }
 family = "rust"
 cell = "linux-x86_64-rust-wasi-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -3506,8 +3507,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "clippy", "--locked", "--target", "wasm32-wasip1", "--lib", "-p", "molt-runtime", "-p", "molt-tir", "--", "-D", "warnings"]
-toolchains = ["rustc", "cargo", "wasm-ld"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "wasi-clippy", "--profile", "dev", "--build-timeout-seconds", "1200"]
+toolchains = ["python", "uv", "rustc", "cargo", "wasi-clang", "wasm-ld"]
 
 # Lockfiles outside the main workspace (MLIR backend, fuzz targets) are not
 # exercised by any build here; resolve each so none silently outgrows its

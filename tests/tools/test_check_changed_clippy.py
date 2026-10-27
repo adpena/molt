@@ -288,7 +288,10 @@ def test_local_clippy_reuses_only_the_declared_host_execution(
     defaults = tuple(
         command
         for command in plan.commands
-        if command.argv[:2] == ("cargo", "clippy")
+        if (
+            command.argv[:2] == ("cargo", "clippy")
+            or command is by_id["rust.clippy.wasi32"]
+        )
         and "pre-push" in command.data["tiers"]
     )
     expected = tuple(
@@ -543,3 +546,95 @@ def test_patch_reach_retains_optional_dev_build_and_target_edges(tmp_path, decla
     )
     assert change.packages == {"backend"}
     assert selected == (COMMANDS[0], COMMANDS[2])
+
+
+def test_registered_wasi_lint_driver_retains_scope_and_execution_protocol(monkeypatch):
+    plan = ProofPlan.load()
+    command = next(row for row in plan.commands if row.id == "rust.clippy.wasi32")
+    operation = gate.clippy_argv(command)
+    assert operation == (
+        "cargo",
+        "clippy",
+        "--locked",
+        "--target",
+        "wasm32-wasip1",
+        "--lib",
+        "-p",
+        "molt-runtime",
+        "-p",
+        "molt-tir",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings",
+    )
+    assert gate.clippy_packages(command) == frozenset({"molt-runtime", "molt-tir"})
+    change = gate.Reach(frozenset({"molt-tir"}), False, False, frozenset())
+    assert gate.select((command,), change) == ((command, "molt-tir"),)
+    unrelated = gate.Reach(frozenset({"molt-wasm-host"}), False, False, frozenset())
+    assert gate.select((command,), unrelated) == ()
+    lifecycle = next(
+        row for row in plan.commands if row.id == "rust.test.wasi-runtime-lifecycle"
+    )
+    assert gate.clippy_argv(lifecycle) is None
+
+    observed = []
+    monkeypatch.setattr(gate, "toolchain_environment", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        gate,
+        "admit_cargo_build",
+        lambda *args, **kwargs: pytest.fail(
+            "the driver admits its actual Cargo operation"
+        ),
+    )
+
+    def run(argv, **kwargs):
+        assert (
+            argv == command.argv
+        )  # Keep the admitted driver, not the scope projection.
+        assert kwargs["timeout"] == 1200.0
+        observed.append(argv)
+        return SimpleNamespace(returncode=42)
+
+    monkeypatch.setattr(gate, "COMMANDS", SimpleNamespace(run=run))
+    assert gate.run(command, plan) == 42
+    assert observed == [command.argv]
+
+
+def test_a_policy_argument_cannot_grant_another_python_source_lint_authority(tmp_path):
+    plan = ProofPlan.load()
+    command = next(row for row in plan.commands if row.id == "rust.clippy.wasi32")
+    decoy = tmp_path / "run_runtime_test_gate.py"
+    decoy.write_text("raise SystemExit('must never execute')\n", encoding="utf-8")
+    argv = [
+        str(decoy) if value == "tools/run_runtime_test_gate.py" else value
+        for value in command.argv
+    ]
+    changed = ProofCommand(command.id, {**command.data, "argv": argv})
+    try:
+        projected = gate.clippy_argv(changed)
+    except ValueError:
+        projected = None  # Admission may refuse before the source discriminator.
+    assert projected is None
+
+
+def test_raw_clippy_scope_uses_typed_cargo_options_and_forwarding():
+    command = _command(
+        "typed",
+        [
+            "cargo",
+            "+stable",
+            "--manifest-path",
+            "clippy",
+            "clippy",
+            "-pbackend",
+            "--",
+            "--package=ignored",
+        ],
+    )
+    assert gate.clippy_argv(command) == command.argv
+    assert gate.clippy_packages(command) == frozenset({"backend"})
+    build = _command(
+        "build", ["cargo", "--manifest-path", "clippy", "build", "-pbackend"]
+    )
+    assert gate.clippy_argv(build) is None
