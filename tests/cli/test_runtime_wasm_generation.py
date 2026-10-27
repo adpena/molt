@@ -1162,7 +1162,8 @@ def test_installed_product_hydration_and_binding_never_create_source_evidence(tm
     assert type(binding.generation) is RuntimeWasmGeneration
     assert binding.generation.payload is product.payload
     assert (
-        json.loads(binding.generation.manifest.read_text()) == product.product_payload()
+        json.loads(binding.generation.manifest.read_text(encoding="utf-8"))
+        == product.product_payload()
     )
     binding.verify()
     hydrated = hydrate_runtime_wasm_product(
@@ -1233,7 +1234,10 @@ def test_equal_products_preserve_distinct_raw_flag_observations(tmp_path):
     binding = bind_runtime_wasm_codegen(first, None)
     assert isinstance(binding.generation, SourceRuntimeWasmGeneration)
     assert binding.generation.payload is first.payload
-    assert json.loads(binding.generation.manifest.read_text()) == first.source_payload()
+    assert (
+        json.loads(binding.generation.manifest.read_text(encoding="utf-8"))
+        == first.source_payload()
+    )
     hydrated = hydrate_runtime_wasm_generation(
         source_manifest=binding.generation.manifest,
         dest_shared=tmp_path / "source-copy" / "molt_runtime.wasm",
@@ -1253,7 +1257,7 @@ def test_expected_pair_requires_and_retains_explicit_receipt_role(tmp_path, role
     path = tmp_path / "expected.json"
     pair.write(path)
     assert RuntimeWasmExpectedPair.read(path).receipt_role is role
-    wire = json.loads(path.read_text())
+    wire = json.loads(path.read_text(encoding="utf-8"))
     assert wire["schema"] == "molt.runtime-wasm-expected-pair.v3"
     assert wire["receipt_role"] == role.value
     del wire["receipt_role"]
