@@ -131,6 +131,18 @@ Rust tool identity resolves the selected physical component before reuse. A chan
 to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit
 physical Rust tools do not require a rustup proxy.
 
+The managed `wasi-clippy` operation uses Cargo's `build.warnings="deny"` with
+human diagnostics, preserving its typed WASI SDK, package and capability plan.
+[The pinned Cargo JSON-output limitation](https://github.com/rust-lang/cargo/issues/17519)
+precludes JSON diagnostics for warning enforcement. The existing runtime driver
+retains raw lint output in `build.stdout.log` and `build.stderr.log`; guarded
+Cargo exit status, plan closure and unchanged source decide the result. It does
+not parse human text or claim libtest/guest execution. Artifact-producing policies
+retain complete compiler JSON and their existing parsers/capture names. This adds
+no subprocess, probe, compiler flag variant or cache; it retires lint-only JSON
+parsing and its diagnostic completion field. Warning policy follows
+[Cargo configuration](https://doc.rust-lang.org/cargo/reference/config.html#buildwarnings).
+
 Clippy commands additionally capture the selected `cargo-clippy` launcher and
 its sibling `clippy-driver`, including physical components behind Rustup proxies.
 Their versions must match the selected Rust compiler. Reuse and final receipt

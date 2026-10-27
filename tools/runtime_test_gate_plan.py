@@ -134,6 +134,8 @@ def lint_cargo_operation(
         (
             cargo,
             "clippy",
+            "--config",
+            'build.warnings="deny"',
             "--locked",
             "--target",
             WASI_TARGET,
@@ -142,9 +144,6 @@ def lint_cargo_operation(
             "molt-runtime",
             "-p",
             "molt-tir",
-            "--message-format=json",
-            "--config",
-            'build.warnings="deny"',
         ),
         "runtime-wasi",
         "managed-wasi",

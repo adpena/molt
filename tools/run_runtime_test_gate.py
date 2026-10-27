@@ -14,12 +14,14 @@ The WASI lifecycle policy builds separate managed-SDK runtime and Rust-only
 platform libtests and hands each exact image to the existing native production-
 host integration; Rust owns both semantic rosters.
 The WASI Clippy policy checks the declared library packages through the same
-managed Cargo operation; it executes no test image and claims no semantic pass.
+managed Cargo operation and Cargo-owned warning denial with human diagnostics;
+its guarded exit status is authoritative. It executes no test image.
 The native semantic policy also owns the declared core/math numeric libtests in
 that same Cargo build; primitive timings are observations, not performance gates.
 Cargo build streams go directly to the shared guard's exclusive capture files,
 so partial output survives a timeout without terminal rewrites. The artifact
-parser still consumes complete compiler JSON; guard diagnostics remain separate
+parser consumes complete compiler JSON for artifact-producing policies. Lint
+retains human output without interpreting it; guard diagnostics remain separate
 from the raw build stderr file.
 """
 
@@ -806,6 +808,8 @@ def cargo_build(
     directory: Path,
     timeout: float,
     environment: Mapping[str, str] | None = None,
+    *,
+    stdout_capture_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     admit_cargo_build(command, cwd=ROOT, env=environment)
     return COMMANDS.run(
@@ -813,9 +817,13 @@ def cargo_build(
         cwd=ROOT,
         env=environment,
         capture_output=True,
-        stdout_capture_path=directory / "build.stdout.jsonl",
+        stdout_capture_path=(
+            directory / "build.stdout.jsonl"
+            if stdout_capture_path is None
+            else stdout_capture_path
+        ),
         stderr_capture_path=directory / "build.stderr.log",
-        capture_tail_bytes=None,  # The artifact parser needs complete compiler JSON.
+        capture_tail_bytes=None,  # Keep full raw output for its owning consumer.
         text=True,
         timeout=timeout,
         check=False,
@@ -841,37 +849,19 @@ def run_compile_only_lint(args: argparse.Namespace, run: Path, aggregate: dict) 
     aggregate["source_command"] = list(operation.command)
     aggregate["build_command"] = command
     aggregate["resolved_rustflags"] = list(plan.rustflags)
-    build = cargo_build(command, run, args.build_timeout_seconds, environment)
+    build = cargo_build(
+        command,
+        run,
+        args.build_timeout_seconds,
+        environment,
+        stdout_capture_path=run / "build.stdout.log",
+    )
     aggregate["build_returncode"] = build.returncode
     plan.verify()
     if build.returncode:
         raise RuntimeError(f"Cargo lint compilation failed with {build.returncode}")
-    finished = False
-    for line in build.stdout.splitlines():
-        if not line.strip():
-            continue
-        row = loads_exact(line)
-        if not isinstance(row, dict) or not isinstance(row.get("reason"), str):
-            raise RuntimeError("Cargo lint output lacks complete compiler JSON")
-        if finished:
-            raise RuntimeError("Cargo lint output continues after build-finished")
-        if row["reason"] == "compiler-message":
-            message = row.get("message")
-            if not isinstance(message, dict) or not isinstance(
-                message.get("level"), str
-            ):
-                raise RuntimeError("Cargo lint compiler diagnostic is malformed")
-            if message["level"] in {"error", "ice", "failure-note"}:
-                raise RuntimeError("Cargo lint compilation emitted an error")
-        elif row["reason"] == "build-finished":
-            if row.get("success") is not True:
-                raise RuntimeError("Cargo lint build did not finish successfully")
-            finished = True
-    if not finished:
-        raise RuntimeError("Cargo lint build lacks its complete build-finished record")
     if truth.git_source_identity() != source:
         raise RuntimeError("source changed during lint compilation")
-    aggregate["build_finished"] = True
     aggregate["status"] = "success"
 
 
