@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -14,15 +13,14 @@ import pytest
 
 from molt.checkout_state import GC_STAMP
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+from tests.test_molt_dev import _git as git_process
 from tools import checkout_maintenance as maintenance
 from tools import molt_dev_controller as controllers
 from tools import molt_dev_detached as detached
 
 
 def _git(root, *args):
-    return subprocess.check_output(
-        ["git", "-C", str(root), *args], text=True, encoding="utf-8"
-    ).strip()
+    return git_process(root, *args).stdout.strip()
 
 
 @pytest.fixture
@@ -230,24 +228,19 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
     source = Path(__file__).resolve().parents[2]
     main = tmp_path / "main"
     main.mkdir()
-    paths = subprocess.check_output(
-        [
-            "git",
-            "-C",
-            str(source),
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            *controllers.CONTROLLER_PATHS,
-        ]
-    )
-    for raw in paths.split(b"\0"):
-        if not raw:
+    paths = git_process(
+        source,
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+        *controllers.CONTROLLER_PATHS,
+    ).stdout
+    for name in paths.split("\0"):
+        if not name:
             continue
-        name = os.fsdecode(raw)
         destination = main / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / name, destination, follow_symlinks=False)
