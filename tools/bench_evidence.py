@@ -288,6 +288,7 @@ class BenchmarkSourceRecord(TypedDict):
 
 class BenchmarkWorkloadRecord(TypedDict):
     entry: str
+    entry_source: str
     scope: Literal["local-python-source-closure"]
     sources: list[BenchmarkSourceRecord]
     topology_sha256: str
@@ -301,6 +302,7 @@ def workload_identity_problems(
     """One durable workload contract for every benchmark projection."""
     if not isinstance(value, Mapping) or set(value) != {
         "entry",
+        "entry_source",
         "scope",
         "sources",
         "topology_sha256",
@@ -347,15 +349,18 @@ def workload_identity_problems(
     if names != sorted(set(names)):
         return ["workload source paths are duplicated or unordered"]
     entry = value["entry"]
+    entry_source = value["entry_source"]
+    if not isinstance(entry_source, str) or entry_source not in names:
+        return ["workload entry is absent from its captured source paths"]
+    source_parts = PurePosixPath(entry_source).parts
     posix_entry, windows_entry = PurePosixPath(entry), PureWindowsPath(entry)
-    relative_entry = (
-        posix_entry.name
-        if posix_entry.is_absolute()
-        else windows_entry.name
-        if windows_entry.is_absolute()
-        else entry
-    )
-    if relative_entry not in names:
+    if posix_entry.is_absolute():
+        matches_source = posix_entry.parts[-len(source_parts) :] == source_parts
+    elif windows_entry.is_absolute():
+        matches_source = windows_entry.parts[-len(source_parts) :] == source_parts
+    else:
+        matches_source = entry == entry_source
+    if not matches_source:
         return ["workload entry is absent from its captured source paths"]
     for field in ("run_args", "molt_args"):
         if not isinstance(value[field], list) or any(
@@ -428,7 +433,7 @@ def admit_benchmark_workload(
         # Reuse content-keyed AST hints, never an earlier immutable query result.
         with local_python_import_graph_transaction(fresh=True):
             return local_python_import_closure(
-                root, (script,), search_roots=search_roots
+                root, (script,), search_roots=search_roots, source_roots=search_roots
             )
 
     closure = discover()
@@ -446,6 +451,7 @@ def admit_benchmark_workload(
             identities.append(identity)
         record: BenchmarkWorkloadRecord = {
             "entry": canonical_benchmark_key(script),
+            "entry_source": script.relative_to(root).as_posix(),
             "scope": "local-python-source-closure",
             "sources": sorted(
                 [

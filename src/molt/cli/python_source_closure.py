@@ -576,12 +576,15 @@ def local_python_import_closure(
     *,
     policy: PythonImportPolicy = _EXECUTABLE_TOOL_IMPORT_POLICY,
     search_roots: tuple[Path, ...] | None = None,
+    source_roots: tuple[Path, ...] | None = None,
 ) -> LocalPythonSourceClosure:
     """Return the policy projection of one source-byte-keyed dependency graph.
 
     Seeds may name files or whole Python source directories. A project's import
     manifest declares ordered search roots and admitted source roots separately;
     a namespace search location does not grant ownership of all its descendants.
+    Consumers may explicitly supply their admitted source domain independently
+    of search order; omitted source roots retain the manifest/default scope.
     Unconfigured projects use ``tools``/``src``/repository search order. Tools use
     full lexical imports, parent-package execution and checked dynamic manifests.
     Lowering supplies its existing module-level-only policy and ``src`` root.
@@ -617,17 +620,35 @@ def local_python_import_closure(
     declared_source_roots = _manifest_python_roots(
         root, manifest_record, "source_roots"
     )
-    source_roots = roots if declared_source_roots is None else declared_source_roots
+    if source_roots is None:
+        admitted_source_roots = (
+            roots if declared_source_roots is None else declared_source_roots
+        )
+    else:
+        admitted_source_roots = tuple(candidate.resolve() for candidate in source_roots)
     seed_paths = tuple(sorted({seed.resolve() for seed in seeds}))
-    if any(not path.is_relative_to(root) for path in (*roots, *seed_paths)):
+    if any(
+        not path.is_relative_to(root)
+        for path in (*roots, *admitted_source_roots, *seed_paths)
+    ):
         raise ValueError(f"Python tooling source is outside project root: {root}")
+    if source_roots is not None:
+        if not admitted_source_roots:
+            raise ValueError("local Python source domain requires a source root")
+        if len(set(admitted_source_roots)) != len(admitted_source_roots):
+            raise ValueError("duplicate local Python source root")
+        for source_root in admitted_source_roots:
+            if not source_root.is_dir():
+                raise ValueError(
+                    f"missing local Python source root directory: {source_root}"
+                )
     query = (seed_paths, policy)
     # Cache placement and manifest contracts cannot share an operation receipt
     # accidentally. Source-byte and topology reuse ends with this transaction.
     domain_key = (
         root,
         roots,
-        source_roots,
+        admitted_source_roots,
         python_source_closure_cache_path(root),
         (manifest_record[0], manifest_record[1])
         if manifest_record is not None
@@ -636,7 +657,7 @@ def local_python_import_closure(
     transaction = _GRAPH_TRANSACTION.get()
     domain = transaction.domains.get(domain_key) if transaction is not None else None
     if domain is None:
-        resolver = LocalPythonModuleResolver(roots, source_roots=source_roots)
+        resolver = LocalPythonModuleResolver(roots, source_roots=admitted_source_roots)
         persisted_entries, cache_pruned = _read_graph_cache(root)
         domain = _GraphDomain(
             root,

@@ -5,10 +5,9 @@
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
 # Workload source admission, exact comparison and failure-atomic publication
-# change qualification and cold-path overhead. Run the canonical --bump after
-# integration; the version and lock below deliberately remain unregenerated.
-version = 13
-content_sha256 = "157f51ebdf027d247a3df7853d80887dd1e24d05be239c5c42d502df4f40cd1c"
+# change qualification and cold-path overhead.
+version = 14
+content_sha256 = "396a3932e7df80609dcf53bb576cd16bb5b43d03a16a3684d1c4ffba96ea6a33"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -88,6 +87,10 @@ role = "executes the declared WASM deployment and routes exact guest stderr"
 [[mechanics]]
 path = "tools/bench_suites.py"
 reason = "suite membership is its own comparability axis (suite_hash)"
+
+[[mechanics]]
+path = "tools/shard_partition.py"
+reason = "deterministic shard membership is recorded in provenance and checked at merge; it does not change per-cell measurement or comparison"
 
 [[mechanics]]
 path = "tools/harness_memory_guard.py"

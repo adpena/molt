@@ -828,7 +828,7 @@ def test_compare_baseline_rejects_incompatible_timing_metadata() -> None:
         "incompatible benchmark baseline: "
         "timing_mode differs: current='warm_throughput', baseline='cold_first_run'; "
         "warmup differs: current=1, baseline=0; "
-        "regenerate the baseline with matching benchmark timing settings and observed build profiles"
+        "regenerate the baseline with matching workload identity, timing settings and observed build profiles"
     ]
 
 
@@ -859,11 +859,13 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
     install_module_view(
         monkeypatch, "platform", platform, bench_tool, platform=fail_platform_platform
     )
-    monkeypatch.setattr(
-        bench_tool,
-        "write_json",
-        lambda path, payload: captured.update({"payload": payload}),
-    )
+
+    def write_json(path, payload, *, validate_inputs):
+        validate_inputs()
+        captured["inputs_validated"] = True
+        captured["payload"] = payload
+
+    monkeypatch.setattr(bench_tool, "write_json", write_json)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -880,6 +882,8 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / "bench_sample.py").write_text("print(1)\n", encoding="utf-8")
 
     bench_tool.main()
+
+    assert captured["inputs_validated"] is True
 
     assert captured["molt_profile"] == "release"
     assert captured["benchmarks"] == [str(tmp_path / "bench_sample.py")]
@@ -911,7 +915,12 @@ def test_bench_cli_defaults_molt_profile_to_release(
         ),
     )
     monkeypatch.setattr(bench_tool, "_git_rev", lambda: "deadbeef")
-    monkeypatch.setattr(bench_tool, "write_json", lambda path, payload: None)
+
+    def write_json(path, payload, *, validate_inputs):
+        validate_inputs()
+        captured["inputs_validated"] = True
+
+    monkeypatch.setattr(bench_tool, "write_json", write_json)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -926,6 +935,8 @@ def test_bench_cli_defaults_molt_profile_to_release(
     (tmp_path / "bench_sample.py").write_text("print(1)\n", encoding="utf-8")
 
     bench_tool.main()
+
+    assert captured["inputs_validated"] is True
 
     assert captured["molt_profile"] == "release"
     assert captured["use_molt_build_cache"] is True
@@ -945,7 +956,12 @@ def test_bench_cli_can_disable_molt_build_cache(monkeypatch, tmp_path: Path) -> 
         ),
     )
     monkeypatch.setattr(bench_tool, "_git_rev", lambda: "deadbeef")
-    monkeypatch.setattr(bench_tool, "write_json", lambda path, payload: None)
+
+    def write_json(path, payload, *, validate_inputs):
+        validate_inputs()
+        captured["inputs_validated"] = True
+
+    monkeypatch.setattr(bench_tool, "write_json", write_json)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -961,6 +977,8 @@ def test_bench_cli_can_disable_molt_build_cache(monkeypatch, tmp_path: Path) -> 
     (tmp_path / "bench_sample.py").write_text("print(1)\n", encoding="utf-8")
 
     bench_tool.main()
+
+    assert captured["inputs_validated"] is True
 
     assert captured["use_molt_build_cache"] is False
 
@@ -2905,6 +2923,7 @@ def test_baseline_and_summary_consume_observation_without_profile_inference():
     cell = {
         "workload": {
             "entry": "sample.py",
+            "entry_source": "sample.py",
             "scope": "local-python-source-closure",
             "sources": [{"path": "sample.py", "size": 9, "sha256": "c" * 64}],
             "topology_sha256": "",
