@@ -378,8 +378,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 1 |
-| `dev-tooling` | 26 | 0 |
-| `checkout-maintenance` | 15 | 0 |
+| `dev-tooling` | 27 | 0 |
+| `checkout-maintenance` | 16 | 0 |
 | `process-forwarding-custody` | 11 | 0 |
 | `changed-clippy-selection` | 11 | 0 |
 | `cargo-source-closure` | 2 | 0 |

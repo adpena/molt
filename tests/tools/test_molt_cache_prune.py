@@ -884,6 +884,46 @@ def test_retention_does_not_swallow_resource_or_cancellation_failure(
         module.automatic_retention(env)
 
 
+def test_failed_long_retention_throttles_from_completion(retention_cache, monkeypatch):
+    module, _cache, _entry, env = retention_cache
+    pruner = _load_molt_cache_prune()
+    now = time.time()
+    clock = install_module_view(monkeypatch, "time", time, pruner, time=lambda: now)
+
+    def fail(_root, **_kwargs):
+        clock.time = lambda: now + 86400
+        raise OSError("long collection failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pruner, "_collect_entries", fail)
+        assert module.automatic_retention(env)["status"] == "failed"
+    assert module.automatic_retention(env)["status"] == "recent"
+    clock.time = lambda: now + 86400 + pruner.AUTOMATIC_PRUNE_INTERVAL_SECONDS
+    assert module.automatic_retention(env)["entries_removed"] == 1
+
+
+def test_completion_stamp_error_preserves_original_retention_failure(
+    retention_cache, monkeypatch
+):
+    module, cache, _entry, _env = retention_cache
+    pruner = _load_molt_cache_prune()
+    clock = install_module_view(monkeypatch, "time", time, pruner, time=time.time)
+    original = MemoryError("original inventory failure")
+
+    def stamp_failure():
+        raise OSError("completion clock unavailable")
+
+    def fail(_root, **_kwargs):
+        clock.time = stamp_failure
+        raise original
+
+    monkeypatch.setattr(pruner, "_collect_entries", fail)
+    with pytest.raises(MemoryError) as caught:
+        module._prune(cache, max_bytes=0, max_age_days=0, dry_run=False, automatic=True)
+    assert caught.value is original
+    assert "completion clock unavailable" in " ".join(caught.value.__notes__)
+
+
 def test_pruner_selects_completed_backend_files_and_preserves_mutable_namespaces(
     tmp_path,
 ):

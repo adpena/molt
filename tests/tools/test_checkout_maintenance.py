@@ -32,6 +32,7 @@ def published_source(tmp_path, monkeypatch):
     _git(repo, "config", "user.name", "Fixture")
     for name, content in {
         "tools/checkout_maintenance.py": "# published collector\n",
+        "tools/cache_maintenance.py": "# published cache collector\n",
         "src/molt/__init__.py": "",
         "src/sitecustomize.py": "",
         "config/policy.toml": "",
@@ -299,8 +300,44 @@ def test_worker_exception_remains_failure(tmp_path, monkeypatch):
         maintenance.main(["--root", str(tmp_path), "--policy-cwd", str(tmp_path)])
 
 
+def test_cache_dispatch_refuses_old_published_worker_before_admission(
+    tmp_path, monkeypatch, published_source
+):
+    repo, _ = published_source
+    _git(repo, "rm", "--", "tools/cache_maintenance.py")
+    _git(repo, "commit", "-qm", "Old published maintenance source")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    with pytest.raises(RuntimeError, match="no automatic maintenance entrypoint"):
+        maintenance.schedule_cache(tmp_path, {}, cwd=repo, epoch="initial")
+    assert not (tmp_path / "logs/cache_retention/automatic/prune-initial").exists()
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"status": "failed", "error": "inventory failed"},
+        {"status": "completed", "entries_failed": 1},
+        {"status": "completed", "source_record_maintenance_failed": True},
+    ],
+)
+def test_cache_worker_keeps_partial_failure_nonzero(
+    tmp_path, monkeypatch, capsys, report
+):
+    from tools import cache_maintenance
+
+    monkeypatch.setattr(
+        cache_maintenance, "automatic_retention", lambda *_a, **_k: report
+    )
+    assert (
+        cache_maintenance.main(["--root", str(tmp_path), "--policy-cwd", str(tmp_path)])
+        == 1
+    )
+    assert json.loads(capsys.readouterr().out)["result"] == report
+
+
+@pytest.mark.parametrize("operation", ["checkout", "cache"])
 def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
-    tmp_path, monkeypatch, record_property
+    tmp_path, monkeypatch, record_property, operation
 ):
     """An independent barrier blocks the real collector, not its dispatcher."""
     from molt import checkout_state, dx
@@ -325,17 +362,37 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / name, destination, follow_symlinks=False)
     # Fault injection belongs to this independently committed fixture policy.
-    collector = main / "tools/disk_guard.py"
+    collector = main / (
+        "tools/disk_guard.py"
+        if operation == "checkout"
+        else "src/molt/cache_eviction.py"
+    )
+    binding = (
+        "\n_real_collect_due = collect_due\ndef collect_due(*, root=None, env=None):\n"
+        if operation == "checkout"
+        else "\n_real_collect_due = automatic_retention\n"
+        "def automatic_retention(env, *, cache_root=None, min_interval_seconds=0, wait_for_lock=False):\n"
+    )
+    invocation = (
+        "    return _real_collect_due(root=root, env=env)\n"
+        if operation == "checkout"
+        else "    return _real_collect_due(env, cache_root=cache_root, min_interval_seconds=min_interval_seconds, wait_for_lock=wait_for_lock)\n"
+    )
     with collector.open("a", encoding="utf-8") as stream:
         stream.write(
-            "\n_real_collect_due = collect_due\n"
-            "def collect_due(*, root=None, env=None):\n"
-            "    barrier = Path(env['CHECKOUT_MAINTENANCE_BARRIER'])\n"
+            binding + "    barrier = Path(env['CHECKOUT_MAINTENANCE_BARRIER'])\n"
             "    barrier.with_suffix('.entered').write_text('entered', encoding='utf-8')\n"
             "    while not barrier.exists():\n"
-            "        time.sleep(0.01)\n"
-            "    return _real_collect_due(root=root, env=env)\n"
+            "        time.sleep(0.01)\n" + invocation
         )
+        if operation == "cache":
+            stream.write(
+                "\n_real_lock = _acquire_file_lock\n"
+                "def _acquire_file_lock(*args, **kwargs):\n"
+                "    marker = Path(os.environ['CHECKOUT_MAINTENANCE_BARRIER']).with_suffix('.waiting')\n"
+                "    marker.write_text('lock attempt', encoding='utf-8')\n"
+                "    return _real_lock(*args, **kwargs)\n"
+            )
     _git(main, "init", "-q")
     _git(main, "config", "user.email", "fixture@example.invalid")
     _git(main, "config", "user.name", "Fixture")
@@ -360,19 +417,77 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
     aged = time.time() - 3 * 3600
     for path in {*retired.iterdir(), retired, *metadata.iterdir(), metadata}:
         os.utime(path, (aged, aged))
+    if operation == "cache":
+        # This cache entry has an independent byte/age oracle; protected home
+        # and bin selectors are relative to the lane that will disappear.
+        retired = artifacts / "module_lowering" / "old.json"
+        retired.parent.mkdir(parents=True)
+        retired.write_bytes(b"obsolete cache payload")
+        protected = artifacts / "module_lowering" / "protected-home"
+        protected.mkdir()
+        (protected / "installed").write_bytes(b"installed state")
+        # A protected top-level child must remain, so use another cache family
+        # for the evictable row.
+        retired = artifacts / "module_analysis" / "old.json"
+        retired.parent.mkdir()
+        retired.write_bytes(b"obsolete cache payload")
+        os.utime(retired, (1, 1))
 
     barrier = tmp_path / "release-collector"
     environment = dict(os.environ)
     environment["CHECKOUT_MAINTENANCE_BARRIER"] = str(barrier)
     # A poisoned ambient source cannot replace the snapshot's startup imports.
     environment["PYTHONPATH"] = str(lane / "poisoned-imports")
+    if operation == "cache":
+        environment.update(
+            MOLT_CACHE_MAX_GB="0",
+            MOLT_CACHE_PRUNE="1",
+            MOLT_HOME="../artifacts/module_lowering/protected-home",
+            MOLT_BIN="../artifacts/module_lowering/protected-home/bin",
+        )
     result = {}
     returned = threading.Event()
+    lock_entered = threading.Event()
+    lock_release = threading.Event()
+    lock_errors = []
+    epoch = "initial"
+    holder = None
+    if operation == "cache":
+        prune_lock = artifacts / "locks/prune.lock"
+        prune_lock.parent.mkdir(parents=True, exist_ok=True)
+        prune_lock.write_text("1", encoding="ascii")
+        os.utime(prune_lock, ns=(1, 1))
+        epoch = str(prune_lock.stat().st_mtime_ns)
+
+        def hold_prune_lock():
+            handle = _try_acquire_file_lock(prune_lock)
+            try:
+                assert handle is not None
+                lock_entered.set()
+                assert lock_release.wait(60), "prune lock owner was never released"
+            except BaseException as error:
+                lock_errors.append(error)
+                lock_entered.set()
+            finally:
+                if handle is not None:
+                    _release_file_lock(handle)
+
+        holder = threading.Thread(target=hold_prune_lock)
+        holder.start()
+        assert lock_entered.wait(30)
+        if lock_errors:
+            raise lock_errors[0]
 
     def dispatch():
         started = time.monotonic()
         try:
-            result["state"] = maintenance.schedule(artifacts, environment, cwd=lane)
+            result["state"] = (
+                maintenance.schedule(artifacts, environment, cwd=lane)
+                if operation == "checkout"
+                else maintenance.schedule_cache(
+                    artifacts, environment, cwd=lane, epoch=epoch
+                )
+            )
         except BaseException as error:
             result["error"] = error
         finally:
@@ -381,7 +496,11 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
 
     thread = threading.Thread(target=dispatch)
     thread.start()
-    state = artifacts / "logs/disk_guard/automatic/gc-initial"
+    state = artifacts / (
+        "logs/disk_guard/automatic/gc-initial"
+        if operation == "checkout"
+        else f"logs/cache_retention/automatic/prune-{epoch}"
+    )
     try:
         assert returned.wait(30), "dispatch waited for the blocked collector"
         if "error" in result:
@@ -398,8 +517,25 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         assert retired.exists(), "reclamation is still blocked independently"
         _git(main, "worktree", "remove", str(lane))
         assert not lane.exists()
+        if operation == "cache":
+            barrier.touch()
+            deadline = time.monotonic() + 30
+            while not barrier.with_suffix(".waiting").exists():
+                assert time.monotonic() < deadline, (
+                    "worker did not retain its lock wait"
+                )
+                if (state / "rc").exists():
+                    pytest.fail((state / "run.log").read_text(encoding="utf-8"))
+                time.sleep(0.02)
+            assert retired.exists() and not (state / "rc").exists()
+            assert str(prune_lock.stat().st_mtime_ns) == epoch
     finally:
         barrier.touch()
+        lock_release.set()
+        if holder is not None:
+            holder.join(35)
+            assert not holder.is_alive()
+            assert not lock_errors
         thread.join(35)
         assert not thread.is_alive(), "fixture dispatcher did not close"
         if (state / "worker.json").exists():
@@ -411,6 +547,15 @@ def test_real_dispatch_returns_before_collection_and_survives_lane_removal(
         state / "run.log"
     ).read_text(encoding="utf-8")
     assert not retired.exists()
+    if operation == "cache":
+        assert (protected / "installed").read_bytes() == b"installed state"
+        assert (
+            json.loads((state / "run.log").read_text(encoding="utf-8"))["result"][
+                "entries_removed"
+            ]
+            == 1
+        )
+        return
     logs = list((artifacts / "logs/disk_guard").glob("disk_guard-*.json"))
     assert {
         json.loads(path.read_text(encoding="utf-8"))["operation"] for path in logs
