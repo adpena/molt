@@ -2183,9 +2183,8 @@ def test_wasi_clippy_uses_the_existing_compile_only_cargo_operation():
         "-p",
         "molt-tir",
         "--message-format=json",
-        "--",
-        "-D",
-        "warnings",
+        "--config",
+        'build.warnings="deny"',
     ]
     assert operation.native_requirements == {"target": ["c"]}
     with pytest.raises(ValueError):
@@ -2229,16 +2228,13 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
         "-p",
         "molt-tir",
         "--message-format=json",
-        "--",
-        "-D",
-        "warnings",
+        "--config",
+        'build.warnings="deny"',
     ]
-    separator = submitted.index("--")
     actual = [
-        *submitted[:separator],
+        *submitted,
         "--config",
         'build.build-dir="/owned/selected-build"',
-        *submitted[separator:],
     ]
     flags = ("--cfg", "explicit_user_flags", "-C", "link-self-contained=no")
     checked, builds = [], []

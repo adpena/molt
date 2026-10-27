@@ -94,6 +94,12 @@ command and actual launch plan through capture, validation and execution.
 This follows [Rust's target contract](https://doc.rust-lang.org/stable/rustc/platform-support/wasm32-wasip1.html):
 Rust supplies its own WASI startup unless external C interoperability is selected.
 The extra planning work occurs in compiler/proof tooling, with no guest cost.
+Managed Clippy uses Cargo's warning-denial configuration (Cargo 1.97 or newer),
+rather than forwarding target compiler options through Clippy's workspace
+wrapper. Target SDK flags remain in Cargo's target compilation lane; host build
+scripts retain their host ABI. The shared Cargo capability gate admits both
+resource-keyed build directories and warning denial from one captured version
+probe. The original warning-failure policy, package scope and deadline remain.
 Direct Cargo C-provider environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
 --wasi-rust-target <target> --wasi-sdk <install> --github-env <path>`, with target
 `wasm32-wasip1` or `wasm32-unknown-unknown`. Native flags are untouched.
