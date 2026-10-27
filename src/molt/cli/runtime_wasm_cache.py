@@ -10,7 +10,7 @@ from molt.process_environment import ProcessEnvironment
 from molt.default_paths import _default_molt_cache
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
-    RuntimeWasmGeneration,
+    SourceRuntimeWasmGeneration,
     _runtime_wasm_store,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
@@ -38,7 +38,7 @@ def admit_runtime_wasm_pair_from_shared_cache(
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
     environment: ProcessEnvironment,
-) -> RuntimeWasmGeneration | None:
+) -> SourceRuntimeWasmGeneration | None:
     """Admit the exact cached family in place; the caller checks its exports.
 
     Codegen pins this admitted receipt before emitting app layout. The mutable

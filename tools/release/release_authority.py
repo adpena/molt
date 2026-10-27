@@ -53,7 +53,11 @@ from tools.release.compiler_payload import (  # noqa: E402
     source_snapshot,
     source_commit_epoch,
 )
-from tools.release.runtime_cells import read_runtime_inventory  # noqa: E402
+from tools.release.runtime_cells import (  # noqa: E402
+    BUILD_OBSERVATIONS_NAME,
+    capture_runtime_build_observations,
+    read_runtime_inventory,
+)
 from tools.release.native_build import (  # noqa: E402
     read_native_build,
     snapshot_rust_channel,
@@ -100,7 +104,7 @@ from tools.release.release_model import (  # noqa: E402
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-CANDIDATE_SCHEMA = "molt.release-candidate.v6"
+CANDIDATE_SCHEMA = "molt.release-candidate.v7"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
 CONSUMER_SCHEMA = "molt.release-consumer-proof.v12"
 COMPONENT_CONSUMER_SCHEMA = "molt.release-consumer-component-proof.v2"
@@ -467,6 +471,26 @@ def assemble_candidate(
             f"{worker_primary['sha256']} != {worker_secondary['sha256']}"
         )
     output.mkdir(parents=True, exist_ok=False)
+    # Preserve both exact build observations before temporary build custody
+    # retires. Their raw values may differ; reproducibility compares products.
+    from molt.cli.atomic_io import _atomic_copy_file
+
+    runtime_builds = []
+    for label, root in (
+        ("primary", primary_runtime_cells),
+        ("secondary", secondary_runtime_cells),
+    ):
+        observed, _ = capture_runtime_build_observations(
+            root / BUILD_OBSERVATIONS_NAME, inventory=runtime
+        )
+        destination = output / f"runtime-build-{label}.json"
+        _atomic_copy_file(observed.path, destination, observed=observed)
+        record = file_record(destination, kind="runtime-build-observations")
+        if (record["sha256"], record["size"]) != (observed.sha256, observed.size):
+            raise ValueError(
+                "runtime build observation changed while retaining evidence"
+            )
+        runtime_builds.append(record)
     artifacts: list[dict[str, object]] = []
     with OwnedTemporaryDirectory() as temporary:
         repeat_root = Path(temporary)
@@ -574,6 +598,7 @@ def assemble_candidate(
         "launcher": launcher,
         "wasm_facts": wasm_facts,
         "runtime": runtime,
+        "runtime_builds": runtime_builds,
         "native_build": native,
         "artifacts": sorted(artifacts, key=lambda item: str(item["filename"])),
         "reproducibility": {
@@ -610,6 +635,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
             "launcher",
             "wasm_facts",
             "runtime",
+            "runtime_builds",
             "native_build",
             "artifacts",
             "reproducibility",
@@ -667,6 +693,24 @@ def _load_candidate(path: Path) -> dict[str, Any]:
     runtime = validate_runtime_inventory(
         payload["runtime"], platform=target["platform"], arch=target["arch"]
     )
+    runtime_builds = payload["runtime_builds"]
+    if not isinstance(runtime_builds, list) or len(runtime_builds) != 2:
+        raise ValueError("release candidate runtime build evidence is incomplete")
+    for label, record in zip(("primary", "secondary"), runtime_builds, strict=True):
+        record = validate_file_record(record)
+        if (
+            set(record) != FILE_FIELDS
+            or record["kind"] != "runtime-build-observations"
+            or record["filename"] != f"runtime-build-{label}.json"
+        ):
+            raise ValueError(
+                "release candidate runtime build evidence has invalid role"
+            )
+        observed, _ = capture_runtime_build_observations(
+            path.parent / record["filename"], inventory=runtime
+        )
+        if (observed.sha256, observed.size) != (record["sha256"], record["size"]):
+            raise ValueError("release candidate runtime build evidence changed")
     native = validate_native_receipt(payload["native_build"])
     if (
         native["source"]["commit"] != payload["source_sha"]

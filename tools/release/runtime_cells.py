@@ -46,9 +46,13 @@ import sys  # noqa: E402
 from typing import Any, Mapping, Sequence  # noqa: E402
 
 from molt.release_lanes import capture_release_lanes  # noqa: E402
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs  # noqa: E402
+from molt.toolchain_identity import StableRegularFileIdentity  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_NAME = "runtime-inventory.json"
+BUILD_OBSERVATIONS_NAME = "runtime-build-observations.json"
+BUILD_OBSERVATIONS_SCHEMA = "molt.runtime-build-observations.v1"
 # Variables that select a runtime configuration other than the derived release
 # policy. Production and coverage verification refuse them rather than
 # publishing a cell the policy does not name.
@@ -72,6 +76,45 @@ class RuntimeCellRequest:
     stdlib_profile: str
     extra_runtime_features: tuple[str, ...] = ()
     freestanding: bool = False
+
+
+@dataclass(frozen=True)
+class ProducedRuntimeCell:
+    """Stable delivered product plus proof-only source build observations.
+
+    Observations never admit source-cache reuse. The original source envelope
+    binds them to the exact product before its temporary build root retires.
+    """
+
+    record: dict[str, Any]
+    cargo_environment: CargoEnvironmentInputs
+    source_receipt: StableRegularFileIdentity
+
+    def observation(self) -> dict[str, Any]:
+        return {
+            "cell_id": self.record["id"],
+            "cargo_environment": self.cargo_environment.to_dict(),
+            "source_receipt": {
+                "sha256": self.source_receipt.sha256,
+                "size": self.source_receipt.size,
+            },
+        }
+
+
+def _capture_source_receipt(
+    path: Path, payload: Mapping[str, object]
+) -> StableRegularFileIdentity:
+    from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+    from molt.exact_json import capture_exact
+
+    identity, observed = capture_exact(
+        path,
+        max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+        label="runtime source build envelope",
+    )
+    if observed != payload:
+        raise ValueError("runtime source envelope changed before product export")
+    return identity
 
 
 def _selected_runtime_cells(
@@ -248,21 +291,35 @@ def _publish_cell(
     kind: str,
     key: dict[str, Any],
     members: Sequence[tuple[Path, str, str]],
+    product: tuple[Mapping[str, object], str, str] | None = None,
 ) -> dict[str, Any]:
     from molt.compiler_distribution import runtime_cell_id
+    from molt.exact_json import write_exact
+    from molt.toolchain_identity import stable_regular_file_content_identity
 
     # This tree remains private until the complete inventory is admitted.
     # Never remove a fixed scratch name that another producer might own.
     with OwnedTemporaryDirectory(prefix=".cell-", dir=output) as temporary:
         staging = Path(temporary) / "members"
         staging.mkdir()
-        files = sorted(
-            (
-                _stage_member(source, staging, name, role)
-                for source, name, role in members
-            ),
-            key=lambda entry: entry["name"],
-        )
+        files = [
+            _stage_member(source, staging, name, role) for source, name, role in members
+        ]
+        if product is not None:
+            payload, name, role = product
+            path = staging / name
+            write_exact(path, payload)
+            path.chmod(0o644)
+            identity = stable_regular_file_content_identity(path, label=role)
+            files.append(
+                {
+                    "role": role,
+                    "name": name,
+                    "sha256": identity["sha256"],
+                    "size": identity["size"],
+                }
+            )
+        files.sort(key=lambda entry: entry["name"])
         cell_id = runtime_cell_id(kind, key, files)
         destination = output / cell_id
         if destination.exists():
@@ -273,7 +330,7 @@ def _publish_cell(
 
 def _produce_native(
     request: RuntimeCellRequest, source_root: Path, output: Path, timeout: float | None
-) -> dict[str, Any]:
+) -> ProducedRuntimeCell:
     from molt.cli.models import _RuntimeArtifactState
     from molt.cli.native_link_custody import native_link_custody_archive_path
     from molt.cli.native_link_manifest import (
@@ -328,13 +385,11 @@ def _produce_native(
         runtime_build_identity=state.native_runtime_build_identity,
     )
     manifest_path = native_link_dependency_manifest_path(runtime_lib)
+    source_receipt = _capture_source_receipt(manifest_path, manifest.source_payload())
     members = [
         (runtime_lib, runtime_lib.name, "runtime_archive"),
-        (manifest_path, manifest_path.name, "native_link_manifest"),
     ]
-    custody_record = manifest["custody"]
-    if not isinstance(custody_record, Mapping):
-        raise ValueError("native runtime manifest custody must be a mapping")
+    custody_record = manifest.custody
     custody = native_link_custody_archive_path(runtime_lib, custody_record)
     if custody is not None:
         members.append((custody, custody.name, "native_link_custody_archive"))
@@ -356,19 +411,29 @@ def _produce_native(
             NATIVE_CALLABLE_PROJECTION_ROLE,
         )
     )
-    return _publish_cell(
-        output, kind=NATIVE_RUNTIME_CELL, key=runtime_cell_key(request), members=members
+    record = _publish_cell(
+        output,
+        kind=NATIVE_RUNTIME_CELL,
+        key=runtime_cell_key(request),
+        members=members,
+        product=(
+            manifest.product_payload(),
+            manifest_path.name,
+            "native_link_manifest",
+        ),
     )
+    return ProducedRuntimeCell(record, manifest.cargo_environment, source_receipt)
 
 
 def _produce_wasm(
     request: RuntimeCellRequest, source_root: Path, output: Path, timeout: float | None
-) -> dict[str, Any]:
+) -> ProducedRuntimeCell:
     from molt.cli.runtime_build import _initialize_runtime_artifact_state
     from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_surface
     from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
+    from molt.cli.runtime_wasm_generation import SourceRuntimeWasmGeneration
     from molt.compiler_distribution import WASM_RUNTIME_CELL
 
     cargo_profile = request.runtime_profile
@@ -412,21 +477,26 @@ def _produce_wasm(
             + (failure.summary if failure is not None else "no codegen binding")
         )
     generation = state.runtime_wasm_codegen_binding.generation
-    return _publish_cell(
+    if not isinstance(generation, SourceRuntimeWasmGeneration):
+        raise ValueError("runtime producer did not admit a source build envelope")
+    source_receipt = _capture_source_receipt(
+        generation.manifest, generation.source_payload()
+    )
+    record = _publish_cell(
         output,
         kind=WASM_RUNTIME_CELL,
         key=runtime_cell_key(request),
         members=[
-            # The pinned snapshot is the same canonical generation payload.
-            (
-                generation.manifest,
-                "molt_runtime.generation.json",
-                "wasm_generation_manifest",
-            ),
             (generation.shared, generation.shared.name, "wasm_shared_member"),
             (generation.reloc, generation.reloc.name, "wasm_reloc_member"),
         ],
+        product=(
+            generation.product_payload(),
+            "molt_runtime.generation.json",
+            "wasm_generation_manifest",
+        ),
     )
+    return ProducedRuntimeCell(record, generation.cargo_environment, source_receipt)
 
 
 @contextlib.contextmanager
@@ -560,7 +630,7 @@ def _populate_runtime_cells(
                 _selector(request.kind, runtime_cell_key(request))
                 for request in selected
             )
-            cells = [
+            produced = [
                 (
                     _produce_native
                     if request.kind == NATIVE_RUNTIME_CELL
@@ -568,6 +638,7 @@ def _populate_runtime_cells(
                 )(request, source_root, output, cargo_timeout)
                 for request in selected
             ]
+            cells = [cell.record for cell in produced]
         # Every staged cell passes the installed receipt admission, and each
         # identity's recorded runtime sources must be this snapshot's. The
         # union of their source roots is hashed once, not once per cell.
@@ -581,28 +652,88 @@ def _populate_runtime_cells(
         )
         # Builds read the snapshot only; any write would change provenance.
         verify_source_inventory(source_root, records)
-    inventory = validate_runtime_inventory(
-        {
-            "schema": RUNTIME_INVENTORY_SCHEMA,
-            "platform": platform,
-            "arch": arch,
-            "source": {
-                "object_format": snapshot.object_format,
-                "commit": snapshot.source_sha,
-                "tree": snapshot.tree_sha,
+        inventory = validate_runtime_inventory(
+            {
+                "schema": RUNTIME_INVENTORY_SCHEMA,
+                "platform": platform,
+                "arch": arch,
+                "source": {
+                    "object_format": snapshot.object_format,
+                    "commit": snapshot.source_sha,
+                    "tree": snapshot.tree_sha,
+                },
+                "cells": sorted(cells, key=lambda cell: cell["id"]),
             },
-            "cells": sorted(cells, key=lambda cell: cell["id"]),
-        },
-        platform=platform,
-        arch=arch,
-    )
-    if inventory_cell_keys(inventory) != expected_keys:
-        raise ValueError(
-            "produced runtime cells differ from the derived release policy"
+            platform=platform,
+            arch=arch,
         )
-    verify_runtime_tree(output, inventory)
-    write_exact(output / INVENTORY_NAME, inventory)
-    return inventory
+        if inventory_cell_keys(inventory) != expected_keys:
+            raise ValueError(
+                "produced runtime cells differ from the derived release policy"
+            )
+        verify_runtime_tree(output, inventory)
+        write_exact(output / INVENTORY_NAME, inventory)
+        observations = {
+            "schema": BUILD_OBSERVATIONS_SCHEMA,
+            "source": inventory["source"],
+            "cells": sorted(
+                (cell.observation() for cell in produced),
+                key=lambda row: row["cell_id"],
+            ),
+        }
+        validate_runtime_build_observations(observations, inventory=inventory)
+        write_exact(output / BUILD_OBSERVATIONS_NAME, observations)
+        return inventory
+
+
+def validate_runtime_build_observations(
+    payload: object, *, inventory: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Admit private release evidence; never a source-cache credential."""
+    from molt.python_identity_common import _valid_sha256
+
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema", "source", "cells"}
+        or payload["schema"] != BUILD_OBSERVATIONS_SCHEMA
+        or payload["source"] != inventory["source"]
+        or not isinstance(payload["cells"], list)
+    ):
+        raise ValueError("invalid runtime build observations")
+    ids = []
+    for row in payload["cells"]:
+        if not isinstance(row, dict) or set(row) != {
+            "cell_id",
+            "cargo_environment",
+            "source_receipt",
+        }:
+            raise ValueError("invalid runtime build observation cell")
+        receipt = row["source_receipt"]
+        if (
+            not _valid_sha256(row["cell_id"])
+            or not isinstance(receipt, dict)
+            or set(receipt) != {"sha256", "size"}
+            or not _valid_sha256(receipt["sha256"])
+            or type(receipt["size"]) is not int
+            or receipt["size"] <= 0
+        ):
+            raise ValueError("invalid runtime source receipt identity")
+        CargoEnvironmentInputs.from_dict(row["cargo_environment"])
+        ids.append(row["cell_id"])
+    if ids != sorted(cell["id"] for cell in inventory["cells"]):
+        raise ValueError("runtime build observations differ from product inventory")
+    return payload
+
+
+def capture_runtime_build_observations(
+    path: Path, *, inventory: Mapping[str, Any]
+) -> tuple[StableRegularFileIdentity, dict[str, Any]]:
+    from molt.exact_json import capture_exact
+
+    identity, payload = capture_exact(
+        path, max_bytes=16 * 1024 * 1024, label="runtime build observations"
+    )
+    return identity, validate_runtime_build_observations(payload, inventory=inventory)
 
 
 def read_runtime_inventory(root: Path, *, platform: str, arch: str) -> dict[str, Any]:
@@ -620,7 +751,14 @@ def read_runtime_inventory(root: Path, *, platform: str, arch: str) -> dict[str,
         platform=platform,
         arch=arch,
     )
-    verify_runtime_tree(root, inventory, extra_names=frozenset({INVENTORY_NAME}))
+    capture_runtime_build_observations(
+        root / BUILD_OBSERVATIONS_NAME, inventory=inventory
+    )
+    verify_runtime_tree(
+        root,
+        inventory,
+        extra_names=frozenset({INVENTORY_NAME, BUILD_OBSERVATIONS_NAME}),
+    )
     return inventory
 
 

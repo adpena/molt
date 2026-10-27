@@ -900,7 +900,13 @@ discovery and reject sealed compiler trees. Project environments, lock validatio
 and vendoring outputs follow the selected user root; a Python-only project does
 not acquire a compiler Cargo dependency. Runtime Cargo builds are a
 source-checkout workflow and the release producer `tools/release/runtime_cells.py`,
-whose cells are admitted with the installed receipt rules and whose
+whose native schema-7 and WASM v6 source envelopes retain mandatory exact Cargo
+observations. It exports their canonical product manifests for installed cells
+and retains private per-cell build observations before retiring temporary source
+builds. Public runtime inventory/cell schema v3 and candidate v7 keep those roles
+explicit; only the product manifests are delivered. See
+[Cargo input authority](../../../design/cargo_input_authority.md#observed-environment-inputs).
+Its cells are admitted with the installed product receipt rules and their
 `compile.sources` must equal the release snapshot's runtime source tree
 identity (hashed once per producer or bundle operation). In a checkout,
 `molt update` refreshes the rustup-managed pinned toolchain; installed

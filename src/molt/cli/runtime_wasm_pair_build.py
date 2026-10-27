@@ -81,6 +81,7 @@ from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
+    SourceRuntimeWasmGeneration,
     bind_runtime_wasm_codegen,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
@@ -397,11 +398,16 @@ def _select_runtime_wasm_generation(
     expected_path = (
         _build_state_root(project_root)
         / "runtime_wasm_generations"
-        / f"{generation.shared_identity.family_digest}.expected.json"
+        / (
+            f"{generation.shared_identity.family_digest}."
+            f"{generation.receipt_role.value}.expected.json"
+        )
     )
     try:
         RuntimeWasmExpectedPair(
-            generation.shared_identity, generation.reloc_identity
+            generation.shared_identity,
+            generation.reloc_identity,
+            generation.receipt_role,
         ).write(expected_path)
     except (OSError, ValueError):
         return False
@@ -467,7 +473,7 @@ class _RuntimeWasmPairBuild:
     staging_reloc: Path | None = None
 
     cargo_environment: CargoEnvironmentInputs | None = None
-    accepted_generation: RuntimeWasmGeneration | None = None
+    accepted_generation: SourceRuntimeWasmGeneration | None = None
     admission_report: RuntimeWasmAdmissionReport | None = None
 
     def failure_details(self) -> dict[str, object]:
@@ -511,8 +517,8 @@ class _RuntimeWasmPairBuild:
         )
 
     def accept_generation(
-        self, *, observed_generation: RuntimeWasmGeneration | None = None
-    ) -> RuntimeWasmGeneration | None:
+        self, *, observed_generation: SourceRuntimeWasmGeneration | None = None
+    ) -> SourceRuntimeWasmGeneration | None:
         self.accepted_generation = None
         self.admission_report = None
         identity = self.pre_identity
@@ -525,7 +531,7 @@ class _RuntimeWasmPairBuild:
                 expected_shared_identity=identity.shared,
                 expected_reloc_identity=identity.reloc,
             )
-        if generation is None or (
+        if not isinstance(generation, SourceRuntimeWasmGeneration) or (
             generation.shared_identity != identity.shared
             or generation.reloc_identity != identity.reloc
         ):
@@ -1022,6 +1028,11 @@ def _ensure_runtime_wasm_both(
     try:
         if binding is not None:
             generation = binding.generation
+            if not isinstance(generation, SourceRuntimeWasmGeneration):
+                return ctx.fail(
+                    "codegen-generation-admission",
+                    "Installed runtime product cannot authorize source-build reuse.",
+                )
             if ctx.pre_identity is None or (
                 ctx.pre_identity.shared != generation.shared_identity
                 or ctx.pre_identity.reloc != generation.reloc_identity

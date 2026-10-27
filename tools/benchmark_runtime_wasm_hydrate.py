@@ -25,7 +25,7 @@ from molt.cli.runtime_wasm_cache import (  # noqa: E402
     _shared_runtime_wasm_cache_root,
 )
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
-    RuntimeWasmGeneration,
+    SourceRuntimeWasmGeneration,
     hydrate_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_identities,
@@ -39,7 +39,7 @@ from molt.cli.runtime_wasm_validation import (  # noqa: E402
 
 def _read_cached_generation(
     manifest: Path,
-) -> RuntimeWasmGeneration:
+) -> SourceRuntimeWasmGeneration:
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     shared_identity, reloc_identity = runtime_wasm_generation_identities(payload)
     generation = read_runtime_wasm_generation(
@@ -115,7 +115,7 @@ def _run_sample(
     dest_reloc: Path,
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
-    source_generation: RuntimeWasmGeneration,
+    source_generation: SourceRuntimeWasmGeneration,
 ) -> tuple[float, int]:
     started = time.perf_counter()
     if mode == "before":
