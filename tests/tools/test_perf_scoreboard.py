@@ -1341,7 +1341,10 @@ def test_dimensional_win_on_tie_with_material_rss_drop() -> None:
     # a DIMENSIONAL_WIN per Rule 4 (landed without a warm flip, better elsewhere).
     c = _warm_cell(1.00, stable=True)
     c.molt_peak_rss_mib = 80.0
-    baseline = {"molt_peak_rss_mib": 120.0}  # 33% RSS reduction
+    baseline = {
+        "workload": synthetic_workload("tests/benchmarks/bench_x.py"),
+        "molt_peak_rss_mib": 120.0,
+    }  # 33% RSS reduction
     cls, reason = ps.classify_cell(c, quiescent=True, baseline_cell=baseline)
     assert cls == ps.CLASS_DIMENSIONAL_WIN
     assert "RSS" in reason
@@ -1356,7 +1359,10 @@ def test_dimensional_win_on_straddle_with_binary_shrink() -> None:
         repeat_passes=5,
     )
     c.binary_size_kib = 1800.0
-    baseline = {"binary_size_kib": 2400.0}  # 25% smaller
+    baseline = {
+        "workload": synthetic_workload("tests/benchmarks/bench_x.py"),
+        "binary_size_kib": 2400.0,
+    }  # 25% smaller
     cls, reason = ps.classify_cell(c, quiescent=True, baseline_cell=baseline)
     assert cls == ps.CLASS_DIMENSIONAL_WIN
     assert "binary" in reason
@@ -1366,7 +1372,10 @@ def test_dimensional_win_requires_material_delta() -> None:
     # A sub-threshold (2%) improvement is NOT a dimensional win -> stays TIE.
     c = _warm_cell(1.00, stable=True)
     c.molt_peak_rss_mib = 98.0
-    baseline = {"molt_peak_rss_mib": 100.0}  # only 2% < 5% gate
+    baseline = {
+        "workload": synthetic_workload("tests/benchmarks/bench_x.py"),
+        "molt_peak_rss_mib": 100.0,
+    }  # only 2% < 5% gate
     cls, _ = ps.classify_cell(c, quiescent=True, baseline_cell=baseline)
     assert cls == ps.CLASS_TIE
 
@@ -1381,9 +1390,36 @@ def test_dimensional_win_needs_a_baseline() -> None:
 def test_dimensional_improvement_higher_is_better_for_cold() -> None:
     c = _warm_cell(1.00, stable=True)
     c.cold_speedup = 1.50
-    baseline = {"cold_speedup": 1.00}  # +50% cold improvement
+    baseline = {
+        "workload": synthetic_workload("tests/benchmarks/bench_x.py"),
+        "cold_speedup": 1.00,
+    }  # +50% cold improvement
     reason = ps._dimensional_improvement(c, baseline)
     assert reason is not None and "cold" in reason
+
+
+@pytest.mark.parametrize(
+    "metric,current,prior",
+    [
+        ("molt_peak_rss_mib", 80.0, 120.0),
+        ("binary_size_kib", 1800.0, 2400.0),
+        ("cold_speedup", 1.50, 1.00),
+    ],
+)
+@pytest.mark.parametrize("identity", ["missing", "different-source"])
+def test_dimensional_win_refuses_unbound_or_changed_workload(
+    metric, current, prior, identity
+) -> None:
+    c = _warm_cell(1.00, stable=True)
+    setattr(c, metric, current)
+    baseline = {metric: prior}
+    if identity == "different-source":
+        workload = synthetic_workload("tests/benchmarks/bench_x.py")
+        workload["sources"][0]["sha256"] = "d" * 64
+        baseline["workload"] = workload
+    assert ps._dimensional_improvement(c, baseline) is None
+    cls, _ = ps.classify_cell(c, quiescent=True, baseline_cell=baseline)
+    assert cls == ps.CLASS_TIE
 
 
 # --- 5-state classification: INFRA passthrough -----------------------------

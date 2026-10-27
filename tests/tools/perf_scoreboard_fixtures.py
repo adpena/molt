@@ -34,6 +34,7 @@ def synthetic_workload(
     """Literal source identity for synthetic metric cells, never measured code."""
     return {
         "entry": entry,
+        "entry_source": Path(entry).name if Path(entry).is_absolute() else entry,
         "scope": "local-python-source-closure",
         "sources": [
             {

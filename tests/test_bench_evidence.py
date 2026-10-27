@@ -363,3 +363,58 @@ def test_collection_identity_refusal_precedes_canonical_key_intersection(metric,
         current, baseline = baseline, current
     errors = comparable_metric_errors(current, baseline, metric=metric)
     assert errors and any(role in error and "workload" in error for error in errors)
+
+
+def test_nested_external_entry_names_its_exact_captured_source(tmp_path):
+    import hashlib
+    from tools.bench_evidence import (
+        admit_benchmark_workload,
+        workload_identity_problems,
+    )
+
+    project = tmp_path / "project"
+    source = project / "inputs" / "case.py"
+    sibling = project / "other" / "case.py"
+    source.parent.mkdir(parents=True)
+    sibling.parent.mkdir()
+    source.write_bytes(b"import other.case\nprint(other.case.VALUE)\n")
+    sibling.write_bytes(b"VALUE = 42\n")
+    (sibling.parent / "__init__.py").write_bytes(b"")
+    with admit_benchmark_workload(
+        source, project_root=project, run_args=["selected"], molt_args=[]
+    ) as workload:
+        record = workload.record
+        assert record["entry"] == source.as_posix()
+        assert record["entry_source"] == "inputs/case.py"
+        assert {row["path"] for row in record["sources"]} == {
+            "inputs/case.py",
+            "other/__init__.py",
+            "other/case.py",
+        }
+        entry = next(
+            row for row in record["sources"] if row["path"] == "inputs/case.py"
+        )
+        assert entry["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+        assert entry["size"] == len(source.read_bytes())
+        assert not workload_identity_problems(record)
+        record["entry_source"] = "other/case.py"
+        assert workload_identity_problems(record)
+        record = workload.record
+        record.pop("entry_source")
+        assert workload_identity_problems(record)
+        assert workload.record["entry_source"] == "inputs/case.py"
+
+
+@pytest.mark.parametrize(
+    "entry", ["/project/inputs/case.py", "C:/project/inputs/case.py"]
+)
+def test_absolute_workload_entry_requires_full_captured_path_suffix(entry):
+    from tools.bench_evidence import workload_identity_problems
+
+    record = synthetic_workload(entry)
+    record["entry_source"] = "inputs/case.py"
+    record["sources"][0]["path"] = "inputs/case.py"
+    assert not workload_identity_problems(record)
+    record["entry_source"] = "other/case.py"
+    record["sources"][0]["path"] = "other/case.py"
+    assert workload_identity_problems(record)

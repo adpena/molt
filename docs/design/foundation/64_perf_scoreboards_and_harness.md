@@ -849,8 +849,9 @@ held through measurement and close before the atomic result replacement. Shared
 baseline, diff, dashboard and trend comparisons require equal valid workloads,
 including comparisons of external-runtime-only metrics; matching names or
 profiles cannot substitute for source identity. Historical records and separate
-legacy harness formats without that contract remain displayable but cannot be
-compared under this policy. This does not attest loaded bytes or undeclared data,
+legacy harness formats without that contract remain retained as unqualified
+data. Strict scoreboard projections and actual metric comparisons reject them;
+raw display and report-only additions/removals remain available. This does not attest loaded bytes or undeclared data,
 and does not upgrade noncanonical benchmark provenance or missing build-profile
 observations. Source checks run outside each measured child interval and still
 have controller/descriptor/IO costs that must be measured separately.
@@ -866,3 +867,12 @@ individual runner reject nonempty guest run arguments, which their current APIs
 do not execute; the legacy harness additionally checks its actual Molt command
 tail against the admitted list before either runtime starts. These refusals do
 not add a new argument parser or silently change the executed program.
+
+
+A workload's public `entry` is the canonical benchmark lookup key. Its required
+`entry_source` names the exact root-relative row in the captured source closure.
+Repository keys equal that coordinate; absolute external keys must end with its
+complete path. This keeps nested external inputs and same-basename dependencies
+distinct. Historical records missing this coordinate remain unqualified.
+Explicit benchmark source roots use the existing import-closure owner; ordinary
+tooling callers retain their manifest's separate search and ownership domains.

@@ -603,6 +603,10 @@ def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
     tmp_path, monkeypatch
 ):
     from tools.bench_evidence import admit_benchmark_workload
+    from tests.wasm_execution_manifest import (
+        EMPTY_WASM_MODULE,
+        write_wasm_execution_manifest,
+    )
 
     script = tmp_path / "program.py"
     script.write_text("print(1)\n", encoding="utf-8")
@@ -613,7 +617,6 @@ def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
     monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
     monkeypatch.setattr(bench_wasm, "_prune_backend_daemons", lambda _: None)
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["selected-python"])
-    monkeypatch.setattr(bench_wasm, "_linked_wasm_output", lambda p: p)
     monkeypatch.setattr(
         bench_wasm.harness_memory_guard,
         "repo_process_sentinel",
@@ -623,7 +626,10 @@ def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
     def run(command, **kwargs):
         commands.append(command)
         out = Path(command[command.index("--out-dir") + 1]) / "output.wasm"
-        out.write_bytes(b"\0asm\x01\0\0\0")
+        out.write_bytes(EMPTY_WASM_MODULE)
+        linked = out.with_name("output_linked.wasm")
+        linked.write_bytes(EMPTY_WASM_MODULE)
+        write_wasm_execution_manifest(out.parent, linked=linked)
         return bench_wasm._RunResult(0)
 
     monkeypatch.setattr(bench_wasm, "_run_cmd", run)
