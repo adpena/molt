@@ -45,11 +45,10 @@ def test_cargo_layers_execute_from_root_membership(monkeypatch, tmp_path: Path):
     assert calls[1][0] == [
         "cargo",
         "clippy",
+        "--config",
+        'build.warnings="deny"',
         "-p",
         "molt-backend",
-        "--",
-        "-D",
-        "warnings",
     ]
     assert all(cwd == tmp_path for _args, cwd in calls)
 

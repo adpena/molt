@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shlex
+import tomllib
+
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +16,38 @@ from tools.proof_plan import ProofCommand, ProofPlan
 from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_all_declared_clippy_entrypoints_use_cargo_warning_policy() -> None:
+    plan = ProofPlan.load()
+    commands = [command.argv for command in plan.commands]
+    commands.extend(
+        tuple(shlex.split(command))
+        for rule in plan.local_rules
+        for command in rule.get("gates", ())
+    )
+    with (ROOT / "pyproject.toml").open("rb") as stream:
+        dx_commands = tomllib.load(stream)["tool"]["molt"]["dx"]["commands"]
+    commands.extend(
+        tuple(shlex.split(command))
+        for command in dx_commands.values()
+        if isinstance(command, str)
+    )
+    clippy = [command for command in commands if command[:2] == ("cargo", "clippy")]
+    assert clippy
+    for command in clippy:
+        assert command[2:4] == ("--config", 'build.warnings="deny"'), command
+        assert proof_plan.clippy_diagnostic_format_error(command) is None, command
+        # Legitimate Clippy options may follow --; only the replaced policy is forbidden.
+        tail = command[command.index("--") + 1 :] if "--" in command else ()
+        assert not any(
+            flag in {"-Dwarnings", "--deny=warnings"}
+            or (
+                flag in {"-D", "--deny"}
+                and tail[index + 1 : index + 2] == ("warnings",)
+            )
+            for index, flag in enumerate(tail)
+        ), command
 
 
 def _package(root: Path, directory: str, name: str, dependencies: str = "") -> None:
@@ -66,25 +101,31 @@ def _command(identifier: str, argv: list[str], **data: object) -> ProofCommand:
 
 
 COMMANDS = (
-    _command("ws", ["cargo", "clippy", "--workspace", "--", "-D", "warnings"]),
+    _command(
+        "ws", ["cargo", "clippy", "--config", 'build.warnings="deny"', "--workspace"]
+    ),
     _command(
         "runtime-micro",
         [
             "cargo",
             "clippy",
+            "--config",
+            'build.warnings="deny"',
             "-p",
             "runtime",
             "--features",
             "micro",
-            "--",
-            "-D",
-            "warnings",
         ],
     ),
     _command(
-        "backend", ["cargo", "clippy", "--package=backend", "--", "-D", "warnings"]
+        "backend",
+        ["cargo", "clippy", "--config", 'build.warnings="deny"', "--package=backend"],
     ),
-    _command("simd", ["cargo", "clippy", "--", "-D", "warnings"], cwd="deploy/simd"),
+    _command(
+        "simd",
+        ["cargo", "clippy", "--config", 'build.warnings="deny"'],
+        cwd="deploy/simd",
+    ),
 )
 
 
@@ -226,7 +267,7 @@ def test_separate_project_change_selects_only_its_own_command(workspace) -> None
 
 
 def test_clippy_command_without_a_package_scope_is_refused() -> None:
-    command = _command("bad", ["cargo", "clippy", "--", "-D", "warnings"])
+    command = _command("bad", ["cargo", "clippy", "--config", 'build.warnings="deny"'])
     with pytest.raises(ValueError, match="--workspace, -p or a cwd"):
         gate.clippy_packages(command)
 

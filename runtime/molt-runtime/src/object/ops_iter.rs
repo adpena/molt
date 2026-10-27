@@ -17,7 +17,7 @@ use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 
 use super::ops::{
-    alloc_range_from_bigints, dict_like_bits_from_ptr, eq_bool_from_bits, list_from_iter_bits,
+    alloc_range_from_bigints, dict_backing_bits, eq_bool_from_bits, list_from_iter_bits,
     range_components_bigint, range_components_i64, range_index_for_candidate, range_len_bigint,
     range_len_i128, range_lookup_candidate, range_value_at_index_i64,
 };
@@ -530,14 +530,11 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 dec_ref_bits(_py, rev_bits);
                 return iter_bits;
             }
-            if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
+            if let Some(dict_bits) = match dict_backing_bits(_py, seq_bits) {
                 Ok(storage) => storage,
                 Err(()) => return MoltObject::none().bits(),
             } {
-                let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                return alloc_hash_iterator(_py, MoltObject::from_ptr(dict_ptr).bits(), true);
+                return alloc_hash_iterator(_py, dict_bits, true);
             }
             if matches!(
                 type_id,
@@ -766,7 +763,7 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
             unsafe {
                 let type_id = object_type_id(ptr);
                 if builtin_only || crate::object::iterable::builtin_receiver(_py, ptr) {
-                    if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
+                    if let Some(dict_bits) = match dict_backing_bits(_py, iter_bits) {
                         Ok(storage) => storage,
                         Err(()) => return MoltObject::none().bits(),
                     } {

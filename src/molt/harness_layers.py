@@ -220,7 +220,7 @@ def run_layer_compile(config: HarnessConfig) -> LayerResult:
 
 
 def run_layer_lint(config: HarnessConfig) -> LayerResult:
-    """Run ``cargo clippy -D warnings`` on molt-authored crates only.
+    """Run Clippy with Cargo-owned warning denial on molt-authored crates only.
 
     We skip molt-runtime (pre-existing warnings in vendored code) and
     molt-cpython-abi (upstream-generated bindings with 10+ errors).
@@ -254,10 +254,9 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
             details="no clippy-clean crates found in workspace",
         )
 
-    cmd: list[str] = ["cargo", "clippy"]
+    cmd: list[str] = ["cargo", "clippy", "--config", 'build.warnings="deny"']
     for crate in lint_crates:
         cmd += ["-p", crate]
-    cmd += ["--", "-D", "warnings"]
 
     proc = _run_cmd(cmd, cwd=config.project_root)
     elapsed = time.monotonic() - t0

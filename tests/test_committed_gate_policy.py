@@ -600,7 +600,9 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
         assert packages == {"molt-ir", "molt-passes", "molt-tir", "molt-backend-wasm"}
         assert "--locked" in command and "--all-features" in command
         assert command[command.index("--profile") + 1] == "dev-fast"
-    assert "--all-targets" in cargo[0] and cargo[0][-3:] == ["--", "-D", "warnings"]
+    assert "--all-targets" in cargo[0]
+    assert cargo[0][2:4] == ["--config", 'build.warnings="deny"']
+    assert "--" not in cargo[0]
     assert "--no-fail-fast" in cargo[1]
 
 
