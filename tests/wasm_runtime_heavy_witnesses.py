@@ -194,14 +194,20 @@ def zipimport_source(root: Path, tmp_path: Path) -> Path:
                 zf.writestr("nested/m.py", "value = 3")
 
             importer = zipimport.zipimporter(zip_path)
-            pkg = importer.load_module("pkg")
-            mod = importer.load_module("pkg.mod")
-            print(pkg.value)
-            print(mod.value)
-
+            # Discovery does not execute arbitrary runtime-created source.
+            # CPython resolves each fullname relative to this importer's prefix.
+            print("package", importer.is_package("pkg"), importer.get_source("pkg"))
+            package_importer = zipimport.zipimporter(f"{zip_path}/pkg")
+            print(
+                "child",
+                package_importer.is_package("pkg.mod"),
+                package_importer.get_source("pkg.mod"),
+            )
             subimporter = zipimport.zipimporter(f"{zip_path}/nested")
-            submod = subimporter.load_module("m")
-            print(submod.value)
+            print("nested", subimporter.is_package("m"), subimporter.get_source("m"))
+
+            # The archive-root importer searches mod.py, not pkg/mod.py.
+            importer.load_module("pkg.mod")
             """
         ),
         encoding="utf-8",

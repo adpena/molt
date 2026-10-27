@@ -166,6 +166,11 @@ def test_wasm_zipimport_package_lookup_parity(
         },
     )
     assert run.returncode != 0
+    assert run.stdout.splitlines() == [
+        "package True value = 1",
+        "child False value = 2",
+        "nested False value = 3",
+    ]
     assert "ZipImportError: can't find module 'pkg.mod'" in run.stderr, run.stderr
     _assert_no_recursive_mutex_panic(run.stderr)
 

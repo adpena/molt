@@ -292,7 +292,7 @@ entries must obey the policy in Section 0.
 | winsound | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (windows). |
 | xmlrpc | Capability-gated | Planned | P3 | SL3 | stdlib | `net` gating. |
 | zipapp | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
-| zipimport | Capability-gated | Partial | P3 | SL3 | stdlib | Minimal zipimporter for store/deflate+zip64 zipfile entries; `fs.read` gated. Runtime-heavy wasm regression now explicitly asserts CPython-compatible failure shape for root-importer `pkg.mod` lookup (`ZipImportError`). (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement zipimporter bytecode/cache parity + broader archive support.) |
+| zipimport | Capability-gated | Partial | P3 | SL3 | stdlib | Minimal zipimporter for store/deflate+zip64 zipfile entries; `fs.read` gated. Runtime-heavy wasm regression checks package/source discovery at archive and nested prefixes, then asserts CPython-compatible `ZipImportError` for archive-root `pkg.mod` lookup. It does not execute arbitrary runtime-created source; compiled-body execution follows the [import contract](../../contracts/import_system_contract.md). (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement zipimporter bytecode/cache parity + broader archive support.) |
 
 ### 3.1 Ten-Item Stdlib Parity Plan (Fully Specced)
 Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib/`.
