@@ -1046,8 +1046,10 @@ def _backend_execution_context(
     if oracle is not None:
         env["MOLT_SYS_EXECUTABLE"] = oracle.executable
     diff_output_layout.enforce_child(env, repo_root=_repo_root())
+    budget.check(build_failed=True)
     return compat_backends.BackendExecutionContext(
         target_python=resolved_target,
+        molt_cli_python=_resolve_molt_cli_python(),
         build_profile=build_profile,
         capabilities=_diff_capabilities(env),
         environment=env,
@@ -2270,10 +2272,14 @@ def _record_rss_metrics(
 
 class _BatchCompileServerClient(BatchCompileServerClient):
     def __init__(
-        self, env: dict[str, str], *, budget: compat_backends.ItemBudget
+        self,
+        env: dict[str, str],
+        *,
+        molt_cli_python: str,
+        budget: compat_backends.ItemBudget,
     ) -> None:
         cmd = [
-            _resolve_molt_cli_python(),
+            molt_cli_python,
             "-m",
             "molt.cli",
             "internal-batch-build-server",
@@ -2315,6 +2321,7 @@ def _shutdown_batch_compile_server(*, force: bool = True) -> None:
 def _batch_compile_server_client(
     env: dict[str, str],
     *,
+    execution_context: compat_backends.BackendExecutionContext | None,
     request_timeout: float,
     budget: compat_backends.ItemBudget,
 ) -> tuple[_BatchCompileServerClient | None, Exception | None]:
@@ -2323,15 +2330,26 @@ def _batch_compile_server_client(
     pid = os.getpid()
     if _BATCH_COMPILE_SERVER_CLIENT_PID != pid:
         _shutdown_batch_compile_server(force=True)
-    if _BATCH_COMPILE_SERVER_CLIENT is not None:
-        return _BATCH_COMPILE_SERVER_CLIENT, None
     client: _BatchCompileServerClient | None = None
     try:
         if budget.expired():
             raise TimeoutError(
                 "differential item budget exhausted before batch startup"
             )
-        client = _BatchCompileServerClient(env, budget=budget)
+        molt_cli_python = (
+            execution_context.molt_cli_python
+            if execution_context is not None
+            else _resolve_molt_cli_python()
+        )
+        if _BATCH_COMPILE_SERVER_CLIENT is not None:
+            if _BATCH_COMPILE_SERVER_CLIENT.child_process.command[0] != molt_cli_python:
+                raise ValueError(
+                    "batch compiler interpreter differs from the execution context"
+                )
+            return _BATCH_COMPILE_SERVER_CLIENT, None
+        client = _BatchCompileServerClient(
+            env, molt_cli_python=molt_cli_python, budget=budget
+        )
         request_timeout = budget.limit(request_timeout)
         if request_timeout == 0:
             raise TimeoutError("differential item budget exhausted before batch ping")
@@ -2355,6 +2373,7 @@ def _batch_compile_server_client(
 def _run_batch_compile_build(
     *,
     env: dict[str, str],
+    execution_context: compat_backends.BackendExecutionContext | None,
     file_path: str,
     output_root: Path,
     output_binary: Path,
@@ -2400,7 +2419,10 @@ def _run_batch_compile_build(
     if budget.expired():
         return budget.exhausted_result(build_failed=True)
     client, start_error = _batch_compile_server_client(
-        env, request_timeout=budget.limit(request_timeout), budget=budget
+        env,
+        execution_context=execution_context,
+        request_timeout=budget.limit(request_timeout),
+        budget=budget,
     )
     if client is None:
         error = start_error or RuntimeError("batch compile server startup failed")
@@ -2953,6 +2975,7 @@ def _run_molt_owned(
         try:
             batch_result = _run_batch_compile_build(
                 env=env,
+                execution_context=execution_context,
                 file_path=file_path,
                 output_root=output_root,
                 output_binary=output_binary,
@@ -2998,8 +3021,12 @@ def _run_molt_owned(
             build_outcome = batch_result
 
     else:
+        if budget.expired():
+            return budget.exhausted_result(build_failed=True)
         build_cmd = [
-            _resolve_molt_cli_python(),
+            execution_context.molt_cli_python
+            if execution_context is not None
+            else _resolve_molt_cli_python(),
             "-m",
             "molt.cli",
             "build",

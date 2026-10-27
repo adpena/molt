@@ -314,6 +314,7 @@ def test_native_adapter_preserves_first_failure_and_admitted_selection(
     monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
 
     context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -375,6 +376,7 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
     monkeypatch.setattr(module, "run_molt", timed_out)
     monkeypatch.setattr(module, "_COMPAT_BACKEND_REGISTRY", None)
     context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -913,7 +915,7 @@ def test_batch_compile_server_ping_failure_closes_the_unpublished_client(
     failure = error_type("first ping failure")
 
     class _FakeClient:
-        def __init__(self, _env, *, budget) -> None:
+        def __init__(self, _env, *, molt_cli_python, budget) -> None:
             events.append(("init", None))
 
         def request(
@@ -931,6 +933,7 @@ def test_batch_compile_server_ping_failure_closes_the_unpublished_client(
     monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", 0)
     client, error = module._batch_compile_server_client(
         {},
+        execution_context=None,
         request_timeout=0.1,
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment({}), None
@@ -941,6 +944,70 @@ def test_batch_compile_server_ping_failure_closes_the_unpublished_client(
     assert events == [("init", None), ("request", 0.1), ("close", True)]
     assert module._BATCH_COMPILE_SERVER_CLIENT is None
     assert module._BATCH_COMPILE_SERVER_CLIENT_PID == 0
+
+
+@pytest.mark.parametrize("mode", ["fresh", "same", "conflict", "expired"])
+def test_batch_singleton_keeps_selected_interpreter_and_budget(monkeypatch, mode):
+    module = _load_diff_module()
+    selected = "/selected/CLI python"
+    starts, requests, closed = [], [], []
+
+    class Client:
+        def __init__(self, env, *, molt_cli_python, budget):
+            starts.append(molt_cli_python)
+            self.child_process = SimpleNamespace(command=(molt_cli_python,))
+
+        def request(self, op, *, timeout):
+            requests.append(op)
+            assert op == "ping"
+            return {"ok": True, "pong": True}
+
+        def close(self, *, force=False, timeout=None):
+            closed.append(force)
+
+    cached = Client.__new__(Client)
+    cached.child_process = SimpleNamespace(
+        command=("/different/python" if mode == "conflict" else selected,)
+    )
+    monkeypatch.setattr(module, "_BatchCompileServerClient", Client)
+    monkeypatch.setattr(
+        module, "_BATCH_COMPILE_SERVER_CLIENT", None if mode == "fresh" else cached
+    )
+    monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", os.getpid())
+    monkeypatch.setattr(
+        module,
+        "_resolve_molt_cli_python",
+        lambda: pytest.fail("the execution context already selected CLI Python"),
+    )
+    budget = module.compat_backends.ItemBudget(
+        module.compat_backends.TimeoutPolicy.from_environment({}),
+        0.0 if mode == "expired" else None,
+    )
+    context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python=selected,
+        target_python=_parse_target_python_version("3.12"),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+        budget=budget,
+    )
+    client, error = module._batch_compile_server_client(
+        {}, execution_context=context, request_timeout=1.0, budget=budget
+    )
+    if mode in {"conflict", "expired"}:
+        assert client is None
+        assert isinstance(error, ValueError if mode == "conflict" else TimeoutError)
+        if mode == "conflict":
+            assert "interpreter differs" in str(error)
+        assert module._BATCH_COMPILE_SERVER_CLIENT is cached
+    else:
+        assert error is None
+        assert client is module._BATCH_COMPILE_SERVER_CLIENT
+        if mode == "same":
+            assert client is cached
+    assert starts == ([selected] if mode == "fresh" else [])
+    assert requests == (["ping"] if mode == "fresh" else [])
+    assert closed == []
 
 
 @pytest.mark.parametrize("stdlib_profile", [None, "full"])
@@ -971,15 +1038,26 @@ def test_run_batch_compile_build_preserves_selected_request_context(
                 "stderr": "",
             }
 
-    def _fake_client_factory(_env, *, request_timeout: float, budget):
-        starts.append((_env, request_timeout, budget))
+    def _fake_client_factory(
+        _env, *, execution_context, request_timeout: float, budget
+    ):
+        starts.append((_env, request_timeout, budget, execution_context))
         return _Client(), None
 
     monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
     budget = module.compat_backends.ItemBudget(
         module.compat_backends.TimeoutPolicy.from_environment({}), None
     )
+    context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python="/selected/context python",
+        target_python=module.TargetPythonVersion(3, 14, 0),
+        build_profile="dev",
+        capabilities="",
+        environment=environment,
+        budget=budget,
+    )
     result = module._run_batch_compile_build(
+        execution_context=context,
         env=environment,
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
@@ -993,7 +1071,7 @@ def test_run_batch_compile_build_preserves_selected_request_context(
     )
 
     assert result == module.compat_backends.BackendResult("ok", "", 0)
-    assert starts == [(environment, 8.0, budget)]
+    assert starts == [(environment, 8.0, budget, context)]
     assert len(seen_params) == 1
     assert seen_params[0]["python_version"] == "3.14"
     assert seen_environments == [environment]
@@ -1029,7 +1107,9 @@ def test_run_batch_compile_build_preserves_first_startup_error(
                 "stderr": "",
             }
 
-    def _fake_client_factory(_env, *, request_timeout: float, budget):
+    def _fake_client_factory(
+        _env, *, execution_context, request_timeout: float, budget
+    ):
         assert request_timeout == 12.0
         attempts["count"] += 1
         if attempts["count"] == 1:
@@ -1039,6 +1119,7 @@ def test_run_batch_compile_build_preserves_first_startup_error(
     monkeypatch.setattr(module, "_batch_compile_server_client", _fake_client_factory)
 
     result = module._run_batch_compile_build(
+        execution_context=None,
         env=environment,
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
@@ -1077,7 +1158,9 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
             assert op == "build"
             raise TimeoutError("build timed out")
 
-    def _fake_client_factory(_env, *, request_timeout: float, budget):
+    def _fake_client_factory(
+        _env, *, execution_context, request_timeout: float, budget
+    ):
         assert request_timeout == 8.0
         return _FailingClient(), None
 
@@ -1088,6 +1171,7 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
     monkeypatch.setattr(module, "_shutdown_batch_compile_server", _fake_shutdown)
 
     result = module._run_batch_compile_build(
+        execution_context=None,
         env={"MOLT_CODEC": "msgpack"},
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
@@ -1132,7 +1216,8 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
     original_error = RuntimeError("first batch transport failure")
 
     class Client:
-        def __init__(self, env, *, budget):
+        def __init__(self, env, *, molt_cli_python, budget):
+            self.child_process = SimpleNamespace(command=(molt_cli_python,))
             starts.append((dict(env), env))
             if failure_at == "startup":
                 raise original_error
@@ -1191,6 +1276,7 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
     )
 
     context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
         capabilities="",
@@ -1282,6 +1368,7 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     context = module.compat_backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
         capabilities="fs,env,time,random",
@@ -1817,6 +1904,7 @@ def test_guest_backends_preserve_primary_and_cleanup_failure(
     # Ambient selection is deliberately incompatible with the supplied context.
     monkeypatch.setenv(output.ROOT_ENV, str(repo / "ambient-missing"))
     context = backends.BackendExecutionContext(
+        molt_cli_python=sys.executable,
         target_python=_parse_target_python_version("3.12"),
         build_profile="dev",
         capabilities="",
@@ -2406,7 +2494,7 @@ def test_batch_startup_and_request_share_one_item_budget(
             clock.now = 10.0
             raise TimeoutError("batch request exhausted its admitted deadline")
 
-    def start(env, *, request_timeout, budget):
+    def start(env, *, execution_context, request_timeout, budget):
         calls.append(("startup", request_timeout))
         clock.now = 10.0 if exhaust_at == "startup" else 9.0
         return Client(), None
@@ -2417,6 +2505,7 @@ def test_batch_startup_and_request_share_one_item_budget(
         module.harness_outcomes, "read_suite_trip", lambda *a, **k: None
     )
     result = module._run_batch_compile_build(
+        execution_context=None,
         env={},
         file_path="case.py",
         output_root=tmp_path,

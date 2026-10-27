@@ -1506,6 +1506,7 @@ def _install_held_backend_probe(initializer, initargs, released, entered):
     molt_diff._python_exe_version = lambda *a, **k: (3, 12)
     molt_diff._backend_execution_context = lambda *a, **k: (
         backends.BackendExecutionContext(
+            molt_cli_python=sys.executable,
             target_python=version,
             build_profile="dev",
             capabilities="",
