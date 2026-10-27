@@ -154,6 +154,73 @@ def _judge_changes_during_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
     time.sleep(0.01)
 
 
+@pytest.mark.parametrize("owner", ["project", "compiler"])
+@pytest.mark.parametrize("explicit_source", [False, True])
+def test_ir_lease_products_do_not_hide_explicit_source_inputs(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str,
+    explicit_source: bool,
+) -> None:
+    import msgspec
+
+    from molt import dx
+    from molt.cli.backend_execution import _write_backend_ir_lease
+    from molt.cli.backend_ir_transport import BackendIrProgram
+    from molt.cli.cache_keys import FunctionDigests
+    from molt.cli.module_source import PythonSourceSnapshot
+    from molt.source_root import compiler_source_root
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", f"disk:{scratch}")
+    root = project if owner == "project" else compiler_source_root()
+    product_root = dx.backend_ir_lease_dir(root, os.environ)
+    product_root.mkdir(parents=True)
+    extra = product_root / "explicit.py"
+    if explicit_source:
+        extra.write_text("a = 1\n", encoding="utf-8")
+    output = tmp_path / "app"
+    calls: list[str] = []
+    emit = _fake_build(calls)
+    _judge_changes_during_the_build(monkeypatch)
+
+    def compile_program(request: BuildRequest) -> int:
+        lease = _write_backend_ir_lease(
+            root, BackendIrProgram({"functions": []}, FunctionDigests())
+        )
+        try:
+            assert msgspec.msgpack.decode(lease.read_bytes()) == {
+                "function_bodies": [],
+                "function_digests": b"",
+            }
+        finally:
+            lease.unlink()
+        extra_text = PythonSourceSnapshot.capture(extra).text if explicit_source else ""
+        result = emit(request)
+        with output.open("a", encoding="utf-8") as handle:
+            handle.write(extra_text)
+        return result
+
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(compile_program)
+    )
+    _run(build, project, output)
+    _run(build, project, output)
+    assert len(calls) == 1, "reading and deleting derived IR must not force a rebuild"
+    assert output.read_text(encoding="utf-8") == "binary of print(1)\n" + (
+        "a = 1\n" if explicit_source else ""
+    )
+    if explicit_source:
+        extra.write_text("a = 2\n", encoding="utf-8")
+        _run(build, project, output)
+        assert len(calls) == 2, (
+            "an explicit source remains an input inside a product root"
+        )
+        assert output.read_text(encoding="utf-8") == "binary of print(1)\na = 2\n"
+
+
 @pytest.mark.parametrize(
     "query,reusable",
     [

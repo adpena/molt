@@ -9,15 +9,15 @@ import json
 import os
 import sys
 import tokenize
-from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TYPE_CHECKING
+from typing import Any, BinaryIO, Literal, TYPE_CHECKING, TypeVar
 
 from molt import file_publication
 from molt.cli.atomic_io import _atomic_write_text
 from molt.default_paths import _default_molt_cache
-from molt.file_hashing import _sha256_file
+from molt.file_hashing import _sha256_file as _unobserved_sha256_file
 
 
 if TYPE_CHECKING:
@@ -28,12 +28,66 @@ class PythonSourceChangedError(ValueError):
     """An admitted source generation no longer matches the current file."""
 
 
+_Read = TypeVar("_Read")
+
+
+def _read_source_input(
+    path: Path, consume: Callable[[BinaryIO, int], tuple[_Read, str]]
+) -> _Read:
+    """Read one bounded source generation; reporting owns no semantic bytes."""
+    from molt import input_report
+
+    selector = path.absolute()
+    input_report.report_probe(selector)
+    selected = selector.resolve(strict=True)
+    with input_report.capture_read(selector) as receipt:
+        # Preserve ordinary source-open sharing and permission behavior. Unknown
+        # change-time/selection evidence refuses reuse, not source compilation.
+        with open(selector, "rb") as handle:
+            receipt.opened()
+            before = os.fstat(handle.fileno())
+            value, digest = consume(handle, before.st_size)
+            after = os.fstat(handle.fileno())
+            token = input_report.stat_token(selector, before)
+            if (
+                token is None
+                or token != input_report.stat_token(selector, after)
+                or token != input_report.stat_token(selector)
+                or selector.resolve(strict=True) != selected
+            ):
+                input_report.refuse(f"source generation changed while read: {path}")
+                token = None
+        input_report.report_probe(selector)
+        receipt.complete(token, digest)
+    return value
+
+
+def _sha256_file(path: Path) -> str:
+    from molt import input_report
+
+    if not input_report.active():
+        return _unobserved_sha256_file(path)
+    from molt.toolchain_identity import iter_captured_file_chunks
+
+    def consume(handle: BinaryIO, size: int) -> tuple[str, str]:
+        digest = hashlib.sha256()
+        for chunk in iter_captured_file_chunks(handle, size=size):
+            digest.update(chunk)
+        value = digest.hexdigest()
+        return value, value
+
+    return _read_source_input(path, consume)
+
+
 @dataclass(frozen=True)
 class PythonSourceSnapshot:
     """One captured byte generation supplies source text, identity and host AST."""
 
     path: Path
     content: bytes
+    _reported_session: object | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def capture(cls, path: Path) -> PythonSourceSnapshot:
@@ -41,19 +95,36 @@ class PythonSourceSnapshot:
 
         if not input_report.active():
             return cls(path, path.read_bytes())
-        with open(path, "rb") as handle:
-            before = os.fstat(handle.fileno())
-            content = handle.read()
-            after = os.fstat(handle.fileno())
-        snapshot = cls(path, content)
-        input_report.report_read(
-            path, sha256=snapshot.sha256, before=before, after=after
-        )
+        from molt.toolchain_identity import iter_captured_file_chunks
+
+        def consume(
+            handle: BinaryIO,
+            size: int,
+        ) -> tuple[PythonSourceSnapshot, str]:
+            content = b"".join(iter_captured_file_chunks(handle, size=size))
+            snapshot = cls(path, content)
+            return snapshot, snapshot._sha256
+
+        snapshot = _read_source_input(path, consume)
+        snapshot.report_input()
         return snapshot
 
     @functools.cached_property
-    def sha256(self) -> str:
+    def _sha256(self) -> str:
         return hashlib.sha256(self.content).hexdigest()
+
+    def report_input(self) -> None:
+        from molt import input_report
+
+        session = input_report.report_consumed_buffer(
+            self.path, self.content, previous_session=self._reported_session
+        )
+        object.__setattr__(self, "_reported_session", session)
+
+    @property
+    def sha256(self) -> str:
+        self.report_input()
+        return self._sha256
 
     @functools.cached_property
     def _decoded_text(self) -> str:
@@ -72,6 +143,7 @@ class PythonSourceSnapshot:
         same captured bytes and logical filename; successful reads do no extra
         parsing. Selected-version grammar admission belongs to target_python.
         """
+        self.report_input()
         try:
             return self._decoded_text
         except (SyntaxError, UnicodeDecodeError) as decode_error:
@@ -81,7 +153,7 @@ class PythonSourceSnapshot:
             ) from decode_error
 
     @functools.cached_property
-    def tree(self) -> ast.Module:
+    def _tree(self) -> ast.Module:
         try:
             # This is the host-source parser. Target consumers parse text through
             # their selected target authority, never through this host AST.
@@ -93,11 +165,21 @@ class PythonSourceSnapshot:
                 f"cannot parse local Python source {self.path}: {exc}"
             ) from exc
 
+    @property
+    def tree(self) -> ast.Module:
+        self.report_input()
+        return self._tree
+
     @functools.cached_property
-    def ast_digest(self) -> str:
+    def _ast_digest(self) -> str:
         from molt.compiler_analysis.python_source_keys import python_ast_digest
 
         return python_ast_digest(self.tree)
+
+    @property
+    def ast_digest(self) -> str:
+        self.report_input()
+        return self._ast_digest
 
 
 @dataclass(frozen=True)
@@ -497,6 +579,13 @@ def _source_content_sha256(
     path: Path,
     path_stat: os.stat_result | None = None,
 ) -> str | None:
+    from molt import input_report
+
+    if input_report.active():
+        try:
+            return _sha256_file(path)
+        except OSError:
+            return None
     if path_stat is None:
         try:
             path_stat = path.stat()
