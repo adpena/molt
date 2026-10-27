@@ -197,6 +197,17 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    select the full workspace. Ordinary member edits retain reverse local-dependency
    reach. Selection preserves the proof plan's command arguments, feature sets,
    targets, profiles and order; Cargo writers remain serialized on their shared target.
+   Clippy commands declare `--config 'build.warnings="deny"'` before Cargo
+   selectors. Cargo rejects emitted lint warnings, including cached diagnostics,
+   without adding warning-level flags to Clippy compiler arguments. The CLI
+   setting takes precedence over ambient `CARGO_BUILD_WARNINGS` and configuration.
+   The pinned Cargo bypasses denial with JSON diagnostics
+   ([upstream #17519](https://github.com/rust-lang/cargo/issues/17519)); plan
+   admission rejects JSON message formats for Clippy. Human output is required
+   until a separately qualified toolchain resolves that upstream limitation.
+   Explicit source lint allowances and non-lint build-script messages retain
+   Cargo/Rust semantics; this is not a change to selected lint coverage. See the
+   [warning-policy design](../design/foundation/56_dx_buildspeed_tooling.md#clippy-warning-policy-and-cache-reuse).
    Selector and source-closure leaf edits run their own test owners. Shared Cargo,
    Git, command and toolchain authorities retain the union of consumer proofs;
    plan-command edits retain selector tests through the committed-policy owner.

@@ -1079,7 +1079,7 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                     if type_id == TYPE_ID_TUPLE {
                         return MoltObject::from_int(tuple_len(ptr) as i64).bits();
                     }
-                    if let Some(dict_bits) = match dict_like_bits_from_ptr(_py, ptr) {
+                    if let Some(dict_bits) = match dict_backing_bits(_py, val) {
                         Ok(storage) => storage,
                         Err(()) => return MoltObject::none().bits(),
                     } {
@@ -1200,7 +1200,7 @@ pub extern "C" fn molt_len_dict(bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 if crate::object::iterable::builtin_receiver(_py, ptr)
-                    && let Some(dict_bits) = (match dict_like_bits_from_ptr(_py, ptr) {
+                    && let Some(dict_bits) = (match dict_backing_bits(_py, bits) {
                         Ok(storage) => storage,
                         Err(()) => return MoltObject::none().bits(),
                     })

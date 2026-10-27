@@ -2436,13 +2436,12 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "--workspace",
         "--all-targets",
-        "--keep-going",
-        "--",
-        "-D",
-        "warnings"
+        "--keep-going"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_native_units": {
@@ -2471,13 +2470,12 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "--workspace",
         "--all-targets",
-        "--keep-going",
-        "--",
-        "-D",
-        "warnings"
+        "--keep-going"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_native_units": {
@@ -7581,13 +7579,12 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "--release",
         "--target",
-        "wasm32-unknown-unknown",
-        "--",
-        "-D",
-        "warnings"
+        "wasm32-unknown-unknown"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-browser-simd-release",
@@ -8092,13 +8089,12 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "--workspace",
         "--all-targets",
-        "--keep-going",
-        "--",
-        "-D",
-        "warnings"
+        "--keep-going"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_native_units": {
@@ -8128,6 +8124,8 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "-p",
         "molt-ir",
@@ -8140,10 +8138,7 @@
         "-p",
         "molt-gpu-runtime",
         "--all-targets",
-        "--all-features",
-        "--",
-        "-D",
-        "warnings"
+        "--all-features"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
@@ -8167,6 +8162,8 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "-p",
         "molt-runtime",
@@ -8174,10 +8171,7 @@
         "--features",
         "stdlib_micro",
         "--lib",
-        "--tests",
-        "--",
-        "-D",
-        "warnings"
+        "--tests"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
@@ -8201,6 +8195,8 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "-p",
         "molt-runtime",
@@ -8208,10 +8204,7 @@
         "--features",
         "stdlib_edge",
         "--lib",
-        "--tests",
-        "--",
-        "-D",
-        "warnings"
+        "--tests"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
@@ -8235,6 +8228,8 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "-p",
         "molt-runtime",
@@ -8242,10 +8237,7 @@
         "--features",
         "stdlib_standard",
         "--lib",
-        "--tests",
-        "--",
-        "-D",
-        "warnings"
+        "--tests"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
@@ -8269,16 +8261,15 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "-p",
         "molt-backend",
         "--no-default-features",
         "--features",
         "wasm-backend",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings"
+        "--all-targets"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
@@ -8302,16 +8293,15 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "-p",
         "molt-backend",
         "--no-default-features",
         "--features",
         "luau-backend",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings"
+        "--all-targets"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
@@ -8335,16 +8325,15 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "-p",
         "molt-backend",
         "--no-default-features",
         "--features",
         "rust-backend",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings"
+        "--all-targets"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
@@ -8496,6 +8485,8 @@
       "argv": [
         "cargo",
         "clippy",
+        "--config",
+        "build.warnings=\"deny\"",
         "--locked",
         "--profile",
         "release-fast",
@@ -8505,10 +8496,7 @@
         "molt-backend-native",
         "--features",
         "molt-backend/native-backend,molt-backend/llvm",
-        "--lib",
-        "--",
-        "-D",
-        "warnings"
+        "--lib"
       ],
       "cache_domain": "llvm-cargo",
       "cargo_native_units": {
@@ -9631,7 +9619,7 @@
       "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-lang-obj-model -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
       "local.runtime-regex.1": "python tests/molt_diff.py --python-version 3.12 --molt-target-python 3.12 --compiler-profile dev --build-profile dev --stdlib-profile full --target native,wasm --jobs 1 --json tests/differential/basic/unicode_surrogate_handling.py tests/differential/stdlib/codecs_error_handlers_basic.py \"tests/differential/stdlib/re_*.py\"",
       "local.runtime-regex.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_stdlib_re.py",
-      "local.runtime-vfs.0": "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+      "local.runtime-vfs.0": "cargo clippy --config 'build.warnings=\"deny\"' --locked -p molt-runtime-vfs --all-targets --all-features",
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_browser_vfs.py",
       "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
@@ -9656,7 +9644,7 @@
       "local.tinygrad-op-contract.1": "python tools/gen_gpu_op_contract.py --check",
       "local.tinygrad-op-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_gpu_op_contract.py",
       "local.tinygrad-upat-static-exec-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_tinygrad_upat_static_exec_registry.py",
-      "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
+      "local.tir-midend.0": "cargo clippy --config 'build.warnings=\"deny\"' --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
       "local.unicode-source-facts.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_runtime_build_python.py",
       "local.wasm-abi-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_wasm_abi.py",
@@ -12174,7 +12162,7 @@
         "command_ids": [
           "local.rust-clippy-changed.0"
         ],
-        "description": "Clippy -D warnings with the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
+        "description": "Clippy with Cargo-owned warning denial and the proof plan's feature, target and profile cells for every Cargo package a change reaches.",
         "gates": [
           "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
         ],
@@ -12447,7 +12435,7 @@
         ],
         "description": "TIR and WASM Rust: one feature-complete graph for final-body/fact custody.",
         "gates": [
-          "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
+          "cargo clippy --config 'build.warnings=\"deny\"' --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features",
           "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast"
         ],
         "globs": [
@@ -12528,7 +12516,7 @@
         ],
         "description": "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke.",
         "gates": [
-          "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+          "cargo clippy --config 'build.warnings=\"deny\"' --locked -p molt-runtime-vfs --all-targets --all-features",
           "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast"
         ],
         "globs": [

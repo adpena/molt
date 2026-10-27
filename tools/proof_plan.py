@@ -29,7 +29,7 @@ import time
 import tomllib
 import traceback
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Collection, Iterable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Literal, Mapping, Sequence
 
 if TYPE_CHECKING:
     from molt.python_runtime_admission import BuildPythonAdmission
@@ -1187,6 +1187,29 @@ def local_gate_commands(
     return commands
 
 
+def clippy_diagnostic_format_error(arguments: Sequence[str]) -> str | None:
+    """Pinned Cargo bypasses warning denial for JSON diagnostic output (#17519)."""
+    argv = tuple(arguments)
+    if argv[:2] != ("cargo", "clippy"):
+        return None
+    flags = iter(argv[2:])
+    for flag in flags:
+        if flag == "--":
+            break
+        if flag == "--message-format":
+            value = next(flags, "")
+        elif flag.startswith("--message-format="):
+            value = flag.partition("=")[2]
+        else:
+            continue
+        if any(part.startswith("json") for part in value.split(",")):
+            return (
+                "Clippy JSON diagnostics bypass Cargo warning denial in the pinned "
+                "toolchain (rust-lang/cargo#17519); use human diagnostics"
+            )
+    return None
+
+
 def local_gate_template_error(command: str) -> str | None:
     """Admit the one closed integration binding as a commit or commit range."""
     for token in _ARGV_PLACEHOLDER.findall(command):
@@ -1195,12 +1218,14 @@ def local_gate_template_error(command: str) -> str | None:
     remainder = command.replace(INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER, "")
     if "{integration_" in remainder or "integration_upstream_commit}" in remainder:
         return "malformed integration upstream placeholder"
-    if INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER not in command:
-        return None
     try:
         arguments = shlex.split(command)
     except ValueError as exc:
         return f"invalid local gate template: {exc}"
+    if error := clippy_diagnostic_format_error(arguments):
+        return error
+    if INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER not in command:
+        return None
     for argument in arguments:
         if INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER in argument and argument not in {
             INTEGRATION_UPSTREAM_COMMIT_PLACEHOLDER,
@@ -2515,6 +2540,8 @@ class ProofPlan:
             ):
                 errors.append(f"{command.id}: argv must be a non-empty string list")
             else:
+                if error := clippy_diagnostic_format_error(argv):
+                    errors.append(f"{command.id}: {error}")
                 for part in argv:
                     if part == PROOF_SOURCE_COMMIT_PLACEHOLDER:
                         continue

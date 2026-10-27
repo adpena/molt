@@ -1853,3 +1853,69 @@ additional per-process compilation for imported modules, measured against the
 existing cached reader before landing. It adds no cache server, persistent trust,
 metadata-only shortcut or emitted-program overhead. Full release acceptance
 remains separate from developer-loop measurements.
+
+
+### Clippy warning policy and cache reuse
+
+`tools/proof_plan.toml` owns the warning policy of all declared Clippy cells
+and local gate strings. They pass `--config 'build.warnings="deny"'` to Cargo,
+keeping package, target, feature, profile and lint selections intact. The active
+harness lint layer uses the same Cargo setting for its existing package scope.
+The replaced `-- -D warnings` argument is removed rather than retained as a
+second enforcement path. Generated CI commands remain projections of the plan.
+
+This follows [Clippy's Cargo 1.97+ guidance](https://doc.rust-lang.org/clippy/usage.html#elevating-warning-to-errors):
+compiler warning flags invalidate build caches, while Cargo can reject emitted
+lint warnings without changing compiler arguments. The pinned toolchain is
+newer than that minimum. [Cargo configuration](https://doc.rust-lang.org/cargo/reference/config.html#buildwarnings)
+applies denial to local-package lint warnings, including diagnostics replayed
+from fresh artifacts. Non-lint `cargo::warning` build-script messages retain
+their existing semantics. Source allowances still suppress lint diagnostics;
+Cargo rejects any warning that remains emitted. In particular, a rustc lint
+capped at `warn` can now fail at Cargo's boundary; this is stricter than relying
+on rustc to elevate that diagnostic. See [Rust lint precedence](https://doc.rust-lang.org/rustc/lints/levels.html#priority-of-lint-level-sources).
+
+The setting is in the command's Cargo arguments so the proof identity captures
+it and the landing selector, local gate runner, CI executor and harness all
+apply it. CLI configuration takes precedence over ambient
+`CARGO_BUILD_WARNINGS` and user/repository configuration. No new environment
+variable registry or environment translation is needed. Explicitly placing it
+after `cargo clippy` preserves the existing command-discovery boundary.
+
+Cold work retains the same Cargo processes and compiler graph. Changing policy
+may invalidate old compiler artifacts once when removing the old Clippy args.
+On a warm run Cargo still reads its ordinary fingerprints and replays stored
+diagnostics, but warning denial adds no extra subprocess, scan, lock, artifact
+cache or compiler-argument variant. Costs scale with Cargo's selected graph;
+this change adds no work to compiled guests. Whole-loop savings require a
+matched workload measurement; the policy itself does not prove a speedup.
+
+The structural controls in `tests/tools/test_check_changed_clippy.py` check
+every declared Clippy command and local gate string so the old policy cannot
+survive in a sibling cell. Harness tests exercise its actual command builder.
+A warning-policy change additionally needs a real tiny offline Cargo workspace
+control under the declared Rust toolchains: populate artifacts with warning
+policy `warn`, then deny the same cached rustc and Clippy warnings from a local
+dependency. Cargo freshness and actual exit status are the independent oracle,
+with ambient `CARGO_BUILD_WARNINGS=allow` deliberately set. Fresh warning
+rejection and explicit source allowance are separate controls. The proof owner
+retains this execution evidence; ordinary Python selector tests do not acquire
+a compiler prerequisite merely to recheck unchanged Cargo semantics.
+
+Package filtering remains conservative. Replacing `--workspace` with a subset
+of roots can change shared dependency features even with unchanged feature
+flags. [Cargo's resolver](https://doc.rust-lang.org/cargo/reference/resolver.html#features)
+unifies features across selected roots. The locked dependency projection
+therefore selects existing commands; it does not rewrite their feature context.
+
+
+The pinned Cargo 1.99.1 has an output-mode limitation:
+[Cargo issue #17519](https://github.com/rust-lang/cargo/issues/17519) records
+that JSON diagnostics bypass `build.warnings` enforcement, including cached
+warnings. The upstream fix is not assumed present. Proof-plan admission rejects
+JSON message formats for structured Clippy commands and local gate strings;
+the DX declaration inventory enforces the same boundary. Human output remains
+the supported warning-enforcement contract. Control runs must preserve that
+output mode and observe compiler invocations independently rather than adding
+`--message-format=json` to obtain freshness records. Failed JSON controls remain
+failed evidence; a successful human-output control does not qualify JSON mode.

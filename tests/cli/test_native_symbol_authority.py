@@ -45,6 +45,72 @@ from molt.native_symbol_table import NativeSymbolRow
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
+@pytest.mark.parametrize("violation", ["old_digest", "other_path", "closed"])
+def test_shared_native_capture_refuses_detached_or_expired_authority(
+    tmp_path, monkeypatch, violation
+):
+    artifact = tmp_path / "input.a"
+    artifact.write_bytes(_archive("molt_before"))
+    old = native_symbol_inspection._native_symbol_artifact_identity(artifact)
+    artifact.write_bytes(_archive("molt_afterx"))
+    other = tmp_path / "alias.a"
+    other.write_bytes(artifact.read_bytes())
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "read_symbol_rows",
+        lambda *args, **kwargs: pytest.fail("unadmitted capture reached symbol reader"),
+    )
+    with native_symbol_inspection.NativeArtifactCapture(
+        artifact, label="test archive"
+    ) as capture:
+        identity = capture.identity
+        if violation == "closed":
+            capture.__exit__(None, None, None)
+        elif violation == "old_digest":
+            identity = replace(identity, sha256=old.sha256)
+        path = other if violation == "other_path" else artifact
+        with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError):
+            with native_symbol_inspection._native_symbol_facts_admission(
+                path, archive=True, identity=identity, capture=capture
+            ):
+                pytest.fail("unadmitted capture yielded facts")
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "replace"])
+def test_shared_native_capture_closes_before_any_fact_cache_publication(
+    tmp_path, monkeypatch, mutation
+):
+    artifact = tmp_path / "input.a"
+    artifact.write_bytes(_archive("molt_allowed"))
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
+    )
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    with native_symbol_inspection.NativeArtifactCapture(
+        artifact, label="test archive"
+    ) as capture:
+        with pytest.raises(
+            (native_symbol_inspection.NativeSymbolInspectionError, OSError)
+        ):
+            with native_symbol_inspection._native_symbol_facts_admission(
+                artifact, archive=True, identity=capture.identity, capture=capture
+            ) as (_opened, _identity, facts):
+                assert facts.defined_functions == {"molt_allowed"}
+                stamp = artifact.stat()
+                if mutation == "replace":
+                    replacement = tmp_path / "replacement.a"
+                    replacement.write_bytes(_archive("molt_hostile"))
+                    replacement.replace(artifact)
+                else:
+                    artifact.write_bytes(_archive("molt_hostile"))
+                os.utime(artifact, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert not native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
+    assert not list((tmp_path / "cache").rglob("*.json"))
+
+
 @pytest.mark.parametrize("archive", [False, True])
 @pytest.mark.parametrize("tier", ["cold", "memory", "persistent"])
 def test_native_content_admission_rejects_old_digest_with_current_metadata(
