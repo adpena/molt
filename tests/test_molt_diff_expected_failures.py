@@ -1050,7 +1050,7 @@ def test_run_batch_compile_build_preserves_selected_request_context(
     )
     context = module.compat_backends.BackendExecutionContext(
         molt_cli_python="/selected/context python",
-        target_python=module.TargetPythonVersion(3, 14, 0),
+        target_python=_parse_target_python_version("3.14"),
         build_profile="dev",
         capabilities="",
         environment=environment,
