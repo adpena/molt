@@ -71,16 +71,15 @@ class _SourceBuildCustody(_SourceBuildAddress):
 
 
 @dataclass(frozen=True)
-class DevelopmentEnvironmentAdmission:
-    """Operation intent carried into the existing selected-image capture."""
+class DevelopmentEnvironmentRequest:
+    """Checkout/Python/group intent, independent of selection or proof role."""
 
     repo_root: Path
     python: str | None
     groups: tuple[str, ...]
 
-    def probe_arguments(self) -> tuple[str, ...]:
+    def intent_arguments(self) -> tuple[str, ...]:
         return (
-            "--admit-published-environment",
             "--development-checkout",
             str(self.repo_root),
             *(() if self.python is None else ("--development-python", self.python)),
@@ -92,12 +91,12 @@ class DevelopmentEnvironmentAdmission:
         )
 
 
-class _DevelopmentAdmissionResult(StrEnum):
-    COMPLETE = "molt.development-environment-admission.v1"
+class _DevelopmentSelectionResult(StrEnum):
+    COMPLETE = "molt.development-environment-selection.v1"
 
 
-class _DevelopmentAdmissionPayload(TypedDict):
-    schema: Literal[_DevelopmentAdmissionResult.COMPLETE]
+class _DevelopmentSelectionPayload(TypedDict):
+    schema: Literal[_DevelopmentSelectionResult.COMPLETE]
     environment: str
     environment_id: str
     checkout: str
@@ -106,11 +105,11 @@ class _DevelopmentAdmissionPayload(TypedDict):
 
 
 @dataclass(frozen=True)
-class DevelopmentEnvironmentAdmissionReceipt:
-    """An immediate guarded-child result, never a reusable admission cache."""
+class DevelopmentEnvironmentSelectionReceipt:
+    """Immediate metadata selection, never live-byte admission or proof."""
 
     root: Path
-    request: DevelopmentEnvironmentAdmission
+    request: DevelopmentEnvironmentRequest
 
     def __post_init__(self) -> None:
         if (
@@ -119,12 +118,12 @@ class DevelopmentEnvironmentAdmissionReceipt:
             or not _valid_sha256(self.root.name)
         ):
             raise SourceBuildEnvironmentError(
-                "invalid development admission coordinates"
+                "invalid development selection coordinates"
             )
 
-    def payload(self) -> _DevelopmentAdmissionPayload:
+    def payload(self) -> _DevelopmentSelectionPayload:
         return {
-            "schema": _DevelopmentAdmissionResult.COMPLETE,
+            "schema": _DevelopmentSelectionResult.COMPLETE,
             "environment": str(self.root),
             "environment_id": self.root.name,
             "checkout": str(self.request.repo_root),
@@ -141,7 +140,7 @@ class DevelopmentEnvironmentAdmissionReceipt:
     def accept(self, payload: object) -> None:
         if type(payload) is not dict or payload != self.payload():
             raise SourceBuildEnvironmentError(
-                "development admission receipt differs from its exact request"
+                "development selection receipt differs from its exact request"
             )
 
 
