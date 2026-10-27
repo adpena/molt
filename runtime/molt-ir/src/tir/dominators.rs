@@ -177,7 +177,9 @@ fn append_block_successors(
     policy: CfgEdgePolicy,
     successors: &mut Vec<BlockId>,
 ) {
-    block.terminator.append_successors(successors);
+    // DFS visits these cold successors first so reverse postorder places an
+    // independent normal continuation before its exception/retention tail.
+    // Real cross-edges still determine the order of shared continuations.
     match policy {
         CfgEdgePolicy::Full => append_exception_successors(block, label_to_block, successors),
         CfgEdgePolicy::TerminatorOnly => {}
@@ -191,6 +193,9 @@ fn append_block_successors(
             );
         }
     }
+    // Preserve the terminator's semantic successor order, especially saved
+    // state cases followed by the initial-entry default.
+    block.terminator.append_successors(successors);
 }
 
 /// Build predecessor map for the full CFG (terminator + exception edges).
