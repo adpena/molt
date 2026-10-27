@@ -239,7 +239,8 @@ def _with_early_cutoff(
         change = _build_record.check(record, key)
         if isinstance(change, _build_record.BuildRecordHit):
             _success(
-                f"Successfully built {change.output} (inputs unchanged)", file=sys.stderr
+                f"Successfully built {change.output} (inputs unchanged)",
+                file=sys.stderr,
             )
             return 0
         verbose = request.verbose

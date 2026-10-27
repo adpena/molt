@@ -93,7 +93,9 @@ def test_an_unchanged_build_is_current(tmp_path: Path) -> None:
     assert not _current(record, output, "j" * 64), "the key binds"
 
 
-def test_output_selection_survives_first_publication_and_checks_directory_kind(tmp_path):
+def test_output_selection_survives_first_publication_and_checks_directory_kind(
+    tmp_path,
+):
     output = tmp_path / "program"
     selection = BuildOutputSelection.capture(
         "program", tmp_path / "default", out_dir=None, project_root=tmp_path
@@ -101,9 +103,10 @@ def test_output_selection_survives_first_publication_and_checks_directory_kind(t
     assert not output.exists()
     output.write_bytes(b"first published binary")
     record = build_record.record_path(tmp_path / "state", KEY)
-    assert build_record.write_record(
-        record, KEY, _future_ledger(), output=selection
-    ) is None
+    assert (
+        build_record.write_record(record, KEY, _future_ledger(), output=selection)
+        is None
+    )
     result = build_record.check(record, KEY)
     assert isinstance(result, build_record.BuildRecordHit) and result.output == output
     output.unlink()
@@ -130,9 +133,10 @@ def test_output_selection_detects_redirected_directory_with_identical_output_ino
         "alias", tmp_path / "app", out_dir=None, project_root=tmp_path
     )
     record = build_record.record_path(tmp_path / "state", KEY)
-    assert build_record.write_record(
-        record, KEY, _future_ledger(), output=selection
-    ) is None
+    assert (
+        build_record.write_record(record, KEY, _future_ledger(), output=selection)
+        is None
+    )
     alias.unlink()
     alias.symlink_to(second, target_is_directory=True)
     assert input_report.stat_token(alias / "app") == input_report.stat_token(binary)
@@ -150,7 +154,9 @@ def test_reported_output_selection_uses_the_existing_worker_fact_protocol(
     input_report.report_build_output(selection.to_dict())
     assert ledger.output_selection == selection
     worker_ledger = _future_ledger()
-    input_report._merge_worker_fact(worker_ledger, ["build_output", selection.to_dict()])
+    input_report._merge_worker_fact(
+        worker_ledger, ["build_output", selection.to_dict()]
+    )
     assert worker_ledger.output_selection == selection
     other = BuildOutputSelection.capture(
         None, tmp_path / "other", out_dir=None, project_root=tmp_path
