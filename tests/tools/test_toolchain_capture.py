@@ -4772,6 +4772,8 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
     source_command = [
         str(tools["cargo"]),
         "clippy",
+        "--config",
+        'build.warnings="deny"',
         "--locked",
         "--target",
         "wasm32-wasip1",
@@ -4780,9 +4782,6 @@ def test_wasi_clippy_driver_keeps_compile_only_cargo_custody(
         "molt-runtime",
         "-p",
         "molt-tir",
-        "--message-format=json",
-        "--config",
-        'build.warnings="deny"',
     ]
     assert operation["source_command"] == source_command
     assert operation["role"] == "runtime"

@@ -596,6 +596,8 @@ def test_registered_wasi_lint_driver_retains_scope_and_execution_protocol(monkey
     assert operation == (
         "cargo",
         "clippy",
+        "--config",
+        'build.warnings="deny"',
         "--locked",
         "--target",
         "wasm32-wasip1",
@@ -604,9 +606,6 @@ def test_registered_wasi_lint_driver_retains_scope_and_execution_protocol(monkey
         "molt-runtime",
         "-p",
         "molt-tir",
-        "--message-format=json",
-        "--config",
-        'build.warnings="deny"',
     )
     assert gate.clippy_packages(command) == frozenset({"molt-runtime", "molt-tir"})
     change = gate.Reach(frozenset({"molt-tir"}), False, False, frozenset())

@@ -2270,6 +2270,7 @@ def test_runtime_cargo_operation_contract_has_exact_commands_and_c_ownership(
 
 
 def test_wasi_clippy_uses_the_existing_compile_only_cargo_operation():
+    from tools import proof_plan
     from tools.runtime_test_gate_plan import cargo_operations
 
     (operation,) = cargo_operations("wasi-clippy", "dev", cargo="/selected/cargo")
@@ -2281,6 +2282,8 @@ def test_wasi_clippy_uses_the_existing_compile_only_cargo_operation():
     assert list(operation.command) == [
         "/selected/cargo",
         "clippy",
+        "--config",
+        'build.warnings="deny"',
         "--locked",
         "--target",
         "wasm32-wasip1",
@@ -2289,11 +2292,12 @@ def test_wasi_clippy_uses_the_existing_compile_only_cargo_operation():
         "molt-runtime",
         "-p",
         "molt-tir",
-        "--message-format=json",
-        "--config",
-        'build.warnings="deny"',
     ]
     assert operation.native_requirements == {"target": ["c"]}
+    assert (
+        proof_plan.clippy_diagnostic_format_error(("cargo", *operation.command[1:]))
+        is None
+    )
     with pytest.raises(ValueError):
         cargo_operations("wasi-clippy", "dev-fast", cargo="/selected/cargo")
 
@@ -2303,10 +2307,9 @@ def test_wasi_clippy_uses_the_existing_compile_only_cargo_operation():
     [
         None,
         "cargo-failure",
-        "missing-finish",
-        "failed-finish",
-        "duplicate-finish",
-        "compiler-error",
+        "fake-json-success",
+        "empty-output",
+        "human-words",
         "plan-changed",
     ],
 )
@@ -2326,6 +2329,8 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
     submitted = [
         selected_cargo,
         "clippy",
+        "--config",
+        'build.warnings="deny"',
         "--locked",
         "--target",
         "wasm32-wasip1",
@@ -2334,9 +2339,6 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
         "molt-runtime",
         "-p",
         "molt-tir",
-        "--message-format=json",
-        "--config",
-        'build.warnings="deny"',
     ]
     actual = [
         *submitted,
@@ -2388,18 +2390,16 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
             assert kwargs["env"]["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(flags)
             assert "link-arg=--export-table" not in flags
             builds.append(list(argv))
-            rows = [
-                {"reason": "build-finished", "success": mutation != "failed-finish"}
-            ]
-            if mutation == "missing-finish":
-                rows.clear()
-            elif mutation == "duplicate-finish":
-                rows *= 2
-            elif mutation == "compiler-error":
-                rows.insert(
-                    0, {"reason": "compiler-message", "message": {"level": "error"}}
-                )
-            output = "\n".join(json.dumps(row) for row in rows) + "\n"
+            assert Path(kwargs["stdout_capture_path"]).name == "build.stdout.log"
+            assert Path(kwargs["stderr_capture_path"]).name == "build.stderr.log"
+            assert kwargs["capture_tail_bytes"] is None
+            output = "ordinary Cargo output, not JSON\n"
+            if mutation == "fake-json-success":
+                output = '{"reason":"build-finished","success":true}\n'
+            elif mutation == "empty-output":
+                output = ""
+            elif mutation == "human-words":
+                output = "error appears in a package path, not an exit status\n"
             Path(kwargs["stdout_capture_path"]).write_text(output, encoding="utf-8")
             Path(kwargs["stderr_capture_path"]).write_text(
                 "lint diagnostic\n", encoding="utf-8"
@@ -2407,7 +2407,9 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
             return SimpleNamespace(
                 stdout=output,
                 stderr="lint diagnostic\n",
-                returncode=101 if mutation == "cargo-failure" else 0,
+                returncode=101
+                if mutation in {"cargo-failure", "fake-json-success"}
+                else 0,
             )
 
     def forbidden_runtime(*_args, **_kwargs):
@@ -2415,6 +2417,9 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
 
     monkeypatch.setattr(runtime_cargo_plan, "resolve_runtime_cargo_plan", plan)
     monkeypatch.setattr(gate, "COMMANDS", Commands())
+    monkeypatch.setattr(
+        gate, "loads_exact", lambda *_a, **_k: pytest.fail("lint verdict parsed output")
+    )
     monkeypatch.setattr(gate, "execute_child", forbidden_runtime)
     monkeypatch.setattr(gate.runner, "listed_tests", forbidden_runtime)
     receipt_root = tmp_path / "receipts"
@@ -2437,13 +2442,18 @@ def test_wasi_clippy_executes_the_resolved_plan_without_claiming_runtime_tests(
     assert aggregate["source_command"] == submitted
     assert aggregate["build_command"] == actual
     assert aggregate["resolved_rustflags"] == list(flags)
-    assert aggregate["build_returncode"] == (101 if mutation == "cargo-failure" else 0)
+    assert aggregate["build_returncode"] == (
+        101 if mutation in {"cargo-failure", "fake-json-success"} else 0
+    )
     assert (result, aggregate["status"]) == (
-        (0, "success") if mutation is None else (1, "failed")
+        (0, "success")
+        if mutation in {None, "empty-output", "human-words"}
+        else (1, "failed")
     )
     assert aggregate["images"] == {}
     assert "passed_test_count" not in aggregate
-    if mutation is None:
+    assert "build_finished" not in aggregate
+    if mutation in {None, "empty-output", "human-words"}:
         assert len(checked) >= 2, "the source plan must close after compilation"
 
 
