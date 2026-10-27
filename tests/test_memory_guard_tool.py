@@ -7520,6 +7520,37 @@ def test_root_only_terminal_observation_avoids_host_snapshot(
     )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="native POSIX process-group probe")
+def test_root_group_absence_probe_preserves_a_live_owned_child() -> None:
+    child = start_owned_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import os; os.write(1, b'x'); os.read(0, 1)",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        assert child.stdout.read(1) == b"x"
+        rows = process_model.sample_processes_custody(
+            process_model.CustodyInterest(tree_pids=frozenset({child.pid}))
+        )
+        assert rows[child.pid].pgid == child.pid
+        assert memory_guard.RootGroupAbsence.observe(child.pid) is None
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+        returncode = child.wait(timeout=5.0)
+        if child.stdout is not None:
+            child.stdout.close()
+    assert returncode == 0, "the existence query must not signal its live target"
+    assert memory_guard.RootGroupAbsence.observe(child.pid) is not None
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin terminal sampling")
 def test_root_absence_does_not_close_an_unseen_nested_guard_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
