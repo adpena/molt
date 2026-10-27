@@ -292,7 +292,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/io.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/io_path.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/io_path_utils.rs` | 2 | scattered-assumption | `3.13` |
-| `runtime/molt-runtime/src/builtins/json.rs` | 1 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/json_tests.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/module_table.rs` | 1 | scattered-assumption | `version_info` |
 | `runtime/molt-runtime/src/builtins/modules/type_attributes.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/modules.rs` | 7 | authority-routed | `version_info` |
