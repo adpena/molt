@@ -53,7 +53,6 @@ _PORTABLE_PATH_ALIASES = [
         ["--runtime-selection"],
         ["--locate-active-environment"],
         ["--editable-project", "environment", "project"],
-        ["--capture-environment", "environment", "--publish-bytecode"],
     ],
 )
 def test_published_admission_requires_read_only_environment_capture(
@@ -204,14 +203,6 @@ def test_identity_probe_refuses_unowned_cache_namespace(tmp_path, fault):
     with pytest.raises(PythonEnvironmentIdentityError, match="fresh empty owned"):
         identity.python_identity_probe_arguments(
             ("--capture-runtime",), verifier_bytecode_prefix=prefix
-        )
-
-
-def test_image_cache_mapping_refuses_absent_verifier_prefix(tmp_path, monkeypatch):
-    install_module_view(monkeypatch, "sys", sys, environment, pycache_prefix=None)
-    with pytest.raises(PythonEnvironmentIdentityError, match="pre-start"):
-        environment._image_cache_from_source(
-            tmp_path / "demo.py", tmp_path / "image", 0
         )
 
 
@@ -2643,402 +2634,192 @@ def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     )
 
 
-@pytest.mark.parametrize(
-    "fault",
-    [
-        "none",
-        "grouped",
-        "mutated-source",
-        "forged-code",
-        "wrong-optimization",
-        "preserved-source-metadata",
-        "runtime-changed",
-        "rewrite",
-        "image-prefix",
-        "populated-prefix",
-    ],
-)
-@pytest.mark.parametrize("trusted", [False, True])
-def test_sealed_ordinary_prefix_derives_code_and_rejects_rewrite(
-    tmp_path, fault, trusted
+@pytest.mark.parametrize("fault", ["none", "missing", "populated", "symlink"])
+def test_managed_source_only_prefix_refuses_executable_caches(tmp_path, fault):
+    root = tmp_path / "image"
+    root.mkdir()
+    prefix = location.environment_bytecode_prefix(root)
+    if fault != "missing":
+        prefix.mkdir()
+    if fault == "populated":
+        (prefix / "foreign.pyc").write_bytes(b"unadmitted executable cache")
+    elif fault == "symlink":
+        prefix.rmdir()
+        target = tmp_path / "foreign"
+        target.mkdir()
+        try:
+            prefix.symlink_to(target, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks unavailable")
+    if fault == "none":
+        environment._validate_managed_bytecode_prefix(
+            root, {"bytecode": {"kind": "directory"}}
+        )
+    else:
+        with pytest.raises(PythonEnvironmentIdentityError, match="physical empty"):
+            environment._validate_managed_bytecode_prefix(
+                root, {"bytecode": {"kind": "directory"}}
+            )
+
+
+def test_managed_empty_prefix_membership_retains_final_fence(tmp_path):
+    root = tmp_path / "image"
+    prefix = location.environment_bytecode_prefix(root)
+    prefix.mkdir(parents=True)
+    environment._validate_managed_bytecode_prefix(
+        root, {"bytecode": {"kind": "directory"}}
+    )
+    with files.PythonFileCaptureContext() as context:
+        pool = files._FileNodePool(capture_context=context)
+        files._stable_tree_inventory(root, root_id="image", label="image", pool=pool)
+        (prefix / "late.pyc").write_bytes(b"late executable input")
+        with pytest.raises(PythonEnvironmentIdentityError, match="changed"):
+            context.verify()
+
+
+@pytest.mark.parametrize("leave_present", [True, False])
+def test_managed_capture_refuses_cache_inserted_at_inventory_boundary(
+    tmp_path, leave_present
 ):
-    # Interpreter-wide cache policy belongs only to spawned children, never the
-    # pytest process with concurrently active guard and sentinel threads.
+    import venv
+
+    root = tmp_path / "image"
+    venv.EnvBuilder(with_pip=False).create(root)
+    (root / "bytecode").mkdir()
+    provisional = location.environment_provisioning_record_path(root)
+    provisional.parent.mkdir()
+    provisional.write_text("{}", encoding="utf-8")
+    # The marker selects the managed namespace policy. No attestation is claimed;
+    # the real capture must refuse this input before it could be published.
+    code = """
+import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from molt import python_environment_identity as identity
+from molt import python_environment_custody as environment
+root=Path(sys.argv[2])
+original=environment._scan_environment_tree
+def scan(*args,**kwargs):
+    cache=root/'bytecode'/'inserted.pyc'
+    cache.write_bytes(b'new executable input')
+    result=original(*args,**kwargs)
+    if sys.argv[3]=='remove':
+        cache.unlink()
+    return result
+environment._scan_environment_tree=scan
+try:
+    identity.capture_current_python_environment(root,admitted_external_roots=(Path(sys.argv[1]).parent,))
+except ValueError as error:
+    print(json.dumps({'refused':str(error)}))
+else:
+    print(json.dumps({'accepted':True}))
+"""
     with identity.PythonIdentityVerifier() as verifier:
-        verifier_prefix = verifier.prefix
         command = [
-            sys.executable,
-            "-B",
-            "-I",
-            "-X",
-            f"pycache_prefix={verifier_prefix}",
+            str(location.environment_python_path(root)),
+            *identity.python_identity_verifier_arguments(verifier.prefix),
             "-c",
-            "import sys; from pathlib import Path; "
-            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
-            "from tests.test_python_environment_identity import _sealed_ordinary_prefix_control; "
-            "_sealed_ordinary_prefix_control(Path(sys.argv[1]), sys.argv[2], trusted=sys.argv[3] == '1')",
-            str(tmp_path),
-            fault,
-            "1" if trusted else "0",
+            code,
+            str(Path(__file__).resolve().parents[1] / "src"),
+            str(root),
+            "keep" if leave_present else "remove",
         ]
         result = verifier.run(
             command,
-            cwd=tmp_path,
+            memory_guard_prefix=_COMMANDS.prefix,
             capture_output=True,
             text=True,
             encoding="utf-8",
             timeout=60,
             check=False,
-            memory_guard_prefix=_COMMANDS.prefix,
         )
         assert result.returncode == 0, result.stderr
-
-
-def _sealed_ordinary_prefix_control(tmp_path: Path, fault: str, *, trusted: bool):
-    """py_compile and real pytest rewriting are independent producer controls."""
-    import ast
-    import importlib.util
-    import marshal
-    import struct
-    from _pytest.assertion.rewrite import rewrite_asserts
-
-    root = tmp_path / "image"
-    source = _installed_fixture(
-        root, b'"module docstring"\nVALUE = 1\nassert VALUE == 1\nDEBUG = __debug__\n'
-    )
-    runtime_root = tmp_path / "runtime"
-    runtime_root.mkdir()
-    runtime_source = runtime_root / "runtime.py"
-    runtime_source.write_bytes(b'"runtime docstring"\nassert __debug__\n')
-    runtime_alias = runtime_root / "alias.py"
-    os.link(runtime_source, runtime_alias)
-    sources = [source, runtime_source, runtime_alias]
-    prefix = location.environment_bytecode_prefix(root)
-    prefix.mkdir()
-    verifier_prefix = sys.pycache_prefix
-    assert verifier_prefix is not None
-    assert Path(verifier_prefix) != prefix
-
-    def capture_tree(directory, first, context):
-        captured_pool = files._FileNodePool(capture_context=context)
-        # Distinct pools deliberately reuse file-node-0; runtime aliases share
-        # that node but require different code.co_filename values.
-        assert captured_pool.bind(first, first.stat(), label="fixture") == "file-node-0"
-        captured_tree, _, _ = files._stable_tree_inventory(
-            directory, root_id="fixture", label="fixture", pool=captured_pool
+        assert (
+            "managed source-only image requires a physical empty bytecode prefix"
+            in json.loads(result.stdout).get("refused", "")
         )
-        return captured_tree, captured_pool
 
-    context = files.PythonFileCaptureContext()
-    tree, pool = capture_tree(root, source, context)
-    runtime_tree, runtime_pool = capture_tree(runtime_root, runtime_source, context)
-    entries = {row["path"]: row for row in tree["entries"]}
-    _, owned, _ = environment._installed_distributions(
-        ["site"], "scripts", entries, {row["id"]: row for row in pool.nodes}, pool
+
+@pytest.mark.parametrize(
+    "optimization,debug,doc",
+    [(0, True, "module doc"), (1, False, "module doc"), (2, False, None)],
+)
+def test_source_only_python_imports_source_at_every_optimization(
+    tmp_path, optimization, debug, doc
+):
+    site = tmp_path / "site"
+    site.mkdir()
+    source = site / "source_only_control.py"
+    source.write_text('"module doc"\nVALUE = 41\nDEBUG = __debug__\n', encoding="utf-8")
+    # A valid but unrelated adjacent cache is an independent adverse input.
+    foreign = tmp_path / "foreign.py"
+    foreign.write_text("VALUE = 99\nDEBUG = False\n", encoding="utf-8")
+    suffix = f".opt-{optimization}" if optimization else ""
+    adjacent = (
+        site
+        / "__pycache__"
+        / f"{source.stem}.{sys.implementation.cache_tag}{suffix}.pyc"
     )
-
-    derivations = environment._BytecodeDerivationProof() if trusted else None
-
-    def project(entries, pool, runtime_tree, runtime_pool, *, publish):
-        reads, attempts = [], []
-        read_bound = files._FileNodePool.read_bound
-        derive = environment._ordinary_cache_bytes
-
-        def read(owner, node, *, label):
-            data = read_bound(owner, node, label=label)
-            if label.endswith(" source"):
-                reads.append((owner, node))
-                if not publish and fault == "mutated-source" and len(reads) == 1:
-                    source.write_bytes(b"VALUE = 2\n")
-            return data
-
-        def compile_cache(data, filename, optimization):
-            attempts.append((filename, optimization))
-            return derive(data, filename, optimization)
-
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(files._FileNodePool, "read_bound", read)
-            patch.setattr(environment, "_ordinary_cache_bytes", compile_cache)
-            environment._ordinary_bytecode_projection(
-                root,
-                entries,
-                owned,
-                pool,
-                {
-                    "runtime_roots": [runtime_tree],
-                    "runtime_closure_sha256": (
-                        "b" if not publish and fault == "runtime-changed" else "a"
-                    )
-                    * 64,
-                },
-                (("fixture", runtime_root),),
-                runtime_pool,
-                {"trees": []},
-                (),
-                publish=publish,
-                derivations=derivations,
-            )
-        return reads, attempts
-
-    reads, attempts = project(entries, pool, runtime_tree, runtime_pool, publish=True)
-    assert reads.count((pool, "file-node-0")) == 1
-    assert reads.count((runtime_pool, "file-node-0")) == 2
-    assert sorted(attempts) == sorted(
-        (str(path), opt) for path in sources for opt in (0, 1, 2)
+    adjacent.parent.mkdir()
+    py_compile.compile(
+        str(foreign),
+        cfile=str(adjacent),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+        optimize=optimization,
     )
-    assert sys.pycache_prefix == verifier_prefix
-    assert not list(Path(verifier_prefix).iterdir())
-    # Ask a separate interpreter selecting the image namespace for its native
-    # paths; expected names do not use the receiver's suffix-rebasing helper.
-    mapped = _COMMANDS.run(
+    prefix = tmp_path / "image" / "bytecode"
+    prefix.mkdir(parents=True)
+    command = [sys.executable, "-B", "-I", "-X", f"pycache_prefix={prefix}"]
+    if optimization:
+        command.append("-" + "O" * optimization)
+    command.extend(
         [
-            sys.executable,
-            "-B",
-            "-I",
-            "-X",
-            f"pycache_prefix={prefix}",
             "-c",
-            "import importlib.util,json,sys; "
-            "print(json.dumps([[importlib.util.cache_from_source(source, "
-            "optimization=o) for o in ('',1,2)] for source in sys.argv[1:]]))",
-            *map(str, sources),
-        ],
-        cwd=tmp_path,
+            "import json,sys;sys.path.insert(0,sys.argv[1]);"
+            "import source_only_control as m;"
+            "print(json.dumps([m.VALUE,m.DEBUG,m.__doc__,sys.dont_write_bytecode,sys.pycache_prefix]))",
+            str(site),
+        ]
+    )
+    result = _COMMANDS.run(
+        command,
         capture_output=True,
         text=True,
         encoding="utf-8",
         timeout=30,
         check=False,
     )
-    assert mapped.returncode == 0, mapped.stderr
-    all_caches = [
-        [Path(value) for value in values] for values in json.loads(mapped.stdout)
-    ]
-    for module, caches in zip(sources, all_caches, strict=True):
-        for optimization, cache in enumerate(caches):
-            oracle = tmp_path / f"oracle-{module.stem}-{optimization}.pyc"
-            py_compile.compile(
-                str(module),
-                cfile=str(oracle),
-                doraise=True,
-                invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
-                optimize=optimization,
-            )
-            assert cache.read_bytes() == oracle.read_bytes()
-        assert len({cache.read_bytes() for cache in caches}) == 3
-    cache_paths = all_caches[0]
-    cache = cache_paths[0]
-    if fault == "forged-code":
-        # Keep the complete valid checked-hash header. A filename/header waiver
-        # would accept executable bytes that have never derived from this source.
-        cache.write_bytes(
-            cache.read_bytes()[:16]
-            + marshal.dumps(compile("VALUE = 99\n", str(source), "exec"))
-        )
-    elif fault == "wrong-optimization":
-        cache.write_bytes(cache_paths[2].read_bytes())
-    elif fault == "preserved-source-metadata":
-        stamp = source.stat()
-        source.write_bytes(source.read_bytes().replace(b"VALUE = 1", b"VALUE = 9"))
-        os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-    elif fault == "rewrite":
-        tree = ast.parse("assert 1 == 2\n", filename=str(source))
-        rewrite_asserts(tree, b"assert 1 == 2\n", str(source))
-        rewritten = compile(tree, str(source), "exec", dont_inherit=True)
-        rewrite_cache = cache.with_name(
-            cache.stem + f"-pytest-{pytest.__version__}.pyc"
-        )
-        stamp = source.stat()
-        rewrite_cache.write_bytes(
-            importlib.util.MAGIC_NUMBER
-            + struct.pack("<III", 0, int(stamp.st_mtime), stamp.st_size)
-            + marshal.dumps(rewritten)
-        )
-    elif fault == "image-prefix":
-        sys.pycache_prefix = str(prefix)
-    elif fault == "populated-prefix":
-        (Path(verifier_prefix) / "unadmitted.pyc").write_bytes(b"foreign cache")
-    present = [(path, opt) for path in sources for opt in (0, 1, 2)]
-    if fault == "grouped":
-        # Sparse opt-1/opt-2 sets and interleaved hardlink rows defeat both an
-        # opt-0 assumption and a last-source-only reuse implementation.
-        present = [
-            (runtime_alias, 0),
-            (source, 1),
-            (runtime_source, 2),
-            (runtime_alias, 2),
-        ]
-        for module, caches in zip(sources, all_caches, strict=True):
-            for opt, cache in enumerate(caches):
-                if (module, opt) not in present:
-                    cache.unlink()
-    captured_context = files.PythonFileCaptureContext()
-    captured, captured_pool = capture_tree(root, source, captured_context)
-    captured_runtime, captured_runtime_pool = capture_tree(
-        runtime_root, runtime_source, captured_context
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [41, debug, doc, True, str(prefix)]
+    # Without the explicit empty read namespace, CPython executes the valid
+    # unchecked foreign cache. This makes the namespace oracle independent.
+    unconfined = [part for part in command]
+    del unconfined[3:5]
+    adverse = _COMMANDS.run(
+        unconfined,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
     )
-    captured_entries = {row["path"]: row for row in captured["entries"]}
-    for module, opt in present:
-        relative = all_caches[sources.index(module)][opt].relative_to(root).as_posix()
-        captured_entries[relative] = captured_entries.pop(relative)
-
-    def admit():
-        reads, attempts = project(
-            captured_entries,
-            captured_pool,
-            captured_runtime,
-            captured_runtime_pool,
-            publish=False,
-        )
-        # The public capture boundary retains this fence after projection.
-        captured_context.verify()
-        assert reads.count((captured_pool, "file-node-0")) == 1
-        assert reads.count((captured_runtime_pool, "file-node-0")) == 2
-        assert sorted(attempts) == (
-            [] if trusted else sorted((str(path), opt) for path, opt in present)
-        )
-
-    if fault in {"none", "grouped"} or (fault == "runtime-changed" and not trusted):
-        admit()
-        assert sys.pycache_prefix == verifier_prefix
-        assert not list(Path(verifier_prefix).iterdir())
-    if fault == "none":
-        # A cache hit must remain usable under the mandatory pre-start policy.
-        # Making source compilation fail distinguishes an actual hit from a
-        # source execution that happens to return the same value.
-        command = [
-            sys.executable,
-            "-B",
-            "-I",
-            "-X",
-            f"pycache_prefix={prefix}",
-            "-c",
-            "import importlib.machinery,sys; "
-            "importlib.machinery.SourceFileLoader.source_to_code = lambda *a,**k: (_ for _ in ()).throw(AssertionError('cache miss')); "
-            f"sys.path.insert(0, {str(source.parent)!r}); import demo; print(demo.VALUE)",
-        ]
-        result = _COMMANDS.run(
-            command,
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == "1"
-    elif fault == "mutated-source":
-        with pytest.raises(ValueError) as error:
-            admit()
-        assert str(error.value) == (
-            f"Python capture custody changed since identity capture: {source}"
-        )
-    elif fault != "grouped" and not (fault == "runtime-changed" and not trusted):
-        with pytest.raises(PythonEnvironmentIdentityError):
-            admit()
-    if derivations is not None:
-        derivations.close()
-        with pytest.raises(PythonEnvironmentIdentityError, match="revoked"):
-            derivations.matches(source.read_bytes(), str(source), 0, cache.read_bytes())
+    assert adverse.returncode == 0, adverse.stderr
+    assert json.loads(adverse.stdout)[:2] == [99, False]
+    assert not list(prefix.iterdir())
+    assert adjacent.is_file()
 
 
-@pytest.mark.parametrize("failure", [None, "producer", "receiver"])
-def test_composite_bytecode_publication_closes_fresh_capture_and_producer_fences(
-    tmp_path, monkeypatch, failure
-):
-    events = []
-    contexts = []
-    proofs = []
-    fresh = {"fresh": "independent final payload"}
-
-    class Context:
-        def __init__(self, *, hash_workers):
-            assert hash_workers == 2
-            self.role = "producer" if not contexts else "receiver"
-            contexts.append(self)
-
-        def __enter__(self):
-            events.append((self.role, "open"))
-            return self
-
-        def verify(self):
-            events.append((self.role, "verify"))
-            if self.role == failure:
-                raise PythonEnvironmentIdentityError("independent fence changed")
-
-        def __exit__(self, *args):
-            events.append((self.role, "close"))
-
-    def capture(root, *, capture_context, derivations, **kwargs):
-        assert root == tmp_path
-        assert kwargs["admitted_external_roots"] == (tmp_path / "reader",)
-        proofs.append(derivations)
-        events.append((capture_context.role, "capture"))
-        if capture_context.role == "producer":
-            assert kwargs["publish_bytecode"] is True
-            return {"stale": "must never escape"}
-        assert "publish_bytecode" not in kwargs
-        return fresh
-
-    monkeypatch.setattr(environment, "PythonFileCaptureContext", Context)
-    monkeypatch.setattr(environment, "_capture_current_python_environment", capture)
-    if failure is None:
-        assert (
-            environment.publish_current_python_environment(
-                tmp_path, admitted_external_roots=(tmp_path / "reader",), hash_workers=2
-            )
-            is fresh
-        )
-    else:
-        with pytest.raises(PythonEnvironmentIdentityError, match="fence changed"):
-            environment.publish_current_python_environment(
-                tmp_path, admitted_external_roots=(tmp_path / "reader",), hash_workers=2
-            )
-    assert contexts[0] is not contexts[1]
-    assert proofs[0] is proofs[1]
-    assert events == [
-        ("producer", "open"),
-        ("producer", "capture"),
-        ("receiver", "open"),
-        ("receiver", "capture"),
-        ("producer", "verify"),
-        *([] if failure == "producer" else [("receiver", "verify")]),
-        ("receiver", "close"),
-        ("producer", "close"),
-    ]
-    with pytest.raises(PythonEnvironmentIdentityError, match="revoked"):
-        proofs[0].compile(b"pass\n", "unused.py", 0)
-
-
-def test_bytecode_derivation_proof_unmatched_input_recompiles_without_adoption(
-    tmp_path, monkeypatch
-):
-    source = tmp_path / "source.py"
-    source.write_bytes(b'"doc"\nassert False\n')
-    oracle = tmp_path / "oracle.pyc"
-    py_compile.compile(
-        str(source),
-        cfile=str(oracle),
-        doraise=True,
-        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
-        optimize=2,
+def test_retired_eager_bytecode_publication_mode_is_refused(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["identity", "--capture-environment", "image", "--publish-bytecode"],
     )
-    proof = environment._BytecodeDerivationProof()
-    proof.bind_runtime({"runtime_closure_sha256": "a" * 64}, publish=True)
-    proof.compile(source.read_bytes(), str(source), 0)
-    calls = []
-    derive = environment._ordinary_cache_bytes
-
-    def compile_cache(data, filename, optimization):
-        calls.append((filename, optimization))
-        return derive(data, filename, optimization)
-
-    monkeypatch.setattr(environment, "_ordinary_cache_bytes", compile_cache)
-    for _ in range(2):
-        assert proof.matches(source.read_bytes(), str(source), 2, oracle.read_bytes())
-    assert calls == [(str(source), 2), (str(source), 2)]
-    proof.close()
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+    assert "unrecognized arguments: --publish-bytecode" in capsys.readouterr().err
 
 
 def test_immutable_image_excludes_only_mutable_editable_source_bytes():

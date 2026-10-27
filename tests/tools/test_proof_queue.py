@@ -2736,7 +2736,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         "dependency_groups": list(groups),
         "dependency_group_requirements": list(requirements),
         "editable_binding": binding,
-        "bytecode_policy": image_schema.ORDINARY_BYTECODE_POLICY,
+        "bytecode_policy": image_schema.IMAGE_BYTECODE_POLICY,
         "lock_closure": closure,
         "python_runtime": runtime,
         "uv": {
@@ -2862,9 +2862,10 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
     provisional.write_text(
         json.dumps({"state": "provisioning", "custody": custody}), encoding="utf-8"
     )
-    # Compile through the real unpublished-image owner, then capture and attest
-    # the actual bytes. The full capture's runtime must retain recipe identity.
-    realized = publisher._publish_environment_bytecode(
+    # The source-only publisher captures the actual immutable installation.
+    # Its empty prefix is part of the exact tree; no eager cache writer exists.
+    (root / "bytecode").mkdir(exist_ok=True)
+    realized = publisher._probe_environment_identity(
         executable,
         root,
         external_root=reader_root,

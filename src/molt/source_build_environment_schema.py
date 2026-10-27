@@ -28,8 +28,8 @@ class SourceBuildEnvironmentError(ValueError):
     pass
 
 
-SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 7
-ORDINARY_BYTECODE_POLICY = "cpython-checked-hash-ordinary-012.v1"
+SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 8
+IMAGE_BYTECODE_POLICY = "cpython-source-only.v1"
 
 
 def source_build_environment_contract() -> dict[str, object]:
@@ -49,7 +49,7 @@ def source_build_environment_contract() -> dict[str, object]:
         "runtime": PYTHON_RUNTIME_IDENTITY_SCHEMA,
         "environment": PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
         "location": PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-        "bytecode": ORDINARY_BYTECODE_POLICY,
+        "bytecode": IMAGE_BYTECODE_POLICY,
     }
 
 
@@ -226,7 +226,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
         dependency_groups = custody.get("dependency_groups")
         if (
             custody.get("editable_binding") is not None
-            or custody.get("bytecode_policy") != ORDINARY_BYTECODE_POLICY
+            or custody.get("bytecode_policy") != IMAGE_BYTECODE_POLICY
             or not isinstance(dependency_groups, list)
             or len(dependency_groups) != 1
         ):

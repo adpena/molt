@@ -300,13 +300,11 @@ gates and pytest batches can overlap; Cargo gates share one target and serialize
 Every gate writes its
 streams to files while it runs (section 2.9, item 6).
 
-`CANONICAL_EXECUTION_ENV` forbids bytecode writes so a gate cannot change the
-checkout's import topology, so every gate compiled `tools/`, `src/molt` and the
-stdlib from source. Integrate keeps that canonical environment for the proof
-queue and gives its gates the DX pycache prefix (`molt.dx.scratch_dir`,
-`"pycache"`) with writes allowed. Bytecode stays outside the checkout. CPython
-validates each cached module by source mtime and size; an exclusive clean
-checkout changes only between gate runs, through Git writes with new mtimes.
+The original executor used a writable external bytecode prefix. Its historical
+measurements below include that policy. Current managed images instead use the
+source-only policy in [Managed Python images](#managed-python-images); every
+Python launch selects its immutable empty read prefix and disables writes before
+site startup. The historical writable-cache policy is retired.
 
 `structural_audit` routes its six per-file probes through scan records: debt
 markers, Python and Rust stub surfaces, both compatibility inventories (keyed by
@@ -1822,3 +1820,36 @@ the perf arc depends on FACT-D to attribute regressions to passes.
 ---
 
 *Design only / executable plan. Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>*
+
+
+## Managed Python images
+
+Managed images compile source on import rather than publishing caches for every
+installed and standard-library module at optimization levels 0, 1 and 2. The
+source-build address includes schema v8 and `cpython-source-only.v1`; old image
+addresses and the eager-publication probe API are retired together. The existing
+publisher creates the empty physical cache prefix under its address lock, then
+performs one independent read-only capture. No generated executable caches means
+there is no producer/receiver compilation roundtrip or derivation-proof registry.
+The same complete byte inventory and final membership/generation fences remain.
+Generic borrowed images retain ordinary, rewritten, sourceless and inert-cache
+validation; source-only selection never grants them an exemption.
+
+This uses [CPython's explicit cache-prefix and no-write startup options](https://docs.python.org/3/using/cmdline.html)
+and the default lazy-compilation policy described by
+[uv's bytecode setting](https://docs.astral.sh/uv/reference/settings/#compile-bytecode).
+Eager compilation can improve repeated import latency; it is counterproductive
+when every launch independently regenerates all three variants before importing
+only a small subset. Managed uv sync explicitly disables bytecode generation even
+when ambient configuration requests it. Child commands apply the policy as argv:
+`-I` ignores inherited Python environment variables before site startup.
+
+The cost model is one installation capture, then O(captured bytes and filesystem
+members) per admission plus compilation of modules actually imported by that
+command. It removes O(all Python source bytes times three optimization variants)
+compilation, cache-file hashing, serialized cache nodes and cache storage. Source
+and native-byte hashing are still a linear startup floor. The accepted trade is
+additional per-process compilation for imported modules, measured against the
+existing cached reader before landing. It adds no cache server, persistent trust,
+metadata-only shortcut or emitted-program overhead. Full release acceptance
+remains separate from developer-loop measurements.

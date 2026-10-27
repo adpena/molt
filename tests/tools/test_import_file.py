@@ -15,6 +15,7 @@ import pytest
 
 from tests.process_guard_common import run_guarded_test_process
 from tests.module_isolation import forget_module
+from molt.python_interpreter import readonly_python_command
 from tools.import_file import (
     bind_repository_imports,
     load_module_from_path,
@@ -693,12 +694,21 @@ def test_binding_a_by_path_tool_drops_tools_directories_from_sys_path(
         "from tools.import_file import bind_repository_imports\n"
         "bind_repository_imports(script)\n"
         "import profile\n"
+        "assert sys.dont_write_bytecode\n"
+        "assert Path(sys.pycache_prefix) == Path(sys.prefix) / 'bytecode'\n"
         "print(profile.__file__)\n"
         "print(any(Path(p or '.').resolve().is_relative_to(script.parent)"
         " for p in sys.path))\n"
     )
     result = run_guarded_test_process(
-        [sys.executable, "-I", "-c", code, str(script)],
+        [
+            *readonly_python_command(
+                (sys.executable, "-I"), environment_root=Path(sys.prefix)
+            ),
+            "-c",
+            code,
+            str(script),
+        ],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -778,7 +788,13 @@ def test_repository_entrypoint_launches_outside_checkout(
     tmp_path: Path, relative: str
 ) -> None:
     result = run_guarded_test_process(
-        [sys.executable, "-I", str(ROOT / relative), "--help"],
+        [
+            *readonly_python_command(
+                (sys.executable, "-I"), environment_root=Path(sys.prefix)
+            ),
+            str(ROOT / relative),
+            "--help",
+        ],
         cwd=tmp_path,
         capture_output=True,
         text=True,
