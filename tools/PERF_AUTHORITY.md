@@ -210,6 +210,21 @@ same interpreter's output. These are bounded compiler-latency observations,
 not a runtime speedup, cross-platform qualification, E2 acceptance, or proof of
 the 100 ms no-change and one-second edit targets. HF-250 remains open.
 
+Consumed-source records now remove the next redundant compile after that exact
+body edit. Scoped read receipts bind actual immutable source bytes to each
+recording, and checksum rows verify them on every replay, including equal-token
+and aged inputs. Weak custody/audit reads and namespace generations retain the
+conservative racy policy. The generated backend IR namespace is projected through
+its producer's single root authority, while explicit source facts inside it stay
+inputs. On the same retained native-dev workload, the immediate post-edit
+unchanged build is 321 ms instead of 2.334 s; all 20 unchanged observations hit,
+with p50 314 ms, nearest-rank p95 333 ms and maximum 341 ms. This has a measured
+cost: the earlier steady p50 was 281 ms, and the body compile is 2.978 s against
+the prior 2.541 s. The compiler-source prime costs 6.378 s separately. The binary
+matches CPython and its previous size/digest. This proves avoided repeated work;
+it does not prove faster edited compilation. No cross-platform/WASM result or
+world-class budget is claimed, and HF-250 stays open.
+
 The shared `regalloc2` move planner uses one maintained source for native
 Cranelift and the Wasmtime host (pin and invariants:
 [`MOLT_PATCHES.md`](../vendor/rust/regalloc2/MOLT_PATCHES.md)). A captured

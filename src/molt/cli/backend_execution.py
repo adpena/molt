@@ -48,10 +48,10 @@ from molt.backend_executable_names import (
 from molt.build_state_layout import build_state_root
 from molt.compiler_distribution import installed_compiler
 from molt.dx import (
+    backend_ir_lease_dir,
     cargo_target_dir_for_artifact_root,
     configured_artifact_root,
     project_cargo_target_base,
-    scratch_dir,
     session_targets_dir,
 )
 from molt.exact_json import canonical_json_sha256
@@ -957,7 +957,7 @@ def _write_backend_ir_lease(
 
     The lease ships the bodies at ``shipped``; ``None`` ships every body.
     """
-    lease_dir = scratch_dir(project_root, "backend-ir-leases")
+    lease_dir = backend_ir_lease_dir(project_root)
     lease_dir.mkdir(parents=True, exist_ok=True)
     lease_path = lease_dir / f"ir-{os.getpid()}-{uuid.uuid4().hex}.msgpack"
     handle = lease_path.open("xb")

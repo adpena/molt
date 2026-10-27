@@ -12,6 +12,190 @@ from molt.cli.python_import_resolution import LocalPythonModuleResolver
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 
 
+def _cached_snapshot_text(snapshot):
+    return snapshot.text
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_plain_fork_reports_inherited_cached_source_bytes(tmp_path, changed):
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    from molt import build_record
+
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("plain fork is unavailable on this host")
+    path = tmp_path / "source.py"
+    path.write_bytes(b"value = 1\n")
+    cached = PythonSourceSnapshot.capture(path)
+    assert cached.text == "value = 1\n"
+    if changed:
+        path.write_bytes(b"value = 2\n")
+    with build_record.recording(tmp_path / "records") as ledger:
+        assert PythonSourceSnapshot.capture(path).text == (
+            "value = 2\n" if changed else "value = 1\n"
+        )
+        # Deliberately no worker initializer: the established fork contract
+        # automatically logs child facts into the parent's recording.
+        with ProcessPoolExecutor(
+            max_workers=1, mp_context=multiprocessing.get_context("fork")
+        ) as pool:
+            assert (
+                pool.submit(_cached_snapshot_text, cached).result(10) == "value = 1\n"
+            )
+    if changed:
+        assert any(
+            "file bytes changed" in reason and str(path) in reason
+            for reason in ledger.refusals
+        ), "child A must not disappear behind the parent's B capture"
+    else:
+        assert not ledger.refusals, "a matching plain-fork source is admissible"
+
+
+@pytest.mark.parametrize("access", ["text", "tree", "sha256", "ast_digest"])
+def test_cached_snapshot_value_is_reported_in_each_recording(tmp_path, access):
+    from molt import build_record
+
+    path = tmp_path / "source.py"
+    original, edited = b"value = 1\n", b"value = 2\n"
+    path.write_bytes(original)
+    cached = PythonSourceSnapshot.capture(path)
+    first = getattr(cached, access)
+    path.write_bytes(edited)
+    with build_record.recording(tmp_path / "records") as ledger:
+        assert getattr(cached, access) == first
+        assert PythonSourceSnapshot.capture(path).content == edited
+    assert ledger.refusals, "a cached A and freshly consumed B cannot become just B"
+
+
+def test_resolution_cache_keeps_consumed_byte_generation(tmp_path):
+    from molt import build_record
+    from molt.cli.module_resolution import _ModuleResolutionCache
+
+    path = tmp_path / "source.py"
+    path.write_bytes(b"value = 1\n")
+    cache = _ModuleResolutionCache()
+    assert cache.read_module_source(path) == "value = 1\n"
+    path.write_bytes(b"value = 2\n")
+    with build_record.recording(tmp_path / "records") as ledger:
+        assert cache.read_module_source(path) == "value = 1\n"
+        assert PythonSourceSnapshot.capture(path).text == "value = 2\n"
+    assert ledger.refusals
+
+
+def test_consumed_snapshot_does_not_become_a_global_retained_owner(tmp_path):
+    import gc
+    import weakref
+    from molt import build_record
+
+    path = tmp_path / "source.py"
+    path.write_bytes(b"value = 1\n")
+    with build_record.recording(tmp_path / "records") as ledger:
+        snapshot = PythonSourceSnapshot.capture(path)
+        assert snapshot.text == "value = 1\n"
+        assert snapshot.tree.body
+        reference = weakref.ref(snapshot)
+        del snapshot
+        gc.collect()
+        assert reference() is None, (
+            "temporary source and AST storage must be releasable"
+        )
+    assert str(path) in ledger.files
+
+
+def test_completed_capture_cannot_acknowledge_a_different_recording(
+    tmp_path, monkeypatch
+):
+    from molt import build_record, input_report
+    from molt.cli import module_source
+    from molt.process_birth import current_process_started_ns
+
+    path = tmp_path / "source.py"
+    path.write_bytes(b"value = 1\n")
+    log_dir = tmp_path / "next-logs"
+    log_dir.mkdir()
+    started = current_process_started_ns()
+    assert started is not None
+    next_ledger = build_record.InputLedger(started)
+    capture = module_source._read_source_input
+
+    def switch_after_completed_read(*args):
+        value = capture(*args)
+        input_report.remove_sink()
+        input_report.install_sink(next_ledger, str(log_dir))
+        return value
+
+    monkeypatch.setattr(
+        module_source, "_read_source_input", switch_after_completed_read
+    )
+    with build_record.recording(tmp_path / "records"):
+        snapshot = PythonSourceSnapshot.capture(path)
+        assert snapshot.text == "value = 1\n"
+        assert str(path) in next_ledger.files
+        assert (
+            next_ledger.files[str(path)].sha256
+            == hashlib.sha256(snapshot.content).hexdigest()
+        )
+
+
+def test_unavailable_record_metadata_does_not_prevent_source_compilation(
+    tmp_path, monkeypatch
+):
+    from molt import build_record, input_report
+
+    path = tmp_path / "source.py"
+    path.write_bytes(b"value = 1\n")
+    token = input_report.stat_token
+
+    def unavailable_source_token(subject, metadata=None):
+        return None if Path(subject) == path else token(subject, metadata)
+
+    monkeypatch.setattr(input_report, "stat_token", unavailable_source_token)
+    with build_record.recording(tmp_path / "records") as ledger:
+        snapshot = PythonSourceSnapshot.capture(path)
+        assert snapshot.text == "value = 1\n"
+        assert snapshot.tree.body[0].value.value == 1
+    assert ledger.refusals
+
+
+def test_receipt_on_another_thread_cannot_cover_a_new_recording(tmp_path):
+    import threading
+    from molt import build_record, input_report
+
+    path = tmp_path / "source.py"
+    path.write_bytes(b"value = 1\n")
+    entered, proceed = threading.Event(), threading.Event()
+    failures = []
+
+    def reader():
+        try:
+            with input_report.capture_read(path) as receipt:
+                entered.set()
+                assert proceed.wait(10)
+                assert path.read_bytes() == b"value = 1\n"
+                receipt.opened()
+        except BaseException as error:
+            failures.append(error)
+
+    thread = threading.Thread(target=reader)
+    try:
+        with build_record.recording(tmp_path / "old") as old:
+            thread.start()
+            assert entered.wait(10)
+        with build_record.recording(tmp_path / "new") as new:
+            assert PythonSourceSnapshot.capture(path).content == b"value = 1\n"
+            proceed.set()
+            thread.join(10)
+            assert not thread.is_alive()
+        assert not failures
+        assert old.pending_reads()
+        assert ("file", str(path)) in new.observed
+        assert new.refusals
+    finally:
+        proceed.set()
+        if thread.ident is not None:
+            thread.join(10)
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [

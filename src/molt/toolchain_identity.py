@@ -460,10 +460,14 @@ def _stable_file_content(
 _DIGEST_CHUNK_BYTES = 256 * 1024
 
 
-def _captured_file_chunks(
-    stream: BinaryIO, *, size: int, chunk_bytes: int
+def iter_captured_file_chunks(
+    stream: BinaryIO, *, size: int, chunk_bytes: int = _DIGEST_CHUNK_BYTES
 ) -> Iterator[bytes]:
     """Consume exactly one admitted extent, probing one byte for growth."""
+    if type(size) is not int or size < 0:
+        raise ValueError("captured file size must be nonnegative")
+    if type(chunk_bytes) is not int or chunk_bytes <= 0:
+        raise ValueError("stable file chunk size must be a positive integer")
     consumed = 0
     while True:
         chunk = stream.read(min(chunk_bytes, size - consumed + 1))
@@ -491,9 +495,7 @@ def iter_stable_regular_file_chunks(
     its owner still checks pathname, handle and change-time identity on exit.
     No over-extent chunk reaches the consumer, including a staging destination.
     """
-    if type(chunk_bytes) is not int or chunk_bytes <= 0:
-        raise ValueError("stable file chunk size must be a positive integer")
-    yield from _captured_file_chunks(
+    yield from iter_captured_file_chunks(
         opened.stream, size=opened.stat.st_size, chunk_bytes=chunk_bytes
     )
 
@@ -501,7 +503,7 @@ def iter_stable_regular_file_chunks(
 def _sha256_stream(stream: BinaryIO, *, max_bytes: int) -> str:
     """Hash exactly the captured file size using the shared finite traversal."""
     digest = hashlib.sha256()
-    for chunk in _captured_file_chunks(
+    for chunk in iter_captured_file_chunks(
         stream, size=max_bytes, chunk_bytes=_DIGEST_CHUNK_BYTES
     ):
         digest.update(chunk)
