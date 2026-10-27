@@ -172,12 +172,31 @@ not installed-user compile latency or E2 performance acceptance.
 ## Finding the limiter
 
 Development-loop latency is always P0: every faster edit, build, diagnosis and
-proof compounds across subsequent work. Keep the existing build phase diagnostics
-on during development, profile the current limiter, and compare the same unchanged
+proof compounds across subsequent work. Use the existing build phase diagnostics
+to attribute the current limiter, and compare the same unchanged
 or edited workload before and after each load-bearing change. Use
 `tools/dx_build_timer.py` for build-loop measurements and
 `MOLT_CLI_PROFILE` for attribution; keep instrumented timings separate from
-uninstrumented latency. Classify a new failure before repeating an expensive proof.
+uninstrumented latency. The timer currently requests JSON and diagnostics, which
+disable the native build-record cutoff; ordinary CLI latency requires a separate
+uninstrumented invocation until that timer contract is repaired. Classify a new
+failure before repeating an expensive proof.
+
+A bounded macOS arm64/CPython 3.12.15 observation of native `dev` builds of
+`bench_calls.py`, in the same retained project/cache/output, found metadata-only
+import-root probes reporting shared parent-directory contents. That false input
+refused every record under unrelated scratch churn: three unchanged builds took
+2.350–2.362 s. Reporting the exact positive lookup instead restores reuse.
+Twenty subsequent ordinary CLI observations on the matched source have p50
+281 ms and nearest-rank p95 290 ms; 19 explicitly report unchanged inputs.
+Restoring that source immediately before the 2.599 s prime triggered the fixed
+two-second racy-window refusal. The first observation therefore rebuilt in
+2.327 s and remains in those statistics. A real function-body edit rebuilt in
+2.541 s, the next unchanged build took 2.334 s after the same racy refusal,
+and the following cutoff took 283 ms. Original and edited executables match the
+same interpreter's output. These are bounded compiler-latency observations,
+not a runtime speedup, cross-platform qualification, E2 acceptance, or proof of
+the 100 ms no-change and one-second edit targets. HF-250 remains open.
 
 The shared `regalloc2` move planner uses one maintained source for native
 Cranelift and the Wasmtime host (pin and invariants:

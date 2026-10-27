@@ -163,6 +163,25 @@ conflict:
   external owner establishes process-tree closure; no age-based reclaimer or
   alternate scratch lifecycle is introduced.
 
+**Import lookup scope.** A successful `PythonImportTopology.probe` consumes the
+selected path's resolved target and file type. Its existing exact probe report
+captures those facts; it does not consume the other entries in the parent.
+Internal directory observations and operation-local validation remain intact.
+An actual enumeration reports its directory before reading entries. A negative
+probe retains the nearest existing directory generation, including missing
+ancestors and `ENOTDIR`, so a removed input subtree cannot grant a reusable
+record. This follows Skyframe's separation of file lookup and directory listing
+dependencies rather than excluding a shared temporary or user directory.
+
+Positive metadata-only probes no longer add a parent stat/report or worker-log
+entry. Listings retain one report per captured enumeration; negative lookups
+retain ancestor traversal and generation reporting. No new cache, process,
+serialization protocol, lock or emitted-program work is added. Actual record
+reuse controls distinguish unrelated parent churn from negative/listing
+generations, changed entry types and retargeted symlinks. The native macOS arm64
+latency observation is documented in [PERF_AUTHORITY.md](../../tools/PERF_AUTHORITY.md);
+it does not qualify other hosts, WASM, or the remaining racy-window policy.
+
 **Captured inputs and isolated Python.** Cargo file custody reports the existing
 handle-bound token and digest, including lexical and resolved tool names. An
 indirect name also records its resolution: identical bytes at a different target
