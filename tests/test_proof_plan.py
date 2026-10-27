@@ -573,6 +573,35 @@ def test_local_pytest_targets_project_one_command_per_rule() -> None:
             },
             "exactly one",
         ),
+        (
+            {"all": False, "targets": ["tests/test_proof_plan.py"]},
+            "literal boolean true",
+        ),
+        ({"all": 1, "targets": ["tests/test_proof_plan.py"]}, "literal boolean true"),
+        (
+            {"all": "true", "targets": ["tests/test_proof_plan.py"]},
+            "literal boolean true",
+        ),
+        (
+            {"all": None, "targets": ["tests/test_proof_plan.py"]},
+            "literal boolean true",
+        ),
+        (
+            {"all": True, "k": "a", "targets": ["tests/test_proof_plan.py"]},
+            "exactly one",
+        ),
+        (
+            {"all": True, "m": "slow", "targets": ["tests/test_proof_plan.py"]},
+            "exactly one",
+        ),
+        (
+            {"all": True, "typo": True, "targets": ["tests/test_proof_plan.py"]},
+            "exactly one",
+        ),
+        ({"all": True, "targets": []}, "non-empty"),
+        ({"k": "selected", "targets": []}, "non-empty"),
+        ({"m": "slow", "targets": []}, "non-empty"),
+        ({"all": True}, "must be a list of test paths"),
         ({"k": " ", "targets": ["tests/test_proof_plan.py"]}, "non-empty"),
         ({"m": "slow", "targets": ["-n 4"]}, "must be a tests/ path"),
         ({"m": "slow"}, "must be a list of test paths"),
@@ -595,6 +624,7 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
     )
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets", "toolchains"}
+        selected = [] if key == "all" else [f"-{key}", entry[key]]
         command, tools = commands[f"local.{rule['name']}.pytest-select-{index}"]
         assert shlex.split(command) == [
             "python",
@@ -604,8 +634,7 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
             "-n",
             "auto",
             "--molt-worker-memory-gb=2.5",
-            f"-{key}",
-            entry[key],
+            *selected,
             *entry["targets"],
         ]
         assert tools == tuple(entry.get("toolchains", rule["toolchains"]))
@@ -666,6 +695,75 @@ def test_local_selector_projection_preserves_command_and_owned_prerequisites() -
     assert commands["local.fixture.pytest-select-1"] == (
         prefix + " -m compiled tests/test_proof_plan.py",
         ("python", "cargo"),
+    )
+
+
+def test_explicit_unfiltered_pytest_cohort_keeps_full_scope_and_cargo_custody():
+    from tools import molt_dev_policy
+
+    target = "tests/test_proof_plan.py"
+    rule = {
+        "name": "unfiltered",
+        "globs": [target],
+        "gates": [],
+        "pytest": [],
+        "toolchains": ["python"],
+        "pytest_select": [
+            {"all": True, "targets": [target], "toolchains": ["python", "uv", "cargo"]}
+        ],
+    }
+    assert (
+        proof_plan.local_pytest_select_errors(
+            rule["name"],
+            rule["pytest_select"],
+            toolchain_names={policy.name for policy in PLAN.toolchain_policies},
+        )
+        == []
+    )
+    (selection,) = proof_plan.local_pytest_selections(rule)
+    assert selection.select == ()
+    assert selection.targets == (target,)
+    assert selection.toolchains == ("python", "uv", "cargo")
+    command, declared = proof_plan.local_gate_commands(
+        {"rule": [rule]},
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
+    )["local.unfiltered.pytest-select-0"]
+    assert shlex.split(command) == [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "--molt-worker-memory-gb=2.5",
+        target,
+    ]
+    assert declared == selection.toolchains
+    assert {"python", "uv", "cargo", "rustc", "git"} <= set(
+        PLAN.toolchain_closure(declared)
+    )
+    # The committed driver consumes the same resolved cohort without a new executor.
+    gates, _matched = molt_dev_policy.GateConfig.load(PLAN.path).select([target])
+    (gate,) = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, tuple) and target in gate.command
+    ]
+    assert gate.pytest and not gate.precheck
+    assert gate.command[-1] == target
+    assert "-k" not in gate.command and "-m" not in gate.command[3:]
+    assert gate.toolchains == declared
+
+
+def test_empty_ordinary_pytest_rule_remains_noop():
+    rule = {"name": "no-tests", "gates": [], "pytest": [], "toolchains": ["python"]}
+    assert proof_plan.local_pytest_target_errors("no-tests", []) == []
+    assert (
+        proof_plan.local_gate_commands(
+            {"rule": [rule]},
+            memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
+        )
+        == {}
     )
 
 
@@ -9567,6 +9665,186 @@ def test_target_release_changes_select_extension_identity_consumers(changed):
     assert {
         "tests/cli/test_source_extension_set_registry.py",
         "tests/cli/test_source_extension_producer.py",
+    } <= selected
+
+
+def test_runtime_wasm_fixture_change_keeps_its_complete_custody_owner():
+    from tools import molt_dev_policy
+
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select(
+        ["tests/cli/test_runtime_wasm_single_compile.py"]
+    )
+    names = {rule.name for rule in matched}
+    assert "runtime-cargo-input-custody" in names
+    assert "frontend-ir-assembly" not in names
+    (owner,) = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, tuple)
+        and "tests/cli/test_runtime_wasm_single_compile.py" in gate.command
+    ]
+    assert owner.command[owner.command.index("-m", 3) + 1] == "not slow"
+    assert "cargo" in PLAN.toolchain_closure(owner.toolchains)
+
+
+def test_frontend_producer_keeps_runtime_routing_and_assembly_consumers():
+    from tools import molt_dev_policy
+
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select(
+        ["src/molt/cli/backend_pipeline.py"]
+    )
+    assert "frontend-ir-assembly" in {rule.name for rule in matched}
+    selected = {
+        arg
+        for gate in gates
+        for arg in (
+            shlex.split(gate.command) if isinstance(gate.command, str) else gate.command
+        )
+    }
+    assert {
+        "tests/cli/test_function_records.py",
+        "tests/cli/test_runtime_import_scan_custody.py",
+        "tests/cli/test_source_record_store.py",
+        "tests/cli/test_runtime_wasm_single_compile.py::test_app_path_default_routes_through_combined_ensure",
+        "tests/cli/test_runtime_wasm_single_compile.py::test_app_path_fails_closed_when_combined_authority_is_absent",
+        "tests/cli/test_runtime_wasm_single_compile.py::test_app_path_freestanding_also_requires_atomic_pair",
+        "tests/tools/test_check_ir_structure.py::test_source_runner_real_frontend_to_strict_verifier",
+        "tests/test_gpu_kernel_compiled.py",
+    } <= selected
+
+
+@pytest.mark.parametrize("producer", [False, True], ids=["fixture", "producer"])
+def test_benchmark_fixture_and_producer_have_distinct_proof_obligations(producer):
+    from tools import molt_dev_policy
+
+    path = (
+        "tools/native_link_benchmark.py"
+        if producer
+        else "tests/tools/test_native_link_benchmark.py"
+    )
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select([path])
+    names = {rule.name for rule in matched}
+    selected = {
+        arg
+        for gate in gates
+        if isinstance(gate.command, tuple)
+        for arg in gate.command
+        if arg.startswith("tests/")
+    }
+    assert "tests/tools/test_native_link_benchmark.py" in selected
+    extension_rules = {"source-extension-package-sets", "source-extension-proof-policy"}
+    if producer:
+        assert extension_rules <= names
+        assert {
+            "tests/cli/test_source_extension_producer.py",
+            "tests/cli/test_source_extension_invocation.py",
+            "tests/cli/test_source_extension_compiler_inputs.py",
+            "tests/cli/test_source_extension_link_inputs.py",
+            "tests/tools/test_source_extension_proof_family.py",
+            "tests/tools/test_target_derived_toolchains.py",
+            "tests/tools/test_proof_queue.py",
+        } <= selected
+    else:
+        assert "native-link-benchmark-tests" in names
+        assert not extension_rules & names
+        assert selected == {
+            "tests/tools/test_native_link_benchmark.py",
+            "tests/tools/test_import_file.py",
+        }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/molt/cli/native_toolchain_transfer.py",
+        "tools/nightly_runtime_bundle.py",
+        "tests/cli/test_native_toolchain_transfer.py",
+        "tests/tools/test_nightly_runtime_bundle.py",
+        "tests/cli/native_toolchain_test_support.py",
+    ],
+)
+def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
+    from tools import molt_dev_policy
+
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select([path])
+    names = {rule.name for rule in matched}
+    assert "native-toolchain-transfer" in names
+    assert "ci-wiring" not in names
+    selected = {
+        arg
+        for gate in gates
+        if isinstance(gate.command, tuple)
+        for arg in gate.command
+        if arg.startswith("tests/")
+    }
+    assert selected == {
+        "tests/cli/test_native_toolchain_transfer.py",
+        "tests/tools/test_nightly_runtime_bundle.py",
+        "tests/tools/test_nightly_prepare.py",
+        "tests/tools/test_import_file.py",
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/molt/cli/runtime_native_generation.py",
+        "src/molt/cli/native_link_manifest.py",
+        "src/molt/cli/backend_binary.py",
+        "src/molt/cli/backend_generation.py",
+        "src/molt/cli/runtime_fingerprints.py",
+        "src/molt/cli/static_archive_identity.py",
+        "src/molt/cli/cache_fingerprints.py",
+        "src/molt/cli/runtime_build_identity.py",
+        "src/molt/cli/cargo_environment_inputs.py",
+        "src/molt/cli/runtime_identity_schema.py",
+        "src/molt/cli/product_store.py",
+        "src/molt/artifact_publication.py",
+        "src/molt/exact_json.py",
+        "src/molt/ustar.py",
+        "tests/cli/backend_generation_test_support.py",
+        "tests/runtime_build_identity_helper.py",
+    ],
+)
+def test_native_transfer_shared_authorities_reach_transport_receivers(path):
+    from tools import molt_dev_policy
+
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select([path])
+    assert "native-toolchain-transfer" in {rule.name for rule in matched}
+    selected = {
+        arg for gate in gates if isinstance(gate.command, tuple) for arg in gate.command
+    }
+    assert {
+        "tests/cli/test_native_toolchain_transfer.py",
+        "tests/tools/test_nightly_runtime_bundle.py",
+        "tests/tools/test_nightly_prepare.py",
+    } <= selected
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/ci.yml",
+        "pyproject.toml",
+        "config/ci_resource_policy.toml",
+        "tools/nightly_prepare.py",
+        "tests/tools/test_nightly_prepare.py",
+    ],
+)
+def test_shared_ci_and_nightly_orchestration_keep_transfer_union(path):
+    from tools import molt_dev_policy
+
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select([path])
+    assert "ci-wiring" in {rule.name for rule in matched}
+    selected = {
+        arg for gate in gates if isinstance(gate.command, tuple) for arg in gate.command
+    }
+    assert {
+        "tests/test_ci_workflow_topology.py",
+        "tests/test_proof_plan.py",
+        "tests/cli/test_native_toolchain_transfer.py",
+        "tests/tools/test_nightly_runtime_bundle.py",
+        "tests/tools/test_nightly_prepare.py",
     } <= selected
 
 

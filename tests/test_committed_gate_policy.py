@@ -306,6 +306,84 @@ def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(source):
     }
 
 
+def test_proof_plan_test_leaf_runs_complete_file_without_production_consumers():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    target = "tests/test_proof_plan.py"
+    gates, matched = cfg.select([target])
+    names = {rule.name for rule in matched}
+    assert "proof-plan-tests" in names
+    assert (
+        not {
+            "ci-wiring",
+            "source-extension-proof-policy",
+            "source-extension-package-sets",
+        }
+        & names
+    )
+    assert _selected_pytest_targets(cfg, [target]) == {
+        target,
+        "tests/tools/test_import_file.py",
+    }
+    (cohort,) = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, tuple) and target in gate.command
+    ]
+    assert cohort.command[-1:] == (target,)
+    assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
+    assert cohort.toolchains == ("python", "uv", "cargo")
+    assert {gate.command for gate in gates} >= set(cfg.always)
+
+
+def test_combined_proof_plan_leaf_and_ci_share_one_complete_cargo_cohort():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    target = "tests/test_proof_plan.py"
+    gates, matched = cfg.select([target, ".github/workflows/ci.yml"])
+    assert {"proof-plan-tests", "ci-wiring"} <= {rule.name for rule in matched}
+    (cohort,) = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, tuple) and target in gate.command
+    ]
+    assert cohort.command[-1:] == (target,)
+    assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
+    assert cohort.toolchains == ("python", "uv", "cargo")
+    assert _selected_pytest_targets(cfg, [target, ".github/workflows/ci.yml"]) >= {
+        target,
+        "tests/test_ci_workflow_topology.py",
+        "tests/cli/test_native_toolchain_transfer.py",
+        "tests/tools/test_nightly_runtime_bundle.py",
+        "tests/tools/test_nightly_prepare.py",
+    }
+
+
+@pytest.mark.parametrize("producer", ["tools/proof_plan.py", "tools/proof_receipts.py"])
+def test_proof_plan_producers_keep_complete_cargo_and_extension_consumer_union(
+    producer,
+):
+    cfg = GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select([producer])
+    assert {"ci-wiring", "source-extension-proof-policy"} <= {
+        rule.name for rule in matched
+    }
+    (cohort,) = [
+        gate
+        for gate in gates
+        if isinstance(gate.command, tuple)
+        and "tests/test_proof_plan.py" in gate.command
+    ]
+    assert cohort.command[-1:] == ("tests/test_proof_plan.py",)
+    assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
+    assert cohort.toolchains == ("python", "uv", "cargo")
+    assert _selected_pytest_targets(cfg, [producer]) >= {
+        "tests/test_ci_workflow_topology.py",
+        "tests/cli/test_source_extension_link_inputs.py",
+        "tests/tools/test_source_extension_proof_family.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_proof_queue.py",
+    }
+
+
 def test_landing_pytest_preserves_each_actual_owning_envelope():
     cfg = GateConfig.load(COMMITTED_GATES)
     gates, _rules = cfg.select(
@@ -376,7 +454,6 @@ def _gate_args(gate):
         "tools/proof_plan.toml",
         "tools/proof_plan.py",
         "tools/proof_receipts.py",
-        "tests/test_proof_plan.py",
         "tools/proof_queue_pkg/command_admission.py",
         "tools/proof_queue_pkg/command_identity.py",
         "tools/proof_queue_pkg/execution_environment.py",

@@ -899,8 +899,9 @@ def plan_policy_errors(data: Mapping[str, Any]) -> list[str]:
 
 
 _LOCAL_PYTEST_PREFIX = ("python", "-m", "pytest", "-q")
-# The selection options a `pytest_select` entry may name, by its table key.
+# Filtered and explicit unfiltered cohorts share the same argv/prerequisite owner.
 _LOCAL_PYTEST_SELECTORS = {"k": "-k", "m": "-m"}
+_LOCAL_PYTEST_SELECTION_KEYS = frozenset((*_LOCAL_PYTEST_SELECTORS, "all"))
 
 
 def _pytest_target_parts(target: str) -> tuple[str, ...]:
@@ -1062,16 +1063,32 @@ class LocalPytestSelection:
     toolchains: tuple[str, ...]
 
 
+def _local_pytest_selection_key(entry: Mapping[str, Any]) -> str:
+    keys = set(entry) & _LOCAL_PYTEST_SELECTION_KEYS
+    unknown = set(entry) - _LOCAL_PYTEST_SELECTION_KEYS - {"targets", "toolchains"}
+    if len(keys) != 1 or unknown:
+        raise ValueError("must hold exactly one of k, m or all, and targets")
+    return next(iter(keys))
+
+
 def local_pytest_selections(
     rule: Mapping[str, Any],
 ) -> list[LocalPytestSelection]:
-    """Resolve each selector's prerequisites, inheriting its rule by default."""
+    """Resolve each bounded cohort's prerequisites and optional pytest filter."""
     selections = []
     for entry in rule.get("pytest_select", []):
-        (key,) = set(entry) & set(_LOCAL_PYTEST_SELECTORS)
+        key = _local_pytest_selection_key(entry)
+        if key == "all":
+            if entry[key] is not True:
+                raise ValueError("an unfiltered pytest cohort requires all=true")
+            select = ()
+        else:
+            select = (_LOCAL_PYTEST_SELECTORS[key], entry[key])
+        if not entry["targets"]:
+            raise ValueError("an explicit pytest cohort requires non-empty targets")
         selections.append(
             LocalPytestSelection(
-                (_LOCAL_PYTEST_SELECTORS[key], entry[key]),
+                select,
                 tuple(entry["targets"]),
                 tuple(entry.get("toolchains", rule.get("toolchains", []))),
             )
@@ -1086,7 +1103,7 @@ def local_pytest_select_errors(
     toolchain_names: Collection[str],
     root: Path = ROOT,
 ) -> list[str]:
-    """Each `pytest_select` entry names one selection and its test targets."""
+    """Each explicit cohort names one filter or all=true and bounded targets."""
     if not isinstance(entries, list):
         return [f"{name}: pytest_select must be a list of tables"]
     errors = []
@@ -1095,17 +1112,20 @@ def local_pytest_select_errors(
         if not isinstance(entry, dict):
             errors.append(f"{label} must be a table")
             continue
-        keys = set(entry) & set(_LOCAL_PYTEST_SELECTORS)
-        unknown = set(entry) - set(_LOCAL_PYTEST_SELECTORS) - {"targets", "toolchains"}
-        if len(keys) != 1 or unknown:
-            errors.append(f"{label} must hold exactly one of k or m, and targets")
+        try:
+            key = _local_pytest_selection_key(entry)
+        except ValueError as exc:
+            errors.append(f"{label} {exc}")
             continue
-        (key,) = keys
-        if not isinstance(entry[key], str) or not entry[key].strip():
+        if key == "all":
+            if entry[key] is not True:
+                errors.append(f"{label}.all must be the literal boolean true")
+        elif not isinstance(entry[key], str) or not entry[key].strip():
             errors.append(f"{label}.{key} must be a non-empty expression")
-        errors.extend(
-            local_pytest_target_errors(label, entry.get("targets"), root=root)
-        )
+        targets = entry.get("targets")
+        if isinstance(targets, list) and not targets:
+            errors.append(f"{label}.targets must be non-empty")
+        errors.extend(local_pytest_target_errors(label, targets, root=root))
         if "toolchains" in entry:
             tools = entry["toolchains"]
             if (
