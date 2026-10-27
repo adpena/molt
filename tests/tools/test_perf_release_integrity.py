@@ -1,5 +1,10 @@
 """Adversarial checks for canonical evidence acceptance (no benchmark builds)."""
 
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_workload,
+    measure_admitted_cell,
+)
+
 import copy
 from pathlib import Path
 import sys
@@ -15,6 +20,8 @@ def winning_cell():
     from tools import perf_schema
 
     return dict(
+        benchmark="tests/benchmarks/bench_fib.py",
+        workload=synthetic_workload(),
         build_ok=True,
         molt_ok=True,
         cpython_ok=True,
@@ -222,7 +229,9 @@ def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):
     monkeypatch.setattr(measure.bench, "prepare_molt_binary", build)
     script = tmp_path / "bench_probe.py"
     script.write_text("print(1)", encoding="utf-8")
-    measure.measure_cell(
+    measure_admitted_cell(
+        measure,
+        project_root=measure.REPO_ROOT,
         script_path=script,
         spec=measure.BackendSpec("native", "native", "native"),
         profile="release-fast",
@@ -590,7 +599,9 @@ def test_measure_cell_closes_actual_binary_owner_on_every_exit(
         try:
             raise unrelated
         except RuntimeError:
-            return measure.measure_cell(
+            return measure_admitted_cell(
+                measure,
+                project_root=measure.REPO_ROOT,
                 script_path=tmp_path / "bench_probe.py",
                 spec=measure.BackendSpec(target, target, target),
                 profile="release-fast",
@@ -659,7 +670,9 @@ def test_measure_cell_preserves_replaced_allocation_and_original_error(
 
     monkeypatch.setattr(measure, "_write_log", log)
     with pytest.raises(OSError) as caught:
-        measure.measure_cell(
+        measure_admitted_cell(
+            measure,
+            project_root=measure.REPO_ROOT,
             script_path=tmp_path / "bench_probe.py",
             spec=measure.BackendSpec("native", "native", "native"),
             profile="release-fast",
@@ -779,3 +792,21 @@ def test_schema_four_is_never_promoted_by_merge(tmp_path):
     doc["schema_version"] = 4
     rc, merged = _merge(tmp_path, [doc])
     assert rc == 3 and merged is None
+
+
+@pytest.mark.parametrize("mutation", ["missing", "changed", "argv"])
+def test_merge_refuses_unbound_or_conflicting_workload(tmp_path, mutation):
+    from tools import perf_schema
+
+    left = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
+    right = _merge_source("llvm", CANONICAL_PERF_BENCHMARKS[0])
+    cell = perf_schema.flatten_cells(right)[0]
+    if mutation == "missing":
+        cell.pop("workload")
+    elif mutation == "changed":
+        cell["workload"]["sources"][0]["sha256"] = "d" * 64
+    else:
+        cell["workload"]["run_args"] = ["different-input"]
+    rc, merged = _merge(tmp_path, [left, right])
+    assert rc == 3
+    assert merged is None

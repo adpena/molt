@@ -1,5 +1,7 @@
 """Hermetic coverage joins; these fixtures are not real performance evidence."""
 
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+
 import copy
 from pathlib import Path
 
@@ -34,14 +36,17 @@ def fixture_matrix():
             "runtime_profile": "wasm-release",
             "compiler_profile": "release",
             "benchmark": f"fixture_{n}.py",
+            "benchmark_sha256": "cc42155088fca5730758db72b2a5bca33112a941dfaa2d43098ec422ce4ea213",
         }
         for n in range(6)
     )
     return ReleaseMatrix("a" * 40, "b" * 64, ("semantic:fixture",), cells, ())
 
 
-def winning_cell():
+def winning_cell(benchmark="fixture_0.py"):
     return dict(
+        benchmark=benchmark,
+        workload=synthetic_workload(benchmark),
         build_ok=True,
         molt_ok=True,
         cpython_ok=True,
@@ -96,7 +101,7 @@ def fixture_receipts(matrix, count=3):
                                 "compiler_profile",
                             )
                         },
-                        measurement=winning_cell(),
+                        measurement=winning_cell(cell["benchmark"]),
                     )
                     for cell in shard_projection(matrix, index=index, count=count)
                 ],
@@ -113,6 +118,12 @@ def test_declared_matrix_preserves_semantic_floor_and_all_primary_workloads():
     assert set(matrix.semantic_ids) == {c.id for c in verified_subset_coordinates()}
     assert len(matrix.semantic_ids) == 3 * 6 * 3 * 2
     cells = matrix.performance_cells
+    import hashlib
+
+    assert (
+        cells[0]["benchmark_sha256"]
+        == hashlib.sha256((ROOT / cells[0]["benchmark"]).read_bytes()).hexdigest()
+    )
     assert {c["python"] for c in cells} == {"3.12", "3.13", "3.14"}
     assert len({(c["platform"], c["arch"]) for c in cells}) == 6
     assert {c["backend"] for c in cells} == {"native", "llvm", "wasm"}
@@ -415,4 +426,55 @@ def test_matrix_rejects_historical_missing_build_profile_binding():
         for p in performance_matrix_problems(
             matrix, shards, toolchain_identities=toolchains
         )
+    )
+
+
+def test_matrix_refuses_measurement_of_another_workload():
+    matrix = fixture_matrix()
+    shards, toolchains = fixture_receipts(matrix)
+    row = shards[0]["cells"][0]
+    row["measurement"]["workload"] = synthetic_workload("another.py")
+    problems = performance_matrix_problems(
+        matrix, shards, toolchain_identities=toolchains
+    )
+    assert any("workload entry differs" in problem for problem in problems)
+
+
+def test_matrix_refuses_conflicting_source_bytes_for_the_same_benchmark():
+    matrix = fixture_matrix()
+    cells = list(matrix.performance_cells)
+    cells[1] = {**cells[1], "benchmark": cells[0]["benchmark"]}
+    matrix = ReleaseMatrix(
+        matrix.source_sha,
+        matrix.authority_sha256,
+        matrix.semantic_ids,
+        tuple(cells),
+        matrix.blockers,
+    )
+    shards, toolchains = fixture_receipts(matrix)
+    row = next(
+        row
+        for shard in shards
+        for row in shard["cells"]
+        if row["coordinate"]["id"] == cells[1]["id"]
+    )
+    row["measurement"]["workload"]["sources"][0]["sha256"] = "e" * 64
+    problems = performance_matrix_problems(
+        matrix, shards, toolchain_identities=toolchains
+    )
+    assert any("conflicting workload identities" in problem for problem in problems)
+
+
+def test_matrix_refuses_uniformly_wrong_entry_bytes():
+    matrix = fixture_matrix()
+    shards, toolchains = fixture_receipts(matrix)
+    for shard in shards:
+        for row in shard["cells"]:
+            row["measurement"]["workload"]["sources"][0]["sha256"] = "e" * 64
+    problems = performance_matrix_problems(
+        matrix, shards, toolchain_identities=toolchains
+    )
+    assert any(
+        "entry digest differs from matrix source authority" in problem
+        for problem in problems
     )

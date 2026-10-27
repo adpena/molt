@@ -22,7 +22,8 @@ TOOLS_ROOT = Path(__file__).resolve().parent
 
 
 from tools.bench_evidence import (  # noqa: E402
-    comparable_build_profile_errors,
+    comparable_metric_errors,
+    workload_map_problems,
     metric_is_comparable,
 )
 
@@ -107,8 +108,11 @@ def _benchmark_map(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         raise SystemExit("invalid benchmark JSON: expected top-level 'benchmarks' dict")
     out: dict[str, dict[str, Any]] = {}
     for name, entry in benches.items():
-        if isinstance(name, str) and isinstance(entry, dict):
-            out[name] = entry
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            raise SystemExit(
+                "invalid benchmark JSON: benchmark names must be strings and cells must be objects"
+            )
+        out[name] = entry
     return out
 
 
@@ -168,14 +172,6 @@ def _compute_metric_diffs(
             and _is_number(new_raw)
         ):
             continue
-        if metric.startswith("molt_"):
-            errors = comparable_build_profile_errors(
-                {"benchmarks": {benchmark: new_bench[benchmark]}},
-                {"benchmarks": {benchmark: old_bench[benchmark]}},
-                metric=metric,
-            )
-            if errors:
-                raise ValueError("incompatible benchmark diff: " + "; ".join(errors))
         old_val = float(old_raw)
         new_val = float(new_raw)
         delta = new_val - old_val
@@ -191,6 +187,12 @@ def _compute_metric_diffs(
                 trend=_metric_trend(metric, old_val, new_val),
             )
         )
+    if rows:
+        errors = comparable_metric_errors(
+            {"benchmarks": new_bench}, {"benchmarks": old_bench}, metric=metric
+        )
+        if errors:
+            raise ValueError("incompatible benchmark diff: " + "; ".join(errors))
     return rows
 
 
@@ -327,6 +329,27 @@ def main() -> int:
     added = sorted(new_names - old_names)
     removed = sorted(old_names - new_names)
 
+    threshold_mode = any(
+        value is not None
+        for value in (
+            args.fail_regression_count,
+            args.fail_regression_pct,
+            args.fail_regression_abs,
+        )
+    )
+    if threshold_mode:
+        identity_errors = [
+            f"{role} {problem}"
+            for role, cells in (("current", new_bench), ("baseline", old_bench))
+            for problem in workload_map_problems(cells)
+        ]
+        if identity_errors:
+            print(
+                "Error: incompatible benchmark diff: " + "; ".join(identity_errors),
+                file=sys.stderr,
+            )
+            return 2
+
     available = _available_metrics(old_bench, new_bench)
     if args.metrics is None:
         metrics = available
@@ -358,6 +381,12 @@ def main() -> int:
         print("Removed benchmarks: " + ", ".join(f"`{name}`" for name in removed))
     if not metrics:
         print("No shared numeric metrics to diff.")
+        if threshold_mode:
+            print(
+                "Error: benchmark diff gate has no comparable benchmark pairs",
+                file=sys.stderr,
+            )
+            return 2
         return 0
 
     metric_summaries: list[dict[str, Any]] = []
@@ -418,6 +447,8 @@ def main() -> int:
         metric_summaries.append(_metric_summary_json(metric, rows, args.top))
 
     failure_reasons: list[str] = []
+    if threshold_mode and not any(summary["rows"] for summary in metric_summaries):
+        failure_reasons.append("no comparable benchmark pairs")
     if args.fail_regression_count is not None:
         if args.fail_regression_count < 0:
             raise SystemExit("--fail-regression-count must be >= 0")

@@ -13,6 +13,8 @@ of truth:
 
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
+
 import math
 import tomllib
 from pathlib import Path
@@ -178,6 +180,7 @@ def _canonical_scoreboard_doc(
     def cell_for(benchmark: str, backend: str) -> dict[str, object]:
         return {
             "benchmark": benchmark,
+            "workload": synthetic_workload(benchmark),
             "target": "native",
             "backend": backend,
             "profile": profile,

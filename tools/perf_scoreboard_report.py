@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import json
 import sys
 from pathlib import Path
@@ -43,16 +45,39 @@ def _validate_board_for_emit(doc: dict, *, context: str) -> None:
         raise ScoreboardSchemaError(context, problems)
 
 
-def _write_scoreboard_doc(path: Path, doc: dict, *, context: str) -> None:
-    _write_scoreboard_doc_atomic(path, doc, context=context)
+def _write_scoreboard_doc(
+    path: Path,
+    doc: dict,
+    *,
+    context: str,
+    validate_inputs: Callable[[], None] | None = None,
+) -> None:
+    _write_scoreboard_doc_atomic(
+        path,
+        doc,
+        context=context,
+        validate_inputs=validate_inputs,
+    )
 
 
-def _write_scoreboard_doc_atomic(path: Path, doc: dict, *, context: str) -> None:
+def _write_scoreboard_doc_atomic(
+    path: Path,
+    doc: dict,
+    *,
+    context: str,
+    validate_inputs: Callable[[], None] | None = None,
+) -> None:
     _validate_board_for_emit(doc, context=context)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    from molt.file_publication import atomic_write_bytes, durable_replace
+
+    def commit(staged: Path, destination: Path) -> None:
+        if validate_inputs is not None:
+            validate_inputs()
+        durable_replace(staged, destination)
+
+    atomic_write_bytes(
+        path, (json.dumps(doc, indent=2) + "\n").encode("utf-8"), replace=commit
+    )
 
 
 def _print_schema_error(exc: ScoreboardSchemaError) -> None:
@@ -406,11 +431,11 @@ def diff_against_baseline(
         old = prior_cells.get(key)
         if old is None:
             continue
-        from tools.perf_schema import cell_execution_hosts_comparable
+        from tools.perf_schema import cells_comparable
 
-        if not cell_execution_hosts_comparable(c, old):
+        if not cells_comparable(c, old):
             newly_red.append(
-                f"{key}: INCOMPARABLE execution host; no regression comparison"
+                f"{key}: INCOMPARABLE workload or execution host; no regression comparison"
             )
             continue
         new_ratio = c.get("warm_speedup")
@@ -641,9 +666,15 @@ def _checkpoint(
     pypy_version: str | None = None,
     codon_version: str | None = None,
     execution_host: dict | None = None,
+    validate_inputs: Callable[[], None] | None = None,
 ) -> None:
     from tools.perf_scoreboard import build_scoreboard_doc
 
+    checkpoint_provenance = dict(provenance or {})
+    checkpoint_provenance.update(
+        authoritative=False,
+        authoritative_reason="partial checkpoint; source custody remains open",
+    )
     doc = build_scoreboard_doc(
         cells,
         benchmarks_run=benchmarks_run,
@@ -651,10 +682,15 @@ def _checkpoint(
         cpython_version=cpython_version,
         samples=samples,
         warmup=warmup,
-        provenance=provenance,
+        provenance=checkpoint_provenance,
         cpython_identity=cpython_identity,
         pypy_version=pypy_version,
         codon_version=codon_version,
         execution_host=execution_host,
     )
-    _write_scoreboard_doc_atomic(path, doc, context=f"checkpoint {path}")
+    _write_scoreboard_doc_atomic(
+        path,
+        doc,
+        context=f"checkpoint {path}",
+        validate_inputs=validate_inputs,
+    )

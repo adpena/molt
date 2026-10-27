@@ -163,12 +163,14 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         output_path: Path,
         _script: str,
         *,
+        molt_args,
         tty: bool,
         log,
         limits=None,
         use_molt_build_cache=True,
     ) -> float:
         del tty, log, limits, use_molt_build_cache
+        assert molt_args == []
         captured_env.update(env)
         _write_linked_build(output_path)
         return 0.01
@@ -177,6 +179,7 @@ def test_prepare_wasm_binary_sets_linked_table_base(
 
     wasm = bench_wasm.prepare_wasm_binary(
         "tests/benchmarks/bench_sum.py",
+        molt_args=[],
         tty=False,
         log=None,
         keep_temp=keep_temp,
@@ -213,6 +216,7 @@ def test_build_wasm_output_reuses_molt_build_cache_by_default(
             {},
             output_path,
             "tests/benchmarks/bench_sum.py",
+            molt_args=[],
             tty=False,
             log=None,
         )
@@ -247,6 +251,7 @@ def test_build_wasm_output_can_disable_molt_build_cache(
             {},
             output_path,
             "tests/benchmarks/bench_sum.py",
+            molt_args=[],
             tty=False,
             log=None,
             use_molt_build_cache=False,

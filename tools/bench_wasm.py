@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -28,7 +30,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
 
-from tools import bench_suites  # noqa: E402
+from tools import bench, bench_suites  # noqa: E402
+from tools.bench_evidence import AdmittedBenchmarkWorkload, admit_benchmark_workload  # noqa: E402
+from tools.bench_reporting import write_json  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
@@ -540,6 +544,7 @@ def _build_wasm_output(
     output_path: Path,
     script: str,
     *,
+    molt_args: Sequence[str],
     tty: bool,
     log: TextIO | None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
@@ -548,7 +553,6 @@ def _build_wasm_output(
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
     build_timeout_s = _parse_env_float("MOLT_WASM_BUILD_TIMEOUT_SEC", default=90.0)
-    extra_args = molt_args_for_benchmark(script)
     build_cmd = [
         *python_cmd,
         "-m",
@@ -561,7 +565,7 @@ def _build_wasm_output(
         "--require-linked",
         "--out-dir",
         str(output_path.parent),
-        *extra_args,
+        *molt_args,
         script,
     ]
     start = time.perf_counter()
@@ -614,6 +618,7 @@ def _build_wasm_output(
 def prepare_wasm_binary(
     script: str,
     *,
+    molt_args: Sequence[str],
     tty: bool,
     log: TextIO | None,
     keep_temp: bool,
@@ -648,6 +653,7 @@ def prepare_wasm_binary(
         env,
         output_path,
         script,
+        molt_args=molt_args,
         tty=tty,
         log=log,
         limits=resolved_limits,
@@ -960,8 +966,11 @@ def collect_samples(
     *,
     log: TextIO | None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+    validate_inputs: Callable[[], None] | None = None,
 ) -> tuple[list[float], bool, _SampleResult | None, list[dict[str, object]]]:
     for _ in range(warmup):
+        if validate_inputs is not None:
+            validate_inputs()
         result = measure_wasm_run(
             wasm.run_env,
             runner_cmd,
@@ -969,12 +978,16 @@ def collect_samples(
             log=log,
             limits=limits,
         )
+        if validate_inputs is not None:
+            validate_inputs()
         if result.elapsed_s is None:
             return [], False, result, []
     timings: list[float] = []
     profile_samples: list[dict[str, object]] = []
     first_failure: _SampleResult | None = None
     for sample_index in range(samples):
+        if validate_inputs is not None:
+            validate_inputs()
         result = measure_wasm_run(
             wasm.run_env,
             runner_cmd,
@@ -982,6 +995,8 @@ def collect_samples(
             log=log,
             limits=limits,
         )
+        if validate_inputs is not None:
+            validate_inputs()
         if result.elapsed_s is None:
             if first_failure is None:
                 first_failure = result
@@ -1124,6 +1139,7 @@ def bench_results(
     warmup: int,
     super_run: bool,
     *,
+    workloads: Mapping[str, AdmittedBenchmarkWorkload],
     runner_cmd: list[str],
     runner_name: str,
     control_runner_cmd: list[str] | None,
@@ -1144,7 +1160,15 @@ def bench_results(
         limits=limits,
     ):
         for script in benchmarks:
-            name = Path(script).stem
+            workload = workloads[script]
+            if Path(script).expanduser().absolute() != workload.script:
+                raise ValueError("benchmark source differs from admitted workload")
+            workload.verify()
+            if workload.record["run_args"]:
+                raise ValueError(
+                    "WASM benchmark execution does not support guest run arguments"
+                )
+            name = workload.record["entry"]
             wasm_time: float | None = None
             wasm_size = 0.0
             wasm_build = 0.0
@@ -1157,6 +1181,7 @@ def bench_results(
             try:
                 wasm_binary = prepare_wasm_binary(
                     script,
+                    molt_args=workload.record["molt_args"],
                     tty=tty,
                     log=log,
                     keep_temp=keep_temp,
@@ -1170,7 +1195,9 @@ def bench_results(
                 )
                 wasm_binary = None
             if wasm_binary is not None:
+                primary: BaseException | None = None
                 try:
+                    workload.verify()
                     wasm_samples, ok, failed_sample, wasm_profile_samples = (
                         collect_samples(
                             wasm_binary,
@@ -1178,6 +1205,7 @@ def bench_results(
                             warmup,
                             runner_cmd,
                             runner_name,
+                            validate_inputs=workload.verify,
                             log=log,
                             limits=limits,
                         )
@@ -1191,6 +1219,7 @@ def bench_results(
                         and control_runner_cmd is not None
                         and control_runner_name is not None
                     ):
+                        workload.verify()
                         control_sample = measure_wasm_run(
                             wasm_binary.run_env,
                             control_runner_cmd,
@@ -1198,6 +1227,9 @@ def bench_results(
                             log=log,
                             limits=limits,
                         )
+                except BaseException as exc:
+                    primary = exc
+                    raise
                 finally:
                     if keep_temp:
                         print(
@@ -1206,10 +1238,12 @@ def bench_results(
                             file=sys.stderr,
                         )
                     else:
-                        wasm_binary.temp_dir.cleanup()
+                        bench._cleanup_bench_temp(wasm_binary.temp_dir, primary)
+            workload.verify()
             time_cell = f"{wasm_time:<12.4f}" if ok else f"{'n/a':<12}"
             print(f"{name:<30} | {time_cell} | {wasm_size:>8.1f} KB")
             data[name] = {
+                "workload": workload.record,
                 "molt_wasm_time_s": wasm_time,
                 "molt_wasm_samples_s": wasm_samples,
                 "molt_wasm_build_s": wasm_build,
@@ -1268,14 +1302,12 @@ def bench_results(
     return data
 
 
-def write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-
-
 def main() -> None:
+    with ExitStack() as workload_custody:
+        _main(workload_custody)
+
+
+def _main(workload_custody: ExitStack) -> None:
     _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt WASM benchmark suite.")
     parser.add_argument("--json-out", type=Path, default=None)
@@ -1527,6 +1559,24 @@ def main() -> None:
             for bench in WS_BENCHMARKS:
                 if bench not in benchmarks:
                     benchmarks.append(bench)
+    bench_suites.validate_benchmark_selection([Path(script) for script in benchmarks])
+    workloads = {
+        script: workload_custody.enter_context(
+            admit_benchmark_workload(
+                Path(script),
+                project_root=REPO_ROOT,
+                run_args=[],
+                molt_args=molt_args_for_benchmark(script),
+            )
+        )
+        for script in benchmarks
+    }
+
+    def finish_workload_custody() -> None:
+        for workload in workloads.values():
+            workload.verify()
+        workload_custody.close()
+
     samples = (
         SUPER_SAMPLES
         if args.super
@@ -1539,6 +1589,7 @@ def main() -> None:
             samples,
             warmup,
             args.super,
+            workloads=workloads,
             runner_cmd=runner_cmd,
             runner_name=args.runner,
             control_runner_cmd=control_runner_cmd,
@@ -1585,7 +1636,7 @@ def main() -> None:
     if json_out is None:
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
         json_out = Path("bench/results") / f"bench_wasm_{timestamp}.json"
-    write_json(json_out, payload)
+    write_json(json_out, payload, validate_inputs=finish_workload_custody)
     if log_file is not None:
         log_file.close()
 

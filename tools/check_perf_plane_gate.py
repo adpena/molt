@@ -47,6 +47,23 @@ from tools import perf_schema as schema  # noqa: E402
 def _green_cell() -> dict[str, object]:
     return {
         "benchmark": "tests/benchmarks/bench_fib.py",
+        # Literal source identity for this synthetic metric cell. This does
+        # not capture or qualify the repository's real benchmark source.
+        "workload": {
+            "entry": "tests/benchmarks/bench_fib.py",
+            "entry_source": "tests/benchmarks/bench_fib.py",
+            "scope": "local-python-source-closure",
+            "sources": [
+                {
+                    "path": "tests/benchmarks/bench_fib.py",
+                    "size": 9,
+                    "sha256": "cc42155088fca5730758db72b2a5bca33112a941dfaa2d43098ec422ce4ea213",
+                }
+            ],
+            "topology_sha256": "",
+            "run_args": [],
+            "molt_args": [],
+        },
         "target": "native",
         "backend": "native",
         "profile": "release-fast",

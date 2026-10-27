@@ -8,6 +8,10 @@ baseline (Rule 2). SYNTHETIC boards only — no molt rebuild.
 
 from __future__ import annotations
 
+from tests.tools.perf_scoreboard_fixtures import (
+    synthetic_workload,
+)
+
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +25,7 @@ from tools import perf_schema as schema  # noqa: E402
 
 def _cell(**overrides: object) -> dict[str, object]:
     cell: dict[str, object] = {
+        "workload": synthetic_workload(),
         "benchmark": "tests/benchmarks/bench_fib.py",
         "target": "native",
         "backend": "native",
@@ -58,6 +63,8 @@ def _cell(**overrides: object) -> dict[str, object]:
         "classification": schema.CLASS_GREEN,
     }
     cell.update(overrides)
+    if "workload" not in overrides:
+        cell["workload"] = synthetic_workload(cell["benchmark"])
     return cell
 
 
@@ -450,3 +457,20 @@ def test_history_uses_same_image_at_new_path_but_not_same_version_new_image(tmp_
         ]["baseline"]
         is None
     )
+
+
+def test_history_identity_cannot_join_changed_or_missing_workloads():
+    import copy
+    import pytest
+
+    board = pb.project_all(_source_doc([_cell()]))["cpython"]
+    changed = copy.deepcopy(board)
+    cells = ph._flatten_projected_cells(changed)
+    cell = next(iter(cells.values()))
+    cell["workload"]["sources"][0]["sha256"] = "b" * 64
+    assert ph.identity_class(board) != ph.identity_class(changed)
+    with pytest.raises(ValueError, match="workloads are not comparable"):
+        ph.regressions_vs_baseline(changed, board)
+    cell["workload"].clear()
+    with pytest.raises(ValueError, match="workload"):
+        ph.identity_class(changed)

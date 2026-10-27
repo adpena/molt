@@ -8,6 +8,7 @@ from pathlib import Path
 import molt.dx as molt_dx
 from molt import custody_layout
 import pytest
+from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +92,10 @@ def test_bench_harness_supports_explicit_molt_profile(
         parallel,
         colors,
         verbose,
+        *,
+        workloads,
     ):
+        assert workloads == {}
         captured["molt_cmd"] = molt_cmd
         return [], bench_harness.SuiteSummary(suite=suite_name)
 
@@ -179,6 +183,9 @@ def test_legacy_harness_refuses_unbound_timing_comparison_and_keeps_raw_measurem
         json.dumps(
             {
                 "provenance": {"profile": "release-fast"},
+                "results": {
+                    "bench": {"sample.py": {"status": "pass", "molt_time_s": 1.0}}
+                },
                 "benchmarks": {"sample.py": {"molt_ok": True, "molt_time_s": 1.0}},
             }
         ),
@@ -187,6 +194,7 @@ def test_legacy_harness_refuses_unbound_timing_comparison_and_keeps_raw_measurem
     result = bench_harness.TestResult(
         name="sample.py",
         suite="bench",
+        workload=synthetic_workload("sample.py"),
         status="pass",
         molt_time_s=current_time,
         cpython_time_s=1.0,
@@ -214,12 +222,21 @@ def test_legacy_harness_keeps_status_regression_independent_of_unbound_profiles(
     baseline = tmp_path / "baseline.json"
     baseline.write_text(
         json.dumps(
-            {"benchmarks": {"sample.py": {"status": "pass", "molt_time_s": 1.0}}}
+            {
+                "results": {
+                    "bench": {"sample.py": {"status": "pass", "molt_time_s": 1.0}}
+                },
+                "benchmarks": {"old-name.py": {"status": "pass", "molt_time_s": 1.0}},
+            }
         ),
         encoding="utf-8",
     )
     result = bench_harness.TestResult(
-        name="sample.py", suite="bench", status="fail", molt_time_s=2.0
+        name="sample.py",
+        suite="bench",
+        status="fail",
+        workload=synthetic_workload("bench/sample.py"),
+        molt_time_s=2.0,
     )
     assert bench_harness.detect_regressions([result], baseline) == [
         {
@@ -228,3 +245,89 @@ def test_legacy_harness_keeps_status_regression_independent_of_unbound_profiles(
             "detail": "was passing, now fail",
         }
     ]
+
+
+def test_harness_fresh_cpython_comparison_retains_actual_source_identity(
+    tmp_path, monkeypatch
+):
+    from contextlib import ExitStack
+    from tools.bench_evidence import admit_benchmark_workload
+    from tools import bench_diff
+
+    source = tmp_path / "program.py"
+    source.write_text("print(1)\n", encoding="utf-8")
+    commands = []
+
+    def run(command, timeout):
+        commands.append(command)
+        return "1\n", "", 0, 0.02
+
+    monkeypatch.setattr(bench_harness, "run_cmd", run)
+    with ExitStack() as custody:
+        admitted = custody.enter_context(
+            admit_benchmark_workload(
+                source,
+                project_root=tmp_path,
+                run_args=[],
+                molt_args=["run", "--profile", "dev"],
+            )
+        )
+        result = bench_harness.run_single_test(
+            source,
+            "bench",
+            ["molt", "run", "--profile", "dev"],
+            "python",
+            1,
+            workload=admitted,
+        )
+        report = bench_harness.build_json_report([result], [], [])
+    assert commands == [
+        ["python", str(source)],
+        ["molt", "run", "--profile", "dev", str(source)],
+    ]
+    cells = report["benchmarks"]
+    assert cells[str(source)]["workload"] == admitted.record
+    rows = bench_diff._compute_metric_diffs("cpython_time_s", cells, cells)
+    assert len(rows) == 1 and rows[0].delta == 0
+    assert cells[str(source)]["build_observation"] is None
+
+
+@pytest.mark.parametrize(
+    "run_args,molt_args,diagnostic",
+    [
+        (
+            ["different"],
+            ["run", "--profile", "dev"],
+            "does not support guest run arguments",
+        ),
+        (
+            [],
+            ["run", "--profile", "release"],
+            "command differs from admitted Molt arguments",
+        ),
+    ],
+)
+def test_harness_refuses_admitted_arguments_it_will_not_execute(
+    tmp_path, monkeypatch, run_args, molt_args, diagnostic
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "program.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        bench_harness,
+        "run_cmd",
+        lambda *a, **k: pytest.fail("unexecuted admitted argv reached child"),
+    )
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=run_args, molt_args=molt_args
+    ) as admitted:
+        with pytest.raises(ValueError, match=diagnostic):
+            bench_harness.run_single_test(
+                script,
+                "bench",
+                ["molt", "run", "--profile", "dev"],
+                "python",
+                1.0,
+                workload=admitted,
+            )
