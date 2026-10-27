@@ -76,6 +76,9 @@ from molt.cli.runtime_features import (
 from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_native_generation import (
     NativeRuntimeGeneration,
+    NativeRuntimeGenerationConsumer,
+    NativeRuntimeGenerationConsumerError,
+    _capture_generation,
     native_runtime_store_generation,
     publish_native_runtime_generation,
     require_unpublished_variant,
@@ -408,6 +411,7 @@ def _ensure_runtime_lib_ready(
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -425,6 +429,7 @@ def _ensure_runtime_lib_ready(
         rust_cpu=runtime_state.rust_cpu,
         stage_timings_ms=stage_timings_ms,
         runtime_state=runtime_state,
+        consume=consume,
     )
 
 
@@ -441,6 +446,7 @@ def _ensure_native_runtime_lib_ready_for_codegen(
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: set[str] | frozenset[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> bool:
     runtime_lib = runtime_state.runtime_lib
     if runtime_lib is None:
@@ -455,22 +461,62 @@ def _ensure_native_runtime_lib_ready_for_codegen(
                 else f"Preparing native runtime ({runtime_cargo_profile})"
             ):
                 ready = bool(runtime_state.runtime_lib_ready_future.result())
+            if (
+                ready
+                and consume is not None
+                and runtime_state.installed_native_admission is None
+            ):
+                # The producer's completed future owns no live file handle.
+                # Admit that exact selected generation for this codegen action;
+                # never select a replacement or trust its detached old digest.
+                generation = runtime_state.native_runtime_generation
+                if generation is None:
+                    raise ValueError("native runtime producer omitted its generation")
+                generation.verify()
+                runtime_state.native_runtime_generation = _capture_generation(
+                    generation.runtime_lib,
+                    build_identity=generation.build_identity,
+                    cargo_profile=runtime_cargo_profile,
+                    target_triple=target_triple,
+                    expected_records=generation.records(),
+                    consume=consume,
+                )
             return ready and runtime_state.native_runtime_build_identity is not None
+        except (OSError, ValueError, NativeRuntimeGenerationConsumerError) as exc:
+            runtime_state.revoke_native_runtime_admission()
+            return _record_native_runtime_failure(
+                runtime_state,
+                project_root=molt_root,
+                stage="codegen-generation-admission",
+                summary=f"Native runtime codegen admission failed: {exc}",
+                emit_diagnostic=not json_output,
+            )
         finally:
             runtime_state.runtime_lib_ready_future = None
     if diagnostics_enabled and "runtime_setup" not in phase_starts:
         phase_starts["runtime_setup"] = time.perf_counter()
-    ready = _ensure_runtime_lib_ready(
-        runtime_state,
-        target_triple=target_triple,
-        json_output=json_output,
-        runtime_cargo_profile=runtime_cargo_profile,
-        molt_root=molt_root,
-        cargo_timeout=cargo_timeout,
-        stdlib_profile=stdlib_profile,
-        resolved_modules=resolved_modules,
-        stage_timings_ms=stage_timings_ms,
-    )
+    try:
+        ready = _ensure_runtime_lib_ready(
+            runtime_state,
+            target_triple=target_triple,
+            json_output=json_output,
+            runtime_cargo_profile=runtime_cargo_profile,
+            molt_root=molt_root,
+            cargo_timeout=cargo_timeout,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            stage_timings_ms=stage_timings_ms,
+            consume=consume,
+        )
+    except NativeRuntimeGenerationConsumerError as exc:
+        runtime_state.revoke_native_runtime_admission()
+        return _record_native_runtime_failure(
+            runtime_state,
+            project_root=molt_root,
+            stage="codegen-generation-consumer",
+            summary=str(exc),
+            emit_diagnostic=not json_output,
+        )
     return ready and runtime_state.native_runtime_build_identity is not None
 
 
@@ -668,6 +714,7 @@ class _NativeRuntimeBuildPlan:
     fingerprint_features: tuple[str, ...]
     build_identity: RuntimeBuildIdentity
     store: ProductStore
+    consume: NativeRuntimeGenerationConsumer | None = None
 
     @property
     def cmd(self) -> list[str]:
@@ -827,6 +874,7 @@ def admit_stored_native_runtime(
             runtime_name=plan.runtime_lib.name,
             cargo_profile=plan.cargo_profile,
             target_triple=plan.target_triple,
+            consume=plan.consume,
         )
     finally:
         _record_runtime_build_stage_ms(
@@ -847,6 +895,7 @@ def _prepare_native_runtime_build(
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None,
     runtime_state: _RuntimeArtifactState | None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> _NativeRuntimeBuildPlan | None:
     if runtime_state is not None:
         runtime_state.revoke_native_runtime_admission()
@@ -938,6 +987,7 @@ def _prepare_native_runtime_build(
         fingerprint_features=fingerprint_features,
         build_identity=build_identity,
         store=native_runtime_store(project_root),
+        consume=consume,
     )
 
 
@@ -1086,6 +1136,7 @@ def _publish_native_runtime_build(
             inputs_are_current=lambda: plan.identity_is_current(
                 stage="generation-publication-identity-stability"
             ),
+            consume=plan.consume,
         )
         if generation is not None:
             plan.store.retain(identity)
@@ -1248,6 +1299,7 @@ def _ensure_runtime_lib(
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
     runtime_state: _RuntimeArtifactState | None = None,
+    consume: NativeRuntimeGenerationConsumer | None = None,
 ) -> bool:
     del resolved_modules
     try:
@@ -1304,6 +1356,7 @@ def _ensure_runtime_lib(
                 rust_cpu=rust_cpu,
                 stage_timings_ms=stage_timings_ms,
                 runtime_state=runtime_state,
+                consume=consume,
             )
             if plan is None:
                 return False

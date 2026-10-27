@@ -180,6 +180,19 @@ opcode families and the spelling-only memoryview builtin export are removed.
 
 ### Native callable publication, binding, and namespaces
 
+Namespace dictionary admission preserves an already boxed receiver. An exact
+dictionary returns its original object word after the runtime type check;
+subclasses retain their existing lazy backing allocation and corruption errors.
+Subscript, iteration, sys and namespace consumers use that same backing
+authority. The result is borrowed: admission changes neither ownership nor
+reference counts and does not republish the dictionary in the pointer registry.
+This follows the object-identity discipline in
+[CPython frame initialization](https://github.com/python/cpython/blob/v3.13.0/Include/internal/pycore_frame.h#L121-L135),
+which carries the function's existing globals reference into the frame.
+Exact admission has constant cost with no allocation; debug builds avoid a
+registration atomic, shard lock and hash lookup. Subclass cold allocation and
+all native/WASM object-word checks retain their existing semantics.
+
 The function header's binder-required flag is exact for both true and false.
 Raw allocation, code attachment, trampoline publication, public metadata writes
 and native-convention changes publish it from the canonical binding shape.
