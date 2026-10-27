@@ -16,6 +16,7 @@ import sys
 
 import pytest
 
+from molt import python_environment_contract as _contract
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
 from tests.process_guard_common import run_guarded_test_process
@@ -429,10 +430,10 @@ def test_development_selection_metadata_is_available_without_site_packages(tmp_p
         "from tools.import_file import bind_repository_imports; "
         "bind_repository_imports(Path(sys.argv[1]) / 'tools/molt_dev.py'); "
         "from molt import checkout_provisioning as cp; "
-        "from molt.source_build_environment import _editable_binding; "
+        "from molt.source_build_environment_selection import capture_source_build_inputs; "
         "root = Path(sys.argv[2]); "
         "spec = cp.checkout_input('uv-environment', root, {}); "
-        "print(json.dumps({'binding': _editable_binding(root), 'locks': cp._lock_digests(spec)}))"
+        "print(json.dumps({'binding': capture_source_build_inputs(root, editable=True).editable_binding, 'locks': cp._lock_digests(spec)}))"
     )
     result = run_guarded_test_process(
         [sys.executable, "-I", "-S", "-B", "-c", code, str(REPO_ROOT), str(checkout)],
@@ -642,8 +643,11 @@ def test_uv_environment_selects_published_images_and_refuses_mutable_roots(
     altered["environment_id"] = "0" * 64
     image.manifest_path.write_text(json.dumps(altered), encoding="utf-8")
     corrupt = image.manifest_path.read_bytes()
-    with pytest.raises(cp.ProvisioningError, match="address/recipe"):
-        cp.ensure("uv-environment", root, environ)
+    assert not cp.ensure("uv-environment", root, environ).provisioned
+    with pytest.raises(_contract.SourceBuildEnvironmentError, match="address/recipe"):
+        from molt.source_build_environment import load_development_environment
+
+        load_development_environment(image.root, repo_root=root)
     assert image.manifest_path.read_bytes() == corrupt, (
         "published corruption is never repaired"
     )
@@ -684,7 +688,6 @@ def test_development_contract_upgrade_selects_new_intent_without_repairing_old_i
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt import source_build_environment as publisher
-    from molt import source_build_environment_schema as schema
 
     root, artifacts = tmp_path / "project", tmp_path / "artifacts"
     _init_repo(root)
@@ -697,9 +700,9 @@ def test_development_contract_upgrade_selects_new_intent_without_repairing_old_i
     old_manifest_bytes = old.manifest_path.read_bytes()
 
     monkeypatch.setattr(
-        schema,
+        _contract,
         "SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION",
-        schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION + 1,
+        _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION + 1,
     )
     new_stamp = cp._development_selection_path(spec, cp._development_intent(spec))
     assert new_stamp != old_stamp and not new_stamp.exists()
@@ -713,7 +716,9 @@ def test_development_contract_upgrade_selects_new_intent_without_repairing_old_i
         calls.append(checkout)
         return new
 
-    load = publisher.load_development_environment
+    from molt import source_build_environment_selection as selection
+
+    load = selection.read_development_environment_selection
     loaded = []
 
     def track_load(path, **options):
@@ -721,7 +726,7 @@ def test_development_contract_upgrade_selects_new_intent_without_repairing_old_i
         return load(path, **options)
 
     monkeypatch.setattr(publisher, "development_environment", publish)
-    monkeypatch.setattr(publisher, "load_development_environment", track_load)
+    monkeypatch.setattr(selection, "read_development_environment_selection", track_load)
     assert cp.ensure("uv-environment", root, environment).environment_root == new.root
     assert old.root not in loaded
     assert new_stamp.is_file()
@@ -914,7 +919,8 @@ def test_implicit_evicted_generation_republishes_through_existing_owner(
     [
         "explicit-absent",
         "missing-manifest",
-        "malformed-manifest",
+        "missing-projection",
+        "malformed-projection",
         "dangling-root",
         "dangling-ancestor",
         "foreign-namespace",
@@ -945,8 +951,12 @@ def test_generation_recovery_keeps_exact_and_invalid_selections_refused(
         )
     elif fault == "missing-manifest":
         image.manifest_path.unlink()
-    elif fault == "malformed-manifest":
-        image.manifest_path.write_text("{not JSON}", encoding="utf-8")
+    elif fault == "missing-projection":
+        (image.root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION).unlink()
+    elif fault == "malformed-projection":
+        (image.root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
+            "{not JSON}", encoding="utf-8"
+        )
     elif fault in {"foreign-namespace", "foreign-owner", "invalid-address"}:
         record = json.loads(selection.read_bytes())
         missing = {

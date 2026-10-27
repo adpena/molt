@@ -12,6 +12,7 @@ import sysconfig
 from typing import cast
 import urllib.parse
 
+from molt import python_environment_contract as _contract
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.python_identity_common import (
     PythonEnvironmentIdentityError,
@@ -20,16 +21,28 @@ from molt.python_identity_common import (
 )
 from molt.python_native_locations import loaded_native_module_paths
 from molt.toolchain_identity import stable_executable_probe
-
-
-PYTHON_ENVIRONMENT_LOCATION_SCHEMA = "molt.python-environment-location.v2"
-ENVIRONMENT_BYTECODE_DIRECTORY = "bytecode"
-SOURCE_BUILD_ENVIRONMENT_MANIFEST = "molt-source-build-environment.json"
+from molt.file_publication import metadata_is_link_like
 
 
 def environment_bytecode_prefix(root: Path) -> Path:
     """Project an image's cache location; this does not admit its contents."""
-    return root.absolute() / ENVIRONMENT_BYTECODE_DIRECTORY
+    return root.absolute() / _contract.ENVIRONMENT_BYTECODE_DIRECTORY
+
+
+def validate_managed_bytecode_prefix(root: Path) -> Path:
+    """Validate the physical source-only read namespace at selection or capture."""
+    prefix = environment_bytecode_prefix(root)
+    if (
+        not prefix.is_dir()
+        or prefix.is_symlink()
+        or metadata_is_link_like(prefix.lstat())
+        or prefix.resolve(strict=True) != prefix
+        or any(prefix.iterdir())
+    ):
+        raise PythonEnvironmentIdentityError(
+            "managed source-only image requires a physical empty bytecode prefix"
+        )
+    return prefix
 
 
 def environment_bytecode_arguments(root: Path) -> tuple[str, ...]:
@@ -363,7 +376,7 @@ def _locate_current_python_environment(selector: Path, base: Path) -> dict[str, 
         external.values(), key=lambda path: (os.path.normcase(str(path)), str(path))
     )
     material: dict[str, object] = {
-        "schema": PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
+        "schema": _contract.PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
         "prefix": str(prefix),
         "selected_executable": str(selected),
         "base_executable": str(base),
@@ -408,7 +421,9 @@ def validate_python_environment_location(payload: object) -> dict[str, object]:
     material = {
         key: value for key, value in payload.items() if key != "identity_sha256"
     }
-    if payload.get("schema") != PYTHON_ENVIRONMENT_LOCATION_SCHEMA or payload.get(
+    if payload.get(
+        "schema"
+    ) != _contract.PYTHON_ENVIRONMENT_LOCATION_SCHEMA or payload.get(
         "identity_sha256"
     ) != canonical_json_sha256(material):
         raise PythonEnvironmentIdentityError(

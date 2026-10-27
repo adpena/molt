@@ -227,7 +227,7 @@ identity consumers, and the selector consumer, closing missing producer triggers
 compile zlib, while provider edits keep both compiled gates and source oracles.
 These are verified obligation changes, not an end-to-end latency comparison.
 
-Managed Python images now publish under the schema-v8 `cpython-source-only.v1`
+Managed Python images now publish under the schema-v9 `cpython-source-only.v1`
 policy. Their ordinary bytecode read namespace is physical and empty, and every
 child disables bytecode writes before startup. The retired three-variant eager
 cache producer and its derivation memo are gone. Publication and admission still

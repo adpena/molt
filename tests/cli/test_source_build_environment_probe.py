@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from tests.process_guard_common import guard_result_for_test
+from molt import python_environment_contract as _contract
 from molt.python_environment_identity import PythonIdentityVerifier
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -13,6 +15,7 @@ import sys
 import pytest
 
 from molt import source_build_environment as authority
+from molt import source_build_environment_selection as selection
 from molt import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import (
     copy_python_capture_authority,
@@ -23,127 +26,338 @@ from tests.python_environment_test_support import (
 from tests.process_guard_common import install_module_view
 
 
+@pytest.fixture
+def selection_image(tmp_path):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    repo = tmp_path / "checkout"
+    image = materialize_development_environment(
+        repo, tmp_path / "artifacts", groups=("dev",)
+    )
+    return repo, image
+
+
 @pytest.mark.parametrize(
     "fault",
     [
         None,
         "schema",
-        "environment",
+        "contract",
+        "contract-type",
         "environment_id",
         "checkout",
-        "python",
         "groups",
+        "inputs",
+        "binding",
         "extra",
-        "missing",
-        "full-capture",
+        "missing-key",
+        "missing-file",
+        "duplicate",
+        "oversized",
     ],
 )
-def test_development_selection_uses_exact_bounded_result(
-    verifier, monkeypatch, tmp_path, fault
-):
-    root = tmp_path / ("a" * 64)
-    root.mkdir()
-    repo = tmp_path / "checkout"
-    repo.mkdir()
-    request = authority_schema.DevelopmentEnvironmentRequest(repo, "3.12", ("dev",))
-    expected = {
-        "schema": "molt.development-environment-selection.v1",
-        "environment": str(root),
-        "environment_id": "a" * 64,
-        "checkout": str(repo),
-        "python": "3.12",
-        "groups": ["dev"],
-    }
-    received = dict(expected)
-    if fault == "extra":
-        received["unrequested"] = True
-    elif fault == "missing":
-        del received["python"]
-    elif fault == "full-capture":
-        received = {"schema": "molt.python-environment.v7", "tree": {}}
+def test_selection_projection_rejects_raw_record_corruption(selection_image, fault):
+    repo, image = selection_image
+    path = image.root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION
+    raw = path.read_text(encoding="utf-8")
+    payload = json.loads(raw)
+    if fault == "missing-file":
+        path.unlink()
+    elif fault == "duplicate":
+        path.write_text('{"schema":"duplicate",' + raw.lstrip()[1:], encoding="utf-8")
+    elif fault == "oversized":
+        path.write_bytes(b" " * (1024 * 1024 + 1))
     elif fault is not None:
-        received[fault] = [] if fault == "groups" else "wrong-coordinate"
-
-    def run(argv, **kwargs):
-        assert "--select-development-environment" in argv
-        assert "--capture-environment" not in argv
-        assert "--admit-published-environment" not in argv
-        assert "--admit-virtualenv-bootstrap" not in argv
-        assert argv[argv.index("--development-checkout") + 1] == str(repo)
-        assert kwargs["timeout"] == 120
-        return guard_result_for_test(
-            argv, 0, json.dumps(received), "", descendants_closed=True
-        )
-
-    monkeypatch.setattr(authority.process_guard, "run_completed_command", run)
+        if fault == "contract":
+            payload["producer_contract"]["source_build"] = -1
+        elif fault == "contract-type":
+            payload["producer_contract"]["source_build"] = float(
+                payload["producer_contract"]["source_build"]
+            )
+        elif fault == "inputs":
+            payload["declared_inputs"]["uv.lock"] = "0" * 64
+        elif fault == "binding":
+            payload["editable_binding"]["source_root"] = str(repo / "foreign")
+        elif fault == "extra":
+            payload["extra"] = True
+        elif fault == "missing-key":
+            del payload["python_version"]
+        else:
+            payload[fault] = ["other"] if fault == "groups" else "wrong"
+        path.write_text(json.dumps(payload), encoding="utf-8")
     if fault is None:
-        assert (
-            authority._probe_source_build_python(
-                Path("selected-python"),
-                verifier=verifier,
-                root=root,
-                development_selection=request,
-            )
-            == expected
+        selected = selection.read_development_environment_selection(
+            image.root, repo_root=repo, groups=("dev",)
         )
-        from molt.python_capture import validate_python_capture
-        from molt.python_identity_common import PythonEnvironmentIdentityError
-
-        with pytest.raises(PythonEnvironmentIdentityError, match="capture envelope"):
-            validate_python_capture(expected)
+        assert selected.root == image.root
+        assert selected.groups == ("dev",)
+        assert selected.python_version.text == payload["python_version"]
     else:
-        with pytest.raises(
-            authority_schema.SourceBuildEnvironmentError, match="receipt"
-        ):
-            authority._probe_source_build_python(
-                Path("selected-python"),
-                verifier=verifier,
-                root=root,
-                development_selection=request,
-            )
+        with pytest.raises(_contract.SourceBuildEnvironmentError):
+            selection.read_development_environment_selection(image.root, repo_root=repo)
 
 
-def test_development_result_bound_precedes_json_decode(verifier, monkeypatch, tmp_path):
-    root = tmp_path / ("a" * 64)
-    root.mkdir()
-    request = authority_schema.DevelopmentEnvironmentRequest(tmp_path, None, ())
-    limit = authority_schema.DevelopmentEnvironmentSelectionReceipt(
-        root, request
-    ).response_limit_bytes
-    monkeypatch.setattr(
-        authority.process_guard,
-        "run_completed_command",
-        lambda argv, **_kwargs: guard_result_for_test(
-            argv, 0, " " * (limit + 1), "", descendants_closed=True
-        ),
+@pytest.mark.parametrize("fault", ["python", "empty-groups", "checkout", "address"])
+def test_selection_projection_binds_actual_requested_coordinates(
+    selection_image, tmp_path, fault
+):
+    repo, image = selection_image
+    root = image.root
+    kwargs = {"repo_root": repo, "groups": ("dev",)}
+    if fault == "python":
+        kwargs["python"] = "99.1"
+    elif fault == "empty-groups":
+        kwargs["groups"] = ()
+    elif fault == "checkout":
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        kwargs["repo_root"] = foreign
+    else:
+        root = image.root.with_name("0" * 64)
+        image.root.rename(root)
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
+        selection.read_development_environment_selection(root, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "provisional",
+        "manifest-missing",
+        "manifest-directory",
+        "manifest-link",
+        "prefix-missing",
+        "prefix-populated",
+        "prefix-link",
+    ],
+)
+def test_selection_requires_completed_physical_publication(
+    selection_image, tmp_path, fault
+):
+    from molt.python_environment_location import environment_provisioning_record_path
+
+    repo, image = selection_image
+    prefix = image.root / "bytecode"
+    if fault == "provisional":
+        marker = environment_provisioning_record_path(image.root)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("{}", encoding="utf-8")
+    elif fault.startswith("manifest"):
+        image.manifest_path.unlink()
+        if fault == "manifest-directory":
+            image.manifest_path.mkdir()
+        elif fault == "manifest-link":
+            target = tmp_path / "manifest"
+            target.write_text("{}", encoding="utf-8")
+            try:
+                image.manifest_path.symlink_to(target)
+            except OSError:
+                pytest.skip("file symlinks unavailable")
+    elif fault == "prefix-populated":
+        (prefix / "late.pyc").write_bytes(b"executable cache")
+    else:
+        prefix.rmdir()
+        if fault == "prefix-link":
+            target = tmp_path / "empty"
+            target.mkdir()
+            try:
+                prefix.symlink_to(target, target_is_directory=True)
+            except OSError:
+                pytest.skip("directory symlinks unavailable")
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
+        selection.read_development_environment_selection(image.root, repo_root=repo)
+
+
+@pytest.mark.parametrize("version", ["3.15.0a1", "3.15.0b2", "3.15.0rc1"])
+def test_selection_preserves_prerelease_identity(selection_image, version):
+    repo, image = selection_image
+    path = image.root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["python_version"] = version
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    selected = selection.read_development_environment_selection(
+        image.root, repo_root=repo
     )
-
-    def refuse_decode(*_args, **_kwargs):
-        raise AssertionError("oversized response reached the JSON decoder")
-
-    monkeypatch.setattr(authority, "loads_exact", refuse_decode)
-    with pytest.raises(
-        authority_schema.SourceBuildEnvironmentError, match="size limit"
-    ):
-        authority._probe_source_build_python(
-            Path("selected-python"),
-            verifier=verifier,
-            root=root,
-            development_selection=request,
+    assert selected.python_version.text == version
+    assert selected.python_version.is_prerelease
+    with pytest.raises(_contract.SourceBuildEnvironmentError, match="requested Python"):
+        selection.read_development_environment_selection(
+            image.root, repo_root=repo, python="3.15"
         )
 
 
-def test_development_result_bound_accounts_for_escaped_coordinates(tmp_path):
-    prefix = tmp_path.joinpath(*(["λ🐍" * 20] * 20))
-    root = prefix / ("a" * 64)
-    request = authority_schema.DevelopmentEnvironmentRequest(
-        prefix / "checkout", None, ()
+def test_selection_runs_without_site_capture_subprocess_or_full_manifest(
+    selection_image,
+):
+    from tests.process_guard_common import run_guarded_test_process
+
+    repo, image = selection_image
+    # A final manifest must exist, but ordinary selection must not decode it.
+    image.manifest_path.write_bytes(b"not a full manifest; proof must reject this")
+    code = r"""
+import builtins,io,json,os,sys,subprocess
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+blocked=('packaging','molt.python_environment_custody','molt.python_environment_identity',
+         'molt.python_capture','molt.source_build_environment')
+class NoHeavyImports:
+    def find_spec(self,fullname,path=None,target=None):
+        if any(fullname==name or fullname.startswith(name+'.') for name in blocked):
+            raise AssertionError('selection imported '+fullname)
+sys.meta_path.insert(0,NoHeavyImports())
+def no_spawn(*args,**kwargs):
+    raise AssertionError('selection spawned a child')
+subprocess.Popen=no_spawn
+manifest=Path(sys.argv[3])/'molt-source-build-environment.json'
+def guarded_open(original):
+    def opened(file,*args,**kwargs):
+        if isinstance(file,(str,bytes,Path)) and Path(os.fsdecode(file)).resolve()==manifest.resolve():
+            raise AssertionError('selection read the full manifest')
+        return original(file,*args,**kwargs)
+    return opened
+builtins.open=guarded_open(builtins.open)
+io.open=guarded_open(io.open)
+from molt.source_build_environment_selection import read_development_environment_selection
+selected=read_development_environment_selection(Path(sys.argv[3]),repo_root=Path(sys.argv[2]),groups=('dev',))
+assert not any(name=='packaging' or name.startswith('packaging.') for name in sys.modules)
+print(json.dumps({'root':str(selected.root),'groups':selected.groups}))
+"""
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-B",
+            "-I",
+            "-S",
+            "-c",
+            code,
+            str(Path(__file__).resolve().parents[2] / "src"),
+            str(repo),
+            str(image.root),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    receipt = authority_schema.DevelopmentEnvironmentSelectionReceipt(root, request)
-    encoded = json.dumps(receipt.payload(), ensure_ascii=True).encode("utf-8")
-    assert len(encoded) > 4096
-    assert receipt.response_limit_bytes >= len(encoded)
-    receipt.accept(json.loads(encoded))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"root": str(image.root), "groups": ["dev"]}
+
+
+def _metadata_project(repo, readme):
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname='selector-fixture'\nversion='1.0'\n"
+        "requires-python='>=3.12'\ndependencies=[]\nreadme="
+        + json.dumps(readme)
+        + "\n[dependency-groups]\n",
+        encoding="utf-8",
+    )
+    (repo / "uv.lock").write_text("version=1\n", encoding="utf-8")
+
+
+def test_declared_readme_alias_retarget_rejects_same_bytes(tmp_path):
+    repo = tmp_path / "checkout"
+    _metadata_project(repo, "README.md")
+    for name in ("A.md", "B.md"):
+        (repo / name).write_bytes(b"identical description\n")
+    alias = repo / "README.md"
+    try:
+        alias.symlink_to("A.md")
+    except OSError:
+        pytest.skip("file symlinks unavailable")
+    before = selection.capture_source_build_inputs(repo, editable=True)
+    alias.unlink()
+    alias.symlink_to("B.md")
+    after = selection.capture_source_build_inputs(repo, editable=True)
+    assert before.digests == after.digests
+    assert before.editable_binding != after.editable_binding
+    assert "A.md" in before.editable_binding["metadata_inputs"]
+    assert "B.md" in after.editable_binding["metadata_inputs"]
+    with pytest.raises(_contract.SourceBuildEnvironmentError, match="binding"):
+        before.verify()
+
+
+def test_selection_rejects_same_byte_readme_alias_rebinding(selection_image, tmp_path):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    repo, _image = selection_image
+    project = repo / "pyproject.toml"
+    project.write_text(
+        project.read_text(encoding="utf-8").replace(
+            "[project]\n", "[project]\nreadme='README.md'\n", 1
+        ),
+        encoding="utf-8",
+    )
+    for name in ("A.md", "B.md"):
+        (repo / name).write_bytes(b"same installed description\n")
+    alias = repo / "README.md"
+    try:
+        alias.symlink_to("A.md")
+    except OSError:
+        pytest.skip("file symlinks unavailable")
+    image = materialize_development_environment(
+        repo, tmp_path / "artifacts", groups=("dev",)
+    )
+    assert selection.read_development_environment_selection(image.root, repo_root=repo)
+    alias.unlink()
+    alias.symlink_to("B.md")
+    assert (repo / "A.md").read_bytes() == alias.read_bytes()
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
+        selection.read_development_environment_selection(image.root, repo_root=repo)
+
+
+def test_declared_metadata_symlink_then_parent_matches_backend_open(tmp_path):
+    repo = tmp_path / "checkout"
+    _metadata_project(repo, "alias/../README.md")
+    (repo / "nested/child").mkdir(parents=True)
+    (repo / "README.md").write_bytes(b"wrong lexical collapse")
+    (repo / "nested/README.md").write_bytes(b"actual backend input")
+    try:
+        (repo / "alias").symlink_to("nested/child", target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+    declared = repo / "alias/../README.md"
+    expected = hashlib.sha256(declared.read_bytes()).hexdigest()
+    inputs = selection.capture_source_build_inputs(repo, editable=True)
+    assert inputs.digests["alias/../README.md"] == expected
+    assert inputs.editable_binding["metadata_inputs"]["nested/README.md"] == expected
+    assert "README.md" not in inputs.editable_binding["metadata_inputs"]
+
+
+def test_optional_python_pin_absence_and_raw_bytes_are_inputs(tmp_path):
+    _metadata_project(tmp_path, "README.md")
+    (tmp_path / "README.md").write_bytes(b"description")
+    missing = selection.capture_source_build_inputs(tmp_path, editable=True)
+    assert missing.digests[".python-version"] is None
+    pin = tmp_path / ".python-version"
+    pin.write_bytes(b"3.12\n")
+    with pytest.raises(_contract.SourceBuildEnvironmentError, match="changed"):
+        missing.verify()
+    first = selection.capture_source_build_inputs(tmp_path, editable=True)
+    pin.write_bytes(b"3.12\n\n")
+    second = selection.capture_source_build_inputs(tmp_path, editable=True)
+    assert first.digests[".python-version"] == hashlib.sha256(b"3.12\n").hexdigest()
+    assert second.digests[".python-version"] == hashlib.sha256(b"3.12\n\n").hexdigest()
+    assert first.digests != second.digests
+
+
+def test_raw_python_pin_spelling_changes_published_address(selection_image, tmp_path):
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    repo, image = selection_image
+    pin = repo / ".python-version"
+    pin.write_bytes(pin.read_bytes() + b"\n")
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
+        selection.read_development_environment_selection(image.root, repo_root=repo)
+    changed = materialize_development_environment(
+        repo, tmp_path / "artifacts", groups=("dev",)
+    )
+    assert changed.root != image.root
 
 
 def test_live_development_admission_reads_one_recipe_and_preserves_empty_groups(
@@ -166,9 +380,7 @@ def test_live_development_admission_reads_one_recipe_and_preserves_empty_groups(
         return read(path)
 
     monkeypatch.setattr(authority, "_read_attestation", observed)
-    request = authority_schema.DevelopmentEnvironmentRequest(
-        repo.resolve(), None, ("dev",)
-    )
+    request = _contract.DevelopmentEnvironmentRequest(repo.resolve(), None, ("dev",))
     admitted = authority.admit_published_environment(
         image.root, realized, development_admission=request
     )
@@ -178,20 +390,16 @@ def test_live_development_admission_reads_one_recipe_and_preserves_empty_groups(
     assert authority.load_development_environment(
         image.root, repo_root=repo, groups=None
     )
-    with pytest.raises(
-        authority_schema.SourceBuildEnvironmentError, match="requested groups"
-    ):
+    with pytest.raises(_contract.SourceBuildEnvironmentError, match="requested groups"):
         authority.admit_published_environment(
             image.root,
             realized,
-            development_admission=authority_schema.DevelopmentEnvironmentRequest(
+            development_admission=_contract.DevelopmentEnvironmentRequest(
                 repo, None, ()
             ),
         )
     (image.root / "bytecode" / "late.pyc").write_bytes(b"unselected cache")
-    with pytest.raises(
-        authority_schema.SourceBuildEnvironmentError, match="physical empty"
-    ):
+    with pytest.raises(_contract.SourceBuildEnvironmentError, match="physical empty"):
         authority.load_development_environment(image.root, repo_root=repo)
 
 
@@ -249,7 +457,7 @@ def test_cross_checkout_probe_admits_selected_editable_reader_and_refuses_foreig
     # A .pth directory loads its genuine sitecustomize before the probe. The
     # old controller-bound launch must therefore refuse B before capture.
     with pytest.raises(
-        authority_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="package source admission failed",
     ):
         authority._probe_environment_identity(executable, root, external_root=selected)
@@ -263,7 +471,7 @@ def test_cross_checkout_probe_admits_selected_editable_reader_and_refuses_foreig
     assert not list(selected.rglob("__pycache__"))
     declaration.write_text(str(foreign / "src") + "\n", encoding="utf-8")
     with pytest.raises(
-        authority_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="package source admission failed",
     ) as caught:
         authority._probe_environment_identity(
@@ -491,7 +699,7 @@ def test_selected_recipe_joins_request_identity_runtime_and_markers_before_publi
             wheel_target_manifest(runtime),
         )
     else:
-        with pytest.raises(authority_schema.SourceBuildEnvironmentError, match=error):
+        with pytest.raises(_contract.SourceBuildEnvironmentError, match=error):
             authority.development_environment(
                 tmp_path,
                 python=requested,
@@ -628,7 +836,7 @@ def test_recipe_probe_rejects_invalid_or_unattested_runtime(
         ),
     )
     with pytest.raises(
-        authority_schema.SourceBuildEnvironmentError, match="runtime probe returned"
+        _contract.SourceBuildEnvironmentError, match="runtime probe returned"
     ):
         authority._probe_source_build_python(Path("selected-python"), verifier=verifier)
 
@@ -644,7 +852,7 @@ def test_realized_environment_capture_rejects_invalid_realization(
             argv, 0, output, "", descendants_closed=True
         ),
     )
-    with pytest.raises(authority_schema.SourceBuildEnvironmentError):
+    with pytest.raises(_contract.SourceBuildEnvironmentError):
         authority._probe_environment_identity(Path("selected-python"), tmp_path)
 
 
@@ -659,7 +867,7 @@ def test_recipe_probe_reports_failure_instead_of_inprocess_fallback(
         ),
     )
     with pytest.raises(
-        authority_schema.SourceBuildEnvironmentError,
+        _contract.SourceBuildEnvironmentError,
         match="runtime content: capture refused",
     ):
         authority._probe_source_build_python(Path("selected-python"), verifier=verifier)
@@ -709,15 +917,24 @@ def test_editable_binding_keeps_mutable_code_out_of_image_address(tmp_path):
     (tmp_path / "README.md").write_text(
         "original installed description\n", encoding="utf-8"
     )
+    (tmp_path / "uv.lock").write_text("version=1\n", encoding="utf-8")
     source = tmp_path / "demo.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
-    binding = authority._editable_binding(tmp_path)
+    binding = selection.capture_source_build_inputs(
+        tmp_path, editable=True
+    ).editable_binding
     source.write_text("VALUE = 2\n", encoding="utf-8")
-    assert authority._editable_binding(tmp_path) == binding
+    assert (
+        selection.capture_source_build_inputs(tmp_path, editable=True).editable_binding
+        == binding
+    )
     (tmp_path / "README.md").write_text(
         "changed installed description\n", encoding="utf-8"
     )
-    assert authority._editable_binding(tmp_path) != binding
+    assert (
+        selection.capture_source_build_inputs(tmp_path, editable=True).editable_binding
+        != binding
+    )
     assert binding["source_root"] == str(tmp_path)
     assert "demo.py" not in binding["metadata_inputs"]
 
@@ -754,7 +971,7 @@ def test_development_loader_binds_requested_intent_and_editable_image(tmp_path, 
             and selected.bytecode_prefix == image.bytecode_prefix
         )
     else:
-        with pytest.raises(authority_schema.SourceBuildEnvironmentError):
+        with pytest.raises(_contract.SourceBuildEnvironmentError):
             authority.load_development_environment(
                 image.root, repo_root=repo, python=version, groups=groups
             )
@@ -788,7 +1005,7 @@ def test_development_loader_normalizes_coordinates_without_admitting_aliases(
             pytest.skip("directory symlinks unavailable")
         requested = alias if coordinate == "leaf-link" else alias / image.root.name
         with pytest.raises(
-            authority_schema.SourceBuildEnvironmentError, match="physical root"
+            _contract.SourceBuildEnvironmentError, match="physical root"
         ):
             authority.load_development_environment(requested, repo_root=repo)
     assert image.manifest_path.read_bytes() == before
@@ -870,7 +1087,7 @@ def test_development_image_reuse_preserves_exact_host_request(
     if error is None:
         assert read().root == image.root
     else:
-        with pytest.raises(authority_schema.SourceBuildEnvironmentError, match=error):
+        with pytest.raises(_contract.SourceBuildEnvironmentError, match=error):
             read()
     assert image.manifest_path.read_bytes() == before
     with pytest.raises(ValueError, match="unsupported Python target"):

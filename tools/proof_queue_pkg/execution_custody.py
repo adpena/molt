@@ -27,13 +27,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, cast
 
+from molt import python_environment_contract as _contract  # noqa: E402
 from molt import process_launch
 from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.process_environment import NameRule, ProcessEnvironment
-from molt.python_environment_location import (
-    PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
-    validate_python_environment_location,
-)
+from molt.python_environment_location import validate_python_environment_location
 from molt.python_runtime_identity import (
     PYTHON_RUNTIME_SELECTION_SCHEMA,
     python_runtime_selection_locations,
@@ -1072,7 +1070,7 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
 
     def visit(value: object, key: str | None = None) -> None:
         if isinstance(value, Mapping):
-            if value.get("schema") == PYTHON_ENVIRONMENT_LOCATION_SCHEMA:
+            if value.get("schema") == _contract.PYTHON_ENVIRONMENT_LOCATION_SCHEMA:
                 location = validate_python_environment_location(dict(value))
                 for role in (
                     "selected_executable",

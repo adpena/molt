@@ -7,6 +7,7 @@ import math
 from pathlib import PurePath
 from typing import cast
 
+from molt import python_environment_contract as _contract
 from molt.python_file_node_custody import PythonFileCaptureContext
 from molt.python_identity_common import (
     PythonEnvironmentIdentityError,
@@ -50,12 +51,9 @@ def validate_python_capture(payload: object) -> dict[str, object]:
     identity = payload.get("identity")
     if not isinstance(identity, dict):
         raise PythonEnvironmentIdentityError("Python capture identity is invalid")
-    from molt.python_runtime_identity import (
-        PYTHON_RUNTIME_IDENTITY_SCHEMA,
-        validate_python_runtime_identity,
-    )
+    from molt.python_runtime_identity import validate_python_runtime_identity
 
-    if identity.get("schema") == PYTHON_RUNTIME_IDENTITY_SCHEMA:
+    if identity.get("schema") == _contract.PYTHON_RUNTIME_IDENTITY_SCHEMA:
         validate_python_runtime_identity(identity)
     else:
         from molt.python_environment_custody import validate_python_environment_identity

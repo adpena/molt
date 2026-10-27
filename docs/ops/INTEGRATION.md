@@ -433,10 +433,11 @@ main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 `molt.checkout_provisioning` owns a checkout's lock-declared inputs.
 `python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
 hand from an existing bootstrap interpreter. Managed Python uses the existing
-source-build publisher and schema 8 recipe at
+source-build publisher and schema 9 recipe at
 `<artifact_root>/build-environments/development/<checkout_component>/<recipe_sha>`.
-The recipe binds the selected interpreter, lock closure, dependency groups and
-editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`
+The recipe binds the selected interpreter, lock closure, dependency groups,
+complete producer contract, raw declared-input digests (including an absent
+Python pin), and editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`
 currently selects `dev` and `bench`, together with root dependencies.
 
 Selection metadata lives in the checkout's Git control directory, outside the
@@ -467,7 +468,7 @@ native search coordinates through observed child closure. Search membership is
 conservative and does not establish interpreter identity; absent, unowned or
 unavailable optional coordinates do not change native executable search errors.
 
-Managed image publication uses the schema-v8 `cpython-source-only.v1` policy.
+Managed image publication uses the schema-v9 `cpython-source-only.v1` policy.
 The publisher disables uv bytecode generation, creates the physical empty
 `bytecode` read namespace under its existing address lock, and captures the
 installed source/runtime/native closure once. Admission requires that same
@@ -492,21 +493,26 @@ Existing process-state leases retain the selected generation until observed
 process closure, even when a newer generation is selected. Owner/use metadata
 stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns
 retirement. Selection or publication alone is not release qualification.
-Ordinary `venv_exec` launches validate their published recipe, physical checkout
-namespace, Python/group intent, editable binding, current declared inputs and
-physical empty bytecode prefix through the canonical metadata selector. A bounded child in the
-selected interpreter supplies the selector's package dependencies to a guardian
-that has no site dependencies. Its exact request-bound result carries the
-physical image, recipe address and checkout/Python/group coordinates; the
-parent retains process closure and reader-source fences. This immediate
-selection result is never proof or reusable live-byte admission. Ordinary
-launches do not certify every installed file's current bytes.
+Ordinary launches use the stdlib-only image-local reader for
+`molt-development-selection.json`. Default Git selection is a coordinate index;
+explicit images and copied/nongit checkouts use the same image-local boundary.
+The reader validates physical checkout/image coordinates, exact producer contract,
+requested Python/groups, current raw declared inputs and resolved editable
+metadata binding, plus a physical empty bytecode prefix. It requires a physical
+final-manifest file and no sibling provisioning marker. It never decodes that
+full manifest, launches a selection interpreter, captures installed/runtime
+bytes, writes state or acquires a publication lock. Its bounded JSON allowance
+scales with actual coordinates and input/group descriptions. Publication writes
+the projection before full image capture, then publishes the final manifest last.
+Schema-v8 images remain immutable and require canonical ensure; no old-format
+fallback or in-place repair exists.
 
-Proof and release ingress independently capture their declared live execution
-closure. Full environment captures with development intent retain complete
-identity and custody payloads and exact published-image comparison. Selection
-and proof admission share one selection validator and one manifest snapshot per
-operation. Environment capture places read-only published-image checks before
+Ordinary selection does not claim detection of arbitrary full-manifest content
+changes or current installed-byte identity. Proof and release ingress retain
+independent full live execution capture, including the projection file, and exact
+published-image comparison. Their neutral checkout/Python/group intent remains;
+the old selection child mode and receipt protocol are retired.
+Environment capture places read-only published-image checks before
 one mandatory closing file/membership fence. Plain identities and full custody
 envelopes pass that fence before returning; schema validation retains its
 existing producer and receiver boundaries. Failed checks or late mutations

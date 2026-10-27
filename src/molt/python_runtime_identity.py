@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import platform
-import re
 import sys
 import sysconfig
 import unicodedata
@@ -12,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import cast
 
+from molt import python_environment_contract as _contract
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.python_file_node_custody import (
     PYTHON_RUNTIME_PRUNED_COMPONENTS,
@@ -42,7 +42,7 @@ from molt.python_native_locations import (
     native_census_disagreement,
 )
 
-PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v7"
+
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v3"
 PYTHON_RUNTIME_SELECTION_SCHEMA = "molt-python-startup-selection-v3"
 # The build Python identity that runtime build receipts record; admission
@@ -705,7 +705,7 @@ def _capture_runtime_with_context(
         positioned_import_roots.append((position, archive_row))
     import_roots = [row for _position, row in sorted(positioned_import_roots)]
     material = {
-        "schema": PYTHON_RUNTIME_IDENTITY_SCHEMA,
+        "schema": _contract.PYTHON_RUNTIME_IDENTITY_SCHEMA,
         **platform_payload,
         "capabilities": capabilities,
         "file_nodes": pool.nodes,
@@ -744,7 +744,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     if (
         not isinstance(payload, dict)
         or set(payload) != _RUNTIME_IDENTITY_FIELDS
-        or payload.get("schema") != PYTHON_RUNTIME_IDENTITY_SCHEMA
+        or payload.get("schema") != _contract.PYTHON_RUNTIME_IDENTITY_SCHEMA
     ):
         raise PythonEnvironmentIdentityError("Python runtime closure shape is invalid")
     payload = cast(dict[str, object], payload)
@@ -753,17 +753,12 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
     if not _valid_sha256(digest) or digest != canonical_json_sha256(material):
         raise PythonEnvironmentIdentityError("Python runtime closure digest is invalid")
     version_text = payload.get("version")
-    version_match = (
-        re.fullmatch(
-            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:(?:a|b|rc)(?:0|[1-9][0-9]*))?",
-            version_text,
-        )
-        if isinstance(version_text, str)
-        else None
-    )
-    if version_match is None:
-        raise PythonEnvironmentIdentityError("Python runtime version is invalid")
-    version = tuple(int(item) for item in version_match.groups())
+    try:
+        version = _contract.parse_canonical_python_runtime_version(version_text).release
+    except ValueError as exc:
+        raise PythonEnvironmentIdentityError(
+            "Python runtime version is invalid"
+        ) from exc
     if (
         payload.get("implementation") != "cpython"
         or len(version) != 3

@@ -27,8 +27,9 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Literal, assert_never, cast, get_args
+from typing import Literal, assert_never, get_args
 
+from molt import python_environment_contract as _contract
 from molt import process_guard
 from molt.custody_layout import git_directories
 from molt.exact_json import (
@@ -359,13 +360,17 @@ def _run(
 def _lock_digests(spec: LockedTree | DevelopmentEnvironment) -> dict[str, str]:
     digests: dict[str, str] = {}
     if isinstance(spec, DevelopmentEnvironment):
-        from molt.source_build_environment import _editable_binding
-        from molt.source_build_environment_schema import SourceBuildEnvironmentError
+        from molt.source_build_environment_selection import capture_source_build_inputs
 
         try:
-            binding = _editable_binding(spec.checkout)
-            digests.update(cast(Mapping[str, str], binding["metadata_inputs"]))
-        except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
+            return {
+                key: value
+                for key, value in capture_source_build_inputs(
+                    spec.checkout, editable=True
+                ).digests.items()
+                if value is not None
+            }
+        except (OSError, ValueError) as exc:
             raise ProvisioningError(f"uv-environment: {exc}") from exc
     for relative in spec.lock_files:
         if relative in digests:
@@ -438,9 +443,6 @@ def _lock_path(spec: CheckoutInput) -> Path:
 
 
 def _development_intent(spec: DevelopmentEnvironment) -> dict:
-    from molt.source_build_environment_schema import (
-        source_build_environment_contract,
-    )
 
     try:
         groups = spec.groups
@@ -463,7 +465,7 @@ def _development_intent(spec: DevelopmentEnvironment) -> dict:
         from molt.dx import DEFAULT_UV_PROJECT_PURPOSE, artifact_root
 
         return {
-            "producer_contract": source_build_environment_contract(),
+            "producer_contract": _contract.source_build_environment_contract(),
             "python": python,
             "groups": sorted(set(groups)),
             "purpose": spec.environment.get(
@@ -543,8 +545,9 @@ def selected_development_environment(
 
 def _current_development_environment(spec: DevelopmentEnvironment) -> Path | None:
     """Validate a selection's published recipe at an operation boundary."""
-    from molt.source_build_environment import load_development_environment
-    from molt.source_build_environment_schema import SourceBuildEnvironmentError
+    from molt.source_build_environment_selection import (
+        read_development_environment_selection,
+    )
 
     selected = selected_development_environment(
         spec.checkout, spec.environment, python=spec.python, groups=spec.groups
@@ -578,13 +581,13 @@ def _current_development_environment(spec: DevelopmentEnvironment) -> Path | Non
                         "its physical checkout generation namespace"
                     )
                 return None
-        return load_development_environment(
+        return read_development_environment_selection(
             selected,
             repo_root=spec.checkout,
             python=intent["python"],
             groups=tuple(intent["groups"]),
         ).root
-    except (OSError, ValueError, SourceBuildEnvironmentError) as exc:
+    except (OSError, ValueError, _contract.SourceBuildEnvironmentError) as exc:
         raise ProvisioningError(f"uv-environment: {exc}") from exc
 
 
@@ -891,7 +894,6 @@ def ensure_input(spec: CheckoutInput, *, refresh_runtime: bool = False) -> Ensur
     if isinstance(spec, DevelopmentEnvironment):
         from molt.python_interpreter import is_python_version_selector
         from molt.source_build_environment import development_environment
-        from molt.source_build_environment_schema import SourceBuildEnvironmentError
 
         try:
             # Current selection is a cheap recipe projection, not a claim that
@@ -934,7 +936,7 @@ def ensure_input(spec: CheckoutInput, *, refresh_runtime: bool = False) -> Ensur
             return Ensured(
                 spec.name, image.provisioned, time.monotonic() - started, image.root
             )
-        except (SourceBuildEnvironmentError, OSError, ValueError) as exc:
+        except (_contract.SourceBuildEnvironmentError, OSError, ValueError) as exc:
             raise ProvisioningError(f"uv-environment: {exc}") from exc
     if isinstance(spec, LockedTree):
         provisioned = _provision_locked(spec)

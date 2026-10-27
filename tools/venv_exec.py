@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 
 
+from molt import python_environment_contract as _contract  # noqa: E402
 from molt.process_spawn import forward_command  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 
@@ -169,16 +170,15 @@ def main(argv: list[str] | None = None) -> int:
         managed = not (args.venv or os.environ.get("MOLT_VENV"))
         if managed:
             from molt.dx import DxConfigError, DxProject
-            from molt.source_build_environment import select_development_environment
-            from molt.source_build_environment_schema import (
-                SourceBuildEnvironmentError,
+            from molt.source_build_environment_selection import (
+                read_development_environment_selection,
             )
 
             try:
-                venv = select_development_environment(
+                venv = read_development_environment_selection(
                     venv, repo_root=ROOT, groups=DxProject(ROOT).dependency_groups()
-                )
-            except (DxConfigError, SourceBuildEnvironmentError) as exc:
+                ).root
+            except (DxConfigError, _contract.SourceBuildEnvironmentError) as exc:
                 raise VenvExecError(str(exc)) from exc
         env = venv_env(venv=venv, managed=managed)
         resolved = resolve_command(command, venv=venv, managed=managed)
