@@ -419,7 +419,7 @@ def _require_cargo_build_tool_environment_context(
             else set()
         ),
     }
-    if invocation is not None and invocation.subcommand == "clippy":
+    if toolchain_capture.command_requires_clippy(envelope):
         # cargo-clippy supplies these two values to nested Cargo. Its [env]
         # defaults cannot replace them, but force=true reaches compiler children.
         # SYSROOT and CLIPPY_CONF_DIR have no admitted external resource owner.

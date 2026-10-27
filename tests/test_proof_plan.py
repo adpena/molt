@@ -5412,14 +5412,10 @@ def test_executor_projects_each_command_from_immutable_pre_admission_environment
         assert environ["RUSTFLAGS"] == baseline["RUSTFLAGS"]
         return (root / "sdk-selector").read_text(encoding="utf-8")
 
-    def sdk_delta(installation, *, environ, rust_target):
-        assert rust_target == "wasm32-wasip1"
+    def sdk_delta(installation, *, environ, rust_target=None):
+        assert rust_target is None
         assert installation == "selected SDK"
         return {
-            target_flags: (
-                environ.get(target_flags, "") + " -C link-self-contained=no"
-            ).strip(),
-            target_linker: "/selected/sdk/wasm-ld",
             "MOLT_WASI_SYSROOT": "/selected/sdk/sysroot",
             "MOLT_PROJECTION_ORDER": "projection",
         }
@@ -5443,7 +5439,9 @@ def test_executor_projects_each_command_from_immutable_pre_admission_environment
         # Admission probes the aggregate projection it is handed, and the
         # process environment never carries it: a later admission in a
         # long-lived process starts from the same baseline.
-        assert environment[target_flags].endswith("-C link-self-contained=no")
+        assert environment.get(target_flags) == baseline.get(target_flags)
+        assert environment.get(target_linker) == baseline.get(target_linker)
+        assert environment["RUSTFLAGS"] == baseline["RUSTFLAGS"]
         assert os.environ.get(target_flags) == baseline.get(target_flags)
         # A probe that writes the process environment anyway must not reach a
         # child, which runs from the retained baseline.
@@ -5502,10 +5500,8 @@ def test_executor_projects_each_command_from_immutable_pre_admission_environment
     assert pure == {key: baseline.get(key) for key in observed_keys}
     for name in ("sdk", "sdk-sibling"):
         assert json.loads(outputs[name].read_text(encoding="utf-8")) == {
-            target_flags: (
-                baseline.get(target_flags, "") + " -C link-self-contained=no"
-            ).strip(),
-            target_linker: "/selected/sdk/wasm-ld",
+            target_flags: baseline.get(target_flags),
+            target_linker: baseline.get(target_linker),
             "MOLT_WASI_SYSROOT": "/selected/sdk/sysroot",
             "RUSTFLAGS": "--cfg ordered_command_override",
             "MOLT_PROJECTION_ORDER": "command",
@@ -8989,7 +8985,8 @@ def test_runtime_boundary_consumers_keep_executable_toolchain_authority():
     rows = {row.id: row for row in proof_plan.ProofPlan.load().commands}
     native = rows["native.integration.python-custody"]
     wasi = rows["rust.test.wasi-runtime-lifecycle"]
-    for row in (native, wasi):
+    clippy = rows["rust.clippy.wasi32"]
+    for row in (native, wasi, clippy):
         assert _proof_command_policy_error(list(row.argv)) is None
         envelope = command_admission.envelope_for_command(row.argv)
         assert envelope["proof_plan_command_ids"] == [row.id]
@@ -9006,6 +9003,39 @@ def test_runtime_boundary_consumers_keep_executable_toolchain_authority():
     assert wasi.argv[wasi.argv.index("--policy") + 1] == "wasi-lifecycle"
     assert proof_plan.cargo_native_units(wasi.data) == {"target": ["c"]}
 
+    assert clippy.argv == (
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "python",
+        "tools/run_runtime_test_gate.py",
+        "--policy",
+        "wasi-clippy",
+        "--profile",
+        "dev",
+        "--build-timeout-seconds",
+        "1200",
+    )
+    assert set(clippy.toolchains) == {
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "wasi-clang",
+        "wasm-ld",
+    }
+    assert proof_plan.cargo_native_units(clippy.data) == {"target": ["c"]}
+    assert (clippy.data["timeout_budget"], clippy.data["timeout_seconds"]) == (
+        "cold",
+        1200,
+    )
+
 
 def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
     plan = proof_plan.ProofPlan.load()
@@ -9021,6 +9051,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
             "llvm.build.backend",
             "llvm.clippy.backend",
             "llvm.test.lowering",
+            "rust.clippy.wasi32",
             "rust.test.compiler-authorities",
             "rust.test.ir-wasm-runtime-authorities",
             "rust.test.wasi-runtime-lifecycle",
@@ -9080,7 +9111,10 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
             delegated = command_admission.envelope_for_command(wrapped)
             assert delegated["cargo_native_units"] == required
             assert delegated["delegated"]["cargo_native_units"] == required
+    # The backend is Rust-only even though it needs the SDK's tools; clippy
+    # above checks the runtime's actual C producer and declares it separately.
     for name in (
+        "wasm.build.backend",
         "wasm.build.shared-runtime",
         "wasm.build.split-runtime-release",
         "wasm.test.finally-pending-observer-parity.wasm",

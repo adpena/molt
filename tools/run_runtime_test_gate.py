@@ -13,6 +13,8 @@ process-global allocator counters and refusal must never share a libtest run.
 The WASI lifecycle policy builds separate managed-SDK runtime and Rust-only
 platform libtests and hands each exact image to the existing native production-
 host integration; Rust owns both semantic rosters.
+The WASI Clippy policy checks the declared library packages through the same
+managed Cargo operation; it executes no test image and claims no semantic pass.
 The native semantic policy also owns the declared core/math numeric libtests in
 that same Cargo build; primitive timings are observations, not performance gates.
 Cargo build streams go directly to the shared guard's exclusive capture files,
@@ -766,6 +768,58 @@ def cargo_build(
     )
 
 
+def run_compile_only_lint(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
+    from tools.proof_queue_pkg.toolchain_capture import (
+        resolve_runtime_gate_cargo_operation,
+    )
+
+    source = truth.git_source_identity()
+    aggregate["source_identity"] = source
+    (operation,) = cargo_operations(
+        args.policy, args.profile, cargo=os.environ.get("CARGO", "cargo")
+    )
+    command, environment, plan = resolve_runtime_gate_cargo_operation(
+        operation, cwd=ROOT, env=dict(os.environ), compiler_host=None
+    )
+    if plan is None:
+        raise RuntimeError("WASI lint operation lacks its managed Cargo plan")
+    aggregate["source_command"] = list(operation.command)
+    aggregate["build_command"] = command
+    aggregate["resolved_rustflags"] = list(plan.rustflags)
+    build = cargo_build(command, run, args.build_timeout_seconds, environment)
+    aggregate["build_returncode"] = build.returncode
+    plan.verify()
+    if build.returncode:
+        raise RuntimeError(f"Cargo lint compilation failed with {build.returncode}")
+    finished = False
+    for line in build.stdout.splitlines():
+        if not line.strip():
+            continue
+        row = loads_exact(line)
+        if not isinstance(row, dict) or not isinstance(row.get("reason"), str):
+            raise RuntimeError("Cargo lint output lacks complete compiler JSON")
+        if finished:
+            raise RuntimeError("Cargo lint output continues after build-finished")
+        if row["reason"] == "compiler-message":
+            message = row.get("message")
+            if not isinstance(message, dict) or not isinstance(
+                message.get("level"), str
+            ):
+                raise RuntimeError("Cargo lint compiler diagnostic is malformed")
+            if message["level"] in {"error", "ice", "failure-note"}:
+                raise RuntimeError("Cargo lint compilation emitted an error")
+        elif row["reason"] == "build-finished":
+            if row.get("success") is not True:
+                raise RuntimeError("Cargo lint build did not finish successfully")
+            finished = True
+    if not finished:
+        raise RuntimeError("Cargo lint build lacks its complete build-finished record")
+    if truth.git_source_identity() != source:
+        raise RuntimeError("source changed during lint compilation")
+    aggregate["build_finished"] = True
+    aggregate["status"] = "success"
+
+
 def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
     # Keep Rust's CASES as the sole semantic roster. The Python policy owns only
     # four compiler images and two native integration consumers. Rust owns the
@@ -1281,11 +1335,16 @@ def main(argv: list[str] | None = None) -> int:
             if args.policy == "wasi-lifecycle"
             else "maintained provider four wasm32 counter controls only; no Molt WASM runtime claim"
             if args.policy == "zlib-wasi"
+            else "compile-only WASI Clippy checks for declared library packages; no test execution"
+            if args.policy == "wasi-clippy"
             else "declared untimed allocation/refusal controls only; no timed performance acceptance"
         ),
         "images": {},
     }
     try:
+        if args.policy == "wasi-clippy":
+            run_compile_only_lint(args, run, aggregate)
+            return finish_aggregate(run, aggregate)
         if args.policy == "zlib-wasi":
             run_zlib_wasi(args, run, aggregate)
             return finish_aggregate(run, aggregate)
