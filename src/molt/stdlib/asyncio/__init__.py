@@ -620,30 +620,6 @@ def _require_ssl_transport_support(
         raise RuntimeError("asyncio ssl transport intrinsic returned invalid payload")
     return outcome
 
-def _socket_eai_codes() -> set[int]:
-    codes: set[int] = set()
-    socket_module = _socket_module()
-    for name in dir(socket_module):
-        if not name.startswith("EAI_"):
-            continue
-        value = getattr(socket_module, name, None)
-        if isinstance(value, int):
-            codes.add(value)
-    return codes
-
-_SOCKET_EAI_CODES: set[int] | None = None
-
-def _map_socket_name_resolution_error(exc: OSError) -> OSError:
-    global _SOCKET_EAI_CODES
-    if _SOCKET_EAI_CODES is None:
-        _SOCKET_EAI_CODES = _socket_eai_codes()
-    errno_value = getattr(exc, "errno", None)
-    if isinstance(errno_value, int) and errno_value in _SOCKET_EAI_CODES:
-        gaierror_cls = getattr(_socket_module(), "gaierror", None)
-        if gaierror_cls is not None:
-            return gaierror_cls(errno_value, str(exc))
-    return exc
-
 def _tls_client_connect(
     host: str, port: int, server_hostname: str | None = None
 ) -> Any:

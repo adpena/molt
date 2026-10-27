@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -26,6 +27,8 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+from molt.wasm_artifact import require_current_wasm_execution_manifest  # noqa: E402
 
 from molt.dx import scratch_dir  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
@@ -277,6 +280,10 @@ def validate_bundle_contract(
         )
 
     manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+    try:
+        require_current_wasm_execution_manifest(manifest_data)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     if manifest_data.get("mode") != "split-runtime":
         raise RuntimeError("Cloudflare manifest must be split-runtime")
     modules = manifest_data.get("modules")

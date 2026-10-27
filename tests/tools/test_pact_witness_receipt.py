@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 from copy import deepcopy
 import json
 from pathlib import Path, PurePosixPath
@@ -70,7 +72,7 @@ def _payload(
         manifest.write_text(
             json.dumps(
                 {
-                    "version": 2,
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
                     "mode": "split-runtime",
                     "modules": {
                         "app": {

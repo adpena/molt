@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import copy
 import hashlib
 import io
@@ -37,7 +39,11 @@ def _wasm_stage_inputs(tmp_path):
         "size": len(data),
     }
     raw = _json(
-        {"mode": "linked", "modules": {"linked": {**artifact, "path": module.name}}}
+        {
+            "version": WASM_EXECUTION_MANIFEST_VERSION,
+            "mode": "linked",
+            "modules": {"linked": {**artifact, "path": module.name}},
+        }
     )
     manifest = source / "manifest.json"
     manifest.write_bytes(raw)
@@ -49,6 +55,41 @@ def _wasm_stage_inputs(tmp_path):
         data,
         raw,
     )
+
+
+@pytest.mark.parametrize(
+    "version", ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0, 3.5]
+)
+def test_wasm_stage_rejects_incompatible_manifest_before_module_stage(
+    tmp_path, monkeypatch, version
+):
+    module, manifest, artifact, _, _, raw = _wasm_stage_inputs(tmp_path)
+    payload = json.loads(raw)
+    if version == "missing":
+        del payload["version"]
+    else:
+        payload["version"] = version
+    raw = _json(payload)
+    manifest.write_bytes(raw)
+    # Admit these exact bytes to the existing immutable snapshot boundary.
+    # A stale hash must not be the reason that a legacy receiver is refused.
+    descriptor = {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+    real_stage = execution_root.stage_file
+    reached = []
+
+    def observe_stage(root, name, source, **kwargs):
+        reached.append(name)
+        assert source != module, "incompatible receiver reached guest module staging"
+        return real_stage(root, name, source, **kwargs)
+
+    monkeypatch.setattr(execution_root, "stage_file", observe_stage)
+    root = tmp_path / "root"
+    with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
+        consumer_replay._stage_wasm(root, "app/cell/", artifact, descriptor)
+    assert reached == ["app/cell/manifest.json"]
+    assert (root / "app/cell/manifest.json").read_bytes() == raw
+    assert not (root / "app/cell/program.wasm").exists()
+    assert not (tmp_path / "root.tar").exists()
 
 
 @pytest.mark.parametrize("selected", ["manifest", "module"])
@@ -114,7 +155,13 @@ def test_staged_manifest_decode_is_bound_to_expected_bytes(tmp_path, monkeypatch
     def replace_before_decode(path, **kwargs):
         path.chmod(0o644)
         path.write_bytes(
-            _json({"mode": "linked", "modules": {"linked": {"path": "other.wasm"}}})
+            _json(
+                {
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "mode": "linked",
+                    "modules": {"linked": {"path": "other.wasm"}},
+                }
+            )
         )
         return real_capture(path, **kwargs)
 

@@ -24,7 +24,10 @@ from drivers._shared.cloudflare import (  # noqa: E402
 )
 from tools.gen_browser_asset_graph import AssetSource, scan_resolved_sources  # noqa: E402
 from molt.exact_json import capture_exact  # noqa: E402
-from molt.wasm_artifact import WASM_RUNTIME_MANIFEST_NAME  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
+    WASM_RUNTIME_MANIFEST_NAME,
+    require_current_wasm_execution_manifest,
+)
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
     canonical_wasm_loader_asset_bytes,
@@ -96,14 +99,9 @@ def execution_artifact_records(root: Path) -> tuple[str, list[dict[str, Any]]]:
     identity, manifest = capture_exact(
         manifest_path, max_bytes=16 * 1024 * 1024, label="Falcon execution manifest"
     )
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("version") != 2
-        or manifest.get("mode") not in ("linked", "split-runtime")
-    ):
-        raise ValueError(
-            "Falcon requires a version 2 linked or split-runtime execution manifest"
-        )
+    require_current_wasm_execution_manifest(manifest)
+    if manifest.get("mode") not in ("linked", "split-runtime"):
+        raise ValueError("Falcon requires a linked or split-runtime execution manifest")
     mode = manifest["mode"]
     modules = manifest.get("modules")
     assets = manifest.get("assets", {})

@@ -292,7 +292,7 @@ entries must obey the policy in Section 0.
 | winsound | Capability-gated | Planned | P3 | SL3 | runtime | Platform-specific (windows). |
 | xmlrpc | Capability-gated | Planned | P3 | SL3 | stdlib | `net` gating. |
 | zipapp | Capability-gated | Planned | P3 | SL3 | stdlib | `fs.read`/`fs.write` gating. |
-| zipimport | Capability-gated | Partial | P3 | SL3 | stdlib | Minimal zipimporter for store/deflate+zip64 zipfile entries; `fs.read` gated. Runtime-heavy wasm regression now explicitly asserts CPython-compatible failure shape for root-importer `pkg.mod` lookup (`ZipImportError`). (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement zipimporter bytecode/cache parity + broader archive support.) |
+| zipimport | Capability-gated | Partial | P3 | SL3 | stdlib | Minimal zipimporter for store/deflate+zip64 zipfile entries; `fs.read` gated. Runtime-heavy wasm regression checks package/source discovery at archive and nested prefixes, then asserts CPython-compatible `ZipImportError` for archive-root `pkg.mod` lookup. It does not execute arbitrary runtime-created source; compiled-body execution follows the [import contract](../../contracts/import_system_contract.md). (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P3, status:partial): implement zipimporter bytecode/cache parity + broader archive support.) |
 
 ### 3.1 Ten-Item Stdlib Parity Plan (Fully Specced)
 Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib/`.
@@ -408,6 +408,24 @@ The [generated host-operation capability matrix](../../../security/host_capabili
 is authoritative for exact grants, operation requirements, and profiles. Network
 integration programs can select the `net` profile; restricted applications grant
 only the required operations from that matrix.
+
+JSON `sort_keys` sorts a retained snapshot of original `(key, value)` items
+through the ordinary runtime stable list sort before key conversion or
+`skipkeys` filtering, as in CPython 3.12.15's
+[`json.encoder`](https://github.com/python/cpython/blob/v3.12.15/Lib/json/encoder.py)
+and [`_json` accelerator](https://github.com/python/cpython/blob/v3.12.15/Modules/_json.c).
+Tuple equality/value comparisons, rich-comparison truth conversion and pending
+exceptions retain their shared owners. Each selected key is converted and its
+value is encoded before visiting the next key, preserving default-callback and
+error precedence. Skipped keys emit no separators; a nonempty dictionary whose
+keys are all skipped preserves CPython's opening/closing indentation, while an
+empty dictionary remains `{}`. Nonempty sorted input adds one private list,
+one item tuple per entry and a retained sorted snapshot; its temporary list
+backing retires once that snapshot owns the tuples. The unsorted path keeps
+its flat snapshot. The previous vector of all converted keys/values is removed.
+Shared sorting costs O(n log n) comparisons and O(n) retained
+storage; no independent JSON comparator or performance improvement is claimed.
+This mechanism does not qualify the remaining JSON parity matrix.
 
 ## 6. TODOs (tracked in ROADMAP.md)
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).

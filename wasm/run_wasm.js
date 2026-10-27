@@ -12,6 +12,7 @@ const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
 const {
+  requireMoltDeploymentManifest,
   bindRuntimeFunctionImports,
   callIsolateImportExport,
   callReservedRuntimeCallable,
@@ -174,7 +175,7 @@ const resolveWasmPaths = ({
       'run_wasm.js accepts a runtime manifest path, not a module path; pass manifest.json',
     );
   }
-  const manifest = JSON.parse(fs.readFileSync(selectedManifestPath, 'utf8'));
+  const manifest = requireMoltDeploymentManifest(JSON.parse(fs.readFileSync(selectedManifestPath, 'utf8')));
   if (manifest.mode !== 'linked' && manifest.mode !== 'split-runtime') {
     throw new Error(`runtime manifest has unsupported mode: ${String(manifest.mode)}`);
   }
@@ -481,27 +482,30 @@ const TAG_MASK = 0x0007000000000000n;
 const MAX_DB_FRAME_SIZE = 64 * 1024 * 1024;
 const CANCEL_POLL_MS = 10;
 const DB_WORKER_CLOSE_TIMEOUT_MS = 250;
-const ERRNO = (os.constants && os.constants.errno) || {};
-const errnoValue = (name, fallback) =>
-  Number.isInteger(ERRNO[name]) ? ERRNO[name] : fallback;
-const ENOSYS = errnoValue('ENOSYS', 38);
-const EINVAL = errnoValue('EINVAL', 22);
-const ENOMEM = errnoValue('ENOMEM', 12);
-const EBADF = errnoValue('EBADF', 9);
-const ENOENT = errnoValue('ENOENT', 2);
-const EPIPE = errnoValue('EPIPE', 32);
-const EWOULDBLOCK = errnoValue('EWOULDBLOCK', errnoValue('EAGAIN', 11));
-const EINPROGRESS = errnoValue('EINPROGRESS', 115);
-const ETIMEDOUT = errnoValue('ETIMEDOUT', 110);
-const ENOTCONN = errnoValue('ENOTCONN', 107);
-const ENOTSOCK = errnoValue('ENOTSOCK', 88);
-const EAFNOSUPPORT = errnoValue('EAFNOSUPPORT', 97);
-const EADDRINUSE = errnoValue('EADDRINUSE', 98);
-const ECONNRESET = errnoValue('ECONNRESET', 104);
-const ECONNREFUSED = errnoValue('ECONNREFUSED', 111);
-const ENOPROTOOPT = errnoValue('ENOPROTOOPT', 92);
-const EOPNOTSUPP = errnoValue('EOPNOTSUPP', errnoValue('ENOTSUP', 95));
-const EISCONN = errnoValue('EISCONN', 106);
+// Molt env imports consume synthetic POSIX errno; raw preview1 is owned by WASI.
+const { errno: GUEST_ERRNO, resolver: RESOLVER_ERROR, encodeSystemError, encodeResolverError } = require('./synthetic_errno_generated.js');
+const { getSystemErrorName } = require('node:util');
+const SOCKET_ABI = require('./socket_abi_generated.js');
+const {
+  ENOSYS,
+  EINVAL,
+  ENOMEM,
+  EBADF,
+  ENOENT,
+  EPIPE,
+  EWOULDBLOCK,
+  EINPROGRESS,
+  ETIMEDOUT,
+  ENOTCONN,
+  ENOTSOCK,
+  EAFNOSUPPORT,
+  EADDRINUSE,
+  ECONNRESET,
+  ECONNREFUSED,
+  ENOPROTOOPT,
+  EOPNOTSUPP,
+  EISCONN,
+} = GUEST_ERRNO;
 const IO_EVENT_READ = 1;
 const IO_EVENT_WRITE = 1 << 1;
 const IO_EVENT_ERROR = 1 << 2;
@@ -1999,29 +2003,31 @@ const dbHostPoll = () => {
 };
 
 const SOCKET_SAB_HEADER_SIZE = 32;
+const SOCKET_RPC_STATE = Object.freeze({ Pending: 0, Ready: 1, Failed: 2 });
+const SOCKET_RPC_DIAGNOSTIC_MAX_BYTES = 256;
 const SOCKET_SAB_DATA_OFFSET = SOCKET_SAB_HEADER_SIZE;
 const SOCKET_RPC_TIMEOUT_MS = 30000;
-const AF_INET = 2;
-const AF_INET6 = 10;
-const AF_UNIX = 1;
-const SOCK_STREAM = 1;
-const SOCK_DGRAM = 2;
-const SOL_SOCKET = 1;
-const SO_SNDBUF = 7;
-const SO_RCVBUF = 8;
-const SO_BROADCAST = 6;
-const SO_LINGER = 13;
-const SO_REUSEADDR = 2;
-const SO_REUSEPORT = 15;
-const SO_ERROR = 4;
-const SO_KEEPALIVE = 9;
-const IPPROTO_TCP = 6;
-const IPPROTO_UDP = 17;
-const TCP_NODELAY = 1;
-const SHUT_RD = 0;
-const SHUT_WR = 1;
-const MSG_PEEK = 2;
-const MSG_TRUNC = 0x20;
+const AF_INET = SOCKET_ABI.AF_INET;
+const AF_INET6 = SOCKET_ABI.AF_INET6;
+const AF_UNIX = SOCKET_ABI.AF_UNIX;
+const SOCK_STREAM = SOCKET_ABI.SOCK_STREAM;
+const SOCK_DGRAM = SOCKET_ABI.SOCK_DGRAM;
+const SOL_SOCKET = SOCKET_ABI.SOL_SOCKET;
+const SO_SNDBUF = SOCKET_ABI.SO_SNDBUF;
+const SO_RCVBUF = SOCKET_ABI.SO_RCVBUF;
+const SO_BROADCAST = SOCKET_ABI.SO_BROADCAST;
+const SO_LINGER = SOCKET_ABI.SO_LINGER;
+const SO_REUSEADDR = SOCKET_ABI.SO_REUSEADDR;
+const SO_REUSEPORT = SOCKET_ABI.SO_REUSEPORT;
+const SO_ERROR = SOCKET_ABI.SO_ERROR;
+const SO_KEEPALIVE = SOCKET_ABI.SO_KEEPALIVE;
+const IPPROTO_TCP = SOCKET_ABI.IPPROTO_TCP;
+const IPPROTO_UDP = SOCKET_ABI.IPPROTO_UDP;
+const TCP_NODELAY = SOCKET_ABI.TCP_NODELAY;
+const SHUT_RD = SOCKET_ABI.SHUT_RD;
+const SHUT_WR = SOCKET_ABI.SHUT_WR;
+const MSG_PEEK = SOCKET_ABI.MSG_PEEK;
+const MSG_TRUNC = SOCKET_ABI.MSG_TRUNC;
 const I64_MIN = -(1n << 63n);
 
 const writeBytes = (ptr, bytes) => {
@@ -2280,37 +2286,31 @@ const decodeRecvmsgExtra = (extra) => {
 };
 
 const mapSocketError = (err) => {
-  if (!err) return EINVAL;
-  if (typeof err.errno === 'number') {
-    return Math.abs(err.errno) || EINVAL;
+  if (!err) return GUEST_ERRNO.EIO;
+  if (typeof err.code === 'string') {
+    return Object.hasOwn(GUEST_ERRNO, err.code) ? GUEST_ERRNO[err.code] : GUEST_ERRNO.EIO;
   }
-  if (err.code && ERRNO[err.code]) {
-    return ERRNO[err.code];
+  if (Number.isInteger(err.errno) && err.errno < 0) {
+    let name;
+    try { name = getSystemErrorName(err.errno); } catch { return GUEST_ERRNO.EIO; }
+    if (Object.hasOwn(GUEST_ERRNO, name)) return GUEST_ERRNO[name];
   }
-  switch (err.code) {
-    case 'EAGAIN':
-    case 'EWOULDBLOCK':
-      return EWOULDBLOCK;
-    case 'EINPROGRESS':
-      return EINPROGRESS;
-    case 'ECONNRESET':
-      return ECONNRESET;
-    case 'ECONNREFUSED':
-      return ECONNREFUSED;
-    case 'ETIMEDOUT':
-      return ETIMEDOUT;
-    case 'ENOTCONN':
-      return ENOTCONN;
-    case 'EISCONN':
-      return EISCONN;
-    case 'ENOTSUP':
-    case 'EOPNOTSUPP':
-      return EOPNOTSUPP;
-    case 'EPIPE':
-      return EPIPE;
-    default:
-      return EINVAL;
+  return GUEST_ERRNO.EIO;
+};
+
+class ResolverBoundaryError extends Error {}
+
+const mapResolverFailure = (err) => {
+  let name = typeof err?.code === 'string' ? err.code : '';
+  if (!name && Number.isInteger(err?.errno) && err.errno < 0) {
+    try { name = getSystemErrorName(err.errno); } catch { /* reject below */ }
   }
+  if (name === 'ENOTFOUND') return encodeResolverError(RESOLVER_ERROR.EAI_NONAME);
+  if (Object.hasOwn(RESOLVER_ERROR, name)) {
+    try { return encodeResolverError(RESOLVER_ERROR[name]); } catch { /* sentinel has no error payload */ }
+  }
+  if (Object.hasOwn(GUEST_ERRNO, name)) return encodeSystemError(GUEST_ERRNO[name]);
+  throw new ResolverBoundaryError(`unsupported resolver error identity ${name ? name.slice(0, 128) : '<missing>'}`);
 };
 
 const writeHandleParts = (view, index, value) => {
@@ -2748,6 +2748,17 @@ const socketWorkerMain = () => {
     });
 
   const handleSocketOp = async (op, request, bufferView) => {
+    let allowedFlags = null;
+    switch (op) {
+      case 'recv': case 'recvfrom': case 'recvmsg':
+        allowedFlags = SOCKET_ABI.MSG_PEEK | SOCKET_ABI.MSG_DONTWAIT; break;
+      case 'send': case 'sendto': case 'sendmsg':
+        allowedFlags = SOCKET_ABI.MSG_DONTWAIT; break;
+    }
+    if (allowedFlags !== null && ((request.flags || 0) & ~allowedFlags) !== 0) {
+      return { status: -GUEST_ERRNO.EOPNOTSUPP };
+    }
+
     switch (op) {
       case 'new': {
         const { family, sockType, proto, fileno } = request;
@@ -2765,6 +2776,9 @@ const socketWorkerMain = () => {
         }
         if (sockType !== SOCK_STREAM && sockType !== SOCK_DGRAM) {
           return { status: -EAFNOSUPPORT };
+        }
+        if (proto !== SOCKET_ABI.IPPROTO_IP && proto !== (sockType === SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP)) {
+          return { status: -GUEST_ERRNO.EPROTONOSUPPORT };
         }
         if (sockType === SOCK_DGRAM) {
           const type = family === AF_INET6 ? 'udp6' : 'udp4';
@@ -3296,6 +3310,7 @@ const socketWorkerMain = () => {
       }
       case 'shutdown': {
         const { handle, how } = request;
+        if (how !== SOCKET_ABI.SHUT_RD && how !== SOCKET_ABI.SHUT_WR && how !== SOCKET_ABI.SHUT_RDWR) return { status: -GUEST_ERRNO.EINVAL };
         const entry = getEntry(handle);
         if (!entry) return { status: -EBADF };
         if (entry.kind === 'udp') return { status: 0 };
@@ -3385,6 +3400,8 @@ const socketWorkerMain = () => {
       }
       case 'setsockopt': {
         const { handle, level, optname, value } = request;
+        if (!SOCKET_ABI.isKnownOption(level, optname)) return { status: -GUEST_ERRNO.ENOPROTOOPT };
+        if (level === SOL_SOCKET && optname === SO_ERROR) return { status: -GUEST_ERRNO.ENOPROTOOPT };
         const entry = getEntry(handle);
         if (!entry) return { status: -EBADF };
         const raw = Buffer.from(value || []);
@@ -3431,6 +3448,7 @@ const socketWorkerMain = () => {
       }
       case 'getsockopt': {
         const { handle, level, optname } = request;
+        if (!SOCKET_ABI.isKnownOption(level, optname)) return { status: -GUEST_ERRNO.ENOPROTOOPT };
         const entry = getEntry(handle);
         if (!entry) return { status: -EBADF };
         if (entry.sockopts) {
@@ -3605,8 +3623,16 @@ const socketWorkerMain = () => {
           proto,
           flags,
         } = request;
-        const host = hostBytes && hostBytes.length ? hostBytes.toString('utf8') : null;
-        const service = serviceBytes && serviceBytes.length ? serviceBytes.toString('utf8') : null;
+        const knownFlags = SOCKET_ABI.AI_PASSIVE | SOCKET_ABI.AI_CANONNAME | SOCKET_ABI.AI_NUMERICHOST | SOCKET_ABI.AI_NUMERICSERV;
+        if ((flags & ~knownFlags) !== 0) return { status: encodeResolverError(RESOLVER_ERROR.EAI_BADFLAGS) };
+        if (family !== SOCKET_ABI.AF_UNSPEC && family !== AF_INET && family !== AF_INET6) return { status: encodeResolverError(RESOLVER_ERROR.EAI_FAMILY) };
+        if (sockType !== 0 && sockType !== SOCK_STREAM && sockType !== SOCK_DGRAM) return { status: encodeResolverError(RESOLVER_ERROR.EAI_SOCKTYPE) };
+        if (proto !== SOCKET_ABI.IPPROTO_IP && proto !== IPPROTO_TCP && proto !== IPPROTO_UDP) return { status: encodeResolverError(RESOLVER_ERROR.EAI_SERVICE) };
+        if ((sockType === SOCK_STREAM && proto === IPPROTO_UDP) || (sockType === SOCK_DGRAM && proto === IPPROTO_TCP)) return { status: encodeResolverError(RESOLVER_ERROR.EAI_SOCKTYPE) };
+        const host = hostBytes && hostBytes.length ? Buffer.from(hostBytes.buffer, hostBytes.byteOffset, hostBytes.byteLength).toString('utf8') : null;
+        const service = serviceBytes && serviceBytes.length ? Buffer.from(serviceBytes.buffer, serviceBytes.byteOffset, serviceBytes.byteLength).toString('utf8') : null;
+        if ((flags & SOCKET_ABI.AI_NUMERICHOST) !== 0 && host && !net.isIP(host)) return { status: encodeResolverError(RESOLVER_ERROR.EAI_NONAME) };
+        if ((flags & SOCKET_ABI.AI_NUMERICSERV) !== 0 && service && !/^\d+$/.test(service)) return { status: encodeResolverError(RESOLVER_ERROR.EAI_NONAME) };
         let port = 0;
         if (service) {
           if (/^\d+$/.test(service)) {
@@ -3614,14 +3640,14 @@ const socketWorkerMain = () => {
           } else {
             let protoName = '';
             if (proto === IPPROTO_TCP) protoName = 'tcp';
-            if (proto === 17) protoName = 'udp';
+            if (proto === IPPROTO_UDP) protoName = 'udp';
             if (!protoName) {
               if (sockType === SOCK_DGRAM) protoName = 'udp';
               if (sockType === SOCK_STREAM) protoName = 'tcp';
             }
             const svcPort = lookupServicePort(service, protoName);
             if (svcPort === null || svcPort === undefined) {
-              return { status: -ENOENT };
+              return { status: encodeResolverError(RESOLVER_ERROR.EAI_SERVICE) };
             }
             port = svcPort;
           }
@@ -3629,6 +3655,8 @@ const socketWorkerMain = () => {
         try {
           let entries = [];
           if (host && net.isIP(host)) {
+            const literalFamily = net.isIP(host) === 6 ? AF_INET6 : AF_INET;
+            if (family !== SOCKET_ABI.AF_UNSPEC && family !== literalFamily) return { status: encodeResolverError(RESOLVER_ERROR.EAI_FAMILY) };
             entries = [
               {
                 address: host,
@@ -3665,7 +3693,7 @@ const socketWorkerMain = () => {
           }
           return { status: 0, data: Buffer.concat(payload) };
         } catch (err) {
-          return { status: -ENOENT };
+          return { status: mapResolverFailure(err) };
         }
       }
       case 'gethostname': {
@@ -3678,9 +3706,9 @@ const socketWorkerMain = () => {
       }
       case 'getservbyname': {
         const { nameBytes, protoBytes } = request;
-        const name = nameBytes ? nameBytes.toString('utf8') : '';
+        const name = nameBytes ? Buffer.from(nameBytes.buffer, nameBytes.byteOffset, nameBytes.byteLength).toString('utf8') : '';
         if (!name) return { status: -EINVAL };
-        const proto = protoBytes && protoBytes.length ? protoBytes.toString('utf8') : '';
+        const proto = protoBytes && protoBytes.length ? Buffer.from(protoBytes.buffer, protoBytes.byteOffset, protoBytes.byteLength).toString('utf8') : '';
         const port = lookupServicePort(name, proto);
         if (port === null || port === undefined) {
           return { status: -ENOENT };
@@ -3689,7 +3717,7 @@ const socketWorkerMain = () => {
       }
       case 'getservbyport': {
         const { port, protoBytes } = request;
-        const proto = protoBytes && protoBytes.length ? protoBytes.toString('utf8') : '';
+        const proto = protoBytes && protoBytes.length ? Buffer.from(protoBytes.buffer, protoBytes.byteOffset, protoBytes.byteLength).toString('utf8') : '';
         const name = lookupServiceName(port, proto);
         if (!name) {
           return { status: -ENOENT };
@@ -3767,14 +3795,23 @@ const socketWorkerMain = () => {
       if (result && result.handle2 !== undefined && result.handle2 !== null) {
         writeHandleParts(header, 5, result.handle2);
       }
-      Atomics.store(header, 0, 1);
+      Atomics.store(header, 0, SOCKET_RPC_STATE.Ready);
       Atomics.notify(header, 0, 1);
     };
     try {
       const result = await handleSocketOp(msg.op, msg.request || {}, dataView);
       respond(result || { status: 0 });
     } catch (err) {
-      respond({ status: -mapSocketError(err) });
+      if (err instanceof ResolverBoundaryError) {
+        const diagnostic = Buffer.from(err.message, 'utf8').subarray(0, SOCKET_RPC_DIAGNOSTIC_MAX_BYTES);
+        dataView.set(diagnostic);
+        header[2] = diagnostic.length;
+        console.error(`molt socket getaddrinfo refused: ${err.message}`);
+        Atomics.store(header, 0, SOCKET_RPC_STATE.Failed);
+        Atomics.notify(header, 0, 1);
+      } else {
+        respond({ status: -mapSocketError(err) });
+      }
     }
   });
 };
@@ -3810,7 +3847,10 @@ class SocketWorkerClient {
       throw new Error('socket host worker unavailable');
     }
     const cap = dataCap || 0;
-    const sab = new SharedArrayBuffer(SOCKET_SAB_HEADER_SIZE + cap);
+    // Reuse the one RPC payload for terminal diagnostics, including a resolver
+    // call that intentionally supplies no guest output capacity.
+    const payloadCapacity = op === 'getaddrinfo' ? Math.max(cap, SOCKET_RPC_DIAGNOSTIC_MAX_BYTES) : cap;
+    const sab = new SharedArrayBuffer(SOCKET_SAB_HEADER_SIZE + payloadCapacity);
     const header = new Int32Array(sab, 0, SOCKET_SAB_HEADER_SIZE / 4);
     this.worker.postMessage({
       type: 'request',
@@ -3824,9 +3864,17 @@ class SocketWorkerClient {
     } else {
       waitTimeout = SOCKET_RPC_TIMEOUT_MS;
     }
-    const waitRes = Atomics.wait(header, 0, 0, waitTimeout);
+    const waitRes = Atomics.wait(header, 0, SOCKET_RPC_STATE.Pending, waitTimeout);
     if (waitRes === 'timed-out') {
       throw new Error(`socket host ${op} timed out`);
+    }
+    if (Atomics.load(header, 0) === SOCKET_RPC_STATE.Failed) {
+      const length = header[2] >>> 0;
+      if (length === 0 || length > SOCKET_RPC_DIAGNOSTIC_MAX_BYTES || length > payloadCapacity) {
+        throw new ResolverBoundaryError(`socket host ${op} refused with invalid failure diagnostic length`);
+      }
+      const diagnostic = Buffer.from(sab, SOCKET_SAB_DATA_OFFSET, length).toString('utf8');
+      throw new ResolverBoundaryError(`socket host ${op} refused: ${diagnostic}`);
     }
     const status = header[1] | 0;
     const dataLen = header[2] >>> 0;
@@ -3865,6 +3913,7 @@ const socketCall = (op, request, dataCap, timeoutMs) => {
     const client = getSocketWorkerClient();
     return client.call(op, request, dataCap, timeoutMs);
   } catch (err) {
+    if (err instanceof ResolverBoundaryError) throw err;
     return {
       status: -ENOSYS,
       data: Buffer.alloc(0),
@@ -4261,16 +4310,21 @@ const socketHostSetsockopt = (handle, level, optname, valPtr, valLen) => {
 
 const socketHostGetsockopt = (handle, level, optname, valPtr, valLen, outLenPtr) => {
   if (!wasmMemory) return -ENOSYS;
+  if (valLen < 0) return -EINVAL;
   const res = socketCall('getsockopt', { handle: Number(handle), level, optname }, valLen);
   if (res.status < 0) return res.status;
   const dataLen = res.dataLen || 0;
-  if (dataLen > valLen) {
-    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-    return -ENOMEM;
+  const partialError = level === SOL_SOCKET && optname === SO_ERROR;
+  const length = partialError ? Math.min(valLen, dataLen) : dataLen;
+  const status = !partialError && dataLen > valLen ? -ENOMEM : 0;
+  try {
+    if (status === 0 && !writeBytes(valPtr, res.data.subarray(0, length))) return -GUEST_ERRNO.EFAULT;
+    writeU32(Number(outLenPtr), length);
+  } catch (error) {
+    if (error instanceof RangeError) return -GUEST_ERRNO.EFAULT;
+    throw error;
   }
-  if (!writeBytes(valPtr, res.data)) return -EINVAL;
-  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-  return 0;
+  return status;
 };
 
 const socketHostDetach = (handle) => {
@@ -4388,15 +4442,17 @@ const socketHostGetaddrinfo = (
     { hostBytes, serviceBytes, family, sockType, proto, flags },
     outCap,
   );
-  if (res.status < 0) return res.status;
+  if (res.status !== 0) return res.status;
   const dataLen = res.dataLen || 0;
-  if (dataLen > outCap) {
-    if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-    return -ENOMEM;
+  const status = dataLen > outCap ? encodeSystemError(GUEST_ERRNO.ENOMEM) : 0;
+  try {
+    if (status === 0 && !writeBytes(outPtr, res.data)) return encodeSystemError(GUEST_ERRNO.EFAULT);
+    writeU32(Number(outLenPtr), dataLen);
+  } catch (error) {
+    if (error instanceof RangeError) return encodeSystemError(GUEST_ERRNO.EFAULT);
+    throw error;
   }
-  if (!writeBytes(outPtr, res.data)) return -EINVAL;
-  if (outLenPtr) writeU32(Number(outLenPtr), dataLen);
-  return 0;
+  return status;
 };
 
 const socketHostGethostname = (bufPtr, bufCap, outLenPtr) => {
@@ -5906,6 +5962,8 @@ if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
 
 module.exports = {
   extractWasmTableBase,
+  mapSocketError,
+  mapResolverFailure,
   parseWasmImports,
   resolveManifestModulePath,
   resolveWasmPaths,

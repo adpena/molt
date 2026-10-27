@@ -58,6 +58,10 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
     runtime_boxed_op_specs,
     runtime_import_return_specs,
     runtime_export_name,
+    wasi_errno_table,
+    synthetic_errno_table,
+    resolver_error_table,
+    wasm_socket_constant_table,
 )
 from tools.wasm_abi_gen.paths import (  # noqa: E402
     BUILTIN_CALLABLES,
@@ -65,6 +69,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_ALLOWED_IMPORTS,
     OUT_JS_ABI,
     OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_JS_WASI_ERRNO,
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_PY,
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
@@ -74,6 +79,11 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_BOXED_ABI_RS,
     OUT_RUNTIME_RAW_ABI_RS,
+    OUT_SYNTHETIC_ERRNO_RS,
+    OUT_NATIVE_ERROR_NAMES_RS,
+    OUT_JS_SYNTHETIC_ERRNO,
+    OUT_WASM_SOCKET_ABI_RS,
+    OUT_JS_SOCKET_ABI,
     OUT_TABLE_LAYOUT_INC,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     REMOVED_GENERATED_FILES,
@@ -87,7 +97,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
 NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
 NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v6"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v8"
 # Every path this generator renders; the render cache holds exactly these.
 OUTPUT_PATHS: tuple[Path, ...] = (
     *OUT_RS_FILES.values(),
@@ -101,6 +111,12 @@ OUTPUT_PATHS: tuple[Path, ...] = (
     OUT_PY,
     OUT_JS_ABI,
     OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_JS_WASI_ERRNO,
+    OUT_SYNTHETIC_ERRNO_RS,
+    OUT_NATIVE_ERROR_NAMES_RS,
+    OUT_JS_SYNTHETIC_ERRNO,
+    OUT_WASM_SOCKET_ABI_RS,
+    OUT_JS_SOCKET_ABI,
     OUT_TABLE_LAYOUT_INC,
     OUT_ALLOWED_IMPORTS,
 )
@@ -396,6 +412,10 @@ def _render_rs_callable_table(
         "pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = ",
         f"{authority['layout_version']};\n",
     ]
+    if not include_active_element_role:
+        lines.append(
+            f"pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = {data['deployment_manifest']['version']};\n"
+        )
     if include_active_element_role:
         lines.extend(
             [
@@ -2315,7 +2335,10 @@ def render_js_abi(data: dict) -> str:
         runtime_export_by_import.setdefault(split_export_name, split_export_name)
 
     payload = {
+        "execution_manifest_version": data["deployment_manifest"]["version"],
         "generated_by": "tools/gen_wasm_abi.py",
+        "synthetic_errno": synthetic_errno_table(data),
+        "wasi_preview1_errno": wasi_errno_table(data),
         "callable_table_publication": dict(data["callable_table_publication"]),
         "runtime_export_by_import": runtime_export_by_import,
         "external_native_link_imports": {
@@ -2353,6 +2376,7 @@ def render_js_callable_table_abi(data: dict) -> str:
     payload = json.dumps(
         {
             **data["callable_table_publication"],
+            "execution_manifest_version": data["deployment_manifest"]["version"],
             "runtime_callables": _js_runtime_callable_abi(data),
         },
         sort_keys=True,
@@ -2370,6 +2394,306 @@ def render_js_callable_table_abi(data: dict) -> str:
             payload,
             "));\n",
         ]
+    )
+
+
+def render_js_wasi_errno(data: dict) -> str:
+    """Raw preview1 errno for actual WASI callbacks; separate from Molt env."""
+    payload = json.dumps(wasi_errno_table(data), sort_keys=True)
+    return "".join(
+        [
+            _header("//"),
+            "(function publishMoltWasiErrno(root, factory) {\n",
+            "  const authority = Object.freeze(factory());\n",
+            "  if (typeof module === 'object' && module && module.exports) {\n",
+            "    module.exports = authority;\n",
+            "  }\n",
+            "  root.MoltWasiErrno = authority;\n",
+            "})(typeof globalThis !== 'undefined' ? globalThis : this, () => (",
+            payload,
+            "));\n",
+        ]
+    )
+
+
+def render_js_synthetic_errno(data: dict) -> str:
+    errno = synthetic_errno_table(data)
+    resolver = resolver_error_table(data)
+    resolver_codes = [
+        resolver[row["name"]]
+        for row in data["resolver_error"]
+        if row["role"] == "resolver"
+    ]
+
+    def cases(values):
+        return " ".join(f"case {value}:" for value in dict.fromkeys(values))
+
+    payload = json.dumps({"errno": errno, "resolver": resolver})
+    return (
+        _header("//") + "(function publishMoltSyntheticErrno(root, payload) {\n"
+        "  Object.freeze(payload.errno); Object.freeze(payload.resolver);\n"
+        "  payload.encodeSystemError = code => { switch (code) { "
+        + cases(errno.values())
+        + " return -code; default: throw new RangeError('invalid system errno'); } };\n"
+        "  payload.encodeResolverError = code => { switch (code) { "
+        + cases(resolver_codes)
+        + " return code; default: throw new RangeError('invalid resolver error or system sentinel'); } };\n"
+        "  const authority = Object.freeze(payload);\n"
+        "  if (typeof module === 'object' && module && module.exports) module.exports = authority;\n"
+        "  root.MoltSyntheticErrno = authority;\n"
+        "})(typeof globalThis !== 'undefined' ? globalThis : this, " + payload + ");\n"
+    )
+
+
+def render_synthetic_errno_rs(data: dict) -> str:
+    table = synthetic_errno_table(data)
+    resolver = resolver_error_table(data)
+    failures = {
+        row["name"]: resolver[row["name"]]
+        for row in data["resolver_error"]
+        if row["role"] == "resolver"
+    }
+    lines = [_header("//")]
+    for name, value in {**table, **resolver}.items():
+        lines.append(f"pub const {name}: i32 = {value};\n")
+    for collection, values in (
+        ("ERRNO_CONSTANTS", table),
+        ("RESOLVER_ERROR_CONSTANTS", resolver),
+    ):
+        lines.append(f"pub const {collection}: &[(&str, i64)] = &[\n")
+        lines.extend(f'    ("{name}", {name} as i64),\n' for name in values)
+        lines.append("];\n")
+    for typename, values, zero in (
+        ("GuestErrno", table, False),
+        ("GuestResolverError", failures, False),
+    ):
+        canonical = {
+            value: name
+            for name, value in values.items()
+            if not any(
+                row["name"] == name and "alias" in row
+                for row in data["synthetic_errno"]
+            )
+        }
+        lines.append(
+            f"#[allow(non_camel_case_types)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n#[repr(i32)]\npub enum {typename} {{\n"
+        )
+        if zero:
+            lines.append("    Success = 0,\n")
+        lines.extend(f"    {name} = {value},\n" for value, name in canonical.items())
+        lines.append(
+            f"}}\nimpl {typename} {{\n    pub const fn code(self) -> i32 {{ self as i32 }}\n"
+        )
+        for name, value in values.items():
+            if canonical[value] != name:
+                lines.append(
+                    f"    pub const {name}: Self = Self::{canonical[value]};\n"
+                )
+        lines.append(
+            "    pub fn from_code(code: i32) -> Option<Self> {\n        match code {\n"
+        )
+        lines.extend(
+            f"            {value} => Some(Self::{name}),\n"
+            for value, name in canonical.items()
+        )
+        lines.append("            _ => None,\n        }\n    }\n")
+        if typename == "GuestErrno":
+            lines.append(
+                f"}}\nimpl core::ops::Neg for {typename} {{\n    type Output = i32;\n    fn neg(self) -> i32 {{ -self.code() }}\n}}\n"
+            )
+        else:
+            lines.append("}\n")
+    raw = data["wasi_errno"]
+    lines.append(
+        "#[allow(non_camel_case_types)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n#[repr(i32)]\npub enum RawWasiErrno {\n"
+    )
+    lines.extend(f"    {name} = {value},\n" for name, value in raw.items())
+    lines.append(
+        "}\nimpl RawWasiErrno {\n    pub const fn code(self) -> i32 { self as i32 }\n    pub fn from_code(code: i32) -> Option<Self> {\n        match code {\n"
+    )
+    lines.extend(
+        f"            {value} => Some(Self::{name}),\n" for name, value in raw.items()
+    )
+    lines.append(
+        "            _ => None,\n        }\n    }\n    pub const fn to_guest(self) -> GuestErrno {\n        match self {\n"
+    )
+    for name in raw:
+        guest_name = data["wasi_errno_disposition"].get(name, name)
+        lines.append(f"            Self::{name} => GuestErrno::{guest_name},\n")
+    lines.append(
+        '        }\n    }\n    #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]\n    pub fn from_sdk(code: i32) -> Option<Self> {\n'
+    )
+    for name in raw:
+        lines.append(
+            f"        if code == ::libc::{name} {{ return Some(Self::{name}); }}\n"
+        )
+    lines.append("        None\n    }\n}\n")
+    lines.append(
+        '#[cfg(not(target_arch = "wasm32"))]\npub fn from_native_errno(code: i32) -> GuestErrno {\n'
+    )
+    for row in data["synthetic_errno"]:
+        name = row["name"]
+        lines.append(
+            f"    if crate::native_error_codes::{name} == Some(code) {{ return GuestErrno::{name}; }}\n"
+        )
+        if symbol := row.get("windows_socket_name"):
+            lines.append(
+                f"    #[cfg(windows)]\n    if crate::native_error_codes::{symbol} == Some(code) {{ return GuestErrno::{name}; }}\n"
+            )
+    fallback = data["errno_adoption"]["unknown"]
+    lines.append(f"    GuestErrno::{fallback}\n}}\n")
+    lines.append(
+        f'#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]\npub fn from_wasi_errno(code: i32) -> GuestErrno {{\n    RawWasiErrno::from_sdk(code).map(RawWasiErrno::to_guest).unwrap_or(GuestErrno::{fallback})\n}}\n'
+    )
+    lines.append("""#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeResolverCode(core::num::NonZeroI32);
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeResolverCode { pub const fn code(self) -> i32 { self.0.get() } }
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeResolverError { System, Resolver(NativeResolverCode) }
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidNativeResolverStatus(pub i32);
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnknownNativeResolverError(pub i32);
+#[cfg(not(target_arch = "wasm32"))]
+pub fn from_native_resolver_error(code: i32) -> Result<NativeResolverError, InvalidNativeResolverStatus> {
+    let code = core::num::NonZeroI32::new(code).ok_or(InvalidNativeResolverStatus(code))?;
+    if crate::native_error_codes::__SYSTEM_SENTINEL__ == Some(code.get()) { return Ok(NativeResolverError::System); }
+    Ok(NativeResolverError::Resolver(NativeResolverCode(code)))
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn project_guest_resolver_error(code: NativeResolverCode) -> Result<GuestResolverError, UnknownNativeResolverError> {
+""")
+    lines[-1] = lines[-1].replace(
+        "__SYSTEM_SENTINEL__",
+        next(
+            row["name"]
+            for row in data["resolver_error"]
+            if row["role"] == "system_sentinel"
+        ),
+    )
+    for row in data["resolver_error"]:
+        if row["role"] != "resolver":
+            continue
+        name = row["name"]
+        condition = f"crate::native_error_codes::{name} == Some(code.code())"
+        if preferred := row.get("native_alias_prefer"):
+            condition += (
+                f" && crate::native_error_codes::{preferred} != Some(code.code())"
+            )
+        lines.append(
+            f"    if {condition} {{ return Ok(GuestResolverError::{name}); }}\n"
+        )
+    lines.append("    Err(UnknownNativeResolverError(code.code()))\n}\n")
+    lines.append("""#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolverFailure { System(GuestErrno), Resolver(GuestResolverError) }
+impl ResolverFailure {
+    pub const fn encode(self) -> i32 {
+        match self { Self::System(error) => -error.code(), Self::Resolver(error) => error.code() }
+    }
+}
+impl From<GuestErrno> for ResolverFailure { fn from(error: GuestErrno) -> Self { Self::System(error) } }
+impl From<GuestResolverError> for ResolverFailure { fn from(error: GuestResolverError) -> Self { Self::Resolver(error) } }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolverStatus { Success, System(GuestErrno), Resolver(GuestResolverError) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidResolverStatus(pub i32);
+pub fn decode_resolver_status(status: i32) -> Result<ResolverStatus, InvalidResolverStatus> {
+    if status == 0 { return Ok(ResolverStatus::Success); }
+    if status < 0 {
+        let code = status.checked_neg().ok_or(InvalidResolverStatus(status))?;
+        return GuestErrno::from_code(code).map(ResolverStatus::System).ok_or(InvalidResolverStatus(status));
+    }
+    GuestResolverError::from_code(status).map(ResolverStatus::Resolver).ok_or(InvalidResolverStatus(status))
+}
+""")
+    return "".join(lines)
+
+
+def render_wasm_socket_abi_rs(data: dict) -> str:
+    table = wasm_socket_constant_table(data)
+    lines = [_header("//")]
+    lines.extend(f"pub const {name}: i32 = {value};\n" for name, value in table.items())
+    lines.append("pub const SOCKET_CONSTANTS: &[(&str, i64)] = &[\n")
+    lines.extend(f'    ("{name}", {name} as i64),\n' for name in table)
+    lines.extend(
+        f'    ("{name}", crate::synthetic_errno::{name} as i64),\n'
+        for name in resolver_error_table(data)
+    )
+    lines.append("];\n")
+    options = [row for row in data["wasm_socket_constant"] if "option_level" in row]
+    lines.append(
+        "#[allow(non_camel_case_types)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum GuestSocketOption {\n"
+    )
+    lines.extend(f"    {row['name']},\n" for row in options)
+    lines.append(
+        "}\nimpl GuestSocketOption {\n    pub fn from_wire(level: i32, name: i32) -> Option<Self> {\n        match (level, name) {\n"
+    )
+    lines.extend(
+        f"            ({row['option_level']}, {row['name']}) => Some(Self::{row['name']}),\n"
+        for row in options
+    )
+    lines.append("            _ => None,\n        }\n    }\n}\n")
+    for kind, typename, flags in (
+        ("address_family", "GuestAddressFamily", False),
+        ("socket_type", "GuestSocketType", False),
+        ("protocol", "GuestProtocol", False),
+        ("shutdown", "GuestShutdown", False),
+        ("message_flag", "GuestMessageFlag", True),
+        ("message_result_flag", "GuestMessageResultFlag", True),
+        ("resolver_flag", "GuestResolverFlag", True),
+    ):
+        rows = [row for row in data["wasm_socket_constant"] if row["kind"] == kind]
+        lines.append(
+            f"#[allow(non_camel_case_types)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n#[repr(i32)]\npub enum {typename} {{\n"
+        )
+        lines.extend(f"    {row['name']} = {row['value']},\n" for row in rows)
+        lines.append(
+            f"}}\nimpl {typename} {{\n    pub const fn code(self) -> i32 {{ self as i32 }}\n"
+        )
+        if not flags or kind == "message_result_flag":
+            variants = ", ".join(f"Self::{row['name']}" for row in rows)
+            lines.append(f"    pub const ALL: [Self; {len(rows)}] = [{variants}];\n")
+        if flags:
+            known = 0
+            for row in rows:
+                known |= row["value"]
+            variants = ", ".join(f"Self::{row['name']}" for row in rows)
+            lines.append(
+                f"    pub fn from_bits(bits: i32) -> Option<impl Iterator<Item=Self>> {{\n        if bits & !{known} != 0 {{ return None; }}\n        Some([{variants}].into_iter().filter(move |flag| bits & flag.code() != 0))\n    }}\n"
+            )
+        else:
+            lines.append(
+                "    pub fn from_wire(value: i32) -> Option<Self> {\n        match value {\n"
+            )
+            lines.extend(
+                f"            {row['name']} => Some(Self::{row['name']}),\n"
+                for row in rows
+            )
+            lines.append("            _ => None,\n        }\n    }\n")
+        lines.append("}\n")
+    return "".join(lines)
+
+
+def render_js_socket_abi(data: dict) -> str:
+    table = wasm_socket_constant_table(data)
+    payload = json.dumps(table)
+    options = [row for row in data["wasm_socket_constant"] if row["kind"] == "option"]
+    condition = " || ".join(
+        f"(level === {table[row['option_level']]} && name === {row['value']})"
+        for row in options
+    )
+    return (
+        _header("//") + "(function publishMoltSocketAbi(root, payload) {\n"
+        "  payload.isKnownOption = (level, name) => " + condition + ";\n"
+        "  const authority = Object.freeze(payload);\n"
+        "  if (typeof module === 'object' && module && module.exports) module.exports = authority;\n"
+        "  root.MoltSocketAbi = authority;\n"
+        "})(typeof globalThis !== 'undefined' ? globalThis : this, " + payload + ");\n"
     )
 
 
@@ -2408,6 +2732,33 @@ def render_outputs(data: dict) -> dict[Path, str]:
     outputs[OUT_PY] = render_py(data)
     outputs[OUT_JS_ABI] = render_js_abi(data)
     outputs[OUT_JS_CALLABLE_TABLE_ABI] = render_js_callable_table_abi(data)
+    outputs[OUT_JS_WASI_ERRNO] = render_js_wasi_errno(data)
+    outputs[OUT_SYNTHETIC_ERRNO_RS] = rustfmt_source(
+        render_synthetic_errno_rs(data), label="synthetic_errno_generated.rs"
+    )
+    outputs[OUT_JS_SYNTHETIC_ERRNO] = render_js_synthetic_errno(data)
+    native_names = list(
+        dict.fromkeys(
+            [row["name"] for row in data["synthetic_errno"]]
+            + [
+                row["windows_socket_name"]
+                for row in data["synthetic_errno"]
+                if "windows_socket_name" in row
+            ]
+            + [row["name"] for row in data["resolver_error"]]
+        )
+    )
+    outputs[OUT_NATIVE_ERROR_NAMES_RS] = rustfmt_source(
+        _header("//")
+        + "pub const NATIVE_ERROR_NAMES: &[&str] = &[\n"
+        + "".join(f'    "{name}",\n' for name in native_names)
+        + "];\n",
+        label="native_error_names_generated.rs",
+    )
+    outputs[OUT_WASM_SOCKET_ABI_RS] = rustfmt_source(
+        render_wasm_socket_abi_rs(data), label="wasm_socket_abi_generated.rs"
+    )
+    outputs[OUT_JS_SOCKET_ABI] = render_js_socket_abi(data)
     outputs[OUT_TABLE_LAYOUT_INC] = render_table_layout_inc(data)
     outputs[OUT_ALLOWED_IMPORTS] = render_allowed_imports(data)
     return outputs

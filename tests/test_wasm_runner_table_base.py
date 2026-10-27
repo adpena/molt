@@ -24,6 +24,54 @@ DEFAULT_WASM_APP_TABLE_BASE = 256
 TEST_SHARED_WASM_TABLE_BASE = 4096
 
 
+def test_node_manifest_rejects_incompatible_receiver_before_module_read(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    script = (
+        "const manifestPath = "
+        + json.dumps(str(manifest_path))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const {resolveWasmPaths} = require('./wasm/run_wasm.js');
+const invalid = [undefined, null, 0, 1, 2, 4, 99, true, false, '3', 3.5];
+const originalRead = fs.readFileSync;
+let cases = 0;
+for (const mode of ['linked', 'split-runtime']) {
+  for (const version of invalid) {
+    const descriptor = {path: 'must-not-read.wasm', size: 8, sha256: '0'.repeat(64)};
+    const manifest = {version, mode, modules: mode === 'linked'
+      ? {linked: descriptor} : {app: descriptor, runtime: descriptor}};
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    let moduleReads = 0;
+    fs.readFileSync = function(selected, ...args) {
+      if (path.resolve(String(selected)) !== path.resolve(manifestPath)) {
+        moduleReads++;
+        throw new Error('module read attempted before receiver admission');
+      }
+      return originalRead.call(this, selected, ...args);
+    };
+    try {
+      assert.throws(() => resolveWasmPaths({manifestPath}),
+        /Molt deployment manifest version must be 3/);
+      assert.equal(moduleReads, 0);
+      cases++;
+    } finally { fs.readFileSync = originalRead; }
+  }
+}
+console.log(JSON.stringify({cases}));
+"""
+    )
+    result = _run_wasm_test_process(
+        ["node", "-e", script], role="tool", cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"cases": 22}
+
+
 @pytest.mark.parametrize("capture", [False, True])
 def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
     tmp_path: Path, capture: bool
@@ -105,6 +153,7 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
     )
     parsed = _run_wasm_test_process(
         [wasm_tools, "parse", str(wat_path), "-o", str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -121,9 +170,15 @@ def test_direct_node_runner_passes_manifest_tail_to_wasi_guest(
     env = dict(os.environ)
     env.pop("NODE_NO_WARNINGS", None)
 
-    omitted = _run_wasm_test_process(command, cwd=ROOT, env=env, timeout=30)
+    omitted = _run_wasm_test_process(
+        command, role="guest-host", cwd=ROOT, env=env, timeout=30
+    )
     passed = _run_wasm_test_process(
-        [*command, "--sample", "value"], cwd=ROOT, env=env, timeout=30
+        [*command, "--sample", "value"],
+        role="guest-host",
+        cwd=ROOT,
+        env=env,
+        timeout=30,
     )
 
     assert omitted.returncode != 0
@@ -191,6 +246,7 @@ def _wasm_from_wat(
     wat_path.write_text(wat, encoding="utf-8")
     result = _run_wasm_test_process(
         [wasm_tools, "parse", str(wat_path), "-o", str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -219,6 +275,7 @@ def _wasm_from_wat(
     # The facts tool reads the module from stdin.
     result = _run_wasm_test_process(
         publish_command,
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=300,
@@ -345,6 +402,7 @@ def test_direct_node_runner_keeps_exact_guest_stderr_separate_from_host(
             "--",
             str(manifest),
         ],
+        role="guest-host",
         cwd=ROOT,
         env=env,
         timeout=30,
@@ -410,6 +468,7 @@ def test_direct_split_runner_app_stderr_close_cannot_retarget_runtime_shutdown(
             "--",
             str(manifest),
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -473,6 +532,7 @@ def test_direct_node_runner_retires_capture_after_guest_fd_ownership_changes(
             "--",
             str(_linked_manifest(module)),
         ],
+        role="guest-host",
         cwd=ROOT,
         env={**os.environ, "MOLT_WASM_TRACE_RUN": "1"},
         timeout=30,
@@ -498,6 +558,7 @@ def test_direct_node_runner_capture_admission_preserves_existing_bytes(
             "--",
             "absent.json",
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -534,6 +595,7 @@ def test_direct_node_runner_rejects_nonregular_capture_before_open(
             "--",
             "absent.json",
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=10,
@@ -584,6 +646,7 @@ def test_direct_node_runner_rejects_capture_inode_substitution(
             "--",
             "absent.json",
         ],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=10,
@@ -598,6 +661,7 @@ def test_direct_node_runner_rejects_capture_inode_substitution(
 def test_direct_node_runner_rejects_ambiguous_capture_prefix(tail: list[str]) -> None:
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", "--guest-stderr", *tail],
+        role="guest-host",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -615,12 +679,56 @@ def _extract_table_base(wasm_path: Path) -> int | None:
     )
     result = _run_wasm_test_process(
         ["node", "-e", script, str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+def test_host_socket_errors_reach_the_guest_in_the_declared_domain() -> None:
+    script = """
+const runner = require('./wasm/run_wasm.js');
+const util = require('node:util');
+const errno = require('./wasm/synthetic_errno_generated.js').errno;
+const nativeWouldBlock = [...util.getSystemErrorMap()].find(([, detail]) => detail[0] === 'EAGAIN')[0];
+process.stdout.write(JSON.stringify({
+  pending: runner.mapSocketError({code:'EINPROGRESS',errno:-1}),
+  refused: runner.mapSocketError({code:'ECONNREFUSED'}),
+  wouldBlock: runner.mapSocketError({errno:nativeWouldBlock}),
+  unknown: runner.mapSocketError({errno:-2147483648}),
+  resolver: runner.mapResolverFailure({code:'ENOTFOUND'}),
+  foreignResolver: runner.mapSocketError({code:'EAI_NONAME',errno:-9}),
+  resolverCollision: runner.mapResolverFailure({code:'EAI_SERVICE'}),
+  systemCollision: runner.mapResolverFailure({code:'EBADF'}),
+  numericSystem: runner.mapResolverFailure({errno: [...util.getSystemErrorMap()].find(([, detail]) => detail[0] === 'EBADF')[0]}),
+  alias: errno.EWOULDBLOCK,
+  explicitUnknown: runner.mapSocketError({code:'EFAKE',errno:nativeWouldBlock}),
+  unknownResolverBounded: (() => { try { runner.mapResolverFailure({code: 'X'.repeat(10000)}); return false; } catch (error) { return error.constructor.name === 'ResolverBoundaryError' && error.message.length < 200; } })(),
+  ordinaryNoDataRefused: (() => { try { runner.mapResolverFailure({code:'ENODATA'}); return false; } catch (error) { return error.constructor.name === 'ResolverBoundaryError'; } })(),
+}));
+"""
+    result = _run_wasm_test_process(
+        ["node", "-e", script], role="tool", cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "pending": 115,
+        "refused": 111,
+        "wouldBlock": 11,
+        "unknown": 5,
+        "resolver": 8,
+        "foreignResolver": 5,
+        "resolverCollision": 9,
+        "systemCollision": -9,
+        "numericSystem": -9,
+        "alias": 11,
+        "explicitUnknown": 5,
+        "unknownResolverBounded": True,
+        "ordinaryNoDataRefused": True,
+    }
 
 
 def test_parse_wasm_imports_handles_tag_imports_before_memory(tmp_path: Path) -> None:
@@ -634,6 +742,7 @@ def test_parse_wasm_imports_handles_tag_imports_before_memory(tmp_path: Path) ->
     )
     result = _run_wasm_test_process(
         ["node", "-e", script, str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -752,6 +861,7 @@ def test_linked_runner_uses_env_table_base_without_calling_setter(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_linked_manifest(wasm_path))],
+        role="guest-host",
         cwd=ROOT,
         env={**os.environ, "NODE_NO_WARNINGS": "1"},
         timeout=30,
@@ -777,6 +887,7 @@ def test_linked_runner_uses_only_main_startup_authority(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_linked_manifest(wasm_path))],
+        role="guest-host",
         cwd=ROOT,
         env={**os.environ, "NODE_NO_WARNINGS": "1"},
         timeout=30,
@@ -892,6 +1003,7 @@ def test_direct_split_runner_accepts_runtime_memory_and_app_wasi_memory(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1031,6 +1143,7 @@ def test_direct_split_runner_bridges_call_dispatch_argv_from_app_memory(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1157,6 +1270,7 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1244,6 +1358,7 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1336,6 +1451,7 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1410,6 +1526,7 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1493,6 +1610,7 @@ def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1578,6 +1696,7 @@ def test_direct_split_runner_dispatches_runtime_owned_reserved_trampoline(
 
     result = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        role="guest-host",
         cwd=ROOT,
         env={
             **os.environ,
@@ -1635,6 +1754,7 @@ def _remap_default_app_runtime_shared_table_index(
     )
     result = _run_wasm_test_process(
         ["node", "-e", script, str(idx), json.dumps(list(installed_indices))],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,
@@ -1739,3 +1859,166 @@ def test_cli_json_wasm_keeps_guest_bytes_and_host_diagnostics(
     assert "ExperimentalWarning: guest" not in data["host_stderr"]
     assert ("unreachable" in data["host_stderr"]) is trap
     assert all(not Path(owner.name).exists() for owner in owners)
+
+
+def test_resolver_worker_transport_preserves_domains_and_terminal_refusal(
+    tmp_path: Path,
+) -> None:
+    # The real worker inherits this external DNS producer. No production test op,
+    # special error status, or duplicate worker implementation is substituted.
+    preload = tmp_path / "dns_producer.cjs"
+    preload.write_text(
+        """
+const dns = require('node:dns');
+dns.promises.lookup = async host => {
+  const identities = { 'resolver.test': 'EAI_SERVICE', 'system.test': 'EBADF',
+    'opaque.test': 'EAI_SYSTEM', 'unknown.test': 'EAI_VENDOR' };
+  if (identities[host]) { const error = new Error('external DNS failure'); error.code = identities[host]; throw error; }
+  return [{ address: '127.0.0.1', family: 4 }];
+};
+""",
+        encoding="utf-8",
+    )
+    script = r"""
+const fs = require('node:fs');
+const Module = require('node:module');
+const path = require('node:path');
+const filename = path.resolve('wasm/run_wasm.js');
+const loaded = new Module(filename, module);
+loaded.filename = filename;
+loaded.paths = Module._nodeModulePaths(path.dirname(filename));
+loaded._compile(fs.readFileSync(filename, 'utf8') +
+  '\nmodule.exports.transport = { socketHostGetaddrinfo, setWasmMemory, close: () => socketWorkerClient.close() };', filename);
+const transport = loaded.exports.transport;
+(async () => {
+  // Import and re-export the real i32 host boundary; no compiler fixture or
+  // alternate resolver implementation supplies a result.
+  const text = value => [...Buffer.from(value)];
+  const name = value => [text(value).length, ...text(value)];
+  const section = (id, body) => [id, body.length, ...body];
+  const bytes = [0,97,115,109,1,0,0,0,
+    ...section(1, [1, 0x60, 11, ...Array(11).fill(0x7f), 1, 0x7f]),
+    ...section(2, [2, ...name('env'), ...name('molt_socket_getaddrinfo_host'), 0, 0,
+      ...name('env'), ...name('memory'), 2, 0, 1]),
+    ...section(7, [2, ...name('lookup'), 0, 0, ...name('memory'), 2, 0])];
+  const memory = new WebAssembly.Memory({initial: 1});
+  transport.setWasmMemory(memory);
+  const {instance} = await WebAssembly.instantiate(new Uint8Array(bytes), {
+    env: {memory, molt_socket_getaddrinfo_host: transport.socketHostGetaddrinfo},
+  });
+  const statuses = [];
+  const lengthControls = [];
+  let requiredLength;
+  try {
+    for (const host of ['ok.test', 'resolver.test', 'system.test', 'opaque.test', 'unknown.test', 'ok.test']) {
+      try {
+        new Uint8Array(memory.buffer).set(Buffer.from(host), 64);
+        new Uint8Array(memory.buffer).set(Buffer.from('80'), 512);
+        statuses.push(instance.exports.lookup(64, Buffer.byteLength(host), 512, 2,
+          2, 1, 6, 0, 1024, host === 'opaque.test' ? 0 : 1024, 2048));
+      } catch (error) {
+        statuses.push({type: error.constructor.name, diagnostic: error.message});
+      }
+    }
+    for (const capacity of [0, 1024]) {
+      lengthControls.push(instance.exports.lookup(64, 7, 512, 2, 2, 1, 6, 0, 1024, capacity, 65535));
+    }
+    lengthControls.push(instance.exports.lookup(64, 7, 512, 2, 2, 1, 6, 0, 1024, 0, 2048));
+    requiredLength = new DataView(memory.buffer).getUint32(2048, true);
+  } finally { await transport.close(); }
+  console.log(JSON.stringify({statuses, lengthControls, requiredLength}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = _run_wasm_test_process(
+        ["node", "--require", str(preload), "-e", script],
+        role="guest-host",
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    statuses = payload["statuses"]
+    assert payload["lengthControls"] == [-14, -14, -12]
+    assert payload["requiredLength"] > 0
+    assert statuses[:3] == [0, 9, -9]
+    assert (
+        statuses[-1] == 0
+    )  # A refusal wakes its waiter and does not strand the worker.
+    for status in statuses[3:5]:
+        assert status["type"] == "ResolverBoundaryError"
+        assert "getaddrinfo refused" in status["diagnostic"]
+    assert "unsupported resolver error identity EAI_SYSTEM" in statuses[3]["diagnostic"]
+    assert "unsupported resolver error identity EAI_VENDOR" in statuses[4]["diagnostic"]
+
+
+def test_node_socket_error_prefix_executes_actual_import_and_native_reset(
+    tmp_path: Path,
+) -> None:
+    script = r"""
+const fs = require('node:fs');
+const Module = require('node:module');
+const path = require('node:path');
+const {Worker} = require('node:worker_threads');
+const server = new Worker(`
+  const {parentPort} = require('node:worker_threads');
+  const net = require('node:net');
+  const server = net.createServer(socket => socket.once('data', bytes => {
+    socket.resetAndDestroy();
+    parentPort.postMessage({type: 'reset', byte: bytes[0]});
+  }));
+  server.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));
+`, {eval: true});
+const filename = path.resolve('wasm/run_wasm.js');
+const loaded = new Module(filename, module);
+loaded.filename = filename;
+loaded.paths = Module._nodeModulePaths(path.dirname(filename));
+loaded._compile(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.socket = { socketHostNew, socketHostConnect, socketHostWait, socketHostGetsockopt, socketHostSend, socketHostClose, setWasmMemory, close: () => socketWorkerClient.close() };', filename);
+const host = loaded.exports.socket;
+(async () => {
+  try {
+    const port = await new Promise((resolve, reject) => { server.once('message', resolve); server.once('error', reject); });
+    const text = value => [...Buffer.from(value)];
+    const name = value => [text(value).length, ...text(value)];
+    const section = (id, body) => [id, body.length, ...body];
+    const bytes = [0,97,115,109,1,0,0,0,
+      ...section(1, [1, 0x60, 6, 0x7e, ...Array(5).fill(0x7f), 1, 0x7f]),
+      ...section(2, [2, ...name('env'), ...name('molt_socket_getsockopt_host'), 0, 0, ...name('env'), ...name('memory'), 2, 0, 1]),
+      ...section(7, [2, ...name('get'), 0, 0, ...name('memory'), 2, 0])];
+    const memory = new WebAssembly.Memory({initial: 1});
+    host.setWasmMemory(memory);
+    const {instance} = await WebAssembly.instantiate(new Uint8Array(bytes), {env: {memory, molt_socket_getsockopt_host: host.socketHostGetsockopt}});
+    const view = new DataView(memory.buffer);
+    const results = [];
+    for (const capacity of [1, 4]) {
+      const reset = new Promise((resolve, reject) => { server.once('message', resolve); server.once('error', reject); });
+      const handle = host.socketHostNew(2, 1, 6, -1);
+      try {
+        new Uint8Array(memory.buffer).set([2, 0, port & 255, port >> 8, 127, 0, 0, 1], 64);
+        const connected = host.socketHostConnect(handle, 64, 8);
+        if (connected !== 0 && connected !== -115) throw new Error(`connect failed ${connected}`);
+        if (host.socketHostWait(handle, 2, 2000) < 0) throw new Error('connect readiness failed');
+        new Uint8Array(memory.buffer)[512] = 7;
+        if (host.socketHostSend(handle, 512, 1, 0) !== 1) throw new Error('handshake byte was not sent');
+        const observed = await reset;
+        if (observed.type !== 'reset' || observed.byte !== 7) throw new Error('server did not reset after the actual handshake byte');
+        if (host.socketHostWait(handle, 1, 2000) < 0) throw new Error('reset readiness failed');
+        new Uint8Array(memory.buffer).set([165,165,165,165], 128);
+        const status = instance.exports.get(handle, 1, 4, 128, capacity, 256);
+        results.push({status, length: view.getUint32(256, true), bytes: [...new Uint8Array(memory.buffer, 128, 4)]});
+        if (instance.exports.get(handle, 1, 4, 128, -1, 256) !== -22) throw new Error('negative option capacity accepted');
+        if (instance.exports.get(handle, 1, 4, 128, 4, 65535) !== -14) throw new Error('invalid option length pointer accepted');
+      } finally { host.socketHostClose(handle); }
+    }
+    console.log(JSON.stringify(results));
+  } finally { await server.terminate(); await host.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = _run_wasm_test_process(
+        ["node", "-e", script], role="guest-host", cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        {"status": 0, "length": 1, "bytes": [104, 165, 165, 165]},
+        {"status": 0, "length": 4, "bytes": [104, 0, 0, 0]},
+    ]

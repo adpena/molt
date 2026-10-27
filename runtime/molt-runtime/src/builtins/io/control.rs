@@ -370,10 +370,13 @@ fn require_seekable_text_backend(
                     "underlying stream is not seekable",
                 ));
             }
+            #[cfg(windows)]
             return Err(match error.raw_os_error() {
                 Some(errno) => raise_os_error_errno::<u64>(py, i64::from(errno), "tell"),
                 None => raise_os_error::<u64>(py, error, "tell"),
             });
+            #[cfg(not(windows))]
+            return Err(raise_os_error::<u64>(py, error, "tell"));
         }
     }
     Ok(())

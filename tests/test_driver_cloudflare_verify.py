@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import json
 import hashlib
 import shutil
@@ -39,7 +41,7 @@ def _write_execution_closure(assets_root: Path) -> dict[str, object]:
     manifest.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
                 "modules": {
                     "app": descriptor("app.wasm"),

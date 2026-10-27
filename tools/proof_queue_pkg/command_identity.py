@@ -38,7 +38,7 @@ from molt.python_environment_identity import (
     validate_python_capture,
     validate_python_environment_location,
 )
-from molt.source_build_environment_schema import DevelopmentEnvironmentAdmission
+from molt.source_build_environment_schema import DevelopmentEnvironmentRequest
 from molt.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
 from molt.python_environment_location import (
     SOURCE_BUILD_ENVIRONMENT_MANIFEST,
@@ -671,7 +671,7 @@ def _development_admission(
     env: Mapping[str, str],
     *,
     source_root: Path,
-) -> DevelopmentEnvironmentAdmission | None:
+) -> DevelopmentEnvironmentRequest | None:
     """Recover managed wrapper intent without importing semantic dependencies."""
     from molt.dx import DxProject
 
@@ -683,7 +683,7 @@ def _development_admission(
         return None
     if kind not in {"venv", "uv-project"}:
         return None
-    return DevelopmentEnvironmentAdmission(
+    return DevelopmentEnvironmentRequest(
         source_root,
         str(wrapper["python"]) if kind == "uv-project" else None,
         DxProject(source_root).dependency_groups(),
@@ -696,7 +696,7 @@ def _python_probe_command(
     verifier_bytecode_prefix: Path,
     source_root: Path,
     admit_published_environment: bool,
-    development_admission: DevelopmentEnvironmentAdmission | None = None,
+    development_admission: DevelopmentEnvironmentRequest | None = None,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
 ) -> list[str]:
@@ -715,10 +715,13 @@ def _python_probe_command(
                 str(hash_workers),
                 "--admit-virtualenv-bootstrap",
                 *(
-                    development_admission.probe_arguments()
+                    ("--admit-published-environment",)
+                    if admit_published_environment or development_admission is not None
+                    else ()
+                ),
+                *(
+                    development_admission.intent_arguments()
                     if development_admission is not None
-                    else ("--admit-published-environment",)
-                    if admit_published_environment
                     else ()
                 ),
                 *(

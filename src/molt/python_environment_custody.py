@@ -16,7 +16,7 @@ import re
 import struct
 import sys
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from email.parser import Parser
 from pathlib import Path, PurePath
 from typing import cast
@@ -758,19 +758,30 @@ def _bytecode_disposition(
     return _BytecodeDisposition.OWNED
 
 
-def _validate_managed_bytecode_prefix(
-    root: Path, tree_by_path: Mapping[str, Mapping[str, object]]
-) -> None:
-    """Managed readers compile imported sources; no executable cache is shipped."""
+def validate_managed_bytecode_prefix(root: Path) -> Path:
+    """Validate the physical source-only read namespace at selection or capture."""
     prefix = environment_bytecode_prefix(root)
-    relative = prefix.relative_to(root).as_posix()
     if (
         not prefix.is_dir()
         or prefix.is_symlink()
         or _is_junction(prefix)
+        or prefix.resolve(strict=True) != prefix
         or any(prefix.iterdir())
-        or tree_by_path.get(relative, {}).get("kind") != "directory"
-        or any(path.startswith(relative + "/") for path in tree_by_path)
+    ):
+        raise PythonEnvironmentIdentityError(
+            "managed source-only image requires a physical empty bytecode prefix"
+        )
+    return prefix
+
+
+def _validate_managed_bytecode_prefix(
+    root: Path, tree_by_path: Mapping[str, Mapping[str, object]]
+) -> None:
+    """Bind the physical read namespace to the captured directory inventory."""
+    prefix = validate_managed_bytecode_prefix(root)
+    relative = prefix.relative_to(root).as_posix()
+    if tree_by_path.get(relative, {}).get("kind") != "directory" or any(
+        path.startswith(relative + "/") for path in tree_by_path
     ):
         raise PythonEnvironmentIdentityError(
             "managed source-only image requires a physical empty bytecode prefix"
@@ -967,28 +978,14 @@ def capture_current_python_environment(
     admitted_external_roots: Sequence[Path] = (),
     capture_context: PythonFileCaptureContext | None = None,
     with_custody: bool = False,
+    final_checks: Callable[[Mapping[str, object]], None] | None = None,
 ) -> dict[str, object]:
-    """Capture exact live bytes without precompiling unimported modules."""
-    return _capture_current_python_environment(
-        root,
-        excluded_relative_paths=excluded_relative_paths,
-        admitted_site_bootstrap_paths=admitted_site_bootstrap_paths,
-        admitted_external_roots=admitted_external_roots,
-        capture_context=capture_context,
-        with_custody=with_custody,
-    )
+    """Capture live bytes, apply read-only checks, then verify before returning.
 
-
-def _capture_current_python_environment(
-    root: Path,
-    *,
-    excluded_relative_paths: Sequence[str] = (),
-    admitted_site_bootstrap_paths: Sequence[str] = (),
-    admitted_external_roots: Sequence[Path] = (),
-    capture_context: PythonFileCaptureContext | None = None,
-    with_custody: bool = False,
-) -> dict[str, object]:
-    """Capture an exact immutable environment using the active interpreter."""
+    ``final_checks`` observes the produced identity before the mandatory file
+    and membership fence. It must not mutate identity or its node bindings.
+    Plain captures and custody envelopes share that finalization boundary.
+    """
 
     if with_custody:
         # Load envelope dependencies before the immutable native-image census.
@@ -1238,6 +1235,8 @@ def _capture_current_python_environment(
         **material,
         "environment_closure_sha256": canonical_json_sha256(material),
     }
+    if final_checks is not None:
+        final_checks(payload)
     if with_custody:
         return python_capture_payload(payload, capture_context)
     capture_context.verify()

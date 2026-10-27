@@ -8,10 +8,13 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal, assert_never
 from pathlib import Path
 
 import pytest
 
+from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli import wasm_toolchain
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 from molt.dx import (
@@ -83,6 +86,7 @@ def _select_out_dir(default: Path, root: Path) -> Path:
 def _run_wasm_test_process(
     args: Sequence[str],
     *,
+    role: Literal["tool", "guest-host"],
     cwd: Path,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
@@ -91,11 +95,28 @@ def _run_wasm_test_process(
     check: bool = False,
     input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    """Keep tool selection distinct from a direct Molt embedding policy.
+
+    Tools own argument/environment precedence and accept the caller's exact
+    mapping or inheritance request. Direct guest hosts consume runtime grants,
+    so only that role projects profiles through the canonical policy owner.
+    Guard budget classification remains with process_guard_common.
+    """
+    process_env: Mapping[str, str] | None
+    match role:
+        case "tool":
+            process_env = env
+        case "guest-host":
+            projected = ProcessEnvironmentBuilder(os.environ if env is None else env)
+            projected.update(resolve_runtime_policy_from_env(projected).to_env_vars())
+            process_env = projected
+        case _:
+            assert_never(role)
     return process_guard_common.run_guarded_test_process(
         list(args),
         prefix="MOLT_WASM_TEST",
         cwd=cwd,
-        env=os.environ if env is None else env,
+        env=process_env,
         capture_output=capture_output,
         text=text,
         timeout=timeout,
@@ -211,13 +232,21 @@ def wasm_test_build_env(
     return env
 
 
-def build_wasm_linked(
+@dataclass(frozen=True)
+class WasmTestBuildCommand:
+    argv: tuple[str, ...]
+    cwd: Path
+    environment: Mapping[str, str]
+    output: Path | None
+
+
+def wasm_linked_build_command(
     root: Path,
     src: Path,
     out_dir: Path,
     *,
     extra_args: list[str] | None = None,
-) -> Path:
+) -> WasmTestBuildCommand:
     out_dir = _select_out_dir(out_dir, root)
     test_artifact_root = _linked_test_artifact_root(root, out_dir)
     env = wasm_test_build_env(
@@ -250,11 +279,23 @@ def build_wasm_linked(
     ]
     if extra_args:
         args.extend(extra_args)
+    return WasmTestBuildCommand(tuple(args), root, env, out_dir / "output_linked.wasm")
+
+
+def build_wasm_linked(
+    root: Path,
+    src: Path,
+    out_dir: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> Path:
+    command = wasm_linked_build_command(root, src, out_dir, extra_args=extra_args)
     try:
         build = _run_wasm_test_process(
-            args,
-            cwd=root,
-            env=env,
+            list(command.argv),
+            role="tool",
+            cwd=command.cwd,
+            env=command.environment,
         )
     except subprocess.TimeoutExpired as exc:
         stderr = exc.stderr or ""
@@ -262,12 +303,14 @@ def build_wasm_linked(
         raise AssertionError(
             "WASM build timed out "
             f"after {exc.timeout}s for {src}; "
-            f"CARGO_TARGET_DIR={env['CARGO_TARGET_DIR']}\n"
+            f"CARGO_TARGET_DIR={command.environment['CARGO_TARGET_DIR']}\n"
             f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
         ) from exc
     assert build.returncode == 0, build.stderr
-    output_wasm = out_dir / "output_linked.wasm"
-    assert output_wasm.exists(), "linked wasm output missing"
+    output_wasm = command.output
+    assert output_wasm is not None and output_wasm.exists(), (
+        "linked wasm output missing"
+    )
     return output_wasm
 
 
@@ -291,12 +334,15 @@ def run_wasm_linked(
         env.pop(key, None)
     if env_overrides:
         env.update(env_overrides)
-    manifest = wasm_runtime_manifest_path(wasm_path)
+    manifest = wasm_runtime_manifest_path(wasm_path).resolve()
     host_args = [host_bin, str(manifest)]
     try:
         return _run_wasm_test_process(
             host_args,
-            cwd=root,
+            # WASI preopens dot. Relative writes and tempfile's valid cwd
+            # fallback belong to this case's existing product directory.
+            role="guest-host",
+            cwd=manifest.parent,
             env=env,
         )
     except subprocess.TimeoutExpired as exc:

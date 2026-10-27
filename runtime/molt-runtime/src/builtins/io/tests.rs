@@ -602,12 +602,107 @@ fn io_error_errno(py: &crate::PyToken<'_>) -> i64 {
 }
 
 fn host_error_errno(error: &std::io::Error) -> i64 {
-    let errno = error
-        .raw_os_error()
-        .expect("host operation has an OS error");
-    #[cfg(windows)]
-    let errno = crate::windows_abi::winerror_to_errno(errno);
-    i64::from(errno)
+    #[cfg(target_arch = "wasm32")]
+    {
+        // This positioning oracle observes a separate real host descriptor.
+        // Its SDK errno crosses the generated ABI data projection; independent
+        // hard-value controls live in synthetic_errno::io_error_tests.
+        return i64::from(
+            molt_runtime_platform::synthetic_errno::RawWasiErrno::from_code(
+                error
+                    .raw_os_error()
+                    .expect("host operation has an OS error"),
+            )
+            .expect("positioning error belongs to the declared WASI SDK")
+            .to_guest()
+            .code(),
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let errno = error
+            .raw_os_error()
+            .expect("host operation has an OS error");
+        #[cfg(windows)]
+        let errno = crate::windows_abi::winerror_to_errno(errno);
+        i64::from(errno)
+    }
+}
+
+#[test]
+fn physical_write_blocking_errno_preserves_target_public_domain() {
+    use super::buffered_writer::physical_blocked_errno;
+    use std::io::{Error, ErrorKind};
+
+    // The physical File branch owns SDK adoption. Python raw callbacks carry
+    // their own public errno and do not call this function.
+    #[cfg(not(target_arch = "wasm32"))]
+    let (sdk_again, public_again) = (libc::EAGAIN, libc::EAGAIN);
+    #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+    let (sdk_again, public_again) = (6, 11);
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+    let public_again = 11;
+    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+    assert_eq!(
+        physical_blocked_errno(&Error::from_raw_os_error(sdk_again)),
+        public_again,
+    );
+    assert_eq!(
+        physical_blocked_errno(&Error::new(ErrorKind::WouldBlock, "blocked")),
+        public_again,
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn text_tell_adopts_real_file_seek_error_without_treating_bad_fd_as_pipe() {
+    use std::os::fd::FromRawFd;
+    use std::sync::{Arc, Mutex};
+
+    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("fs.read", |py| {
+        let path = temp_path("text_seek_sdk");
+        std::fs::write(&path, b"fixture").unwrap();
+        let path_c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let descriptor = unsafe { libc::open(path_c.as_ptr(), libc::O_PATH) };
+        assert!(descriptor >= 0);
+        // O_PATH is a valid owned descriptor whose seek fails with EBADF.
+        // Retain its actual File owner; never close an OwnedFd behind Rust.
+        let file = unsafe { File::from_raw_fd(descriptor) };
+        let state = Arc::new(crate::object::MoltFileState {
+            backend: Mutex::new(Some(crate::object::MoltFileBackend::File(file))),
+            host_descriptor: false,
+        });
+        let handle = super::alloc_file_handle_with_state(
+            py,
+            Some(state),
+            true,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+            0,
+            crate::builtin_classes(py).text_io_wrapper,
+            crate::MoltObject::none().bits(),
+            "r".to_string(),
+            Some("utf-8".to_string()),
+            Some("utf-8".to_string()),
+            None,
+            None,
+            0,
+            0,
+        );
+        assert!(!handle.is_null());
+        let handle = crate::MoltObject::from_ptr(handle).bits();
+        let result = super::molt_file_tell(handle);
+        assert_eq!(io_error_errno(py), 9);
+        dec_ref_bits(py, result);
+        super::molt_file_close(handle);
+        assert!(!crate::exception_pending(py));
+        dec_ref_bits(py, handle);
+        remove_file(path).unwrap();
+    });
 }
 
 fn selected_grants(required: &[&str], mask: usize) -> String {

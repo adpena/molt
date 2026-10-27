@@ -1506,6 +1506,7 @@ def _install_held_backend_probe(initializer, initargs, released, entered):
     molt_diff._python_exe_version = lambda *a, **k: (3, 12)
     molt_diff._backend_execution_context = lambda *a, **k: (
         backends.BackendExecutionContext(
+            molt_cli_python=sys.executable,
             target_python=version,
             build_profile="dev",
             capabilities="",
@@ -1670,3 +1671,29 @@ def test_live_preview_is_one_bounded_write_and_not_a_full_result_copy(monkeypatc
     assert len(writes) == 1 and len(writes[0]) < 900
     assert writes[0].startswith("[BACKEND UNCALIBRATED]")
     assert writes[0].endswith("[matrix still running; final verdict pending]\n")
+
+
+def test_warm_cache_other_value_error_keeps_its_original_failure(
+    suite, tmp_path, monkeypatch
+):
+    original = ValueError("target admission mismatch")
+
+    def context(*_args, **_kwargs):
+        raise original
+
+    monkeypatch.setattr(molt_diff, "_backend_execution_context", context)
+    monkeypatch.setattr(
+        molt_diff,
+        "run_molt_build_only",
+        lambda *_a, **_k: pytest.fail("rejected warm context dispatched a compiler"),
+    )
+    with pytest.raises(ValueError) as captured:
+        molt_diff.run_diff(
+            suite.files,
+            sys.executable,
+            jobs=1,
+            warm_cache=True,
+            failures_output=tmp_path / "failures.txt",
+        )
+    assert captured.value is original
+    assert suite.calls == []

@@ -164,7 +164,6 @@ def _compile_source_to_ir(source_text: str) -> str:
 def _compile_ir_subprocess_with_env(
     source_text: str,
     *,
-    parse_codec: str,
     extra_env: dict[str, str],
     pythonhashseed: str = "0",
     allow_unsupported: bool = False,
@@ -178,7 +177,7 @@ from molt.frontend import compile_to_tir, CompatibilityError
 from tests.determinism.test_ir_determinism import _production_ir_record
 source = sys.stdin.read()
 try:
-    ir = compile_to_tir(source, parse_codec={parse_codec!r})
+    ir = compile_to_tir(source)
 except CompatibilityError as exc:
     record = {{'kind': 'unsupported', 'exception': 'CompatibilityError', 'message': str(exc)}}
 else:
@@ -198,24 +197,20 @@ print(json.dumps(record))
 
 
 def _compile_source_to_ir_subprocess(
-    source_text: str, *, pythonhashseed: str = "0", parse_codec: str = "msgpack"
+    source_text: str, *, pythonhashseed: str = "0"
 ) -> str:
     return _compile_ir_subprocess_with_env(
         source_text,
-        parse_codec=parse_codec,
         extra_env={},
         pythonhashseed=pythonhashseed,
     )
 
 
-def _compile_outcome_subprocess(
-    source_text: str, *, pythonhashseed: str, parse_codec: str
-) -> str:
+def _compile_outcome_subprocess(source_text: str, *, pythonhashseed: str) -> str:
     # Existing unsupported corpus coordinates prove typed diagnostic determinism;
     # the finite supported witness below must produce real IR for every seed.
     return _compile_ir_subprocess_with_env(
         source_text,
-        parse_codec=parse_codec,
         extra_env={},
         pythonhashseed=pythonhashseed,
         allow_unsupported=True,
@@ -253,8 +248,7 @@ def test_determinism_child_failure_cannot_be_a_stable_outcome(status, stdout, st
         )
 
 
-@pytest.mark.parametrize("parse_codec", ["json", "msgpack"])
-def test_production_serializers_and_cache_payloads_ignore_host_seed(parse_codec):
+def test_production_serializers_and_cache_payloads_ignore_host_seed():
     source = """
 async def spill(x):
     a, b, *tail = [x, x + 1, x + 2]
@@ -269,9 +263,7 @@ def choose(value):
 print(choose({'left': 1, 'right': 3}))
 """
     records = [
-        _compile_source_to_ir_subprocess(
-            source, pythonhashseed=seed, parse_codec=parse_codec
-        )
+        _compile_source_to_ir_subprocess(source, pythonhashseed=seed)
         for seed in ("0", "1", "42", "12345", "random", "random")
     ]
     assert all(record == records[0] for record in records[1:])
@@ -421,11 +413,11 @@ def test_ir_hashseed_independence(program: Path) -> None:
 # emitted offsets — varied with PYTHONHASHSEED.  A fixed-seed-only check
 # missed it because the chosen seeds happened to agree; the decisive
 # configuration is an *unpinned* (process-random) seed, run alongside a few
-# fixed seeds, across BOTH parse codecs.
+# fixed seeds, through the canonical frontend.
 # ---------------------------------------------------------------------------
 
 
-def _assert_outcome_hashseed_stable(program: Path, parse_codec: str) -> None:
+def _assert_outcome_hashseed_stable(program: Path) -> None:
     """Compile *program* under several fixed seeds + an explicit random seed +
     the unpinned ``"random"`` path and assert a single byte-identical outcome.
 
@@ -435,15 +427,11 @@ def _assert_outcome_hashseed_stable(program: Path, parse_codec: str) -> None:
     """
     source = program.read_text(encoding="utf-8")
     seeds = ["0", "1", "42", "12345", str(_random_seed()), "random", "random"]
-    reference = _compile_outcome_subprocess(
-        source, pythonhashseed=seeds[0], parse_codec=parse_codec
-    )
+    reference = _compile_outcome_subprocess(source, pythonhashseed=seeds[0])
     for seed in seeds[1:]:
-        outcome = _compile_outcome_subprocess(
-            source, pythonhashseed=seed, parse_codec=parse_codec
-        )
+        outcome = _compile_outcome_subprocess(source, pythonhashseed=seed)
         assert outcome == reference, (
-            f"Compile outcome for {program.name} [{parse_codec}] differs with "
+            f"Compile outcome for {program.name} differs with "
             f"PYTHONHASHSEED={seed} vs PYTHONHASHSEED={seeds[0]} — a hash-order "
             f"leak into IR emission (regression of #34)"
         )
@@ -454,10 +442,9 @@ def _assert_outcome_hashseed_stable(program: Path, parse_codec: str) -> None:
     ASYNC_PROGRAMS,
     ids=[p.name for p in ASYNC_PROGRAMS],
 )
-@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
-def test_async_spill_hashseed_independence(program: Path, parse_codec: str) -> None:
+def test_async_spill_hashseed_independence(program: Path) -> None:
     """Async-spill IR must be byte-identical across hash seeds, unpinned."""
-    _assert_outcome_hashseed_stable(program, parse_codec)
+    _assert_outcome_hashseed_stable(program)
 
 
 @pytest.mark.parametrize(
@@ -465,17 +452,14 @@ def test_async_spill_hashseed_independence(program: Path, parse_codec: str) -> N
     HASH_ORDER_LEAK_PROGRAMS,
     ids=[p.name for p in HASH_ORDER_LEAK_PROGRAMS],
 )
-@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
-def test_unpack_and_pattern_hashseed_independence(
-    program: Path, parse_codec: str
-) -> None:
+def test_unpack_and_pattern_hashseed_independence(program: Path) -> None:
     """Unpacking-target and pattern-capture names must not leak hash order.
 
     These flow through ``_collect_target_names`` / ``_collect_pattern_capture
     _names`` into the function's co_varnames tuple; both returned sets before
     the fix, so the emitted IR depended on PYTHONHASHSEED.
     """
-    _assert_outcome_hashseed_stable(program, parse_codec)
+    _assert_outcome_hashseed_stable(program)
 
 
 # ---------------------------------------------------------------------------
@@ -540,10 +524,7 @@ _MIDEND_BUDGET_KNOBS: tuple[str | None, ...] = (None, "1", "5", "999999999")
     MIDEND_WALLTIME_SENSITIVE_PROGRAMS,
     ids=[p.name for p in MIDEND_WALLTIME_SENSITIVE_PROGRAMS],
 )
-@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
-def test_midend_ir_independent_of_walltime_budget(
-    program: Path, parse_codec: str
-) -> None:
+def test_midend_ir_independent_of_walltime_budget(program: Path) -> None:
     """Mid-end pass selection — and the emitted IR — must be a pure function of
     the input: independent of the retired wall-clock time budget env AND of
     PYTHONHASHSEED (#73; #34 bug class).
@@ -579,16 +560,16 @@ def test_midend_ir_independent_of_walltime_budget(
     """
     source = program.read_text(encoding="utf-8")
     reference = _compile_ir_subprocess_with_env(
-        source, parse_codec=parse_codec, extra_env={}, pythonhashseed="0"
+        source, extra_env={}, pythonhashseed="0"
     )
 
     def _check(seed: str, budget: str | None) -> None:
         extra_env = {} if budget is None else {"MOLT_MIDEND_BUDGET_MS": budget}
         outcome = _compile_ir_subprocess_with_env(
-            source, parse_codec=parse_codec, extra_env=extra_env, pythonhashseed=seed
+            source, extra_env=extra_env, pythonhashseed=seed
         )
         assert outcome == reference, (
-            f"IR for {program.name} [{parse_codec}] changed with "
+            f"IR for {program.name} changed with "
             f"PYTHONHASHSEED={seed}, "
             f"MOLT_MIDEND_BUDGET_MS={budget if budget is not None else '<default>'}"
             f" vs the (seed=0, default-budget) reference — the mid-end degrade "

@@ -64,7 +64,6 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 from molt.cli.build_request import (  # noqa: E402
     BuildProfile,
     BuildRequest,
-    ParseCodec,
     TypeHintPolicy,
     build_request_to_payload,
 )
@@ -794,8 +793,6 @@ def _molt_build_params(
         linked=build_target == "wasm",
         require_linked=build_target == "wasm",
     )
-    if "MOLT_CODEC" in env:
-        request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
     remaining = deque(extra_args or ())
     while remaining:
         arg = remaining.popleft()

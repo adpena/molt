@@ -60,7 +60,6 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 
 | Flag | Description |
 |------|-------------|
-| `--codec {msgpack,cbor,json}` | Structured codec for parse calls. |
 | `--type-hints {ignore,trust,check}` | Apply type annotations to guide lowering. |
 | `--type-facts PATH` | Path to type facts JSON from `molt check`. |
 | `--pgo-profile PATH` | Path to PGO profile artifact for optimization hints. |

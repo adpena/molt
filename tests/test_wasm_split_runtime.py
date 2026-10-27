@@ -11,6 +11,12 @@ Exercises the full --split-runtime pipeline:
 
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import (
+    EMPTY_WASM_MODULE,
+    split_wasm_execution_manifest,
+)
+
+from collections.abc import Mapping
 import gzip
 import hashlib
 import json
@@ -32,7 +38,11 @@ import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
 from tools.wasm_size_audit import DEFAULT_TOTAL_BUDGET_MB
-from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tests.wasm_linked_runner import (
+    WasmTestBuildCommand,
+    _run_wasm_test_process,
+    wasm_test_build_env,
+)
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
 from molt._runtime_profile_schema import validate_process_profile
@@ -112,7 +122,7 @@ def test_build_split_uses_wasm_test_memory_guard(
     assert "--split-runtime" in args
     assert kwargs["cwd"] == ROOT
     env = kwargs["env"]
-    assert isinstance(env, dict)
+    assert isinstance(env, Mapping)
     assert env.get("CARGO_BUILD_JOBS") != "1"
     assert "timeout" not in kwargs
 
@@ -178,6 +188,9 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     from molt.capability_manifest import CapabilityManifest
 
     worker_js = _generate_split_worker_js(
+        deployment_manifest=split_wasm_execution_manifest(
+            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
+        ),
         resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
@@ -234,13 +247,13 @@ def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
     assert _isolate_import_module_order(["sys"], set()) == []
 
 
-def _build_split(
+def wasm_split_build_command(
     source_file: Path,
     output_dir: Path,
     *,
     extra_args: list[str] | None = None,
-) -> subprocess.CompletedProcess:
-    """Run ``molt build --target wasm --split-runtime`` and return the result."""
+) -> WasmTestBuildCommand:
+    """Select the actual split test command without executing it."""
     env = _split_runtime_build_env()
 
     cmd = [
@@ -259,10 +272,22 @@ def _build_split(
     ]
     if extra_args:
         cmd.extend(extra_args)
+    return WasmTestBuildCommand(tuple(cmd), ROOT, env, output_dir / "manifest.json")
+
+
+def _build_split(
+    source_file: Path,
+    output_dir: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Run ``molt build --target wasm --split-runtime`` and return the result."""
+    command = wasm_split_build_command(source_file, output_dir, extra_args=extra_args)
     return _run_wasm_test_process(
-        cmd,
-        env=env,
-        cwd=ROOT,
+        list(command.argv),
+        role="tool",
+        env=command.environment,
+        cwd=command.cwd,
     )
 
 
@@ -277,6 +302,7 @@ def _run_split_direct(
         env.update(extra_env)
     return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json"), *argv],
+        role="guest-host",
         env=env,
         cwd=ROOT,
         timeout=timeout,
@@ -296,6 +322,7 @@ def _run_split_direct_host_exports(
         env.update(extra_env)
     return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json")],
+        role="guest-host",
         env=env,
         cwd=ROOT,
         timeout=timeout,
@@ -1021,6 +1048,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1030,6 +1058,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     successful = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1045,6 +1074,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     )
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1101,6 +1131,7 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1110,6 +1141,7 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1160,6 +1192,7 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1169,6 +1202,7 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1252,6 +1286,7 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1261,6 +1296,7 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1318,6 +1354,7 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1359,6 +1396,7 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
         run_env["MOLT_CAPABILITIES"] = "env.read"
         return _run_wasm_test_process(
             ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+            role="guest-host",
             cwd=ROOT,
             env=run_env,
             timeout=60,

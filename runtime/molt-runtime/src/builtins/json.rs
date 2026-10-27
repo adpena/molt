@@ -1432,18 +1432,68 @@ fn object_to_json_with_options(
                 crate::object::ops_dict::dict_snapshot(
                     _py,
                     ptr,
-                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                    if options.sort_keys {
+                        crate::object::ops_dict::DictSnapshotKind::Items
+                    } else {
+                        crate::object::ops_dict::DictSnapshotKind::Entries
+                    },
                 )
             }
             .ok_or_else(|| JsonEncodeError::Raised(MoltObject::none().bits()))?;
-            let mut entries: Vec<(String, u64)> = Vec::with_capacity(order.len() / 2);
-            for idx in 0..(order.len() / 2) {
-                let key_bits = order[idx * 2];
-                let val_bits = order[idx * 2 + 1];
+            let order = if options.sort_keys && !order.is_empty() {
+                // CPython sorts original (key, value) tuples before key
+                // conversion or skipkeys. The ordinary list/tuple comparison
+                // authority owns callbacks, truth conversion, ties and errors.
+                let list = crate::object::builders::alloc_list_from_snapshot(_py, order);
+                if list.is_null() {
+                    return Err(JsonEncodeError::Raised(MoltObject::none().bits()));
+                }
+                let owner = unsafe {
+                    crate::object::seq_access::PinnedSequenceItem::from_owned_bits(
+                        _py,
+                        MoltObject::from_ptr(list).bits(),
+                    )
+                };
+                if !crate::object::ops_list::sort_in_place(
+                    _py,
+                    owner.bits(),
+                    MoltObject::none().bits(),
+                    false,
+                ) {
+                    return Err(JsonEncodeError::Raised(MoltObject::none().bits()));
+                }
+                // The snapshot pins every sorted tuple through key conversion
+                // and recursive encoding, independently of the private list.
+                // Retire that list before any JSON/default callbacks.
+                unsafe {
+                    crate::object::seq_access::snapshot(
+                        _py,
+                        list,
+                        "JSON sorted item snapshot allocation failed",
+                    )
+                }
+                .ok_or_else(|| JsonEncodeError::Raised(MoltObject::none().bits()))?
+            } else {
+                order
+            };
+            let width = if options.sort_keys { 1 } else { 2 };
+            out.push('{');
+            let mut emitted = false;
+            for row in order.chunks_exact(width) {
+                let (key_bits, val_bits) = if options.sort_keys {
+                    let tuple = obj_from_bits(row[0]).as_ptr().expect("dict item tuple");
+                    unsafe {
+                        (
+                            crate::object::seq_access::item(tuple, 0).expect("dict item key"),
+                            crate::object::seq_access::item(tuple, 1).expect("dict item value"),
+                        )
+                    }
+                } else {
+                    (row[0], row[1])
+                };
                 let key_obj = obj_from_bits(key_bits);
-                let key_text = coerce_dict_key_to_text(_py, key_obj, options.allow_nan)?;
-                match key_text {
-                    Some(text) => entries.push((text, val_bits)),
+                let key_text = match coerce_dict_key_to_text(_py, key_obj, options.allow_nan)? {
+                    Some(text) => text,
                     None => {
                         if options.skipkeys {
                             continue;
@@ -1453,31 +1503,35 @@ fn object_to_json_with_options(
                             "keys must be str, int, float, bool or None, not {tn}"
                         )));
                     }
-                }
-            }
-            if options.sort_keys {
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-            }
-
-            out.push('{');
-            for (idx, (key_text, val_bits)) in entries.iter().enumerate() {
-                if idx > 0 {
+                };
+                // Coerce one key, then encode its value before visiting the
+                // next key. Default callbacks and errors must retain that order.
+                if emitted {
                     out.push_str(&options.item_separator);
                 }
                 json_write_indent(out, options.indent_text.as_deref(), depth + 1);
-                out.push_str(&json_encode_basestring_impl(key_text, options.ensure_ascii));
+                out.push_str(&json_encode_basestring_impl(
+                    &key_text,
+                    options.ensure_ascii,
+                ));
                 out.push_str(&options.key_separator);
                 object_to_json_with_options(
                     _py,
-                    obj_from_bits(*val_bits),
+                    obj_from_bits(val_bits),
                     out,
                     options,
                     depth + 1,
                     stack,
                     stack_set,
                 )?;
+                emitted = true;
             }
-            if !entries.is_empty() {
+            if emitted {
+                json_write_indent(out, options.indent_text.as_deref(), depth);
+            } else if !order.is_empty() && options.indent_text.is_some() {
+                // A nonempty dictionary still opens/closes its indentation
+                // when every original key was skipped. Empty dicts stay {}.
+                json_write_indent(out, options.indent_text.as_deref(), depth + 1);
                 json_write_indent(out, options.indent_text.as_deref(), depth);
             }
             out.push('}');
@@ -2414,160 +2468,5 @@ pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
 }
 
 #[cfg(test)]
-mod float_text_tests {
-    use super::*;
-
-    #[test]
-    fn json_decoding_preserves_python_codepoints_and_character_positions() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::concurrency::gil::with_gil(|py| {
-            let py = &py;
-            let options = JsonLoadsOptions {
-                parse_float: None,
-                parse_int: None,
-                parse_constant: None,
-                object_hook: None,
-                object_pairs_hook: None,
-                strict: true,
-            };
-            // CPython v3.12.13 Lib/json/__init__.py and Modules/_json.c:
-            // byte inputs use surrogatepass; only escaped pairs combine.
-            let cases: &[(&[u8], &[u8])] = &[
-                (b"\"\\ud800\"", b"\xed\xa0\x80"),
-                (b"\"\\udfff\"", b"\xed\xbf\xbf"),
-                (b"\"\\ud800\\udfff\"", b"\xf0\x90\x8f\xbf"),
-                (b"\"\xed\xa0\x80\xed\xbf\xbf\"", b"\xed\xa0\x80\xed\xbf\xbf"),
-                (b"\"\\udbff\\udfff\"", b"\xf4\x8f\xbf\xbf"),
-                (b"\"\xf0\x90\x80\x80\"", b"\xf0\x90\x80\x80"),
-                (b"\xef\xbb\xbf\"\xed\xa0\x80\"", b"\xed\xa0\x80"),
-                (b"\xff\xfe\"\x00\x00\xd8\"\x00", b"\xed\xa0\x80"),
-                (b"\xfe\xff\x00\"\xdc\x00\x00\"", b"\xed\xb0\x80"),
-                (
-                    b"\xff\xfe\x00\x00\"\x00\x00\x00\x00\xd8\x00\x00\"\x00\x00\x00",
-                    b"\xed\xa0\x80",
-                ),
-                (
-                    b"\x00\x00\xfe\xff\x00\x00\x00\"\x00\x00\xdc\x00\x00\x00\x00\"",
-                    b"\xed\xb0\x80",
-                ),
-            ];
-            for &(wire, expected) in cases {
-                let text = decode_json_text(py, wire).unwrap();
-                let parsed = run_json_parse(py, &text, options)
-                    .unwrap_or_else(|_| panic!("JSON parse failed: {wire:?}"));
-                assert_eq!(
-                    crate::object::ops_format::string_obj_bytes(obj_from_bits(parsed)).as_deref(),
-                    Some(expected),
-                    "{wire:?}"
-                );
-                dec_ref_bits(py, parsed);
-                let (scanned, end) = json_scanstring_decode(&text, 1, true).unwrap();
-                assert_eq!(scanned, expected, "{wire:?}");
-                assert_eq!(end, byte_index_to_char_index(&text, text.len()));
-            }
-            let text = b"x\"\xf0\x90\x80\x80\xed\xa0\x80\" tail";
-            let (parsed, end) = run_json_raw_decode(py, text, 1, options)
-                .unwrap_or_else(|_| panic!("raw decode failed"));
-            assert_eq!(end, 5);
-            assert_eq!(
-                crate::object::ops_format::string_obj_bytes(obj_from_bits(parsed)).as_deref(),
-                Some(b"\xf0\x90\x80\x80\xed\xa0\x80".as_slice())
-            );
-            dec_ref_bits(py, parsed);
-            let invalid = b"[\n \"\xc3\xa9\xed\xa0\x80\",?]";
-            let Err(JsonParseError::Message { msg, pos }) = run_json_parse(py, invalid, options)
-            else {
-                panic!("invalid JSON unexpectedly parsed")
-            };
-            assert_eq!(
-                json_parse_error_message(invalid, &msg, pos),
-                "Expecting value: line 2 column 7 (char 8)"
-            );
-            assert_eq!(json_string_line_col(invalid, 8), (2, 7));
-            let input = alloc_string(py, b"\"decoded heap string \\ud800\"");
-            assert!(!input.is_null());
-            let input_bits = MoltObject::from_ptr(input).bits();
-            let baseline = unsafe { (*header_from_obj_ptr(input)).ref_count_snapshot() };
-            assert_eq!(molt_json_coerce_text(input_bits), input_bits);
-            assert_eq!(
-                unsafe { (*header_from_obj_ptr(input)).ref_count_snapshot() },
-                baseline + 1
-            );
-            dec_ref_bits(py, input_bits);
-            let scanned = molt_json_scanstring_obj(
-                input_bits,
-                MoltObject::from_int(1).bits(),
-                MoltObject::from_bool(true).bits(),
-            );
-            let tuple = obj_from_bits(scanned)
-                .as_ptr()
-                .expect("scanner result tuple");
-            let child = unsafe { crate::object::seq_access::item(tuple, 0) }.unwrap();
-            let child = obj_from_bits(child).as_ptr().unwrap();
-            assert_eq!(
-                unsafe { (*header_from_obj_ptr(child)).ref_count_snapshot() },
-                1,
-                "only the result tuple owns the decoded heap string"
-            );
-            dec_ref_bits(py, scanned);
-            dec_ref_bits(py, input_bits);
-            assert!(!exception_pending(py));
-        });
-    }
-
-    #[test]
-    fn json_encoding_detection_retains_cpython_malformed_prefix_policy() {
-        // The encoding decision precedes validation, so even malformed
-        // prefixes select the decoder (and therefore the error label).
-        for (input, expected) in [
-            (b"".as_slice(), "utf-8"),
-            (b"\x00", "utf-8"),
-            (b"\x00\x01", "utf-16-be"),
-            (b"\x01\x00", "utf-16-le"),
-            (b"\x00\x01\x00", "utf-8"),
-            (b"\x01\x00\x00", "utf-8"),
-            (b"\x00\x00\x01\x22", "utf-32-be"),
-            (b"\x00\x01\x22\x00", "utf-16-be"),
-            (b"\x22\x00\x00\x01", "utf-16-le"),
-            (b"\x22\x00\x00\x00", "utf-32-le"),
-            (b"\xff\xfe\x00\x00", "utf-32"),
-            (b"\x00\x00\xfe\xff", "utf-32"),
-        ] {
-            assert_eq!(detect_json_encoding(input), expected, "{input:?}");
-        }
-    }
-
-    #[test]
-    fn json_finite_float_tokens_use_canonical_cpython_repr() {
-        let cases = [
-            (1e16, "1e+16"),
-            (1e-5, "1e-05"),
-            (1e100, "1e+100"),
-            (5e-324, "5e-324"),
-            (137839762462415.62, "137839762462415.62"),
-            (-0.0, "-0.0"),
-        ];
-        for (value, expected) in cases {
-            match json_float_token(value, true) {
-                Ok(actual) => assert_eq!(actual, expected),
-                Err(_) => panic!("finite float token unexpectedly failed for {value:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn json_nonfinite_policy_remains_json_specific() {
-        assert!(matches!(
-            json_float_token(f64::NAN, true),
-            Ok(token) if token == "NaN"
-        ));
-        assert!(matches!(
-            json_float_token(f64::INFINITY, true),
-            Ok(token) if token == "Infinity"
-        ));
-        assert!(matches!(
-            json_float_token(f64::NEG_INFINITY, false),
-            Err(JsonEncodeError::Value(_))
-        ));
-    }
-}
+#[path = "json_tests.rs"]
+mod float_text_tests;

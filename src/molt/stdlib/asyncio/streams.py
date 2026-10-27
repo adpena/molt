@@ -18,7 +18,6 @@ from asyncio import (
     _SOCKET,
     _errno,
     _io_wait,
-    _map_socket_name_resolution_error,
     _molt_socket_reader_at_eof,
     _molt_socket_reader_drop,
     _molt_socket_reader_new,
@@ -537,14 +536,11 @@ async def open_connection(
             server_side=False,
         )
         if use_tls:
-            try:
-                tls_handle = _tls_client_connect(
-                    host,
-                    int(port),
-                    host if ssl is not False else None,
-                )
-            except OSError as exc:
-                raise _map_socket_name_resolution_error(exc) from None
+            tls_handle = _tls_client_connect(
+                host,
+                int(port),
+                host if ssl is not False else None,
+            )
             return (
                 ProcessStreamReader(tls_handle),
                 ProcessStreamWriter(tls_handle),

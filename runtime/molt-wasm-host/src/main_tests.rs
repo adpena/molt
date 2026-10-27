@@ -5,6 +5,7 @@ use super::{
     parse_host_args, resolve_execution, resolve_execution_modules, select_manifest_path,
     validate_execution_imports, validate_guest_module_entrypoint,
 };
+use molt_wasm_facts::WASM_EXECUTION_MANIFEST_VERSION;
 use molt_wasm_host::sha256_hex;
 use std::collections::HashMap;
 use std::fs;
@@ -48,7 +49,7 @@ fn execute_test_guest(
     engine: &Engine,
     output: &Module,
     runtime: Option<&Module>,
-    kind: LoadedGuestKind,
+    kind: LoadedGuestKind<'_>,
     guest_args: &[String],
     wasm_table_base: Option<u64>,
 ) -> wasmtime::Result<GuestTermination> {
@@ -97,7 +98,7 @@ fn runtime_manifest_fixture(label: &str, module_bytes: &[u8], digest: &str) -> t
     fs::write(
         root.path().join("manifest.json"),
         format!(
-            r#"{{"version":2,"mode":"linked","modules":{{"linked":{{"path":"program.wasm","size":{},"sha256":"{digest}"}}}}}}"#,
+            r#"{{"version":{WASM_EXECUTION_MANIFEST_VERSION},"mode":"linked","modules":{{"linked":{{"path":"program.wasm","size":{},"sha256":"{digest}"}}}}}}"#,
             module_bytes.len()
         ),
     )
@@ -132,7 +133,7 @@ fn runtime_manifest_resolves_and_verifies_split_modules() {
     fs::write(
         root.path().join("manifest.json"),
         format!(
-            r#"{{"version":2,"mode":"split-runtime","modules":{{"app":{{"path":"program.wasm","size":{},"sha256":"{app_digest}"}},"runtime":{{"path":"runtime.wasm","size":{},"sha256":"{runtime_digest}"}}}}}}"#,
+            r#"{{"version":{WASM_EXECUTION_MANIFEST_VERSION},"mode":"split-runtime","modules":{{"app":{{"path":"program.wasm","size":{},"sha256":"{app_digest}"}},"runtime":{{"path":"runtime.wasm","size":{},"sha256":"{runtime_digest}"}}}}}}"#,
             app_bytes.len(),
             runtime_bytes.len(),
         ),
@@ -198,14 +199,38 @@ fn runtime_manifest_rejects_version_and_nonportable_asset_paths() {
     let root = runtime_manifest_fixture("manifest-admission", bytes, &sha256_hex(bytes));
     let path = root.path().join("manifest.json");
     let original: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    for version in [0, 1, 3] {
+    // Remove the module: an old receiver must be rejected before even reading
+    // its bytes, rather than reaching a misleading missing-artifact failure.
+    fs::remove_file(root.path().join("program.wasm")).unwrap();
+    for version in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!(0)),
+        Some(serde_json::json!(1)),
+        Some(serde_json::json!(2)),
+        Some(serde_json::json!(4)),
+        Some(serde_json::json!(99)),
+        Some(serde_json::json!(true)),
+        Some(serde_json::json!(false)),
+        Some(serde_json::json!("3")),
+        Some(serde_json::json!(3.0)),
+    ] {
         let mut manifest = original.clone();
-        manifest["version"] = version.into();
+        match version {
+            Some(version) => manifest["version"] = version,
+            None => {
+                manifest.as_object_mut().unwrap().remove("version");
+            }
+        }
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let error =
             resolve_execution_modules(Some(path.to_string_lossy().into_owned())).unwrap_err();
-        assert!(error.to_string().contains("version 2"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("Molt deployment manifest version must be 3"),
+            "{error:#}",
+        );
     }
+    fs::write(root.path().join("program.wasm"), bytes).unwrap();
     for asset in [
         "../program.wasm",
         "/program.wasm",
@@ -230,7 +255,8 @@ fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
         .tempdir()
         .expect("create command fixture root");
     let module = root.path().join("command.wasm");
-    fs::write(&module, b"command wasm fixture").expect("write command fixture");
+    let bytes = br#"(module (func (export "_start")))"#;
+    fs::write(&module, bytes).expect("write command fixture");
 
     let resolved = resolve_execution(ExecutionRequest::WasiCommand {
         module: module.to_string_lossy().into_owned(),
@@ -239,9 +265,116 @@ fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
     match resolved {
         ResolvedExecution::WasiCommand { module: source } => {
             assert_eq!(source.path(), module);
-            assert_eq!(source.bytes(), b"command wasm fixture");
+            assert_eq!(source.bytes(), bytes);
+            let engine = build_engine().expect("production host engine");
+            let command = Module::new(&engine, source.bytes()).unwrap();
+            assert_eq!(
+                execute_test_guest(
+                    &engine,
+                    &command,
+                    None,
+                    LoadedGuestKind::WasiCommand,
+                    &[],
+                    None
+                )
+                .unwrap(),
+                GuestTermination::Returned,
+            );
         }
-        ResolvedExecution::MoltApplication(_) => panic!("command resolved as application"),
+        ResolvedExecution::MoltApplication(_) | ResolvedExecution::WasiCommandManifest(_) => {
+            panic!("raw command resolved through a manifest")
+        }
+    }
+}
+
+#[test]
+fn explicit_wasi_command_cannot_import_molt_without_current_manifest() {
+    let engine = build_engine().expect("production host engine");
+    for (namespace, name) in [
+        ("env", "molt_socket_getaddrinfo_host"),
+        ("molt_runtime", "molt_int_from_i64"),
+        ("molt_native", "native_entry"),
+    ] {
+        let module = Module::new(
+            &engine,
+            format!(
+                r#"(module
+                (import "{namespace}" "{name}" (func))
+                (func $unreachable_start unreachable) (start $unreachable_start)
+                (func (export "_start")))"#
+            ),
+        )
+        .unwrap();
+        let error = execute_test_guest(
+            &engine,
+            &module,
+            None,
+            LoadedGuestKind::WasiCommand,
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("Molt host imports require a current deployment manifest"),
+            "{namespace}.{name}: {error:#}",
+        );
+        assert!(
+            !error
+                .chain()
+                .any(|cause| cause.to_string().contains("unreachable")),
+            "command started before import admission: {error:#}",
+        );
+    }
+}
+
+#[test]
+fn command_indirect_dispatch_cannot_admit_manifest_bound_services() {
+    let engine = build_engine().expect("production host engine");
+    for (namespace, name) in [
+        ("env", "molt_socket_getaddrinfo_host"),
+        ("molt_runtime", "molt_int_from_i64"),
+        ("molt_native", "native_entry"),
+    ] {
+        let module = Module::new(
+            &engine,
+            format!(
+                r#"(module
+                (import "env" "molt_call_indirect0"
+                  (func $dispatch (param i64) (result i64)))
+                (import "{namespace}" "{name}" (func))
+                (table (export "__indirect_function_table") 2 funcref)
+                (func $target (result i64) i64.const 42)
+                (elem (i32.const 1) $target)
+                (func $unreachable_start unreachable) (start $unreachable_start)
+                (func (export "_start") i64.const 1 call $dispatch drop))"#
+            ),
+        )
+        .expect("valid indirect dispatch and service import fixture");
+        let error = execute_test_guest(
+            &engine,
+            &module,
+            None,
+            LoadedGuestKind::WasiCommand,
+            &[],
+            None,
+        )
+        .unwrap_err();
+        let diagnostic = format!("{error:#}");
+        assert!(
+            diagnostic.contains("Molt host imports require a current deployment manifest"),
+            "{diagnostic}",
+        );
+        assert!(
+            diagnostic.contains(&format!("{namespace}.{name}")),
+            "{diagnostic}",
+        );
+        assert!(
+            !error
+                .chain()
+                .any(|cause| cause.to_string().contains("unreachable")),
+            "command started before service import admission: {error:#}",
+        );
     }
 }
 
@@ -267,7 +400,9 @@ fn command_selector_separates_host_options_from_guest_argv() {
     };
     match options.execution {
         ExecutionRequest::WasiCommand { module } => assert_eq!(module, "tests.wasm"),
-        ExecutionRequest::MoltApplication { .. } => panic!("command parsed as application"),
+        ExecutionRequest::MoltApplication { .. } | ExecutionRequest::WasiCommandManifest { .. } => {
+            panic!("raw command parsed through a manifest")
+        }
     }
     assert_eq!(options.bundle_path.as_deref(), Some("bundle.pack"));
     assert_eq!(options.vfs_tmp_quota, Some(8));
@@ -288,7 +423,9 @@ fn application_selector_keeps_manifest_out_of_guest_argv() {
         ExecutionRequest::MoltApplication { manifest } => {
             assert_eq!(manifest.as_deref(), Some("manifest.json"));
         }
-        ExecutionRequest::WasiCommand { .. } => panic!("application parsed as command"),
+        ExecutionRequest::WasiCommand { .. } | ExecutionRequest::WasiCommandManifest { .. } => {
+            panic!("application parsed as command")
+        }
     }
     assert_eq!(
         options.guest_args,
@@ -351,27 +488,57 @@ fn precompile_selector_accepts_only_execution_inputs() {
 
 #[test]
 fn execution_kind_rejects_runtime_import_drift() {
+    let engine = build_engine().expect("production host engine");
+    let standalone = Module::new(
+        &engine,
+        r#"(module (import "wasi_snapshot_preview1" "proc_exit" (func (param i32))))"#,
+    )
+    .expect("valid standalone import fixture");
+    let split = Module::new(
+        &engine,
+        r#"(module (import "molt_runtime" "anchor" (func)))"#,
+    )
+    .expect("valid runtime import fixture");
     assert!(
-        validate_execution_imports(true, true, true)
+        validate_execution_imports(LoadedGuestKind::WasiCommand, &split, None)
             .unwrap_err()
             .to_string()
-            .contains("must not import molt_runtime")
+            .contains("Molt host imports require a current deployment manifest")
     );
     assert!(
-        validate_execution_imports(false, true, true)
-            .unwrap_err()
-            .to_string()
-            .contains("linked wasm still imports molt_runtime")
+        validate_execution_imports(
+            LoadedGuestKind::MoltApplication { linked: true },
+            &split,
+            None
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("linked wasm still imports molt_runtime")
     );
     assert!(
-        validate_execution_imports(false, false, false)
-            .unwrap_err()
-            .to_string()
-            .contains("split-runtime app does not import molt_runtime")
+        validate_execution_imports(
+            LoadedGuestKind::MoltApplication { linked: false },
+            &standalone,
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("split-runtime app does not import molt_runtime")
     );
-    validate_execution_imports(true, true, false).expect("standalone command imports");
-    validate_execution_imports(false, true, false).expect("linked application imports");
-    validate_execution_imports(false, false, true).expect("split application imports");
+    validate_execution_imports(LoadedGuestKind::WasiCommand, &standalone, None)
+        .expect("standalone command imports");
+    validate_execution_imports(
+        LoadedGuestKind::MoltApplication { linked: true },
+        &standalone,
+        None,
+    )
+    .expect("linked application imports");
+    validate_execution_imports(
+        LoadedGuestKind::MoltApplication { linked: false },
+        &split,
+        None,
+    )
+    .expect("split application imports");
 }
 
 #[test]
@@ -481,6 +648,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main"))
                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
         ),
         (
@@ -488,6 +656,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main") (result i64) i64.const 0)
                (func (export "molt_isolate_bootstrap"))
                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
         ),
         (
@@ -495,6 +664,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main") (result i64) i64.const 0)
                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                (func (export "molt_isolate_import") (param i32) (result i64) i64.const 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i64) i64.const 0)"#,
         ),
         (
@@ -502,6 +672,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
             r#"(func (export "molt_main") (result i64) i64.const 0)
                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+               (func (export "molt_main_exit_status") (result i64) i64.const 0)
                (func (export "molt_exception_pending") (result i32) i32.const 0)"#,
         ),
     ] {
@@ -548,6 +719,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
               (func $initialize unreachable)
               (start $initialize)
               (func (export "molt_anchor"))
+              (func (export "molt_main_exit_status") (result i64) i64.const 0)
               (func (export "molt_exception_pending") (result i32) i32.const 0))"#,
     )
     .unwrap();
@@ -596,6 +768,7 @@ fn module_entrypoint_abis_reject_missing_parameters_and_result_drift() {
             format!(
                 r#"(module
                     {definition}
+                    (func (export "molt_main_exit_status") (result i64) i64.const 0)
                     (func (export "molt_exception_pending") (result i64) i64.const 0))"#
             ),
         )
@@ -906,6 +1079,7 @@ fn loaded_guest_primitive_executes_linked_application_contract() {
         (module
           (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
           (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 0)
           (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
           (func (export "molt_runtime_execution_leave") (param i64))
@@ -939,6 +1113,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
           (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
           (func (export "molt_runtime_execution_leave") (param i64))
           (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+          (func (export "molt_main_exit_status") (result i64) i64.const 7)
           (func (export "molt_exception_pending") (result i64) i64.const 0))
     "#,
     )
@@ -950,6 +1125,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
           (import "molt_runtime" "anchor" (func $anchor))
           (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
           (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+          (func (export "molt_main_exit_status") (result i64) unreachable)
           (func (export "molt_main") (result i64) call $anchor i64.const 0))
     "#,
     )
@@ -964,7 +1140,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
             None,
         )
         .unwrap(),
-        GuestTermination::Returned
+        GuestTermination::ApplicationExit(7)
     );
 }
 
@@ -989,6 +1165,7 @@ fn execute_split_import_fixture(
                 (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
                 (func (export "molt_runtime_execution_leave") (param i64))
                 (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                (func (export "molt_main_exit_status") (result i64) i64.const 0)
                 (func (export "molt_exception_pending") (result i64) i64.const 0))"#
         ),
     )
@@ -1013,8 +1190,12 @@ fn execute_split_import_fixture(
         ),
     )
     .expect("valid application fixture");
-    validate_execution_imports(false, false, super::has_runtime_imports(&application))
-        .expect("split fixture must pass protocol admission before its injected import failure");
+    validate_execution_imports(
+        LoadedGuestKind::MoltApplication { linked: false },
+        &application,
+        Some(&runtime),
+    )
+    .expect("split fixture must pass protocol admission before its injected import failure");
     execute_test_guest(
         engine,
         &application,
@@ -1251,6 +1432,7 @@ fn app_startup_calls_only_molt_main_wrapper() {
     let bootstrap_order = Arc::clone(&order);
     let main_order = Arc::clone(&order);
     let start_order = Arc::clone(&order);
+    let report_order = Arc::clone(&order);
     let mark_bootstrap = Func::wrap(&mut store, move || {
         bootstrap_order.lock().unwrap().push("bootstrap");
     });
@@ -1269,6 +1451,12 @@ fn app_startup_calls_only_molt_main_wrapper() {
     linker
         .define(&mut store, "env", "mark_start", mark_start)
         .unwrap();
+    let mark_report = Func::wrap(&mut store, move || {
+        report_order.lock().unwrap().push("report");
+    });
+    linker
+        .define(&mut store, "env", "mark_report", mark_report)
+        .unwrap();
     let module = Module::new(
         &engine,
         r#"
@@ -1276,11 +1464,13 @@ fn app_startup_calls_only_molt_main_wrapper() {
               (import "env" "mark_bootstrap" (func $mark_bootstrap))
               (import "env" "mark_main" (func $mark_main))
               (import "env" "mark_start" (func $mark_start))
+              (import "env" "mark_report" (func $mark_report))
               (func (export "molt_isolate_bootstrap") (result i64)
                 call $mark_bootstrap
                 i64.const 0)
               (func (export "molt_isolate_import") (param i64) (result i64)
                 local.get 0)
+              (func (export "molt_main_exit_status") (result i64) call $mark_report i64.const 0)
               (func (export "molt_exception_pending") (result i64)
                 i64.const 0)
               (func (export "molt_main") (result i64)
@@ -1295,49 +1485,51 @@ fn app_startup_calls_only_molt_main_wrapper() {
 
     call_test_app_startup(&mut store, &instance, &instance).unwrap();
 
-    assert_eq!(&*order.lock().unwrap(), &["main"]);
+    assert_eq!(&*order.lock().unwrap(), &["main", "report"]);
 }
 
 #[test]
-fn app_startup_rejects_pending_runtime_failure() {
+fn app_startup_reports_and_consumes_pending_runtime_failure() {
     let engine = build_engine().expect("production host engine");
     let mut store = Store::new(&engine, test_host_state());
     let module = Module::new(
         &engine,
-        r#"
-        (module
-          (global $pending (mut i64) (i64.const 0))
-          (func (export "molt_main") (result i64)
-            i64.const 1
-            global.set $pending
-            i64.const 0)
-          (func (export "molt_exception_pending") (result i64)
-            global.get $pending))
-    "#,
+        r#"(module
+        (global $pending (mut i64) (i64.const 0))
+        (global $reports (mut i64) (i64.const 0))
+        (func (export "molt_main") (result i64)
+            i64.const 1 global.set $pending i64.const 0)
+        (func (export "molt_exception_pending") (result i64) global.get $pending)
+        (func (export "reports") (result i64) global.get $reports)
+        (func (export "molt_main_exit_status") (result i64)
+            global.get $pending i64.const 1 i64.ne if unreachable end
+            global.get $reports i64.const 1 i64.add global.set $reports
+            i64.const 0 global.set $pending i64.const 7))"#,
     )
     .unwrap();
     let instance = Linker::new(&engine)
         .instantiate(&mut store, &module)
         .unwrap();
-    let error = call_test_app_startup(&mut store, &instance, &instance)
-        .expect_err("pending runtime failure must not become successful startup");
-    assert!(error.to_string().contains("MOLT_APP_BOOTSTRAP_FAILED"));
-    let pending = instance
-        .get_typed_func::<(), i64>(&mut store, "molt_exception_pending")
-        .unwrap();
     assert_eq!(
-        pending.call(&mut store, ()).unwrap(),
-        1,
-        "host must preserve diagnostic state"
+        call_test_app_startup(&mut store, &instance, &instance).unwrap(),
+        GuestTermination::ApplicationExit(7)
     );
+    for (name, expected) in [("molt_exception_pending", 0), ("reports", 1)] {
+        let observed = instance
+            .get_typed_func::<(), i64>(&mut store, name)
+            .unwrap();
+        assert_eq!(observed.call(&mut store, ()).unwrap(), expected);
+    }
 }
 
 #[test]
 fn app_startup_resolves_status_before_executing_main() {
     for status_export in [
         "",
-        r#"(func (export "molt_exception_pending") (result i32) i32.const 0)"#,
-        r#"(func (export "molt_exception_pending") (result i64) i64.const 2)"#,
+        r#"(func (export "molt_main_exit_status") (result i64) i64.const 0)
+          (func (export "molt_exception_pending") (result i32) i32.const 0)"#,
+        r#"(func (export "molt_main_exit_status") (result i64) i64.const 0)
+          (func (export "molt_exception_pending") (result i64) i64.const 2)"#,
     ] {
         let engine = build_engine().expect("production host engine");
         let mut store = Store::new(&engine, test_host_state());
@@ -1377,7 +1569,8 @@ fn split_startup_reads_runtime_instance_status_not_application_shadow() {
     let runtime = Module::new(
         &engine,
         r#"
-        (module (func (export "molt_exception_pending") (result i64) i64.const 1))
+        (module (func (export "molt_main_exit_status") (result i64) i64.const 0)
+          (func (export "molt_exception_pending") (result i64) i64.const 1))
     "#,
     )
     .unwrap();
@@ -1393,6 +1586,7 @@ fn split_startup_reads_runtime_instance_status_not_application_shadow() {
             global.set $calls
             i64.const 0)
           (func (export "calls") (result i64) global.get $calls)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 0))
     "#,
     )
@@ -1430,6 +1624,7 @@ fn linked_startup_rejects_preexisting_failure_before_main() {
             global.set $calls
             i64.const 0)
           (func (export "calls") (result i64) global.get $calls)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 1))
     "#,
     )
@@ -1462,6 +1657,7 @@ fn app_startup_preserves_wasm_trap_failure() {
         r#"
         (module
           (func (export "molt_main") (result i64) unreachable)
+          (func (export "molt_main_exit_status") (result i64) i64.const 0)
           (func (export "molt_exception_pending") (result i64) i64.const 0))
     "#,
     )
@@ -1495,5 +1691,162 @@ fn isolate_export_registration_validates_both_abis_before_publication() {
         assert!(error.to_string().contains("missing or malformed"));
         assert!(store.data().isolate_bootstrap_export.is_none());
         assert!(store.data().isolate_import_export.is_none());
+    }
+}
+
+#[test]
+fn manifest_command_selector_preserves_command_argv_and_precompile_identity() {
+    let ParsedHostArgs::Run(options) = parse_host_args(
+        [
+            "--wasi-command-manifest",
+            "manifest.json",
+            "--",
+            "--exact",
+            "case",
+        ]
+        .map(str::to_string),
+    )
+    .unwrap() else {
+        panic!("expected command run");
+    };
+    assert!(matches!(options.execution,
+        ExecutionRequest::WasiCommandManifest { manifest } if manifest == "manifest.json"));
+    assert_eq!(options.guest_args, ["--exact", "case"]);
+    assert!(matches!(parse_host_args(
+        ["--precompile", "--wasi-command-manifest", "manifest.json"].map(str::to_string)
+    ).unwrap(), ParsedHostArgs::Precompile(ExecutionRequest::WasiCommandManifest { manifest })
+        if manifest == "manifest.json"));
+    for args in [
+        vec!["--wasi-command-manifest"],
+        vec![
+            "--precompile",
+            "--wasi-command-manifest",
+            "manifest.json",
+            "guest",
+        ],
+    ] {
+        assert!(parse_host_args(args.into_iter().map(str::to_string)).is_err());
+    }
+}
+
+#[test]
+fn manifest_command_captures_source_and_cannot_admit_an_unrelated_module() {
+    let original =
+        br#"(module (func (export "_start")) (func (export "answer") (result i32) i32.const 17))"#;
+    let root = runtime_manifest_fixture("command-capture", original, &sha256_hex(original));
+    let path = root.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["entry"] = serde_json::json!({"module":"linked","function":"_start"});
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let ResolvedExecution::WasiCommandManifest(resolved) =
+        resolve_execution(ExecutionRequest::WasiCommandManifest {
+            manifest: path.to_string_lossy().into_owned(),
+        })
+        .unwrap()
+    else {
+        panic!("manifest did not resolve as a command");
+    };
+    fs::write(root.path().join("program.wasm"), b"changed after admission").unwrap();
+    let engine = build_engine().unwrap();
+    let command = resolved.load(&engine).unwrap();
+    assert_eq!(
+        molt_wasm_host::sha256_digest_hex(command.source_sha256()),
+        sha256_hex(original)
+    );
+    let mut store = Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, command.module(), &[]).unwrap();
+    assert_eq!(
+        instance
+            .get_typed_func::<(), i32>(&mut store, "answer")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap(),
+        17
+    );
+    assert_eq!(
+        execute_test_guest(
+            &engine,
+            command.module(),
+            None,
+            LoadedGuestKind::WasiCommandManifest(&command),
+            &[],
+            None
+        )
+        .unwrap(),
+        GuestTermination::Returned
+    );
+    let unrelated = Module::new(
+        &engine,
+        r#"(module (func $s unreachable) (start $s) (func (export "_start")))"#,
+    )
+    .unwrap();
+    let error = execute_test_guest(
+        &engine,
+        &unrelated,
+        None,
+        LoadedGuestKind::WasiCommandManifest(&command),
+        &[],
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("requires its captured module"),
+        "{error:#}"
+    );
+    assert!(!format!("{error:#}").contains("unreachable"), "{error:#}");
+}
+
+#[test]
+fn split_reporter_admission_rejects_runtime_defect_despite_valid_app_shadow() {
+    let engine = build_engine().unwrap();
+    for reporter in [
+        "",
+        r#"(global (export "molt_main_exit_status") i64 (i64.const 0))"#,
+        r#"(func (export "molt_main_exit_status") (param i64) (result i64) i64.const 0)"#,
+        r#"(func (export "molt_main_exit_status") (result i32) i32.const 0)"#,
+    ] {
+        let runtime = Module::new(
+            &engine,
+            format!(
+                r#"(module
+            (func $start unreachable) (start $start)
+            (func (export "molt_anchor"))
+            (func (export "molt_exception_pending") (result i64) i64.const 0)
+            (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
+            (func (export "molt_runtime_execution_leave") (param i64))
+            (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+            {reporter})"#
+            ),
+        )
+        .unwrap();
+        let app = Module::new(
+            &engine,
+            r#"(module
+            (import "molt_runtime" "anchor" (func))
+            (func $start unreachable) (start $start)
+            (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
+            (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
+            (func (export "molt_main_exit_status") (result i64) i64.const 0)
+            (func (export "molt_main") (result i64) unreachable))"#,
+        )
+        .unwrap();
+        let error = execute_test_guest(
+            &engine,
+            &app,
+            Some(&runtime),
+            LoadedGuestKind::MoltApplication { linked: false },
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("molt_main_exit_status"),
+            "{error:#}"
+        );
+        assert!(
+            error.downcast_ref::<wasmtime::Trap>().is_none(),
+            "{error:#}"
+        );
     }
 }

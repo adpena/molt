@@ -13,8 +13,8 @@ hosted job see the same toolchain:
 Each ``[[toolchain_policy]]`` in ``tools/proof_plan.toml`` names its provider
 in ``projection``: ``llvm-sdk`` (the verified LLVM SDK, as ``molt.llvm_toolchain
 --verify --github-env`` exports it), ``wasi-sdk`` (the provisioned wasi-sdk, as
-``--verify-wasm --wasi-rust-target wasm32-wasip1 --github-env`` exports it), ``tool-release`` (a pinned release
-from ``config/tool_releases.toml``) or ``binaryen`` (the pinned ``wasm-opt``).
+``--verify-wasm --github-env`` exports it), ``tool-release`` (a pinned
+release from ``config/tool_releases.toml``) or ``binaryen`` (the pinned ``wasm-opt``).
 Policies without a projection are host tools or manage themselves (rustup,
 elan, uv). The WASI variables appear only when the selection needs the
 wasi-sdk: injected into an unrelated run, they break C extension builds.

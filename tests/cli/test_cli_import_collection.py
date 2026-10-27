@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 from molt.cargo_execution_policy import cargo_profile_directory
@@ -11177,7 +11179,6 @@ def test_wrapper_build_cache_semantic_env_tracks_external_static_packages() -> N
 
 def test_frontend_known_modules_do_not_authorize_unknown_children() -> None:
     gen = SimpleTIRGenerator(
-        parse_codec="json",
         known_modules={"externalpkg"},
         stdlib_allowlist=set(),
     )
@@ -11193,7 +11194,6 @@ def test_frontend_known_modules_do_not_authorize_native_python_direct_calls() ->
         "mask = 1\n"
         "result = distance_transform_edt(mask)\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -11231,7 +11231,6 @@ def test_frontend_from_import_known_child_module_does_not_authorize_python_direc
         "mask = 1\n"
         "result = ndimage.distance_transform_edt(mask)\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -11280,7 +11279,6 @@ def test_frontend_native_callable_export_uses_captured_import_object() -> None:
         "mask = 1\n"
         "result = distance_transform_edt(mask)\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -11327,7 +11325,6 @@ def test_frontend_native_callable_export_uses_live_child_module_attr() -> None:
         "mask = 1\n"
         "result = ndimage.distance_transform_edt(mask)\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -11373,7 +11370,6 @@ def test_frontend_native_callable_callargs_export_uses_live_child_module_attr() 
         "mask = 1\n"
         "result = ndimage.gaussian_filter(mask, sigma=1.5)\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -11426,7 +11422,6 @@ def test_frontend_pact_ndimage_operation_closure_calls_published_callable(
         + "\nmask = 1\n"
         + f"result = {callee.format(name=name)}({arguments})\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -11476,7 +11471,6 @@ def test_frontend_native_callable_module_attr_export_uses_normal_dispatch() -> N
         "mask = 1\n"
         "result = distance_transform_edt(mask)\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -11522,7 +11516,6 @@ def test_frontend_native_callable_module_attr_rejects_memory_abi() -> None:
             "mask = 1\n"
             "result = distance_transform_edt(mask)\n",
             module_name="field_solve",
-            parse_codec="json",
             known_modules={"field_solve", "scipy", "scipy.ndimage"},
             direct_call_modules={"field_solve"},
             stdlib_allowlist=set(),
@@ -11560,7 +11553,6 @@ def test_frontend_native_python_export_without_callable_metadata_uses_object_dis
         ops = _frontend_main_ops_for_import_source(
             source,
             module_name="field_solve",
-            parse_codec="json",
             known_modules={"field_solve", "scipy", "scipy.ndimage"},
             direct_call_modules={"field_solve"},
             stdlib_allowlist=set(),
@@ -11603,7 +11595,6 @@ def test_rebound_native_python_export_calls_replacement_without_abi_metadata() -
         "distance_transform_edt = replacement\n"
         "result = distance_transform_edt(1)\n",
         module_name="field_solve",
-        parse_codec="json",
         known_modules={"field_solve", "scipy", "scipy.ndimage"},
         direct_call_modules={"field_solve"},
         stdlib_allowlist=set(),
@@ -15624,6 +15615,7 @@ def test_backend_source_paths_are_feature_aware() -> None:
         # `object`, and the lock closure is conservative over features.
         "vendor/rust/cranelift-object",
         "vendor/rust/object",
+        "vendor/rust/regalloc2",
     }
     codegen_abi = {
         "runtime/molt-codegen-abi",
@@ -16588,7 +16580,6 @@ def test_module_lowering_reuses_generated_source_across_output_paths(tmp_path):
             module_execution_kind="imported",
             is_package=True,
             known_classes_snapshot={},
-            parse_codec="json",
             type_hint_policy="ignore",
             type_facts=None,
             enable_phi=True,
@@ -17087,7 +17078,6 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             ),
             project_root=project_root,
             known_classes_snapshot={},
-            parse_codec="json",
             type_hint_policy="ignore",
             type_facts=None,
             enable_phi=True,
@@ -17190,7 +17180,6 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
             ),
             project_root=project_root,
             known_classes_snapshot={},
-            parse_codec="json",
             type_hint_policy="ignore",
             type_facts=None,
             enable_phi=True,
@@ -17316,7 +17305,6 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
         module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -17489,7 +17477,6 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults(
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -17536,7 +17523,6 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -17587,7 +17573,6 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -17637,7 +17622,6 @@ def test_module_lowering_context_payload_scopes_known_classes(tmp_path: Path) ->
             ClassId("alpha", "DepClass"): {"fields": {}},
             ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
         },
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -17673,7 +17657,6 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
         source_lease=cli_module_source._ModuleSourceLease.inline(
             Path("/tmp/main.py"), "import alpha\n"
         ),
-        parse_codec="json",
         type_hint_policy="ignore",
         module_is_namespace=False,
         module_execution_kind="imported",
@@ -17725,7 +17708,6 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
         source_lease=cli_module_source._ModuleSourceLease.inline(
             Path("/tmp/main.py"), "VALUE = 1\n"
         ),
-        parse_codec="json",
         type_hint_policy="ignore",
         module_is_namespace=False,
         module_execution_kind="imported",
@@ -17848,7 +17830,6 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
                 ClassId("alpha", "DepClass"): {"fields": {}},
                 ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
             },
-            parse_codec="json",
             type_hint_policy="ignore",
             type_facts=None,
             enable_phi=True,
@@ -17910,7 +17891,6 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
             module_source_catalog=module_source_catalog,
             project_root=tmp_path,
             known_classes_snapshot={},
-            parse_codec="json",
             type_hint_policy="ignore",
             type_facts=None,
             enable_phi=True,
@@ -17960,7 +17940,6 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
             module_path=module_path,
             logical_source_path=str(module_path),
             source_lease=lease,
-            parse_codec="json",
             type_hint_policy="ignore",
             module_is_namespace=False,
             module_execution_kind="imported",
@@ -18014,7 +17993,6 @@ def test_module_lowering_context_payload_scopes_type_facts(tmp_path: Path) -> No
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="trust",
         type_facts=type_facts,
         enable_phi=True,
@@ -18058,7 +18036,6 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         source_lease=cli_module_source._ModuleSourceLease.inline(
             Path("/tmp/main.py"), "import alpha\n"
         ),
-        parse_codec="json",
         type_hint_policy="trust",
         module_is_namespace=False,
         module_execution_kind="imported",
@@ -18364,7 +18341,6 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -18417,7 +18393,6 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         source_lease=cli_module_source._ModuleSourceLease.inline(
             Path("/tmp/main.py"), "import alpha\n"
         ),
-        parse_codec="json",
         type_hint_policy="ignore",
         module_is_namespace=False,
         module_execution_kind="imported",
@@ -18488,7 +18463,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         module_execution_kind="imported",
         is_package=False,
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -18524,7 +18498,6 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
         logical_source_path="/tmp/main.py",
         module_is_namespace=False,
         module_execution_kind="script",
-        parse_codec="json",
         type_hint_policy="ignore",
         enable_phi=True,
         stdlib_allowlist=("json",),
@@ -18570,7 +18543,6 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="ignore",
         type_facts=None,
         enable_phi=True,
@@ -18610,7 +18582,6 @@ def test_module_lowering_context_digest_includes_native_callable_exports(
         "logical_source_path": "/tmp/main.py",
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
-        "parse_codec": "json",
         "type_hint_policy": "ignore",
         "type_facts": None,
         "enable_phi": True,
@@ -18679,7 +18650,6 @@ def test_module_lowering_context_digest_includes_native_python_exports(
         "logical_source_path": "/tmp/main.py",
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
-        "parse_codec": "json",
         "type_hint_policy": "ignore",
         "type_facts": None,
         "enable_phi": True,
@@ -18730,7 +18700,6 @@ def test_module_lowering_context_digest_includes_target_sys_platform(
         "logical_source_path": "/tmp/main.py",
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
-        "parse_codec": "json",
         "type_hint_policy": "ignore",
         "type_facts": None,
         "enable_phi": True,
@@ -18783,7 +18752,6 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
         "logical_source_path": str(module_path),
         "module_execution_kind": "imported",
         "known_classes_snapshot": {},
-        "parse_codec": "json",
         "type_hint_policy": "ignore",
         "type_facts": None,
         "enable_phi": True,
@@ -18855,7 +18823,6 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="trust",
         type_facts=facts_a,
         enable_phi=True,
@@ -18887,7 +18854,6 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         logical_source_path="/tmp/main.py",
         module_execution_kind="imported",
         known_classes_snapshot={},
-        parse_codec="json",
         type_hint_policy="trust",
         type_facts=facts_b,
         enable_phi=True,
@@ -20933,7 +20899,6 @@ def test_frontend_lower_module_worker_smoke(
         "source_lease": cli_module_source._ModuleSourceLease.inline(
             module_path, source
         ).worker_payload(),
-        "parse_codec": "msgpack",
         "type_hint_policy": "ignore",
         "module_is_namespace": False,
         "module_execution_kind": "imported",
@@ -25402,7 +25367,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             module_graph={},
             module_source_catalog=cli_module_source._ModuleSourceCatalog(leases={}),
             project_root=tmp_path,
-            parse_codec="json",
             type_hint_policy="check",
             type_facts=None,
             enable_phi=False,
@@ -27610,6 +27574,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     linked_bytes = _wasm_exporting_i64_unary_symbol("molt_main")
     linked_wasm.write_bytes(linked_bytes)
     manifest_payload = {
+        "version": WASM_EXECUTION_MANIFEST_VERSION,
         "mode": "linked",
         "modules": {
             "linked": {
@@ -35132,9 +35097,7 @@ def _real_frontend_fake_backend(
         yield
 
 
-def _cli_build_diagnostics(
-    project: Path, entry: str, output: str, parse_codec: str = "json"
-) -> dict[str, object]:
+def _cli_build_diagnostics(project: Path, entry: str, output: str) -> dict[str, object]:
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
         result = cli_build_command.build(
@@ -35142,7 +35105,6 @@ def _cli_build_diagnostics(
                 file_path=str(project / entry),
                 emit="obj",
                 output=str(project / output),
-                parse_codec=parse_codec,
                 profile="dev",
                 deterministic=False,
                 json_output=True,
@@ -35154,13 +35116,13 @@ def _cli_build_diagnostics(
 
 
 def _capture_hashseed_cli_builds(
-    project: Path, cache_root: Path, parse_codec: str, workers: int, output: str
+    project: Path, cache_root: Path, workers: int, output: str
 ) -> dict[str, object]:
     """Real CLI/frontend/cache inputs; replace only native artifact production."""
     records: list[dict[str, object]] = []
     with _real_frontend_fake_backend(project, cache_root, workers, records):
         diagnostics = [
-            _cli_build_diagnostics(project, "main.py", output, parse_codec)
+            _cli_build_diagnostics(project, "main.py", output)
             for _generation in ("cold", "warm")
         ]
     for generation in diagnostics:
@@ -35211,20 +35173,18 @@ def test_programs_share_the_lowered_form_of_every_imported_module(
     assert warm["hits"] == warm["observed"] - 1
 
 
-# Every IR codec and frontend worker mode, each under one fixed and one random
-# hash seed. Production bytes and cache keys must not depend on any of them, so
-# all eight builds are compared with each other: a seed-, codec- or
-# worker-dependent difference in any one build fails. Random seeds keep adding
-# coverage across runs.
+# Each frontend worker mode under two fixed and two independently random hash
+# seeds. All eight cold/warm builds are compared: any seed- or worker-dependent
+# production-byte/cache-key difference fails. Random seeds add coverage across runs.
 _HASHSEED_BUILDS = (
-    ("json", 0, "0"),
-    ("msgpack", 0, "1"),
-    ("json", 2, "42"),
-    ("msgpack", 2, "12345"),
-    ("json", 0, "random"),
-    ("msgpack", 0, "random"),
-    ("json", 2, "random"),
-    ("msgpack", 2, "random"),
+    (0, "0"),
+    (0, "1"),
+    (2, "42"),
+    (2, "12345"),
+    (0, "random"),
+    (0, "random"),
+    (2, "random"),
+    (2, "random"),
 )
 
 
@@ -35251,7 +35211,7 @@ def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
     )
 
     def build(index: int) -> tuple[object, ...]:
-        parse_codec, workers, seed = _HASHSEED_BUILDS[index]
+        workers, seed = _HASHSEED_BUILDS[index]
         cache = tmp_path / f"cache-{index}"
         # Each build owns its cache, Cargo target and output; they share only
         # the project's sources, so the builds after the first run together.
@@ -35260,7 +35220,7 @@ import json, sys
 from pathlib import Path
 sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT)!r}]
 from tests.cli.test_cli_import_collection import _capture_hashseed_cli_builds
-print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(cache)!r}), {parse_codec!r}, {workers}, "output-{index}.o")))
+print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(cache)!r}), {workers}, "output-{index}.o")))
 """
         completed = run_cli_test_process(
             [sys.executable, "-c", script],
@@ -35274,13 +35234,13 @@ print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(
         assert completed.stdout.strip()
         result = json.loads(completed.stdout)
         assert result["warm_hits"] > 0
-        return (parse_codec, workers, seed, result["records"])
+        return (workers, seed, result["records"])
 
     first = build(0)
     with ThreadPoolExecutor(max_workers=3) as executor:
         rest = list(executor.map(build, range(1, len(_HASHSEED_BUILDS))))
-    differing = [record[:3] for record in rest if record[3] != first[3]]
-    assert not differing, f"builds differ from {first[:3]}: {differing}"
+    differing = [record[:2] for record in rest if record[2] != first[2]]
+    assert not differing, f"builds differ from {first[:2]}: {differing}"
 
 
 def test_frontend_semantic_fingerprint_ignores_hashseed(tmp_path: Path) -> None:

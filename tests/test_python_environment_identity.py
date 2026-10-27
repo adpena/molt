@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import builtins
 import copy
+import csv
 from contextlib import contextmanager
 import hashlib
 import io
@@ -13,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import py_compile
+import shutil
 import stat
 import sys
 from types import ModuleType, SimpleNamespace
@@ -86,16 +88,16 @@ def test_development_admission_requires_complete_operation_intent(
     with pytest.raises(SystemExit) as caught:
         identity._parse_arguments()
     assert caught.value.code == 2
-    assert "development intent requires published admission and a checkout" in (
+    assert "development intent requires selection or admission and a checkout" in (
         capsys.readouterr().err
     )
 
 
 @pytest.mark.parametrize("development", [False, True])
 @pytest.mark.parametrize("with_custody", [False, True])
-@pytest.mark.parametrize("verification_fails", [False, True])
+@pytest.mark.parametrize("failure", [None, "verify", "close"])
 def test_published_admission_keeps_capture_context_until_final_verification(
-    tmp_path, monkeypatch, capsys, with_custody, verification_fails, development
+    tmp_path, monkeypatch, capsys, with_custody, failure, development
 ):
     from molt import source_build_environment
     from molt import input_report
@@ -103,6 +105,7 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     events = []
     realized = {"environment": "independent captured bytes"}
     payload = {"identity": realized} if with_custody else realized
+    (tmp_path / "checkout").mkdir()
 
     class Context:
         def __init__(self, *, hash_workers, digest_cache):
@@ -118,31 +121,32 @@ def test_published_admission_keeps_capture_context_until_final_verification(
 
         def __exit__(self, *args):
             events.append("context-closed")
+            if failure == "close":
+                raise PythonEnvironmentIdentityError("context close failed")
 
         def verify(self):
             events.append("verified")
-            if verification_fails:
+            if failure == "verify":
                 raise PythonEnvironmentIdentityError("captured input changed")
 
-    def capture(root, *, capture_context, **_kwargs):
+    def capture(root, *, capture_context, final_checks, **_kwargs):
         assert root == tmp_path and isinstance(capture_context, Context)
         events.append("captured")
+        final_checks(realized)
+        capture_context.verify()
         return payload
 
-    def admit(root, observed):
+    def admit(root, observed, *, development_admission):
         assert root == tmp_path and observed is realized
-        assert events == [
-            "context-open",
-            "captured",
-            *(["intent"] if development else []),
-        ]
-        events.append("admitted")
-
-    def load(root, *, repo_root, python, groups):
-        assert root == tmp_path and repo_root == tmp_path / "checkout"
-        assert python == "3.14" and groups == ("bench", "dev")
         assert events == ["context-open", "captured"]
-        events.append("intent")
+        if development:
+            assert development_admission.repo_root == tmp_path / "checkout"
+            assert development_admission.python == "3.14"
+            assert development_admission.groups == ("bench", "dev")
+            events.append("intent")
+        else:
+            assert development_admission is None
+        events.append("admitted")
 
     arguments = [
         "identity",
@@ -171,10 +175,14 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
     monkeypatch.setattr(identity, "capture_current_python_environment", capture)
     monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
-    monkeypatch.setattr(source_build_environment, "load_development_environment", load)
-    if verification_fails:
+    if failure is not None:
         with pytest.raises(
-            PythonEnvironmentIdentityError, match="captured input changed"
+            PythonEnvironmentIdentityError,
+            match=(
+                "captured input changed"
+                if failure == "verify"
+                else "context close failed"
+            ),
         ):
             identity._main()
         assert not capsys.readouterr().out
@@ -189,6 +197,211 @@ def test_published_admission_keeps_capture_context_until_final_verification(
         "verified",
         "context-closed",
     ]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        None,
+        ["--admit-published-environment"],
+        ["--with-custody"],
+        ["--runtime-session"],
+        ["--wheel-tag-source", "tags.py"],
+        ["--hash-workers", "2"],
+        ["--admit-virtualenv-bootstrap"],
+        ["--admit-site-bootstrap", "sitecustomize"],
+        ["--admit-external-root", "external"],
+        ["--capture-active-environment"],
+    ],
+)
+def test_development_selection_rejects_capture_roles_and_requires_checkout(
+    tmp_path, monkeypatch, capsys, extra
+):
+    arguments = ["identity", "--select-development-environment", str(tmp_path)]
+    if extra is not None:
+        arguments += ["--development-checkout", str(tmp_path), *extra]
+    monkeypatch.setattr(sys, "argv", arguments)
+    with pytest.raises(SystemExit) as caught:
+        identity._parse_arguments()
+    assert caught.value.code == 2
+    assert not capsys.readouterr().out
+
+
+@pytest.mark.parametrize("metadata_refused", [False, True])
+def test_development_selection_uses_metadata_owner_without_capture(
+    tmp_path, monkeypatch, capsys, metadata_refused
+):
+    from molt import input_report, source_build_environment, toolchain_facts
+    from molt.source_build_environment_schema import LockedSourceBuildEnvironment
+
+    root = tmp_path / ("a" * 64)
+    root.mkdir()
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    calls = []
+    image = LockedSourceBuildEnvironment(
+        root,
+        root / "bin/python",
+        root / "manifest.json",
+        {},
+        active=False,
+    )
+
+    def load(selected, *, repo_root, python, groups):
+        calls.append((selected, repo_root, python, groups))
+        if metadata_refused:
+            raise PythonEnvironmentIdentityError("metadata selection refused")
+        return image
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("ordinary selection entered byte capture authority")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "identity",
+            "--select-development-environment",
+            str(root),
+            "--development-checkout",
+            str(repo),
+            "--development-python",
+            "3.14",
+            "--development-group",
+            "bench",
+            "--development-group",
+            "dev",
+        ],
+    )
+    monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
+    monkeypatch.setattr(input_report, "worker_initializer", lambda _: None)
+    monkeypatch.setattr(source_build_environment, "load_development_environment", load)
+    monkeypatch.setattr(files, "PythonFileCaptureContext", refuse)
+    monkeypatch.setattr(toolchain_facts, "host_file_digest_cache", refuse)
+    monkeypatch.setattr(identity, "capture_current_python_environment", refuse)
+    monkeypatch.setattr(identity, "validate_python_environment_identity", refuse)
+    if metadata_refused:
+        with pytest.raises(
+            PythonEnvironmentIdentityError, match="metadata selection refused"
+        ):
+            identity._main()
+        assert not capsys.readouterr().out
+    else:
+        identity._main()
+        assert json.loads(capsys.readouterr().out) == {
+            "schema": "molt.development-environment-selection.v1",
+            "environment": str(root),
+            "environment_id": "a" * 64,
+            "checkout": str(repo),
+            "python": "3.14",
+            "groups": ["bench", "dev"],
+        }
+    assert calls == [(root, repo, "3.14", ("bench", "dev"))]
+
+
+@pytest.mark.parametrize("with_custody", [False, True])
+@pytest.mark.parametrize("fault", [None, "file", "membership", "callback"])
+def test_environment_final_checks_precede_one_real_closing_fence(
+    tmp_path, with_custody, fault
+):
+    from tests.python_environment_test_support import create_test_venv
+
+    root = tmp_path / "image"
+    python = create_test_venv(root)
+    reader = tmp_path / "reader"
+    copy_python_capture_authority(reader)
+    site = root / (
+        "Lib/site-packages"
+        if os.name == "nt"
+        else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    )
+    shutil.copytree(reader / "src/molt", site / "molt")
+    metadata = site / "molt-0.0.1.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: molt\nVersion: 0.0.1\n", encoding="utf-8"
+    )
+    (metadata / "WHEEL").write_text(
+        "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        encoding="utf-8",
+    )
+    _write_installed_record(
+        site, metadata, sorted(path for path in site.rglob("*") if path.is_file())
+    )
+    (root / "captured.py").write_text("VALUE = 41\n", encoding="utf-8")
+    code = r"""
+import json,os,sys
+from pathlib import Path
+from molt.python_environment_custody import capture_current_python_environment
+from molt.python_file_node_custody import PythonFileCaptureContext
+root=Path(sys.argv[1]);fault=sys.argv[2];with_custody=sys.argv[3]=='yes'
+assert Path(sys.modules['molt'].__file__).resolve().is_relative_to(root.resolve())
+counts={'checks':0,'fences':0}
+verify=PythonFileCaptureContext.verify
+
+def counted_verify(self):
+    counts['fences']+=1
+    return verify(self)
+PythonFileCaptureContext.verify=counted_verify
+
+def final_checks(identity):
+    counts['checks']+=1
+    assert counts['fences']==0, 'producer fenced before final checks'
+    assert any(row['path']=='captured.py' for row in identity['tree']['entries'])
+    if fault=='file':
+        path=root/'captured.py';before=path.stat()
+        path.write_text('VALUE = 42\n',encoding='utf-8')
+        os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
+        assert path.stat().st_size==before.st_size
+        assert path.stat().st_mtime_ns==before.st_mtime_ns
+    elif fault=='membership':
+        (root/'late.py').write_text('VALUE = 42\n',encoding='utf-8')
+    elif fault=='callback':
+        raise ValueError('callback oracle refused')
+
+try:
+    with PythonFileCaptureContext() as context:
+        payload=capture_current_python_environment(
+            root,capture_context=context,with_custody=with_custody,final_checks=final_checks,
+        )
+except ValueError as error:
+    result={'error':str(error),**counts}
+else:
+    result={'schema':payload['schema'],**counts}
+print(json.dumps(result))
+"""
+    with identity.PythonIdentityVerifier() as verifier:
+        result = verifier.run(
+            [
+                str(python),
+                *identity.python_identity_verifier_arguments(verifier.prefix),
+                "-c",
+                code,
+                str(root),
+                fault or "none",
+                "yes" if with_custody else "no",
+            ],
+            memory_guard_prefix=_COMMANDS.prefix,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["checks"] == 1, observed
+    assert observed["fences"] == (0 if fault == "callback" else 1)
+    if fault == "callback":
+        assert observed["error"] == "callback oracle refused"
+    elif fault is not None:
+        assert "changed" in observed["error"]
+    else:
+        assert observed["schema"] == (
+            "molt.python-capture.v2"
+            if with_custody
+            else "molt.python-environment-closure.v7"
+        )
 
 
 @pytest.mark.parametrize("fault", ["missing", "populated", "symlink"])
@@ -568,7 +781,8 @@ def test_capture_entry_refuses_image_cache_before_capturing_runtime(
         "host_file_digest_cache",
         lambda: files.FileDigestCache(store, max_age_ns=10**18),
     )
-    monkeypatch.setattr(sys, "argv", ["identity", "--capture-environment", str(image)])
+    arguments = ["identity", "--capture-environment", str(image)]
+    monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
 
     def refuse(*_args, **_kwargs):
@@ -2115,6 +2329,19 @@ def test_environment_locator_keeps_import_archive_as_exact_input(
     assert location.validate_python_environment_location(located) == located
 
 
+def _write_installed_record(site: Path, metadata: Path, paths: list[Path]) -> None:
+    rows = []
+    for path in paths:
+        data = path.read_bytes()
+        digest = (
+            base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+        )
+        rows.append((path.relative_to(site).as_posix(), f"sha256={digest}", len(data)))
+    rows.append(((metadata / "RECORD").relative_to(site).as_posix(), "", ""))
+    with (metadata / "RECORD").open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream).writerows(rows)
+
+
 def _installed_fixture(root: Path, source_bytes: bytes = b"VALUE = 1\n"):
     site = root / "site"
     metadata = site / "demo-1.0.dist-info"
@@ -2125,16 +2352,7 @@ def _installed_fixture(root: Path, source_bytes: bytes = b"VALUE = 1\n"):
     meta.write_text(
         "Metadata-Version: 2.1\nName: Demo\nVersion: 1.0\n", encoding="utf-8"
     )
-    rows = []
-    for path in (module, meta):
-        data = path.read_bytes()
-        digest = (
-            base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
-        )
-        rows.append(f"{path.relative_to(site).as_posix()},sha256={digest},{len(data)}")
-    (metadata / "RECORD").write_text(
-        "\n".join(rows) + "\ndemo-1.0.dist-info/RECORD,,\n", encoding="utf-8"
-    )
+    _write_installed_record(site, metadata, [module, meta])
     return module
 
 
@@ -2611,8 +2829,8 @@ def test_standalone_package_refusal_preserves_unicode_on_diagnostic_wire(
             wire.flush()
             diagnostic = output.getvalue().decode("utf-8", errors="strict")
         assert caught.value.code == 2
-        assert str(foreign) in diagnostic
-        assert str(standalone_probe_source.parent) in diagnostic
+        assert str(foreign) in diagnostic, diagnostic
+        assert str(standalone_probe_source.parent) in diagnostic, diagnostic
         assert "\\u03bb" not in diagnostic
         assert imports == []
         assert sys.stdout is stdout

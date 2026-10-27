@@ -2014,6 +2014,15 @@ MANIFEST_FIELDS = frozenset(
         "strip_import_prefix_rule",
         "strip_import_rule",
         "table_layout",
+        "wasi_errno",
+        "wasi_errno_alias",
+        "synthetic_errno",
+        "errno_adoption",
+        "deployment_manifest",
+        "wasi_errno_disposition",
+        "resolver_error",
+        "resolver_status",
+        "wasm_socket_constant",
         "wasm_bulk_memory_op",
         "witness_frontier",
     }
@@ -2028,6 +2037,256 @@ DERIVED_MANIFEST_FIELDS = frozenset(
 )
 
 
+_WASI_ERRNO_NAME = re.compile(r"E[A-Z0-9]+")
+
+
+def _validate_wasi_errno(data: dict) -> None:
+    """The raw preview1 errno table: one code per name,
+    each code named once, and aliases that name a declared code."""
+    codes = data.get("wasi_errno")
+    if not isinstance(codes, dict) or not codes:
+        raise WasmAbiManifestError("manifest must define [wasi_errno]")
+    seen: dict[int, str] = {}
+    for name, value in codes.items():
+        if not _WASI_ERRNO_NAME.fullmatch(name):
+            raise WasmAbiManifestError(f"wasi_errno name {name!r} is not an E* name")
+        if type(value) is not int or not 0 < value < 256:
+            raise WasmAbiManifestError(f"wasi_errno {name} must be a code in 1..255")
+        if value in seen:
+            raise WasmAbiManifestError(
+                f"wasi_errno {name} repeats code {value} of {seen[value]}; "
+                "declare it in [wasi_errno_alias]"
+            )
+        seen[value] = name
+    aliases = data.get("wasi_errno_alias", {})
+    if not isinstance(aliases, dict):
+        raise WasmAbiManifestError("[wasi_errno_alias] must map names to names")
+    for alias, target in aliases.items():
+        if not _WASI_ERRNO_NAME.fullmatch(alias) or alias in codes:
+            raise WasmAbiManifestError(
+                f"wasi_errno_alias {alias!r} must be a new E* name"
+            )
+        if target not in codes:
+            raise WasmAbiManifestError(
+                f"wasi_errno_alias {alias} names undeclared code {target!r}"
+            )
+
+
+def wasi_errno_table(data: dict) -> dict[str, int]:
+    """Every WASI errno name, aliases included, with its code."""
+    table = dict(data["wasi_errno"])
+    for alias, target in data.get("wasi_errno_alias", {}).items():
+        table[alias] = data["wasi_errno"][target]
+    return table
+
+
+def synthetic_errno_table(data: dict) -> dict[str, int]:
+    """Resolve the ordered Molt errno declaration, preserving publication order."""
+    rows = data.get("synthetic_errno")
+    if not isinstance(rows, list) or not rows:
+        raise WasmAbiManifestError("manifest must define [[synthetic_errno]]")
+    definitions: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) - {
+            "name",
+            "value",
+            "alias",
+            "windows_socket_name",
+            "wasi_sdk",
+        }:
+            raise WasmAbiManifestError("invalid synthetic_errno declaration fields")
+        name = row.get("name")
+        if (
+            not isinstance(name, str)
+            or not _WASI_ERRNO_NAME.fullmatch(name)
+            or name in definitions
+        ):
+            raise WasmAbiManifestError("synthetic_errno names must be unique E* names")
+        if ("value" in row) == ("alias" in row):
+            raise WasmAbiManifestError(
+                "synthetic_errno requires exactly one value or alias"
+            )
+        if "value" in row and (
+            type(row["value"]) is not int or not 0 < row["value"] < 2**31
+        ):
+            raise WasmAbiManifestError("synthetic_errno value must be a positive i32")
+        if "alias" in row and not isinstance(row["alias"], str):
+            raise WasmAbiManifestError("synthetic_errno alias must name a declaration")
+        if "windows_socket_name" in row and (
+            not isinstance(row["windows_socket_name"], str)
+            or not re.fullmatch(r"WSAE[A-Z0-9_]+", row["windows_socket_name"])
+        ):
+            raise WasmAbiManifestError("invalid native Windows socket errno symbol")
+        if "wasi_sdk" in row and row["wasi_sdk"] is not False:
+            raise WasmAbiManifestError("wasi_sdk marks only explicit SDK absence")
+        definitions[name] = row
+    resolved: dict[str, int] = {}
+
+    def resolve(name: str, active: frozenset[str]) -> int:
+        if name in resolved:
+            return resolved[name]
+        if name not in definitions or name in active:
+            raise WasmAbiManifestError("synthetic_errno alias is cyclic or undeclared")
+        row = definitions[name]
+        value = (
+            row["value"] if "value" in row else resolve(row["alias"], active | {name})
+        )
+        resolved[name] = value
+        return value
+
+    result = {name: resolve(name, frozenset()) for name in definitions}
+    values: dict[int, str] = {}
+    for name, row in definitions.items():
+        if "value" in row:
+            if row["value"] in values:
+                raise WasmAbiManifestError(
+                    "duplicate synthetic_errno value requires an explicit alias"
+                )
+            values[row["value"]] = name
+    adoption = data.get("errno_adoption")
+    if (
+        not isinstance(adoption, dict)
+        or set(adoption) != {"unknown"}
+        or adoption["unknown"] not in result
+    ):
+        raise WasmAbiManifestError(
+            "errno_adoption requires a declared unknown-error disposition"
+        )
+    raw = wasi_errno_table(data)
+    disposition = data.get("wasi_errno_disposition")
+    if not isinstance(disposition, dict) or set(disposition) != set(raw) - set(result):
+        raise WasmAbiManifestError(
+            "wasi_errno_disposition must cover exactly raw SDK-only errno"
+        )
+    if any(name not in result for name in disposition.values()):
+        raise WasmAbiManifestError(
+            "WASI errno disposition must name declared guest errno"
+        )
+    absent = {row["name"] for row in rows if row.get("wasi_sdk") is False}
+    if absent != set(result) - set(raw):
+        raise WasmAbiManifestError(
+            "synthetic errno without WASI SDK identity requires explicit absence"
+        )
+    return result
+
+
+def resolver_error_table(data: dict) -> dict[str, int]:
+    rows = data.get("resolver_error")
+    if not isinstance(rows, list) or not rows:
+        raise WasmAbiManifestError("manifest must define [[resolver_error]]")
+    result: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) - {
+            "name",
+            "value",
+            "role",
+            "native_alias_prefer",
+        }:
+            raise WasmAbiManifestError("invalid resolver_error declaration fields")
+        if row.get("role") not in {"resolver", "system_sentinel", "metadata_sentinel"}:
+            raise WasmAbiManifestError("resolver_error requires a closed role")
+        name, value = row.get("name"), row.get("value")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"EAI_[A-Z][A-Z0-9_]*", name)
+            or name in result
+        ):
+            raise WasmAbiManifestError("resolver_error names must be unique EAI names")
+        if type(value) is not int or not 0 < value < 2**31 or value in result.values():
+            raise WasmAbiManifestError(
+                "resolver_error values must be unique positive integers"
+            )
+        result[name] = value
+    declarations = {row["name"]: row for row in rows}
+    for row in rows:
+        preferred = row.get("native_alias_prefer")
+        if preferred is None:
+            continue
+        if (
+            row["role"] != "resolver"
+            or not isinstance(preferred, str)
+            or preferred == row["name"]
+            or preferred not in declarations
+            or declarations[preferred]["role"] != "resolver"
+            or "native_alias_prefer" in declarations[preferred]
+        ):
+            raise WasmAbiManifestError("invalid resolver native alias preference")
+    if sum(row["role"] == "system_sentinel" for row in rows) != 1:
+        raise WasmAbiManifestError(
+            "resolver_error requires exactly one system sentinel"
+        )
+    return result
+
+
+def wasm_socket_constant_table(data: dict) -> dict[str, int]:
+    rows = data.get("wasm_socket_constant")
+    if not isinstance(rows, list) or not rows:
+        raise WasmAbiManifestError("manifest must define [[wasm_socket_constant]]")
+    kinds = {
+        "address_family",
+        "socket_type",
+        "shutdown",
+        "message_flag",
+        "message_result_flag",
+        "resolver_flag",
+        "nameinfo_flag",
+        "protocol",
+        "level",
+        "option",
+    }
+    definitions: dict[str, dict] = {}
+    values: dict[tuple[str, int], str] = {}
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) - {"name", "value", "kind", "option_level"}
+            or not {"name", "value", "kind"} <= set(row)
+        ):
+            raise WasmAbiManifestError("invalid WASM socket constant fields")
+        kind, name, value = row["kind"], row["name"], row["value"]
+        if not isinstance(kind, str) or kind not in kinds:
+            raise WasmAbiManifestError("unknown WASM socket constant kind")
+        if (kind == "option") != ("option_level" in row):
+            raise WasmAbiManifestError("WASM socket options require an explicit level")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Z][A-Z0-9_]+", name)
+            or name in definitions
+        ):
+            raise WasmAbiManifestError("invalid or duplicate WASM socket constant")
+        if type(value) is not int or not 0 <= value < 2**31:
+            raise WasmAbiManifestError("invalid WASM socket constant value")
+        if kind in {
+            "message_flag",
+            "message_result_flag",
+            "resolver_flag",
+            "nameinfo_flag",
+        } and (value == 0 or value & (value - 1)):
+            raise WasmAbiManifestError("WASM socket flags must be single positive bits")
+        if kind != "option":
+            key = (kind, value)
+            if key in values:
+                raise WasmAbiManifestError("duplicate WASM socket wire identity")
+            values[key] = name
+        definitions[name] = row
+    option_keys: set[tuple[int, int]] = set()
+    for row in rows:
+        if row["kind"] != "option":
+            continue
+        level_name = row["option_level"]
+        if (
+            not isinstance(level_name, str)
+            or level_name not in definitions
+            or definitions[level_name]["kind"] not in {"level", "protocol"}
+        ):
+            raise WasmAbiManifestError("unknown or invalid WASM socket option level")
+        key = (definitions[level_name]["value"], row["value"])
+        if key in option_keys:
+            raise WasmAbiManifestError("duplicate WASM socket option wire identity")
+        option_keys.add(key)
+    return {name: row["value"] for name, row in definitions.items()}
+
+
 def validate_loaded_manifest(
     data: dict,
     *,
@@ -2038,6 +2297,22 @@ def validate_loaded_manifest(
         raise WasmAbiManifestError(f"unknown manifest fields: {sorted(unknown_fields)}")
     for field in DERIVED_MANIFEST_FIELDS:
         data.pop(field, None)
+    deployment = data.get("deployment_manifest")
+    if (
+        not isinstance(deployment, dict)
+        or set(deployment) != {"version"}
+        or type(deployment["version"]) is not int
+        or not 0 < deployment["version"] < 2**32
+    ):
+        raise WasmAbiManifestError(
+            "deployment_manifest requires a positive u32 version"
+        )
+    _validate_wasi_errno(data)
+    synthetic_errno_table(data)
+    resolver_error_table(data)
+    if data.get("resolver_status") != {"encoding": "signed-i32-v1"}:
+        raise WasmAbiManifestError("unsupported resolver status encoding")
+    wasm_socket_constant_table(data)
     table_layout = data.get("table_layout")
     if not isinstance(table_layout, dict):
         raise WasmAbiManifestError("manifest must define [table_layout]")

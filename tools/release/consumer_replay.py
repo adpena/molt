@@ -28,6 +28,7 @@ from molt.toolchain_identity import (
     capture_stable_regular_file,
     verify_stable_regular_file_identity,
 )
+from molt.wasm_artifact import require_current_wasm_execution_manifest
 from tools.cross_run import (
     SealedRootTransport,
     SEALED_REPLAY_EXECUTION,
@@ -173,6 +174,7 @@ def _artifact_bytes(
 
 
 def _linked_wasm_descriptor(payload: object) -> tuple[str, dict[str, Any]]:
+    require_current_wasm_execution_manifest(payload)
     if (
         not isinstance(payload, dict)
         or payload.get("mode") != "linked"

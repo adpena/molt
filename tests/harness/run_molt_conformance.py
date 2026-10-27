@@ -17,9 +17,8 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
 
 # Ensure the harness directory is on sys.path so the import works
 # regardless of the caller's working directory.
@@ -42,7 +41,6 @@ from molt.harness_conformance import (  # noqa: E402
 from molt.temporary_artifacts import execution_scratch  # noqa: E402
 from molt.cli.build_request import (  # noqa: E402
     BuildRequest,
-    ParseCodec,
     build_request_to_payload,
 )
 from run_monty_conformance import parse_expectation  # noqa: E402
@@ -145,9 +143,10 @@ def _molt_batch_build_params(
     src: Path, out: Path, env: dict[str, str]
 ) -> dict[str, object]:
     """Build-server params matching the previous native `molt build` contract."""
-    request = BuildRequest(file_path=str(src), output=str(out))
-    if "MOLT_CODEC" in env:
-        request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
+    request = BuildRequest(
+        file_path=str(src),
+        output=str(out),
+    )
     return build_request_to_payload(request)
 
 

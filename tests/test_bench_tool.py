@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import json
 import subprocess
 import sys
@@ -1041,7 +1043,8 @@ def test_prepare_molt_binary_uses_batch_build_server(
                 "stderr": "",
             }
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    environment = {"BASE": "1"}
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: environment)
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
 
     binary = bench_tool.prepare_molt_binary(
@@ -1066,7 +1069,7 @@ def test_prepare_molt_binary_uses_batch_build_server(
         assert params["trusted"] is True
         assert params["json_output"] is True
         assert params["cache"] is True
-        assert env_overrides == {"BASE": "1"}
+        assert env_overrides == environment
         assert "env_overrides" not in params
         assert not {"codec", "type_hints", "type_facts", "backend"} & params.keys()
     finally:
@@ -1149,46 +1152,6 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
     assert failure.returncode == bench_tool.memory_guard.TIMEOUT_RETURN_CODE
     assert failure.timed_out is True
     assert failure.detail == "batch_server_response_timeout"
-
-
-@pytest.mark.parametrize("build_target", ["native", "wasm"])
-@pytest.mark.parametrize("batched", [False, True])
-def test_prepare_molt_binary_rejects_invalid_codec_before_dispatch(
-    monkeypatch, tmp_path: Path, build_target: str, batched: bool
-) -> None:
-    environment = {"MOLT_CODEC": "invalid-codec"}
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: environment)
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
-    monkeypatch.setattr(bench_tool, "_bench_tmp_root", lambda env: tmp_path)
-
-    def unexpected_dispatch(*args, **kwargs):
-        pytest.fail("invalid build configuration reached compiler dispatch")
-
-    monkeypatch.setattr(bench_tool, "BatchCompileServerClient", unexpected_dispatch)
-    monkeypatch.setattr(
-        bench_tool.harness_memory_guard,
-        "guarded_completed_process",
-        unexpected_dispatch,
-    )
-    owner = bench_tool._BenchBatchBuildServer(environment) if batched else None
-    try:
-        failure = bench_tool.prepare_molt_binary(
-            str(tmp_path / "program.py"),
-            env=environment,
-            batch_server=owner,
-            build_target=build_target,
-        )
-    finally:
-        if owner is not None:
-            owner.close()
-
-    assert isinstance(failure, bench_tool.MoltFailure)
-    assert failure.phase == "build" and failure.status == "build_failed"
-    assert failure.returncode == 2
-    assert not failure.timed_out
-    assert failure.infrastructure_failure is None
-    assert "parse_codec" in failure.stderr and "invalid-codec" in failure.stderr
-    assert list(tmp_path.iterdir()) == []
 
 
 def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
@@ -2736,6 +2699,7 @@ def test_wasm_artifact_selection_refuses_decoys_without_scanning(tmp_path, defec
         manifest.write_text(
             json.dumps(
                 {
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
                     "mode": "split-runtime" if defect == "split-mode" else "linked",
                     "modules": {
                         "linked": {

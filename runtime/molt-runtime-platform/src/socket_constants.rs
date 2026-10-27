@@ -1,6 +1,9 @@
 //! Platform socket constants shared by stdlib exports and runtime helpers.
 
+#[cfg(not(target_arch = "wasm32"))]
 pub const AF_INET: i32 = 2;
+#[cfg(target_arch = "wasm32")]
+pub use crate::wasm_socket_abi::AF_INET;
 
 #[cfg(target_arch = "wasm32")]
 pub const AF_INET6: i32 = crate::libc_compat::AF_INET6;
@@ -25,9 +28,6 @@ pub const SOCK_CLOEXEC_FLAG: i32 = libc::SOCK_CLOEXEC;
 pub const SOCK_CLOEXEC_FLAG: i32 = 0;
 
 #[cfg(target_arch = "wasm32")]
-use crate::libc_compat as libc;
-
-#[cfg(target_arch = "wasm32")]
 pub fn errno_constants(_python_version: u16) -> impl Iterator<Item = (&'static str, i64)> + Clone {
     crate::libc_compat::ERRNO_CONSTANTS.iter().copied()
 }
@@ -35,51 +35,13 @@ pub fn errno_constants(_python_version: u16) -> impl Iterator<Item = (&'static s
 #[cfg(not(target_arch = "wasm32"))]
 include!(concat!(env!("OUT_DIR"), "/errno_constants.rs"));
 
-pub fn socket_constants() -> &'static [(&'static str, i64)] {
+fn socket_abi_constants() -> &'static [(&'static str, i64)] {
     #[cfg(target_arch = "wasm32")]
     {
         // Keep wasm socket constants aligned with wasm/run_wasm.js host values so
         // stdlib consumers (e.g. socketserver/smtplib) do not observe missing
         // module attributes.
-        &[
-            ("AF_UNIX", libc::AF_UNIX as i64),
-            ("AF_INET", AF_INET as i64),
-            ("AF_INET6", AF_INET6 as i64),
-            ("SOCK_STREAM", libc::SOCK_STREAM as i64),
-            ("SOCK_DGRAM", libc::SOCK_DGRAM as i64),
-            ("SOCK_RAW", libc::SOCK_RAW as i64),
-            ("SOL_SOCKET", libc::SOL_SOCKET as i64),
-            ("SO_REUSEADDR", 2),
-            ("SO_KEEPALIVE", 9),
-            ("SO_SNDBUF", 7),
-            ("SO_RCVBUF", 8),
-            ("SO_ERROR", 4),
-            ("SO_LINGER", 13),
-            ("SO_BROADCAST", 6),
-            ("SO_REUSEPORT", 15),
-            ("IPPROTO_TCP", 6),
-            ("IPPROTO_UDP", 17),
-            ("IPPROTO_IPV6", 41),
-            ("IPV6_V6ONLY", 26),
-            ("TCP_NODELAY", 1),
-            ("SHUT_RD", 0),
-            ("SHUT_WR", 1),
-            ("SHUT_RDWR", 2),
-            ("AI_PASSIVE", 0x1),
-            ("AI_CANONNAME", 0x2),
-            ("AI_NUMERICHOST", 0x4),
-            ("AI_NUMERICSERV", 0x400),
-            ("NI_NUMERICHOST", 0x1),
-            ("NI_NUMERICSERV", 0x2),
-            ("MSG_PEEK", 2),
-            ("MSG_DONTWAIT", libc::MSG_DONTWAIT as i64),
-            ("EAI_AGAIN", 2),
-            ("EAI_FAIL", 4),
-            ("EAI_FAMILY", 5),
-            ("EAI_NONAME", libc::EAI_NONAME as i64),
-            ("EAI_SERVICE", 9),
-            ("EAI_SOCKTYPE", 10),
-        ]
+        crate::wasm_socket_abi::SOCKET_CONSTANTS
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -107,21 +69,6 @@ pub fn socket_constants() -> &'static [(&'static str, i64)] {
                 ("AI_PASSIVE", 1_i64),
                 ("AI_V4MAPPED", 2048_i64),
                 ("AI_V4MAPPED_CFG", 512_i64),
-                ("EAI_ADDRFAMILY", 1_i64),
-                ("EAI_AGAIN", 2_i64),
-                ("EAI_BADFLAGS", 3_i64),
-                ("EAI_BADHINTS", 12_i64),
-                ("EAI_FAIL", 4_i64),
-                ("EAI_FAMILY", 5_i64),
-                ("EAI_MAX", 15_i64),
-                ("EAI_MEMORY", 6_i64),
-                ("EAI_NODATA", 7_i64),
-                ("EAI_NONAME", 8_i64),
-                ("EAI_OVERFLOW", 14_i64),
-                ("EAI_PROTOCOL", 13_i64),
-                ("EAI_SERVICE", 9_i64),
-                ("EAI_SOCKTYPE", 10_i64),
-                ("EAI_SYSTEM", 11_i64),
                 ("ETHERTYPE_ARP", 2054_i64),
                 ("ETHERTYPE_IP", 2048_i64),
                 ("ETHERTYPE_IPV6", 34525_i64),
@@ -315,12 +262,6 @@ pub fn socket_constants() -> &'static [(&'static str, i64)] {
                 ("NI_NUMERICHOST", 0x0002_i64),
                 ("NI_NUMERICSERV", 0x0008_i64),
                 ("MSG_PEEK", 0x0002_i64),
-                ("EAI_AGAIN", 11002_i64),
-                ("EAI_FAIL", 11003_i64),
-                ("EAI_FAMILY", 10047_i64),
-                ("EAI_NONAME", 11001_i64),
-                ("EAI_SERVICE", 10109_i64),
-                ("EAI_SOCKTYPE", 10044_i64),
             ]
         }
         #[cfg(all(not(target_os = "macos"), not(windows)))]
@@ -384,12 +325,6 @@ pub fn socket_constants() -> &'static [(&'static str, i64)] {
                     target_os = "dragonfly"
                 ))]
                 ("SO_REUSEPORT", libc::SO_REUSEPORT as i64),
-                ("EAI_AGAIN", libc::EAI_AGAIN as i64),
-                ("EAI_FAIL", libc::EAI_FAIL as i64),
-                ("EAI_FAMILY", libc::EAI_FAMILY as i64),
-                ("EAI_NONAME", libc::EAI_NONAME as i64),
-                ("EAI_SERVICE", libc::EAI_SERVICE as i64),
-                ("EAI_SOCKTYPE", libc::EAI_SOCKTYPE as i64),
                 #[cfg(target_os = "linux")]
                 ("AF_ALG", 38_i64),
                 #[cfg(target_os = "linux")]
@@ -413,6 +348,20 @@ pub fn socket_constants() -> &'static [(&'static str, i64)] {
     }
 }
 
+/// Borrow the selected ABI rows and the same SDK resolver values used at the
+/// native resolver boundary; no allocation or copied EAI number table.
+pub fn socket_constants() -> impl Iterator<Item = (&'static str, i64)> + Clone {
+    let rows = socket_abi_constants().iter().copied();
+    #[cfg(target_arch = "wasm32")]
+    {
+        rows
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        rows.chain(crate::native_error_codes::EAI_CONSTANTS.iter().copied())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,22 +382,32 @@ mod tests {
 
     #[test]
     fn socket_constants_include_core_address_and_type_values() {
-        let constants = socket_constants();
-        assert_eq!(find(constants, "AF_INET"), Some(AF_INET as i64));
-        assert_eq!(find(constants, "AF_INET6"), Some(AF_INET6 as i64));
-        assert!(find(constants, "SOCK_STREAM").is_some());
-        assert!(find(constants, "EAI_NONAME").is_some());
+        let constants: Vec<_> = socket_constants().collect();
+        assert_eq!(find(&constants, "AF_INET"), Some(AF_INET as i64));
+        assert_eq!(find(&constants, "AF_INET6"), Some(AF_INET6 as i64));
+        assert!(find(&constants, "SOCK_STREAM").is_some());
+        assert!(find(&constants, "EAI_NONAME").is_some());
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(
+            constants
+                .iter()
+                .copied()
+                .filter(|(name, _)| name.starts_with("EAI_"))
+                .collect::<Vec<_>>(),
+            crate::native_error_codes::EAI_CONSTANTS,
+            "publish every present SDK resolver symbol once, with no copied defaults"
+        );
     }
 
     #[test]
     fn socket_flags_are_present_only_when_supported() {
-        let constants = socket_constants();
+        let constants: Vec<_> = socket_constants().collect();
         assert_eq!(
-            find(constants, "SOCK_NONBLOCK"),
+            find(&constants, "SOCK_NONBLOCK"),
             (SOCK_NONBLOCK_FLAG != 0).then_some(SOCK_NONBLOCK_FLAG as i64)
         );
         assert_eq!(
-            find(constants, "SOCK_CLOEXEC"),
+            find(&constants, "SOCK_CLOEXEC"),
             (SOCK_CLOEXEC_FLAG != 0).then_some(SOCK_CLOEXEC_FLAG as i64)
         );
     }

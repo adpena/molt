@@ -14,7 +14,6 @@ from molt.cargo_execution_policy import (
 
 import os
 import re
-import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field, replace
@@ -23,7 +22,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
-from molt import process_guard
 from molt.flag_strings import FlagStringError, FlagStringRule
 from molt.process_environment import (
     NameRule,
@@ -31,6 +29,7 @@ from molt.process_environment import (
     ProcessEnvironmentBuilder,
 )
 from molt.cli import cargo_command as cargo_argv
+from molt.cli import cargo_capabilities
 from molt.cli import runtime_tool_selection
 from molt.cli import rustc_probes
 from molt.cli.cargo_search_path import cargo_search_path, derives_cargo_search_path
@@ -74,14 +73,6 @@ from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
     verify_stable_regular_file_identity,
-)
-from molt.toolchain_facts import (
-    CARGO_VERSION_ENVIRONMENT,
-    ProbeKey,
-    ProbeTool,
-    completed_probe,
-    environment_inputs,
-    host_toolchain_facts,
 )
 
 
@@ -1050,53 +1041,6 @@ def _cargo_build_directory_base(root: Path, environment: Mapping[str, str]) -> P
     return Path(os.path.abspath(path if path.is_absolute() else root / path))
 
 
-def require_cargo_build_directory_version(version: str) -> None:
-    """Admit the Cargo capability from its captured short or verbose banner."""
-    banner = version.partition("\n")[0].rstrip("\r")
-    match = re.fullmatch(r"cargo (\d+)\.(\d+)\.(\d+)(?:[-+ ][^\r\n]*)?", banner)
-    if match is None or tuple(map(int, match.groups())) < (1, 91, 0):
-        raise ValueError(
-            "runtime Cargo requires Cargo 1.91 or newer for resource-keyed build directories"
-        )
-
-
-def _require_cargo_build_directory(
-    cargo: CargoExecutableCustody, *, root: Path, env: Mapping[str, str]
-) -> None:
-    # Older Cargo ignores unknown configuration keys instead of proving that
-    # the selected intermediate graph is used. Admit the capability up front.
-    tool = ProbeTool.from_identity(cargo.entrypoint, cargo.identity)
-    key = ProbeKey(
-        "cargo-version",
-        (tool,),
-        ("--version",),
-        os.fspath(root),
-        environment_inputs(env, CARGO_VERSION_ENVIRONMENT),
-        (),
-    )
-
-    def run() -> subprocess.CompletedProcess[str]:
-        with tool.fenced(label="runtime Cargo version"):
-            return process_guard.run_completed_command(
-                [os.fspath(cargo.entrypoint), "--version"],
-                cwd=root,
-                env=ProcessEnvironment(env),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=15,
-                memory_guard_prefix=None,
-                check=False,
-            )
-
-    result, _cached = completed_probe(host_toolchain_facts(), key, run)
-    if result.returncode != 0:
-        raise ValueError(
-            "runtime Cargo requires Cargo 1.91 or newer; its version probe failed"
-        )
-    require_cargo_build_directory_version(result.stdout)
-
-
 def _cargo_profile_package_selector_name(spec: str) -> str | None:
     """Proven package-name projection of Cargo's package-ID specification.
 
@@ -1978,6 +1922,7 @@ def resolve_runtime_cargo_plan(
     environment_transform: Callable[[ProcessEnvironment], Mapping[str, str]]
     | None = None,
     rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
+    required_cargo_capabilities: tuple[cargo_capabilities.CargoCapability, ...] = (),
 ) -> RuntimeCargoPlan:
     if any(item.startswith("+") for item in cargo_command[1:2]):
         raise ValueError(
@@ -2233,7 +2178,12 @@ def resolve_runtime_cargo_plan(
     )
     cargo = resolve_rustup_proxy(cargo, role="cargo", root=root, env=environment)
     cargo_custody = CargoExecutableCustody.capture("tool/cargo", cargo)
-    _require_cargo_build_directory(cargo_custody, root=root, env=environment)
+    cargo_capabilities.require_cargo_capabilities(
+        cargo_custody,
+        root=root,
+        env=environment,
+        capabilities=required_cargo_capabilities,
+    )
     tools: dict[str, Path] = {"rustc": rustc, "cargo": cargo}
     defaults = runtime_tool_selection.target_tool_defaults(target)
     for role in ("cc", "cxx", "ar", "ranlib", "linker"):

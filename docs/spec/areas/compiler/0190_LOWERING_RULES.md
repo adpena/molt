@@ -792,6 +792,26 @@ The saved-state dispatch map is transported explicitly, independently of label
 numbers and physical block order. Backends do not synthesize suspension returns
 or a second activation ownership policy.
 
+Final block linearization reads the shared full-CFG reverse postorder in
+`molt_ir::tir::dominators`, including implicit exception transfers and handler
+retention. Allocation IDs do not define execution order: a cleanup suffix
+allocated before its predecessor must not become a backward transfer merely
+because its ID is smaller. State-resume adjacency is a layout constraint over
+that order; it does not change control arcs, release order or handler payloads.
+The shared DFS schedules exceptional successors before ordinary terminator
+successors, so reversal places an independent failure tail after the normal
+continuation. Terminator successor order and graph dependencies take precedence;
+this preference does not manufacture an exception edge or a second layout walk.
+It has the same linear traversal cost and successor storage as the shared order.
+Retention edges remain distinct from the observation-position execution proof
+used for ownership and SSA availability. This follows the graph-based ordering
+used by [LLVM reverse postorder](https://llvm.org/doxygen/classllvm_1_1ReversePostOrderTraversal.html)
+and its explicit [normal and unwind successors](https://llvm.org/docs/LangRef.html#invoke-instruction).
+[Cranelift's lowering order](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/codegen/src/machinst/blockorder.rs)
+also preserves reverse postorder for operand availability while treating cold
+physical placement as a separate emission decision; Molt's preference remains
+within the shared reverse-postorder traversal.
+
 Release placement names an owned root only where one authority,
 `drop_insertion/availability.rs`, finds it available. The root's definition
 must reach the point on every path, including an exception edge that leaves a

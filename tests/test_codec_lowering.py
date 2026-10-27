@@ -191,10 +191,9 @@ def test_runtime_package_calls_use_live_callable(module, binding):
     )
 
 
-@pytest.mark.parametrize("parse_codec", ["msgpack", "cbor", "json"])
-def test_json_package_intrinsic_is_independent_of_transport_codec(parse_codec):
+def test_json_package_intrinsic_uses_its_own_runtime_parser():
     source = Path(__file__).resolve().parents[1] / "src/molt_json/__init__.py"
-    ir = compile_to_tir(source.read_text(encoding="utf-8"), parse_codec=parse_codec)
+    ir = compile_to_tir(source.read_text(encoding="utf-8"))
     symbols = {op.get("s_value") for op in _all_ops(ir)}
     assert "molt_json_parse_scalar_obj" in symbols
     assert "molt_msgpack_parse_scalar_obj" not in symbols
@@ -1371,3 +1370,10 @@ def test_text_predicate_producers_cover_shared_call_family_and_arity(public_fixt
         else:
             assert len(calls) == 1, kind
         assert all(len(call["args"]) == arity for call in calls), kind
+
+
+def test_frontend_rejects_retired_codec_keyword():
+    with pytest.raises(TypeError, match="parse_codec"):
+        compile_to_tir("print(42)", **{"parse_codec": "json"})
+    with pytest.raises(TypeError, match="parse_codec"):
+        SimpleTIRGenerator(**{"parse_codec": "json"})

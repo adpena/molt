@@ -216,13 +216,28 @@ pub(super) fn table_limits(module: &Module) -> Option<TableType> {
 pub(super) fn plan_call_indirect_imports(
     output: &Module,
     runtime: Option<&Module>,
-    is_wasi_command: bool,
+    kind: LoadedGuestKind<'_>,
 ) -> Result<Vec<(String, FuncType)>> {
+    if let LoadedGuestKind::WasiCommandManifest(command) = kind
+        && !std::ptr::eq(output, command.module())
+    {
+        bail!("manifest-bound WASI command requires its captured module");
+    }
     let mut imports = std::collections::BTreeMap::<String, FuncType>::new();
     for module in std::iter::once(output).chain(runtime) {
         for import in module.imports() {
+            let namespace = import.module();
             let name = import.name();
-            if import.module() != "env" || !name.starts_with("molt_call_indirect") {
+            let is_indirect = namespace == "env" && name.starts_with("molt_call_indirect");
+            if matches!(kind, LoadedGuestKind::WasiCommand)
+                && (matches!(namespace, "molt_runtime" | "molt_native")
+                    || (namespace == "env" && name.starts_with("molt_") && !is_indirect))
+            {
+                bail!(
+                    "Molt host imports require a current deployment manifest; use manifest.json instead of --wasi-command: {namespace}.{name}"
+                );
+            }
+            if !is_indirect {
                 continue;
             }
             let ExternType::Func(ty) = import.ty() else {
@@ -236,20 +251,23 @@ pub(super) fn plan_call_indirect_imports(
             }
         }
     }
-    if is_wasi_command {
-        if !imports.is_empty() {
-            validate_command_indirect_table(output)?;
+    match kind {
+        LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_) => {
+            if !imports.is_empty() {
+                validate_command_indirect_table(output)?;
+            }
         }
-    } else {
-        for (name, expected) in &imports {
-            let export = output
-                .exports()
-                .find(|export| export.name() == name)
-                .with_context(|| format!("missing indirect-call application export {name}"))?;
-            let ExternType::Func(actual) = export.ty() else {
-                bail!("malformed indirect-call application export {name}: expected a function");
-            };
-            require_indirect_signature(name, &actual, expected)?;
+        LoadedGuestKind::MoltApplication { .. } => {
+            for (name, expected) in &imports {
+                let export = output
+                    .exports()
+                    .find(|export| export.name() == name)
+                    .with_context(|| format!("missing indirect-call application export {name}"))?;
+                let ExternType::Func(actual) = export.ty() else {
+                    bail!("malformed indirect-call application export {name}: expected a function");
+                };
+                require_indirect_signature(name, &actual, expected)?;
+            }
         }
     }
     Ok(imports.into_iter().collect())
@@ -317,16 +335,19 @@ pub(super) fn define_call_indirect_imports(
     linker: &mut Linker<HostState>,
     store: &mut Store<HostState>,
     imports: &[(String, FuncType)],
-    is_wasi_command: bool,
+    kind: LoadedGuestKind<'_>,
 ) -> Result<()> {
     let registry = store.data().call_indirect.clone();
     for (name, ty) in imports {
-        let target = if is_wasi_command {
-            IndirectDispatch::CommandTable {
-                callee_type: FuncType::new(ty.engine(), ty.params().skip(1), ty.results()),
+        let target = match kind {
+            LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_) => {
+                IndirectDispatch::CommandTable {
+                    callee_type: FuncType::new(ty.engine(), ty.params().skip(1), ty.results()),
+                }
             }
-        } else {
-            IndirectDispatch::ApplicationExports(registry.clone())
+            LoadedGuestKind::MoltApplication { .. } => {
+                IndirectDispatch::ApplicationExports(registry.clone())
+            }
         };
         let func = make_call_indirect_func(&mut *store, name.clone(), ty.clone(), target);
         linker.define(&mut *store, "env", name, func)?;
@@ -481,14 +502,19 @@ pub(super) fn write_u64(
     write_bytes(caller, memory, ptr, &val.to_le_bytes())
 }
 
-pub(super) fn map_io_error(err: &std::io::Error) -> i32 {
-    if let Some(code) = err.raw_os_error() {
-        return code;
+pub(super) fn map_io_error(err: &std::io::Error) -> GuestErrno {
+    guest_errno::from_io_error(err)
+}
+
+pub(super) fn last_socket_error() -> GuestErrno {
+    #[cfg(unix)]
+    {
+        map_io_error(&std::io::Error::last_os_error())
     }
-    if err.kind() == std::io::ErrorKind::WouldBlock {
-        return libc::EWOULDBLOCK;
+    #[cfg(windows)]
+    {
+        guest_errno::from_native_errno(unsafe { winsock::WSAGetLastError() })
     }
-    libc::EIO
 }
 
 pub(super) fn define_resource_host(
@@ -754,6 +780,7 @@ mod indirect_dispatch_tests {
                         (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                         (func (export "molt_runtime_execution_leave") (param i64))
                         (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                        (func (export "molt_main_exit_status") (result i64) i64.const 0)
                         (func (export "molt_exception_pending") (result i64) i64.const 0))"#
                     ),
                 )
@@ -768,6 +795,7 @@ mod indirect_dispatch_tests {
                     (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                     (func (export "molt_runtime_execution_leave") (param i64))
                     (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                    (func (export "molt_main_exit_status") (result i64) i64.const 0)
                     (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
                     )
                     .unwrap()
@@ -814,7 +842,12 @@ mod indirect_dispatch_tests {
             (func (export "molt_call_indirect1") (param i64 i64) (result i64) i64.const 0))"#,
         )
         .unwrap();
-        let plan = plan_call_indirect_imports(&output, Some(&runtime), false).unwrap();
+        let plan = plan_call_indirect_imports(
+            &output,
+            Some(&runtime),
+            LoadedGuestKind::MoltApplication { linked: false },
+        )
+        .unwrap();
         assert_eq!(
             plan.iter()
                 .map(|(name, _)| name.as_str())
@@ -903,6 +936,7 @@ mod indirect_dispatch_tests {
                 (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                 (func (export "molt_runtime_execution_leave") (param i64))
                 (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+                (func (export "molt_main_exit_status") (result i64) i64.const 0)
                 (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
         )
         .unwrap();
@@ -935,6 +969,7 @@ mod indirect_dispatch_tests {
             (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
             (func (export "molt_runtime_execution_leave") (param i64))
             (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+            (func (export "molt_main_exit_status") (result i64) i64.const 0)
             (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
         )
         .unwrap();

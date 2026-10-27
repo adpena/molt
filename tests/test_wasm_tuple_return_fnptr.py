@@ -53,7 +53,6 @@ def test_wasm_unpack_sequence_direct_call(tmp_path: Path) -> None:
         root,
         src,
         tmp_path,
-        extra_args=["--codec", "json"],
     )
     run = run_wasm_linked(root, output_wasm)
 
@@ -88,7 +87,6 @@ def test_wasm_unpack_sequence_function_local(tmp_path: Path) -> None:
         root,
         src,
         tmp_path,
-        extra_args=["--codec", "json"],
     )
     run = run_wasm_linked(root, output_wasm)
 
@@ -107,7 +105,6 @@ def test_wasm_tuple_return_function_object_call(tmp_path: Path) -> None:
         root,
         src,
         tmp_path,
-        extra_args=["--codec", "json"],
     )
     run = run_wasm_linked(root, output_wasm)
 

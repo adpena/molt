@@ -84,6 +84,7 @@ def test_wasm_module_try_exception_loop_parity(
             str(root / "wasm" / "run_wasm.js"),
             str(wasm_runtime_manifest_path(output_wasm)),
         ],
+        role="guest-host",
         cwd=root,
     )
     assert run.returncode == 0, run.stderr

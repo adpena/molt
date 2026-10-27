@@ -371,6 +371,7 @@
     "tests/process_guard_common.py",
     "tests/native_process_guard.py",
     "tests/wasm_linked_runner.py",
+    "tests/wasm_runtime_heavy_witnesses.py",
     "tests/test_ci_workflow_topology.py",
     "tests/test_ci_cargo_cache.py",
     "tools/ci_cargo_cache.py",
@@ -716,6 +717,7 @@
         "tools/wasm_*.py",
         "tests/test_wasm_*.py",
         "tests/wasm_linked_runner.py",
+        "tests/wasm_runtime_heavy_witnesses.py",
         "wasm/**",
         "examples/*.py",
         "tools/compat/**",
@@ -763,6 +765,7 @@
       "required": true,
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -889,6 +892,7 @@
         "src/**",
         "tests/test_bench_harness.py",
         "tests/cli/test_native_link_*.py",
+        "tests/wasm_runtime_heavy_witnesses.py",
         "tests/llvm_sdk_test_support.py",
         "tests/proof_queue_custody_test_support.py",
         "tests/python_environment_test_support.py",
@@ -917,6 +921,7 @@
         "tests/cli/test_cli_smoke.py/**",
         "tests/cli/test_cli_build_identity.py/**",
         "tests/cli/test_traceback_carets.py/**",
+        "tests/test_resource_enforcement_e2e.py/**",
         "tests/metamorphic/**"
       ],
       "job": "native-integration",
@@ -925,6 +930,7 @@
       "required": true,
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -4638,6 +4644,7 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
+        "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "family": "wasm",
@@ -4647,13 +4654,11 @@
         "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_calls_preserve_owned_results",
         "tests/test_wasm_split_runtime.py::test_split_runtime_host_export_struct_unpack_from_reads_u64",
         "tests/test_wasm_split_runtime.py::test_split_runtime_profile_json_emits_on_wasm",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
-        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload"
+        "tests/test_wasm_runtime_heavy_regressions.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -6388,44 +6393,8 @@
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
         "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python",
-        "-m",
-        "pytest",
-        "-q",
-        "-n",
-        "auto",
-        "-m",
-        "not slow"
-      ],
-      "cache_domain": "pytest",
-      "cell": "linux-x86_64-py312-unit",
-      "dependencies": [],
-      "family": "python_unit",
-      "id": "python.unit.compiled-contracts",
-      "pytest": [
-        "tests/test_resource_enforcement_e2e.py",
-        "tests/test_wasm_runtime_heavy_regressions.py"
-      ],
-      "pytest_worker_memory_gb": 4.0,
-      "resource_class": "python-tests",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 600,
-      "toolchains": [
-        "python",
-        "uv"
+        "node"
       ]
     },
     {
@@ -6795,7 +6764,53 @@
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "node"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "tools/prepare_compiled_contracts.py",
+        "--out",
+        "proof-results/compiled-contracts/macos"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "macos-arm64-py312-compiled",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-results/compiled-contracts/macos"
+      ],
+      "family": "python_unit",
+      "id": "python.unit.compiled-contracts.prepare.macos",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "node",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -6813,26 +6828,45 @@
         "-m",
         "not slow"
       ],
-      "cache_domain": "pytest",
-      "cell": "macos-arm64-py312-unit",
-      "dependencies": [],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "macos-arm64-py312-compiled",
+      "dependencies": [
+        "python.unit.compiled-contracts.prepare.macos"
+      ],
+      "env": {
+        "MOLT_WASM_COMPILE_FAST": "1"
+      },
       "family": "python_unit",
       "id": "python.unit.compiled-contracts.macos",
       "pytest": [
         "tests/test_resource_enforcement_e2e.py",
         "tests/test_wasm_runtime_heavy_regressions.py"
       ],
-      "pytest_worker_memory_gb": 4.0,
-      "resource_class": "python-tests",
+      "pytest_worker_memory_gb": 20.0,
+      "resource_class": "compiler-build-resource",
       "tiers": [
         "pre-push",
         "pr",
         "main"
       ],
+      "timeout_budget": "integration",
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo",
+        "node",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang",
+        "wasm-opt"
       ]
     },
     {
@@ -7276,10 +7310,12 @@
       "pytest": [
         "tests/cli/test_cli_smoke.py",
         "tests/cli/test_cli_build_identity.py",
-        "tests/cli/test_traceback_carets.py"
+        "tests/cli/test_traceback_carets.py",
+        "tests/test_resource_enforcement_e2e.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pre-push",
         "pr",
         "main"
       ],
@@ -7339,20 +7375,30 @@
     },
     {
       "argv": [
-        "cargo",
-        "clippy",
-        "--config",
-        "build.warnings=\"deny\"",
-        "--locked",
-        "--target",
-        "wasm32-wasip1",
-        "--lib",
-        "-p",
-        "molt-runtime",
-        "-p",
-        "molt-tir"
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "python",
+        "tools/run_runtime_test_gate.py",
+        "--policy",
+        "wasi-clippy",
+        "--profile",
+        "dev",
+        "--build-timeout-seconds",
+        "1200"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-rust-wasi-dev",
       "dependencies": [],
       "family": "rust",
@@ -7366,8 +7412,11 @@
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
       "toolchains": [
+        "python",
+        "uv",
         "rustc",
         "cargo",
+        "wasi-clang",
         "wasm-ld"
       ]
     },
@@ -7662,6 +7711,8 @@
         "rust_transpiler_preview",
         "--test",
         "wasm_link_facts_cli",
+        "--test",
+        "host_diagnostics",
         "-p",
         "regalloc2@0.15.2",
         "-p",
@@ -7692,6 +7743,8 @@
         "molt-backend-luau",
         "-p",
         "molt-backend-rust",
+        "-p",
+        "molt-wasm-host",
         "--no-default-features",
         "--features",
         "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool",
@@ -7780,11 +7833,17 @@
         "zlib-rs@0.6.8",
         "--no-default-features",
         "--features",
-        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
+        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/stdlib_net,molt-runtime/stdlib_math,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
         "--",
         "errno_build_tests::",
         "socket_constants::tests::",
         "libc_compat::tests::synthetic_errno_",
+        "synthetic_errno::",
+        "async_rt::sockets::wait::tests::",
+        "async_rt::sockets_net::tests::",
+        "builtins::io::tests::physical_write_blocking_errno_preserves_target_public_domain",
+        "builtins::io::tests::text_tell_adopts_real_file_seek_error_without_treating_bad_fd_as_pipe",
+        "builtins::io::tests::append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pipe",
         "counter_wrap",
         "memory_budget::",
         "tir::",
@@ -9204,23 +9263,34 @@
         "linux-x86_64-py312-unit": {
           "budget_seconds": 2580,
           "critical_path_seconds": 900,
-          "headroom_seconds": 0,
+          "headroom_seconds": 120,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2520,
-          "required_job_seconds": 2580,
+          "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2460
+            "python-tests": 2160
+          }
+        },
+        "macos-arm64-py312-compiled": {
+          "budget_seconds": 2580,
+          "critical_path_seconds": 1800,
+          "headroom_seconds": 720,
+          "job_reserve_seconds": 60,
+          "projected_makespan_seconds": 1800,
+          "required_job_seconds": 1860,
+          "resource_capacity_floor_seconds": {
+            "compiler-build-resource": 1800
           }
         },
         "macos-arm64-py312-unit": {
           "budget_seconds": 2580,
           "critical_path_seconds": 900,
-          "headroom_seconds": 0,
+          "headroom_seconds": 120,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2520,
-          "required_job_seconds": 2580,
+          "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2460
+            "python-tests": 2160
           }
         }
       },
@@ -9592,6 +9662,7 @@
       "local.wasm-facts-host-tool.0": "shared",
       "local.wasm-facts-host-tool.1": "shared",
       "local.wasm-host.0": "shared",
+      "local.wasm-host.1": "shared",
       "local.wasm-optimizer-policy.0": "none"
     },
     "commands": {
@@ -9766,6 +9837,7 @@
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
+      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ --nocapture --test-threads=1",
       "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
     "rules": [
@@ -11487,6 +11559,7 @@
         "gates": [],
         "globs": [
           "src/molt/cli/cargo_build_reads.py",
+          "src/molt/cli/cargo_capabilities.py",
           "src/molt/cli/cargo_environment_inputs.py",
           "src/molt/cli/cargo_search_path.py",
           "src/molt/cli/product_store.py",
@@ -11591,7 +11664,9 @@
         "globs": [
           "tests/native_process_guard.py",
           "tests/test_native_process_guard.py",
-          "tests/test_native_lir_loop_join_semantics.py"
+          "tests/test_native_lir_loop_join_semantics.py",
+          "tools/prepare_compiled_contracts.py",
+          "tests/wasm_runtime_heavy_witnesses.py"
         ],
         "name": "native-test-failure-diagnostics",
         "pytest": [
@@ -12707,14 +12782,20 @@
       },
       {
         "command_ids": [
-          "local.wasm-host.0"
+          "local.wasm-host.0",
+          "local.wasm-host.1"
         ],
-        "description": "Wasmtime host Rust: release-fast link build.",
+        "description": "Wasmtime host Rust: release-fast link build and actual host-error ABI binary tests.",
         "gates": [
-          "cargo build --locked --profile release-fast -p molt-wasm-host"
+          "cargo build --locked --profile release-fast -p molt-wasm-host",
+          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ --nocapture --test-threads=1"
         ],
         "globs": [
           "runtime/molt-wasm-host/**/*.rs",
+          "runtime/molt-runtime-platform/src/synthetic_errno*.rs",
+          "runtime/molt-runtime-platform/src/synthetic_errno/**/*.rs",
+          "runtime/molt-runtime-platform/src/wasm_socket_abi*.rs",
+          "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
           "runtime/molt-wasm-host/**/*.toml",
           "runtime/molt-wasm-host/Cargo.toml",
           "runtime/molt-artifact-publish/**/*.rs",
@@ -13951,6 +14032,12 @@
         "cargo",
         "git"
       ],
+      "local.wasm-host.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
       "local.wasm-optimizer-policy.0": [
         "python",
         "uv",
@@ -14004,6 +14091,16 @@
       "arch": "aarch64",
       "backend": "python-tooling",
       "id": "macos-arm64-py312-unit",
+      "os": "macos",
+      "profile": "test",
+      "python": "3.12",
+      "runner": "macos-14",
+      "target": "host"
+    },
+    {
+      "arch": "aarch64",
+      "backend": "python-tooling",
+      "id": "macos-arm64-py312-compiled",
       "os": "macos",
       "profile": "test",
       "python": "3.12",

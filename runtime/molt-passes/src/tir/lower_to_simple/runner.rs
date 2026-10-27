@@ -11,7 +11,7 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::ops::{AttrValue, OpCode};
 
-use super::cfg::{collect_guard_raise_path_blocks, reverse_postorder, successor_reaches_header};
+use super::cfg::{collect_guard_raise_path_blocks, lowering_block_order, successor_reaches_header};
 use super::cleanup::{eliminate_dead_labels, missing_label_references};
 use super::op_utils::attr_int;
 use super::structured::{
@@ -89,8 +89,8 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         });
     }
 
-    // Compute block visit order (reverse-postorder from entry).
-    let rpo = reverse_postorder(func, &state_yield_resume_after);
+    // Project the shared full-CFG order with suspension layout preserved.
+    let rpo = lowering_block_order(func, &state_yield_resume_after);
     let debug_lower_func = backend_env::var(BackendEnv::MOLT_DEBUG_LOWER_FUNC).ok();
     let debug_loop_if_return = func.name == "loop_if_return_continue_roundtrip"
         || debug_lower_func.as_deref() == Some(func.name.as_str());

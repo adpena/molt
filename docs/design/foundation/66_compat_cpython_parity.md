@@ -63,6 +63,21 @@ release completed children on every failure while preserving a pending error.
 Complete lexical `tokenize` conformance, other versioned metadata and release
 matrix qualification remain separate obligations in the findings ledger.
 
+## Codec packages own their parsers
+
+Runtime JSON, MessagePack and CBOR packages select their own parsing intrinsics.
+The compiler has no codec selector: the retired `--codec` and build-request
+`parse_codec` inputs are rejected by their existing argument/request boundaries,
+and project `build.codec` is rejected at configuration admission. Other unknown
+project keys retain the existing configuration policy. `MOLT_CODEC` is no longer
+a declared or read harness input.
+
+The shared backend IR transport remains its existing content-addressed
+MessagePack lease; standalone backend debug/input formats are separate contracts.
+Retirement removes one request/context field, one per-input strict decoder call
+and an unused lowering-cache partition. It changes no runtime codec operation and
+makes no guest performance claim.
+
 ## One authoritative execution attempt
 
 Every selected backend comparison runs once through the same adapter registry. Its first
@@ -72,6 +87,17 @@ a passing cell by disabling the daemon, ignoring caches, rebuilding, selecting
 a cold Cargo target or retrying an OOM serially. A batch request with an unknown
 outcome is terminal; resubmission could execute the compile twice. Startup ping
 and request custody retain their existing bounded transport and cleanup owners.
+
+A batch request's deadline covers lock admission, raw stdin writes and the
+response. A waiting caller acquires no child custody. A partial write or unknown
+response poisons the transport and is never retried. Stderr is drained into a
+bounded 8 KiB tail. Forced child closure, serialized descriptor closure and all
+reader joins precede releasing the child's use hold; an arbitrary teardown
+callback has its own budget, separate from the request deadline. The transport
+adds one steady reader thread and one `os.set_blocking` call per child, normally
+one `os.write` per request, and no guest work. Python 3.12 documents
+[nonblocking Windows pipe support](https://docs.python.org/3.12/library/os.html#os.set_blocking).
+These are structural costs, with no latency or throughput claim.
 
 This follows the ordinary single-attempt default in
 [Bazel](https://github.com/bazelbuild/bazel/blob/master/src/main/java/com/google/devtools/build/lib/exec/ExecutionOptions.java)

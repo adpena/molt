@@ -4,11 +4,11 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-# Version 10 separates requested labels from observed build profiles. Refusing
-# historical/unbound or mismatched selections changes comparison verdicts;
-# version 9 boards remain historical in their original methodology class.
-version = 10
-content_sha256 = "a307ebf02ab90b6018b6e2572f3515df00c77114e511a40af9f7ab89fb1b58ea"
+# Version 12 retires the inactive frontend codec option and its setup/cache
+# partition and bounds batch admission, pipe writes and response waiting with
+# one deadline. Cold build measurements and failure verdicts can change.
+version = 12
+content_sha256 = "f48f669fe34808461141bdbfcde3da3781fd00b8ade84d820e02f37c51d9800e"
 
 [[methodology]]
 path = "tools/safe_run.py"

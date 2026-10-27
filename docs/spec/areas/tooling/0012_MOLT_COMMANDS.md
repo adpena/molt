@@ -23,7 +23,6 @@ Purpose: Compile Python source to native or WASM artifacts.
 Key flags:
 - `--module <name>` (use `name.__main__` when present)
 - `--target {native,wasm,luau,mlir,<triple>}`
-- `--codec {msgpack,cbor,json}` (default: `msgpack`)
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
 - `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root; when omitted, default final wasm/object outputs land under `dist/`; directory paths use the default filename within that directory)

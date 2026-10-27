@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import hashlib
 import json
 from pathlib import Path
@@ -98,7 +100,7 @@ def _write_linked_build(output_path: Path) -> None:
     manifest.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "linked",
                 "modules": {"linked": _module_descriptor(linked, manifest)},
             }
@@ -273,6 +275,7 @@ def test_run_wasm_resolves_linked_module_only_from_manifest(
     manifest_path.write_text(
         json.dumps(
             {
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "linked",
                 "modules": {
                     "linked": _module_descriptor(explicit_linked, manifest_path)
@@ -381,6 +384,7 @@ def test_run_wasm_resolves_split_modules_relative_to_manifest(
     manifest_path.write_text(
         json.dumps(
             {
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
                 "modules": {
                     "app": _module_descriptor(explicit_wasm, manifest_path),
@@ -444,6 +448,7 @@ def test_run_wasm_rejects_manifest_module_digest_drift(
     manifest_path.write_text(
         json.dumps(
             {
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
                 "modules": {
                     "app": _module_descriptor(explicit_wasm, manifest_path),

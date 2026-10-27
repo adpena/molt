@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import hashlib
 import importlib.util
 import json
@@ -68,7 +70,7 @@ def _write_execution_fixture(root: Path) -> None:
     (root / "manifest.json").write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
                 "modules": {
                     "app": descriptor("app.wasm"),
@@ -1172,6 +1174,30 @@ def test_falcon_deploy_refuses_incomplete_execution_closure(
         execution_artifact_records(tmp_path)
 
 
+def test_falcon_deploy_rejects_incompatible_version_before_module_read(
+    tmp_path: Path,
+) -> None:
+    from drivers.falcon.browser_webgpu.deploy import execution_artifact_records
+
+    (tmp_path / "app.wasm").write_bytes(b"app")
+    (tmp_path / "molt_runtime.wasm").write_bytes(b"runtime")
+    _write_execution_fixture(tmp_path)
+    path = tmp_path / "manifest.json"
+    original = json.loads(path.read_text(encoding="utf-8"))
+    (tmp_path / "app.wasm").unlink()
+    for version in ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0]:
+        manifest = dict(original)
+        if version == "missing":
+            del manifest["version"]
+        else:
+            manifest["version"] = version
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(
+            ValueError, match="Molt deployment manifest version must be 3"
+        ):
+            execution_artifact_records(tmp_path)
+
+
 @pytest.mark.parametrize("mode", ["split-runtime", "linked"])
 def test_falcon_bundle_preserves_build_paths_and_manifest_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
@@ -1192,7 +1218,7 @@ def test_falcon_bundle_preserves_build_paths_and_manifest_bytes(
     manifest["modules"]["app"]["path"] = "code/selected.wasm"
     if mode == "linked":
         manifest = {
-            "version": 2,
+            "version": WASM_EXECUTION_MANIFEST_VERSION,
             "mode": "linked",
             "modules": {"linked": manifest["modules"]["app"]},
             "abi": {"app_exports": {"sentinel": "linked ABI stays untouched"}},
@@ -1289,10 +1315,10 @@ def test_falcon_parallel_initialization_transfers_or_retires_host(
 import assert from 'node:assert/strict';
 import { initFalconBrowserWebGpu } from './driver.mjs';
 const executionUrl = 'https://artifacts.example/build/manifest.json';
-const execution = {version: 2, mode: 'split-runtime', modules: {
+const execution = {version: 3, mode: 'split-runtime', modules: {
   app: {path: 'code/selected.wasm'}, runtime: {path: 'rt/selected.wasm'}
 }};
-assert.deepEqual(resolveMoltWasmUrls({version: 2, mode: 'linked', modules: {
+assert.deepEqual(resolveMoltWasmUrls({version: 3, mode: 'linked', modules: {
   linked: {path: 'code/linked.wasm'}
 }}, executionUrl), {wasmUrl: null, runtimeUrl: null,
   linkedUrl: 'https://artifacts.example/build/code/linked.wasm'});
@@ -1332,7 +1358,7 @@ for (const scenario of ['success', 'weights-first', 'config-first', 'host-first'
     return {ok: true, arrayBuffer: async () => new ArrayBuffer(2), text: async () => '{}'};
   };
   const pending = initFalconBrowserWebGpu({manifestUrl: 'https://model.example/driver.json', browserHostOptions: {
-    manifestUrl: 'https://wrong.example/default.json', manifest: {mode: 'linked'}
+    manifestUrl: 'https://wrong.example/default.json', manifest: {version: 3, mode: 'linked'}
   }});
   await Promise.all(entered.map(x => x.promise));
   if (scenario === 'weights-first' || scenario === 'cleanup') {
@@ -1392,7 +1418,7 @@ def test_falcon_refuses_omitted_loader_reference_even_without_descriptor(
         manifest_path.write_text(
             json.dumps(
                 {
-                    "version": 2,
+                    "version": WASM_EXECUTION_MANIFEST_VERSION,
                     "mode": "linked",
                     "modules": {"linked": original["modules"]["app"]},
                 }

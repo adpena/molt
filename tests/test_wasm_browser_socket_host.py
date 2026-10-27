@@ -208,6 +208,24 @@ if (!lastSocket || lastSocket.url !== 'ws://example.com:1234') {{
   throw new Error(`unexpected synthetic url ${{lastSocket ? lastSocket.url : 'none'}}`);
 }}
 
+// Required/completed resolver lengths use the System domain on pointer faults.
+for (const capacity of [0, outCap]) {{
+  if (host.socketHostGetaddrinfo(hostPtr, hostLen, servicePtr, serviceLen, 0, SOCK_STREAM, 0, 0, outPtr, capacity, 65535) !== -14) throw new Error('invalid resolver length pointer accepted');
+}}
+if (host.socketHostGetaddrinfo(hostPtr, hostLen, servicePtr, serviceLen, 0, SOCK_STREAM, 0, 0, outPtr, 0, outLenPtr) !== -12) throw new Error('resolver capacity lost System ENOMEM');
+if (view.getUint32(outLenPtr, true) <= 0) throw new Error('resolver required size not published');
+if (host.socketHostGetaddrinfo(hostPtr, hostLen, servicePtr, serviceLen, 0, SOCK_STREAM, 2147483647, 0, outPtr, outCap, outLenPtr) !== 9) throw new Error('resolver error lost positive domain');
+// A declared SO_ERROR integer is normalized before a caller-sized prefix.
+lastSocket.error();
+for (const capacity of [1, 4]) {{
+  writeBytes(900, new Uint8Array([165, 165, 165, 165]));
+  if (host.socketHostGetsockopt(handle2, 1, 4, 900, capacity, 920) !== 0) throw new Error('SO_ERROR prefix failed');
+  if (view.getUint32(920, true) !== capacity) throw new Error('SO_ERROR length mismatch');
+  if (view.getUint8(900) !== 111) throw new Error('SO_ERROR guest errno mismatch');
+  if (capacity === 1 && view.getUint8(901) !== 165) throw new Error('SO_ERROR overwrote prefix capacity');
+}}
+if (host.socketHostGetsockopt(handle2, 1, 4, 900, -1, 920) !== -22) throw new Error('negative option capacity accepted');
+if (host.socketHostGetsockopt(handle2, 1, 4, 900, 4, 65535) !== -14) throw new Error('invalid option length pointer accepted');
 console.log('ok');
 """.lstrip(),
         encoding="utf-8",
@@ -215,6 +233,7 @@ console.log('ok');
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         env=os.environ,
         timeout=None,

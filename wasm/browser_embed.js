@@ -14,20 +14,21 @@ import {
   NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
   nativeCallableBrowserSignature,
 } from './native_callable_abi_generated.js';
+import './synthetic_errno_generated.js';
+import './wasi_errno_generated.js';
 
-const ENOSYS = 38;
 const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
-const EINVAL = 22;
-const ENOMEM = 12;
-const WASI_ERRNO_BADF = 8;
-const WASI_ERRNO_NOSYS = 52;
-const WASI_ERRNO_INVAL = 28;
+// Molt env imports consume the generated synthetic POSIX domain.
+const { ENOSYS, EINVAL, ENOMEM, EBADF } = globalThis.MoltSyntheticErrno.errno;
 const TYPE_TAG_BYTES = 6;
 const NATIVE_CALLABLE_IMPORT_MODULE = 'molt_native';
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
 
 const {
+  requireMoltDeploymentManifest,
+  manifestModuleUrl,
+  verifyManifestModuleBytes,
   callIsolateImportExport,
   callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
@@ -710,7 +711,7 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, options = {})
 };
 
 const buildMinimalWasi = (state, logFn) => {
-  const unsupported = () => WASI_ERRNO_NOSYS;
+  const unsupported = () => globalThis.MoltWasiErrno.ENOSYS;
   const wasi = {
     args_get: () => 0,
     args_sizes_get: (argcPtr, argvBufSizePtr) => {
@@ -726,7 +727,7 @@ const buildMinimalWasi = (state, logFn) => {
     },
     fd_write: (fd, iovs, iovsLen, nwritten) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const view = new DataView(memory.buffer);
       let total = 0;
       let text = '';
@@ -746,7 +747,7 @@ const buildMinimalWasi = (state, logFn) => {
     },
     random_get: (bufPtr, bufLen) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       const bytes = new Uint8Array(memory.buffer, Number(bufPtr), Number(bufLen));
       if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
         crypto.getRandomValues(bytes);
@@ -759,7 +760,7 @@ const buildMinimalWasi = (state, logFn) => {
     },
     clock_time_get: (_clockId, _precision, outPtr) => {
       const memory = state.memory;
-      if (!memory) return WASI_ERRNO_NOSYS;
+      if (!memory) return globalThis.MoltWasiErrno.ENOSYS;
       new DataView(memory.buffer).setBigUint64(
         Number(outPtr),
         BigInt(Date.now()) * 1000000n,
@@ -778,7 +779,7 @@ const buildMinimalWasi = (state, logFn) => {
     // The embed exposes no preopened directories. EBADF ends wasi-libc's
     // preopen scan; any other errno (ENOSYS) makes it _Exit(71) on the first
     // descriptor operation, such as closing a file handle at shutdown.
-    fd_prestat_get: () => WASI_ERRNO_BADF,
+    fd_prestat_get: () => globalThis.MoltWasiErrno.EBADF,
   };
   return new Proxy(wasi, {
     get(target, name) {
@@ -1017,16 +1018,18 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
   const moduleUrl = options.moduleUrl || import.meta.url;
   const baseForManifest = options.baseUrl || moduleUrl;
   const manifestUrl = options.manifestUrl || resolveUrl('manifest.json', baseForManifest);
-  const manifest = options.manifest || await fetchJson(manifestUrl);
-  const baseUrl = options.baseUrl || resolveUrl('.', manifestUrl);
-  const appPath = manifest?.modules?.app?.path || 'app.wasm';
-  const runtimePath = manifest?.modules?.runtime?.path || 'molt_runtime.wasm';
-  const appUrl = options.appUrl || options.wasmUrl || resolveUrl(appPath, baseUrl);
-  const runtimeUrl = options.runtimeUrl || resolveUrl(runtimePath, baseUrl);
+  const manifest = requireMoltDeploymentManifest(Object.hasOwn(options, 'manifest') ? options.manifest : await fetchJson(manifestUrl));
+  if (manifest.mode !== 'split-runtime') throw new Error('Molt browser embed requires a split-runtime deployment manifest');
+  const appUrl = options.appUrl || options.wasmUrl || manifestModuleUrl(manifestUrl, manifest?.modules?.app, 'app');
+  const runtimeUrl = options.runtimeUrl || manifestModuleUrl(manifestUrl, manifest?.modules?.runtime, 'runtime');
   const browserAbi = browserAbiFromManifest(manifest);
   const [appBytes, runtimeBytes] = await Promise.all([
     fetchArrayBuffer(appUrl),
     fetchArrayBuffer(runtimeUrl),
+  ]);
+  await Promise.all([
+    verifyManifestModuleBytes(appBytes, manifest?.modules?.app, 'app wasm', appUrl, globalThis.crypto, manifestUrl, moduleUrl),
+    verifyManifestModuleBytes(runtimeBytes, manifest?.modules?.runtime, 'runtime wasm', runtimeUrl, globalThis.crypto, manifestUrl, moduleUrl),
   ]);
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);

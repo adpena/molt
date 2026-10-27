@@ -17,6 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 
+
 # Make the repository root importable so the `tools` / `tests` packages resolve
 # regardless of the current working directory or how this harness is launched.
 # Running `python3 tests/molt_diff.py` puts `tests/` (the script directory) on
@@ -57,7 +58,6 @@ from molt.cli.backend_daemon_config import _backend_daemon_enabled  # noqa: E402
 from molt.cli.build_request import (  # noqa: E402
     BuildProfile,
     BuildRequest,
-    ParseCodec,
     build_request_to_payload,
 )
 from molt import file_locks  # noqa: E402
@@ -1046,8 +1046,10 @@ def _backend_execution_context(
     if oracle is not None:
         env["MOLT_SYS_EXECUTABLE"] = oracle.executable
     diff_output_layout.enforce_child(env, repo_root=_repo_root())
+    budget.check(build_failed=True)
     return compat_backends.BackendExecutionContext(
         target_python=resolved_target,
+        molt_cli_python=_resolve_molt_cli_python(),
         build_profile=build_profile,
         capabilities=_diff_capabilities(env),
         environment=env,
@@ -2270,10 +2272,14 @@ def _record_rss_metrics(
 
 class _BatchCompileServerClient(BatchCompileServerClient):
     def __init__(
-        self, env: dict[str, str], *, budget: compat_backends.ItemBudget
+        self,
+        env: dict[str, str],
+        *,
+        molt_cli_python: str,
+        budget: compat_backends.ItemBudget,
     ) -> None:
         cmd = [
-            _resolve_molt_cli_python(),
+            molt_cli_python,
             "-m",
             "molt.cli",
             "internal-batch-build-server",
@@ -2315,6 +2321,7 @@ def _shutdown_batch_compile_server(*, force: bool = True) -> None:
 def _batch_compile_server_client(
     env: dict[str, str],
     *,
+    execution_context: compat_backends.BackendExecutionContext | None,
     request_timeout: float,
     budget: compat_backends.ItemBudget,
 ) -> tuple[_BatchCompileServerClient | None, Exception | None]:
@@ -2323,15 +2330,26 @@ def _batch_compile_server_client(
     pid = os.getpid()
     if _BATCH_COMPILE_SERVER_CLIENT_PID != pid:
         _shutdown_batch_compile_server(force=True)
-    if _BATCH_COMPILE_SERVER_CLIENT is not None:
-        return _BATCH_COMPILE_SERVER_CLIENT, None
     client: _BatchCompileServerClient | None = None
     try:
         if budget.expired():
             raise TimeoutError(
                 "differential item budget exhausted before batch startup"
             )
-        client = _BatchCompileServerClient(env, budget=budget)
+        molt_cli_python = (
+            execution_context.molt_cli_python
+            if execution_context is not None
+            else _resolve_molt_cli_python()
+        )
+        if _BATCH_COMPILE_SERVER_CLIENT is not None:
+            if _BATCH_COMPILE_SERVER_CLIENT.child_process.command[0] != molt_cli_python:
+                raise ValueError(
+                    "batch compiler interpreter differs from the execution context"
+                )
+            return _BATCH_COMPILE_SERVER_CLIENT, None
+        client = _BatchCompileServerClient(
+            env, molt_cli_python=molt_cli_python, budget=budget
+        )
         request_timeout = budget.limit(request_timeout)
         if request_timeout == 0:
             raise TimeoutError("differential item budget exhausted before batch ping")
@@ -2355,6 +2373,7 @@ def _batch_compile_server_client(
 def _run_batch_compile_build(
     *,
     env: dict[str, str],
+    execution_context: compat_backends.BackendExecutionContext | None,
     file_path: str,
     output_root: Path,
     output_binary: Path,
@@ -2365,6 +2384,20 @@ def _run_batch_compile_build(
     request_timeout: float,
     budget: compat_backends.ItemBudget,
 ) -> compat_backends.BackendResult:
+    build_cap = budget.policy.phase("native", "build")
+    if build_cap is not None:
+        request_timeout = (
+            build_cap if request_timeout is None else min(request_timeout, build_cap)
+        )
+    admission = compat_backends.suite_trip_outcome(
+        harness_outcomes.read_suite_trip(env)
+    )
+    if admission is not None:
+        return admission.as_build_failure(
+            detail="suite guard stopped batch admission", fallback="suite guard tripped"
+        )
+    if budget.expired():
+        return budget.exhausted_result(build_failed=True)
     diff_caps = _diff_capabilities(env)
     try:
         stdlib_profile = compat_backends.stdlib_profile_from_environment(env)
@@ -2380,27 +2413,14 @@ def _run_batch_compile_build(
             stdlib_profile=stdlib_profile,
             capabilities=diff_caps or None,
         )
-        if "MOLT_CODEC" in env:
-            request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
         params = build_request_to_payload(request)
     except ValueError as exc:
         return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
-    build_cap = budget.policy.phase("native", "build")
-    if build_cap is not None:
-        request_timeout = (
-            build_cap if request_timeout is None else min(request_timeout, build_cap)
-        )
-    admission = compat_backends.suite_trip_outcome(
-        harness_outcomes.read_suite_trip(env)
-    )
-    if admission is not None:
-        return admission.as_build_failure(
-            detail="suite guard stopped batch admission", fallback="suite guard tripped"
-        )
-    if budget.expired():
-        return budget.exhausted_result(build_failed=True)
     client, start_error = _batch_compile_server_client(
-        env, request_timeout=budget.limit(request_timeout), budget=budget
+        env,
+        execution_context=execution_context,
+        request_timeout=budget.limit(request_timeout),
+        budget=budget,
     )
     if client is None:
         error = start_error or RuntimeError("batch compile server startup failed")
@@ -2953,6 +2973,7 @@ def _run_molt_owned(
         try:
             batch_result = _run_batch_compile_build(
                 env=env,
+                execution_context=execution_context,
                 file_path=file_path,
                 output_root=output_root,
                 output_binary=output_binary,
@@ -2998,8 +3019,12 @@ def _run_molt_owned(
             build_outcome = batch_result
 
     else:
+        if budget.expired():
+            return budget.exhausted_result(build_failed=True)
         build_cmd = [
-            _resolve_molt_cli_python(),
+            execution_context.molt_cli_python
+            if execution_context is not None
+            else _resolve_molt_cli_python(),
             "-m",
             "molt.cli",
             "build",
@@ -3029,9 +3054,6 @@ def _run_molt_owned(
             build_cmd.append("--rebuild")
         if stdlib_profile is not None:
             build_cmd.extend(["--stdlib-profile", stdlib_profile])
-        codec = env.get("MOLT_CODEC")
-        if codec:
-            build_cmd.extend(["--codec", codec])
         build_timeout = budget.limit(build_timeout)
         if build_timeout == 0:
             return budget.exhausted_result(build_failed=True)
