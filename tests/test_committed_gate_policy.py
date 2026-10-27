@@ -944,7 +944,7 @@ def test_an_edited_rule_selects_itself():
 
 
 def test_a_plan_edit_without_its_changes_is_refused():
-    from tools.molt_dev_common import DriverError
+    from tools.driver_errors import DriverError  # noqa: E402
 
     cfg = GateConfig.load(COMMITTED_GATES)
     with pytest.raises(DriverError, match="changed entries are unknown"):

@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from tools import harness_memory_guard
+from tools import driver_errors, harness_memory_guard
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.process_environment import ProcessEnvironment
 
@@ -18,10 +18,6 @@ from tools.command_execution import CommandExecutor  # type: ignore
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 DEFAULT_REPO = Path(__file__).resolve().parents[1]
-
-EXIT_OK = 0
-EXIT_FAIL = 1
-EXIT_USAGE = 2
 
 
 def _say(msg: str) -> None:
@@ -43,41 +39,6 @@ def _fail(msg: str) -> None:
 
 def _warn(msg: str) -> None:
     _say(f"    WARN: {msg}")
-
-
-class DriverError(Exception):
-    """A loud, fatal driver condition. Carries an exit code (default FAIL)."""
-
-    def __init__(
-        self,
-        message: str,
-        code: int = EXIT_FAIL,
-        *,
-        maintenance_selection: tuple[Path, ProcessEnvironment] | None = None,
-    ):
-        super().__init__(message)
-        self.code = code
-        # Only a completed command attaches its captured selection. The CLI
-        # publishes this failure before scheduling its independent maintenance.
-        self.maintenance_selection = maintenance_selection
-
-
-# The landing queue attributes a failure to a candidate only when the
-# candidate caused it; these name the outcomes it must tell apart.
-class CandidateFailure(DriverError):
-    """The candidate failed a check that its own commits decide."""
-
-
-class GateFailure(CandidateFailure):
-    """A selected gate failed on the candidate."""
-
-
-class RebaseConflict(DriverError):
-    """The candidate does not apply to the current upstream."""
-
-
-class PublicationRace(DriverError):
-    """Upstream moved after the candidate's upstream was selected."""
 
 
 def _run_driver_command(
@@ -249,5 +210,7 @@ def _run_captured_gate(
     if not isinstance(proc, harness_memory_guard.GuardedCompletedProcess) or tuple(
         proc.args
     ) != tuple(argv):
-        raise DriverError("gate guard returned an unavailable or mismatched outcome")
+        raise driver_errors.DriverError(
+            "gate guard returned an unavailable or mismatched outcome"
+        )
     return proc

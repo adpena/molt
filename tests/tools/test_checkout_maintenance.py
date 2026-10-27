@@ -15,8 +15,8 @@ from molt.checkout_state import GC_STAMP
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 from tests.test_molt_dev import _git as git_process
 from tools import checkout_maintenance as maintenance
-from tools import molt_dev_controller as controllers
-from tools import molt_dev_detached as detached
+from tools import controller_source as controllers
+from tools import detached_execution as detached
 
 
 def _git(root, *args):
@@ -134,6 +134,17 @@ def test_existing_epoch_keeps_unresolved_evidence_and_stamp(
         maintenance.schedule(root, {}, cwd=tmp_path)
     assert evidence.read_text(encoding="utf-8") == '{"unresolved":true}'
     assert not root.joinpath(*GC_STAMP).exists()
+
+
+def test_missing_published_detached_worker_keeps_epoch_and_state_unclaimed(
+    tmp_path, published_source
+):
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    with pytest.raises(RuntimeError, match="no detached execution worker"):
+        maintenance.schedule(root, {}, cwd=tmp_path)
+    assert not root.joinpath(*GC_STAMP).exists()
+    assert not (root / "logs/disk_guard/automatic/gc-initial").exists()
 
 
 def test_unpublished_worker_contract_defers_without_daily_admission(
