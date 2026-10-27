@@ -730,10 +730,19 @@ cover the whole block. This follows [Cargo's separate target-directory storage](
 and the existing [LLVM lit private test-output convention](https://llvm.org/docs/CommandGuide/lit.html).
 The declaration adds constant work per command and linear union work per selected
 request, with no subprocess, filesystem scan or new scheduler. Receipts and the
-generated policy projection carry the resolved effect. The frontend/cache pytest
+generated local policy projection carry the resolved effect. CI commands without
+an effect declaration omit that local facet; receipt admission rejects an
+injected field and requires exact presence and value for declared effects.
+The frontend/cache pytest
 cohort declares `isolated` because its fake-Cargo publication fixture writes a
 private target; its separate Rust verifier remains `shared`. Browser VFS pytest
 requests declare `none`. This contract itself claims no measured speedup.
+
+The native artifact-ownership regression uses the `release-fast` host compiler
+with guest `dev` code, retaining all nine real concurrent builds and CPython
+output comparisons. Host and guest profiles are independent: the ownership
+proof must not implicitly build another thin-LTO `release` compiler. Compiler
+profile behavior remains qualified by its own profile and installation tests.
 
 The repository pytest configuration reports only the ten slowest durations
 above 0.25 seconds, including setup and teardown, to expose stragglers.
