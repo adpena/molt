@@ -59,11 +59,12 @@ def _build(request: BuildRequest) -> int:
 
 
 def _apply_cache_budget_after_build(cache_root: Path | None, *, verbose: bool) -> None:
-    """Apply the cache budget once a day, after a build published its output.
+    """Arrange the daily cache budget after a build published its output.
 
     It prunes the cache the build used. The common case reads one lock stamp
-    and imports nothing more; a due sweep runs the canonical automatic
-    retention. Retention never changes the build's result.
+    and imports nothing more. Source commands dispatch the canonical pruner
+    through retained published source; installed compilers run their packaged
+    policy directly. Retention never changes the build's result.
     """
     from molt.default_paths import (
         CLI_CACHE_RETENTION_INTERVAL_SECONDS,
@@ -76,12 +77,37 @@ def _apply_cache_budget_after_build(cache_root: Path | None, *, verbose: bool) -
     root = cache_root or _default_molt_cache(environ=os.environ)
     stamp = shared_cache_lock_path(root, "prune")
     try:
-        age = time.time() - stamp.stat().st_mtime
+        metadata = stamp.stat()
+        age = time.time() - metadata.st_mtime
     except FileNotFoundError:
+        metadata = None
         age = None
     except OSError:
         return
     if age is not None and 0 <= age < CLI_CACHE_RETENTION_INTERVAL_SECONDS:
+        return
+    from molt.dx import _source_checkout_maintenance
+
+    scheduler = _source_checkout_maintenance()
+    if scheduler is not None:
+        try:
+            state = scheduler.schedule_cache(
+                root,
+                os.environ,
+                cwd=Path.cwd(),
+                epoch="initial" if metadata is None else str(metadata.st_mtime_ns),
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(
+                f"molt: cache retention scheduling failed: {str(exc)[:512]}",
+                file=sys.stderr,
+            )
+        else:
+            if verbose:
+                print(
+                    f"molt: cache retention evidence: {state} (run.log/rc)",
+                    file=sys.stderr,
+                )
         return
     from molt.cache_eviction import automatic_retention
 
