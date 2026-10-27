@@ -64,8 +64,9 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 from molt.cli.build_request import (  # noqa: E402
     BuildProfile,
     BuildRequest,
-    ParseCodec,
+    parse_codec_from_input,
     TypeHintPolicy,
+    build_request_from_payload,
     build_request_to_payload,
 )
 from molt.cli.config_resolution import _select_codegen_backend  # noqa: E402
@@ -785,6 +786,7 @@ def _molt_build_params(
 ) -> dict[str, object]:
     request = BuildRequest(
         file_path=script,
+        parse_codec=parse_codec_from_input(env.get("MOLT_CODEC")),
         profile=cast(BuildProfile, build_profile),
         target=admit_target(build_target),
         trusted=build_target == "native",
@@ -794,8 +796,6 @@ def _molt_build_params(
         linked=build_target == "wasm",
         require_linked=build_target == "wasm",
     )
-    if "MOLT_CODEC" in env:
-        request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
     remaining = deque(extra_args or ())
     while remaining:
         arg = remaining.popleft()
@@ -1338,6 +1338,8 @@ def prepare_molt_binary(
                 *_molt_build_cmd(build_profile),
                 *(["--trusted"] if params["trusted"] else []),
                 "--json",
+                "--codec",
+                build_request_from_payload(params).parse_codec,
                 "--cache" if use_molt_build_cache else "--rebuild",
                 "--out-dir",
                 str(out_dir),

@@ -149,6 +149,14 @@ def build_request_from_payload(payload: object) -> BuildRequest:
     return msgspec.convert(admitted, BuildRequest, strict=True, dec_hook=_decode_path)
 
 
+def parse_codec_from_input(value: str | None) -> ParseCodec:
+    """Admit a codec input using the request's strict decoder and default."""
+    payload: dict[str, object] = {"file_path": None}
+    if value is not None:
+        payload["parse_codec"] = value
+    return build_request_from_payload(payload).parse_codec
+
+
 def build_request_values(request: BuildRequest) -> dict[str, Any]:
     """Project the complete request into scalar cache/transport field values."""
     from dataclasses import fields

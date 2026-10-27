@@ -11,6 +11,7 @@ from molt.cli.build_request import (
     FactGraphRequest,
     build_request_from_payload,
     build_request_to_payload,
+    parse_codec_from_input,
 )
 
 
@@ -249,3 +250,22 @@ def test_batch_refusal_reports_all_unknown_options_before_environment(
         "ok": False,
         "error": "BuildRequest: unknown fields: backend, codec",
     }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, "msgpack"), ("msgpack", "msgpack"), ("cbor", "cbor"), ("json", "json")],
+)
+def test_codec_input_admits_only_the_selected_value(
+    raw, expected, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
+    (tmp_path / "molt.toml").write_text('[build]\ncodec = "cbor"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert parse_codec_from_input(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "invalid-codec", "JSON", " msgpack "])
+def test_codec_input_rejects_present_invalid_values(raw):
+    with pytest.raises(ValueError, match="parse_codec"):
+        parse_codec_from_input(raw)

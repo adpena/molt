@@ -1021,8 +1021,12 @@ def _bench_results_with_mocked_native_outputs(
     )[script.name]
 
 
+@pytest.mark.parametrize(
+    ("raw_codec", "expected_codec"),
+    [(None, "msgpack"), ("json", "json"), ("cbor", "cbor")],
+)
 def test_prepare_molt_binary_uses_batch_build_server(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, raw_codec, expected_codec
 ) -> None:
     script = tmp_path / "bench_sample.py"
     script.write_text("print(1)\n", encoding="utf-8")
@@ -1043,7 +1047,11 @@ def test_prepare_molt_binary_uses_batch_build_server(
                 "stderr": "",
             }
 
-    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    environment = {"BASE": "1"}
+    if raw_codec is not None:
+        environment["MOLT_CODEC"] = raw_codec
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: environment)
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
 
     binary = bench_tool.prepare_molt_binary(
@@ -1063,12 +1071,13 @@ def test_prepare_molt_binary_uses_batch_build_server(
         assert timeout_s == 12.5
         assert params["file_path"] == str(script)
         assert params["profile"] == "release"
+        assert params["parse_codec"] == expected_codec
         assert params["type_hint_policy"] == "trust"
         assert params["stdlib_profile"] == "full"
         assert params["trusted"] is True
         assert params["json_output"] is True
         assert params["cache"] is True
-        assert env_overrides == {"BASE": "1"}
+        assert env_overrides == environment
         assert "env_overrides" not in params
         assert not {"codec", "type_hints", "type_facts", "backend"} & params.keys()
     finally:
@@ -1153,12 +1162,13 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
     assert failure.detail == "batch_server_response_timeout"
 
 
+@pytest.mark.parametrize("raw_codec", ["", "invalid-codec"])
 @pytest.mark.parametrize("build_target", ["native", "wasm"])
 @pytest.mark.parametrize("batched", [False, True])
 def test_prepare_molt_binary_rejects_invalid_codec_before_dispatch(
-    monkeypatch, tmp_path: Path, build_target: str, batched: bool
+    monkeypatch, tmp_path: Path, build_target: str, batched: bool, raw_codec: str
 ) -> None:
-    environment = {"MOLT_CODEC": "invalid-codec"}
+    environment = {"MOLT_CODEC": raw_codec}
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: environment)
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env: None)
     monkeypatch.setattr(bench_tool, "_bench_tmp_root", lambda env: tmp_path)
@@ -1189,7 +1199,9 @@ def test_prepare_molt_binary_rejects_invalid_codec_before_dispatch(
     assert failure.returncode == 2
     assert not failure.timed_out
     assert failure.infrastructure_failure is None
-    assert "parse_codec" in failure.stderr and "invalid-codec" in failure.stderr
+    assert "parse_codec" in failure.stderr
+    if raw_codec:
+        assert raw_codec in failure.stderr
     assert list(tmp_path.iterdir()) == []
 
 
@@ -2922,3 +2934,57 @@ def test_baseline_and_summary_consume_observation_without_profile_inference():
     errors = bench_tool.compare_baseline(payload, legacy, 0.15)
     assert len(errors) == 1 and "baseline selected profiles unbound" in errors[0]
     assert "observed=`unbound`" in render_bench_summary_markdown(legacy)
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(None, "msgpack"), ("json", "json"), ("cbor", "cbor")]
+)
+def test_benchmark_codec_uses_supplied_input_not_ambient_config(
+    monkeypatch, tmp_path, target, raw, expected
+):
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
+    (tmp_path / "molt.toml").write_text('[build]\ncodec = "cbor"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    params = bench_tool._molt_build_params(
+        script="case.py",
+        out_dir=tmp_path,
+        build_profile="dev",
+        extra_args=["--python-version", "3.14"],
+        env={} if raw is None else {"MOLT_CODEC": raw},
+        build_target=target,
+    )
+    assert params["parse_codec"] == expected
+    assert params["target"] == target and params["profile"] == "dev"
+    assert params["python_version"] == "3.14"
+    assert params["linked"] is (target == "wasm")
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(None, "msgpack"), ("json", "json"), ("cbor", "cbor")]
+)
+def test_direct_benchmark_dispatch_projects_the_admitted_codec(
+    monkeypatch, tmp_path, target, raw, expected
+):
+    env = {} if raw is None else {"MOLT_CODEC": raw}
+    monkeypatch.setenv("MOLT_CODEC", "invalid-ambient")
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda _env: env)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda _env: None)
+    monkeypatch.setattr(bench_tool, "_bench_tmp_root", lambda _env: tmp_path)
+    commands = []
+
+    def dispatched(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 7, "", "stop after selected build")
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", dispatched
+    )
+    result = bench_tool.prepare_molt_binary("case.py", env=env, build_target=target)
+    assert isinstance(result, bench_tool.MoltFailure) and result.returncode == 7
+    assert len(commands) == 1
+    command = commands[0]
+    assert command.count("--codec") == 1
+    assert command[command.index("--codec") + 1] == expected
+    assert ("--linked" in command) is (target == "wasm")
