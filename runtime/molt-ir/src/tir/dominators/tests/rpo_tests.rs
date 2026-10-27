@@ -1,15 +1,16 @@
 //! Shared executable-CFG order consumed by analysis and backend lowering.
 //!
 //! These tests target [`crate::tir::dominators::executable_reverse_postorder`]
-//! directly. They construct synthetic TIR CFGs (no ops, just terminators) and
-//! assert the dominator-precedes-dominatee invariants that LLVM lowering
-//! relies on. We do not pin the result to a single canonical ordering: any
-//! traversal that records each block in post-order before reversal is a
-//! valid RPO. Instead we assert the relational properties that callers
-//! actually depend on.
+//! directly. Synthetic TIR CFGs assert the dominator-precedes-dominatee
+//! invariants that LLVM lowering relies on. Unconstrained sibling blocks may
+//! use either valid RPO; explicit layout obligations additionally preserve
+//! normal-before-cold order and the state terminator's successor order.
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
-use crate::tir::dominators::{build_pred_map, compute_idoms, executable_reverse_postorder};
+use crate::tir::dominators::{
+    CfgEdgePolicy, build_pred_map, compute_idoms, executable_reverse_postorder,
+    reverse_postorder_with,
+};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -440,6 +441,11 @@ fn rpo_includes_exception_edge_only_reachable_handler() {
     );
     // Exit is the join of the normal edge and the handler edge, so it is last.
     assert_eq!(rpo[2], exit, "post-handler merge must be last: {:?}", rpo);
+    assert_eq!(
+        reverse_postorder_with(&func, CfgEdgePolicy::Retention),
+        vec![entry, handler, exit],
+        "a handler-to-normal cross-edge overrides cold-tail preference"
+    );
 }
 
 #[test]
@@ -503,8 +509,55 @@ fn rpo_includes_handler_reachable_only_transitively_via_exception_edge() {
     let pos_handler = position_of(&rpo, handler);
     let pos_body = position_of(&rpo, handler_body);
     assert!(
+        position_of(&rpo, exit) < pos_handler,
+        "independent normal exit must precede the cold handler chain: {rpo:?}"
+    );
+    assert!(
         pos_handler < pos_body,
         "handler must precede its transitively-reachable body: {:?}",
         rpo
+    );
+    assert_eq!(
+        reverse_postorder_with(&func, CfgEdgePolicy::TerminatorOnly),
+        vec![entry, exit],
+        "ordinary CFG traversal must not gain exception-only blocks"
+    );
+}
+
+#[test]
+fn rpo_checked_state_dispatch_preserves_initial_entry_and_cold_tail() {
+    let mut func = make_func_with_blocks("checked_dispatch", 5);
+    let entry = func.entry_block;
+    let handler = BlockId(1);
+    let initial = BlockId(2);
+    let first_resume = BlockId(3);
+    let second_resume = BlockId(4);
+    func.label_id_map.insert(handler.0, 71);
+    push_check_exception(&mut func, entry, 71);
+    set_term(
+        &mut func,
+        entry,
+        Terminator::StateDispatch {
+            cases: vec![(5, first_resume, vec![]), (9, second_resume, vec![])],
+            default: initial,
+            default_args: vec![],
+        },
+    );
+    for bid in [handler, initial, first_resume, second_resume] {
+        set_term(&mut func, bid, Terminator::Return { values: vec![] });
+    }
+
+    // An exception-first DFS leaves normal continuations first in RPO without
+    // reversing the state terminator itself: its default still leads its cases.
+    for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::Retention] {
+        assert_eq!(
+            reverse_postorder_with(&func, policy),
+            vec![entry, initial, second_resume, first_resume, handler],
+            "{policy:?}"
+        );
+    }
+    assert_eq!(
+        reverse_postorder_with(&func, CfgEdgePolicy::TerminatorOnly),
+        vec![entry, initial, second_resume, first_resume]
     );
 }
