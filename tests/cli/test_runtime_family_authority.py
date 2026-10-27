@@ -1934,7 +1934,12 @@ def test_resource_generation_requires_cargo_build_directory_capability(
         plan.verify()
         assert plan.environment["CARGO_BUILD_BUILD_DIR"] == str(plan.build_directory)
     else:
-        with pytest.raises(ValueError, match="Cargo 1.91 or newer"):
+        diagnostic = (
+            "runtime Cargo capability version probe failed"
+            if returncode
+            else r"Cargo 1\.91 or newer"
+        )
+        with pytest.raises(ValueError, match=diagnostic):
             _plan(plan_root)
 
 
