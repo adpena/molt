@@ -474,7 +474,9 @@ def test_copied_default_targets_replay_the_computed_audit(
     assert copied_audit == default_audit
 
     # A changed file must be re-examined even when every other result replays.
-    source.write_text(source.read_text() + "    sp.call([])\n", encoding="utf-8")
+    source.write_text(
+        source.read_text(encoding="utf-8") + "    sp.call([])\n", encoding="utf-8"
+    )
     changed = records()
     rejected = module.audit_paths(root=root, records=changed)
     assert not rejected.ok
