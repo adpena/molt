@@ -109,6 +109,7 @@ def test_cargo_check_passes() -> None:
     """cargo check -p molt-runtime passes after our changes."""
     result = _run_wasm_test_process(
         ["cargo", "check", "-p", "molt-runtime"],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=180,

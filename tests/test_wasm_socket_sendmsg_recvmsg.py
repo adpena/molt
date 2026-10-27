@@ -191,6 +191,7 @@ def test_wasm_socket_sendmsg_recvmsg_parity() -> None:
 
     run = _run_wasm_test_process(
         ["node", "-e", script],
+        role="guest-host",
         cwd=root,
         env=os.environ,
         timeout=None,

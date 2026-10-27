@@ -649,6 +649,7 @@ def freestanding_build(
             "--linked-output",
             str(linked),
         ],
+        role="tool",
         cwd=PROJECT_ROOT,
         env=build_env,
     )
@@ -709,6 +710,7 @@ def test_precompile_produces_host_container(tmp_path):
             "dev",
             "--precompile",
         ],
+        role="tool",
         cwd=PROJECT_ROOT,
         env=wasm_test_build_env(PROJECT_ROOT, linked=True),
     )
@@ -747,6 +749,7 @@ def test_profile_cloudflare_accepted():
     """--profile cloudflare should be accepted by the CLI."""
     result = _run_wasm_test_process(
         [sys.executable, "-m", "molt", "build", "--help"],
+        role="tool",
         cwd=PROJECT_ROOT,
         env=os.environ,
         timeout=30,

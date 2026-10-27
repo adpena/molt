@@ -293,7 +293,7 @@ console.log('four hosts: exact identity, startup binding, complete missing-expor
         encoding="utf-8",
     )
     run = _run_wasm_test_process(
-        ["node", str(script)], cwd=root, env=os.environ, timeout=30
+        ["node", str(script)], role="guest-host", cwd=root, env=os.environ, timeout=30
     )
     assert run.returncode == 0, run.stderr
     assert "four hosts: exact identity" in run.stdout
@@ -531,6 +531,7 @@ console.log(JSON.stringify(imports));
 
     run = _run_wasm_test_process(
         ["node", str(script), str(wasm_path)],
+        role="tool",
         cwd=root,
         env=os.environ,
         timeout=30,
@@ -576,6 +577,7 @@ console.log(JSON.stringify(imports));
 
     run = _run_wasm_test_process(
         ["node", str(script), str(wasm_path)],
+        role="tool",
         cwd=root,
         env=os.environ,
         timeout=30,
@@ -713,6 +715,7 @@ try {{
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             env=os.environ,
             timeout=30,
@@ -787,6 +790,7 @@ try {{
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             env=os.environ,
             timeout=30,
@@ -867,6 +871,7 @@ console.log(JSON.stringify(Array.from(output)));
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -933,6 +938,7 @@ console.log(imports[symbol](35n).toString());
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -998,6 +1004,7 @@ console.log(imports[symbol]().toString(16));
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1063,6 +1070,7 @@ try {{
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1129,6 +1137,7 @@ console.log(imports[symbol](37n).toString());
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1183,6 +1192,7 @@ try {{
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1248,6 +1258,7 @@ try {{
 
     run = _run_wasm_test_process(
         ["node", str(script)],
+        role="guest-host",
         cwd=root,
         capture_output=True,
         text=True,
@@ -1295,6 +1306,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
             "--out-dir",
             str(package_dir),
         ],
+        role="tool",
         cwd=root,
         env=build_env,
         capture_output=True,
@@ -1454,6 +1466,7 @@ try {{
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
+            role="guest-host",
             cwd=root,
             capture_output=True,
             text=True,
@@ -1542,7 +1555,11 @@ def test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate(
             encoding="utf-8",
         )
         result = _run_wasm_test_process(
-            ["node", str(script)], cwd=root, env=os.environ, timeout=30
+            ["node", str(script)],
+            role="guest-host",
+            cwd=root,
+            env=os.environ,
+            timeout=30,
         )
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == [8, -38]

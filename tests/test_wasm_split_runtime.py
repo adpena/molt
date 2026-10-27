@@ -285,6 +285,7 @@ def _build_split(
     command = wasm_split_build_command(source_file, output_dir, extra_args=extra_args)
     return _run_wasm_test_process(
         list(command.argv),
+        role="tool",
         env=command.environment,
         cwd=command.cwd,
     )
@@ -301,6 +302,7 @@ def _run_split_direct(
         env.update(extra_env)
     return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json"), *argv],
+        role="guest-host",
         env=env,
         cwd=ROOT,
         timeout=timeout,
@@ -320,6 +322,7 @@ def _run_split_direct_host_exports(
         env.update(extra_env)
     return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json")],
+        role="guest-host",
         env=env,
         cwd=ROOT,
         timeout=timeout,
@@ -1045,6 +1048,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1054,6 +1058,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     successful = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1069,6 +1074,7 @@ def test_linked_host_export_attribute_error_does_not_return_none(
     )
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1125,6 +1131,7 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1134,6 +1141,7 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1184,6 +1192,7 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1193,6 +1202,7 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1276,6 +1286,7 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1285,6 +1296,7 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
     run_env["MOLT_WASM_EXPORT_CALLS_JSON"] = str(calls_path)
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         cwd=ROOT,
         env=run_env,
         timeout=60,
@@ -1342,6 +1354,7 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
             "--out-dir",
             str(out_dir),
         ],
+        role="tool",
         cwd=ROOT,
         env=env,
     )
@@ -1383,6 +1396,7 @@ def test_linked_falcon_ocr_wasm_driver_runs_stub_generation(
         run_env["MOLT_CAPABILITIES"] = "env.read"
         return _run_wasm_test_process(
             ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+            role="guest-host",
             cwd=ROOT,
             env=run_env,
             timeout=60,

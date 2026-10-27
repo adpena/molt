@@ -64,6 +64,7 @@ def _molt_build(
         cmd.append("--linked")
     result = _run_wasm_test_process(
         cmd,
+        role="tool",
         env=env,
         cwd=ROOT,
         timeout=300,
@@ -97,6 +98,7 @@ def _wasmtime_run(wasm_path: Path) -> tuple[bool, str]:
         return False, "wasmtime not found"
     result = _run_wasm_test_process(
         [wasmtime, str(wasm_path)],
+        role="tool",
         cwd=ROOT,
         env=os.environ,
         timeout=30,

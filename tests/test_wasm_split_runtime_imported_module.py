@@ -142,6 +142,7 @@ def _build_split(
     ]
     return _run_wasm_test_process(
         cmd,
+        role="tool",
         env=env,
         cwd=ROOT,
         timeout=300,
@@ -151,6 +152,7 @@ def _build_split(
 def _run_split_direct(output_dir: Path) -> subprocess.CompletedProcess[str]:
     return _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(output_dir / "manifest.json")],
+        role="guest-host",
         env=os.environ.copy(),
         cwd=ROOT,
         timeout=300,
@@ -349,6 +351,7 @@ def test_split_runtime_import_typing_direct_mode(tmp_path: Path) -> None:
 
     run = _run_wasm_test_process(
         ["node", "wasm/run_wasm.js", str(out_dir / "manifest.json")],
+        role="guest-host",
         env=os.environ.copy(),
         cwd=ROOT,
         timeout=30,

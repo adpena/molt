@@ -94,6 +94,7 @@ def _run_wasm_layout(
     )
     return _run_wasm_test_process(
         [str(node.path), str(root / "wasm" / "run_wasm.js"), str(manifest)],
+        role="guest-host",
         cwd=tmp_path,
         env=env,
     )
@@ -240,7 +241,9 @@ def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) ->
             env.pop(key, None)
         env["MOLT_CAPABILITY_TIER"] = "none"
         env["MOLT_CAPABILITIES"] = grants
-        run = _run_wasm_test_process(command, cwd=payload_dir, env=env)
+        run = _run_wasm_test_process(
+            command, role="guest-host", cwd=payload_dir, env=env
+        )
         diagnostic = f"grants={grants!r}\nstdout:\n{run.stdout}\nstderr:\n{run.stderr}"
         assert run.returncode == 0, diagnostic
         expected = (

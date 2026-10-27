@@ -56,6 +56,7 @@ def _molt_cli_available() -> bool:
         env["PYTHONPATH"] = str(SRC_DIR)
         result = _run_wasm_test_process(
             [sys.executable, "-c", "import molt.cli"],
+            role="tool",
             env=env,
             cwd=ROOT,
             timeout=30,
@@ -85,6 +86,7 @@ def _build_wasm(src_path: Path, out_dir: Path) -> Path:
                 "--out-dir",
                 str(out_dir),
             ],
+            role="tool",
             cwd=ROOT,
             env=env,
             timeout=_SUBPROCESS_TIMEOUT,
@@ -145,6 +147,7 @@ def _extract_f64_constants(wasm_path: Path) -> list[int]:
     try:
         result = _run_wasm_test_process(
             ["wasm-tools", "print", str(wasm_path)],
+            role="tool",
             cwd=ROOT,
             env=os.environ,
             timeout=30,
