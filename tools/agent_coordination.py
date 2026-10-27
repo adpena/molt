@@ -38,6 +38,7 @@ from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
 from tools import check_instruction_hierarchy, claims_status  # noqa: E402
 from tools.memory_guard_core.cli_contract import guardian_argv  # noqa: E402
+from tools.detached_execution import python_command  # noqa: E402
 
 LOG_ROOT = Path("logs/agents")
 COORDINATION_RECORD_GLOB = "*/coordination.json"
@@ -1079,8 +1080,7 @@ def _proof_audit_context(
     repo_root: Path,
     errors: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    command = (
-        sys.executable,
+    command = python_command(
         str(repo_root / "tools" / "proof_queue.py"),
         "--repo-root",
         str(repo_root),

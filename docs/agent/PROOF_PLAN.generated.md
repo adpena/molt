@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 406 |
+| Hashed executable authority inputs | 1 | 407 |
 | Local path rules | 35 | 101 |
 | Unique local commands | 73 | 79 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -377,8 +377,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 1 |
-| `dev-tooling` | 26 | 0 |
-| `checkout-maintenance` | 15 | 0 |
+| `dev-tooling` | 27 | 0 |
+| `checkout-maintenance` | 16 | 0 |
 | `process-forwarding-custody` | 11 | 0 |
 | `changed-clippy-selection` | 11 | 0 |
 | `cargo-source-closure` | 2 | 0 |
