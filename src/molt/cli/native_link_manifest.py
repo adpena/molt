@@ -45,19 +45,14 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class NativeLinkManifestFacts:
-    """Owned canonical semantics, independent of any mutable receipt selection."""
+class NativeLinkProductFacts:
+    """Admitted product semantics, never authority for source-build reuse."""
 
     manifest: Mapping[str, object]
     items: tuple[Mapping[str, object], ...]
     build_identity: RuntimeBuildIdentity
-    cargo_environment: CargoEnvironmentInputs
 
     def __post_init__(self) -> None:
-        if _freeze_json(self.manifest.get("cargo_environment")) != _freeze_json(
-            self.cargo_environment.to_dict()
-        ):
-            raise ValueError("native link facts changed their Cargo observation")
         object.__setattr__(self, "manifest", _freeze_json(self.manifest))
         object.__setattr__(self, "items", _freeze_json(self.items))
 
@@ -65,12 +60,34 @@ class NativeLinkManifestFacts:
     def custody(self) -> Mapping[str, object]:
         return cast(Mapping[str, object], _thaw_json(self.manifest["custody"]))
 
-    def to_dict(self) -> dict[str, object]:
+    def product_payload(self) -> dict[str, object]:
         return cast(dict[str, object], _thaw_json(self.manifest))
 
 
-_SCHEMA_VERSION = 6
+@dataclass(frozen=True, slots=True)
+class NativeLinkManifestFacts(NativeLinkProductFacts):
+    """Source-build product and its mandatory, exact Cargo observations."""
+
+    cargo_environment: CargoEnvironmentInputs
+
+    def __post_init__(self) -> None:
+        NativeLinkProductFacts.__post_init__(self)
+        if not isinstance(self.cargo_environment, CargoEnvironmentInputs):
+            raise ValueError("native source facts require a Cargo observation")
+
+    def source_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": _SCHEMA_VERSION,
+            "kind": _KIND,
+            "product": self.product_payload(),
+            "cargo_environment": self.cargo_environment.to_dict(),
+        }
+
+
+_SCHEMA_VERSION = 7
 _KIND = "molt_native_link_dependencies"
+_PRODUCT_SCHEMA_VERSION = 1
+_PRODUCT_KIND = "molt_native_link_product"
 _NATIVE_STATIC_LIBS_PREFIX = "native-static-libs:"
 _LINK_PLAN_SCHEMA = "molt.native-link-plan.v1"
 _FRAMEWORK_NAME_RE = re.compile(r"[A-Za-z0-9_+.-]+")
@@ -617,12 +634,11 @@ def manifest_from_cargo_json(
         declared_dynamic_libraries=frozenset(declared_dynamic_libraries),
         declared_static_libraries=frozenset(declared_static_libraries),
     )
-    return {
-        "schema_version": _SCHEMA_VERSION,
-        "kind": _KIND,
+    product = {
+        "schema_version": _PRODUCT_SCHEMA_VERSION,
+        "kind": _PRODUCT_KIND,
         "runtime": _runtime_identity(runtime_lib),
         "runtime_build_identity": runtime_build_identity.to_dict(),
-        "cargo_environment": cargo_environment.to_dict(),
         "cargo": {
             "profile": cargo_profile,
             "profile_dir": cargo_profile_directory(cargo_profile),
@@ -630,6 +646,12 @@ def manifest_from_cargo_json(
         },
         "link_plan": link_plan,
         "custody": custody,
+    }
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "kind": _KIND,
+        "product": product,
+        "cargo_environment": cargo_environment.to_dict(),
     }
 
 
@@ -666,18 +688,51 @@ def validate_native_link_dependency_manifest(
     cargo_profile: str | None = None,
     runtime_build_identity: RuntimeBuildIdentity | None = None,
 ) -> NativeLinkManifestFacts:
-    """Validate one decoded manifest against its artifact and build authorities."""
+    """Admit source evidence; a shipped product is never source authority."""
+    product, cargo_environment = _source_manifest_components(manifest, context=context)
+    facts = validate_native_link_product_manifest(
+        product,
+        runtime_identity=runtime_identity,
+        context=context,
+        target_triple=target_triple,
+        cargo_profile=cargo_profile,
+        runtime_build_identity=runtime_build_identity,
+    )
+    return NativeLinkManifestFacts(
+        facts.manifest, facts.items, facts.build_identity, cargo_environment
+    )
+
+
+def _require_product_header(manifest: Mapping[str, object], *, context: str) -> None:
     if set(manifest) != {
         "schema_version",
         "kind",
         "runtime",
         "runtime_build_identity",
-        "cargo_environment",
         "cargo",
         "link_plan",
         "custody",
     }:
-        raise NativeLinkDependencyManifestError(f"invalid manifest shape: {context}")
+        raise NativeLinkDependencyManifestError(
+            f"invalid product manifest shape: {context}"
+        )
+    if (
+        type(manifest.get("schema_version")) is not int
+        or manifest.get("schema_version") != _PRODUCT_SCHEMA_VERSION
+        or manifest.get("kind") != _PRODUCT_KIND
+    ):
+        raise NativeLinkDependencyManifestError(
+            f"unsupported product manifest schema: {context}"
+        )
+
+
+def _source_manifest_components(
+    manifest: Mapping[str, object], *, context: str
+) -> tuple[Mapping[str, object], CargoEnvironmentInputs]:
+    if set(manifest) != {"schema_version", "kind", "product", "cargo_environment"}:
+        raise NativeLinkDependencyManifestError(
+            f"invalid source manifest shape: {context}"
+        )
     if (
         type(manifest.get("schema_version")) is not int
         or manifest.get("schema_version") != _SCHEMA_VERSION
@@ -686,15 +741,33 @@ def validate_native_link_dependency_manifest(
         raise NativeLinkDependencyManifestError(
             f"unsupported manifest schema: {context}"
         )
-    runtime = manifest.get("runtime")
+    product = manifest.get("product")
+    if not isinstance(product, dict):
+        raise NativeLinkDependencyManifestError(f"invalid product manifest: {context}")
+    _require_product_header(product, context=context)
     try:
-        cargo_environment = CargoEnvironmentInputs.from_dict(
+        environment = CargoEnvironmentInputs.from_dict(
             manifest.get("cargo_environment")
         )
     except (TypeError, ValueError) as exc:
         raise NativeLinkDependencyManifestError(
             f"invalid Cargo environment observation: {context}: {exc}"
         ) from exc
+    return product, environment
+
+
+def validate_native_link_product_manifest(
+    manifest: Mapping[str, object],
+    *,
+    runtime_identity: Mapping[str, object],
+    context: str,
+    target_triple: str | None,
+    cargo_profile: str | None = None,
+    runtime_build_identity: RuntimeBuildIdentity | None = None,
+) -> NativeLinkProductFacts:
+    """Admit only a bare shipped product against its actual archive authority."""
+    _require_product_header(manifest, context=context)
+    runtime = manifest.get("runtime")
     stored_build_identity_value = manifest.get("runtime_build_identity")
     cargo = manifest.get("cargo")
     try:
@@ -751,9 +824,7 @@ def validate_native_link_dependency_manifest(
         raise NativeLinkDependencyManifestError(
             f"native link manifest archive digest mismatch: {context}"
         )
-    return NativeLinkManifestFacts(
-        manifest, link_items, stored_build_identity, cargo_environment
-    )
+    return NativeLinkProductFacts(manifest, link_items, stored_build_identity)
 
 
 def read_native_link_dependency_manifest_payload(path: Path) -> Mapping[str, object]:
@@ -772,6 +843,7 @@ def read_native_link_dependency_manifest_payload(path: Path) -> Mapping[str, obj
         raise NativeLinkDependencyManifestError(
             f"native link dependency manifest must be an object: {path}"
         )
+    _source_manifest_components(payload, context=str(path))
     return payload
 
 
@@ -800,7 +872,7 @@ def read_native_link_dependency_manifest(
     target_triple: str | None,
     cargo_profile: str | None = None,
     runtime_build_identity: RuntimeBuildIdentity | None = None,
-) -> Mapping[str, object]:
+) -> NativeLinkManifestFacts:
     facts = _read_native_link_dependency_manifest(
         runtime_lib,
         target_triple=target_triple,
@@ -817,7 +889,7 @@ def read_native_link_dependency_manifest(
         raise NativeLinkDependencyManifestError(
             f"native link custody archive is unavailable or invalid: {exc}"
         ) from exc
-    return facts.to_dict()
+    return facts
 
 
 def _directive_parts(raw: str) -> tuple[str | None, str]:
@@ -1048,33 +1120,24 @@ def _native_link_flags(
 
 
 def native_link_flags_from_manifest(
-    manifest: Mapping[str, object],
+    facts: NativeLinkProductFacts,
     *,
     object_format: str,
     runtime_lib: Path | None = None,
 ) -> list[str]:
-    try:
-        runtime_build_identity = RuntimeBuildIdentity.from_dict(
-            manifest.get("runtime_build_identity")
-        )
-    except (TypeError, ValueError) as exc:
+    """Render already admitted source or installed product facts."""
+    if not isinstance(facts, NativeLinkProductFacts):
         raise NativeLinkDependencyManifestError(
-            f"native link manifest runtime build identity is invalid: {exc}"
-        ) from exc
-    _require_object_format(runtime_build_identity, object_format)
+            "native link flags require admitted product facts"
+        )
+    _require_object_format(facts.build_identity, object_format)
     try:
         custody, entries = validate_native_link_custody(
-            manifest.get("custody"),
+            facts.custody,
             context=os.fspath(runtime_lib) if runtime_lib is not None else "manifest",
         )
     except NativeLinkCustodyError as exc:
         raise NativeLinkDependencyManifestError(str(exc)) from exc
-    items = _validated_link_plan(
-        manifest.get("link_plan"),
-        entries=entries,
-        object_format=object_format,
-        context=os.fspath(runtime_lib) if runtime_lib is not None else "manifest",
-    )
     if entries and runtime_lib is None:
         raise NativeLinkDependencyManifestError(
             "native link manifest requires its adjacent custody archive"
@@ -1088,7 +1151,7 @@ def native_link_flags_from_manifest(
     except NativeLinkCustodyError as exc:
         raise NativeLinkDependencyManifestError(str(exc)) from exc
     return _native_link_flags(
-        items,
+        facts.items,
         object_format=object_format,
         custody_paths=custody_paths,
     )
@@ -1100,7 +1163,7 @@ class NativeLinkInputs:
 
     flags: tuple[str, ...]
     runtime_lib: Path
-    facts: NativeLinkManifestFacts
+    facts: NativeLinkProductFacts
     custody: NativeLinkCustodyObservation
 
     def verify(self) -> None:

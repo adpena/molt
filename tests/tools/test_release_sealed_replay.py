@@ -390,6 +390,15 @@ def test_consumer_resource_archive_exceeds_generic_envelope_without_nesting(tmp_
         "target": {"platform": "linux", "arch": "x86_64"},
         "source_date_epoch": 1_700_000_000,
     }
+    candidate["runtime_builds"] = []
+    from tools.release.release_model import file_record
+
+    for role in ("primary", "secondary"):
+        path = candidate_dir / f"runtime-build-{role}.json"
+        path.write_text("{}", encoding="utf-8")
+        candidate["runtime_builds"].append(
+            file_record(path, kind="runtime-build-observations")
+        )
     consumer = {
         "standalone": {"path": "consumer-evidence/replay.json"},
         "python_proofs": [],

@@ -18,7 +18,10 @@ from molt.cli import runtime_native_generation as generations
 from molt.cli.cargo_execution import CargoExecutionResult
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.product_store import ProductStore
-from molt.cli.native_link_manifest import native_link_dependency_manifest_path
+from molt.cli.native_link_manifest import (
+    NativeLinkDependencyManifestError,
+    native_link_dependency_manifest_path,
+)
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
 from molt.process_environment import ProcessEnvironment
@@ -832,3 +835,45 @@ def test_a_reused_runtime_is_renewed_and_outlives_the_idle_window(
     ok, again, _timings = native_build.run(profile="micro")
     assert ok and again.runtime_lib == first.runtime_lib
     assert len(native_build.cargo_runs) == 2
+
+
+@pytest.mark.parametrize(
+    ("mutation", "diagnostic"),
+    [
+        ("bare-product", "invalid source manifest shape"),
+        ("missing-observation", "invalid source manifest shape"),
+        ("null-observation", "invalid Cargo environment observation"),
+    ],
+)
+def test_resealed_transported_product_cannot_authorize_source_generation(
+    tmp_path, mutation, diagnostic
+):
+    exported = tmp_path / "producer" / "dev-fast" / _RUNTIME_NAME
+    publish(exported)
+    selection, members = _transport(exported, tmp_path / "transport")
+    manifest = members["native_link_manifest"]
+    envelope = json.loads(manifest.read_text(encoding="utf-8"))
+    if mutation == "bare-product":
+        payload = envelope["product"]
+    else:
+        payload = dict(envelope)
+        if mutation == "missing-observation":
+            del payload["cargo_environment"]
+        else:
+            payload["cargo_environment"] = None
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    # Reseal all content digests: the oracle is source admission, not an
+    # accidental member hash mismatch caused by the substitution itself.
+    receipt = json.loads(selection.read_text(encoding="utf-8"))
+    for member in receipt["members"]:
+        if member["role"] == "native_link_manifest":
+            member["size"] = manifest.stat().st_size
+            member["sha256"] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    receipt["generation"] = canonical_json_sha256(
+        {key: value for key, value in receipt.items() if key != "generation"}
+    )
+    selection.write_text(json.dumps(receipt), encoding="utf-8")
+    store = ProductStore(tmp_path / "consumer-store" / "native-runtime")
+    with pytest.raises(NativeLinkDependencyManifestError, match=diagnostic):
+        _import(store, selection, members)
+    assert not store.root.exists()

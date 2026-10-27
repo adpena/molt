@@ -29,7 +29,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -52,7 +51,9 @@ from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
+from molt.flag_strings import FlagStringRule  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
+from molt.rust_toolchain import rust_flag_spans  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 from tools.runtime_test_gate_plan import (  # noqa: E402
     OBSERVER_FEATURE,
@@ -522,6 +523,37 @@ def observed_abi_dependency(
     }
 
 
+_PROFILE_CHECKS = {
+    "dev-fast": ("DEV", True, "correctness"),
+    "release-fast": ("RELEASE", False, "iteration"),
+    "release-output": ("RELEASE", False, "shipping"),
+}
+_CHECK_FIELDS = ("debug_assertions", "overflow_checks")
+
+
+def build_environment(environment: Mapping[str, str]) -> dict[str, str | None]:
+    """Retain every selector used to admit the resolved runtime profile."""
+    names = {
+        "RUSTUP_TOOLCHAIN",
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CARGO_BUILD_RUSTFLAGS",
+        "CARGO_BUILD_TARGET",
+        "CARGO_TARGET_DIR",
+    }
+    for profile, (parent, _expected, _role) in _PROFILE_CHECKS.items():
+        for selector in (parent, profile.upper().replace("-", "_")):
+            names.update(
+                f"CARGO_PROFILE_{selector}_{field.upper()}" for field in _CHECK_FIELDS
+            )
+    names.update(
+        key
+        for key in environment
+        if key.startswith("CARGO_TARGET_") and key.endswith("_RUSTFLAGS")
+    )
+    return {key: environment.get(key) for key in sorted(names)}
+
+
 def observed_build(
     cargo_output: str,
     artifact: dict[str, str],
@@ -549,13 +581,16 @@ def observed_build(
         or not all(isinstance(feature, str) for feature in features)
     ):
         raise RuntimeError("compiler artifact lacks resolved profile/features evidence")
-    if profile_name in {"release-fast", "release-output"}:
-        if profile["debug_assertions"] is not False:
-            raise RuntimeError(
-                f"{profile_name} compiler artifact enables debug assertions"
-            )
+    policy = _PROFILE_CHECKS.get(profile_name)
+    if policy is not None:
+        parent, expected, _role = policy
+        for field in _CHECK_FIELDS:
+            if profile.get(field) is not expected:
+                raise RuntimeError(
+                    f"{profile_name} compiler artifact requires {field}={expected}"
+                )
         # rustc -C flags can override Cargo's profile metadata. Fail closed for
-        # contradictory or unfamiliar explicit assertion settings in either lane.
+        # contradictory or unfamiliar explicit settings in every named tier.
         flag_variables = {
             "RUSTFLAGS",
             "CARGO_ENCODED_RUSTFLAGS",
@@ -566,32 +601,52 @@ def observed_build(
             if key.startswith("CARGO_TARGET_") and key.endswith("_RUSTFLAGS")
         }
         for variable in sorted(flag_variables):
-            flags = (environment.get(variable) or "").replace("\x1f", " ")
-            if re.search(r"--cfg(?:\s+|=)[\"']?debug_assertions(?:\b|$)", flags):
-                raise RuntimeError(
-                    f"{variable} explicitly enables debug_assertions cfg"
+            rule = (
+                FlagStringRule.CARGO_ENCODED
+                if variable == "CARGO_ENCODED_RUSTFLAGS"
+                else FlagStringRule.CARGO_RUSTFLAGS
+                if variable == "RUSTFLAGS"
+                else FlagStringRule.CARGO_LIST
+            )
+            try:
+                spans = tuple(
+                    rust_flag_spans(rule.decode(environment.get(variable) or ""))
                 )
-            for match in re.finditer(
-                r"debug-assertions(?:\s*=\s*|\s+)?([^\s]*)", flags
-            ):
-                if match.group(1).lower() not in {"no", "off", "false", "0"}:
+            except ValueError as exc:
+                raise RuntimeError(f"{variable}: {exc}") from exc
+            for span in spans:
+                if (
+                    not expected
+                    and span.option == "--cfg"
+                    and (span.value or "").partition("=")[0].strip("\"'")
+                    == "debug_assertions"
+                ):
                     raise RuntimeError(
-                        f"{variable} contradicts disabled debug assertions"
+                        f"{variable} explicitly enables debug_assertions cfg"
                     )
-        for variable in (
-            f"CARGO_PROFILE_{profile_name.upper().replace('-', '_')}_DEBUG_ASSERTIONS",
-            "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS",
-        ):
-            value = environment.get(variable)
-            if value is not None and value.lower() not in {"false", "0"}:
-                raise RuntimeError(f"{variable} contradicts disabled debug assertions")
+                if span.codegen is not None:
+                    key, _separator, value = span.codegen.partition("=")
+                    accepted = (
+                        {"yes", "on", "true", "1"}
+                        if expected
+                        else {"no", "off", "false", "0"}
+                    )
+                    if (
+                        key.replace("-", "_") in _CHECK_FIELDS
+                        and value.lower() not in accepted
+                    ):
+                        raise RuntimeError(f"{variable} contradicts {key}={expected}")
+        for selector in (parent, profile_name.upper().replace("-", "_")):
+            for field in _CHECK_FIELDS:
+                variable = f"CARGO_PROFILE_{selector}_{field.upper()}"
+                value = environment.get(variable)
+                if value is not None and value.lower() not in (
+                    {"true", "1"} if expected else {"false", "0"}
+                ):
+                    raise RuntimeError(f"{variable} contradicts {field}={expected}")
     return {
         "requested_profile": profile_name,
-        "profile_role": "shipping"
-        if profile_name == "release-output"
-        else "iteration"
-        if profile_name == "release-fast"
-        else "custom",
+        "profile_role": policy[2] if policy is not None else "custom",
         "observed_profile": profile,
         "features": features,
         "target": item["target"],
@@ -1384,27 +1439,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             toolchain[tool] = version.stdout.strip()
         aggregate["toolchain"] = toolchain
-        aggregate["build_environment"] = {
-            key: os.environ.get(key)
-            for key in (
-                "RUSTUP_TOOLCHAIN",
-                "RUSTFLAGS",
-                "CARGO_ENCODED_RUSTFLAGS",
-                "CARGO_BUILD_RUSTFLAGS",
-                "CARGO_BUILD_TARGET",
-                "CARGO_TARGET_DIR",
-                "CARGO_PROFILE_RELEASE_FAST_DEBUG_ASSERTIONS",
-                "CARGO_PROFILE_RELEASE_OUTPUT_DEBUG_ASSERTIONS",
-                "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS",
-            )
-        }
-        aggregate["build_environment"].update(
-            {
-                key: value
-                for key, value in os.environ.items()
-                if key.startswith("CARGO_TARGET_") and key.endswith("_RUSTFLAGS")
-            }
-        )
+        aggregate["build_environment"] = build_environment(os.environ)
         artifacts = truth.expected_test_binaries(
             build.stdout, truth.package_identities_from_metadata(metadata.stdout)
         )

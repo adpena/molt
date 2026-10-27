@@ -125,6 +125,13 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    the run **before push**. `--extra-gate` selects an exact command already declared in this plan with
    prerequisite custody; it does not admit arbitrary commands. There is
    no gate-skipping or alternate-manifest landing route.
+   The local runtime semantic gate uses the existing registered `dev-fast`
+   invocation and Cargo-workspace custody. Its package/features inventory and
+   isolated child accounting are the same semantic harness used by the shipping
+   gate, while release CI retains `release-output`. Local iteration reuses the
+   development profile rather than building a shipping ThinLTO image on every
+   runtime edit. This follows the source/release distinction in the
+   [minimum matrix](../spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md).
    Prerequisite failures are reported together. Content-resolver and version-query
    failures retain the probe command, directory, actual cause and bounded output; they do not
    fabricate an unavailable image path. Relative interpreter aliases preserve the
@@ -412,7 +419,7 @@ main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 `molt.checkout_provisioning` owns a checkout's lock-declared inputs.
 `python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
 hand from an existing bootstrap interpreter. Managed Python uses the existing
-source-build publisher's recipe at
+source-build publisher and schema 8 recipe at
 `<artifact_root>/build-environments/development/<checkout_component>/<recipe_sha>`.
 The recipe binds the selected interpreter, lock closure, dependency groups and
 editable checkout metadata. `[tool.molt.dx].dependency_groups` in `pyproject.toml`

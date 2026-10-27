@@ -169,9 +169,22 @@ debug = 0
 [profile.dev.package.zlib-rs]
 debug = 0
 
-# Runtime at opt-level 2 even in dev: this code runs inside compiled
-# output, so a sluggish runtime masks the actual perf of user programs.
+# The same four hot runtime crates selected by release and size profiles use
+# opt-level 2 in dev: this code runs inside compiled user programs. dev-fast
+# and the built-in test profile inherit the family without another package list.
 [profile.dev.package.molt-runtime]
+opt-level = 2
+debug = 0
+
+[profile.dev.package.molt-runtime-core]
+opt-level = 2
+debug = 0
+
+[profile.dev.package.molt-lang-obj-model]
+opt-level = 2
+debug = 0
+
+[profile.dev.package.molt-runtime-collections]
 opt-level = 2
 debug = 0
 

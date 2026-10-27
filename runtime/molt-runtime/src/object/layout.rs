@@ -1368,14 +1368,17 @@ pub(crate) unsafe fn prepare_function_code_bits(
                 );
                 return Err(());
             }
-            if code_published_execution_kind(code_ptr).is_none() {
-                prepared.signature = match signature {
-                    Some(signature) => Some(signature),
-                    None if identity_was_unpublished => {
-                        prepare_code_signature_from_function_attrs(_py, ptr)?
-                    }
-                    None => None,
-                };
+            let signature = match signature {
+                Some(signature) => Some(signature),
+                None if identity_was_unpublished
+                    && code_published_execution_kind(code_ptr).is_none() =>
+                {
+                    prepare_code_signature_from_function_attrs(_py, ptr)?
+                }
+                None => None,
+            };
+            if let Some(signature) = signature {
+                prepared.signature = signature.for_code(_py, code_ptr)?;
             }
             prepared.code = Some((code_ptr, identity));
         }
@@ -1478,6 +1481,10 @@ impl PreparedFunctionCode {
                 } else {
                     [0; 5]
                 };
+            // Code publication changes the active signature projection. Keep
+            // every attachment path coherent before returning displaced edges
+            // whose release can invoke Python finalizers.
+            crate::call::bind::refresh_function_requires_binder_flag(py, ptr);
             DisplacedFunctionCode {
                 code: if old_bits != self.bits { old_bits } else { 0 },
                 signature: displaced_signature,
@@ -1515,9 +1522,13 @@ pub(crate) unsafe fn function_set_code_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
     }
 }
 
-pub(crate) unsafe fn function_set_trampoline_ptr(ptr: *mut u8, bits: u64) {
+pub(crate) unsafe fn function_set_trampoline_ptr(py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
+        crate::gil_assert();
         *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+        // WASM symbol identity also considers the trampoline. A fresh identity
+        // must publish its binder policy even when its function key is stable.
+        crate::call::bind::refresh_function_requires_binder_flag(py, ptr);
     }
 }
 
@@ -2231,6 +2242,30 @@ pub(crate) fn prepare_code_signature(
 }
 
 impl PreparedCodeSignature {
+    /// A callable identity can expose this signature to attached functions
+    /// before an execution kind is published. Either publication seals it.
+    /// Exact replay is accepted without replacing any owned edge.
+    unsafe fn for_code(self, py: &PyToken<'_>, ptr: *mut u8) -> Result<Option<Self>, ()> {
+        unsafe {
+            if code_callable_identity(ptr).is_none() && code_published_execution_kind(ptr).is_none()
+            {
+                return Ok(Some(self));
+            }
+            let published = [
+                code_arg_names_bits(ptr),
+                code_signature_posonly_bits(ptr),
+                code_kwonly_names_bits(ptr),
+                code_vararg_bits(ptr),
+                code_varkw_bits(ptr),
+            ];
+            if self.0 == published {
+                return Ok(None);
+            }
+            crate::raise_exception::<u64>(py, "TypeError", "code signature is already published");
+            Err(())
+        }
+    }
+
     unsafe fn publish(self, py: &PyToken<'_>, ptr: *mut u8) -> [u64; 5] {
         unsafe {
             let mut displaced = [0; 5];
@@ -2257,10 +2292,7 @@ pub(crate) unsafe fn code_set_signature_bits(
 ) -> Result<(), ()> {
     unsafe {
         crate::gil_assert();
-        if code_published_execution_kind(ptr).is_some() {
-            return Ok(());
-        }
-        let signature = prepare_code_signature(
+        let Some(signature) = prepare_code_signature(
             _py,
             [
                 arg_names_bits,
@@ -2269,7 +2301,11 @@ pub(crate) unsafe fn code_set_signature_bits(
                 vararg_bits,
                 varkw_bits,
             ],
-        )?;
+        )?
+        .for_code(_py, ptr)?
+        else {
+            return Ok(());
+        };
         for old_bits in signature.publish(_py, ptr) {
             if old_bits != 0 {
                 dec_ref_bits(_py, old_bits);

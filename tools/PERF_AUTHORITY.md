@@ -214,6 +214,16 @@ identity consumers, and the selector consumer, closing missing producer triggers
 compile zlib, while provider edits keep both compiled gates and source oracles.
 These are verified obligation changes, not an end-to-end latency comparison.
 
+Managed Python images now publish under the schema-v8 `cpython-source-only.v1`
+policy. Their ordinary bytecode read namespace is physical and empty, and every
+child disables bytecode writes before startup. The retired three-variant eager
+cache producer and its derivation memo are gone. Publication and admission still
+verify dependency inputs, source contents, executable images and the empty
+namespace's final membership fence. Borrowed Python environments retain their
+ordinary cache validation. The [image contract](../docs/ops/INTEGRATION.md)
+owns these boundaries; timing the removed eager builder does not measure the
+current image policy.
+
 The retired schema-v7 Python image publisher derived three ordinary bytecode variants per
 source. One publication action retained trusted derivation hashes for its fresh
 receiver capture, eliminating duplicate compilation while preserving full input
@@ -226,11 +236,7 @@ fresh source/cache inventory and verification at median 16.28 seconds before and
 scaled with cache variants. This component excludes full environment/runtime
 inventory, dependency installation and process startup; it does not measure the
 entire dev loop. Cold publication also removed one child and JSON round trip.
-Under that policy, incoming and existing-image admission derived caches
-independently. These measurements describe the retired eager publisher. Managed
-images now use source-only publication and an empty bytecode read namespace;
-[checkout provisioning](../docs/ops/INTEGRATION.md#checkout-provisioning) owns that
-contract. The measurements above do not qualify its performance.
+These historical schema-v7 measurements do not qualify the current source-only policy.
 
 WASM policy separates typed build intent, target placement, effective captured
 Cargo incrementality and shared publication. The ordinary nonincremental default
@@ -251,6 +257,23 @@ previous Cargo chain and can now overlap the real writer. This is a verified
 classification and dependency reduction, not a new end-to-end timing comparison.
 Unfiltered consumers that build native fixtures keep their prerequisites, and
 writer serialization, pytest-session limits and memory envelopes are unchanged.
+
+Explicit unfiltered cohorts use `all = true` with nonempty targets in the same
+`pytest_select` authority as filtered cohorts. A complete-file consumer that
+executes Cargo keeps its Cargo prerequisite even when its surrounding CI rule
+requires only Python. The leaf and shared-input rules name the same cohort, so
+the existing command identity deduplicates their combined selection. Ordinary
+`pytest = []` still means no work; an empty explicit cohort is invalid.
+
+Test fixture edits select their owning consumer without requalifying unrelated
+producers. WASM single-compile fixtures retain their runtime/Cargo owner;
+native-link benchmark fixtures retain the complete benchmark test file. Native
+transfer leaves select transfer, Nightly bundle and Nightly preparation tests.
+Changes to shared frontend, extension, CI and transfer authorities still select
+their consumer union. This follows [LLVM's individual regression tests](https://llvm.org/docs/TestingGuide.html#unit-and-regression-tests)
+and [Cargo's package and target selection](https://doc.rust-lang.org/cargo/commands/cargo-check.html):
+the dependency boundary determines the work. Selection reduction alone does not
+establish an end-to-end latency improvement.
 
 Integration source fences obtain HEAD and cleanliness in one fresh porcelain-v2
 status observation. Closed one-reference symbolic-ref queries and tree reads use

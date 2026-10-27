@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from typing import assert_never
 import time
 
 
@@ -29,7 +30,9 @@ from molt.cli.atomic_io import _atomic_write_json  # noqa: E402
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
+    RuntimeWasmReceiptRole,
     read_runtime_wasm_generation,
+    read_runtime_wasm_product,
 )
 from tools.wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
 from tools.wasm_link_optimizer_policy import _tree_shake_runtime  # noqa: E402
@@ -71,7 +74,14 @@ def _admitted_runtime_generation(args: argparse.Namespace) -> RuntimeWasmGenerat
         )
     except ValueError as exc:
         raise SystemExit(f"trusted runtime pair identity is invalid: {exc}") from exc
-    generation = read_runtime_wasm_generation(
+    match expected.receipt_role:
+        case RuntimeWasmReceiptRole.SOURCE_BUILD:
+            reader = read_runtime_wasm_generation
+        case RuntimeWasmReceiptRole.INSTALLED_PRODUCT:
+            reader = read_runtime_wasm_product
+        case unexpected:
+            assert_never(unexpected)
+    generation = reader(
         manifest,
         expected_shared_identity=expected.shared,
         expected_reloc_identity=expected.reloc,

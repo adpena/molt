@@ -241,13 +241,11 @@ fn trace_function_bind_meta_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_FUNCTION_BIND_META)
 }
 
-/// One callback-free projection of binder-relevant metadata. Ordinary calls
-/// require binding for positional defaults; the fused fast path may pad those
-/// defaults directly. Both consumers share all other admission facts.
+/// Callback-free derivation of the published binder flag. Positional-default
+/// counts remain live metadata reads because direct calls can pad them without
+/// selecting the full binder.
 pub(super) struct FunctionBindingShape {
     pub(super) full_binder: bool,
-    pub(super) positional_defaults: usize,
-    fixed_builtin: bool,
 }
 
 pub(super) unsafe fn function_binding_meta(
@@ -256,6 +254,28 @@ pub(super) unsafe fn function_binding_meta(
     field: FunctionBindingField,
 ) -> u64 {
     unsafe { crate::call::function::function_metadata_bits(py, func_ptr, field.name()) }
+}
+
+/// Read current positional defaults without retaining a second derived fact.
+/// Missing/None and an empty tuple have count zero; malformed metadata has no
+/// count and must be admitted by the full binder for its existing diagnostic.
+unsafe fn positional_default_count(py: &PyToken<'_>, func_ptr: *mut u8) -> Option<usize> {
+    unsafe {
+        let defaults = obj_from_bits(function_binding_meta(
+            py,
+            func_ptr,
+            FunctionBindingField::Defaults,
+        ));
+        if defaults.is_none() {
+            return Some(0);
+        }
+        match defaults.as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => {
+                Some(crate::object::seq_access::len(ptr))
+            }
+            _ => None,
+        }
+    }
 }
 
 pub(super) unsafe fn function_binding_shape(
@@ -305,38 +325,19 @@ pub(super) unsafe fn function_binding_shape(
         // unlike the live dictionary's size, changes only through a metadata
         // write that refreshes the binder flag.
         full_binder |= !kwdefaults.is_none();
-        let defaults = obj_from_bits(function_binding_meta(
-            py,
-            func_ptr,
-            FunctionBindingField::Defaults,
-        ));
-        let positional_defaults = if defaults.is_none() {
-            0
-        } else {
-            match defaults.as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_TUPLE => {
-                    crate::object::seq_access::len(ptr)
-                }
-                _ => {
-                    full_binder = true;
-                    0
-                }
-            }
-        };
-        FunctionBindingShape {
-            full_binder,
-            positional_defaults,
-            fixed_builtin,
-        }
+        full_binder |= positional_default_count(py, func_ptr).is_none();
+        FunctionBindingShape { full_binder }
     }
 }
 
 /// Positional defaults can be padded by the direct path of
 /// `call_owned_function`; every other binder requirement, including malformed
-/// defaults, comes from the same shape.
+/// defaults, is maintained by publication. The live count also observes public
+/// defaults replacement without caching or rederiving the full binding shape.
 pub(super) unsafe fn function_requires_full_binding(py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
-    let shape = unsafe { function_binding_shape(py, func_ptr) };
-    shape.full_binder || shape.positional_defaults != 0
+    unsafe {
+        function_requires_binder_flag(func_ptr) || positional_default_count(py, func_ptr) != Some(0)
+    }
 }
 
 pub(crate) unsafe fn function_needs_full_binder(py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
@@ -355,6 +356,10 @@ pub(crate) unsafe fn refresh_function_requires_binder_flag(
         } else {
             (*header).fetch_and_flags(!HEADER_FLAG_FUNC_REQUIRES_BINDER);
         }
+        // Publication derives the policy while metadata is callback-free and
+        // checks the stored projection before displaced owners can finalize.
+        // Calls consume that projection; they must not repeat this analysis.
+        debug_assert_eq!(function_requires_binder_flag(func_ptr), needs_binder);
         needs_binder
     }
 }
@@ -377,10 +382,6 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
         if function_requires_binder_flag(func_ptr) {
             return true;
         }
-        debug_assert!(
-            !function_needs_full_binder(_py, func_ptr),
-            "binder flag is stale: a construction or metadata write skipped its refresh"
-        );
         let Some(arity) = function_arity_usize(func_ptr) else {
             let _ = raise_exception::<u64>(
                 _py,
@@ -394,10 +395,8 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
         }
         // Wrong Python arity belongs to frame binding even without defaults.
         // Native callables without a Python signature keep their own admission.
-        let shape = function_binding_shape(_py, func_ptr);
-        shape.full_binder
-            || shape.fixed_builtin
-            || shape.positional_defaults != 0
+        crate::builtins::functions::native_callable::fixed_builtin_convention(func_ptr).is_some()
+            || positional_default_count(_py, func_ptr) != Some(0)
             || !obj_from_bits(function_binding_meta(
                 _py,
                 func_ptr,

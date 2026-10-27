@@ -872,6 +872,7 @@ def publish_archive(
         ),
         selected=(
             "candidate.json",
+            *(row["filename"] for row in candidate["runtime_builds"]),
             "consumer-verification.json",
             "compilation-evidence",
             "consumer-evidence",
@@ -885,7 +886,7 @@ def admit_archive(
     *, candidate_dir: Path, candidate: dict[str, Any], supervisor: Path
 ) -> dict[str, Any]:
     """Replay the bytes actually shipped, without producer paths or containers."""
-    from .release_authority import validate_consumer_proof
+    from .release_authority import _load_candidate, validate_consumer_proof
 
     archive = candidate_dir / archive_filename(candidate)
     with tempfile.TemporaryDirectory(prefix="molt-consumer-admission-") as raw:
@@ -893,20 +894,21 @@ def admit_archive(
         identity = extract_zip_strict(
             archive, extracted, policy=CONSUMER_ARCHIVE_POLICY
         )
-        archived_candidate = read_exact(
-            extracted / "candidate.json",
-            max_bytes=4 * 1024 * 1024,
-            label="archived candidate",
-        )
+        archived_candidate = _load_candidate(extracted / "candidate.json")
         if archived_candidate != candidate:
             raise ValueError("consumer archive candidate differs from admitted source")
-        for name in ("candidate.json", "consumer-verification.json"):
+        for name in (
+            "candidate.json",
+            "consumer-verification.json",
+            *(row["filename"] for row in candidate["runtime_builds"]),
+        ):
             if not same_regular_file_bytes(extracted / name, candidate_dir / name):
                 raise ValueError(
                     "consumer archive differs from admitted candidate/proof"
                 )
         if {path.name for path in extracted.iterdir()} != {
             "candidate.json",
+            *(row["filename"] for row in candidate["runtime_builds"]),
             "consumer-verification.json",
             "consumer-evidence",
             "compilation-evidence",
