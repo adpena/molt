@@ -45,7 +45,7 @@ from molt.cli.runtime_identity_schema import (
 from molt.exact_json import canonical_json_sha256
 from molt.flag_strings import FlagStringError, FlagStringRule
 from molt.llvm_toolchain import project_wasm_toolchain_environment
-from molt import rust_toolchain
+from molt import process_guard, rust_toolchain
 from molt import cargo_execution_policy
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from tests.executable_test_support import write_mock_executable
@@ -703,7 +703,7 @@ def plan_root(
         stdout, stderr = rustc_target_metadata_output(tmp_path, target=target)
         return subprocess.CompletedProcess(command, 0, stdout, stderr)
 
-    monkeypatch.setattr(plans.process_guard, "run_completed_command", metadata_command)
+    monkeypatch.setattr(process_guard, "run_completed_command", metadata_command)
     resources = tmp_path / "rust-resources"
     resources.mkdir()
     (resources / "libcore.rlib").write_bytes(b"rust-core")
@@ -915,7 +915,7 @@ def test_cfg_probe_retains_selected_compiler_and_reports_failure(
             "cfg diagnostic" if failure == "exit" else "",
         )
 
-    monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     if failure == "none":
         metadata = rustc_probes.rust_target_metadata(
             rustc,
@@ -1921,14 +1921,14 @@ def test_resource_generation_requires_cargo_build_directory_capability(
     returncode: int,
     supported: bool,
 ) -> None:
-    original = plans.process_guard.run_completed_command
+    original = process_guard.run_completed_command
 
     def probe(command, **kwargs):
         if tuple(command[1:]) == ("--version",):
             return subprocess.CompletedProcess(command, returncode, version, "")
         return original(command, **kwargs)
 
-    monkeypatch.setattr(plans.process_guard, "run_completed_command", probe)
+    monkeypatch.setattr(process_guard, "run_completed_command", probe)
     if supported:
         plan = _plan(plan_root)
         plan.verify()
@@ -2310,7 +2310,7 @@ def test_selected_sysroot_supplies_target_resources_not_default(
             command, 0, stdout=_metadata_stdout(value), stderr=""
         )
 
-    monkeypatch.setattr(plans.process_guard, "run_completed_command", probe)
+    monkeypatch.setattr(process_guard, "run_completed_command", probe)
     roots = plans._rust_resource_roots(
         compiler,
         root=tmp_path,
@@ -2355,7 +2355,7 @@ def test_cfg_probe_uses_and_fences_nested_cargo_wrappers(
             wrappers[mutated].write_bytes(b"MZchanged")
         return subprocess.CompletedProcess(command, 0, _metadata_stdout(tmp_path), "")
 
-    monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     if mutated is None:
         assert ("selected", None) in rustc_probes.rust_target_metadata(
             rustc,
@@ -3426,7 +3426,7 @@ def test_runtime_metadata_preserves_resource_owned_unstable_backend_and_confines
         assert kwargs["input"] == ""
         return subprocess.CompletedProcess(command, 0, _metadata_stdout(plan_root), "")
 
-    monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     metadata = rustc_probes.rust_target_metadata(
         rustc,
         "target",

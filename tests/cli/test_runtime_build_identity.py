@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from molt import toolchain_identity
+from molt.cli import cargo_capabilities
 from molt.cli import runtime_build_identity as identity
 from molt.cli.cargo_search_path import derives_cargo_search_path
 from molt.cli import runtime_native_build
@@ -270,7 +271,7 @@ def identity_root(
         return original_plan(root, env, target_triple=target_triple, **kwargs)
 
     monkeypatch.setattr(sys.modules[__name__], "_test_plan", plan_with_sdk)
-    original_run = cargo_plans.process_guard.run_completed_command
+    original_run = cargo_capabilities.process_guard.run_completed_command
 
     def tool_probe(command, **kwargs):
         if list(command) == [sys.executable, "--version"]:
@@ -280,8 +281,8 @@ def identity_root(
     install_module_view(
         monkeypatch,
         "process_guard",
-        cargo_plans.process_guard,
-        cargo_plans,
+        cargo_capabilities.process_guard,
+        cargo_capabilities,
         run_completed_command=tool_probe,
     )
 

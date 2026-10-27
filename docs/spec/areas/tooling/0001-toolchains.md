@@ -99,7 +99,9 @@ rather than forwarding target compiler options through Clippy's workspace
 wrapper. Target SDK flags remain in Cargo's target compilation lane; host build
 scripts retain their host ABI. The shared Cargo capability gate admits both
 resource-keyed build directories and warning denial from one captured version
-probe. The original warning-failure policy, package scope and deadline remain.
+probe. `molt.cli.cargo_capabilities` owns this admission; runtime planning and
+proof receivers consume it directly. The original warning-failure policy,
+package scope and deadline remain.
 Direct Cargo C-provider environments explicitly use `python -m molt.llvm_toolchain --verify-wasm
 --wasi-rust-target <target> --wasi-sdk <install> --github-env <path>`, with target
 `wasm32-wasip1` or `wasm32-unknown-unknown`. Native flags are untouched.
