@@ -43,6 +43,7 @@ covers the complete Windows loop inheritance chain and these operation owners:
 
 | Operation | CPython authority | Relevant behavior |
 | --- | --- | --- |
+| importlib cache path with unavailable tag | `Lib/importlib/_bootstrap_external.py`, `cache_from_source`, `_get_cached` | The public cache API raises when the live implementation tag is `None`; lazy ModuleSpec cache derivation catches that precise outcome |
 | Counter.fromkeys | `Lib/collections/__init__.py`, `Counter.fromkeys` | Exact exception/message, no argument consumption |
 | Windows add/remove signal handler | `Lib/asyncio/events.py`, `AbstractEventLoop`; `windows_events.py`, `selector_events.py`, `proactor_events.py`, `base_events.py` | Windows loop classes inherit the unconditional bare refusal |
 | Memoryview scalar access | `Objects/memoryobject.c`, `adjust_fmt`, `unpack_single`, `pack_single` | Syntax rejection differs from unsupported native scalar code; half-float `e` is supported |

@@ -4,6 +4,9 @@ use crate::{
 };
 
 pub(crate) enum CompatibilityError<'a> {
+    ImportlibCacheTagUnavailable {
+        is_none: bool,
+    },
     PathGlobNonRelative {
         non_relative: bool,
     },
@@ -42,12 +45,16 @@ impl CompatibilityError<'_> {
         let supported = match &self {
             Self::RawIoBaseReadinto => matches!(target_version, (3, 12..=15)),
             Self::LoggingHandlerEmit => matches!(target_version, (3, 12..=15)),
+            Self::ImportlibCacheTagUnavailable { .. } => matches!(target_version, (3, 12..=15)),
             _ => matches!(target_version, (3, 12..=14)),
         };
         if !supported {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
+            Self::ImportlibCacheTagUnavailable { is_none } if is_none => {
+                "sys.implementation.cache_tag is None".to_owned()
+            }
             Self::PathGlobNonRelative { non_relative } if non_relative => {
                 "Non-relative patterns are unsupported".to_owned()
             }
@@ -161,6 +168,17 @@ mod tests {
                             .as_deref(),
                         Ok("emit must be implemented by Handler subclasses")
                     );
+                    assert_eq!(
+                        CompatibilityError::ImportlibCacheTagUnavailable { is_none: true }
+                            .message(py)
+                            .as_deref(),
+                        Ok("sys.implementation.cache_tag is None")
+                    );
+                    assert_eq!(
+                        CompatibilityError::ImportlibCacheTagUnavailable { is_none: false }
+                            .message(py),
+                        Err("inapplicable compatibility-error outcome")
+                    );
                 });
             }
             // Synthetic projection tests identity only, never target admission.
@@ -201,6 +219,11 @@ mod tests {
                     );
                     assert_eq!(
                         CompatibilityError::LoggingHandlerEmit.message(py),
+                        Err("unsupported compatibility-error target"),
+                    );
+                    assert_eq!(
+                        CompatibilityError::ImportlibCacheTagUnavailable { is_none: true }
+                            .message(py),
                         Err("unsupported compatibility-error target"),
                     );
                 });
