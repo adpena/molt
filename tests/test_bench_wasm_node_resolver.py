@@ -234,7 +234,9 @@ def test_prepare_wasm_binary_owns_every_failed_preparation(
 
     def build(_python, _env, output, _script, **kwargs):
         build_calls.append(output)
-        (output.parent / "preparation-evidence.txt").write_text("retain on refusal")
+        (output.parent / "preparation-evidence.txt").write_text(
+            "retain on refusal", encoding="utf-8"
+        )
         if failure in {"build", "interrupt"}:
             raise primary
         if failure == "refusal":
@@ -316,9 +318,9 @@ def test_prepare_wasm_binary_owns_every_failed_preparation(
         root = Path(owners[0].name)
         assert root.exists() is cleanup_fails
         if cleanup_fails:
-            assert (
-                root / "preparation-evidence.txt"
-            ).read_text() == "retain on refusal"
+            assert (root / "preparation-evidence.txt").read_text(
+                encoding="utf-8"
+            ) == "retain on refusal"
     finally:
         for owner in owners:
             original_cleanup(owner)

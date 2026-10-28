@@ -446,7 +446,7 @@ def test_sealed_workload_rejects_additions(tmp_path, extra):
         with sealed_workload(tmp_path) as workload:
             target = workload.execution_root / extra
             if extra.endswith(".py"):
-                target.write_text("print('injected')\n")
+                target.write_text("print('injected')\n", encoding="utf-8")
             else:
                 target.mkdir()
             workload.verify()

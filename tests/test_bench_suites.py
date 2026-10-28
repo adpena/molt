@@ -260,7 +260,7 @@ def test_application_selection_uses_one_snapshot_and_exact_path(
     tmp_path, monkeypatch
 ) -> None:
     catalog = tmp_path / "registry.toml"
-    catalog.write_text(_APPLICATION_CATALOG)
+    catalog.write_text(_APPLICATION_CATALOG, encoding="utf-8")
     monkeypatch.setattr(benchmark_applications, "CATALOG", catalog)
     monkeypatch.setattr(benchmark_applications, "ROOT", tmp_path)
     monkeypatch.setattr(
@@ -269,7 +269,7 @@ def test_application_selection_uses_one_snapshot_and_exact_path(
         cache(benchmark_applications.applications.__wrapped__),
     )
     (app,) = benchmark_applications.applications()
-    catalog.write_text("invalid TOML [")
+    catalog.write_text("invalid TOML [", encoding="utf-8")
     assert benchmark_applications.application_for_script(tmp_path / app.driver) is app
     assert benchmark_applications.applications() == (app,)
 
@@ -315,7 +315,9 @@ def test_application_oracle_records_exact_reference_bytes(
     driver.parent.mkdir(parents=True)
     driver.write_text(f"import os\nos.write(1, {payload!r})\n", encoding="utf-8")
     project = source / "pyproject.toml"
-    project.write_text('[project]\nname = "oracle-fixture"\nversion = "0"\n')
+    project.write_text(
+        '[project]\nname = "oracle-fixture"\nversion = "0"\n', encoding="utf-8"
+    )
     seal = stage_source_package_seal(
         tmp_path / "seals",
         [
