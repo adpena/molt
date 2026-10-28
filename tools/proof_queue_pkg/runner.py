@@ -421,6 +421,7 @@ def _validated_execution_context(
     run_id: str,
     execution_nonce: str,
     returncode: int,
+    supervisor_artifact_root: Mapping[str, object],
 ) -> None:
     if context.get("run_id") != run_id:
         raise ValueError("guarded receipt context run identity mismatch")
@@ -904,10 +905,17 @@ def _validated_execution_context(
             raise ValueError("proof scratch differs from admitted Cargo output layout")
     from tools.proof_queue_pkg import supervisor_generation
 
+    if not cargo_output_layout.same_root(
+        context.get("supervisor_artifact_root"), supervisor_artifact_root
+    ):
+        raise ValueError(
+            "guarded receipt context supervisor artifact root substitution detected"
+        )
     supervisor_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
         envelope,
         result_root=execution_path.parent,
         source_root=Path(str(source_custody.get("row_cwd"))),
+        supervisor_artifact_root=supervisor_artifact_root,
     )
     supervisor_generation.validate_receipt(
         supervisor.get("provision_telemetry"),
@@ -1016,6 +1024,7 @@ def _write_execution_request(
     log_path: Path,
     summary_path: Path,
     timeout_seconds: float,
+    output_layout: cargo_output_layout.CargoOutputLayout,
 ) -> tuple[Path, Path, dict[str, object], str]:
     try:
         envelope = loads_exact(str(row["command_envelope_json"]))
@@ -1047,6 +1056,7 @@ def _write_execution_request(
         "execution_nonce": execution_nonce,
         "env_override_names": sorted(env_override_names, key=str.casefold),
         "timeout_seconds": timeout_seconds,
+        "supervisor_artifact_root": output_layout.supervisor_artifact_root,
     }
     write_exact(request_path, request)
     return request_path, result_path, envelope, execution_nonce
@@ -1727,6 +1737,9 @@ def _run_one(
             )
             requested_environment = ProcessEnvironmentBuilder(os.environ)
             requested_environment.update(env_overrides)
+            output_layout = output_layout.bind_supervisor_artifact_root(
+                requested_environment
+            )
             output_layout.validate_environment(requested_environment)
             if uses_cargo:
                 # The queue owns Cargo and derived output below the result root.
@@ -1796,6 +1809,7 @@ def _run_one(
                     log_path=log_path,
                     summary_path=summary_json,
                     timeout_seconds=timeout,
+                    output_layout=output_layout,
                 )
             )
             memory_limits = custody._proof_queue_memory_limits(env_overrides)
@@ -1960,6 +1974,7 @@ def _run_one(
                     run_id=run_id,
                     execution_nonce=execution_nonce,
                     returncode=command_rc,
+                    supervisor_artifact_root=output_layout.supervisor_artifact_root,
                 )
                 guard_receipt = _validated_guard_receipt(
                     summary_json,
