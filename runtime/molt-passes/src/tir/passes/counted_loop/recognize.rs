@@ -11,7 +11,7 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::ops::OpCode;
 
-use super::super::value_identity::{build_copy_map, resolve_copy};
+use super::super::value_identity::{build_scalar_value_map, resolve_copy};
 use super::descriptor::CountedLoop;
 use super::facts::{branch_args_to, build_const_int_map, find_def, loop_forest_contains_header};
 use super::gate::{CmpPolarity, LoopGate, loop_gate};
@@ -131,7 +131,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     }
 
     let const_map = build_const_int_map(func);
-    let copy_of = build_copy_map(func);
+    let copy_of = build_scalar_value_map(func);
 
     // The comparison defines `cmp_cond`. It must be Lt/Le/Gt/Ge(iv_view, stop).
     let Some((cmp_block, cmp_op)) = find_def(func, cmp_cond) else {

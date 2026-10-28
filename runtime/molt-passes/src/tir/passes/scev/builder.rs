@@ -75,6 +75,10 @@ impl<'a> ScevBuilder<'a> {
     }
 
     fn compute_scev_of(&mut self, v: ValueId) -> ScevExpr {
+        let source = self.defs.resolve(v);
+        if source != v {
+            return self.scev(source);
+        }
         if let Some(&c) = self.defs.const_int.get(&v) {
             return ScevExpr::Constant(c);
         }

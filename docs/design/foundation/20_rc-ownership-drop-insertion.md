@@ -430,6 +430,24 @@ after it knows views, and the SimpleIR frame-lifecycle rule checks only that
 numbering, load forwarding and copy propagation never merge, forward or fold
 one.
 
+The generated scalar-forwarding contract separately preserves a plain
+`frame_home_store` result's exact mathematical scalar value from operand zero.
+The store returns the saved operand view after publishing it and releasing the
+displaced binding; it does not reread a finalizer's replacement. Exact scalar
+provenance, ranges, recurrences and physical representation consume this fact.
+The numeric resolver admits effectful edges only for proven exact scalars, so it
+cannot transport a mutable container's pre-release length. Home loads remain
+unknown. The operation still publishes, can allocate and invoke Python, consumes
+its operand, and returns a borrowed view; alias analysis and copy propagation
+retain their narrower predicates. This follows the separation between value
+propagation and other effects in LLVM's
+[`returned` parameter attribute](https://llvm.org/docs/LangRef.html#parameter-attributes)
+and MLIR's
+[integer range inference interface](https://mlir.llvm.org/doxygen/InferIntRangeInterface_8h_source.html).
+The additional exact-scalar query is compile-time analysis over existing SSA;
+it adds no runtime guards, allocations, locks or calls. Existing range and
+overflow proofs still decide whether an integer can use a raw carrier.
+
 A plain store can allocate when its result needs a boxed view of a raw
 integer. The frontend authors a `CheckException` immediately after that store,
 before a later effect or `TRY_END`; the existing preserved-Copy effect floor

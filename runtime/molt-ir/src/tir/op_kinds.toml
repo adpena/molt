@@ -1941,6 +1941,11 @@ classifier_binding_view = [
     "frame_home_private_cell",
     "frame_home_store",
 ]
+# A successful unary binding publication returns operand 0's mathematical
+# scalar value. This transfers only already-proven scalar facts, not heap
+# identity, ownership, purity or the current contents of a reentrantly written
+# home. In particular, frame_home_load has no such operand/value relationship.
+classifier_scalar_value_forward = ["frame_home_store"]
 # copy_kind_is_explicit_no_heap_move: provable no-incref pure move of operand 0
 # (bare copy, the named SSA/var moves, the validate-and-pass-through guards).
 classifier_no_heap_move = [

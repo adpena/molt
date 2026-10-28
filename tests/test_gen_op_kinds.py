@@ -5804,6 +5804,80 @@ def test_binding_views_render_and_stay_non_owning() -> None:
         raise AssertionError(f"a binding view {reason} must be rejected")
 
 
+def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes() -> (
+    None
+):
+    gen = _gen()
+    data = gen.load_table()
+    assert data["classifier_scalar_value_forward"] == ["frame_home_store"]
+    gen._validate_scalar_value_forwarding(data)
+    rendered = gen.render_rs(data)
+    region = _re_search(rendered, "fn copy_kind_forwards_scalar_value_table").split(
+        "pub fn", 1
+    )[0]
+    assert '"frame_home_store"' in region
+    assert '"frame_home_load"' not in region
+    without = json.loads(json.dumps(data))
+    without["classifier_scalar_value_forward"] = []
+    unforwarded = gen.render_rs(without)
+    # The mathematical-value declaration cannot change ownership or purity.
+    for function in (
+        "copy_kind_is_explicit_no_heap_move_table",
+        "copy_kind_is_binding_view_table",
+        "kind_consumed_operand_table",
+        "opcode_effects_table",
+    ):
+        assert (
+            _re_search(rendered, f"fn {function}").split("pub fn", 1)[0]
+            == (_re_search(unforwarded, f"fn {function}").split("pub fn", 1)[0])
+        )
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        "frame_home_store",
+        [0],
+        ["unknown"],
+        ["frame_home_load"],
+        ["frame_home_store", "frame_home_store"],
+    ],
+)
+def test_scalar_value_forwarding_rejects_invalid_declarations(members) -> None:
+    gen = _gen()
+    data = json.loads(json.dumps(gen.load_table()))
+    data["classifier_scalar_value_forward"] = members
+    with pytest.raises(gen.OpKindTableError, match="classifier_scalar_value_forward"):
+        gen._validate_scalar_value_forwarding(data)
+
+
+@pytest.mark.parametrize("arity", [0, 2, True, "one"])
+def test_scalar_value_forwarding_requires_a_unary_shape(arity) -> None:
+    gen = _gen()
+    data = json.loads(json.dumps(gen.load_table()))
+    for row in data["simpleir_op_shape"]:
+        if row["kind"] == "frame_home_store":
+            row["operands"] = arity
+    with pytest.raises(gen.OpKindTableError, match="declared unary binding view"):
+        gen._validate_scalar_value_forwarding(data)
+
+
+@pytest.mark.parametrize("missing", ["shape", "binding_view"])
+def test_scalar_value_forwarding_requires_its_existing_contract(missing) -> None:
+    gen = _gen()
+    data = json.loads(json.dumps(gen.load_table()))
+    if missing == "shape":
+        data["simpleir_op_shape"] = [
+            row
+            for row in data["simpleir_op_shape"]
+            if row["kind"] != "frame_home_store"
+        ]
+    else:
+        data["classifier_binding_view"].remove("frame_home_store")
+    with pytest.raises(gen.OpKindTableError, match="declared unary binding view"):
+        gen._validate_scalar_value_forwarding(data)
+
+
 def test_container_absorbing_kind_table_renders_storage_boundaries() -> None:
     """Preserved SimpleIR mutators that retain a value in an existing container
     get a generated per-spelling table, parallel to consuming-kind overrides but
