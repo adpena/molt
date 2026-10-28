@@ -175,9 +175,10 @@ def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Pa
         "    spec = __spec__",
         "except NameError:",
         "    spec = None",
+        # CPython's namespace module and spec share one locations object.
         "if spec is not None:",
         "    try:",
-        "        spec.submodule_search_locations = list(__path__)",
+        "        spec.submodule_search_locations = __path__",
         "    except Exception:",
         "        pass",
         "",

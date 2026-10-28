@@ -2630,10 +2630,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "importlib_spec_from_loader",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibStabilizeModuleState,
-        name: "importlib_stabilize_module_state",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibValidateResourceName,
         name: "importlib_validate_resource_name",
     },
@@ -12588,12 +12584,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "importlib_spec_from_loader" => Some(WasmRuntimeImport::ImportlibSpecFromLoader),
         "molt_importlib_spec_from_loader" => Some(WasmRuntimeImport::ImportlibSpecFromLoader),
-        "importlib_stabilize_module_state" => {
-            Some(WasmRuntimeImport::ImportlibStabilizeModuleState)
-        }
-        "molt_importlib_stabilize_module_state" => {
-            Some(WasmRuntimeImport::ImportlibStabilizeModuleState)
-        }
         "importlib_validate_resource_name" => {
             Some(WasmRuntimeImport::ImportlibValidateResourceName)
         }

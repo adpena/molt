@@ -258,9 +258,12 @@ the GIL through the existing RLock authority; single-threaded WASM uses its
 existing reentrant backing. No state/list mutex spans a Python callback.
 An empty path calls the actual public `_warnings.warn` attribute, including
 rebinding, noncallable values and callback errors. Acquisition reuses the existing
-support loader. Captured native warning-provider identity and startup with an
-absent `_warnings` facade belong to the open warning-provider contract (HF-270);
-this core change does not establish their parity or eagerly load that graph.
+support loader. The compiler carries `_warnings` as a runtime-import support root
+(`_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES`), and the `_warnings` body bootstraps its
+own imports as the `importlib` bodies do, so the warning loads with an empty
+`sys.meta_path`. Nothing loads `_warnings` at startup. Molt's `_warnings` facade
+still imports `warnings`, the reverse of CPython, so the first empty-path warning
+also loads `warnings`; that provider direction is a separate open finding.
 
 Completed cache hits add no finder, bootstrap, lock-map or filesystem work. A cold
 finder traversal owns its three arguments, iterator and current observations;
