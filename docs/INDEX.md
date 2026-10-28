@@ -8,6 +8,7 @@ the source of truth.
 
 - Project overview: [README.md](../README.md)
 - First install and run: [getting-started.md](getting-started.md)
+- Current V1.0 burndown, priorities and blockers: [agent/V1_HANDOFF_FINDINGS.md](agent/V1_HANDOFF_FINDINGS.md)
 - Current supported state: [spec/STATUS.md](spec/STATUS.md)
 - Forward plan: [../ROADMAP.md](../ROADMAP.md)
 

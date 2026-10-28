@@ -10,8 +10,9 @@ performance claims require the [performance authority](../tools/PERF_AUTHORITY.m
 **Document role:** Detailed roadmap archive/reference.
 For canonical current state, use [STATUS.md](spec/STATUS.md).
 For the active forward-looking project plan, use [ROADMAP.md](../ROADMAP.md).
-The active roadmap also owns near-term sequencing; this archive adds no
-independent schedule or release checklist.
+Current V1.0 burndown, priorities and blockers belong only in the
+[findings ledger](agent/V1_HANDOFF_FINDINGS.md). This archive adds no independent
+schedule or release checklist.
 For historical milestone framing, use the [process roadmap](spec/areas/process/0006-roadmap.md).
 
 **Version policy:** Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge, document the chosen target in specs/tests.

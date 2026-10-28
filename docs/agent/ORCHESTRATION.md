@@ -6,16 +6,18 @@ handoff. The active integrator owns reconciliation and landing. Register that
 ownership; a role named in old prose is not a current lock.
 
 This board holds the binding coordination protocol, the canonical host paths,
-and the R0-R9 roadmap recipe. It is not the work list. Live work comes from
-`docs/agent/V1_HANDOFF_FINDINGS.md`, `docs/agent/CLAIMS.md`, and the
-coordination records. Current operator instructions determine concurrency.
+and the R0-R9 roadmap recipe. Current V1.0 burndown state, priorities, blockers
+and next closure outcomes come only from `docs/agent/V1_HANDOFF_FINDINGS.md`.
+`docs/agent/CLAIMS.md` and coordination records own their claim/worker custody;
+their evidence feeds the ledger rather than a second V1 status board. Current
+operator instructions determine concurrency.
 
 On 2026-10-06 the dated status snapshots, pause handoffs, swarm burndowns, and
 per-agent lane lists were deleted from this board. Git history keeps them.
 Status notes that remain in the roadmap are dated; check them against live
 source before reuse.
 
-Routing reviewed: 2026-10-06.
+V1 burndown routing reviewed: 2026-10-28.
 
 ## Canonical paths (binding)
 
@@ -304,10 +306,11 @@ the coordination records. Status notes inside items are dated history.
 
 ### R0. Pact witness kernel GREEN end-to-end
 
-Current frontier: `V1_HANDOFF_FINDINGS.md` row HF-04 (reproduce the NumPy/SciPy
-seals under schema 7) and `E1_REMAINING_FRONTIER_MAP.md`.
+Current frontier state: only `V1_HANDOFF_FINDINGS.md` row HF-04.
+`E1_REMAINING_FRONTIER_MAP.md` is dated historical reconnaissance, to reconcile
+against that row and current source before using its observations.
 
-The done criterion of the current goal: `field_solve.py` from
+The R0 done criterion: `field_solve.py` from
 `collab/pact/` compiles through the live WASM/browser path, produces
 `candidate_outputs.npz`, and `check_parity.py` passes — no host-CPython
 fallback, no fake symbols, upstream source only through package custody.
