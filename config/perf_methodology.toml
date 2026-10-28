@@ -7,7 +7,7 @@ schema = "molt-perf-methodology-v1"
 # Sealed application inputs and complete, byte-preserving observations change
 # workload identity and measurement admission together.
 version = 16
-content_sha256 = "dc84748833c5a0953630c477cb192ab7064d8db387b58c64ef74808c339b6449"
+content_sha256 = "6537eb23e255f260ddec0601c16c0942f6366110eeb17f9cc95e9bf807bd9c0d"
 
 [[methodology]]
 path = "tools/safe_run.py"
