@@ -505,6 +505,7 @@ impl RuntimeServiceExecutionGuard {
         })
     }
 
+    #[inline(always)]
     pub(crate) fn token(&self) -> PyToken<'_> {
         self.execution.token()
     }
@@ -520,19 +521,23 @@ pub(crate) struct RuntimeExecutionGuard {
 
 impl RuntimeExecutionGuard {
     /// Enter a runtime call, lazily initializing only before acquiring the GIL.
+    #[inline(always)]
     pub(crate) fn enter() -> Self {
         Self::enter_with_policy(true, ExecutionCleanupPolicy::Preserve)
     }
 
     /// Enter a raw ABI call that is valid without bootstrapping RuntimeState.
+    #[inline(always)]
     pub(crate) fn enter_without_runtime() -> Self {
         Self::enter_with_policy(false, ExecutionCleanupPolicy::Preserve)
     }
 
+    #[inline(always)]
     pub(crate) fn enter_with_worker_cleanup() -> Self {
         Self::enter_with_policy(true, ExecutionCleanupPolicy::WorkerEnd)
     }
 
+    #[inline(always)]
     pub(crate) fn enter_with_boundary_created_cleanup() -> Self {
         Self::enter_with_policy(true, ExecutionCleanupPolicy::BoundaryCreated)
     }
@@ -670,6 +675,7 @@ impl RuntimeExecutionGuard {
         })
     }
 
+    #[inline(always)]
     pub(crate) fn token(&self) -> PyToken<'_> {
         self.gil.as_ref().expect("execution guard lost GIL").token()
     }

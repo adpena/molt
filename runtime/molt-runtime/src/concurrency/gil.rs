@@ -305,6 +305,7 @@ impl GilGuard {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn token(&self) -> PyToken<'_> {
         PyToken {
             _guard: self,
