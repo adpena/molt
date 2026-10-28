@@ -1423,7 +1423,11 @@ def _collect_scratch(
     apply: bool,
     deadline: float,
 ) -> None:
-    from molt.checkout_state import OWNER_RECORD, checkout_state_retirement
+    from molt.checkout_state import (
+        LAST_USE_STAMP,
+        OWNER_RECORD,
+        checkout_state_retirement,
+    )
     from molt.file_publication import resolve_owned_path
 
     # A marker without a scratch coordinate cannot prove which legacy entry
@@ -1467,10 +1471,17 @@ def _collect_scratch(
                     _region_locked(lock) for lock in checkout_state_lock_paths(path)
                 ):
                     return 0, "state-in-use"
-                # A recent top-level stamp avoids an unnecessary recursive
-                # inventory. Old entries still need all descendants observed.
+                # Constant-work precheck: even an immediate-child inventory
+                # can be huge. Every descendant walk must share the deadline.
+                newest = path.lstat().st_mtime
+                try:
+                    newest = max(newest, (path / LAST_USE_STAMP).lstat().st_mtime)
+                except FileNotFoundError:
+                    pass
                 if (
-                    checkout_state_decision(path, root, now=now_fn(), limits=limits)
+                    checkout_state_decision(
+                        path, root, now=now_fn(), limits=limits, last_use=newest
+                    )
                     is None
                 ):
                     return 0, "recent-use"
