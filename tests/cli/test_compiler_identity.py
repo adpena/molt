@@ -342,6 +342,11 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
     configuration = tmp_path / "config.toml"
     configuration.write_text('[build]\nrustflags=["-Copt-level=2"]\n', encoding="utf-8")
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
+    extra_flags: list[str] = []
+    final_flags: list[str] = []
+    link_arguments: list[str] = []
+    source_destination = "/molt/source"
+    c_inputs: dict[str, tuple[str, ...]] = {}
 
     def resolve(
         root,
@@ -362,7 +367,8 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         # result exactly as the real resolver does.
         rustflags = (
             *rustflags_transform(("-Copt-level=2",)),
-            f"--remap-path-prefix={root}=/molt/source",
+            *extra_flags,
+            f"--remap-path-prefix={root}={source_destination}",
             f"--remap-path-prefix={env['CARGO_TARGET_DIR']}=/molt/build",
         )
         return SimpleNamespace(
@@ -370,8 +376,17 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
             configuration=(),
             cli_configuration={},
             rustflags=rustflags,
-            c_environment={},
-            partition_command=lambda: (tuple(cargo_command), ()),
+            logical_paths=(
+                ("source", root),
+                ("cargo-build", Path(env["CARGO_TARGET_DIR"])),
+            ),
+            c_environment=dict(c_inputs),
+            partition_command=lambda: (
+                (*cargo_command, "--", *final_flags)
+                if final_flags
+                else tuple(cargo_command),
+                tuple(link_arguments),
+            ),
             link_resources=SimpleNamespace(content_identity=lambda: {}),
             profile_environment=lambda profile: {
                 key: value
@@ -386,9 +401,9 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
     monkeypatch.setattr(runtime_cargo_plan, "resolve_runtime_cargo_plan", resolve)
     baseline_env = {"CARGO_TARGET_DIR": str(tmp_path / "target")}
 
-    def admission(env, rust_cpu=RustCpuPolicy.BASELINE):
+    def admission(env, rust_cpu=RustCpuPolicy.BASELINE, *, root=tmp_path):
         return compiler_identity.backend_build_admission(
-            tmp_path,
+            root,
             ("native-backend",)
             if product is HostToolProduct.BACKEND
             else product.required_features,
@@ -423,6 +438,41 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
     assert all("target-cpu" not in "".join(env.values()) for env in seen)
     profile = admission({**baseline_env, "CARGO_PROFILE_RELEASE_LTO": "true"})
     assert profile.fingerprint != baseline.fingerprint
+    relocated_root = tmp_path / "relocated"
+    relocated_env = {"CARGO_TARGET_DIR": str(tmp_path / "other-target")}
+    relocated = admission(relocated_env, root=relocated_root)
+    assert relocated.plan.rustflags != baseline.plan.rustflags
+    assert relocated.fingerprint == baseline.fingerprint
+    source_destination = "/different/debug/source"
+    assert admission(baseline_env).fingerprint != baseline.fingerprint
+    source_destination = "/molt/source"
+    # A literal cfg value is program input, even when it spells a known root.
+    extra_flags[:] = ["--cfg", f'build_path="{tmp_path}"']
+    literal = admission(baseline_env)
+    extra_flags[:] = ["--cfg", f'build_path="{relocated_root}"']
+    assert (
+        admission(relocated_env, root=relocated_root).fingerprint != literal.fingerprint
+    )
+    extra_flags[:] = [f"--remap-path-prefix={tmp_path}=/final"]
+    dependency_scope = admission(baseline_env)
+    final_flags[:] = extra_flags
+    extra_flags.clear()
+    assert admission(baseline_env).fingerprint != dependency_scope.fingerprint
+    final_flags[:] = [f"--remap-path-prefix={tmp_path}=/final"]
+    first_final = admission(baseline_env)
+    final_flags[:] = [f"--remap-path-prefix={relocated_root}=/final"]
+    assert (
+        admission(relocated_env, root=relocated_root).fingerprint
+        == first_final.fingerprint
+    )
+    # The same spelling sent to the linker is not a rustc remap operation.
+    link_arguments[:] = final_flags
+    final_flags.clear()
+    assert admission(baseline_env).fingerprint != first_final.fingerprint
+    link_arguments.clear()
+    c_inputs["SDKROOT"] = ("${c/SDKROOT/search/0}",)
+    assert admission(baseline_env).fingerprint != baseline.fingerprint
+    c_inputs.clear()
     # Public Luau builds choose guest chunking after a prewarm. Neither this
     # setting nor diagnostic verbosity changes the admitted host compiler.
     guest = admission(
@@ -643,6 +693,7 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
             cli_configuration={},
             profile_environment=lambda profile: {},
             rustflags=(),
+            logical_paths=(("source", root),),
             c_environment={},
             partition_command=lambda: (kw["cargo_command"], ()),
             toolchain_identity=lambda: {"tools": {"rustc": "content"}},

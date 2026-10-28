@@ -356,7 +356,13 @@ One runner owns main. Agents enqueue and continue.
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
-  It builds a candidate in its own sandbox worktree. When the first enrolled
+  It builds a candidate in a repository-keyed external sandbox worktree,
+  selected by `molt.custody_layout.landing_sandbox_path`. The Git common
+  directory still owns queue metadata and locks. Keeping candidate source
+  outside every other checkout prevents ancestor Cargo configuration from
+  changing the selected build inputs. Registration must prove the sandbox
+  belongs to the same repository before reuse; source aliases into another
+  checkout are refused. When the first enrolled
   tip already contains captured main, it checks out that tip directly and adds
   a dedicated candidate commit. Otherwise it starts at main. Remaining tips
   merge with `--no-ff` in queue order, preserving source DAGs
