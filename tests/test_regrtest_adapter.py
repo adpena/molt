@@ -1,8 +1,29 @@
 from __future__ import annotations
 
 import sys
+import json
+
+from tests.process_guard_common import run_guarded_test_process
 
 from tools import regrtest_adapter
+
+
+def test_cpython_runner_selects_bytecode_policy_before_isolated_site(tmp_path):
+    argv = regrtest_adapter._cpython_argv(sys.executable, "test_math", tmp_path)
+    options = argv[1 : argv.index("-m")]
+    child = run_guarded_test_process(
+        [
+            sys.executable,
+            *options,
+            "-c",
+            "import json,sys;print(json.dumps([sys.flags.isolated,sys.dont_write_bytecode,sys.pycache_prefix]))",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    assert json.loads(child.stdout) == [1, True, str(tmp_path / "bytecode")]
 
 
 def test_regrtest_infrastructure_outcome_is_not_semantic_failure(

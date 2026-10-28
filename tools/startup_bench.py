@@ -246,15 +246,20 @@ def _measure_probe(
 ) -> dict[str, Any]:
     probe_root = TMP / name
     baseline_env = _cpython_env(env)
+    from molt.python_interpreter import readonly_python_command
+
+    baseline_command = readonly_python_command(
+        baseline.command, environment_root=probe_root
+    )
     cpython = _measure(
-        [*baseline.command, str(script)],
+        [*baseline_command, str(script)],
         env=baseline_env,
         samples=samples,
         timeout=timeout,
         label=f"{name} cpython",
     )
     cpython["importtime"] = _measure(
-        [*baseline.command, "-X", "importtime", str(script)],
+        [*baseline_command, "-X", "importtime", str(script)],
         env=baseline_env,
         samples=1,
         timeout=timeout,
