@@ -139,13 +139,25 @@ def test_pact_witness_acceptance_check_parity_requires_reference(
         )
 
 
+@pytest.mark.parametrize("queued", [False, True])
 def test_pact_witness_acceptance_uses_run_scoped_attempt_dirs(
     tmp_path: Path,
     monkeypatch,
+    queued: bool,
 ) -> None:
-    monkeypatch.setattr(acceptance, "ROOT", tmp_path)
+    from molt.checkout_state import read_checkout_owner
+
+    source = tmp_path / "repo"
+    source.mkdir()
+    monkeypatch.setattr(acceptance, "ROOT", source)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
+    if queued:
+        monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(tmp_path / "issued"))
     monkeypatch.setenv("MOLT_PROOF_QUEUE_RUN_ID", "run:id/with spaces")
-    out_dir = tmp_path / "tmp" / "pact_witness_acceptance_queue"
+    root = acceptance._owned_tmp_root()
+    assert not root.exists(), "the path projection remains read-only"
+    out_dir = root / "pact_witness_acceptance_queue"
     stale_build = out_dir / "build"
     stale_build.mkdir(parents=True)
     stale_file = stale_build / "output_linked.wat"
@@ -155,6 +167,11 @@ def test_pact_witness_acceptance_uses_run_scoped_attempt_dirs(
 
     build_dir, run_dir = acceptance._prepare_attempt_dirs(out_dir)
     second_build_dir, second_run_dir = acceptance._prepare_attempt_dirs(out_dir)
+    owner = read_checkout_owner(root)
+    if queued:
+        assert owner is None, "receipt-owned queue scratch never adopts a lane owner"
+    else:
+        assert owner is not None and owner.path == source and owner.kind == "scratch"
 
     assert build_dir == out_dir / "runs" / "run_id_with_spaces" / "build"
     assert run_dir == out_dir / "runs" / "run_id_with_spaces" / "run"

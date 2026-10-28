@@ -53,7 +53,7 @@ def main() -> int:
             "pact witness oracle requires its prepared locked interpreter; "
             "use proof_queue.py pact-witness-oracle"
         )
-    scratch = proof_scratch_root(ROOT)
+    scratch = proof_scratch_root(ROOT, create=True)
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="pact_witness_oracle_", dir=scratch) as raw:
         work = Path(raw)

@@ -4,6 +4,7 @@ import os
 import shutil
 
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 import subprocess
 
 import molt.dx as molt_dx
@@ -263,10 +264,23 @@ def test_run_with_log_uses_memory_guard_and_canonical_env(
     )
     assert run_env["MOLT_DIFF_CARGO_TARGET_DIR"] == run_env["CARGO_TARGET_DIR"]
     assert run_env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
-    assert run_env["MOLT_DIFF_ROOT"] == str(artifact_root / "tmp" / "diff")
-    assert run_env["MOLT_DIFF_TMPDIR"] == str(artifact_root / "tmp")
+    assert run_env["MOLT_DIFF_ROOT"] == str(
+        scratch_state_root(
+            artifact_root / "tmp", owner=runtime_safety.ROOT, create=False
+        )
+        / "diff"
+    )
+    assert run_env["MOLT_DIFF_TMPDIR"] == str(
+        scratch_state_root(
+            artifact_root / "tmp", owner=runtime_safety.ROOT, create=False
+        )
+    )
     assert run_env["UV_CACHE_DIR"] == str(artifact_root / ".uv-cache")
-    assert run_env["TMPDIR"] == str(artifact_root / "tmp")
+    assert run_env["TMPDIR"] == str(
+        scratch_state_root(
+            artifact_root / "tmp", owner=runtime_safety.ROOT, create=False
+        )
+    )
     assert run_env["MOLT_SESSION_ID"] == "runtime-safety-test"
     assert run_env["RUSTFLAGS"] == "-Z sanitizer=address"
     assert log_path.read_text(encoding="utf-8") == "out\nerr\n"

@@ -592,7 +592,7 @@ def _optimize_split_app_module(
             optimizer_policy = wasm_link_policy(
                 optimize_level, preserve_debug=preserve_debug
             )
-            scratch_root = proof_scratch_root(TOOLS_ROOT.parent)
+            scratch_root = proof_scratch_root(TOOLS_ROOT.parent, create=True)
             scratch_root.mkdir(parents=True, exist_ok=True)
             with OwnedTemporaryDirectory(
                 prefix="molt-split-app-opt-", dir=scratch_root

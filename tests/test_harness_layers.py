@@ -12,6 +12,7 @@ sys.path.insert(0, "src")
 
 import molt.dx as molt_dx
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 from molt.source_root import compiler_source_root
 from molt.harness_layers import (
     LAYERS,
@@ -141,7 +142,11 @@ def test_run_cmd_uses_harness_memory_guard(
     # Scratch is <artifact root>/tmp, or out of tree when that would sit inside
     # the checkout (a standalone clone is its own artifact root).
     assert call["env"]["TMPDIR"] == str(
-        custody_layout.scratch_root(artifact_root, compiler_source_root())
+        scratch_state_root(
+            custody_layout.scratch_root(artifact_root, compiler_source_root()),
+            owner=compiler_source_root(),
+            create=False,
+        )
     )
 
 
@@ -236,7 +241,11 @@ def test_harness_repo_sentinel_uses_canonical_artifact_root(
         calls.append({"event": "body"})
 
     assert calls[0]["repo_root"] == project
-    assert calls[0]["artifact_root"] == external.resolve() / "tmp" / "harness"
+    assert (
+        calls[0]["artifact_root"]
+        == scratch_state_root(external.resolve() / "tmp", owner=project, create=False)
+        / "harness"
+    )
     assert calls[0]["label"] == "molt_harness"
     assert calls[0]["limits"] is limits
     assert [call["event"] for call in calls[1:]] == ["enter", "body", "exit"]

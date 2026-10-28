@@ -268,6 +268,7 @@ def _attempt_slug() -> str:
 
 def _prepare_attempt_dirs(out_dir: Path) -> tuple[Path, Path]:
     owned = _assert_owned_tmp(out_dir)
+    proof_scratch_root(ROOT, create=True)
     owned.mkdir(parents=True, exist_ok=True)
     attempts_root = owned / "runs"
     attempts_root.mkdir(parents=True, exist_ok=True)

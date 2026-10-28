@@ -47,7 +47,7 @@
   labeling a cold-first-run measurement. `--isolate-daemon` is
   current-session/explicit-socket scoped, preserves foreign-session backend
   daemons, and records daemon custody events under
-  `tmp/bench/daemon_custody.jsonl`.
+  `<lane scratch>/bench/daemon_custody.jsonl` (`molt.dx.scratch_root`).
 - `tools/bench_wasm.py` uses the same warmup defaults and records wasm compile time in `molt_wasm_build_s`.
 - `tools/bench_report.py` combines native and WASM benchmark JSON into the detailed report at `docs/benchmarks/bench_summary.md` and can also refresh the concise generated benchmark summary block in `docs/spec/STATUS.md`.
 - Install optional benchmark deps with `uv sync --group bench --python 3.12`.

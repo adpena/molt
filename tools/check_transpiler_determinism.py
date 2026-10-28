@@ -57,9 +57,7 @@ def _tmp_root() -> Path:
             path = Path(raw).expanduser().resolve()
             path.mkdir(parents=True, exist_ok=True)
             return path
-    root = scratch_root(_repo_root())
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return scratch_root(_repo_root(), create=True)
 
 
 def _build_env() -> ProcessEnvironment:
