@@ -1031,7 +1031,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Provision or inspect a checkout's lock-declared inputs."
     )
-    parser.add_argument("action", choices=("ensure", "status"))
+    parser.add_argument("action", choices=("ensure", "status", "artifact-root"))
     parser.add_argument(
         "inputs",
         nargs="*",
@@ -1041,12 +1041,59 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--checkout", type=Path, default=compiler_source_root())
     parser.add_argument("--json", action="store_true")
+    binding = parser.add_mutually_exclusive_group()
+    binding.add_argument(
+        "--bind",
+        type=Path,
+        help="Bind an existing healthy artifact root for this Git family.",
+    )
+    binding.add_argument(
+        "--clear", action="store_true", help="Clear the family's artifact-root binding."
+    )
     parser.add_argument(
         "--refresh-runtime",
         action="store_true",
         help="Recapture the current Python runtime through the uv-environment publisher.",
     )
     args = parser.parse_args(argv)
+    if args.action == "artifact-root":
+        if args.inputs or args.refresh_runtime:
+            parser.error("artifact-root accepts no inputs or --refresh-runtime")
+        from molt.dx import (
+            DxConfigError,
+            artifact_root_binding_path,
+            artifact_root_selection,
+            prefers_external_artifacts,
+            set_artifact_root_binding,
+        )
+
+        try:
+            if args.bind is not None or args.clear:
+                record = set_artifact_root_binding(args.checkout, args.bind)
+            else:
+                record = artifact_root_binding_path(args.checkout)
+            selection = artifact_root_selection(
+                args.checkout,
+                prefer_external=prefers_external_artifacts(args.checkout, os.environ),
+            )
+        except (DxConfigError, OSError, ValueError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        payload = {
+            "root": str(selection.root),
+            "source": selection.source,
+            "binding_record": None if record is None else str(record),
+        }
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"artifact root: {selection.root} ({selection.source})")
+            print(
+                f"binding record: {record if record is not None else 'none (no Git family)'}"
+            )
+        return 0
+    if args.bind is not None or args.clear:
+        parser.error("--bind and --clear require artifact-root")
     unknown = sorted(set(args.inputs) - set(CHECKOUT_INPUT_NAMES))
     if unknown:
         parser.error(f"unknown checkout input: {', '.join(unknown)}")

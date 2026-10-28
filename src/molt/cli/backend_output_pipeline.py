@@ -571,6 +571,7 @@ def _emit_backend_pipeline_outputs(
         link_selection=prepared_native_link.link_selection,
         link_input_artifacts=prepared_native_link.link_input_artifacts,
         link_input_observation=prepared_native_link.link_input_observation,
+        result_inputs=prepared_native_link.result_inputs,
         validate_inputs=validate_inputs,
         finalize_inputs=validate_inputs,
     )

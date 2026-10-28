@@ -17,7 +17,7 @@ shorter idle limit (`is_session_target`).
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager, ExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1518,6 +1518,191 @@ def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | No
         return retirement if os.path.lexists(expected) else None
     except (OSError, ExactJsonError, ValueError, OverflowError):
         return None
+
+
+# Walk time that one family of complete walks may spend in one daily pass:
+# the earlier shared 30-second inventory budget, for each family (HF-528).
+WALK_BUDGET_S = 30.0
+# Where the next applied pass resumes each family: one small record in the
+# disk guard's stable interlock directory. It grants no deletion authority.
+WALK_ROTATION_RECORD = ("target", ".disk_guard", "walk-rotation.json")
+_WALK_ROTATION_SCHEMA = "molt.walk-rotation.v1"
+_WALK_ROTATION_MAX_BYTES = 64 * 1024
+# The daily pass's complete-walk families: legacy scratch under every scope
+# root's `tmp`, expired scratch retirements, terminal agent evidence under
+# every checkout's `logs/agents`, and integration receipts.
+WalkFamily = Literal[
+    "scratch", "retired-scratch", "agent-evidence", "integration-receipts"
+]
+_WALK_FAMILIES: frozenset[str] = frozenset(get_args(WalkFamily))
+WalkIncompleteReason = Literal["inventory-deferred", "inventory-exceeds-pass-budget"]
+
+
+class WalkIncomplete(Exception):
+    """A complete walk did not finish in this pass; it authorizes nothing."""
+
+    def __init__(self, reason: WalkIncompleteReason) -> None:
+        super().__init__(reason)
+        self.reason: WalkIncompleteReason = reason
+
+
+@dataclass(slots=True)
+class _WalkFamilyState:
+    cursor: str | None
+    remaining_s: float
+    first: str | None = None
+    next_cursor: str | None = None
+    walks: int = 0
+    deferred: int = 0
+    exceeded: int = 0
+    walk_s: float = 0.0
+
+
+class WalkRotation:
+    """Complete walks that resume where the previous applied pass stopped.
+
+    A family visits its entries in key (path) order from a persisted cursor
+    and wraps around, as ccache cleans one cache bucket and git maintenance
+    packs one bounded batch per run. The family's walks share ``budget_s``
+    of walk time per pass; constant-work decisions between walks do not
+    spend it. A walk the budget interrupts is deferred, and the next pass
+    starts there with the whole budget. If the first walk of a pass cannot
+    finish in the whole budget, the entry is reported and kept, and the
+    cursor passes it. So each pass completes at least one entry. Each pass
+    but the last of a cycle spends the budget on completed walks plus at
+    most one interrupted walk, which the next pass completes first. Every
+    entry is therefore evaluated within ``min(L, 1 + 2 * C / budget_s)``
+    passes: ``L`` entries need a walk, and ``C`` is the sum of their walk
+    times (every walk an applied pass makes before it retires the entry),
+    each capped at the budget. Only an applied pass moves the cursor; a dry
+    run previews the next applied pass.
+    """
+
+    def __init__(
+        self, record: Path, budget_s: float, cursors: Mapping[str, str]
+    ) -> None:
+        self.record = record
+        self.budget_s = budget_s
+        self.cursors = dict(cursors)
+        self._families: dict[WalkFamily, _WalkFamilyState] = {}
+
+    @classmethod
+    def load(cls, artifact_root: Path) -> WalkRotation:
+        record = artifact_root.joinpath(*WALK_ROTATION_RECORD)
+        return cls(record, WALK_BUDGET_S, _read_walk_cursors(record))
+
+    def _family(self, name: WalkFamily) -> _WalkFamilyState:
+        if name not in self._families:
+            self._families[name] = _WalkFamilyState(
+                self.cursors.get(name), self.budget_s
+            )
+        return self._families[name]
+
+    def order(self, name: WalkFamily, keys: Iterable[str]) -> list[str]:
+        """``keys`` in order, from the first one not before the cursor."""
+        import bisect
+
+        ordered = sorted(keys)
+        cursor = self._family(name).cursor
+        if cursor is None:
+            return ordered
+        start = bisect.bisect_left(ordered, cursor)
+        return ordered[start:] + ordered[:start]
+
+    def spend[T](self, name: WalkFamily, key: str, work: Callable[[float], T]) -> T:
+        """Run ``work(deadline)`` for ``key``, or raise `WalkIncomplete`.
+
+        ``work`` raises TimeoutError once the deadline passes; it must change
+        nothing before it completes. Every walk of one entry in one pass,
+        such as a plan and its recheck, spends the same family budget.
+        """
+        family = self._family(name)
+        if family.first is None:
+            family.first = key
+        started = time.monotonic()
+        deadline = started + family.remaining_s
+        try:
+            if family.remaining_s <= 0:
+                raise TimeoutError("walk budget spent")
+            result = work(deadline)
+        except TimeoutError:
+            if time.monotonic() < deadline:
+                raise  # A filesystem timeout is an ordinary walk error.
+            if key == family.first:
+                family.exceeded += 1
+                raise WalkIncomplete("inventory-exceeds-pass-budget") from None
+            if family.next_cursor is None:
+                family.next_cursor = key
+            family.deferred += 1
+            raise WalkIncomplete("inventory-deferred") from None
+        finally:
+            elapsed = max(0.0, time.monotonic() - started)
+            family.remaining_s -= elapsed
+            family.walk_s += elapsed
+        family.walks += 1
+        return result
+
+    def next_cursors(self) -> dict[str, str]:
+        return {
+            name: family.next_cursor
+            for name, family in sorted(self._families.items())
+            if family.next_cursor is not None
+        }
+
+    def report(self) -> dict[str, dict[str, object]]:
+        return {
+            name: {
+                "cursor": family.cursor,
+                "next_cursor": family.next_cursor,
+                "walks": family.walks,
+                "deferred": family.deferred,
+                "exceeded": family.exceeded,
+                "walk_s": family.walk_s,
+            }
+            for name, family in sorted(self._families.items())
+        }
+
+    def publish(self) -> None:
+        """Persist where each family resumes; an unchanged record stays as is."""
+        from .file_publication import PublicationDurability, resolve_owned_path
+
+        cursors = self.next_cursors()
+        if cursors == self.cursors:
+            return
+        record = resolve_owned_path(self.record)
+        record.parent.mkdir(parents=True, exist_ok=True)
+        write_exact(
+            record,
+            {"schema": _WALK_ROTATION_SCHEMA, "cursors": cursors},
+            durability=PublicationDurability.RECONSTRUCTIBLE,
+        )
+        self.cursors = cursors
+
+
+def _read_walk_cursors(record: Path) -> dict[str, str]:
+    """The persisted cursors; an absent or malformed record restarts each family."""
+    from .file_publication import resolve_owned_path
+
+    try:
+        value = read_exact(
+            resolve_owned_path(record),
+            max_bytes=_WALK_ROTATION_MAX_BYTES,
+            label="walk rotation",
+        )
+    except (OSError, ExactJsonError, ValueError, RecursionError):
+        return {}
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "cursors"}
+        or value["schema"] != _WALK_ROTATION_SCHEMA
+        or not isinstance(value["cursors"], dict)
+        or not all(
+            name in _WALK_FAMILIES and isinstance(cursor, str)
+            for name, cursor in value["cursors"].items()
+        )
+    ):
+        return {}
+    return dict(value["cursors"])
 
 
 RetentionReason = Literal["owner-gone", "max-age", "session-idle"]

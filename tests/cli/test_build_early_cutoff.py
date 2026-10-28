@@ -499,7 +499,7 @@ def test_a_file_output_replaced_by_a_directory_selects_a_new_binary(
     assert (project / "program" / "app_molt").is_file()
 
 
-@pytest.mark.parametrize("option", ["json_output", "diagnostics", "cache_report"])
+@pytest.mark.parametrize("option", ["diagnostics", "cache_report"])
 def test_requests_for_additional_results_still_do_not_cut_off(
     project: Path, option: str
 ) -> None:
@@ -635,3 +635,99 @@ def test_input_capture_never_cuts_off_a_fresh_observation(
         build_record._BUILDS_ENTERED = 0
         assert build(request) == 0
     assert len(calls) == 2, "every capture must produce fresh input observations"
+
+
+def test_native_json_is_eligible_but_remains_a_distinct_request(project: Path) -> None:
+    plain = build_command._early_cutoff_request(
+        BuildRequest(file_path=str(project / "app.py"))
+    )
+    structured = build_command._early_cutoff_request(
+        BuildRequest(file_path=str(project / "app.py"), json_output=True)
+    )
+    assert plain is not None and structured is not None and plain[0] != structured[0]
+
+
+def test_json_without_a_recorded_result_still_runs_the_compiler(
+    project: Path, tmp_path: Path
+) -> None:
+    calls = []
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(_fake_build(calls))
+    )
+    request = BuildRequest(
+        file_path=str(project / "app.py"),
+        output=str(tmp_path / "app"),
+        json_output=True,
+    )
+    for _ in range(2):
+        build_record._BUILDS_ENTERED = 0
+        assert build(request) == 0
+    assert len(calls) == 2
+
+
+def test_json_cutoff_emits_a_current_result_without_running_compiler(
+    project: Path,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    import json
+    from molt.cli import build_output_layout, build_results
+
+    out_dir = tmp_path / "products"
+    artifacts = out_dir / ".molt_build" / "selected-configuration"
+    artifacts.mkdir(parents=True)
+    output = out_dir / "app"
+    calls = []
+    emit = _fake_build(calls)
+
+    def compile_json(request):
+        build_output_layout._claim_artifacts_root(artifacts)
+        assert emit(request) == 0
+        paths = [output]
+        for name in ("archive", "stub", "runtime", "compiler"):
+            path = artifacts / name
+            path.write_text(f"compiled {name}", encoding="utf-8")
+            paths.append(path)
+        result = build_record.NativeBuildResult(
+            build_record.NativeBuildFacts(
+                None,
+                str(project / "app.py"),
+                False,
+                False,
+                (),
+                (),
+                "sha256:" + "a" * 64,
+                None,
+                "release",
+                False,
+                "generic",
+                "default",
+            ),
+            *(build_record.RecordedArtifact.capture(path) for path in paths),
+            (),
+            None,
+        )
+        input_report.report_build_result(result.payload())
+        return build_results._emit_reused_native_build_result(result)
+
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(compile_json)
+    )
+    request = BuildRequest(
+        file_path=str(project / "app.py"),
+        output=str(output),
+        out_dir=str(out_dir),
+        json_output=True,
+    )
+    for _ in range(2):
+        build_record._BUILDS_ENTERED = 0
+        assert build(request) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "ok"
+        assert payload["data"]["output"] == str(output)
+    assert len(calls) == 1, "unchanged JSON must not enter the compiler"
+    assert payload["data"]["cache"]["hit_tier"] == "build-record"
+    (artifacts / "stub").unlink()
+    build_record._BUILDS_ENTERED = 0
+    assert build(request) == 0
+    assert len(calls) == 2, "a missing promised stub must run the producer"

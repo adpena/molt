@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import stat
 import time
 import uuid
 from contextlib import contextmanager
@@ -17,12 +18,13 @@ from molt.cache_eviction import refresh_cache_entry_recency
 from molt.default_paths import (
     _default_molt_cache,
     is_backend_cache_artifact_name,
-    shared_stdlib_archive_cache_root,
+    stdlib_archive_cache_root,
     validate_required_stdlib_output,
     backend_cache_artifact_filename,
     backend_cache_sync_receipt_path,
     backend_cache_publication_lock_name,
     shared_stdlib_cache_entry,
+    native_stdlib_archive_cache_entry,
     shared_stdlib_publish_lock_path,
 )
 
@@ -533,7 +535,8 @@ def compilation_cache_export_paths(
                 )
             archive = Path(cache["stdlib"])
             if (
-                shared_stdlib_archive_cache_root(archive) != root
+                archive
+                != shared_stdlib_cache_entry(root, archive.parent.name)[0] / "stdlib.a"
                 or archive.resolve(strict=True) != archive
                 or not artifact.name.endswith(
                     f".stdlib-{archive.parent.name}{artifact_contract.suffix}"
@@ -542,35 +545,62 @@ def compilation_cache_export_paths(
                 raise ValueError(
                     "stdlib cache coordinate is outside its canonical owner"
                 )
+            # The backend hydrates content -> build before publishing a program
+            # generation. Pin content first too; each family has its own stripe.
+            content_key = stdlib_origin.content_key
+            if content_key is not None:
+                content = (
+                    native_stdlib_archive_cache_entry(root, content_key)[0] / "stdlib.a"
+                )
+                locks.enter_context(_shared_stdlib_cache_lock(content))
+                selected.extend(
+                    _stdlib_archive_export_paths(content, stdlib_origin, content_key)
+                )
             locks.enter_context(_shared_stdlib_cache_lock(archive))
-            _, data = capture_stable_regular_file(
-                _stdlib_object_origin_sidecar_path(archive),
-                label="stdlib cache export origin",
-                max_bytes=64 * 1024 * 1024,
+            selected.extend(
+                _stdlib_archive_export_paths(
+                    archive, stdlib_origin, archive.parent.name
+                )
             )
-            from molt.exact_json import loads_exact
-
-            original = BackendStdlibOrigin.from_payload(
-                loads_exact(data.decode("utf-8"))
-            )
-            if original != stdlib_origin:
-                raise ValueError("stdlib cache coordinate owns another emission")
-            original.verify_output(archive)
-            selected.append(archive)
-            for sidecar in (
-                _stdlib_object_count_sidecar_path,
-                _stdlib_object_key_sidecar_path,
-                _stdlib_object_manifest_sidecar_path,
-                _stdlib_object_partition_manifest_sidecar_path,
-                _stdlib_object_digest_sidecar_path,
-                _stdlib_object_symbol_contract_sidecar_path,
-                _stdlib_object_origin_sidecar_path,
-                _native_symbols._native_object_symbol_facts_sidecar_path,
-            ):
-                path = sidecar(archive)
-                if path.is_file() and not path.is_symlink():
-                    selected.append(path)
         yield tuple(selected)
+
+
+def _stdlib_archive_export_paths(
+    archive: Path, origin: BackendStdlibOrigin, key: str
+) -> tuple[Path, ...]:
+    """Select one complete generation while its publication stripe is held."""
+    if archive.resolve(strict=True) != archive:
+        raise ValueError("stdlib cache export contains a path indirection")
+    required = _stdlib_object_required_sidecars(archive)
+    for path in required:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise ValueError(f"stdlib cache export sidecar is not regular: {path}")
+    _, data = capture_stable_regular_file(
+        _stdlib_object_origin_sidecar_path(archive),
+        label="stdlib cache export origin",
+        max_bytes=64 * 1024 * 1024,
+    )
+    from molt.exact_json import loads_exact
+
+    original = BackendStdlibOrigin.from_payload(loads_exact(data.decode("utf-8")))
+    if original != origin:
+        raise ValueError("stdlib cache coordinate owns another emission")
+    original.verify_output(archive)
+    for path, expected in (
+        (_stdlib_object_key_sidecar_path(archive), key),
+        (_stdlib_object_digest_sidecar_path(archive), origin.output_sha256),
+    ):
+        _, encoded = capture_stable_regular_file(
+            path, label="stdlib cache export identity", max_bytes=1024
+        )
+        if encoded.decode("utf-8").strip() != expected:
+            raise ValueError(f"stdlib cache export identity differs: {path}")
+    derived = tuple(
+        path
+        for path in _stdlib_object_derived_sidecars(archive)
+        if path.is_file() and not path.is_symlink()
+    )
+    return archive, *required, *derived
 
 
 def _materialize_cached_backend_artifact(
@@ -1272,6 +1302,27 @@ def _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path: Path) -> Pat
     return stdlib_object_path.with_suffix(".symbol-contract.json")
 
 
+def _stdlib_object_required_sidecars(archive: Path) -> tuple[Path, ...]:
+    return tuple(
+        select(archive)
+        for select in (
+            _stdlib_object_count_sidecar_path,
+            _stdlib_object_key_sidecar_path,
+            _stdlib_object_manifest_sidecar_path,
+            _stdlib_object_partition_manifest_sidecar_path,
+            _stdlib_object_digest_sidecar_path,
+            _stdlib_object_origin_sidecar_path,
+        )
+    )
+
+
+def _stdlib_object_derived_sidecars(archive: Path) -> tuple[Path, ...]:
+    return (
+        _stdlib_object_symbol_contract_sidecar_path(archive),
+        _native_symbols._native_object_symbol_facts_sidecar_path(archive),
+    )
+
+
 def _shared_stdlib_manifest(
     *,
     cache_key: str | None,
@@ -1448,7 +1499,7 @@ def _hydrate_shared_stdlib_archive(
                     f"Shared stdlib staging cleanup also failed: {cleanup_error}"
                 )
             raise
-        if shared_stdlib_archive_cache_root(stdlib_object_path) is not None:
+        if stdlib_archive_cache_root(stdlib_object_path) is not None:
             refresh_cache_entry_recency(stdlib_object_path.parent)
     return staged_stdlib_obj
 
@@ -1457,14 +1508,8 @@ def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
     """Attempt every owned path; a partial invalidation is never a cache miss."""
     paths = (
         stdlib_object_path,
-        _stdlib_object_count_sidecar_path(stdlib_object_path),
-        _stdlib_object_key_sidecar_path(stdlib_object_path),
-        _stdlib_object_manifest_sidecar_path(stdlib_object_path),
-        _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path),
-        _stdlib_object_digest_sidecar_path(stdlib_object_path),
-        _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path),
-        _stdlib_object_origin_sidecar_path(stdlib_object_path),
-        _native_symbols._native_object_symbol_facts_sidecar_path(stdlib_object_path),
+        *_stdlib_object_required_sidecars(stdlib_object_path),
+        *_stdlib_object_derived_sidecars(stdlib_object_path),
     )
     failures: list[tuple[Path, OSError]] = []
     for path in paths:
