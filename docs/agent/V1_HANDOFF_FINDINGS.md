@@ -431,7 +431,7 @@ Windows execution, other backends/profiles, installed delivery, first-build and
 edit latency remain unqualified. This is a local warm-reuse improvement, not
 V1-07 release acceptance.
 
-At `change:I9b533a29ae9f8d3bb3e51e58d1a01a6018034a3b`, installed-consumer
+At `3e0f73b77`, installed-consumer
 cache export also carries the existing native stdlib content generation. Its
 producer-owned v2 origin binds the complete ordered-job cache key and preserves
 the original workers and archive identity through hydration and publication.
