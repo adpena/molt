@@ -393,8 +393,15 @@ preserve source/toolchain/target/profile and directory/absence invalidation,
 and emit truthful reuse facts instead of replaying old timings or process
 output. Then measure first compilation and edits through their actual affected
 stages. Do not add a second cache or optimize frontend worker counts from these
-warm-hit observations. Local measurements do not close V1-07's authenticated
-installed producer/receiver or the required performance matrix.
+warm-hit observations. For first compilation, the existing lowering records and
+native closed stdlib object jobs already own reusable work, but the installed
+distribution does not deliver those Python stdlib artifacts. Qualify their reuse
+between two distinct small programs, including relocated installation, shadowed
+sources and changed dependency facts, through the existing release-consumer
+seeding path before moving stable bootstrap production into distribution builds.
+Preserve context-sensitive misses and application-owned registry/code slots;
+WASM machine-code splitting is a separate contract. Local measurements do not
+close V1-07's authenticated installed producer/receiver or performance matrix.
 
 The runtime's shared path-join builder replaces repeated accumulated-prefix copies
 with linear accumulation and removes the duplicated join intrinsics. A retained
