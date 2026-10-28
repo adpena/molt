@@ -58,68 +58,13 @@ acceptance scope; do not infer it from an aggregate speedup or a smaller test.
 
 ## Current Priorities
 
-### Qualification and blocker burndown
+The [V1 findings ledger](docs/agent/V1_HANDOFF_FINDINGS.md) alone owns current
+Version 1.0 burndown state, priorities, blockers and next closure outcomes.
+Consult its release decision, active integration and dependency order before
+selecting work; update it as the owning evidence changes. This roadmap records
+product direction and architectural plans, with no separate live V1 checklist.
 
-The current work is development integration, not a qualified release candidate.
-Use the existing local coordination record for the active source identity,
-integrator, owned changes, execution receipts, blocker and next complete outcome.
-Reconcile worker handoffs against live source before carrying a blocker forward:
-an old unintegrated proposal can have been superseded by an integrated solution.
-Keep machine-specific evidence and execution history out of this roadmap.
-
-Close release outcomes in dependency order:
-
-| Outcome | Current barrier | Closure authority |
-| --- | --- | --- |
-| Stable integrated candidate | Consolidated compiler/runtime authorities need one immutable candidate with source-bound validation; unresolved semantic failures still block qualification. HEAD alone does not identify a dirty candidate. | Existing source snapshots, integration ownership and observed compiler/runtime identities |
-| Useful standalone programs | Exception/class/frame boundaries and asyncio still need complete native/WASM execution coverage in the advertised subset. | Public CLI consumers and the verified-subset contract |
-| Installed compile/edit/run workflow | Runtime-cell delivery, installed dependencies, LLVM availability and build identity binding must close without requiring users to build Molt. | [Packaging](packaging/PACKAGING.md) |
-| Accepted product measurements | The release caller supplies empty full-matrix performance shards/toolchain identities, and the receiver still reports authenticated compiler/runtime used-byte admission unavailable. One real installed producer-to-receiver path must succeed before a full campaign can qualify. | Existing `tools/release/release_evidence.py`, `tools/release_matrix_acceptance.py` and performance authorities |
-| Product performance and resource limits | Required runtime, compile latency, startup, size and memory cells must be measured; async idle CPU, wakeup latency and throughput remain unqualified. | [Performance authority](tools/PERF_AUTHORITY.md) |
-| Qualified and publishable v1.0 | Current-candidate E1-E4 and authenticated H0, full installation/compatibility/reproducibility/supply-chain evidence, then explicit publication authorization. | [Release acceptance](packaging/PACKAGING.md) and `tools/release_exit_gate.py` |
-
-For each active blocker, keep one owner, the earliest failing consumer, the
-affected contract and the next result that would close it. Distinguish
-implemented, representative execution passed, full acceptance passed and
-published. Review completion, narrow checks, absent measurements and skipped
-cells never advance a later state. Asyncio is a P0 product outcome; integrated
-park/wake code is not closure of its lifecycle, target or performance contract.
-Constructor receiver gaps, including repeat subclass preservation and foreign
-class rejection, remain tracked in the
-[call binding contract](docs/spec/areas/compat/contracts/call_argument_binding_contract.md).
-
-Run one coordinated acceptance campaign after candidate stabilization. Invalidate
-affected evidence when inputs change, retain valid independent results, and
-diagnose the failed stage before repeating expensive work. An operator-only
-blocker retains its exact resume state while independent authorized work proceeds.
-
-### Immediate release critical path
-
-Finish a small set of connected product outcomes through their existing owners:
-
-1. Make representative standalone native/WASM programs reliable through the
-   shared module/import, frame/async and codec/IO boundaries. Reconcile integrated
-   repairs and retained qualification before rebuilding. Interpreter-only
-   invocations of a compiled application must refuse safely rather than
-   recursively relaunching its `main` (HF-519).
-2. Complete installed compile/edit/run together with one accepted measurement
-   from the delivered compiler and runtime through the existing release receiver.
-   Join the actual consumed-byte identities and required metric subjects; preserve
-   omission/substitution controls. Local diagnostic measurements can proceed,
-   while a complete qualification campaign waits for a working positive path.
-3. Use those same conforming programs to select and measure shared runtime/compiler
-   bottlenecks, meet resource budgets and arm the existing regression baseline.
-   Advance the current native/WASM scientific witness and remaining declared
-   platform/version cells with compatible producers. Concrete safety defects
-   precede optimization of the affected boundary.
-
-These outcomes overlap where ownership is disjoint. Broader ledger obligations
-remain required; their shared causes, dependencies and earliest failing consumers
-determine execution order. Development storage, scheduling and verification work
-is justified when it blocks the next product closure. A prepared optimization
-proposal or a new checker alone does not establish that priority.
-
-### Product integration order
+## Product architecture
 
 Correctness and performance are both release priorities. Work follows complete
 user outcomes and their measured blockers; this sequence is not a schedule or
@@ -129,14 +74,6 @@ Every release's critical path includes the native/WASM NumPy/SciPy witness
 verified-subset coverage (E3). Windows networking is required by the declared
 Windows-native tests. These are load-bearing product work, not tasks to defer
 until packaging. Stable v1.0 additionally requires authenticated H0.
-
-The native scientific witness needs newly admitted NumPy/SciPy extension seals
-under the current source-extension contract. Preserved schema-4 native seals
-are historical evidence; schema-7 admission additionally binds consumed Python
-providers and Meson dependency facts. Their historical digests cannot supply
-current registry entries or acceptance receipts. Reproduce the upstream
-extension builds through the canonical candidate producer and admission path;
-the upstream libraries remain the package source authority.
 
 1. Complete the install, compile, and execute workflow. Released platform wheels,
    package-manager distributions, and GitHub bundles must provide the compiler
@@ -233,29 +170,19 @@ the upstream libraries remain the package source authority.
 
 Update the owning support contract and user documentation with each substantive
 integration. Keep implementation, representative validation, release acceptance,
-and publication distinct. Current support belongs in
-[STATUS.md](docs/spec/STATUS.md) and its generated indexes; this roadmap owns
-forward sequencing. Per-run logs and working handoffs are local evidence.
+and publication distinct. Implementation/support belongs in
+[STATUS.md](docs/spec/STATUS.md) and its generated indexes. Current V1 execution
+order and burndown belong only in the [findings ledger](docs/agent/V1_HANDOFF_FINDINGS.md);
+this roadmap records broader product direction. Per-run logs and working handoffs
+are local evidence.
 
 ## Milestone Sequence
 
 ### Near Term
 
-- Finish consolidation and land the current authority cohort before opening new
-  compiler-frontier lanes.
-- Complete shared ownership/exception/finalizer closure and delete the obsolete
-  sibling lanes it replaces.
-- Close fused-loop equivalence and exact binding/type admission before relying
-  on their performance results.
-- Complete installed-user workflows and correctness-checked measurements of
-  compile latency, hot generated code, allocations, startup, and artifact size.
-- Produce serial native and linked-WASM guest receipts for the exact supported
-  Python/profile cells, then close the first-release matrix without widening its
-  scope.
-- Reconcile Luau prose and implementation work against the generated admission
-  matrix; helper presence remains internal until target admission is real.
-- Keep no-host source-extension and pinned NumPy/SciPy import/runtime work
-  fail-closed while the generic artifact and ABI custody becomes complete.
+Use the [V1 findings ledger](docs/agent/V1_HANDOFF_FINDINGS.md#release-dependency-and-landing-order)
+for the current execution frontier and closure obligations. This roadmap keeps
+no second near-term task or status list.
 
 ### Medium Term
 

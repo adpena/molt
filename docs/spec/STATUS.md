@@ -3,8 +3,10 @@
 This document is a current-state summary derived from the live codebase,
 executable tests, and generated evidence. The code and tests are the sole source
 of truth; when this file conflicts with implementation, update this file from
-the implementation. For forward-looking priorities, use
-[ROADMAP.md](../../ROADMAP.md).
+the implementation. The [V1 findings ledger](../agent/V1_HANDOFF_FINDINGS.md)
+alone owns current Version 1.0 burndown state, priorities, blockers and next
+closure outcomes. This page summarizes implementation and support; broader
+product direction lives in [ROADMAP.md](../../ROADMAP.md).
 
 ## Reading Support Claims
 

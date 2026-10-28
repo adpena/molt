@@ -18,8 +18,9 @@ checkout (`python tools/tree_drift_check.py --fetch` first).
   agent: seal-regen → WASM link → numpy static-lib link → execution →
   `candidate_outputs.npz` → `check_parity.py` PASS. Do NOT split this across
   agents; the seal artifacts, cpython-abi link, and acceptance lane are one
-  coherent arc. The current frontier is `V1_HANDOFF_FINDINGS.md` row HF-04 and
-  `E1_REMAINING_FRONTIER_MAP.md`; the step recipe is R0 in `ORCHESTRATION.md`.
+  coherent arc. Current frontier state comes only from `V1_HANDOFF_FINDINGS.md`
+  row HF-04. `E1_REMAINING_FRONTIER_MAP.md` is historical reconnaissance;
+  the step recipe is R0 in `ORCHESTRATION.md`.
 
 (Add new SOLO lanes here as the orchestrator or a claimant identifies them. Remove
 a lane from this list when its log row is `COMPLETE`; the log keeps its history.)

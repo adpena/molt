@@ -16,9 +16,10 @@ over stale prose or precedent.
   privileged or externally consequential action. Proceed with authorized safe, reversible work.
 - Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
   useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
-- Minimize wall clock to qualified outcomes and measured user benefit. Follow the release critical
-  path and reassess with new evidence. State passes, failures, skips and unknowns; keep WIP small
-  and land/retire coherent outcomes before adjacent apparatus. Activity is not progress.
+- Minimize wall clock to qualified user outcomes. Consult the published V1 ledger below before
+  choosing work; update it as evidence changes scope, priorities, blockers or qualification.
+  It alone owns current V1 burndown state; other roadmaps link to it. Keep WIP small and
+  land/retire coherent outcomes before adjacent apparatus. State passes, failures and unknowns.
 - Follow safer live facts over stale guidance; repair in-scope guidance in the same change.
 
 ## Engineer coherent systems

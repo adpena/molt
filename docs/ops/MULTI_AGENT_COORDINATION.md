@@ -69,6 +69,23 @@ This policy was reviewed against primary guidance on 2026-10-28:
 
 ## Serialized integration
 
+### V1 burndown authority
+
+`docs/agent/V1_HANDOFF_FINDINGS.md` alone owns current V1.0 burndown state,
+priorities, blockers and next closure outcomes. Consult its published release
+decision, active integration and dependency order before selecting or resuming
+work, then read the owning finding rows. Use `context` to distinguish published
+and selected source; dirty primary prose and remembered handoffs are leads.
+
+Workers return evidence against those finding IDs. The integrator updates their
+rows and the relevant frontier/dependency sections as material state changes,
+in the same landing as the implementation or qualification. Source integration,
+representative execution and full qualification remain distinct; close only the
+qualified family. Record remaining cells and the next result needed. Reconcile
+contradictions into the ledger instead of adding another backlog. Coordination
+records retain live ownership and private command/recovery state; roadmaps and
+reports link to or derive their V1 status from the ledger.
+
 ### Release outcome graph
 
 The canonical `context` command joins the committed findings ledger and proof
