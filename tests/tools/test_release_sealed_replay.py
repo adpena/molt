@@ -2843,7 +2843,10 @@ def _compilation_export_fixture(
             emitted = archive_bytes
         else:
             stdlib_origin = BackendStdlibOrigin(
-                content(archive_bytes)["sha256"], len(archive_bytes), worker_origins
+                content(archive_bytes)["sha256"],
+                len(archive_bytes),
+                worker_origins,
+                None,
             )
     # Independent LLD archive coordinates: drive/UNC provenance cannot be
     # reconstructed by prefixing '/'. Do not call the production projector.

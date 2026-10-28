@@ -1,4 +1,4 @@
-use crate::backend_process::native_batch::NativeWorkerOrigin;
+use super::StdlibArchiveProvenance;
 use std::io;
 use std::path::Path;
 
@@ -17,7 +17,7 @@ pub(crate) fn publish_shared_stdlib_cache_archive(
     cache_key: Option<&str>,
     cache_manifest: Option<&str>,
     partition_manifest: &str,
-    origins: Option<&[NativeWorkerOrigin]>,
+    origins: Option<&StdlibArchiveProvenance>,
 ) -> io::Result<String> {
     with_shared_stdlib_cache_publish_lock(stdlib_path, || {
         // A pre-transfer failure preserves the prior generation. A replacement

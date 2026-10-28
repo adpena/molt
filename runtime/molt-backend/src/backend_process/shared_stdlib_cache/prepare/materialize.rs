@@ -4,9 +4,10 @@ use std::time::Instant;
 
 use molt_backend::SimpleIR;
 
-use super::super::super::native_batch::{NativeWorkerOrigin, write_native_archive_objects};
+use super::super::super::native_batch::write_native_archive_objects;
 use super::super::publish::{
-    ArchiveGeneration, ContentArchive, StdlibObjectCache, hydrate_shared_stdlib_cache_archive,
+    ArchiveGeneration, ContentArchive, StdlibArchiveProvenance, StdlibObjectCache,
+    hydrate_shared_stdlib_cache_archive,
 };
 use super::super::{plan_stdlib_cache_archive, publish_shared_stdlib_cache_archive};
 use super::request::NativeStdlibCachePrepare;
@@ -115,7 +116,7 @@ pub(crate) fn materialize_stdlib_cache(
                         current_partition_manifest,
                         Some(origins),
                     )?);
-                    retained_origins = Some(origins.to_vec());
+                    retained_origins = Some(origins.clone());
                     Ok(())
                 },
             )?;
@@ -128,7 +129,7 @@ pub(crate) fn materialize_stdlib_cache(
                     content_generation(content),
                     stdlib_count,
                     current_partition_manifest,
-                    retained_origins.as_deref(),
+                    retained_origins.as_ref(),
                 )?;
             }
             (digest, retained_origins)
@@ -148,7 +149,7 @@ pub(crate) fn materialize_stdlib_cache(
             },
             stdlib_count,
             current_partition_manifest,
-            origins.as_deref(),
+            origins.as_ref(),
         )?;
     }
 
@@ -178,7 +179,7 @@ fn publish_copy(
     destination: ArchiveGeneration<'_>,
     stdlib_count: usize,
     partition: &str,
-    origins: Option<&[NativeWorkerOrigin]>,
+    origins: Option<&StdlibArchiveProvenance>,
 ) -> io::Result<()> {
     publish_shared_stdlib_cache_archive(
         destination.path,
