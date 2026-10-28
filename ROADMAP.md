@@ -8,9 +8,11 @@ this roadmap does not duplicate their implementation history.
 
 ## First Release Milestone
 
-The highest priority is a stable `v1.0` contract and release, with an
-evidence-backed `v0.0.1` as the initial milestone. Release-blocking correctness
-and integration work takes precedence over broader feature expansion.
+The highest priority is Molt Version 1.0: the first public release useful for
+real work and supported by measured performance, correctness, conformance,
+security and a coherent compiler/runtime architecture. The release must be
+strong enough to demonstrate and stand behind publicly. Release-blocking
+correctness and integration work takes precedence over broader feature expansion.
 The exact version and tag follow the existing
 [packaging authority](packaging/PACKAGING.md), not a separate roadmap version.
 Consolidate shared compiler/runtime semantics and close known correctness
@@ -72,6 +74,7 @@ Close release outcomes in dependency order:
 | Stable integrated candidate | Consolidated compiler/runtime authorities need one immutable candidate with source-bound validation; unresolved semantic failures still block qualification. HEAD alone does not identify a dirty candidate. | Existing source snapshots, integration ownership and observed compiler/runtime identities |
 | Useful standalone programs | Exception/class/frame boundaries and asyncio still need complete native/WASM execution coverage in the advertised subset. | Public CLI consumers and the verified-subset contract |
 | Installed compile/edit/run workflow | Runtime-cell delivery, installed dependencies, LLVM availability and build identity binding must close without requiring users to build Molt. | [Packaging](packaging/PACKAGING.md) |
+| Accepted product measurements | The release caller supplies empty full-matrix performance shards/toolchain identities, and the receiver still reports authenticated compiler/runtime used-byte admission unavailable. One real installed producer-to-receiver path must succeed before a full campaign can qualify. | Existing `tools/release/release_evidence.py`, `tools/release_matrix_acceptance.py` and performance authorities |
 | Product performance and resource limits | Required runtime, compile latency, startup, size and memory cells must be measured; async idle CPU, wakeup latency and throughput remain unqualified. | [Performance authority](tools/PERF_AUTHORITY.md) |
 | Qualified and publishable v1.0 | Current-candidate E1-E4 and authenticated H0, full installation/compatibility/reproducibility/supply-chain evidence, then explicit publication authorization. | [Release acceptance](packaging/PACKAGING.md) and `tools/release_exit_gate.py` |
 
@@ -89,6 +92,32 @@ Run one coordinated acceptance campaign after candidate stabilization. Invalidat
 affected evidence when inputs change, retain valid independent results, and
 diagnose the failed stage before repeating expensive work. An operator-only
 blocker retains its exact resume state while independent authorized work proceeds.
+
+### Immediate release critical path
+
+Finish a small set of connected product outcomes through their existing owners:
+
+1. Make representative standalone native/WASM programs reliable through the
+   shared module/import, frame/async and codec/IO boundaries. Reconcile integrated
+   repairs and retained qualification before rebuilding. Interpreter-only
+   invocations of a compiled application must refuse safely rather than
+   recursively relaunching its `main` (HF-519).
+2. Complete installed compile/edit/run together with one accepted measurement
+   from the delivered compiler and runtime through the existing release receiver.
+   Join the actual consumed-byte identities and required metric subjects; preserve
+   omission/substitution controls. Local diagnostic measurements can proceed,
+   while a complete qualification campaign waits for a working positive path.
+3. Use those same conforming programs to select and measure shared runtime/compiler
+   bottlenecks, meet resource budgets and arm the existing regression baseline.
+   Advance the current native/WASM scientific witness and remaining declared
+   platform/version cells with compatible producers. Concrete safety defects
+   precede optimization of the affected boundary.
+
+These outcomes overlap where ownership is disjoint. Broader ledger obligations
+remain required; their shared causes, dependencies and earliest failing consumers
+determine execution order. Development storage, scheduling and verification work
+is justified when it blocks the next product closure. A prepared optimization
+proposal or a new checker alone does not establish that priority.
 
 ### Product integration order
 

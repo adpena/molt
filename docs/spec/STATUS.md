@@ -59,9 +59,11 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   the Node WASI warning is retained, with independent WASM guest-stderr
   attribution open. This does not establish every locals-proxy, suspension,
   finalizer, concurrency, or target-version cell.
-- Native AOT compilation uses Cranelift by default; LLVM is opt-in for source
-  builds and is absent from the current prebuilt compiler feature set. The Rust
-  source emitter is a separate experimental target, not the native backend.
+- Native AOT compilation uses Cranelift by default; LLVM is opt-in and included
+  in the declared production compiler feature set. Installed LLVM execution
+  still requires its delivered-artifact and release-matrix qualification; the
+  feature declaration alone does not establish it. The Rust source emitter is
+  a separate experimental target, not the native backend.
 - Native Cranelift codegen decomposition is active at function-boundary
   granularity:
   `runtime/molt-backend-native/src/native_backend/function_compiler/fc/` owns extracted op-family
