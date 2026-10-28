@@ -19,8 +19,8 @@
 - Total audited modules: `949`
 - `intrinsic-backed`: `38`
 - `intrinsic-partial`: `163`
-- `intrinsic-support`: `28`
-- `python-compiled`: `341`
+- `intrinsic-support`: `27`
+- `python-compiled`: `342`
 - `stub`: `379`
 - `policy-gate`: `0`
 
@@ -290,7 +290,6 @@
 - `_struct`
 - `_tokenize`
 - `_types`
-- `_warnings`
 - `_weakrefset`
 - `_zoneinfo`
 - `collections.abc`
@@ -332,6 +331,7 @@
 - `_strptime`
 - `_threading_local`
 - `_tracemalloc`
+- `_warnings`
 - `argparse`
 - `asyncio.__main__`
 - `asyncio.base_events`

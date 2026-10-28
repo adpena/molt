@@ -146,6 +146,111 @@ class MarkerProcessIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class MarkerArtifactScope:
+    """The source owner and finite resource coordinates of one invocation.
+
+    Version-2 records predating this field still name their source through
+    ``path`` and their working directory through ``cwd``. An empty ``paths``
+    tuple explicitly leaves only owner-scoped conservative protection.
+    """
+
+    checkout: Path | None = None
+    paths: tuple[Path, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        if self.checkout is None:
+            raise ActiveCustodyError("artifact_scope_requires_checkout")
+        return {
+            "checkout": str(self.checkout),
+            "paths": [str(path) for path in self.paths],
+        }
+
+
+def command_artifact_scope(
+    checkout: Path,
+    command: Collection[str],
+    environment: Mapping[str, str],
+    *,
+    cwd: Path,
+    outputs: Collection[Path] = (),
+) -> MarkerArtifactScope:
+    """Capture declared resources before launch without materializing state."""
+    from molt.checkout_state import checkout_state_command_roots
+    from molt.dx import project_cargo_target_dir, scratch_root
+    from molt.cargo_execution_policy import cargo_output_paths, is_cargo_command
+
+    checkout, cwd = checkout.resolve(), cwd.resolve()
+    paths = [
+        cwd,
+        *(
+            path
+            for path, _ in checkout_state_command_roots(
+                checkout, environment, tuple(command), cwd=cwd
+            )
+        ),
+        scratch_root(checkout, environment),
+        *outputs,
+    ]
+    if not environment.get("CARGO_TARGET_DIR", "").strip():
+        paths.append(project_cargo_target_dir(checkout, environment))
+    # The state-use projection retains managed scratch ancestors. Keep exact
+    # declarations too: explicit operator scratch may predate that layout.
+    for key in (
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "MOLT_PROOF_SCRATCH_ROOT",
+        "MOLT_GUARD_SCRATCH_ROOT",
+        "MOLT_MEMORY_GUARD_STATE_ROOT",
+        "CARGO_BUILD_BUILD_DIR",
+    ):
+        if raw := environment.get(key, "").strip():
+            paths.append(cwd / Path(raw).expanduser())
+    if is_cargo_command(tuple(command)):
+        paths.extend(cargo_output_paths(tuple(command), cwd=cwd, env=environment))
+    return MarkerArtifactScope(
+        checkout, tuple(dict.fromkeys(path.resolve(strict=False) for path in paths))
+    )
+
+
+def _artifact_path(value: object) -> Path:
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        raise ActiveCustodyError("artifact_coordinate_invalid")
+    return Path(value)
+
+
+def _artifact_scope(payload: Mapping[str, object]) -> MarkerArtifactScope:
+    value = payload.get("artifact_scope")
+    if "artifact_scope" in payload:
+        if not isinstance(value, dict) or set(value) != {"checkout", "paths"}:
+            raise ActiveCustodyError("artifact_scope_invalid")
+        paths = value["paths"]
+        if not isinstance(paths, list):
+            raise ActiveCustodyError("artifact_coordinates_invalid")
+        checkout = _artifact_path(value["checkout"])
+        coordinates = tuple(_artifact_path(path) for path in paths)
+    else:
+        # Read the coordinates already published by older guards. Do not
+        # interpret arbitrary command arguments as paths or invent a session.
+        checkout = None
+        publisher = payload.get("path")
+        if isinstance(publisher, str):
+            path = Path(publisher)
+            if path.is_absolute() and path.parts[-2:] == ("tools", "memory_guard.py"):
+                checkout = path.parent.parent
+        cwd = payload.get("cwd")
+        coordinates = (
+            (Path(cwd),) if isinstance(cwd, str) and Path(cwd).is_absolute() else ()
+        )
+    scratch = payload.get("temporary_artifacts")
+    if isinstance(scratch, dict) and isinstance(scratch.get("target"), str):
+        coordinates += (_artifact_path(scratch["target"]),)
+    return MarkerArtifactScope(checkout, tuple(dict.fromkeys(coordinates)))
+
+
+@dataclass(frozen=True, slots=True)
 class MarkerRecord:
     path: Path
     identity: StableRegularFileIdentity | None = None
@@ -159,6 +264,7 @@ class MarkerRecord:
     orphaned_groups: tuple[int, ...] = ()
     # The producer's closure verdict; None in records written before it.
     descendants_closed: bool | None = None
+    artifact_scope: MarkerArtifactScope = MarkerArtifactScope()
 
     @property
     def status(self) -> str | None:
@@ -416,6 +522,7 @@ def _parse_payload(path: Path, payload: object) -> MarkerRecord:
         child=child,
         orphaned_groups=tuple(sorted(set(groups))),
         descendants_closed=closed,
+        artifact_scope=_artifact_scope(payload),
     )
     if status == "custody_reconciled":
         _validate_reconciliation(record)
@@ -509,12 +616,35 @@ def read_marker_record(path: Path) -> MarkerRecord:
                 guard = _parse_guard_identity(path, payload)
             except ActiveCustodyError:
                 pass
+        scope = MarkerArtifactScope()
+        if isinstance(payload, dict):
+            try:
+                scope = _artifact_scope(payload)
+            except ActiveCustodyError:
+                # Independently valid owner/cwd coordinates still bind an
+                # invalid body, as the publisher identity does. The malformed
+                # new scope remains an error, never an admitted record.
+                legacy = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"artifact_scope", "temporary_artifacts"}
+                }
+                scope = _artifact_scope(legacy)
+                value = payload.get("artifact_scope")
+                if isinstance(value, dict):
+                    try:
+                        scope = replace(
+                            scope, checkout=_artifact_path(value.get("checkout"))
+                        )
+                    except ActiveCustodyError:
+                        pass
         return MarkerRecord(
             path,
             identity,
             payload if isinstance(payload, dict) else None,
             guard=guard,
             error=str(exc),
+            artifact_scope=scope,
         )
 
 
@@ -613,6 +743,86 @@ def has_active_guard_marker(active_dir: Path) -> bool:
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactGuard:
+    record: MarkerRecord
+    state: str
+    reason: str
+    active_dir: Path
+
+    @property
+    def release_command(self) -> str:
+        if self.record.path == self.active_dir:
+            return f"{CUSTODY_COMMAND} --active-dir {self.active_dir}"
+        return (
+            f"{CUSTODY_COMMAND} --active-dir {self.active_dir} "
+            f"--release {self.record.path} --apply"
+        )
+
+
+def artifact_guard_records(
+    active_dirs: Collection[Path],
+    *,
+    snapshot: Callable[[], Mapping[int, ProcessSampleView]] | None = None,
+) -> tuple[ArtifactGuard, ...]:
+    """Observe artifact protection without changing any marker or scratch.
+
+    Capture records before one complete native snapshot, as reconciliation
+    does. Closed orphan records protect nothing even before an operator moves
+    them out of active/. Unavailable observations preserve each record's own
+    scope; they never turn a scoped record into artifact-root protection.
+    """
+    records: list[tuple[Path, MarkerRecord]] = []
+    for directory in sorted(set(active_dirs), key=str):
+        try:
+            records.extend(
+                (directory, record)
+                for record in iter_marker_records(directory)
+                if not record.terminal
+            )
+        except (OSError, ValueError) as exc:
+            records.append((directory, MarkerRecord(directory, error=str(exc))))
+    if not records:
+        return ()
+    if snapshot is None:
+        from molt.process_model import sample_processes
+
+        snapshot = sample_processes
+    now_s = time.time()
+    snapshot_error = None
+    try:
+        samples = _validated_snapshot(snapshot)
+        if os.getpid() not in samples:
+            raise ActiveCustodyError("process snapshot omits its own reader")
+    except (OSError, ValueError, RuntimeError) as exc:
+        samples = {}
+        snapshot_error = str(exc)
+    guards = []
+    for directory, record in records:
+        if record.error is not None:
+            guards.append(
+                ArtifactGuard(
+                    record, "ambiguous", f"marker_invalid: {record.error}", directory
+                )
+            )
+        elif snapshot_error is not None:
+            guards.append(
+                ArtifactGuard(
+                    record,
+                    "ambiguous",
+                    f"snapshot_unavailable: {snapshot_error}",
+                    directory,
+                )
+            )
+        else:
+            observed = observe_custody(record, samples, now_s=now_s)
+            if observed.state != "closed":
+                guards.append(
+                    ArtifactGuard(record, observed.state, observed.reason, directory)
+                )
+    return tuple(guards)
+
+
 @contextmanager
 def _marker_lock(path: Path, *, create_parent: bool = True) -> Generator[Path]:
     canonical = canonical_file_leaf(
@@ -684,7 +894,16 @@ def update_active_guard_marker(
             or record.status == "custody_reconciled"
         ):
             return False
-        immutable = {"schema_version", "pid", "token", "guard_process", "created_at"}
+        immutable = {
+            "schema_version",
+            "pid",
+            "token",
+            "guard_process",
+            "created_at",
+            "artifact_scope",
+            "path",
+            "cwd",
+        }
         if immutable.intersection(fields):
             raise ActiveCustodyError(
                 "producer update changes immutable marker identity"
