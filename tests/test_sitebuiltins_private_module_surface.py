@@ -17,14 +17,15 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 _calls = []
 
-install_registry({{
+_registry = {{
     "molt_site_help0": lambda: _calls.append(("help0", None)),
     "molt_site_help1": lambda topic: _calls.append(("help1", topic)),
     "molt_site_credits": lambda: _calls.append(("credits", None)),
     "molt_site_copyright": lambda: _calls.append(("copyright", None)),
     "molt_site_license": lambda: _calls.append(("license", None)),
     "molt_site_quitter_call": lambda code=None: _calls.append(("quit", code)),
-}})
+}}
+install_registry(_registry)
 
 
 def _load_module(name, path_text):
@@ -37,6 +38,11 @@ def _load_module(name, path_text):
 
 
 _private = _load_module("_molt_private_sitebuiltins", {str(STDLIB_ROOT / "_sitebuiltins.py")!r})
+
+# Printers resolve on every call, including replacement after module import.
+# Capturing the intrinsic eagerly would invoke the old credits function.
+_registry["molt_site_credits"] = lambda: _calls.append(("credits_replaced", None))
+install_registry(_registry)
 
 rows = [
     (name, type(getattr(_private, name)).__name__, bool(callable(getattr(_private, name))))
@@ -59,7 +65,7 @@ checks = {{
         == [
             ("help0", None),
             ("help1", "topic"),
-            ("credits", None),
+            ("credits_replaced", None),
             ("copyright", None),
             ("license", None),
             ("quit", 7),

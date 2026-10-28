@@ -30,6 +30,7 @@ from molt.cli import module_graph_cache  # noqa: E402
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction  # noqa: E402
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise  # noqa: E402
 from molt.stdlib_intrinsic_policy import (  # noqa: E402
+    INTRINSIC_CALL_NAMES,
     STATUS_INTRINSIC,
     STATUS_INTRINSIC_PARTIAL,
     STATUS_INTRINSIC_SUPPORT,
@@ -406,6 +407,78 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], bool]:
     """Source rule errors, required intrinsic names and the progress marker."""
     text = path.read_text(encoding="utf-8")
     errors = _scan_runtime_import_boundary(path, text)
+    tree = ast.parse(text, filename=str(path))
+    # Inspect resolver calls themselves, rather than trying to infer the names
+    # passed through arbitrary Python wrappers. Aliases include local imports
+    # during bootstrap (for example importlib.machinery's former `_require`).
+    resolver_exports = {
+        "require_intrinsic",
+        "load_intrinsic",
+        "require_optional_intrinsic",
+    }
+    resolvers = {"_require_intrinsic", *resolver_exports}
+    resolver_modules: set[str] = set()
+    # A local function may validate an already resolved callable under this
+    # name (runpy/multiprocessing), or implement the resolver itself. Neither
+    # is an imported intrinsic lookup; inspect its actual loader calls below.
+    resolvers.difference_update(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            resolver_modules.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name == "_intrinsics"
+            )
+        if isinstance(node, ast.ImportFrom) and node.module in {
+            "_intrinsics",
+            "molt.stdlib._intrinsics",
+        }:
+            resolvers.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name in resolver_exports
+            )
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and (
+                isinstance(node.func, ast.Name)
+                and node.func.id in resolvers
+                or isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in resolver_modules
+                and node.func.attr in resolver_exports
+            )
+        ):
+            continue
+        name = (
+            node.args[0]
+            if node.args
+            else next(
+                (keyword.value for keyword in node.keywords if keyword.arg == "name"),
+                None,
+            )
+        )
+        if not (
+            isinstance(name, ast.Constant)
+            and isinstance(name.value, str)
+            and name.value.startswith("molt_")
+        ):
+            errors.append(
+                f"Line {node.lineno}: Intrinsic reads must use a literal molt_* "
+                "name directly; name wrappers hide reads from the stdlib audit."
+            )
+        elif (
+            isinstance(node.func, ast.Name) and node.func.id not in INTRINSIC_CALL_NAMES
+        ):
+            errors.append(
+                f"Line {node.lineno}: Use _require_intrinsic directly; this "
+                "resolver alias hides the literal read from the stdlib audit."
+            )
     intrinsic_names = tuple(sorted(intrinsic_names_from_source(text)))
     has_stdlib_progress_marker = bool(STDLIB_PROGRESS_MARKER_RE.search(text))
     return errors, intrinsic_names, has_stdlib_progress_marker
@@ -448,6 +521,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         "- Every stdlib module and submodule has exactly one status, derived from its own source and its proven imports by `src/molt/stdlib_intrinsic_policy.py`.",
         "- Intrinsic status rests on the intrinsics a module reads, not on the ones it requires. A module reads an intrinsic when it loads or exports the module-level name bound to it, requires it inside a function or class body, consumes it in an expression, or another stdlib module imports that private binding by name.",
         "- A requirement nothing reads is a gate failure, never backing: a discarded `_require_intrinsic(...)` statement or a private binding no module loads. Intrinsics that exist only to make a module count (readiness anchors) are not admitted.",
+        "- Intrinsic resolver calls must name a literal `molt_*` intrinsic directly. Name wrappers are rejected because they hide reads from the audit; callable validation may wrap the resolved value.",
         "- `intrinsic-backed`: reads intrinsics and is attested as full CPython 3.12+ coverage. `intrinsic-partial`: reads intrinsics without that attestation, or carries a stdlib progress marker.",
         "- `intrinsic-support`: a private fragment its intrinsic owner imports, or a pure forwarding facade whose every resolved owner is intrinsic-backed. Forwarding cycles alone cannot establish support.",
         "- `python-compiled`: reads no intrinsic. Molt compiles the module's Python source into the binary like application code. This is an admitted implementation, not debt; a module moves to intrinsics when a measured win or a missing host capability requires it.",
