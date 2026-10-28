@@ -142,8 +142,12 @@ def test_darwin_link_plans_use_admitted_target_without_arch_probe(
     monkeypatch.setattr(native_toolchain, "_run_completed_command", unexpected_process)
     # The selected target, not the machine running this planning test, owns
     # architecture selection for both application and runtime-image links.
-    monkeypatch.setattr(
-        platform, "machine", lambda: "x86_64" if host_arch == "arm64" else "arm64"
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        native_link_command,
+        machine=lambda: "x86_64" if host_arch == "arm64" else "arm64",
     )
     monkeypatch.delenv("CFLAGS", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
