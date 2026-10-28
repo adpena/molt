@@ -132,6 +132,19 @@ raises `KeyError`. This preserves callback ordering even when retirement changes
 the public dictionary. Private circular-child tracking and broader concurrency
 qualification remain open; this contract does not qualify the 3.15 source pin.
 
+Import-name storage must preserve Python string bytes, including lone
+surrogates, through cache lookup. The two public APIs have distinct key
+semantics: [`import_module`](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/__init__.py)
+slices the requested name before entering the core, producing an exact string;
+[`__import__`](https://github.com/python/cpython/blob/v3.12.15/Python/import.c)
+can observe the supplied string subclass's hash behavior. Independent controls
+on the pinned 3.12.15, 3.13.17 and 3.14.9 references preserve a surrogate-keyed
+cached value through both APIs; a raising subclass hash is observed only by
+`__import__`. Removing name copies must preserve this distinction and callback
+failure order. The current host `String` conversion loses surrogate bytes and
+the reconstructed cache key loses the builtin's subclass behavior; their
+consumer migration and compiled qualification remain open under HF-276.
+
 Public argument validation and `importlib.util.resolve_name` precede finder
 discovery and require no host filesystem authority. Following
 [CPython's pinned import_module](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/__init__.py)
