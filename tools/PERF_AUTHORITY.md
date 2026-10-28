@@ -1004,3 +1004,17 @@ individual runner reject nonempty guest run arguments, which their current APIs
 do not execute; the legacy harness additionally checks its actual Molt command
 tail against the admitted list before either runtime starts. These refusals do
 not add a new argument parser or silently change the executed program.
+
+`opt_explorer` cost buckets are callable-name hints for inspection, not proof of
+allocation, runtime admission or the cause of a slowdown. The tool demangles all
+sampled symbols in one batch before attribution, independently of the displayed
+top-symbol limit. Generic arguments and signature types describe an
+instantiation, so their names do not select a cost bucket. In particular,
+`LocalKey<Vec<FrameEntry>>::with` is TLS work, and `Vec<FrameEntry>::len` is not an
+allocation. Unreadable or unbalanced callable names remain explicitly unresolved;
+the raw sampled symbols and call tree remain available for attribution. Replaying
+a retained report qualifies this analysis change without rerunning its workload
+or upgrading the original measurement's source/image, quiescence or profile
+qualification. Rust's [v0 symbol contract](https://doc.rust-lang.org/rustc/symbol-mangling/v0.html)
+distinguishes the entity path from generic parameters; demangled presentation is
+not a stable source or ABI identity.
