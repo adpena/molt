@@ -986,6 +986,17 @@ pub extern "C" fn fam_home_raw_check(value: i64) {
     assert_eq!(ATTEMPTS.load(SeqCst), 0, "unobserved raw homes do not allocate");
 }
 #[no_mangle]
+pub extern "C" fn fam_home_numeric_check() {
+    assert!(!pending());
+    assert_eq!(home_pair(), (HOME_RAW, FIRST_RAW as u64));
+    assert_eq!(ATTEMPTS.load(SeqCst), 0, "numeric store views never materialize a box");
+    assert_eq!(CALLS.fetch_add(1, SeqCst), 0, "only the successful arithmetic branch observes the home");
+}
+#[no_mangle]
+pub extern "C" fn fam_home_numeric_failed() {
+    panic!("wide store-view arithmetic overflowed or produced the wrong sum");
+}
+#[no_mangle]
 pub extern "C" fn fam_home_store_check(view: u64) {
     assert!(!pending(), "the store's exception edge must skip the following effect");
     assert_eq!(HOME_REENTRIES.load(SeqCst), 1);
@@ -1516,6 +1527,7 @@ extern "C" {
     fn fam_home_identity();
     fn fam_home_deferred();
     fn fam_home_raw_view();
+    fn fam_home_numeric();
     fn fam_home_inline();
     fn fam_home_reentry(old: u64);
     fn fam_home_cell(cell: u64);
@@ -1764,7 +1776,7 @@ fn main() {
         for (case, invoke, attempts) in [
             ("persistent boxed home", fam_home_identity as unsafe extern "C" fn(), 2),
             ("deferred raw home", fam_home_deferred as unsafe extern "C" fn(), 1),
-            ("shared raw result proof", fam_home_raw_view as unsafe extern "C" fn(), 1),
+            ("lowerer-only raw operand ABI", fam_home_raw_view as unsafe extern "C" fn(), 1),
             ("inline boxed home", fam_home_inline as unsafe extern "C" fn(), 0),
         ] {
             fam_home_reset(0, 0);
@@ -1772,6 +1784,11 @@ fn main() {
             assert_eq!(fam_attempts(), attempts, "{case}");
             settle(case, NONE, true);
         }
+        fam_home_reset(0, 0);
+        fam_home_numeric();
+        assert_eq!(fam_calls(), 1, "the exact wide sum reaches the numeric observation");
+        assert_eq!(fam_attempts(), 0, "producer-qualified arithmetic stays allocation-free");
+        settle("producer-qualified raw home arithmetic", NONE, true);
         for failure in [0, 1] {
             fam_home_reset(failure, 1);
             fam_home_reentry(0x501);
@@ -1899,6 +1916,8 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
         ("fam_home_store_check", 1),
         ("fam_home_store_failed", 0),
         ("fam_home_cell_check", 2),
+        ("fam_home_numeric_check", 0),
+        ("fam_home_numeric_failed", 0),
     ] {
         let mut abi = test_native_linkage_abi(vec![TirType::DynBox; arity], None);
         abi.parameter_custody = vec![crate::ir::ParameterCustody::Borrowed; arity];
@@ -1967,6 +1986,10 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             ]
         });
         if raw_view {
+            // LOWERER-ONLY capability: this registered native I64 operand ABI
+            // is not projected into TIR. The canonical producer must treat an
+            // opaque TIR call as a boxed observation; this manual map does not
+            // qualify a producer exemption for a raw native call operand.
             let mut facts = crate::representation_plan::LlvmReprFacts::default();
             facts
                 .repr_by_value
@@ -2061,6 +2084,160 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             },
         ));
     }
+    for func in &functions {
+        if func.name == "fam_home_raw_view" {
+            continue; // The explicit lowerer-only ABI control above keeps its map.
+        }
+        if func.name == "fam_home_inline" {
+            // Preserve the original lowerer-only boxed-inline publication
+            // control and its HOME_PLAIN oracle. Producer-derived RawSafe(5)
+            // may instead keep a raw home with stable tagged observations.
+            backend.function_repr_facts.insert(
+                func.name.clone(),
+                crate::representation_plan::LlvmReprFacts::default(),
+            );
+            continue;
+        }
+        let facts = crate::representation_plan::LlvmReprFacts::build(func);
+        for op in func.blocks.values().flat_map(|block| &block.ops) {
+            if matches!(
+                op.attrs.get("_original_kind"),
+                Some(AttrValue::Str(name)) if name == "frame_home_store"
+            ) {
+                for &view in &op.results {
+                    assert!(
+                        !facts.is_full_deopt_int(view),
+                        "{}: opaque boxed observations cannot borrow a full-width raw home",
+                        func.name
+                    );
+                }
+            }
+        }
+        backend.function_repr_facts.insert(func.name.clone(), facts);
+    }
+
+    // A separate producer-qualified numeric consumer has no opaque operand
+    // observation. Its checked sum and comparison control which zero-argument
+    // provider runs, so passing a raw native ABI argument cannot mask boxing.
+    let mut numeric = family_function("fam_home_numeric", false, |_, _, _| vec![]);
+    let wide = numeric.blocks[&numeric.entry_block].ops[0].results[0];
+    let view = numeric.fresh_value();
+    let alias = numeric.fresh_value();
+    let step = numeric.fresh_value();
+    let expected = numeric.fresh_value();
+    let sum = numeric.fresh_value();
+    let overflow = numeric.fresh_value();
+    let equal = numeric.fresh_value();
+    let masked = numeric.fresh_value();
+    let wide_is_zero = numeric.fresh_value();
+    let masked_is_zero = numeric.fresh_value();
+    let check_overflow = numeric.fresh_block();
+    let compare = numeric.fresh_block();
+    let check_mask = numeric.fresh_block();
+    let success = numeric.fresh_block();
+    let failure = numeric.fresh_block();
+    let entry = numeric.blocks.get_mut(&numeric.entry_block).unwrap();
+    entry.ops.extend([
+        home_op("frame_home_store", vec![wide], vec![view]),
+        family_op(OpCode::Copy, vec![view], vec![alias], &[]),
+        const_int_def(step, 1),
+        const_int_def(expected, FIRST_RAW + 1),
+        family_op(
+            OpCode::CheckedAdd,
+            vec![alias, step],
+            vec![sum, overflow],
+            &[],
+        ),
+        family_op(OpCode::Not, vec![alias], vec![wide_is_zero], &[]),
+        family_op(OpCode::BitAnd, vec![alias, step], vec![masked], &[]),
+    ]);
+    entry.terminator = Terminator::CondBranch {
+        cond: wide_is_zero,
+        then_block: failure,
+        then_args: vec![],
+        else_block: check_overflow,
+        else_args: vec![],
+    };
+    numeric.blocks.insert(
+        check_overflow,
+        TirBlock {
+            id: check_overflow,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::CondBranch {
+                cond: overflow,
+                then_block: failure,
+                then_args: vec![],
+                else_block: compare,
+                else_args: vec![],
+            },
+        },
+    );
+    numeric.blocks.insert(
+        compare,
+        TirBlock {
+            id: compare,
+            args: vec![],
+            ops: vec![family_op(OpCode::Eq, vec![sum, expected], vec![equal], &[])],
+            terminator: Terminator::CondBranch {
+                cond: equal,
+                then_block: check_mask,
+                then_args: vec![],
+                else_block: failure,
+                else_args: vec![],
+            },
+        },
+    );
+    numeric.blocks.insert(
+        check_mask,
+        TirBlock {
+            id: check_mask,
+            args: vec![],
+            ops: vec![family_op(
+                OpCode::Not,
+                vec![masked],
+                vec![masked_is_zero],
+                &[],
+            )],
+            terminator: Terminator::CondBranch {
+                cond: masked_is_zero,
+                then_block: success,
+                then_args: vec![],
+                else_block: failure,
+                else_args: vec![],
+            },
+        },
+    );
+    for (block, provider) in [
+        (success, "fam_home_numeric_check"),
+        (failure, "fam_home_numeric_failed"),
+    ] {
+        numeric.blocks.insert(
+            block,
+            TirBlock {
+                id: block,
+                args: vec![],
+                ops: vec![
+                    home_call(provider, vec![]),
+                    home_op("frame_home_clear", vec![], vec![]),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    let facts = crate::representation_plan::LlvmReprFacts::build(&numeric);
+    for value in [wide, view, alias, sum, expected] {
+        assert!(
+            facts.is_full_deopt_int(value),
+            "wide numeric carrier {value:?}"
+        );
+    }
+    assert!(facts.is_inline_safe_int(step));
+    assert!(facts.is_inline_safe_int(masked));
+    backend
+        .function_repr_facts
+        .insert(numeric.name.clone(), facts);
+    functions.push(numeric);
     functions
 }
 

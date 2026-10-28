@@ -134,6 +134,14 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 let negated_masked = builder.ins().band_imm_u(negated, 1);
                 not_raw = Some(negated_masked);
                 result
+            } else if let Some(raw_val) =
+                int_raw_value(&mut *builder, vars, representation_plan, &args[0])
+            {
+                // Exact integer truthiness is scalar, including full-width
+                // home views. Materializing a temporary box could allocate.
+                let is_zero = builder.ins().icmp_imm_s(IntCC::Equal, raw_val, 0);
+                not_raw = Some(builder.ins().uextend(types::I64, is_zero));
+                box_bool_value(&mut *builder, is_zero, nbc)
             } else if op_prefers_bool_lane(op) {
                 // NaN-boxed bool: extract bit 0 and flip.
                 let val = var_get_boxed_overflow_safe(
