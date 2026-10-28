@@ -56,10 +56,7 @@ from molt.cli.source_extension_link_requirements import (
     render_source_extension_link_arguments,
     validate_source_extension_link_input_files,
 )
-from molt.cli.native_toolchain import (
-    _append_darwin_runtime_frameworks,
-    _detect_macos_arch,
-)
+from molt.cli.native_toolchain import _append_darwin_runtime_frameworks
 
 
 _CPYTHON_SINGLETON_CANONICAL_ALIASES = (
@@ -173,15 +170,12 @@ def _resolve_native_linker_hint(
 
 def _build_native_link_driver_command(
     *,
-    output_obj: Path | None,
     target: NativeTargetSpec,
     sysroot_path: Path | None,
     profile: str,
     host_platform: str | None = None,
-    host_arch: str | None = None,
 ) -> tuple[list[str], str | None, str | None]:
     host_platform = sys.platform if host_platform is None else host_platform
-    host_arch = platform.machine() if host_arch is None else host_arch
     explicit_cc = os.environ.get("CC", "").strip()
     if explicit_cc:
         link_cmd = list(resolve_explicit_tool_command(explicit_cc, label="CC"))
@@ -220,13 +214,12 @@ def _build_native_link_driver_command(
     if target.os == "macos":
         # One selected SDK supplies headers, libraries, framework search paths
         # and the default version. An argv sysroot overrides ambient SDKROOT.
-        arch = target.arch
+        # Backend admission already checked every application archive member
+        # against this target. Project its architecture at the Darwin argv
+        # boundary; reopening the archive cannot select a different target.
+        arch = "arm64" if target.arch == "aarch64" else target.arch
         if target.is_host:
-            arch = (
-                os.environ.get("MOLT_ARCH")
-                or (None if output_obj is None else _detect_macos_arch(output_obj))
-                or host_arch
-            )
+            arch = os.environ.get("MOLT_ARCH") or arch
         try:
             link_cmd = list(
                 darwin_compiler_commands(
@@ -288,17 +281,13 @@ def _build_native_link_plan(
     external_link_requirements: Sequence[SourceExtensionLinkRequirements] = (),
     bolt_requested: bool = False,
     host_platform: str | None = None,
-    host_arch: str | None = None,
 ) -> NativeLinkPlan:
     host_platform = sys.platform if host_platform is None else host_platform
-    host_arch = platform.machine() if host_arch is None else host_arch
     link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
-        output_obj=output_obj,
         target=target,
         sysroot_path=sysroot_path,
         profile=profile,
         host_platform=host_platform,
-        host_arch=host_arch,
     )
     link_inputs = [
         str(stub_path),
@@ -539,7 +528,6 @@ def _build_native_runtime_image_link_plan(
         raise RuntimeError("The JIT tier runs programs on the host target only")
     runtime_image_suffix(target)
     link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
-        output_obj=None,
         target=target,
         sysroot_path=sysroot_path,
         profile=profile,

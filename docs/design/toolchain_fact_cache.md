@@ -22,8 +22,29 @@ questions the toolchain had already answered in the previous build:
 
 Three Cargo plans are resolved per build (backend admission, the runtime
 build, the runtime identity), and each plan asked every question again.
-The remaining one to five children are link work (`clang`, `lipo`,
-`dyld_info`, `llvm-strip`, `codesign`) that the link cache owns.
+At that measurement, the remaining one to five children were link work
+(`clang`, `lipo`, `dyld_info`, `llvm-strip`, `codesign`). The architecture
+rediscovery described below has since been removed; these historical counts
+are not current latency measurements.
+
+Darwin native link planning projects the already-admitted `NativeTargetSpec`
+into compiler arguments, presenting `aarch64` as `arm64`. The backend artifact
+contract checks every application archive member against the exact target
+before cached or freshly produced output reaches link planning. Planning
+launches no `lipo` architecture probe and introduces no additional cache or
+receipt. Existing stable-file admission, verified copying and final-link
+fingerprints retain their ownership of artifact contents.
+
+For host links, an explicit `MOLT_ARCH` still takes precedence and the compiler
+argument validator still rejects a conflicting target. Explicit cross targets
+retain their target selector and ignore that host override. Runtime-image links
+use the same target projection. Universal object containers remain outside the
+backend's exact-target admission contract; link planning does not choose a
+slice. Host application builds without an explicit `MOLT_ARCH` remove one
+architecture-probe child when they reach Darwin link planning, including first
+builds, edits and full JSON builds. Cross-target and runtime-image planning
+already avoided that child. This does not reduce work in the earlier ordinary
+no-change whole-build cutoff.
 
 Each child costs a fork/exec, dynamic loading of a 400 KB launcher plus an
 80 MB `librustc_driver`, and 10 to 60 ms of wall time; sccache-wrapped

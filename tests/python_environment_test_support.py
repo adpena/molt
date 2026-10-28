@@ -22,11 +22,13 @@ from tests.process_guard_common import run_guarded_test_process
 
 
 Package = tuple[str, str]
-_READ_ONLY_EXECUTABLE = {
-    "readable": True,
-    "writable": False,
-    "executable": True,
-}
+
+
+def _read_only_executable() -> dict[str, bool]:
+    """Return a fresh access row; parsed manifests never share one."""
+    return {"readable": True, "writable": False, "executable": True}
+
+
 _EMPTY_FILE_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
@@ -104,7 +106,7 @@ def runtime_identity_manifest(*, python: str | None = None) -> dict[str, object]
             "path": "os.py",
             "kind": "file",
             "node": "file-node-0",
-            "access": _READ_ONLY_EXECUTABLE,
+            "access": _read_only_executable(),
         }
     ]
     capabilities = {
@@ -374,7 +376,7 @@ def realized_environment_manifest(
         )
     entries: list[dict[str, object]] = [
         *[
-            {"path": path, "kind": "directory", "access": _READ_ONLY_EXECUTABLE}
+            {"path": path, "kind": "directory", "access": _read_only_executable()}
             for path in sorted(
                 directory_paths, key=lambda value: (value.casefold(), value)
             )
@@ -383,20 +385,20 @@ def realized_environment_manifest(
             "path": selected,
             "kind": "file",
             "node": nodes_by_path[selected],
-            "access": _READ_ONLY_EXECUTABLE,
+            "access": _read_only_executable(),
         },
         {
             "path": "pyvenv.cfg",
             "kind": "file",
             "node": nodes_by_path["pyvenv.cfg"],
-            "access": _READ_ONLY_EXECUTABLE,
+            "access": _read_only_executable(),
         },
         *[
             {
                 "path": path,
                 "kind": "file",
                 "node": nodes_by_path[path],
-                "access": _READ_ONLY_EXECUTABLE,
+                "access": _read_only_executable(),
             }
             for path in [*installed_paths, *wheel_paths]
         ],
@@ -780,7 +782,7 @@ def materialize_development_environment(
             {
                 "path": metadata,
                 "kind": "directory",
-                "access": _READ_ONLY_EXECUTABLE,
+                "access": _read_only_executable(),
             }
         )
         additions = []
@@ -801,7 +803,7 @@ def materialize_development_environment(
                     "path": path,
                     "kind": "file",
                     "node": node,
-                    "access": _READ_ONLY_EXECUTABLE,
+                    "access": _read_only_executable(),
                 }
             )
             additions.append({"path": path, "node": node, "declared": None})

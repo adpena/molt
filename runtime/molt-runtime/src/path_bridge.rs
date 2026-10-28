@@ -716,11 +716,11 @@ pub unsafe extern "C" fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i3
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32 {
     crate::with_gil_entry_nopanic!(py, {
-        let value =
-            crate::builtins::numbers::index_i64_from_obj(py, bits, "an integer is required");
-        if crate::exception_pending(py) {
+        // Every path-crate consumer (lseek pos, truncate/ftruncate length)
+        // takes CPython's `Py_off_t` argument.
+        let Some(value) = crate::builtins::numbers::index_off_t_from_obj(py, bits) else {
             return 0;
-        }
+        };
         unsafe {
             *out = value;
         }

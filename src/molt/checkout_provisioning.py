@@ -798,7 +798,16 @@ def _owner_argv(spec: OwnedInstallation, *arguments: str) -> list[str]:
     # A repository tool imports only the standard library and its own
     # checkout. `-I -S` keeps this interpreter's site-packages, whose editable
     # install and sitecustomize name another checkout's molt, out of it.
-    return [sys.executable, "-I", "-S", str(spec.checkout / spec.owner), *arguments]
+    from molt.python_environment_location import environment_bytecode_arguments
+
+    return [
+        sys.executable,
+        *environment_bytecode_arguments(Path(sys.prefix)),
+        "-I",
+        "-S",
+        str(spec.checkout / spec.owner),
+        *arguments,
+    ]
 
 
 def _owned_state(spec: OwnedInstallation) -> InputState:

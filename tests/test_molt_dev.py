@@ -44,6 +44,7 @@ Hazard -> proving test(s):
 """
 
 from __future__ import annotations
+from molt.python_environment_location import environment_bytecode_arguments
 
 import json
 import re
@@ -8615,7 +8616,13 @@ assert rc == {outcome}
 raise SystemExit(0)
 """
     completed = run_guarded_test_process(
-        [str(venv_python(cache / ".venv")), "-I", "-c", code],
+        [
+            str(venv_python(cache / ".venv")),
+            *environment_bytecode_arguments(cache / ".venv"),
+            "-I",
+            "-c",
+            code,
+        ],
         cwd=tmp_path,
         env=ProcessEnvironment(os.environ),
         timeout=120,
@@ -8703,7 +8710,15 @@ assert molt_dev_detached._detached_state_dir("lazy", None) == Path({str(tmp_path
 print("lazy-temporary-state")
 """
     completed = run_guarded_test_process(
-        [sys.executable, "-I", "-c", code], cwd=tmp_path, timeout=60
+        [
+            sys.executable,
+            *environment_bytecode_arguments(Path(sys.prefix)),
+            "-I",
+            "-c",
+            code,
+        ],
+        cwd=tmp_path,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.strip() == "lazy-temporary-state"

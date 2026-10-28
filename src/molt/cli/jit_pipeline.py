@@ -17,7 +17,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from molt.backend_environment import request_environment_inputs
+from molt.backend_environment import (
+    prepare_backend_debug_artifact_dir,
+    request_environment_inputs,
+)
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
@@ -193,17 +196,14 @@ def _run_jit_pipeline(
             profile=profile,
             link_timeout=prepared_build_config.link_timeout,
         )
-        backend_environment = request_environment_inputs(
-            _backend_request_environment(
-                native_runtime_codegen_environment(
-                    prepared_build_config.codegen.environment(
-                        os.environ, profile=profile
-                    ),
-                    binding,
-                ),
-                entry_module=None,
-            )
+        backend_operation_environment = _backend_request_environment(
+            native_runtime_codegen_environment(
+                prepared_build_config.codegen.environment(os.environ, profile=profile),
+                binding,
+            ),
+            entry_module=None,
         )
+        backend_environment = request_environment_inputs(backend_operation_environment)
     except (OSError, RuntimeError, ValueError) as exc:
         return _fail(str(exc), json_output, command="build")
     image = output_layout.output_artifact
@@ -218,6 +218,10 @@ def _run_jit_pipeline(
     try:
         # The published program must be the one these sources lowered to.
         prepared_frontend_pipeline_bundle.module_source_catalog.validate()
+        # The image's later runner writes backend scratch. Bind it while the
+        # full selection still carries artifact/storage ownership inputs;
+        # request_environment_inputs intentionally omits those host settings.
+        prepare_backend_debug_artifact_dir(backend_operation_environment)
         publish_jit_image(
             image,
             runner=runner,
@@ -231,7 +235,7 @@ def _run_jit_pipeline(
                 FunctionDigests(prepared_backend_ir.function_digest_seeds),
             ),
         )
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return _fail(
             f"Cannot publish the JIT image: {exc}", json_output, command="build"
         )
