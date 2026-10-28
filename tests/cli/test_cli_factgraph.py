@@ -301,13 +301,29 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     monkeypatch,
     custody_failure: bool,
     capsys,
+    developer_host_context,
 ) -> None:
     from molt.cli import backend_compile
+    import molt.backend_environment as backend_environment
+    from molt.checkout_state import (
+        CheckoutOwner,
+        read_checkout_owner,
+        scratch_state_root,
+    )
     from tests.cli.native_link_test_support import (
         native_codegen_binding,
         write_test_native_link_manifest,
         write_test_static_archive,
     )
+
+    compiler = tmp_path / "compiler"
+    compiler.mkdir()
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setattr(backend_environment, "compiler_source_root", lambda: compiler)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.delenv("MOLT_DEBUG_ARTIFACT_DIR", raising=False)
+    monkeypatch.delenv("MOLT_SCRATCH_STORAGE", raising=False)
+    owned_scratch = scratch_state_root(artifacts / "tmp", owner=compiler, create=False)
 
     output = tmp_path / "facts" / "main.json"
     ir_file = tmp_path / "backend-ir.msgpack"
@@ -335,6 +351,10 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         env = kwargs["env"]
+        assert read_checkout_owner(owned_scratch) == CheckoutOwner(
+            compiler.resolve(), "scratch"
+        )
+        assert env["MOLT_DEBUG_ARTIFACT_DIR"] == str(owned_scratch / "molt-backend")
         # The backend process gets the selection in its own mapping, while
         # the caller's environment never holds it.
         assert env["MOLT_BACKEND"] == "llvm"
@@ -370,6 +390,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         if custody_failure:
             raise ValueError("owned producer did not exit")
 
+    assert not artifacts.exists()
     rc = factgraph_module.emit_pipeline_fact_graph(
         request=FactGraphRequest(
             output_path=output,

@@ -116,3 +116,87 @@ def test_capture_scope_is_explicit_and_never_a_semantic_codegen_input(
     assert native_object_environment_inputs(
         dispatch.backend_env
     ) == native_object_environment_inputs(baseline)
+
+
+@pytest.mark.parametrize("start_daemon", [False, True])
+@pytest.mark.parametrize("blocked", [False, True])
+def test_backend_dispatch_binds_scratch_before_any_backend_writer(
+    tmp_path, monkeypatch, start_daemon, blocked, developer_host_context
+):
+    import molt.backend_environment as backend_environment
+    from molt.checkout_state import (
+        CheckoutOwner,
+        read_checkout_owner,
+        scratch_state_root,
+    )
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
+    from tests.cli.native_link_test_support import transport_codegen_binding
+
+    compiler = tmp_path / "compiler"
+    compiler.mkdir()
+    monkeypatch.setattr(backend_environment, "compiler_source_root", lambda: compiler)
+    artifacts = tmp_path / "artifacts"
+    supplied = backend_environment.CodegenSelection().environment(
+        {"MOLT_EXT_ROOT": str(artifacts)}
+    )
+    owned = scratch_state_root(artifacts / "tmp", owner=compiler, create=False)
+    binding = transport_codegen_binding(tmp_path / "runtime")
+    if blocked:
+        artifacts.mkdir()
+        (artifacts / "tmp").write_text("not a scratch directory")
+    else:
+        assert not artifacts.exists()
+    starts = []
+
+    def start(*args, **kwargs):
+        assert read_checkout_owner(owned) == CheckoutOwner(
+            compiler.resolve(), "scratch"
+        )
+        starts.append(kwargs["backend_env"])
+        return True, None
+
+    monkeypatch.setattr(backend_compile, "_backend_daemon_enabled", lambda: True)
+    monkeypatch.setattr(
+        backend_compile, "_backend_daemon_config_digest", lambda *a, **k: "digest"
+    )
+    monkeypatch.setattr(
+        backend_compile,
+        "_backend_daemon_socket_path",
+        lambda *a, **k: tmp_path / "socket",
+    )
+    monkeypatch.setattr(backend_compile, "_start_backend_daemon_under_lock", start)
+    dispatch, error = backend_compile._prepare_backend_dispatch(
+        is_rust_transpile=False,
+        is_wasm=False,
+        wasm_layout=None,
+        backend_environment=supplied,
+        deterministic=False,
+        profile="dev",
+        cargo_timeout=None,
+        molt_root=compiler,
+        target_triple=None,
+        backend_cargo_profile="dev",
+        diagnostics_enabled=False,
+        phase_starts={},
+        json_output=True,
+        backend_daemon_config_digest=None,
+        warnings=[],
+        codegen=backend_environment.CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
+        backend_bin=tmp_path / "backend",
+        start_daemon=start_daemon,
+        native_runtime_codegen_binding=binding,
+    )
+    if blocked:
+        assert dispatch is None and error is not None
+        assert not starts
+        assert (artifacts / "tmp").read_text() == "not a scratch directory"
+    else:
+        assert error is None and dispatch is not None
+        assert read_checkout_owner(owned) == CheckoutOwner(
+            compiler.resolve(), "scratch"
+        )
+        assert bool(starts) is start_daemon
+        assert dispatch.backend_env[backend_environment.DEBUG_ARTIFACT_DIR_ENV] == str(
+            owned / "molt-backend"
+        )
