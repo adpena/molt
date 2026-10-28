@@ -31,6 +31,8 @@ SRC_ROOT = REPO_ROOT / "src"
 
 
 from tools import bench, bench_suites  # noqa: E402
+from tools.safe_run import RunOutcome, _run_measured_command  # noqa: E402
+from tools.compat.comparison import Outputs, compare_outputs  # noqa: E402
 from tools.bench_evidence import AdmittedBenchmarkWorkload, admit_benchmark_workload  # noqa: E402
 from tools.bench_reporting import write_json  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
@@ -98,6 +100,7 @@ class WasmBinary:
     import_count_total: int | None
     import_count_functions: int | None
     import_count_tables: int | None
+    guest_stderr_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,8 @@ class _SampleResult:
     error_class: str | None
     profile: dict[str, object] | None = None
     profile_epochs: list[dict[str, object]] | None = None
+    output: Outputs | None = None
+    host_stderr: str | None = None
 
 
 def _is_valid_wasm(path: Path) -> bool:
@@ -204,7 +209,7 @@ def _run_cmd(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     cwd: Path | None = None,
 ) -> _RunResult:
-    admit_cargo_build(cmd, cwd=None, env=env)
+    admit_cargo_build(cmd, cwd=cwd, env=env)
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     if tty and not capture:
         print(
@@ -221,6 +226,8 @@ def _run_cmd(
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
         timeout=timeout_s,
         limits=resolved_limits,
     )
@@ -380,7 +387,9 @@ def _open_log(log_path: Path | None) -> TextIO | None:
     if log_path is None:
         return None
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    return log_path.open("a", encoding="utf-8", buffering=1)
+    # Sealed observations decode with surrogateescape; the log keeps their
+    # exact bytes instead of failing on a non-UTF-8 host diagnostic.
+    return log_path.open("a", encoding="utf-8", errors="surrogateescape", buffering=1)
 
 
 def _python_cmd() -> list[str]:
@@ -549,6 +558,7 @@ def _build_wasm_output(
     log: TextIO | None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     use_molt_build_cache: bool = True,
+    source_cwd: Path | None = None,
 ) -> float | None:
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
@@ -577,6 +587,7 @@ def _build_wasm_output(
         log=log,
         timeout_s=build_timeout_s,
         limits=limits,
+        cwd=source_cwd,
     )
     build_s = time.perf_counter() - start
     if build_res.timed_out:
@@ -624,13 +635,10 @@ def prepare_wasm_binary(
     keep_temp: bool,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     use_molt_build_cache: bool = True,
+    workload: AdmittedBenchmarkWorkload | None = None,
 ) -> WasmBinary | None:
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
-    temp_dir = OwnedTemporaryDirectory(prefix="molt-wasm-bench-")
-    if keep_temp:
-        temp_dir.retain()
-    output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
     _prune_backend_daemons(base_env)
     resolved_limits = limits or harness_memory_guard.limits_from_env(
@@ -638,7 +646,11 @@ def prepare_wasm_binary(
     )
     python_cmd = _python_cmd()
 
-    env = base_env.copy()
+    env = (
+        dict(workload.compiler_environment(base_env))
+        if workload is not None
+        else base_env.copy()
+    )
 
     if "MOLT_WASM_TABLE_BASE" not in env:
         table_probe = (
@@ -648,63 +660,132 @@ def prepare_wasm_binary(
         if table_base is not None:
             env["MOLT_WASM_TABLE_BASE"] = str(table_base)
 
-    build_s = _build_wasm_output(
-        python_cmd,
-        env,
-        output_path,
-        script,
-        molt_args=molt_args,
-        tty=tty,
-        log=log,
-        limits=resolved_limits,
-        use_molt_build_cache=use_molt_build_cache,
-    )
-    if build_s is None:
-        if _LAST_BUILD_FAILURE_DETAIL is None:
-            _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
-        if not keep_temp:
-            temp_dir.cleanup()
-        return None
-
-    linked = _linked_wasm_output(output_path)
-    if linked is None:
-        print(
-            f"Compiler produced no manifest-bound linked WASM for {script}.",
-            file=sys.stderr,
+    # Scratch custody starts at allocation. Every exit before the artifact
+    # reaches its caller retires the directory through the shared owner; a
+    # cleanup failure keeps the primary outcome and the retained owner.
+    temp_dir = OwnedTemporaryDirectory(prefix="molt-wasm-bench-")
+    if keep_temp:
+        temp_dir.retain()
+    transferred = False
+    primary: BaseException | None = None
+    try:
+        output_path = Path(temp_dir.name) / "output.wasm"
+        build_s = _build_wasm_output(
+            python_cmd,
+            env,
+            output_path,
+            str(workload.execution_script) if workload is not None else script,
+            molt_args=molt_args,
+            tty=tty,
+            log=log,
+            limits=resolved_limits,
+            use_molt_build_cache=use_molt_build_cache,
+            source_cwd=workload.source_cwd if workload is not None else None,
         )
-        if not keep_temp:
-            temp_dir.cleanup()
-        _LAST_BUILD_FAILURE_DETAIL = "linked_wasm_required_unavailable"
-        raise RuntimeError("linked wasm required")
-    wasm_path = linked
-    wasm_size = wasm_path.stat().st_size / 1024
-    import_metrics = _read_wasm_import_metrics(wasm_path)
-    run_env = env.copy()
-    # Runtime executions should not inherit host-Python import environment knobs.
-    # Keep run-time behavior aligned with standalone compiled binaries.
-    run_env.pop("PYTHONPATH", None)
-    run_env.pop("PYTHONHASHSEED", None)
-    run_env.pop("PYTHONUNBUFFERED", None)
-    for name in ("MOLT_RUNTIME_WASM", "MOLT_WASM_LINKED"):
-        run_env.pop(name, None)
-    # Avoid noisy Node warnings in parity and benchmark lanes.
-    run_env.setdefault("NODE_NO_WARNINGS", "1")
-    run_env["MOLT_WASM_MANIFEST_PATH"] = str(wasm_runtime_manifest_path(wasm_path))
-    return WasmBinary(
-        run_env=run_env,
-        temp_dir=temp_dir,
-        build_s=build_s,
-        size_kb=wasm_size,
-        linked_used=True,
-        import_count_total=(
-            import_metrics["total"] if import_metrics is not None else None
+        if build_s is None:
+            if _LAST_BUILD_FAILURE_DETAIL is None:
+                _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
+            return None
+
+        linked = _linked_wasm_output(output_path)
+        if linked is None:
+            print(
+                f"Compiler produced no manifest-bound linked WASM for {script}.",
+                file=sys.stderr,
+            )
+            _LAST_BUILD_FAILURE_DETAIL = "linked_wasm_required_unavailable"
+            raise RuntimeError("linked wasm required")
+        wasm_path = linked
+        wasm_size = wasm_path.stat().st_size / 1024
+        import_metrics = _read_wasm_import_metrics(wasm_path)
+        run_env = env.copy()
+        # Runtime executions should not inherit host-Python import environment
+        # knobs. Keep run-time behavior aligned with standalone compiled binaries.
+        run_env.pop("PYTHONPATH", None)
+        run_env.pop("PYTHONHASHSEED", None)
+        run_env.pop("PYTHONUNBUFFERED", None)
+        for name in ("MOLT_RUNTIME_WASM", "MOLT_WASM_LINKED"):
+            run_env.pop(name, None)
+        # Avoid noisy Node warnings in parity and benchmark lanes.
+        run_env.setdefault("NODE_NO_WARNINGS", "1")
+        run_env["MOLT_WASM_MANIFEST_PATH"] = str(wasm_runtime_manifest_path(wasm_path))
+        guest_stderr_path = None
+        if workload is not None and workload.source_cwd is not None:
+            guest_stderr_path = Path(temp_dir.name) / "guest-stderr.txt"
+            guest_stderr_path.touch(exist_ok=False)
+        binary = WasmBinary(
+            run_env=run_env,
+            guest_stderr_path=guest_stderr_path,
+            temp_dir=temp_dir,
+            build_s=build_s,
+            size_kb=wasm_size,
+            linked_used=True,
+            import_count_total=(
+                import_metrics["total"] if import_metrics is not None else None
+            ),
+            import_count_functions=(
+                import_metrics["functions"] if import_metrics is not None else None
+            ),
+            import_count_tables=(
+                import_metrics["tables"] if import_metrics is not None else None
+            ),
+        )
+        transferred = True
+        return binary
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        if not transferred and not keep_temp:
+            try:
+                bench._cleanup_bench_temp(temp_dir, primary)
+            except BaseException as exc:
+                if primary is None and _LAST_BUILD_FAILURE_DETAIL is not None:
+                    exc.add_note(
+                        "WASM build failed before scratch cleanup: "
+                        f"{_LAST_BUILD_FAILURE_DETAIL}"
+                    )
+                raise
+
+
+def _run_observation(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    cwd: Path | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None,
+    label: str,
+    guest_stderr_path: Path | None,
+) -> RunOutcome:
+    """One bounded, byte-lossless reference or WASM timing observation.
+
+    The CPython reference and the Node guest are captured through the same
+    typed guard boundary, so both sides of the parity check decode identically.
+    """
+    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    timeout_s = harness_memory_guard.timeout_from_env("MOLT_BENCH", env, default=300.0)
+    if timeout_s is None or not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("WASM timing requires a finite positive timeout")
+    return _run_measured_command(
+        cmd,
+        env=env,
+        cwd=cwd or REPO_ROOT,
+        rss_mb=max(
+            1,
+            int(
+                min(
+                    resolved_limits.max_process_rss_gb,
+                    resolved_limits.max_total_rss_gb,
+                )
+                * 1024
+            ),
         ),
-        import_count_functions=(
-            import_metrics["functions"] if import_metrics is not None else None
-        ),
-        import_count_tables=(
-            import_metrics["tables"] if import_metrics is not None else None
-        ),
+        timeout_s=timeout_s,
+        poll_s=resolved_limits.poll_interval,
+        label=label,
+        capture_output=True,
+        guest_stderr_path=guest_stderr_path,
+        limits=resolved_limits,
     )
 
 
@@ -715,26 +796,75 @@ def measure_wasm_run(
     runner_name: str,
     log: TextIO | None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+    workload: AdmittedBenchmarkWorkload | None = None,
+    expected_output: Outputs | None = None,
+    guest_stderr_path: Path | None = None,
 ) -> _SampleResult:
-    start = time.perf_counter()
-    run_res = _run_cmd(
+    cwd = None
+    if workload is not None:
+        prefix = list(runner_cmd)
+        manifest = run_env.get("MOLT_WASM_MANIFEST_PATH")
+        if manifest is None:
+            raise ValueError("admitted workload requires a manifest-bound WASM runner")
+        if expected_output is not None:
+            if runner_name != "node":
+                return _SampleResult(
+                    None,
+                    1,
+                    "sealed WASM timing requires separate guest stderr; "
+                    "molt-wasm-host has no qualified guest-stderr capture protocol",
+                    "unsupported_semantic_stream_capture",
+                )
+            if guest_stderr_path is None:
+                raise ValueError(
+                    "qualified WASM timing requires owned guest stderr capture"
+                )
+            prefix.extend(["--guest-stderr", str(guest_stderr_path), "--"])
+        prefix.append(manifest)
+        invocation = workload.guest_invocation(prefix, run_env)
+        runner_cmd = list(invocation.command)
+        run_env = dict(invocation.environment)
+        if expected_output is not None:
+            run_env["MOLT_PROFILE"] = "0"
+            run_env["MOLT_ASSERT_NO_LEAK"] = "0"
+        cwd = invocation.cwd
+    outcome = _run_observation(
         runner_cmd,
-        run_env,
-        capture=True,
-        tty=False,
-        log=log,
+        env=run_env,
+        cwd=cwd,
         limits=limits,
+        label="wasm",
+        guest_stderr_path=guest_stderr_path if expected_output is not None else None,
     )
-    elapsed_s = run_res.elapsed_s
-    if elapsed_s is None:
-        elapsed_s = time.perf_counter() - start
-    if run_res.returncode != 0:
-        err = (run_res.stderr or run_res.stdout).strip()
+    host_stderr = outcome.host_stderr
+    returncode = outcome.exit_code if outcome.exit_code is not None else 1
+    output = (
+        Outputs(outcome.stdout, outcome.stderr, outcome.exit_code)
+        if outcome.stdout is not None
+        and outcome.stderr is not None
+        and outcome.exit_code is not None
+        else None
+    )
+    if log is not None:
+        _log_command(log, runner_cmd)
+        for stream in (outcome.stdout, outcome.stderr):
+            if stream:
+                _log_write(log, stream)
+        if host_stderr:
+            _log_write(log, "HOST STDERR:\n" + host_stderr)
+    if not outcome.ok:
+        err = (
+            outcome.stderr
+            or outcome.stdout
+            or host_stderr
+            or outcome.stderr_tail
+            or outcome.status
+        ).strip()
         summarized = _summarize_error_text(err)
-        error_class = _classify_failure(
-            summarized,
-            runner=runner_name,
-            returncode=run_res.returncode,
+        error_class = (
+            _classify_failure(summarized, runner=runner_name, returncode=returncode)
+            if outcome.status == "nonzero"
+            else outcome.status
         )
         if err:
             print(
@@ -743,24 +873,55 @@ def measure_wasm_run(
             )
         return _SampleResult(
             elapsed_s=None,
-            returncode=run_res.returncode,
+            returncode=returncode,
             error=summarized or None,
             error_class=error_class,
+            output=output,
+            host_stderr=host_stderr,
         )
-    if not math.isfinite(elapsed_s) or elapsed_s <= 0:
+    elapsed_s = outcome.elapsed_s
+    if elapsed_s is None or not math.isfinite(elapsed_s) or elapsed_s <= 0:
         return _SampleResult(
             elapsed_s=None,
-            returncode=run_res.returncode,
+            returncode=returncode,
             error=f"invalid elapsed time: {elapsed_s!r}",
             error_class="invalid_timing",
+            output=output,
+            host_stderr=host_stderr,
+        )
+    if output is None:
+        return _SampleResult(
+            elapsed_s=None,
+            returncode=returncode,
+            error="WASM observation is missing complete output",
+            error_class="incomplete_output",
+            host_stderr=host_stderr,
+        )
+    if (
+        expected_output is not None
+        and not compare_outputs(
+            expected_output,
+            output,
+            stderr_mode="exact",
+        ).equal
+    ):
+        return _SampleResult(
+            elapsed_s=None,
+            returncode=returncode,
+            error="WASM output differs from sealed CPython reference",
+            error_class="output_mismatch",
+            output=output,
+            host_stderr=host_stderr,
         )
     return _SampleResult(
         elapsed_s=elapsed_s,
-        returncode=run_res.returncode,
+        returncode=returncode,
         error=None,
         error_class=None,
-        profile=_extract_profile_json(run_res.stderr or ""),
-        profile_epochs=_extract_profile_epoch_json(run_res.stderr or ""),
+        profile=_extract_profile_json(output.stderr),
+        profile_epochs=_extract_profile_epoch_json(output.stderr),
+        output=output,
+        host_stderr=host_stderr,
     )
 
 
@@ -967,6 +1128,8 @@ def collect_samples(
     log: TextIO | None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     validate_inputs: Callable[[], None] | None = None,
+    workload: AdmittedBenchmarkWorkload | None = None,
+    expected_output: Outputs | None = None,
 ) -> tuple[list[float], bool, _SampleResult | None, list[dict[str, object]]]:
     for _ in range(warmup):
         if validate_inputs is not None:
@@ -977,6 +1140,9 @@ def collect_samples(
             runner_name=runner_name,
             log=log,
             limits=limits,
+            workload=workload,
+            expected_output=expected_output,
+            guest_stderr_path=wasm.guest_stderr_path,
         )
         if validate_inputs is not None:
             validate_inputs()
@@ -994,6 +1160,9 @@ def collect_samples(
             runner_name=runner_name,
             log=log,
             limits=limits,
+            workload=workload,
+            expected_output=expected_output,
+            guest_stderr_path=wasm.guest_stderr_path,
         )
         if validate_inputs is not None:
             validate_inputs()
@@ -1048,7 +1217,7 @@ def _resolve_runner(
         extra_options = os.environ.get("MOLT_WASM_NODE_OPTIONS")
         if extra_options:
             cmd.extend(shlex.split(extra_options))
-        cmd.append("wasm/run_wasm.js")
+        cmd.append(str(REPO_ROOT / "wasm" / "run_wasm.js"))
         return cmd
     if runner != "wasmtime":
         raise ValueError(f"Unsupported wasm runner: {runner}")
@@ -1164,9 +1333,31 @@ def bench_results(
             if Path(script).expanduser().absolute() != workload.script:
                 raise ValueError("benchmark source differs from admitted workload")
             workload.verify()
-            if workload.record["run_args"]:
-                raise ValueError(
-                    "WASM benchmark execution does not support guest run arguments"
+            expected_output = None
+            if workload.source_cwd is not None:
+                reference = workload.reference_invocation(_python_cmd(), _base_env())
+                _log_command(log, list(reference.command))
+                reference_result = _run_observation(
+                    list(reference.command),
+                    env=dict(reference.environment),
+                    cwd=reference.cwd,
+                    limits=limits,
+                    label="sealed-reference",
+                    guest_stderr_path=None,
+                )
+                workload.verify()
+                if not reference_result.ok:
+                    raise ValueError(
+                        "sealed CPython reference failed: "
+                        f"status={reference_result.status} "
+                        f"exit={reference_result.exit_code}: "
+                        f"{reference_result.stderr_tail or ''}"
+                    )
+                reference_stdout = reference_result.stdout or ""
+                reference_stderr = reference_result.stderr or ""
+                workload.verify_reference_output(reference_stdout, reference_stderr)
+                expected_output = Outputs(
+                    reference_stdout, reference_stderr, reference_result.exit_code
                 )
             name = workload.record["entry"]
             wasm_time: float | None = None
@@ -1187,8 +1378,13 @@ def bench_results(
                     keep_temp=keep_temp,
                     limits=limits,
                     use_molt_build_cache=use_molt_build_cache,
+                    workload=workload,
                 )
             except RuntimeError as exc:
+                # A setup refusal is a recorded cell failure; scratch that
+                # could not be retired is custody evidence and must surface.
+                if getattr(exc, "benchmark_temporary_directories", ()):
+                    raise
                 print(
                     f"WASM benchmark setup failed for {script}: {exc}",
                     file=sys.stderr,
@@ -1206,6 +1402,8 @@ def bench_results(
                             runner_cmd,
                             runner_name,
                             validate_inputs=workload.verify,
+                            workload=workload,
+                            expected_output=expected_output,
                             log=log,
                             limits=limits,
                         )
@@ -1224,6 +1422,9 @@ def bench_results(
                             wasm_binary.run_env,
                             control_runner_cmd,
                             runner_name=control_runner_name,
+                            workload=workload,
+                            expected_output=expected_output,
+                            guest_stderr_path=wasm_binary.guest_stderr_path,
                             log=log,
                             limits=limits,
                         )
@@ -1310,6 +1511,11 @@ def main() -> None:
 def _main(workload_custody: ExitStack) -> None:
     _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt WASM benchmark suite.")
+    parser.add_argument(
+        "--applications",
+        action="store_true",
+        help="Run sealed application benchmarks only",
+    )
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=None)
     parser.add_argument(
@@ -1517,7 +1723,13 @@ def _main(workload_custody: ExitStack) -> None:
             log_file, f"# reusing cached reloc runtime wasm {RUNTIME_WASM_RELOC}\n"
         )
 
-    benchmarks = list(SMOKE_BENCHMARKS) if args.smoke else list(BENCHMARKS)
+    benchmarks = (
+        list(bench_suites.APPLICATION_BENCHMARKS)
+        if args.applications
+        else list(SMOKE_BENCHMARKS)
+        if args.smoke
+        else list(BENCHMARKS)
+    )
     if args.bench:
         by_path = {bench: bench for bench in benchmarks}
         by_name = {Path(bench).name: bench for bench in benchmarks}
@@ -1546,7 +1758,7 @@ def _main(workload_custody: ExitStack) -> None:
             parser.error(f"Unknown benchmark selection(s): {', '.join(missing)}")
         benchmarks = selected
     include_ws = args.ws or os.environ.get("MOLT_WASM_BENCH_WS") == "1"
-    if include_ws:
+    if include_ws and not args.applications:
         if args.runner == "node" and not _node_has_websocket(
             log_file,
             limits=limits,
@@ -1565,7 +1777,7 @@ def _main(workload_custody: ExitStack) -> None:
             admit_benchmark_workload(
                 Path(script),
                 project_root=REPO_ROOT,
-                run_args=[],
+                run_args=bench_suites.application_run_args(script),
                 molt_args=molt_args_for_benchmark(script),
             )
         )

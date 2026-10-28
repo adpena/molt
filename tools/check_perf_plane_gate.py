@@ -50,6 +50,8 @@ def _green_cell() -> dict[str, object]:
         # Literal source identity for this synthetic metric cell. This does
         # not capture or qualify the repository's real benchmark source.
         "workload": {
+            "schema": "molt.benchmark-workload/2",
+            "sealed_inputs": None,
             "entry": "tests/benchmarks/bench_fib.py",
             "entry_source": "tests/benchmarks/bench_fib.py",
             "scope": "local-python-source-closure",

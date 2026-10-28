@@ -63,6 +63,8 @@ bind_repository_imports(__file__)
 
 from tools import harness_memory_guard  # noqa: E402
 from tools import perf_authority, bench_suites  # noqa: E402
+from tools.compat.comparison import Outputs, compare_outputs  # noqa: E402
+from tools.safe_run import RunOutcome, observed_run_outcome  # noqa: E402
 from tools.bench_evidence import (  # noqa: E402
     AdmittedBenchmarkWorkload,
     BenchmarkWorkloadRecord,
@@ -88,11 +90,11 @@ class TestResult:
     workload: BenchmarkWorkloadRecord | None
     cpython_stdout: str = ""
     cpython_stderr: str = ""
-    cpython_rc: int = 0
+    cpython_rc: int | None = None
     cpython_time_s: Optional[float] = None
     molt_stdout: str = ""
     molt_stderr: str = ""
-    molt_rc: int = 0
+    molt_rc: int | None = None
     molt_time_s: Optional[float] = None
     molt_speedup: Optional[float] = None
     output_match: Optional[bool] = None
@@ -120,6 +122,15 @@ class TestResult:
             d["error_msg"] = self.error_msg
         if self.diff_snippet:
             d["diff_snippet"] = self.diff_snippet[:500]
+        if self.status != "pass":
+            d.update(
+                cpython_stdout=self.cpython_stdout,
+                cpython_stderr=self.cpython_stderr,
+                cpython_rc=self.cpython_rc,
+                molt_stdout=self.molt_stdout,
+                molt_stderr=self.molt_stderr,
+                molt_rc=self.molt_rc,
+            )
         return d
 
 
@@ -171,10 +182,15 @@ class Colors:
 # ---------------------------------------------------------------------------
 
 
-def run_cmd(cmd: list, timeout_s: float, cwd: Optional[Path] = None):
-    """Run a command, capture output. Returns (stdout, stderr, rc, elapsed_s)."""
-    start = time.monotonic()
-    env = _base_env()
+def run_cmd(
+    cmd: list,
+    timeout_s: float,
+    cwd: Optional[Path] = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> RunOutcome:
+    """Retain the shared guard's output, completion and child timing evidence."""
+    env = _base_env() if env is None else env
     limits = harness_memory_guard.limits_from_env(BENCH_MEMORY_PREFIX, env)
     timeout = harness_memory_guard.timeout_from_env(
         BENCH_MEMORY_PREFIX,
@@ -186,24 +202,37 @@ def run_cmd(cmd: list, timeout_s: float, cwd: Optional[Path] = None):
             cmd,
             prefix=BENCH_MEMORY_PREFIX,
             capture_output=True,
-            text=True,
+            text=False,
+            encoding="utf-8",
+            errors="surrogateescape",
             timeout=timeout,
             cwd=cwd or REPO_ROOT,
             env=env,
             limits=limits,
         )
-        elapsed = time.monotonic() - start
-        if proc.elapsed_s is not None:
-            elapsed = proc.elapsed_s
-        if proc.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
-            return "", f"TIMEOUT after {timeout_s}s", -1, elapsed
-        return proc.stdout, proc.stderr, proc.returncode, elapsed
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - start
-        return "", f"TIMEOUT after {timeout_s}s", -1, elapsed
+        return observed_run_outcome(proc, captured_stderr=proc.child_stderr)
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout
+        stderr = error.stderr
+        return RunOutcome(
+            False,
+            None,
+            None,
+            "timeout",
+            None,
+            stdout=(
+                stdout.decode("utf-8", "surrogateescape")
+                if isinstance(stdout, bytes)
+                else stdout
+            ),
+            stderr=(
+                stderr.decode("utf-8", "surrogateescape")
+                if isinstance(stderr, bytes)
+                else stderr
+            ),
+        )
     except FileNotFoundError as e:
-        elapsed = time.monotonic() - start
-        return "", str(e), -2, elapsed
+        return RunOutcome(False, None, None, "not_found", None, stderr=str(e))
 
 
 def _base_env() -> ProcessEnvironment:
@@ -238,7 +267,13 @@ def compute_diff(a: str, b: str) -> str:
     diff = difflib.unified_diff(
         a_lines, b_lines, fromfile="cpython", tofile="molt", lineterm=""
     )
-    return "".join(list(diff)[:60])
+    # Captured output keeps undecodable bytes as surrogate escapes; show them
+    # as \xNN so a printed snippet never fails and distinct bytes stay distinct.
+    return (
+        "".join(list(diff)[:60])
+        .encode("utf-8", "surrogateescape")
+        .decode("utf-8", "backslashreplace")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -263,10 +298,6 @@ def run_single_test(
         if script.expanduser().absolute() != workload.script:
             raise ValueError("benchmark source differs from admitted workload")
         workload.verify()
-        if workload.record["run_args"]:
-            raise ValueError(
-                "legacy benchmark execution does not support guest run arguments"
-            )
         if workload.record["molt_args"] != molt_cmd[1:]:
             raise ValueError("benchmark command differs from admitted Molt arguments")
     result = TestResult(
@@ -277,71 +308,89 @@ def run_single_test(
     )
 
     # --- CPython ---
-    cp_out, cp_err, cp_rc, cp_time = run_cmd([python_cmd, str(script)], timeout_s)
+    if workload is None:
+        reference_run = run_cmd([python_cmd, str(script)], timeout_s)
+    else:
+        reference = workload.reference_invocation([python_cmd], _base_env())
+        reference_run = run_cmd(
+            list(reference.command),
+            timeout_s,
+            cwd=reference.cwd,
+            env=reference.environment,
+        )
+        if reference_run.ok:
+            workload.verify_reference_output(
+                reference_run.stdout or "", reference_run.stderr or ""
+            )
     if workload is not None:
         workload.verify()
-    result.cpython_stdout = cp_out
-    result.cpython_stderr = cp_err
-    result.cpython_rc = cp_rc
-    result.cpython_time_s = cp_time
+    cp_out = result.cpython_stdout = reference_run.stdout or ""
+    cp_err = result.cpython_stderr = reference_run.stderr or ""
+    cp_rc = result.cpython_rc = reference_run.exit_code
+    cp_time = result.cpython_time_s = reference_run.elapsed_s
 
-    if cp_rc == -1:
-        result.status = "skip"
-        result.error_msg = "CPython timed out"
-        return result
-    if cp_rc == -2:
-        result.status = "skip"
-        result.error_msg = f"CPython not found: {cp_err}"
-        return result
-    if cp_rc != 0 and suite == "diff":
-        # For differential tests, skip if CPython itself fails
-        result.status = "skip"
-        result.error_msg = f"CPython exited {cp_rc}"
+    if not reference_run.ok:
+        # A failed reference remains a skip only for the documented diff
+        # policy or absent/timeout reference; incomplete custody is an error.
+        result.status = (
+            "skip"
+            if reference_run.status in {"timeout", "not_found"}
+            or (suite == "diff" and reference_run.status == "nonzero")
+            else "error"
+        )
+        result.error_msg = (
+            f"CPython {reference_run.status} (rc={reference_run.exit_code})"
+        )
         return result
 
     # --- Molt ---
     molt_full_cmd = molt_cmd + [str(script)]
     if workload is not None:
         workload.verify()
-    m_out, m_err, m_rc, m_time = run_cmd(molt_full_cmd, timeout_s)
+    if workload is None:
+        guest_run = run_cmd(molt_full_cmd, timeout_s)
+    else:
+        prefix = [*molt_cmd, str(workload.execution_script)]
+        if workload.record["run_args"]:
+            prefix.append("--")
+        guest = workload.guest_invocation(
+            prefix, workload.compiler_environment(_base_env())
+        )
+        guest_run = run_cmd(
+            list(guest.command), timeout_s, cwd=guest.cwd, env=guest.environment
+        )
     if workload is not None:
         workload.verify()
-    result.molt_stdout = m_out
-    result.molt_stderr = m_err
-    result.molt_rc = m_rc
-    result.molt_time_s = m_time
+    m_out = result.molt_stdout = guest_run.stdout or ""
+    m_err = result.molt_stderr = guest_run.stderr or ""
+    m_rc = result.molt_rc = guest_run.exit_code
+    m_time = result.molt_time_s = guest_run.elapsed_s
 
-    if m_rc == -1:
-        result.status = "timeout"
-        result.error_msg = "Molt timed out"
-        return result
-    if m_rc == -2:
-        result.status = "error"
-        result.error_msg = f"Molt binary not found: {m_err}"
+    if not guest_run.ok:
+        result.status = "timeout" if guest_run.status == "timeout" else "error"
+        result.error_msg = f"Molt {guest_run.status} (rc={guest_run.exit_code})"
         return result
 
     # --- Compare ---
-    result.output_match = cp_out == m_out
+    result.output_match = (
+        compare_outputs(
+            Outputs(cp_out, cp_err, cp_rc),
+            Outputs(m_out, m_err, m_rc),
+            stderr_mode="exact",
+        ).equal
+        if suite == "bench"
+        else cp_out == m_out
+    )
 
     if suite == "bench":
-        # For benchmarks, compute speedup; pass if molt ran successfully.
-        # Route through the single authority guard so a build failure / crash
-        # (m_rc != 0, or a None/non-positive time) can NEVER become a finite
-        # ratio - it stays None and renders as n/a downstream.
-        if m_rc == 0:
+        # Only complete successful observations can reach ratio calculation.
+        if result.output_match:
             speedup = perf_authority.safe_speedup(cp_time, m_time)
             result.molt_speedup = round(speedup, 2) if speedup is not None else None
-        if m_rc == 0:
-            result.status = "pass" if result.output_match else "fail"
-        else:
-            result.status = "error"
-            result.error_msg = f"Molt exited {m_rc}"
+        result.status = "pass" if result.output_match else "fail"
     else:
         # For diff tests, pass/fail based on output match
-        if m_rc != 0 and cp_rc == 0:
-            result.status = "error"
-            result.error_msg = f"Molt exited {m_rc}"
-        elif result.output_match:
+        if result.output_match:
             result.status = "pass"
         else:
             result.status = "fail"
@@ -355,8 +404,14 @@ def run_single_test(
 # ---------------------------------------------------------------------------
 
 
-def collect_bench_scripts(filter_pat: Optional[str] = None) -> list:
-    scripts = sorted(BENCH_DIR.glob("bench_*.py"))
+def collect_bench_scripts(
+    filter_pat: Optional[str] = None, *, applications: bool = False
+) -> list:
+    scripts = (
+        [REPO_ROOT / script for script in bench_suites.APPLICATION_BENCHMARKS]
+        if applications
+        else sorted(BENCH_DIR.glob("bench_*.py"))
+    )
     if filter_pat:
         scripts = [
             s
@@ -728,7 +783,14 @@ def _main(workload_custody: ExitStack):
         "--no-color", action="store_true", help="Disable colored output"
     )
 
+    parser.add_argument(
+        "--applications",
+        action="store_true",
+        help="Run sealed application benchmarks only",
+    )
     args = parser.parse_args()
+    if args.applications:
+        args.bench = True
 
     # If no mode specified, show help
     if not (args.bench or args.diff or args.full):
@@ -771,14 +833,14 @@ def _main(workload_custody: ExitStack):
     ):
         # --- Benchmark suite ---
         if args.bench:
-            scripts = collect_bench_scripts(args.filter)
+            scripts = collect_bench_scripts(args.filter, applications=args.applications)
             bench_suites.validate_benchmark_selection(scripts)
             workloads = {
                 script: workload_custody.enter_context(
                     admit_benchmark_workload(
                         script,
                         project_root=REPO_ROOT,
-                        run_args=[],
+                        run_args=bench_suites.application_run_args(script),
                         molt_args=molt_cmd[1:],
                     )
                 )

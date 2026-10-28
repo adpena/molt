@@ -104,6 +104,7 @@ consumer migrations. A source checkpoint is not a completed finding.
 | Module ownership and callback-safe IO (HF-276, V1-18) | The joined module source uses one interpreter-owned module dictionary, scoped initializer/private execution, ordered public finder transactions and role-bound compiled providers. Source and generated-consumer reconciliation, actual native/WASM public-import execution, and provenance-bound startup, import-cost and memory qualification remain required before closure. Earlier donor source/static or mixed-image results do not qualify these joined bytes. Luau import capability remains an explicit gap. Codec/IO remains with V1-18. |
 | Codec state, errors and registry (V1-18) | Current native state/error/map controls pass, but public, scalar and IO consumers still disagree about registry authority. Reconcile the existing registry/TextIO design and complete that one migration before landing this family. Retain the measured kernel/cache costs and existing semantic evidence; do not start another registry or claim whole-codec conformance from the current slice. |
 | Installed product and accepted measurements (V1-01/V1-02/V1-06/V1-07/V1-24/V1-28) | Reuse the existing installed candidate/consumer machinery for compile, edit/rebuild and standalone native/WASM execution without Cargo provisioning or host-Python fallback. The release caller currently supplies empty full-matrix performance shards/toolchain identities; the receiver reports authenticated compiler/runtime used-byte admission unavailable. Complete one genuine producer-to-receiver measurement path with omission/substitution negatives before the full campaign. Local diagnostic measurements remain useful but do not close acceptance. LLVM is in the declared production feature set; installed execution still needs qualification. |
+| Representative application measurements (V1-07) | Finish the existing sealed application migration through the canonical corpus catalog and benchmark/scoreboard consumers. Workload v2 binds package/source/data identity, exact argv, import roots and semantic oracle; one typed guard observation owns child completion, direct-child timing, RSS and binary capture decoded losslessly. Refuse incomplete samples, retain failure output and close preparation/output owners before publication. Native sealed package/data/argv execution matches CPython. LLVM now reaches the canonical managed SDK after removal of the benchmark-only Homebrew selector, compiles, then fails the public `pathlib` → `itertools` → `typing` import at `_MOLT_KWD_MARK`; retain this actual consumer counterexample under V1-02/V1-18. The minimal package/data/argv witness passes native and LLVM. Its Node/WASM build completes, but the guest returns 1 with empty semantic output and only a host WASI warning; the cause remains unqualified. The larger WASM build also exceeds a bounded four-minute diagnostic run. Preserve those failures under V1-02/V1-07/V1-18; do not report an application timing or full target qualification. The full HTML workload still reaches unsupported dynamic `exec` in its pinned dependency; do not patch that package or widen the execution policy to make a benchmark pass. These protocol controls and local diagnostics do not close authenticated measured-metric admission or the required performance matrix. |
 | Scientific witness and remaining matrix (HF-04 and E1/E3) | Reproduce NumPy/SciPy extension seals through the current source-extension producer. Preserved schema-4 native seals are historical; schema-7 admission additionally binds consumed Python providers and Meson dependency facts. Historical digests cannot supply current registry entries. Reuse compatible products for native/WASM witness execution and the remaining declared platform/version/profile consumers. |
 
 Asyncio remains a P0 product outcome: integrated park/wake code does not qualify
@@ -356,6 +357,22 @@ no Python fallback was observed in the reviewed launch paths.
 
 ### Development cost and release discipline
 
+User-code compilation is the optimization priority over compiler self-build cost.
+A native arm64/Python 3.12 `release-fast` two-file diagnostic at `24b802cb58`
+reuses existing compiler/runtime products but still takes 4.77 seconds to rebuild
+unchanged source to the same output destination, despite 40/40 frontend cache
+hits. Its recorded build core is 3.23 seconds, including 1.26 seconds of backend
+preparation, 0.66 seconds of linking and 0.65 seconds of module-graph work.
+Separate fresh-output observations take 9.31 seconds with unchanged source and
+14.11 seconds after a one-function edit; both emitted programs produce their
+expected 42/43 output. Fresh destinations and stable destinations are distinct
+workloads. These single instrumented observations provide attribution, not
+accepted latency distributions or an improvement claim. Trace the existing
+compiler-product admission and final-artifact reuse authorities next; frontend
+cache tuning alone cannot remove these measured warm-path costs. More work at
+compiler build time is acceptable when it removes repeated user-build work and
+preserves exact source/toolchain/target/profile and artifact admission.
+
 The runtime's shared path-join builder replaces repeated accumulated-prefix copies
 with linear accumulation and removes the duplicated join intrinsics. A retained
 paired macOS arm64 lexical-core measurement at 16,384 24-byte components records
@@ -495,6 +512,12 @@ base, and delete each replaced internal path in that same migration. A broader
 open release finding does not require holding an independently complete repair;
 an unmigrated consumer does. Reuse unchanged accepted inputs rather than
 restarting unrelated proofs after every edit.
+
+User-code compilation and edit/rebuild latency take priority over building Molt
+itself. A slower compiler self-build is acceptable for measured user-facing gains
+while preserving correctness, conformance and generated-program performance.
+Measure cold user builds, unchanged rebuilds and edit rebuilds separately from
+Cargo/rustc compilation of the compiler/runtime; report their actual cache state.
 
 The immediate product frontier is:
 
