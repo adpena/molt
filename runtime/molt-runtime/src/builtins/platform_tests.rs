@@ -4051,10 +4051,15 @@ fn platform_terminal_custody_precedes_environment_value_finalizers() {
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        loader_identity_class_namespace(py, class, b"__del__", function);
+        // The class is already sealed: use normal mutation so its declared
+        // finalizer metadata is published along with the namespace entry.
+        loader_identity_setattr(py, class, b"__del__", function);
         dec_ref_bits(py, function);
         let value = unsafe { call_callable0(py, class) };
         assert!(!exception_pending(py));
+        assert!(unsafe {
+            crate::object::object_has_finalizer(py, obj_from_bits(value).as_ptr().unwrap())
+        });
         let key = alloc_test_string_bits(py, "__MOLT_TERMINAL_CALLBACK__");
         assert!(unsafe { dict_set_in_place(py, ptr_from_bits(root), key, value) });
         dec_ref_bits(py, key);
