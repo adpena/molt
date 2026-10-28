@@ -220,6 +220,30 @@ def session_sentinel_paused(request: pytest.FixtureRequest) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _hide_host_artifact_root_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve this checkout as an unbound family inside the test process.
+
+    A developer host may bind the family's artifact root
+    (`.git/molt/artifact-root.json`); hosted CI never does. Tests that select
+    roots for the real checkout must see the same unbound family on both, so
+    the real family's record is hidden. Fixture families keep their bindings,
+    and child processes still read the real record.
+    """
+    from molt import custody_layout, dx
+
+    real_state = custody_layout.checkout_family_state_root(ROOT)
+    if real_state is None:
+        return
+    original = dx.artifact_root_binding_path
+
+    def binding_path(repo_root: Path) -> Path | None:
+        path = original(repo_root)
+        return None if path is not None and path.parent == real_state else path
+
+    monkeypatch.setattr(dx, "artifact_root_binding_path", binding_path)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_host_toolchain_facts(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[None]:
