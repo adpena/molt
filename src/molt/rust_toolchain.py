@@ -16,12 +16,12 @@ from molt.process_environment import (
 from contextlib import contextmanager
 from dataclasses import dataclass
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import subprocess
 import sys
 import tomllib
-from typing import Generator, Iterator, Mapping, Sequence
+from typing import Generator, Iterator, Mapping, Sequence, assert_never
 
 from molt.exact_json import string_keyed_mapping
 from molt.toolchain_facts import (
@@ -564,6 +564,90 @@ class RustFlagSpan:
             if self.option == "-C" and self.value is not None
             else None
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RustLogicalRemapSource:
+    label: str
+    suffix: str
+
+
+@dataclass(frozen=True, slots=True)
+class RustLiteralRemapSource:
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class RustPathRemap:
+    """rustc's textual FROM=TO operation, never a resolved filesystem path."""
+
+    source: str
+    destination: str
+
+    @classmethod
+    def parse(cls, value: str) -> RustPathRemap:
+        source, separator, destination = value.rpartition("=")
+        if not separator:
+            raise ValueError("Rust --remap-path-prefix requires FROM=TO")
+        return cls(source, destination)
+
+    @property
+    def source_is_absolute(self) -> bool:
+        return (
+            PureWindowsPath(self.source).is_absolute()
+            or self.source.startswith("\\")
+            or PurePosixPath(self.source).is_absolute()
+        )
+
+    def project(
+        self, logical_roots: Sequence[tuple[str, str]]
+    ) -> RustLogicalRemapSource | RustLiteralRemapSource:
+        # Preserve the existing owned-root boundary, spelling and longest-root
+        # precedence. In particular, '..', quotes and case are semantic text.
+        if self.source_is_absolute:
+            for label, root in sorted(
+                logical_roots, key=lambda item: len(item[1]), reverse=True
+            ):
+                if self.source == root or self.source.startswith(root + os.sep):
+                    return RustLogicalRemapSource(label, self.source[len(root) :])
+        return RustLiteralRemapSource(self.source)
+
+
+def rust_flag_remap_identity(
+    flags: Sequence[str], logical_roots: Sequence[tuple[str, str]]
+) -> list[dict[str, object]]:
+    """Bind host flags exactly except for typed owned remap source prefixes.
+
+    Unknown paths remain literal inputs. This is not portable runtime flag
+    admission: cfg values, response-looking text and other operands stay exact.
+    The existing lexical parser owns option values and the '--' terminator.
+    """
+    if isinstance(flags, str):
+        raise TypeError("Rust flag vectors are token sequences, not strings")
+    result: list[dict[str, object]] = []
+    for span in rust_flag_spans(flags):
+        if span.option != "--remap-path-prefix":
+            result.append(
+                {"kind": "literal", "tokens": list(flags[span.start : span.stop])}
+            )
+            continue
+        remap = RustPathRemap.parse(span.value or "")
+        source = remap.project(logical_roots)
+        source_record: dict[str, str]
+        if isinstance(source, RustLogicalRemapSource):
+            source_record = {
+                "kind": "logical-root",
+                "label": source.label,
+                "suffix": source.suffix,
+            }
+        elif isinstance(source, RustLiteralRemapSource):
+            source_record = {"kind": "literal", "value": source.value}
+        else:
+            assert_never(source)
+        result.append(
+            {"kind": "remap", "source": source_record, "destination": remap.destination}
+        )
+    return result
 
 
 def rust_remap_path_flags(mappings: Sequence[tuple[Path, str]]) -> tuple[str, ...]:

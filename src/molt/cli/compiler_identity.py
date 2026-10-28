@@ -229,6 +229,7 @@ def backend_build_admission(
     from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
     from molt.dx import project_cargo_target_dir
     from molt.llvm_toolchain import LlvmToolchainConfigError
+    from molt.rust_toolchain import rust_flag_remap_identity
 
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     if not isinstance(product, HostToolProduct):
@@ -296,16 +297,32 @@ def backend_build_admission(
         environment = _runtime_build_environment_identity(
             plan, cargo_profile=cargo_profile
         )
+        logical_roots = tuple(
+            (label, os.fspath(path)) for label, path in plan.logical_paths
+        )
+        compile_command, link_arguments = plan.partition_command()
+        # Cargo's delimiter starts final-crate rustc arguments. Linker
+        # arguments have their own scope and must remain literal inputs.
+        if "--" in compile_command:
+            boundary = compile_command.index("--")
+            cargo_arguments = compile_command[:boundary]
+            rust_arguments = compile_command[boundary + 1 :]
+        else:
+            cargo_arguments, rust_arguments = compile_command, ()
         # Build-script and rustc ambient reads are captured from Cargo's actual
         # unit outputs after execution, then checked separately on every reuse.
         # The plan owns direct Cargo/profile selectors and typed tool/resources.
         fingerprint = canonical_json_sha256(
             {
-                "schema": "molt.compiler-cargo-build.v1",
-                "command": plan.partition_command(),
+                "schema": "molt.compiler-cargo-build.v2",
+                "command": {
+                    "cargo": cargo_arguments,
+                    "rust": rust_flag_remap_identity(rust_arguments, logical_roots),
+                    "link": link_arguments,
+                },
                 "features": sorted(features),
                 "profile": cargo_profile,
-                "rustflags": plan.rustflags,
+                "rustflags": rust_flag_remap_identity(plan.rustflags, logical_roots),
                 "environment": environment,
                 "c_environment": dict(plan.c_environment),
                 "toolchain": plan.toolchain_identity(),

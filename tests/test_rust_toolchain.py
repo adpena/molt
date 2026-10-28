@@ -17,6 +17,114 @@ from molt.rust_toolchain import (
 from tests.process_guard_common import install_module_view
 
 
+@pytest.mark.parametrize("joined", [False, True])
+def test_remap_identity_relocates_owned_roots_and_preserves_semantics(tmp_path, joined):
+    first, second = tmp_path / "first = source", tmp_path / "second source"
+
+    def identity(root, destination="/molt/source", source=None):
+        operand = f"{root if source is None else source}={destination}"
+        flags = (
+            ("--remap-path-prefix=" + operand,)
+            if joined
+            else ("--remap-path-prefix", operand)
+        )
+        return rust_toolchain.rust_flag_remap_identity(flags, (("source", str(root)),))
+
+    expected = [
+        {
+            "kind": "remap",
+            "source": {"kind": "logical-root", "label": "source", "suffix": ""},
+            "destination": "/molt/source",
+        }
+    ]
+    assert identity(first) == identity(second) == expected
+    assert identity(first, "/different/@destination") != expected
+    assert identity(first, source="${source}") != expected
+    assert identity(first, source=str(first) + "-sibling") != expected
+    assert identity(first, source=str(first) + os.sep + "nested" + os.sep + "..") == [
+        {
+            "kind": "remap",
+            "source": {
+                "kind": "logical-root",
+                "label": "source",
+                "suffix": os.sep + "nested" + os.sep + "..",
+            },
+            "destination": "/molt/source",
+        }
+    ]
+
+
+def test_remap_identity_keeps_literal_flags_and_option_value_boundaries(tmp_path):
+    root = str(tmp_path)
+    flags = (
+        "--cfg",
+        f'build_path="{root}/@literal"',
+        "--cfg",
+        "--remap-path-prefix=opaque=value",
+        "--unknown=/unowned/@literal",
+        "--",
+        f"--remap-path-prefix={root}=/must-remain-literal",
+    )
+    records = rust_toolchain.rust_flag_remap_identity(flags, (("source", root),))
+    assert records == [
+        {"kind": "literal", "tokens": list(flags[:2])},
+        {"kind": "literal", "tokens": list(flags[2:4])},
+        {"kind": "literal", "tokens": [flags[4]]},
+        {"kind": "literal", "tokens": list(flags[5:])},
+    ]
+
+
+def test_remap_identity_preserves_unknown_absolute_source_and_order(tmp_path):
+    root = str(tmp_path)
+    first = f"--remap-path-prefix={root}=/source"
+    second = "--remap-path-prefix=/unowned/tree=/external"
+    roots = (("source", root),)
+    record = rust_toolchain.rust_flag_remap_identity((first, second), roots)
+    assert record[1] == {
+        "kind": "remap",
+        "source": {"kind": "literal", "value": "/unowned/tree"},
+        "destination": "/external",
+    }
+    assert (
+        rust_toolchain.rust_flag_remap_identity((second, first), roots) == record[::-1]
+    )
+    assert rust_toolchain.rust_flag_remap_identity(
+        (first, "--remap-path-scope=all"), roots
+    ) != rust_toolchain.rust_flag_remap_identity(
+        (first, "--remap-path-scope=debuginfo"), roots
+    )
+
+
+def test_remap_parser_projects_longest_root_without_rewriting_text(tmp_path):
+    root = str(tmp_path)
+    nested = root + os.sep + "nested"
+    remap = rust_toolchain.RustPathRemap.parse(nested + "=/destination/@text")
+    assert remap.project((("source", root), ("nested", nested))) == (
+        rust_toolchain.RustLogicalRemapSource("nested", "")
+    )
+    assert remap.destination == "/destination/@text"
+    assert rust_toolchain.RustPathRemap.parse("source=with=equals=target").source == (
+        "source=with=equals"
+    )
+    with pytest.raises(ValueError, match="requires FROM=TO"):
+        rust_toolchain.RustPathRemap.parse("no-separator")
+    with pytest.raises(TypeError, match="token sequences"):
+        rust_toolchain.rust_flag_remap_identity("--cfg x", ())
+
+
+def test_remap_identity_preserves_windows_root_spelling():
+    root = r"C:\owned\Source"
+    roots = (("source", root),)
+    expected = rust_toolchain.RustLogicalRemapSource("source", "")
+    assert (
+        rust_toolchain.RustPathRemap.parse(root + "=/molt").project(roots) == expected
+    )
+    for spelling in (r"C:\owned\source", "C:/owned/Source", '"' + root + '"'):
+        assert rust_toolchain.RustPathRemap.parse(spelling + "=/molt").project(
+            roots
+        ) == rust_toolchain.RustLiteralRemapSource(spelling)
+
+
 @pytest.mark.parametrize("cargo_home", [None, "", "relative-cargo", "~/literal-cargo"])
 def test_cargo_configuration_discovery_has_one_home_and_shadowing_authority(
     tmp_path, cargo_home

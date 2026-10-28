@@ -428,6 +428,38 @@ Each slice is one contract, migrated whole with its consumers and tests:
    contract. The record does not supply its own coverage proof, and changed
    inputs producing equal bytes must preserve downstream output identity.
 
+## Host compiler remap identity
+
+Host compiler admission uses `molt.compiler-cargo-build.v2`. The shared typed
+`RustPathRemap` parser splits FROM and TO at the final equals sign, as
+[rustc specifies](https://doc.rust-lang.org/rustc/remap-source-paths.html).
+The [pinned rustc implementation](https://raw.githubusercontent.com/rust-lang/rust/58cf8f9c35b355199727627d07ae34a4e2846d67/compiler/rustc_span/src/source_map.rs)
+uses `Path::strip_prefix` and joins the remainder to TO; a sibling such as
+`source-dependency` does not match the `source` component. Only an absolute
+FROM under a declared logical root becomes a root label plus its exact suffix. TO, mapping order, remap scope, case, quotes and
+`..` stay semantic inputs. Literal text resembling a logical-root token stays
+literal. Cargo arguments, dependency-wide Rust flags, final-crate Rust flags
+and linker arguments retain distinct scopes. Non-remap host spans remain exact,
+including cfg values containing paths and response-looking text. Unknown FROM
+paths stay literal host inputs; the portable runtime consumer retains its
+strict unknown-absolute-path refusal through this same parser.
+
+Equivalent source and build-root relocation can therefore reuse host product
+admission without erasing selected SDK bytes, C environment, Cargo
+configuration, toolchain resources or observed build inputs. Candidate source
+is external to other checkouts; it cannot acquire an extra primary Cargo config
+through its parent directory. This follows Cargo's
+[hierarchical configuration search](https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure).
+The sandbox placement and remap projection correct distinct causes; differences
+in real selected configuration or SDK resources must still invalidate reuse.
+No portable runtime identity schema changes in this extraction. Old host v1
+keys miss naturally; no compatibility reader is retained.
+
+The hot projection is linear in flag spans and searches the small declared
+root set only for actual remaps. It performs no filesystem resolution, probes,
+process launches or extra reads. Sandbox selection reads enclosing Git metadata
+and reuses the queue's existing primary discovery; it adds no per-gate process.
+
 ## Development fixture cost
 
 Custody-only tool fixtures use independent copies of one small native image,
