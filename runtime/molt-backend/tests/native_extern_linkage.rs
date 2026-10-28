@@ -471,7 +471,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
     // resolver (which would require the linked runtime staticlib's
     // callable-symbol set). This is the same opt-out production uses for every
     // non-primary object; integration tests cannot rely on the `cfg(test)`
-    // carve-out in `runtime_callable_symbols_required` because they link
+    // carve-out in `RuntimeCallableSymbols::required_symbols` because they link
     // `molt-backend` as a non-test library.
     let mut backend = SimpleBackend::new();
     backend.emit_app_callable_resolver = false;

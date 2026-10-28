@@ -27,7 +27,9 @@ function reset(label, inherited = false, exceptionAt = 0, failEntry = false) {
            anchorOwners: new Map(), anchorRetains: 0, anchorReleases: 0};
 }
 function ensure(condition, message) {
-  assert.ok(condition, state.label + ': ' + message + '; state=' + JSON.stringify(state));
+  if (!condition)
+    assert.fail(state.label + ': ' + message + '; state=' + JSON.stringify(
+      state, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
 }
 function instantiate(path) {
   const module = new WebAssembly.Module(fs.readFileSync(path));
@@ -36,7 +38,31 @@ function instantiate(path) {
     __indirect_function_table: new WebAssembly.Table({initial: config.table_entries, element: 'anyfunc'}),
   }};
   const hooks = {
+    int_from_i64(value) {
+      ensure(state.mixedCase && state.mixedAnchorLive && state.enters===0 && state.boxes<2
+             && value === (1n << 62n) + BigInt(state.boxes), 'unexpected integer materialization');
+      const view = new DataView(imports.env.memory.buffer);
+      for (let slot=state.boxes; slot<2; slot++)
+        ensure(view.getBigInt64(state.mixedAnchorPtr+8*slot,true)===boxedNone,
+               'initialize all literal anchor holes before constructors');
+      const object = 1000n + BigInt(++state.boxes);
+      state.homeOwners.set(object, 1);
+      return object;
+    },
+    is_truthy(value) {
+      ensure(state.mixedCase && (value === boxedTrue || value === boxedFalse), 'unexpected condition');
+      return value === boxedTrue ? 1n : 0n;
+    },
     scratch_alloc(size) {
+      if (state.mixedCase) {
+        ensure(size===16n && state.mixedAnchorAllocations===0 && state.enters===0
+               && state.depth===0, 'mixed literals require one two-slot pre-entry region');
+        state.mixedAnchorAllocations++;
+        state.mixedAnchorPtr=config.memory_pages*65536+128;
+        state.mixedAnchorLive=true;
+        new Uint8Array(imports.env.memory.buffer,state.mixedAnchorPtr,16).fill(0xa5);
+        return BigInt(state.mixedAnchorPtr);
+      }
       ensure(state.anchorCase && size===8n && state.anchorAllocations===0,
              'only A1 invocation may allocate its one anchor slot');
       ensure(state.enters===0 && state.depth===state.initialDepth,
@@ -49,6 +75,22 @@ function instantiate(path) {
       return BigInt(state.anchorPtr);
     },
     scratch_free(ptr,size) {
+      if (state.mixedCase) {
+        ensure(state.mixedAnchorLive && state.mixedAnchorFrees===0 && size===16n
+               && ptr===BigInt(state.mixedAnchorPtr) && state.enters===1 && state.exits===0,
+               'mixed anchor region freed exactly once before frame cleanup');
+        const view = new DataView(imports.env.memory.buffer);
+        for (let slot=0; slot<2; slot++)
+          ensure(view.getBigInt64(state.mixedAnchorPtr+8*slot,true)===boxedNone,
+                 'clear every literal anchor before freeing its region');
+        ensure(state.mixedAnchorReleases===2
+               && state.homeOwners.get(1001n)===(state.chooseView ? 2 : 1)
+               && state.homeOwners.get(1002n)===(state.chooseView ? 0 : 1),
+               'anchor cleanup preserves precisely the home and selected return owners');
+        state.mixedAnchorLive=false;state.mixedAnchorFrees++;
+        new Uint8Array(imports.env.memory.buffer,state.mixedAnchorPtr,16).fill(0xdd);
+        return;
+      }
       ensure(state.anchorCase && state.anchorLive && size===8n
              && ptr===BigInt(state.anchorPtr),'anchor region freed incorrectly');
       ensure(new DataView(imports.env.memory.buffer).getBigInt64(state.anchorPtr,true)===boxedNone,
@@ -80,6 +122,13 @@ function instantiate(path) {
       // data and dispatcher maps. The decoy catches wrong-slot/base reads.
       state.homeBase = config.memory_pages * 65536 + 16;
       const view = new DataView(imports.env.memory.buffer);
+      if (state.mixedCase) {
+        for (let slot=0; slot<2; slot++) {
+          view.setBigInt64(state.homeBase+16*slot,0n,true);
+          view.setBigInt64(state.homeBase+16*slot+8,0n,true);
+        }
+        return BigInt(state.homeBase);
+      }
       for (const [slot, bits] of [[0,888n],[1,777n]]) {
         view.setBigInt64(state.homeBase + 16*slot,1n,true);
         view.setBigInt64(state.homeBase + 16*slot + 8,bits,true);
@@ -139,7 +188,20 @@ function instantiate(path) {
       if (state.anchorCase) ensure(!state.anchorLive && state.anchorFrees===1,
                                   'anchor region must retire before home/frame cleanup');
       if (pushed) state.depth--;
-      if (state.homeCase && state.homeOwners.size) {
+      if (state.mixedCase) {
+        ensure(!state.mixedAnchorLive && state.mixedAnchorFrees===1,
+               'literal anchor region must retire before frame homes');
+        const view = new DataView(imports.env.memory.buffer);
+        ensure(view.getBigInt64(state.homeBase+16,true) === 1n, 'binding must be boxed in its home');
+        const object = view.getBigInt64(state.homeBase+24,true);
+        ensure(object === 1001n, 'home must retain the original full-width allocation');
+        state.published = object;
+        ensure(state.homeOwners.get(object) === (state.chooseView ? 2 : 1), 'wrong home/join ownership');
+        state.homeOwners.set(object,state.homeOwners.get(object)-1);
+        view.setBigInt64(state.homeBase+16,0n,true);
+        view.setBigInt64(state.homeBase+24,0n,true);
+        state.homeReleases++;
+      } else if (state.homeCase && state.homeOwners.size) {
         // The runtime owns the homes. Exit unlinks the frame before releasing
         // bindings; compiled borrowed views must not release those bindings.
         const view = new DataView(imports.env.memory.buffer);
@@ -163,6 +225,14 @@ function instantiate(path) {
       state.lines.push(Number(line)); return boxedNone;
     },
     exception_pending() {
+      if (state.mixedCase && state.enters===0) {
+        ensure(state.mixedAnchorLive && state.boxes===state.mixedAnchorChecks+1,
+               'each full-width constructor gets one pre-entry failure observation');
+        const slot=state.mixedAnchorChecks++;
+        ensure(new DataView(imports.env.memory.buffer).getBigInt64(state.mixedAnchorPtr+8*slot,true)
+               ===1001n+BigInt(slot), 'publish constructed integer in its anchor');
+        return 0n;
+      }
       if (state.anchorCase && state.enters===0) {
         ensure(state.anchorConstructed===1 && state.anchorChecks===0,
                'only constructor failure is observed before owned entry');
@@ -179,6 +249,12 @@ function instantiate(path) {
       return hooks.exception_pending();
     },
     inc_ref_obj(value) {
+      if (state.mixedCase && state.homeOwners.has(value)) {
+        ensure(state.homeOwners.get(value)>0, 'retaining dead joined integer');
+        state.homeOwners.set(value,state.homeOwners.get(value)+1);
+        state.homeRetains++;
+        return;
+      }
       if (state.anchorCase && state.anchorOwners.has(value)) {
         ensure(value===909n && state.anchorLive && state.anchorRetains===0
                && state.anchorOwners.get(value)===1,
@@ -198,6 +274,21 @@ function instantiate(path) {
              'unexpected heap retain in scalar split fixture');
     },
     dec_ref_obj(value) {
+      if (state.mixedCase && state.homeOwners.has(value)) {
+        ensure(state.homeOwners.get(value)>0, 'releasing dead joined integer');
+        // Anchor cleanup clears the published slot before releasing its credit.
+        const slot=Number(value-1001n);
+        const bits=new DataView(imports.env.memory.buffer).getBigInt64(state.mixedAnchorPtr+8*slot,true);
+        if (bits===boxedNone) {
+          ensure(state.mixedAnchorLive && !state.mixedReleased.has(value),
+                 'literal anchor released twice or after region free');
+          state.mixedReleased.add(value);state.mixedAnchorReleases++;
+        } else {
+          ensure(bits===value, 'SSA release must preserve the anchor owner');
+        }
+        state.homeOwners.set(value,state.homeOwners.get(value)-1);
+        return;
+      }
       if (state.anchorCase && state.anchorOwners.has(value)) {
         ensure(state.anchorLive && state.anchorOwners.get(value)>0,
                'literal owner released early or twice');
@@ -306,6 +397,26 @@ for (const test of config.activation_modules) {
     assert.deepEqual(state.lines, [index + 1], state.label + ': resumed body');
     resumeState = state.resumeState;
   }
+}
+for (const chooseView of [true,false]) {
+  reset('mixed binding/owner phi '+chooseView);
+  state.homeCase = state.mixedCase = true;
+  state.chooseView = chooseView;
+  state.boxes = 0;
+  state.mixedAnchorAllocations = state.mixedAnchorFrees = state.mixedAnchorChecks = state.mixedAnchorReleases = 0;
+  state.mixedAnchorLive = false;
+  state.mixedReleased = new Set();
+  const app = instantiate(config.mixed_home_module);
+  const result = app.molt_main(chooseView ? boxedTrue : boxedFalse);
+  assert.equal(state.boxes,2,'one construction per distinct literal; no binding rematerialization');
+  assert.equal(state.mixedAnchorChecks,2,'both constructors observed before frame entry');
+  assert.equal(state.mixedAnchorAllocations,1,'one invocation-owned literal region');
+  assert.equal(state.mixedAnchorFrees,1,'literal region retired exactly once');
+  assert.equal(result,chooseView ? state.published : 1002n,'join carries the selected object identity');
+  assert.equal(state.homeOwners.get(result),1,'returned owner survives frame cleanup');
+  assert.equal([...state.homeOwners.values()].reduce((a,b)=>a+b,0),1,'only returned owner remains');
+  ensure(state.enters===1 && state.exits===1 && state.depth===0 && !state.pending,
+         'mixed join must retire exactly its frame');
 }
 // These are exact codegen-mode witnesses over synchronous binding homes.
 // Actual generator/coroutine bindings use the distinct task-payload authority.
@@ -740,6 +851,132 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "expected": expected.to_string(), "stateful": false}),
         );
     }
+    // Derive the carriers from literal producers, then pass the actual mixed
+    // owner/view SSA join through terminal ownership and final WASM custody.
+    // No supplied representation map or hand-authored arc retains can hide a
+    // lost binding identity in lowering.
+    let mixed_source = wasm_test_function(
+        "molt_main",
+        vec!["choose"],
+        None,
+        vec![
+            OpIR {
+                s_value: Some("molt_main".into()),
+                ..wasm_test_op("trace_enter_slot", None, vec![])
+            },
+            OpIR {
+                value: Some(1_i64 << 62),
+                ..wasm_test_op("const", Some("wide"), vec![])
+            },
+            OpIR {
+                value: Some(1),
+                ..wasm_test_op("frame_home_store", Some("view"), vec!["wide"])
+            },
+            wasm_test_op("trace_exit", None, vec![]),
+            wasm_test_op("ret", None, vec!["view"]),
+        ],
+    );
+    let mut mixed_source = mixed_source;
+    mixed_source.execution_context = ExecutionContextPolicy::Local;
+    let mut mixed = crate::tir::lower_from_simple::lower_to_tir(&mixed_source);
+    let independent = mixed.fresh_value();
+    let joined = mixed.fresh_value();
+    let other = mixed.fresh_block();
+    let join = mixed.fresh_block();
+    let entry = mixed.blocks.get_mut(&mixed.entry_block).unwrap();
+    let condition = entry.args[0].id;
+    let view = match &entry.terminator {
+        crate::tir::blocks::Terminator::Return { values } => values[0],
+        _ => panic!("straight-line home fixture"),
+    };
+    let exit = entry.ops.pop().expect("authored trace exit");
+    let mut literal = entry
+        .ops
+        .iter()
+        .find(|op| op.opcode == crate::tir::ops::OpCode::ConstInt)
+        .expect("full-width literal producer")
+        .clone();
+    literal.results = vec![independent];
+    // Equal literal payloads intentionally share one invocation anchor. Use a
+    // distinct full-width payload so selecting the owner arm is observable.
+    literal.attrs.insert(
+        "value".into(),
+        crate::tir::ops::AttrValue::Int((1_i64 << 62) + 1),
+    );
+    entry.terminator = crate::tir::blocks::Terminator::CondBranch {
+        cond: condition,
+        then_block: join,
+        then_args: vec![view],
+        else_block: other,
+        else_args: vec![],
+    };
+    mixed.blocks.insert(
+        other,
+        crate::tir::blocks::TirBlock {
+            id: other,
+            args: vec![],
+            ops: vec![literal],
+            terminator: crate::tir::blocks::Terminator::Branch {
+                target: join,
+                args: vec![independent],
+            },
+        },
+    );
+    mixed.blocks.insert(
+        join,
+        crate::tir::blocks::TirBlock {
+            id: join,
+            args: vec![crate::tir::values::TirValue {
+                id: joined,
+                ty: crate::tir::types::TirType::I64,
+            }],
+            ops: vec![exit],
+            terminator: crate::tir::blocks::Terminator::Return {
+                values: vec![joined],
+            },
+        },
+    );
+    crate::tir::type_refine::refine_types(&mut mixed);
+    crate::tir::drop_phase::finalize_function_drops(
+        &mut mixed,
+        &crate::tir::TargetInfo::wasm_release_fast(),
+    );
+    let mixed_ir = SimpleIR {
+        functions: vec![mixed_source],
+        profile: None,
+    };
+    let final_functions = crate::wasm::final_functions::WasmFinalFunctions::from_final_tir(
+        mixed_ir,
+        vec![(false, mixed)],
+    );
+    let trampolines =
+        crate::wasm::trampoline_analysis::analyze_wasm_trampolines(final_functions.ir());
+    let output = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .with_code_slots(
+        molt_ir::code_slots::CodeSlotBindings::try_from(BTreeMap::from([(
+            "molt_main".to_string(),
+            0,
+        )]))
+        .unwrap(),
+    )
+    .emit_wasm_module(
+        final_functions,
+        trampolines,
+        crate::wasm_plan::WasmStageAudit::from_environment(),
+    );
+    wasmparser::Validator::new()
+        .validate_all(&output.wasm)
+        .unwrap();
+    let (pages, entries) = wasm_import_minimums(&output.wasm);
+    memory_pages = memory_pages.max(pages);
+    table_entries = table_entries.max(entries);
+    let mixed_home_module = temp.join("mixed_home_phi.wasm");
+    fs::write(&mixed_home_module, output.wasm).expect("write emitted mixed home join");
     let mut activation_modules = Vec::new();
     for mode in ["ordinary", "dispatch", "stateful", "yield", "await"] {
         let stateful = matches!(mode, "stateful" | "yield" | "await");
@@ -1050,6 +1287,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "return_modules": return_modules,
             "activation_modules": activation_modules,
             "home_modules": home_modules,
+            "mixed_home_module": mixed_home_module,
             "unwind_module": unwind_path,
         }))
         .unwrap(),
