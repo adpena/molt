@@ -457,12 +457,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_spec_from_file_location as *const (),
             ))
         }
-        "molt_importlib_stabilize_module_state" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_stabilize_module_state",
-                crate::molt_importlib_stabilize_module_state as *const (),
-            ))
-        }
         "molt_importlib_metadata_types_payload" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_metadata_types_payload",

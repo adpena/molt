@@ -1673,11 +1673,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 5,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_stabilize_module_state",
-        import: WasmRuntimeImport::ImportlibStabilizeModuleState,
-        arity: 6,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_validate_resource_name",
         import: WasmRuntimeImport::ImportlibValidateResourceName,
         arity: 1,
@@ -12969,9 +12964,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
             Some(WasmRuntimeImport::ImportlibSpecFromFileLocation)
         }
         "molt_importlib_spec_from_loader" => Some(WasmRuntimeImport::ImportlibSpecFromLoader),
-        "molt_importlib_stabilize_module_state" => {
-            Some(WasmRuntimeImport::ImportlibStabilizeModuleState)
-        }
         "molt_importlib_validate_resource_name" => {
             Some(WasmRuntimeImport::ImportlibValidateResourceName)
         }

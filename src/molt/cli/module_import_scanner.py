@@ -26,10 +26,14 @@ from molt.target_python import (
 )
 
 
+# Modules the runtime import protocol acquires through its support loader.
+# The meta-path walk calls `_warnings.warn("sys.meta_path is empty",
+# ImportWarning)`, as CPython's `importlib._bootstrap._find_spec` does.
 _RUNTIME_IMPORT_SUPPORT_ROOT_MODULES = (
     "importlib",
     "importlib.util",
     "importlib.machinery",
+    "_warnings",
 )
 
 

@@ -3776,7 +3776,6 @@
     "importlib_sourceless_loader_exec_module": "molt_importlib_sourceless_loader_exec_module",
     "importlib_spec_from_file_location": "molt_importlib_spec_from_file_location",
     "importlib_spec_from_loader": "molt_importlib_spec_from_loader",
-    "importlib_stabilize_module_state": "molt_importlib_stabilize_module_state",
     "importlib_suffixes": "molt_importlib_suffixes",
     "importlib_validate_resource_name": "molt_importlib_validate_resource_name",
     "importlib_zip_archive_path": "molt_importlib_zip_archive_path",

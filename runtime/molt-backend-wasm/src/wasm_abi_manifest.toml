@@ -3646,10 +3646,6 @@ name = "importlib_spec_from_loader"
 type = 10
 
 [[import]]
-name = "importlib_stabilize_module_state"
-type = 8
-
-[[import]]
 name = "importlib_validate_resource_name"
 type = 2
 
