@@ -10,8 +10,9 @@ use super::super::super::native_batch::{
     create_native_batch_temp_dir, finish_native_batch_temp_dir,
     release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
 };
-use super::super::publish::StdlibObjectCache;
+use super::super::publish::{StdlibArchiveProvenance, StdlibObjectCache};
 use super::plan::{StdlibBatchPlan, log_stdlib_batch, stdlib_batch_ops_budget};
+use molt_ir::content_digest::bytes_to_lower_hex;
 
 /// One closed constituent job, its input key when reuse is active, and the
 /// batch's function and operation counts for the progress log.
@@ -95,13 +96,16 @@ impl PlannedStdlibArchive {
         self,
         log_prefix: &str,
         cache: Option<&StdlibObjectCache>,
-        publish: impl FnOnce(&[MappedObject], &[NativeWorkerOrigin]) -> io::Result<()>,
+        publish: impl FnOnce(&[MappedObject], &StdlibArchiveProvenance) -> io::Result<()>,
     ) -> io::Result<()> {
         if cache.is_none() {
             eprintln!(
                 "{log_prefix}: stdlib object reuse inactive (no compiler manifest or explicit compilation diagnostics)"
             );
         }
+        let content_key = cache
+            .and_then(|_| self.archive_key())
+            .map(|key| bytes_to_lower_hex(&key));
         let stdlib_tmp_dir = create_native_batch_temp_dir()?;
         let compile_result = (|| -> io::Result<()> {
             let total = self.batches.len();
@@ -188,7 +192,11 @@ impl PlannedStdlibArchive {
             let publication_started = Instant::now();
             // Completed objects stay mapped until assembly and its short cache
             // lock finish. No archive-sized intermediate copy.
-            publish(&objects, &origins)?;
+            let provenance = StdlibArchiveProvenance {
+                content_key,
+                workers: origins,
+            };
+            publish(&objects, &provenance)?;
             drop(objects);
             eprintln!(
                 "{log_prefix}: stdlib object reuse: {} hits, {} misses, {} reused bytes, {} emitted bytes; compile {:?}, cache {:?}, publication {:?}",

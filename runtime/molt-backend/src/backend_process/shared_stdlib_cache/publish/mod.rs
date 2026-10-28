@@ -6,6 +6,7 @@ mod objects;
 mod paths;
 pub(crate) use objects::{ContentArchive, StdlibObjectCache};
 mod sidecars;
+pub(crate) use sidecars::StdlibArchiveProvenance;
 
 #[cfg(any(unix, test))]
 pub(crate) use admission::shared_stdlib_cache_matches;

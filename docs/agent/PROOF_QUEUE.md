@@ -1891,10 +1891,20 @@ cache, a broad selector, or a stale generated file.
 - If a proof lane is already active, monitor it instead of stacking another
   Cargo/WASM proof unless the new command is independent and cheap.
 - The native proof supervisor uses one source-bound bootstrap Cargo store.
-  Explicit output declarations keep their existing custody. Without a declaration,
-  canonical external checkout custody is reused; plain clones and temporary
-  sources place the store beside the source. Source and receipt overlap, links,
-  and Windows path-budget violations are rejected before provisioning.
+  The queue parent freezes its artifact-root selection through
+  `CargoOutputLayout.bind_supervisor_artifact_root`: an explicit Cargo output
+  declaration wins, otherwise DX selects the explicit environment root, healthy
+  family binding or existing default. Request version 5 carries the directory's
+  path/device/inode declaration as `supervisor_artifact_root`. The child consumes
+  that declaration without consulting its environment or selecting storage
+  again. The parent retains the declaration and verifies the same root in the
+  receipt context. Missing declarations and replaced/offline roots refuse;
+  there is no transport fallback. Payload argv/environment authority stays in
+  the admitted command envelope and its existing classifications.
+  The store remains `<artifact root>/proof-supervisor/<implementation namespace>`.
+  Unbound plain clones whose default would enter source refuse with the bind
+  command. Source and receipt overlap, links, and Windows path-budget violations
+  are rejected before provisioning.
   Synthetic layout tests model the implementation source, receipts, and declared
   output roots as siblings through the layout's implementation-source authority;
   pytest temporary directories may themselves be inside the real checkout.

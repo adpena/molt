@@ -202,6 +202,7 @@ class ReceiptCustodyFactory(Protocol):
         nonce: str = "a" * 64,
         descendants: str = "forbidden",
         environment: dict[str, str] | None = None,
+        supervisor_artifact_root: Mapping[str, object] | None = None,
     ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]: ...
 
 
@@ -356,6 +357,7 @@ def publish_receipt_custody(
     nonce: str = "a" * 64,
     descendants: str = "forbidden",
     environment: dict[str, str] | None = None,
+    supervisor_artifact_root: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     summaries, artifact, telemetry = toolchain_capture.publish_capture(
         directory / "custody-cas", toolchains
@@ -419,9 +421,10 @@ def publish_receipt_custody(
         "verification_identity_sha256": verification["identity_sha256"],
         "identical": True,
     }
-    provision_target = cargo_output_layout.CargoOutputLayout.create(
-        result_root=directory
-    ).supervisor_target
+    provision_layout = cargo_output_layout.CargoOutputLayout.create(
+        result_root=directory, supervisor_artifact_root=supervisor_artifact_root
+    )
+    provision_target = provision_layout.supervisor_target
     generation_inputs = {
         "profile": "release",
         "synthetic_fixture": True,
@@ -462,7 +465,15 @@ def publish_receipt_custody(
             ).as_dict(),
         },
     }
-    return summaries, toolchain_custody, {"capture": capture, "supervisor": supervisor}
+    return (
+        summaries,
+        toolchain_custody,
+        {
+            "capture": capture,
+            "supervisor": supervisor,
+            "supervisor_artifact_root": provision_layout.supervisor_artifact_root,
+        },
+    )
 
 
 def synthetic_live_custody(directory: Path) -> dict[str, object]:
@@ -518,6 +529,7 @@ def assert_execution_context_rejects_substitutions(
         "run_id": "run-one",
         "execution_nonce_sha256": hashlib.sha256(("a" * 64).encode()).hexdigest(),
         "command_envelope": envelope,
+        "supervisor_artifact_root": v3["supervisor_artifact_root"],
         "command_transcript": transcript,
         "toolchains": synthetic_toolchains,
         "toolchain_custody": compact_custody,
@@ -584,11 +596,34 @@ def assert_execution_context_rejects_substitutions(
     )
     runner._validated_execution_context(
         context,
+        supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
         execution_path=execution_path,
         envelope=envelope,
         run_id="run-one",
         execution_nonce="a" * 64,
         returncode=0,
+    )
+    expected_supervisor_root = context["supervisor_artifact_root"]
+    context["supervisor_artifact_root"] = {
+        **expected_supervisor_root,
+        "path": str(tmp_path / "substituted-storage"),
+    }
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
+    )
+    with pytest.raises(ValueError, match="supervisor artifact root substitution"):
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+            supervisor_artifact_root=expected_supervisor_root,
+        )
+    context["supervisor_artifact_root"] = expected_supervisor_root
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
     )
     original_live_custody = context["live_input_custody"]
     for apparatus in (None, "unrecognized-operational-lock"):
@@ -627,6 +662,7 @@ def assert_execution_context_rejects_substitutions(
         ):
             runner._validated_execution_context(
                 context,
+                supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
                 execution_path=execution_path,
                 envelope=envelope,
                 run_id="run-one",
@@ -661,6 +697,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError) as unstable_refusal:
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -697,6 +734,9 @@ def assert_execution_context_rejects_substitutions(
             with pytest.raises(ValueError, match="verified different receipt bytes"):
                 runner._validated_execution_context(
                     context,
+                    supervisor_artifact_root=context.get(
+                        "supervisor_artifact_root", {}
+                    ),
                     execution_path=execution_path,
                     envelope=envelope,
                     run_id="run-one",
@@ -714,6 +754,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="required-environment metadata mismatch"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -735,6 +776,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="environment ownership metadata mismatch"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -759,6 +801,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="no complete native process supervisor"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -770,6 +813,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="no complete native process supervisor"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -784,6 +828,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="receipt failed independent verification"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -804,6 +849,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="policy binding is invalid"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -818,6 +864,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="event artifact binding is invalid"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -829,6 +876,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="transcript content substitution"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",
@@ -840,6 +888,7 @@ def assert_execution_context_rejects_substitutions(
     with pytest.raises(ValueError, match="custody digest mismatch"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=execution_path,
             envelope=envelope,
             run_id="run-one",

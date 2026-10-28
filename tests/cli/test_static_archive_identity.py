@@ -488,7 +488,8 @@ def test_original_worker_bytes_admit_only_documented_darwin_member_padding(
         return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
     payload = {
-        "schema": "molt.stdlib-archive-origin.v1",
+        "schema": "molt.stdlib-archive-origin.v2",
+        "content_key": None,
         "output": content(archive),
         "workers": [
             {

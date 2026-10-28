@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 import hashlib
 import json
 import os
@@ -22,6 +23,8 @@ import time
 from typing import Any
 
 from molt.checkout_state import (
+    WalkIncomplete,
+    WalkRotation,
     agent_evidence_idle_s,
     checkout_state_retirement,
     soft_retire,
@@ -295,10 +298,16 @@ def harvest_agent_evidence(
     registry_stamps: dict[Path, int | None],
     now: float,
     apply: bool,
-    deadline: float,
+    tasks: Sequence[Path],
+    walks: WalkRotation,
     protected: Sequence[Path] = (),
 ) -> list[dict[str, Any]]:
     """Keep terminal tasks' small records and retire each payload with one rename.
+
+    ``tasks`` are task directories of this checkout in the order that the
+    ``agent-evidence`` walk rotation visits them. A task's walks and text
+    checks spend that family's budget; an incomplete one is deferred or
+    reported over budget, and it never harvests (HF-528).
 
     Read candidate text once, hash its Git blob framing, and query one lazy
     cat-file stream for the whole checkout. Small records are relinked after
@@ -385,10 +394,37 @@ def harvest_agent_evidence(
         git_failed = False
         return True
 
+    def unique_text(
+        task: Path, record: CoordinationRecord, text: list[Path], deadline: float
+    ) -> dict[Path, int]:
+        """The small text records to keep: decodable and not a repository blob."""
+        kept: dict[Path, int] = {}
+        for path in text:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("agent evidence harvest budget exhausted")
+            resolve_owned_path(path)
+            if path == record.path:
+                assert record.raw is not None
+                data = record.raw
+            else:
+                with path.open("rb") as source:
+                    data = source.read(_EVIDENCE_TEXT_LIMIT + 1)
+            if len(data) > _EVIDENCE_TEXT_LIMIT:
+                raise ValueError(f"evidence changed during harvest: {path}")
+            # Only decodable text is evidence; opaque bytes retire.
+            try:
+                if "\0" in _decode_record_bytes(data):
+                    continue
+            except UnicodeError:
+                continue
+            if path == record.path or not is_blob(data):
+                kept[path.relative_to(task)] = len(data)
+        return kept
+
     try:
-        for task in sorted(log_root.iterdir()):
+        for task in tasks:
             item: dict[str, Any] = {"path": str(task), "kind": "agent-evidence"}
-            if task.is_symlink() or not task.is_dir():
+            if task.parent != log_root or task.is_symlink() or not task.is_dir():
                 continue
             record = by_task.get(task.name)
             if record is None:
@@ -435,32 +471,16 @@ def harvest_agent_evidence(
                     if now - newest < idle:
                         results.append({**item, "reason": "recent-activity"})
                         continue
-                    size, newest, text = _evidence_inventory(task, deadline)
+                    key = str(task)
+                    size, newest, text = walks.spend(
+                        "agent-evidence", key, partial(_evidence_inventory, task)
+                    )
                     if now - newest < idle:
                         results.append({**item, "reason": "recent-activity"})
                         continue
-                    kept: dict[Path, int] = {}
-                    for path in text:
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError(
-                                "agent evidence harvest budget exhausted"
-                            )
-                        resolve_owned_path(path)
-                        if path == record.path:
-                            data = record.raw
-                        else:
-                            with path.open("rb") as source:
-                                data = source.read(_EVIDENCE_TEXT_LIMIT + 1)
-                        if len(data) > _EVIDENCE_TEXT_LIMIT:
-                            raise ValueError(f"evidence changed during harvest: {path}")
-                        # Only decodable text is evidence; opaque bytes retire.
-                        try:
-                            if "\0" in _decode_record_bytes(data):
-                                continue
-                        except UnicodeError:
-                            continue
-                        if path == record.path or not is_blob(data):
-                            kept[path.relative_to(task)] = len(data)
+                    kept = walks.spend(
+                        "agent-evidence", key, partial(unique_text, task, record, text)
+                    )
                     payload_bytes = size - sum(kept.values())
                     if payload_bytes <= 0:
                         continue
@@ -474,7 +494,9 @@ def harvest_agent_evidence(
                     if apply:
                         # Raw writers also count: inspect every payload's activity
                         # again under custody immediately before the atomic move.
-                        _, current_use, _ = _evidence_inventory(task, deadline)
+                        _, current_use, _ = walks.spend(
+                            "agent-evidence", key, partial(_evidence_inventory, task)
+                        )
                         if now - current_use < idle:
                             results.append({**item, "reason": "recent-activity"})
                             continue
@@ -517,6 +539,8 @@ def harvest_agent_evidence(
                             registry_stamps[log_root] = log_root.stat().st_mtime_ns
                             record_stamps[record.path] = _record_signature(record.path)
                     results.append(item)
+            except WalkIncomplete as incomplete:
+                results.append({**item, "reason": incomplete.reason})
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 results.append({**item, "reason": str(exc), "error": True})
                 if git_failed or isinstance(exc, TimeoutError):

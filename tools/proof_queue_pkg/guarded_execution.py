@@ -354,8 +354,17 @@ def execute_guarded_request(request_path: Path) -> int:
             cargo_output_environment.CargoOutputEnvironment.for_envelope(
                 envelope
             ).validate_request_environment(inherited_env)
+        supervisor_artifact_root = cargo_output_layout.validate_root(
+            request.get("supervisor_artifact_root")
+        )
+        if supervisor_artifact_root is None:
+            raise ValueError("proof execution request has no supervisor artifact root")
+        result["supervisor_artifact_root"] = supervisor_artifact_root
         output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
-            envelope, result_root=result_path.parent, source_root=effective_cwd
+            envelope,
+            result_root=result_path.parent,
+            source_root=effective_cwd,
+            supervisor_artifact_root=supervisor_artifact_root,
         )
         # Even non-Cargo payloads provision the native supervisor with Cargo.
         # Reject an inadmissible control-plane target before provisioning or
@@ -1028,6 +1037,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 },
             },
             "command_envelope": envelope,
+            "supervisor_artifact_root": supervisor_artifact_root,
             "command_envelope_sha256": hashlib.sha256(
                 json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),

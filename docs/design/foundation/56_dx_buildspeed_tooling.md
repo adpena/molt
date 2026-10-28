@@ -115,6 +115,85 @@ below `molt-tir`), (b) convert the advisory/ritual parts of the DX loop into
 and (c) build the observability plane (DX-4) the audit board explicitly lists as
 MISSING. Each is a structural FACT, not a script.
 
+### Durable artifact roots (HF-521)
+
+Artifact placement is a DX selection, independent of source, Git, seals and
+toolchain custody. An operator can persist the selection with
+`python -m molt.checkout_provisioning artifact-root --checkout /checkout --bind /absolute/root`.
+The same entry point without `--bind` reports the selected root, its source and
+the record address; `--clear` deliberately removes the binding. `--json` exposes
+the same facts. Binding requires an existing, writable, identifiable directory
+outside source checkouts with the existing external-root capacity headroom
+(`MOLT_EXTERNAL_MIN_FREE_GB`, default 20 GiB). It never creates the target.
+
+The record is `<git common dir>/molt/artifact-root.json`, alongside the existing
+repository control records. Linked worktrees share it even outside the conventional
+family directory names. Source trees without Git metadata cannot write a family
+binding and retain their existing defaults. Publication uses exact JSON and the
+durable atomic-file owner, serialized by the existing checkout-provisioning lock
+namespace. Clear uses durable retirement under the same lock. This adds no
+parallel family registry or output-selection implementation.
+
+Precedence is explicit `MOLT_EXT_ROOT`, then family binding, then the existing
+requested external-candidate selection and checkout-custody default. The
+unconfigured default is reported as `plain-clone-default`; a plain clone retains
+its in-place Cargo target. `configured_artifact_root` returns either explicit
+configuration source and refuses an unhealthy binding. Default Cargo targets,
+both DX environment builders, scratch and build control consume this authority.
+For supervisor bootstrap, the store is
+`<artifact root>/proof-supervisor/<implementation namespace>`. An immutable
+`--cargo-output-root` declaration remains the proof queue's explicit output
+override. Source, enclosing-checkout and receipt-overlap refusals still apply;
+an unconfigured plain clone must bind/select an external root for supervisor
+bootstrap instead of silently acquiring a sibling output directory.
+
+The queue resolves that control-plane choice once in the parent, including
+requested environment overrides, and carries an existing directory declaration
+(path/device/inode) in execution request version 5. The guarded child and receipt
+verifier use that captured root; they never reselect from a scrubbed child
+environment. A missing declaration refuses instead of falling back to DX.
+The declaration is separate from payload argv/environment authority and enters
+the nonce-bound receipt context. This preserves CI's environment-only selection
+without granting new environment names to proof commands. Direct local layout
+users and the parent share the same root/store selector and overlap checks.
+
+A binding records the resolved root and its directory device/inode identity.
+Every use checks that directory before probing capacity; absence, replacement,
+an unmounted volume exposing another directory, unwritability or failed/low
+capacity produces one diagnostic naming the root, observation and bind/clear
+remedy. It never probes an ancestor of a missing bound directory or falls back
+to the source/root volume. A remount that changes identity requires an explicit
+rebind after inspection. Selection reserves no space and cannot prevent media
+removal or concurrent disk growth after admission.
+
+Research checked 2026-10-28, using upstream documentation and implementation:
+
+| Prior art | Durable selection and missing-directory behavior | Molt decision |
+| --- | --- | --- |
+| [Cargo configuration](https://doc.rust-lang.org/cargo/reference/config.html#buildtarget-dir) and [Cargo 1.92 layout](https://github.com/rust-lang/cargo/blob/rust-1.92.0/src/cargo/core/compiler/layout.rs) | `build.target-dir` in `.cargo/config.toml` persists placement; configuration-relative paths have a documented base. `Layout::new` creates missing output roots and propagates creation failure. | Reuse explicit durable placement; store an absolute path so worktree location cannot change it. |
+| [Bazel rc files](https://bazel.build/run/bazelrc), [output layout](https://bazel.build/remote/output-directories) and [PrepareDirectories](https://github.com/bazelbuild/bazel/blob/master/src/main/cpp/blaze.cc) | `.bazelrc` can persist `startup --output_user_root=...`; bootstrap creates the user root/output base and refuses creation errors. | Keep one family control record shared by worktrees, with explicit operator precedence. |
+| [Go env](https://go.dev/cmd/go/#hdr-Print_Go_environment_information), [GOENV configuration](https://go.dev/src/cmd/go/internal/cfg/cfg.go) and [cache initialization](https://go.dev/src/cmd/go/internal/cache/default.go) | `go env -w GOCACHE=/path` persists a default in the GOENV file (`go/env` under the user configuration directory); environment values override defaults. Cache initialization calls `MkdirAll` and fails if initialization fails. | Adopt the explicit write/clear/status boundary and process-cached configuration. |
+| [uv configuration](https://docs.astral.sh/uv/configuration/files/), [cache selection](https://docs.astral.sh/uv/concepts/cache/#cache-directory) and [Cache::init](https://github.com/astral-sh/uv/blob/main/crates/uv-cache/src/lib.rs) | `cache-dir` in `uv.toml` persists a selection; CLI/environment override it. Initialization creates the selected root and reports errors there. | Retain overrides, but refuse to recreate missing bound storage. |
+
+The deliberate difference from these tools' directory creation is the mounted
+storage obligation: recreating a missing path can put artifacts on the root
+volume beneath an absent mount. The HF-521 incident measured 16 GiB of cache,
+9.2 GiB of Cargo output and 5.80 GiB in 45 cold supervisor builds on the
+integrator's small root volume; the published V1 ledger owns that incident and
+its qualification status. These are storage observations, not timing evidence.
+
+Resolution adds at most one bounded 16 KiB record read per family per process,
+including absence and malformed-record refusal. The in-memory cache serializes
+first reads; Git/common-directory metadata uses a per-checkout memo. Explicit
+environment roots bypass the binding read. Live health remains the existing
+statvfs-style capacity authority plus directory identity/access checks; no new
+subprocess, directory enumeration or ancestor discovery is added for a bound
+root. Only the operator mutation boundary invalidates its process's record
+snapshot; other running processes keep their selection and fresh health checks.
+The owning regression checks count record reads across worktrees and threads.
+No new wall-clock performance result is claimed before the parent's focused
+qualification; emitted programs carry none of this machinery.
+
 ### 2.1 Live latency evidence: WASM ABI generator and runtime crate proof
 
 The 2026-07-01 Pact recovery exposed two DX facts that should be treated as
@@ -1398,11 +1477,26 @@ The design extends `molt.checkout_state`; it adds no second authority.
    products, while soft retirement adds seven recoverable days. This is a
    retention choice from observed accumulation, not a measured reuse optimum.
 
-   A complete metadata walk observes every descendant's activity, bytes and
-   held lock, including writes that leave all ancestor mtimes unchanged.
-   It never follows links or reads payload bytes. Recent use, a protected
-   path, an external checkout-state use lock, a held descendant lock or an
-   unresolved guard marker whose coordinates cover the root keeps it. The
+   A constructor root, whose owner record binds and whose last-use stamp is
+   a regular file, follows the use protocol of 2.6: every managed use holds
+   the root's external use lock for its lifetime and refreshes the stamp
+   when it starts and ends, at most once an hour. Its last use is the
+   newer of the root's and the stamp's mtimes, and that stamp decides it
+   without a walk (HF-528), as Go and Cargo decide by a recorded last use.
+   The decision never lists the root, so it does not estimate the root's
+   bytes; Cargo also computes disk usage only for size-based cleaning. A
+   lock or guard marker below the root that no managed use declares is
+   outside this protocol, as raw Cargo is outside 2.6's managed custody;
+   soft retirement keeps such a root recoverable, and its final deletion
+   walks it completely.
+
+   A pre-constructor root has no cooperating writer. A complete metadata
+   walk observes every descendant's activity, bytes and held lock,
+   including writes that leave all ancestor mtimes unchanged. It never
+   follows links or reads payload bytes. For either kind, recent use, a
+   protected path, an external checkout-state use lock or an unresolved
+   guard marker whose coordinates cover the root keeps it; for a walked
+   root, so does a held descendant lock or a nested guard marker. The
    version-2 marker's typed `artifact_scope` records its source checkout, cwd,
    selected command resources, scratch declarations and guard output paths
    before launch; its published temporary-artifact target joins that scope.
@@ -1423,9 +1517,105 @@ The design extends `molt.checkout_state`; it adds no second authority.
    attributable owner scope. Malformed-owner and incompletely inventoried
    roots stay. Apply reobserves activity and protection under the existing
    exclusive state lock, then calls `soft_retire`; final deletion also
-   checks recursive activity and custody. Inventories share the daily pass's
-   existing 30-second deadline; a timeout defers the root. Dry-run reports
-   estimated bytes for each selected scratch root without changing it.
+   checks recursive activity and custody. Dry-run reports estimated bytes
+   for each selected walked root, and none for a stamped one, without
+   changing either.
+
+   Complete walks must cover every root within a known number of passes
+   (HF-528). Until then the walks shared the pass's 30-second deadline and
+   visited roots in one fixed order. On 2026-10-28 a dry run on the
+   external root spent the deadline on the first five of 1,006 entries and
+   left 879 unevaluated; the next pass would repeat the same five. Leading
+   tools bound the work of one cleanup and cover the rest in later runs:
+
+   - ccache's automatic cleanup works on one part of the cache at a time,
+     1/256 of it since 4.8 (1/16 before), so the oldest entries are not
+     always removed first, but the overall behavior approximates LRU over
+     time ([manual](https://ccache.dev/manual/latest.html),
+     [4.8 release notes](https://ccache.dev/releasenotes.html)).
+   - Cargo's global cache tracker records each entry's last use in its
+     database, adds untracked entries found by a one-level listing with the
+     time now, and computes sizes with a recursive `du` only when
+     size-based cleaning needs them
+     ([global_cache_tracker.rs](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/global_cache_tracker.rs.html)).
+   - Go's `Trim` runs at most once a day (`trim.txt`), lists each of the
+     256 subdirectories and reads entry mtimes, which a use refreshes at
+     most once an hour; it never reads entry contents
+     ([cache.go](https://go.dev/src/cmd/go/internal/cache/cache.go)).
+   - `git gc --auto` estimates loose objects from one of 256 object
+     directories (`objects/17` against `gc.auto / 256`), and the
+     `loose-objects` maintenance task packs at most 50,000 objects per run
+     ([gc.c](https://github.com/git/git/blob/v2.47.0/builtin/gc.c),
+     [git-maintenance](https://git-scm.com/docs/git-maintenance)).
+
+   Molt takes Cargo's and Go's rule for constructor roots (the stamp
+   decides) and ccache's and git's bounded batch for walked roots.
+   `molt.checkout_state.WalkRotation` is the one scheduler of the daily
+   pass's complete walks. Its closed families are pre-constructor scratch
+   under every scope root's `tmp`, expired scratch retirements, terminal
+   agent evidence under every checkout's `logs/agents` (item 2) and
+   integration receipts. Each family's walks rotate across the whole scope,
+   and each family gets its own 30 seconds of walk time per pass, so one
+   family cannot spend another's budget. Each caller passes its own walk:
+   `disk_guard._scratch_inventory`, `disk_guard._receipt_inventory`, and,
+   for evidence, `coordination_records._evidence_inventory` and the task's
+   text checks (decoding and object-store queries); every bounded step of
+   one entry in one pass, including the applied pass's recheck, spends the
+   same budget. Constant-work decisions between walks do not spend it. A
+   family visits its entries in path order from a cursor and wraps around.
+   Agent evidence keeps one object-store stream per run of consecutive
+   tasks of one checkout, so a rotation that starts inside a checkout opens
+   at most one more stream for that checkout's first tasks. A walk that
+   the budget interrupts is deferred, and the next pass starts there with
+   the whole budget. If a pass's first walk cannot finish in the whole
+   budget, the root is kept and reported (`inventory-exceeds-pass-budget`),
+   and the cursor passes it. No partial walk or text check authorizes a
+   retirement or harvest. Each
+   pass therefore completes at least one entry, and each pass but the last
+   of a cycle spends the budget on completed walks plus at most one
+   interrupted walk, which the next pass completes first. So every entry
+   is evaluated within `min(L, 1 + 2C/B)` passes, where `L` entries need a
+   walk, `B` is the budget and `C` is the sum of their walk times (every
+   bounded step of an entry that an applied pass retires), each capped at
+   `B`. An applied pass publishes the cursors in one small record,
+   `target/.disk_guard/walk-rotation.json`, beside the guard's
+   existing interlocks; it grants no deletion authority, and a missing or
+   malformed record restarts each family at its first entry. A dry run
+   reads the record and never writes it, so it previews the next applied
+   pass. The result's `walk_rotation` reports each family's cursor, walks,
+   deferrals and walk time.
+
+   Measured on the external root on 2026-10-28, with a cold metadata cache:
+   `tmp/` held 1,420 directories, 4.09 million files and 238 GiB. The 14
+   stamped roots (0.41 GiB) need no walk. 882 pre-constructor roots need
+   one: 3.55 million files and 175 GiB, 679 seconds of walking. 832 of them
+   walk in under a second; seven take longer than 30 seconds (37.7 GiB, up
+   to 75 seconds). With `B` = 30 seconds, `C` = 545 seconds and the bound is
+   37 passes; a replay of `WalkRotation` over the measured costs evaluates
+   every root in 24 passes. Consecutive real dry-run passes, carrying the
+   cursor an applied pass would publish, evaluated all 1,009 scratch
+   entries in 27 passes of 31 to 42 seconds each (877 complete walks, eight
+   over budget). Before HF-528 a pass took the same time, and 879 entries
+   were never evaluated. An applied pass retires a walked root only when
+   its plan and recheck walks fit one pass, so the six roots between 15 and
+   30 seconds (10.1 GiB) and the seven over 30 seconds stay kept and
+   reported. A 150-second budget would admit every measured root; the
+   budget stays 30 seconds until the owner accepts that cost.
+
+   Cost: a stamped root's decision costs 100 metadata calls whatever its
+   size (52 `lstat`, 43 `stat`, three bounded record and lock opens and two
+   `flock` probes, measured with 16 and 1,600 files); it lists nothing below
+   the scratch container. A walked root costs one listing per directory and
+   one `lstat` per entry, plus a constant about 150 calls (1,755 calls with
+   1,600 files). Byte estimates of other classes keep one 30-second
+   deadline, and a partial estimate decides nothing. So a pass walks for at
+   most 4 x 30 seconds plus that deadline and constant work per entry,
+   against one shared 30 seconds before: the named price of a progress
+   guarantee for each family. Families with nothing to walk cost nothing;
+   on 2026-10-28 the internal root's 1,125 evidence entries took 6.3
+   seconds of evidence walks and 3.0 seconds of receipt walks in one dry
+   run, with nothing deferred. Reading and publishing the record is one
+   bounded read and, only when a cursor moves, one reconstructible write.
 
    Existing checkout-owned `build-control`, `pytest-cache` and `hypothesis`
    containers, memory-guard control/evidence, guard-scratch `gs`/`pt-*`,
@@ -1521,9 +1711,10 @@ candidate text file once and checks it against the object store in one lazy
 format once. It retains one at-most-1-MiB text buffer, the family's coordination snapshot and
 one task's file metadata. Restoring kept names uses hardlinks and no byte copies;
 final GC unlinks the retired names while the retained names stay. Raw payload
-bytes are never read. Recursive activity/size inventories share the
-existing 30-second inventory budget; an incomplete walk defers that task and
-reports the budget boundary. Apply rechecks recursive activity under custody.
+bytes are never read. A task's walks and text checks spend the
+`agent-evidence` family's walk budget (item 1, HF-528); an incomplete one
+defers that task, the next pass resumes there, and nothing moves. Apply
+rechecks recursive activity under custody.
 Dry-run reports one line and estimated payload bytes per selected task and
 per other retirement class. Renamed bytes and actual free-space deltas remain
 separate observations. A failure writes one file instead of
