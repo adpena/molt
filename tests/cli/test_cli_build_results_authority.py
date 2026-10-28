@@ -344,6 +344,7 @@ def test_input_custody_failure_prevents_success_result(
 def _native_record_fixture(tmp_path: Path):
     from dataclasses import replace
     from molt.build_record import NativeBuildResult, RecordedArtifact, NativeBuildFacts
+    from molt.capability_policy import CapabilityPolicy, resolve_capability_policy
     from molt.backend_protocol import (
         BackendEmissionOrigin,
         BackendEmissionProducer,
@@ -365,7 +366,7 @@ def _native_record_fixture(tmp_path: Path):
             False,
             (),
             (),
-            "a" * 64,
+            resolve_capability_policy(CapabilityPolicy()).digest(),
             None,
             "dev",
             False,

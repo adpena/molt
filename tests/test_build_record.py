@@ -2023,7 +2023,7 @@ def _native_result_fixture(tmp_path: Path):
         False,
         (),
         (),
-        "a" * 64,
+        "sha256:" + "a" * 64,
         None,
         "dev",
         False,
@@ -2121,6 +2121,20 @@ def test_malformed_native_results_refuse_reuse(tmp_path: Path, field: str) -> No
     _paths, _ledger, record, _result, _claim = _native_result_fixture(tmp_path)
     payload = json.loads(record.read_text(encoding="utf-8"))
     payload["result"][field] = ["not this field's contract"]
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert isinstance(
+        build_record.check(record, KEY, claim=lambda value: None, require_result=True),
+        str,
+    )
+
+
+@pytest.mark.parametrize("digest", ["a" * 64, "md5:" + "a" * 64, "sha256:short"])
+def test_native_result_rejects_noncanonical_policy_digest(
+    tmp_path: Path, digest: str
+) -> None:
+    _paths, _ledger, record, _result, _claim = _native_result_fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["result"]["facts"]["capability_policy_digest"] = digest
     record.write_text(json.dumps(payload), encoding="utf-8")
     assert isinstance(
         build_record.check(record, KEY, claim=lambda value: None, require_result=True),
