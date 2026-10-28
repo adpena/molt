@@ -597,8 +597,8 @@ def check_exception_names() -> CategoryResult:
         )
     )
 
-    # Module ownership excludes stdlib classes structurally; aliases and roots
-    # are actual rows, so neither needs a second manually maintained allowlist.
+    # Explicit namespace binding excludes stdlib classes; aliases and roots are
+    # actual rows, so neither needs a second manually maintained allowlist.
     missing_in_frontend = sorted(rust_names - py_names)
     result.items.append(
         CheckItem(
