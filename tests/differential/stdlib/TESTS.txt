@@ -1540,12 +1540,14 @@ tests/differential/stdlib/os_environ_intrinsic_ops.py
 tests/differential/stdlib/os_environ_snapshot_sync.py
 tests/differential/stdlib/os_fsencode_basic.py
 tests/differential/stdlib/os_mkdir_makedirs_mode_intrinsic.py
+tests/differential/stdlib/os_mode_argument_conversion.py
 tests/differential/stdlib/os_path_basic.py
 tests/differential/stdlib/os_path_expandvars_normpath.py
 tests/differential/stdlib/os_path_extended.py
 tests/differential/stdlib/os_path_isabs_intrinsic.py
 tests/differential/stdlib/os_path_more.py
 tests/differential/stdlib/os_pipe_basic.py
+tests/differential/stdlib/os_posix_argument_conversion.py
 tests/differential/stdlib/os_read_write_basic.py
 tests/differential/stdlib/os_read_write_errors.py
 tests/differential/stdlib/os_stat_rename_replace_intrinsic.py

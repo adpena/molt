@@ -425,3 +425,4 @@ filters = _require_intrinsic("molt_warnings_filters_get")()
 onceregistry = _require_intrinsic("molt_warnings_onceregistry_get")()
 defaultaction = "default"
 _filters_mutated = _require_intrinsic("molt_warnings_filters_mutated")
+del _require_intrinsic

@@ -862,3 +862,157 @@ def test_a_cache_hit_renews_every_store_entry_a_jit_start_reads(
     # Eviction (idle or `molt cache evict`) removes the entry and its record.
     assert runtime.evict(identity)
     assert hit() is None
+
+
+@pytest.mark.parametrize("location", ["owned", "external", "blocked"])
+def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
+    tmp_path, monkeypatch, location, developer_host_context
+):
+    from types import SimpleNamespace
+    import molt.backend_environment as backend_environment
+    from molt.checkout_state import (
+        CheckoutOwner,
+        read_checkout_owner,
+        scratch_state_root,
+    )
+    from molt.cli import jit_pipeline
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
+
+    compiler = tmp_path / "compiler"
+    compiler.mkdir()
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setattr(backend_environment, "compiler_source_root", lambda: compiler)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.delenv("MOLT_SCRATCH_STORAGE", raising=False)
+    monkeypatch.delenv("MOLT_DEBUG_ARTIFACT_DIR", raising=False)
+    owned = scratch_state_root(artifacts / "tmp", owner=compiler, create=False)
+    selected = owned / "molt-backend"
+    if location == "external":
+        selected = tmp_path / "caller" / "molt-backend"
+        monkeypatch.setenv("MOLT_DEBUG_ARTIFACT_DIR", str(selected))
+    if location == "blocked":
+        artifacts.mkdir()
+        (artifacts / "tmp").write_text("not a scratch directory", encoding="utf-8")
+    binding = transport_codegen_binding(tmp_path / "runtime")
+    published = []
+
+    def publish(image, *, header, **kwargs):
+        effective = header["backend_environment"]
+        assert effective["MOLT_DEBUG_ARTIFACT_DIR"] == str(selected)
+        assert "MOLT_EXT_ROOT" not in effective
+        if location == "owned":
+            assert read_checkout_owner(owned) == CheckoutOwner(
+                compiler.resolve(), "scratch"
+            )
+        else:
+            assert location == "external"
+            assert not artifacts.exists()
+        # Model the runner's actual mkdir/write boundary after publication.
+        selected.mkdir(parents=True)
+        (selected / "object.o").write_bytes(b"runner scratch")
+        published.append(image)
+
+    monkeypatch.setattr(jit_pipeline, "publish_jit_image", publish)
+    monkeypatch.setattr(
+        jit_pipeline, "ensure_jit_runner", lambda *a, **k: tmp_path / "runner"
+    )
+    monkeypatch.setattr(
+        jit_pipeline, "ensure_jit_runtime_image", lambda **k: tmp_path / "runtime.dylib"
+    )
+    monkeypatch.setattr(
+        jit_pipeline, "jit_runtime_image_store", lambda _: tmp_path / "images"
+    )
+    monkeypatch.setattr(
+        jit_pipeline,
+        "_initialize_runtime_artifact_state",
+        lambda **k: SimpleNamespace(native_runtime_codegen_binding=binding),
+    )
+    monkeypatch.setattr(
+        jit_pipeline,
+        "_stage_runtime_callable_symbols_for_native_codegen",
+        lambda *a, **k: ("digest", None),
+    )
+    monkeypatch.setattr(
+        jit_pipeline._backend_ir,
+        "_prepare_backend_ir",
+        lambda **k: (
+            SimpleNamespace(required_link_features=(), ir={}, function_digest_seeds=()),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        jit_pipeline._runtime_features,
+        "runtime_stdlib_profile_for_required_features",
+        lambda *a, **k: "micro",
+    )
+    monkeypatch.setattr(
+        jit_pipeline.NativeLaunchPlan,
+        "for_program",
+        lambda **k: SimpleNamespace(image_header_payload=lambda: {}),
+    )
+    monkeypatch.setattr(jit_pipeline, "_build_common_build_json_data", lambda **k: {})
+    monkeypatch.setattr(jit_pipeline, "_emit_build_result_json", lambda **k: 0)
+    bundle = SimpleNamespace(
+        output_layout=SimpleNamespace(
+            emit_ir_path=None,
+            target_triple=None,
+            output_artifact=tmp_path / "app.moltjit",
+            emit_mode="jit",
+        ),
+        native_artifact_plan=None,
+        module_graph={},
+        prepared_frontend_run_ticket=SimpleNamespace(
+            frontend_layer_execution_context=SimpleNamespace(
+                module_graph_metadata=SimpleNamespace(
+                    logical_source_path_by_module={},
+                    module_is_namespace_by_module={},
+                    module_source_role_by_module={},
+                )
+            )
+        ),
+        known_modules=(),
+        stdlib_allowlist=(),
+        integration_state=None,
+        module_order=(),
+        runtime_import_dispatch_roots=(),
+        spawn_enabled=False,
+        module_source_catalog=SimpleNamespace(
+            validate=lambda: None, source_paths=lambda _: ()
+        ),
+    )
+    result = jit_pipeline._run_jit_pipeline(
+        prepared_build_preamble=SimpleNamespace(
+            rust_cpu=RustCpuPolicy.BASELINE, warnings=[]
+        ),
+        prepared_build_roots=SimpleNamespace(molt_root=compiler, sysroot_path=None),
+        prepared_build_config=SimpleNamespace(
+            pgo_profile_summary=None,
+            runtime_feedback_summary=None,
+            target_python=None,
+            backend_cargo_profile="dev-fast",
+            runtime_cargo_profile="dev-fast",
+            cargo_timeout=None,
+            link_timeout=None,
+            codegen=backend_environment.CodegenSelection(),
+            resolved_capability_policy=None,
+            capabilities_source=None,
+        ),
+        resolved_build_entry=SimpleNamespace(
+            entry_module="main", source_path=tmp_path / "app.py"
+        ),
+        prepared_frontend_pipeline_bundle=bundle,
+        profile="dev",
+        json_output=True,
+        target=admit_target("native"),
+        deterministic=True,
+        trusted=False,
+        stdlib_profile=None,
+    )
+    if location == "blocked":
+        assert result != 0 and not published
+        assert (artifacts / "tmp").read_text(
+            encoding="utf-8"
+        ) == "not a scratch directory"
+    else:
+        assert result == 0 and published == [tmp_path / "app.moltjit"]
+        assert (selected / "object.o").read_bytes() == b"runner scratch"

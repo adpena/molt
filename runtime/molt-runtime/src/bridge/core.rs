@@ -160,12 +160,11 @@ pub fn index_c_int_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i32> {
     })
 }
 
+/// CPython's `Py_off_t` argument converter (lseek pos, truncate length).
 #[cfg(not(feature = "stdlib_path"))]
-pub fn index_i64_checked_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
+pub fn index_off_t_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
     crate::with_gil_entry_nopanic!(py, {
-        let value =
-            crate::builtins::numbers::index_i64_from_obj(py, bits, "an integer is required");
-        (!crate::exception_pending(py)).then_some(value)
+        crate::builtins::numbers::index_off_t_from_obj(py, bits)
     })
 }
 

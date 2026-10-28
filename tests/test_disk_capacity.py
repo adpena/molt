@@ -307,9 +307,17 @@ def _literal_cargo_compiles(path: Path) -> list[int]:
 
     from molt.cargo_execution_policy import cargo_compiles
 
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    # A literal compared against an argv classifies a command; it starts none.
+    compared = {
+        id(operand)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        for operand in (node.left, *node.comparators)
+    }
     lines: list[int] = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if not isinstance(node, (ast.List, ast.Tuple)):
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.List, ast.Tuple)) or id(node) in compared:
             continue
         prefix: list[str] = []
         for element in node.elts:
