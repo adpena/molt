@@ -2,7 +2,7 @@
 
 Status: active
 Owner: tooling + tests + release
-Last updated: 2026-10-02
+Last updated: 2026-10-28
 
 ## Purpose
 
@@ -20,6 +20,52 @@ The goal is highest expected signal per machine hour:
 - targeted verification before broad sweeps;
 - durable evidence in canonical artifact roots;
 - no silent blocking, duplicate rebuild storms, or spammy full-suite reruns.
+
+## Proportionate development feedback
+
+The orchestrator selects a small set of release-critical outcomes by dependency,
+user impact and measured cost. Finish, land and retire a coherent outcome before
+opening adjacent apparatus work. A bounded review is complete when it returns its
+requested evidence; implementation ownership includes integration and retirement.
+
+Choose the changed claim and a plausible defect, then the smallest independent
+check that distinguishes them. Stop focused development testing when that claim is
+proved. A new failure, changed input or named unresolved obligation can justify
+widening. Required selected integration gates and release qualification still run;
+development feedback and release acceptance are distinct claims. Preserve matching
+receipts rather than repeating successful work. Scratch experiments do not require
+permanent tests, helpers or new validators for low-impact edits.
+
+Reuse compatible compiled producers and batch affected selectors. Different
+profiles, feature sets and targets need explicit equivalence or subsumption before
+their gates can be consolidated. Measure the critical path before increasing
+workers; additional pytest sessions do not shorten a serialized Rust build. Keep
+one shared Cargo writer and existing resource admission. Delegate substantial
+independent work when saved time or independent correctness insight justifies
+startup and context cost; do not create small agents to recheck passing evidence.
+
+This policy was reviewed against primary guidance on 2026-10-28:
+
+- [OpenAI's current model guide](https://developers.openai.com/api/docs/guides/latest-model)
+  and [GPT-6 Astra workflow guidance](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra)
+  recommend calibrated testing and delegation, concise task-specific instructions
+  and removal of accumulated scaffolding. Small edits need no mandatory full-map
+  discovery or blanket extra verification.
+- [Anthropic's Opus prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5)
+  and [Fable prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1)
+  discourage reflexive verification and tiny delegated tasks; scope permanent
+  tests to the requested behavior and batch independent tool work. The newer
+  [Opus 5.5 guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5)
+  retains Opus 5's prompting patterns as a starting point and recommends measuring
+  effort against quality and latency rather than carrying maximum settings forward.
+- [Claude Code memory guidance](https://code.claude.com/docs/en/memory)
+  favors concise, consistent instructions. Imports still consume context:
+  `CLAUDE.md` imports `AGENTS.md` as one authority, not a second policy.
+- [LLVM's developer policy](https://llvm.org/docs/DeveloperPolicy.html) favors
+  focused regressions using the closest tool and incremental self-contained
+  changes. [rustc's test workflow](https://rustc-dev-guide.rust-lang.org/tests/running.html)
+  uses targeted local tests and broader integration qualification. Neither model
+  treats maximum local test volume as progress.
 
 ## Serialized integration
 

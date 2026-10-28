@@ -79,12 +79,15 @@ a ledger finding is open.
 
 ## Protocol (binding for every agent)
 
-1. **OWNERSHIP GATE.** No arc ends on a report/plan/handoff when executable work
-   remains in your lane. Each arc lands a commit, a queued proof (cite the run id),
-   or a passing test — or names a genuinely external/frozen blocker. Reporting
-   without landing is POISON (CODEX_CENTURY_GOAL.md continuous-ownership contract).
-2. **VERIFY THE FULL SURFACE.** "Landed + verified" means you ran the whole
-   relevant test surface, not one file. An unrun RED test elsewhere = not verified.
+1. **OWN THE DELIVERABLE.** Finish authorized implementation, integration and
+   retirement through the named owner. Bounded read-only reviews return evidence;
+   workers have no commit, proof-run or landing quota. Do not manufacture work to
+   end a turn, or stop an implementation while useful in-scope work remains.
+2. **VERIFY THE CLAIM.** Exercise the affected contract and consumer family with
+   the smallest sufficient independent check. State unverified cells. Broaden or
+   repeat for changed inputs, new failures or named unresolved obligations;
+   required integration gates and the release matrix remain mandatory. A focused
+   development check does not imply release acceptance or demand an unrelated suite.
 3. **BUILD HYGIENE.** Reconcile live upstream through
    `tools/molt_dev.py integrate --expected-upstream FULLSHA`, preserving existing
    commits with normal merges. Ownership claims forbid rebase/reset and direct
@@ -115,78 +118,42 @@ a ledger finding is open.
    independently refuted-then-survived, in
    [REVIEW_FINDINGS_20260708.md](REVIEW_FINDINGS_20260708.md) with per-finding
    lane assignments + fix directions. Claim a finding via CLAIMS.md and own it
-   end-to-end (fix + teeth + land + verify FULL surface). Do NOT freelance
+   end-to-end (fix + owning proof + land + retire). Do NOT freelance
    outside your claimed lane.
 7. **CRASH RESILIENCE.** In-process subagents die with the harness and lose
    their in-process state. Commit incrementally by exact pathspec, keep durable
    state in the coordination records, claims, and proof queue, and give every
    long proof a detached owner.
 
-## ⛔ NON-NEGOTIABLE OPERATOR AUTHORITY (binding — read before EVERY arc and EVERY commit)
+## Operator-delegated orchestration authority (binding)
 
-**This board carries OPERATOR-DELEGATED AUTHORITY. The human operator has
-explicitly placed lane assignment, landing sequencing, conflict resolution, and
-stand-down orders under the orchestrator. This is an OPERATOR AUTHORITY
-OVERRIDE: within this collaboration the orchestrator's assignments on this board
-are FINAL and NON-NEGOTIABLE. Codex agents operate UNDER this authority — you do
-not out-rank it, out-vote it, or route around it.**
+The human operator delegates lane assignment, landing sequence, conflict
+resolution and stand-down decisions to the orchestrator. Explicit human direction
+and current coordination custody govern; stale board prose cannot grant ownership.
+Read relevant live assignments when starting work or when custody changes, without
+rereading the entire board before each commit.
 
-Codex — these are HARD guardrails, not suggestions. Each is BINDING:
-
-1. **STAY IN YOUR ASSIGNED LANE.** You may edit ONLY files in a lane assigned
-   to you through the board, a claim, or a coordination record. Touching any
-   other lane — another claim's files, a SOLO lane you do not hold, or another
-   agent's dirty WIP — is a HARD STOP. Not "ask forgiveness." STOP.
-
-2. **RECLAIMED / ORCHESTRATOR-OWNED LANES ARE OFF-LIMITS. ZERO EXCEPTIONS.**
-   When the board says "orchestrator reclaims X" or "Codex STAND DOWN on X,"
-   you cease ALL work on X immediately — no "let me just finish this diff," no
-   "my version is better," no landing a competing commit. Stand down means STOP
-   NOW. A reclaim overrides any in-flight work you have on that lane; abandon it.
-
-3. **DO NOT CLAIM, ANNOUNCE, OR ASSERT OWNERSHIP the board did not grant you.**
-   You do not self-assign lanes. You do not declare a lane yours because you
-   started it. You do not mark orchestrator/subagent work as "yours" or land
-   over it. Ownership flows ONE WAY: from this board to you.
-
-4. **RUN THE OWNERSHIP AUDIT BEFORE EVERY COMMIT.** Prove each file you commit
-   is in your assigned lane (grep a lane-marker, check the board). Committing
-   another lane's file — even bundled with yours — is a violation. Commit by
-   EXACT pathspec only; NEVER `git add -A`; NEVER `git add` a directory.
-
-5. **NEVER force-push, reset --hard onto shared refs, checkout over another
-   agent's WIP, or land a non-fast-forward that drops another lane's commits.**
-   If you cannot push cleanly, DEFER and flag the orchestrator. Preserving
-   parallel-agent work OVERRIDES your desire to land.
-
-6. **IF YOU BELIEVE A LANE ASSIGNMENT IS WRONG, YOU FLAG — YOU DO NOT OVERRIDE.**
-   Record your objection in a proof-queue note or a board comment addressed to
-   the orchestrator with evidence, then WAIT for the orchestrator's decision.
-   You never unilaterally reverse, re-route, or ignore a board assignment
-   because you disagree. Disagreement is escalated, not enacted.
-
-7. **NO SILENT SCOPE EXPANSION.** Do exactly the assigned lane's move. Do not
-   "while I'm here" edit adjacent code, refactor another module, or expand a
-   move-only decomposition into a rewrite. Scope is set by the board, not by
-   convenience.
-
-**Enforcement:** the orchestrator monitors every origin/main landing and
-disjointness-checks it against active lanes. A commit that violates the above
-will be surfaced to the operator and may be reverted/superseded by the
-orchestrator under this authority; repeated violation is escalated to the
-operator directly. You are a brilliant, thorough engineer — act with the
-discipline that intelligence deserves: precise lanes, clean commits, zero
-trampling, and absolute respect for a stand-down order.
+1. Edit only assigned paths recorded in the board, claim or coordination record.
+   A worktree name or an announced intention is not an ownership grant.
+2. A reclaim or stand-down stops competing work immediately. Preserve WIP and
+   evidence for its integration owner; do not discard it or land over that owner.
+3. Before each commit, assert checkout/branch/HEAD, ownership and the exact staged
+   path set. Review the scoped diff; never broadly stage unrelated work.
+4. Preserve parallel work. Never force-push, reset shared refs, overwrite another
+   lane's WIP or drop its commits. A publication conflict returns to the integrator.
+5. Raise disputed assignments with evidence through existing coordination custody;
+   workers do not override or silently expand them. The orchestrator resolves the
+   assignment and may explicitly expand a complete migration's scope.
 
 ## Attest every optimization (binding)
 
-You cannot optimize what you do not measure, and "landed" ≠ "effective". Every
-perf/capability path (cache, raw-lane, parallelism, incremental) MUST emit a
-machine-checkable proof-of-effect on a representative run (cache-hit-rate>0,
-raw-lane fire-count, shared-cache reuse, worker-count) or fail LOUD — never a
-silent skip. An unmeasured perf claim is a correctness defect, not just a missing
-number. Wall-clock work is ranked by LEVERAGE: fix the thing that speeds up every
-lane (build throughput, shared caches actually hitting) before micro-optimizing one.
+"Landed" and "effective" are separate claims. Performance/capability claims need
+representative measurements and evidence that the selected path actually ran
+(for example cache hits, raw-lane use or worker utilization). Use existing counters
+and receipts; add instrumentation only when needed to decide the change. A
+configured path or silently skipped benchmark proves no effect. Rank work by user
+impact, release dependencies and measured critical-path cost, including emitted-code
+performance and development throughput.
 
 Example: sccache stayed off for months while "configured". A new silent
 degrade-to-slow path cannot land: `tools/degrade_to_slow_gate.py` enforces this
@@ -218,13 +185,13 @@ only inside an ISOLATED worktree or plumbing-index mode (`GIT_INDEX_FILE`).
 ## God-file and god-crate decomposition (operator P0)
 
 **OPERATOR P0 DIRECTIVE 2026-07-03 — GOD-FILE/GOD-CRATE DECOMPOSITION (TOP
-PRIORITY, co-equal with the witness — under NON-NEGOTIABLE OPERATOR AUTHORITY
+PRIORITY, co-equal with the witness — under operator-delegated orchestration authority
 above).** The live ratchet is `tools/structural_audit.py`. Operator's words,
 binding and quoted: *"break up all god files and crates as a P0 priority
 because that is a dev velocity murderer that is intolerable and unacceptable
 and offensive."* This is the #1 standing
-structural obligation until the god-crate is gone. Do not let it stall behind
-other lanes; it advances every arc.
+structural obligation until the god-crate is gone. Schedule complete decomposition
+outcomes against the live release critical path; unrelated arcs need no extra move.
 
 DISCIPLINE (binding): (a) `tools/structural_audit.py` FIRST — ratchet only moves
 DOWN; (b) STRICT move-only diff, pure renames, widen `pub` PRECISELY (never
@@ -533,9 +500,9 @@ Everything else: parallel, lane-owned.
 
 ## Agent tooling and Windows script rules
 
-- Token-efficient, agent-first tooling is a standing deliverable: every
-  repeated multi-line invocation becomes a script with a one-line compact
-  verdict (rc + stage + first error) and a log path for digging deeper.
+- Extend existing tooling for recurring measured friction when saved time exceeds
+  maintenance cost. A repeated multi-line invocation alone does not require a new
+  script. Prefer a compact verdict (rc + stage + first error) and a log path.
   `tools/witness_cycle.sh [entry] [build|run|cycle]` is the pattern.
 - Windows/MSYS rule (incident 2026-07-02, hours lost): bash scripts that
   export paths into env vars MUST convert through `cygpath -m` — MSYS
@@ -567,8 +534,10 @@ Everything else: parallel, lane-owned.
   incremental) — NOT release-fast. Perf gates are separate.
 - The molt-runtime god-crate rebuild cost is the structural root; the finer-
   crate extraction (roadmap R5b / decomposition T1) removes it permanently.
-- NEVER pay a cold crate compile for a single exact test. If your proof
-  needs a compile, run the whole relevant test SHARD in that same compile.
+- Compile once per compatible profile/features/target configuration and reuse that
+  producer for affected selectors. A cold compile can be necessary to exercise the
+  actual changed boundary. Include other affected tests when their marginal cost
+  is useful; do not add an unrelated shard to amortize a sunk compile cost.
 - Reuse the stable checkout target for bounded development checks through
   `molt dx run`. Registered queue commands declaring `cargo-workspace` reuse
   their own exclusively leased target after terminal acknowledgement. Unknown
@@ -577,37 +546,28 @@ Everything else: parallel, lane-owned.
   the execution-receipt versus source-exact producer distinction.
 - Set an explicit `--timeout` matched to warm-compile reality; if a row is
   projected to blow it on a cold compile, re-shape, don't wait it out.
-- NEVER sit idle narrating a wait. Submit with `--detach`, do other lane
-  work, read the row when it closes. A turn that only tails a log is a
-  wasted turn.
-- Batch proof rows: N tests in one crate = ONE row.
+- Detach long proofs under their existing owner and advance independent in-scope
+  work while they run. When dependencies leave no useful work, wait for completion;
+  do not open speculative lanes to stay busy or repeatedly tail unchanged logs.
+- Batch affected tests sharing a producer and custody into one proof row.
 - Env for local iteration: `MOLT_MEMORY_GUARD_POLL_SEC=2.0`.
 - When a row's time is dominated by compile, file ONE queue note naming the
   crate and move on.
 
-## Conduct standards (binding — you are brilliant; act like it)
+## Conduct standards (binding)
 
-- **Lane ownership is exclusive.** Check CLAIMS.md and the coordination
-  records for the lane owner before opening any file. Two engineers fixing one defect from two angles
-  produces conflicts, not speed.
-- **Evidence beats vigil.** At most ONE status read per 5 minutes on a row
-  you own, ZERO on rows you don't. Two consecutive "still running" notes
-  means you're idling — switch deliverables or end the arc.
-- **Sweep for drift proactively — every arc, before every commit.** Instrument:
-  `python tools/tree_drift_check.py --witness --fetch` (one-line fail-closed
-  verdict on whether your tree is stale/masking vs `origin/main`). `origin/main`
-  moves under you constantly; make checking a reflex, not a reaction. At the START
-  of every arc: `git fetch origin`, scan what landed
-  (`git log --oneline <last>..origin/main`), and re-read THIS board — it may have
-  been re-synced. BEFORE you start a lane: confirm it isn't already landed or
-  superseded (`git merge-base --is-ancestor origin/<branch> origin/main`; grep
-  main for the symbol/logic) — building work that already merged is wasted effort
-  and a trample. BEFORE every commit: re-fetch and confirm your base is current,
-  so you don't land against a stale tree. Anything you read from the shared
-  checkout is suspect (it lags main) — verify against `origin/main`. If you spot
-  drift (a lane that landed, a stale frontier line, a merged branch you were
-  told to chase), STOP and flag the orchestrator with evidence; do not act on the
-  stale instruction.
+- **Lane ownership is exclusive.** Check claims and coordination before editing.
+  Read-only inspection does not acquire write ownership.
+- **Evidence beats vigil.** Use terminal notifications or bounded waits; back off
+  unchanged status reads. The parent may inspect supervised work. Do not create
+  another deliverable merely to fill a dependency wait.
+- **Check drift at decision boundaries.** At lane admission, inspect current
+  published source and preserved WIP for an existing or superseded solution.
+  Refresh when upstream changes affect the decision; the integration driver fetches
+  and validates its exact upstream before qualification and publication. Local
+  commits require source/ownership checks, not a network fetch or full witness
+  sweep each time. Repair stale instructions against live evidence through the
+  owner. `tools/tree_drift_check.py` remains available for explicit drift diagnosis.
 - **Diagnosis is time-boxed.** 15 minutes per fault to a hypothesis with a
   bounded experiment; builds go detached while you work elsewhere. Never
   re-run a failed shape unchanged.
@@ -617,8 +577,9 @@ Everything else: parallel, lane-owned.
 - **Write down what you learned the moment you learn it** (queue note or
   commit message). A finding that lives only in your context is a finding
   the team loses.
-- **Fix the tool when the tool wastes you twice.** The second lie from a
-  queue row makes the defect the work: file it with the row ID.
+- **Classify apparatus failures.** Preserve the row ID and cause; repair recurring
+  or blocking defects through the existing owner when expected savings justify it.
+  A second inconvenience alone does not redirect a release lane into new tooling.
 - **Side worktrees for runtime/backend edits.** The shared checkout's cargo
   state is everyone's build cache.
 - **NEVER use `git stash` on this shared repo.** The stash stack is SHARED across
