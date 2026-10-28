@@ -222,7 +222,8 @@ pub fn index_c_int_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i32> {
     }
 }
 
-pub fn index_i64_checked_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
+/// CPython's `Py_off_t` argument converter (lseek pos, truncate length).
+pub fn index_off_t_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
     let mut value = 0;
     if unsafe { __molt_path_index_i64(bits, &mut value) } != 0 {
         Some(value)

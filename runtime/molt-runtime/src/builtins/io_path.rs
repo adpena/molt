@@ -283,10 +283,10 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
             Ok(path) => path,
             Err(error) => return error,
         };
-        let mode = index_i64_from_obj(_py, mode_bits, "mkdir() mode must be int");
-        if exception_pending(_py) {
+        // pathlib.Path.mkdir passes `mode` to os.mkdir: CPython's `int` converter.
+        let Some(mode) = crate::builtins::numbers::index_c_int_from_obj(_py, mode_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         let mode = mode as u32;
         #[cfg(unix)]
         let builder = {
@@ -784,10 +784,11 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
             Ok(path) => path,
             Err(error) => return error,
         };
-        let mode = index_i64_from_obj(_py, mode_bits, "makedirs() mode must be int");
-        if exception_pending(_py) {
+        // Path.mkdir(parents=True) tries os.mkdir(self, mode) first, so `mode`
+        // converts (CPython's `int` converter) before any directory is created.
+        let Some(mode) = crate::builtins::numbers::index_c_int_from_obj(_py, mode_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         let mode = mode as u32;
         if path.as_os_str().is_empty() {
             return MoltObject::none().bits();
@@ -1497,8 +1498,8 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
             Ok(path) => path,
             Err(error) => return error,
         };
-        let mode = index_i64_from_obj(_py, mode_bits, "chmod() mode must be int");
-        if exception_pending(_py) {
+        // pathlib.Path.chmod passes `mode` to os.chmod: CPython's `int` converter.
+        let Some(mode) = crate::builtins::numbers::index_c_int_from_obj(_py, mode_bits) else {
             return MoltObject::none().bits();
         };
         #[cfg(unix)]
@@ -2412,11 +2413,12 @@ pub extern "C" fn molt_os_open(path_bits: u64, flags_bits: u64, mode_bits: u64) 
             Ok(path) => path,
             Err(error) => return error,
         };
-        let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "flags must be an integer");
+        // os.open(path, flags: int, mode: int = 0o777): CPython's `int` converter.
+        let Some(flags) = crate::builtins::numbers::index_c_int_from_obj(_py, flags_bits) else {
+            return MoltObject::none().bits();
         };
-        let Some(mode) = to_i64(obj_from_bits(mode_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "mode must be an integer");
+        let Some(mode) = crate::builtins::numbers::index_c_int_from_obj(_py, mode_bits) else {
+            return MoltObject::none().bits();
         };
         #[cfg(target_arch = "wasm32")]
         {
@@ -2526,43 +2528,42 @@ pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
-            let msg = format!("an integer is required (got {type_name})");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        // os.read(fd: int, length: Py_ssize_t): CPython's argument converters.
+        let Some(fd) = crate::builtins::numbers::index_c_int_from_obj(_py, fd_bits) else {
+            return MoltObject::none().bits();
         };
-        let Some(len) = to_i64(obj_from_bits(len_bits)) else {
-            let type_name = class_name_for_error(type_of_bits(_py, len_bits));
-            let msg = format!("an integer is required (got {type_name})");
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        };
+        let len = crate::builtins::numbers::index_ssize_from_obj(_py, len_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         if fd < 0 {
             return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "read");
         }
         if len < 0 {
             return raise_os_error_errno::<u64>(_py, libc::EINVAL as i64, "read");
         }
-        let mut buf = vec![0u8; len as usize];
         #[cfg(target_arch = "wasm32")]
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "read")
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // Like CPython's PyBytes_FromStringAndSize(NULL, length): an
+            // unsatisfiable request is MemoryError, and the buffer is not
+            // zero-filled before read(2) writes it.
+            let mut buf: Vec<u8> = Vec::new();
+            if buf.try_reserve_exact(len as usize).is_err() {
+                crate::record_memory_error_without_allocation(_py);
+                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
+            }
             #[cfg(unix)]
-            let rc = unsafe {
-                libc::read(
-                    fd as libc::c_int,
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len(),
-                )
-            };
+            let rc = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, len as usize) };
             #[cfg(windows)]
             let rc = unsafe {
                 libc::read(
-                    fd as libc::c_int,
+                    fd,
                     buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len().min(u32::MAX as usize) as libc::c_uint,
+                    (len as usize).min(u32::MAX as usize) as libc::c_uint,
                 )
             } as isize;
             #[cfg(not(any(unix, windows)))]
@@ -2574,7 +2575,9 @@ pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
                 }
                 return raise_os_error::<u64>(_py, err, "read");
             }
-            buf.truncate(rc as usize);
+            // SAFETY: read(2) initialized the first `rc` bytes of the reserved
+            // capacity, and `rc <= len <= capacity`.
+            unsafe { buf.set_len(rc as usize) };
             let ptr = alloc_bytes(_py, &buf);
             if ptr.is_null() {
                 return MoltObject::none().bits();
