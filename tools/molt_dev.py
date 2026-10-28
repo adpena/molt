@@ -214,7 +214,6 @@ from tools.molt_dev_gates import (  # noqa: E402
     display as _gate_display,
     gate_output_dir,
     gate_time_summary,
-    retire_gate_logs,
     run_selected_gates,
 )
 from tools.molt_dev_policy import GateConfig, GateEnvironment, select_landing_gates  # noqa: E402
@@ -975,7 +974,6 @@ def _gate_runtime(
         / "receipts"
         / f"{selected_commit}.{receipt_kind}.json"
     )
-    retire_gate_logs(receipt_path.parent, now=time.time())
     return GateRuntime(
         repo=repo,
         environments=environments,

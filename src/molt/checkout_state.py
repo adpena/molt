@@ -20,6 +20,9 @@ from __future__ import annotations
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager, ExitStack, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import errno
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -55,6 +58,12 @@ DEFAULT_MAX_AGE_DAYS = 30.0
 # 6 hours that the disk guard's lane registry applied.
 SESSION_IDLE_ENV = "MOLT_SESSION_TARGET_IDLE_HOURS"
 DEFAULT_SESSION_IDLE_HOURS = 6.0
+AGENT_EVIDENCE_IDLE_ENV = "MOLT_AGENT_EVIDENCE_IDLE_DAYS"
+DEFAULT_AGENT_EVIDENCE_IDLE_DAYS = 3
+RETIRED_DIR = "retired"
+RETIREMENT_RECORD_SUFFIX = ".retirement.json"
+RETIREMENT_WINDOW_S = 7 * 86400.0
+_RETIREMENT_SCHEMA = "molt.soft-retirement.v1"
 # The automatic GC runs at most once per interval per artifact root.
 GC_INTERVAL_S = 24 * 3600.0
 GC_STAMP = ("target", ".molt-checkout-state-gc")
@@ -194,7 +203,7 @@ def _binds(kind: CheckoutStateKind, root: Path, owner: Path) -> bool:
 class _ManagedStateRoot:
     root: Path
     artifact: Path
-    kind: CheckoutStateKind
+    kind: CheckoutStateKind | Literal["agent-evidence"]
 
 
 def target_use_artifact_root(root: Path) -> Path | None:
@@ -230,6 +239,18 @@ def legacy_target_kind_of(
 def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
     """Bind existing placement with the canonical no-link custody identity."""
     root = root.expanduser().absolute()
+    if root.name == "agents" and root.parent.name == "logs":
+        from .custody_layout import custody_root
+        from .file_publication import resolve_owned_path
+
+        root = resolve_owned_path(root)
+        return _ManagedStateRoot(root, custody_root(root.parents[1]), "agent-evidence")
+    if root.parent.name == "agents" and root.parent.parent.name == "logs":
+        from .custody_layout import custody_root
+        from .file_publication import resolve_owned_path
+
+        root = resolve_owned_path(root)
+        return _ManagedStateRoot(root, custody_root(root.parents[2]), "agent-evidence")
     names = tuple(os.path.normcase(part) for part in root.parts)
     containers = (
         *(
@@ -451,6 +472,8 @@ def checkout_state_use(
 @contextmanager
 def checkout_state_retirement(
     root: Path,
+    *,
+    purged_root: Path | None = None,
 ) -> Generator[bool, None, None]:
     """Try exclusive mutation; every live managed reader keeps its lineage."""
     from .file_locks import _try_acquire_file_lock, _release_file_lock
@@ -480,7 +503,15 @@ def checkout_state_retirement(
             yield False
             return
         yield True
-        if coordinate is not None and coordinate.kind == "python-environment":
+        # Python generation metadata lives outside its immutable payload.
+        # Keep it through soft retirement so rename-back restores ownership;
+        # only final GC may forget it, and never while a replacement exists.
+        if (
+            purged_root is not None
+            and not os.path.lexists(purged_root)
+            and coordinate is not None
+            and coordinate.kind == "python-environment"
+        ):
             metadata = _state_metadata_root(root)
             if not os.path.lexists(root):
                 try:
@@ -1203,6 +1234,16 @@ def retention_limits(environment: Mapping[str, str]) -> RetentionLimits:
     )
 
 
+def agent_evidence_idle_s(environment: Mapping[str, str]) -> float:
+    return _idle_limit_s(
+        environment,
+        AGENT_EVIDENCE_IDLE_ENV,
+        DEFAULT_AGENT_EVIDENCE_IDLE_DAYS,
+        86400.0,
+        "days",
+    )
+
+
 def _idle_limit_s(
     environment: Mapping[str, str],
     name: str,
@@ -1225,6 +1266,147 @@ def _idle_limit_s(
             f"{PROTECTION_WINDOW_S / 3600:g}-hour protection window: {raw!r}"
         )
     return limit_s
+
+
+@dataclass(frozen=True, slots=True)
+class SoftRetirement:
+    path: Path
+    original: Path
+    reason: str
+    retired_at: float
+    owner: str
+
+    @property
+    def record_path(self) -> Path:
+        return self.path.with_name(self.path.name + RETIREMENT_RECORD_SUFFIX)
+
+
+def _retirement_name(root: Path, now: float) -> str:
+    # Bounded, portable encoding of the full coordinate and this generation.
+    # A reused original path must not replace an earlier recoverable root.
+    digest = hashlib.sha256(os.fsencode(root)).hexdigest()
+    return f"{digest}-{int(now * 1_000_000_000)}"
+
+
+def soft_retire(
+    root: Path,
+    owning_root: Path,
+    *,
+    reason: str,
+    owner: str,
+    now: float | None = None,
+) -> SoftRetirement:
+    """Retire a root with one same-filesystem rename and one small record.
+
+    The caller owns eligibility and exclusive custody. Artifact state stays
+    under its artifact root; checkout evidence stays under its family custody
+    root. No copying or cross-device fallback is permitted. The sidecar is
+    published before the rename, so interruption never leaves moved bytes
+    without a recovery address. A sidecar without payload grants no deletion.
+    Recovery is ``retirement.path.rename(retirement.original)`` after clearing
+    any replacement at the original coordinate.
+    """
+    from .file_publication import resolve_owned_path
+
+    root, owning_root = resolve_owned_path(root), resolve_owned_path(owning_root)
+    if root == owning_root or owning_root not in root.parents:
+        raise ValueError(f"retirement outside owning root: {root}")
+    if root.is_relative_to(owning_root / RETIRED_DIR):
+        raise ValueError(f"root is already retired: {root}")
+    if (
+        not isinstance(reason, str)
+        or not reason
+        or not isinstance(owner, str)
+        or not owner
+    ):
+        raise ValueError("retirement requires a reason and owner")
+    moment = time.time() if now is None else now
+    if type(moment) not in (float, int) or not 0 <= moment < float("inf"):
+        raise ValueError("retirement requires a finite, nonnegative timestamp")
+    date = datetime.fromtimestamp(moment, UTC).strftime("%Y-%m-%d")
+    parent = resolve_owned_path(owning_root / RETIRED_DIR / date)
+    parent.mkdir(parents=True, exist_ok=True)
+    if root.stat().st_dev != parent.stat().st_dev:
+        raise OSError(
+            errno.EXDEV, "soft retirement requires the same filesystem", str(root)
+        )
+    retirement = SoftRetirement(
+        parent / _retirement_name(root, moment), root, reason, moment, owner
+    )
+    if os.path.lexists(retirement.path):
+        raise FileExistsError(str(retirement.path))
+    write_exact(
+        retirement.record_path,
+        {
+            "schema": _RETIREMENT_SCHEMA,
+            "original_path": str(root),
+            "reason": reason,
+            "retired_at": moment,
+            "owner": owner,
+        },
+        exclusive=True,
+    )
+    try:
+        root.rename(retirement.path)
+    except BaseException:
+        retirement.record_path.unlink()
+        raise
+    return retirement
+
+
+def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | None:
+    """Validate a sidecar's exact coordinate; malformed records keep payloads."""
+    from .file_publication import resolve_owned_path
+
+    try:
+        owning_root, record = (
+            resolve_owned_path(owning_root),
+            resolve_owned_path(record),
+        )
+        value = read_exact(record, max_bytes=_MAX_RECORD_BYTES, label="soft retirement")
+        if not isinstance(value, dict) or set(value) != {
+            "schema",
+            "original_path",
+            "reason",
+            "retired_at",
+            "owner",
+        }:
+            return None
+        original, reason, moment, owner = (
+            value["original_path"],
+            value["reason"],
+            value["retired_at"],
+            value["owner"],
+        )
+        if (
+            value["schema"] != _RETIREMENT_SCHEMA
+            or not isinstance(original, str)
+            or not Path(original).is_absolute()
+            or not isinstance(reason, str)
+            or not reason
+            or not isinstance(owner, str)
+            or not owner
+            or type(moment) not in (float, int)
+            or not 0 <= moment < float("inf")
+        ):
+            return None
+        original_path = Path(original)
+        if owning_root not in original_path.parents or original_path.is_relative_to(
+            owning_root / RETIRED_DIR
+        ):
+            return None
+        expected = (
+            owning_root
+            / RETIRED_DIR
+            / datetime.fromtimestamp(moment, UTC).strftime("%Y-%m-%d")
+            / _retirement_name(original_path, moment)
+        )
+        retirement = SoftRetirement(expected, original_path, reason, moment, owner)
+        if retirement.record_path != record or resolve_owned_path(expected) != expected:
+            return None
+        return retirement if os.path.lexists(expected) else None
+    except (OSError, ExactJsonError, ValueError, OverflowError):
+        return None
 
 
 RetentionReason = Literal["owner-gone", "max-age", "session-idle"]

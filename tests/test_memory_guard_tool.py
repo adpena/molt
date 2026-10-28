@@ -9181,46 +9181,51 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     assert ("SIGKILL" in diagnostic.getvalue()) is (child_returncode == 137)
 
 
-def test_a_named_record_survives_its_window_whatever_follows(tmp_path):
-    from tools.memory_guard_core import reporting
+def test_named_incidents_retire_only_in_the_daily_pass(tmp_path):
+    from tools import disk_guard, harness_memory_guard
+    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.memory_guard_paths import active_guard_marker_dirs_of
 
-    now = 10_000_000.0
-    window = reporting.NAMED_RECORD_MIN_AGE_S
-    ages = {
-        "new.json": 0,
-        "young.json": window - 60,
-        "old.json": window + 60,
-        "young.json.tmp": window - 60,
-        "crashed.json.tmp": window + 60,
-    }
-    for name, age in ages.items():
-        path = tmp_path / name
-        path.write_text("{}", encoding="utf-8")
-        os.utime(path, (now - age, now - age))
-    reporting.prune_named_records(tmp_path, keep=1, now=now)
-    # Beyond the newest one, only the record older than the window goes; a
-    # temporary file that old is a crashed write.
-    assert sorted(p.name for p in tmp_path.iterdir()) == [
-        "new.json",
-        "young.json",
-        "young.json.tmp",
-    ]
+    now = time.time()
+    directory = active_guard_marker_dirs_of(tmp_path)[0].parent / "incidents"
+    directory.mkdir(parents=True)
+    old = directory / "old.json"
+    old.write_text('{"diagnostic": "keep my evidence"}', encoding="utf-8")
+    original = old.read_bytes()
+    os.utime(old, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    # Publishing the next incident no longer deletes older evidence.
+    fresh = harness_memory_guard._write_incident_record(
+        directory, {"recorded_at": "now"}
+    )
+    assert old.read_bytes() == original and fresh.is_file()
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert not old.exists() and fresh.is_file()
+    assert Path(result.retirements[str(old)]).read_bytes() == original
+    retirement = next(tmp_path.glob("retired/*/*.retirement.json"))
+    metadata = json.loads(retirement.read_bytes())
+    assert metadata["original_path"] == str(old)
+    assert metadata["retired_at"] == now
 
 
-def test_a_named_record_that_cannot_be_pruned_says_so(tmp_path, capsys):
-    from tools.memory_guard_core import reporting
+def test_a_named_record_that_cannot_retire_is_reported(tmp_path, monkeypatch):
+    from tools import disk_guard
+    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.memory_guard_paths import active_guard_marker_dirs_of
 
-    now = 10_000_000.0
-    old = now - reporting.NAMED_RECORD_MIN_AGE_S - 60
-    # A directory under a crashed write's name cannot be unlinked on any OS.
-    stuck = tmp_path / "crashed.json.tmp"
-    stuck.mkdir()
-    os.utime(stuck, (old, old))
-    reporting.prune_named_records(tmp_path, keep=1, now=now)
-    err = capsys.readouterr().err
-    assert "1 named record(s) could not be pruned" in err
-    assert f"{stuck}: " in err
-    assert stuck.is_dir()
+    now = time.time()
+    directory = active_guard_marker_dirs_of(tmp_path)[0].parent / "incidents"
+    directory.mkdir(parents=True)
+    record = directory / "old.json.tmp"
+    record.write_text("crashed write", encoding="utf-8")
+    os.utime(record, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError("retirement denied")
+
+    monkeypatch.setattr(disk_guard, "soft_retire", refuse)
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert result.errors == [f"{record}: retirement denied"]
+    assert record.read_text(encoding="utf-8") == "crashed write"
 
 
 def test_terminal_report_names_a_written_record_and_keeps_an_unwritten_one():

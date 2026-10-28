@@ -780,9 +780,6 @@ def _write_incident_record(directory: Path, payload: dict[str, object]) -> Path:
     scratch = path.with_suffix(".json.tmp")
     scratch.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     scratch.replace(path)
-    _reporting.prune_named_records(
-        directory, keep=memory_guard.DEFAULT_INCIDENT_SUMMARY_KEEP
-    )
     return path
 
 
