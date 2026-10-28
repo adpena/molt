@@ -207,7 +207,8 @@ fn constrain_boxed_binding_observations(func: &TirFunction, repr: &mut HashMap<V
         .filter(|block| reachable.contains(&block.id))
     {
         for op in &block.ops {
-            let observation = integer_operand_observation(op);
+            let use_plan = integer_operand_use(op);
+            let observation = use_plan.observation;
             let result_requirement = match observation {
                 IntegerOperandObservation::UnlessRawOperandsAndResult => op.results.first(),
                 _ => None,
@@ -247,7 +248,7 @@ fn constrain_boxed_binding_observations(func: &TirFunction, repr: &mut HashMap<V
                 let source = scalar_value_source(op);
                 let inputs = if let Some(source) = source.as_ref() {
                     std::slice::from_ref(source)
-                } else if integer_result_requires_raw_operands(op.opcode) {
+                } else if use_plan.raw_result_depends_on_operands {
                     op.operands.as_slice()
                 } else {
                     &[]
@@ -322,69 +323,155 @@ enum IntegerOperandObservation {
     Always,
 }
 
-fn integer_operand_observation(op: &TirOp) -> IntegerOperandObservation {
-    if crate::tir::passes::value_identity::copy_value_source(op).is_some() {
-        return IntegerOperandObservation::Never;
-    }
-    if crate::tir::dominators::exception_edge_binds_handler_arguments(op.opcode) {
-        return IntegerOperandObservation::Never;
-    }
-    match op.opcode {
-        OpCode::IncRef | OpCode::DecRef | OpCode::DelBoundary => IntegerOperandObservation::Never,
-        OpCode::CheckedAdd
-        | OpCode::CheckedMul
-        | OpCode::Eq
-        | OpCode::Ne
-        | OpCode::Lt
-        | OpCode::Le
-        | OpCode::Gt
-        | OpCode::Ge
-            if op.operands.len() == 2 =>
-        {
-            IntegerOperandObservation::UnlessAllRaw
-        }
-        OpCode::Not | OpCode::Bool if op.operands.len() == 1 => {
-            IntegerOperandObservation::UnlessAllRaw
-        }
-        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor
-            if op.operands.len() == 2 && op.results.len() == 1 =>
-        {
-            IntegerOperandObservation::UnlessRawOperandsAndResult
-        }
-        OpCode::Pos | OpCode::BitNot if op.operands.len() == 1 && op.results.len() == 1 => {
-            IntegerOperandObservation::UnlessRawOperandsAndResult
-        }
-        _ => IntegerOperandObservation::Always,
-    }
+/// One exhaustive physical-use policy owns both boxed observation demand and
+/// operand-dependent result carriers. Adding an opcode requires an explicit
+/// decision here; constants and independent producers never inherit a result
+/// carrier from a boxed operand merely because its mathematical range fits.
+struct IntegerOperandUse {
+    observation: IntegerOperandObservation,
+    raw_result_depends_on_operands: bool,
 }
 
-/// These producers switch to a boxed result when an integer operand loses its
-/// raw carrier. A valid mathematical range alone cannot keep their result raw.
-/// Constants and independent producers retain their own representation proof.
-fn integer_result_requires_raw_operands(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::CheckedAdd
-            | OpCode::CheckedMul
-            | OpCode::Add
-            | OpCode::InplaceAdd
-            | OpCode::Sub
-            | OpCode::InplaceSub
-            | OpCode::Mul
-            | OpCode::InplaceMul
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::Pow
-            | OpCode::Neg
-            | OpCode::Pos
-            | OpCode::BitAnd
-            | OpCode::BitOr
-            | OpCode::BitXor
-            | OpCode::BitNot
-            | OpCode::Shl
-            | OpCode::Shr
-    )
+fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
+    if crate::tir::passes::value_identity::copy_value_source(op).is_some()
+        || crate::tir::dominators::exception_edge_binds_handler_arguments(op.opcode)
+    {
+        return IntegerOperandUse {
+            observation: IntegerOperandObservation::Never,
+            raw_result_depends_on_operands: false,
+        };
+    }
+    let raw_operands = |arity| {
+        if op.operands.len() == arity {
+            IntegerOperandObservation::UnlessAllRaw
+        } else {
+            IntegerOperandObservation::Always
+        }
+    };
+    let raw_operands_and_result = |arity| {
+        if op.operands.len() == arity && op.results.len() == 1 {
+            IntegerOperandObservation::UnlessRawOperandsAndResult
+        } else {
+            IntegerOperandObservation::Always
+        }
+    };
+    let binary = raw_operands(2);
+    let unary = raw_operands(1);
+    let binary_result = raw_operands_and_result(2);
+    let unary_result = raw_operands_and_result(1);
+    let (observation, raw_result_depends_on_operands) = match op.opcode {
+        OpCode::IncRef | OpCode::DecRef | OpCode::DelBoundary => {
+            (IntegerOperandObservation::Never, false)
+        }
+        OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),
+        OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
+            (binary, false)
+        }
+        OpCode::Not | OpCode::Bool => (unary, false),
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => (binary_result, true),
+        OpCode::Pos | OpCode::BitNot => (unary_result, true),
+        OpCode::Add
+        | OpCode::InplaceAdd
+        | OpCode::Sub
+        | OpCode::InplaceSub
+        | OpCode::Mul
+        | OpCode::InplaceMul
+        | OpCode::Div
+        | OpCode::FloorDiv
+        | OpCode::Mod
+        | OpCode::Pow
+        | OpCode::Neg
+        | OpCode::Shl
+        | OpCode::Shr => (IntegerOperandObservation::Always, true),
+        OpCode::Is
+        | OpCode::IsNot
+        | OpCode::In
+        | OpCode::NotIn
+        | OpCode::And
+        | OpCode::Or
+        | OpCode::Alloc
+        | OpCode::StackAlloc
+        | OpCode::ObjectNewBound
+        | OpCode::Free
+        | OpCode::LoadAttr
+        | OpCode::LoadMethod
+        | OpCode::LoadSuperMethod
+        | OpCode::StoreAttr
+        | OpCode::DelAttr
+        | OpCode::Index
+        | OpCode::StoreIndex
+        | OpCode::DelIndex
+        | OpCode::DeleteVar
+        | OpCode::Call
+        | OpCode::CallMethod
+        | OpCode::CallLoadedMethod
+        | OpCode::CallargsPushMethodReceiver
+        | OpCode::CallBuiltin
+        | OpCode::OrdAt
+        | OpCode::BoxVal
+        | OpCode::UnboxVal
+        | OpCode::TypeGuard
+        | OpCode::BuildList
+        | OpCode::BuildDict
+        | OpCode::BuildTuple
+        | OpCode::BuildSet
+        | OpCode::BuildSlice
+        | OpCode::GetIter
+        | OpCode::IterNext
+        | OpCode::IterNextUnboxed
+        | OpCode::UnpackSequence
+        | OpCode::ForIter
+        | OpCode::AllocTask
+        | OpCode::StateSwitch
+        | OpCode::StateTransition
+        | OpCode::StateYield
+        | OpCode::StateSet
+        | OpCode::IsPending
+        | OpCode::TaskWait
+        | OpCode::ClosureLoad
+        | OpCode::ClosureStore
+        | OpCode::FrameContextSet
+        | OpCode::Yield
+        | OpCode::YieldFrom
+        | OpCode::Raise
+        | OpCode::CheckException
+        | OpCode::ExceptionPending
+        | OpCode::FunctionDefaultsVersion
+        | OpCode::TryStart
+        | OpCode::TryEnd
+        | OpCode::StateBlockStart
+        | OpCode::StateBlockEnd
+        | OpCode::ModuleSlot
+        | OpCode::ConstInt
+        | OpCode::ConstBigInt
+        | OpCode::ConstFloat
+        | OpCode::ConstStr
+        | OpCode::ConstBool
+        | OpCode::ConstNone
+        | OpCode::ConstBytes
+        | OpCode::Copy
+        | OpCode::Import
+        | OpCode::ImportFrom
+        | OpCode::ModuleCacheGet
+        | OpCode::ModuleCacheSet
+        | OpCode::ModuleCacheDel
+        | OpCode::ModuleGetAttr
+        | OpCode::ModuleImportFrom
+        | OpCode::ModuleGetGlobal
+        | OpCode::ModuleGetName
+        | OpCode::ModuleSetAttr
+        | OpCode::ModuleDelGlobal
+        | OpCode::ModuleDelGlobalIfPresent
+        | OpCode::WarnStderr
+        | OpCode::ScfIf
+        | OpCode::ScfFor
+        | OpCode::ScfWhile
+        | OpCode::ScfYield => (IntegerOperandObservation::Always, false),
+    };
+    IntegerOperandUse {
+        observation,
+        raw_result_depends_on_operands,
+    }
 }
 
 pub fn native_projectable_scalar_reprs_for(
