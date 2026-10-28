@@ -2,7 +2,11 @@
 # bench/corpus/registry.toml — molt canonical-benchmark registry (doc 69 §5 task R)
 # =============================================================================
 #
-# THE single source of truth for "which benchmark is which." One [[benchmark]]
+# Intended corpus identities, not executable or qualified workload coverage.
+# No scoreboard/adapter currently reads this catalog. Runnable selections and
+# recipes remain in tools/bench_suites.py and bench/friends/manifest.toml until
+# the complete executable-portfolio migration in doc 69 is implemented.
+# One [[benchmark]]
 # entry per CANONICAL benchmark, DEDUPED across every external suite per doc
 # 69A §A.10 (the cross-suite dedup map). A kernel that recurs in CLBG +
 # pyperformance + PyPy + Codon (nbody, fannkuch, spectral_norm, mandelbrot,
@@ -10,7 +14,7 @@
 # `source_suites`. A win on such a kernel counts ONCE across the CPython + PyPy
 # + Codon scoreboards — never triple-counted (doc 69A §A.10 dedup rule).
 #
-# Consumed by the S1–S6 suite adapters and the five scoreboards (doc 64):
+# Planned consumers (not current executable wiring; doc 64/doc 69):
 #   S1 pyperformance (tools/pyperformance_adapter.py)  — source_suites ∋ "pyperformance"
 #   S2 pypy/benchmarks                                 — source_suites ∋ "pypy"
 #   S3 Codon bench/                                    — source_suites ∋ "codon"

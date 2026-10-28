@@ -9,6 +9,100 @@ oracle); stdlib sourcing/collaboration is recorded in the Monty assessment. -->
 
 # 69 — Benchmark Corpus Union + Dynamic Calibration
 
+## Executable portfolio and optimization order
+
+Correctness, deterministic behavior and CPython conformance precede performance.
+Compiled user-program execution is the primary performance objective; compiler,
+developer-loop and gate latency remain explicit engineering objectives. Optimize
+the full path a user experiences, using application evidence to select structural
+work across frontend, typed IR, code generation, runtime, ABI, operating system,
+linking and deployment. A faster diagnostic kernel does not establish an
+application improvement.
+
+The implementation currently falls short of this document's proposed union:
+
+- `tools/bench_suites.py` supplies the runnable core, predominantly kernels,
+  components and internally generated application proxies. The corpus catalog
+  is not read by the scoreboard or suite adapters. Catalog membership is intent,
+  not runnable, supported or measured coverage.
+- `bench/friends/manifest.toml` has explicit deferred Molt lanes, including
+  pyperformance. Reference-only execution cannot qualify those lanes. Full/group
+  pyperformance commands fail when a selected workload errors; explicit runner
+  capability refusals retain skipped rows. Skips still mean missing coverage.
+- The pyperformance adapter replaces upstream Runner process/calibration
+  behavior. A fingerprint of `None` or a time-function marker proves no semantic
+  output. Application qualification needs an independent observable oracle.
+- The scoreboard's repeated "warm" samples start fresh processes. They measure
+  fresh-process latency on a warmed host, including imports, initialization,
+  input preparation and output. They do not measure in-process steady state;
+  first-minus-later process latency does not isolate process startup.
+- `tools/bench_evidence.py` admits the local Python source closure and invocation
+  arguments. It explicitly excludes arbitrary data reads and does not seal an
+  external package installation. Real-application comparison must extend this
+  authority to its dependencies, data and oracle, through every producer,
+  history/merge validator, fixture and report. Existing source-only receipts
+  must retain their original scope.
+
+Use one executable portfolio contract through the existing scoreboard and
+friend runners. Extend the existing catalog into executable descriptors and
+retire replaced selection tables in the same migration. Each descriptor needs
+workload kind (kernel, component, proxy or application), producer, immutable
+sources/dependencies/data, scales, invocation, independent output oracle,
+measurement protocol and applicability. Report intended, executable, attempted,
+parity-qualified and measured coverage separately. Keep blocked and unrun cells
+in the intended denominator; do not invent a skip reason from a slow or failing
+execution. Do not gate or score the catalog as if it were already implemented.
+
+The first application tranche is complete-document HTML5 parsing/serialization
+with unmodified html5lib and SQL parse/transform/emit with the package selected
+by upstream pyperformance's SQLGlot recipe. Acquire immutable package and data
+identities before making either cell runnable. Compare complete normalized
+trees/ASTs and emitted output against pinned CPython and upstream expected
+cases; a node count, checksum of a timing marker or round trip alone is
+insufficient. A Flask application remains an explicit blocked cell until its
+server, request trace, database and response/state oracle are qualified.
+
+This tranche is a starting point, not representative coverage of all Python:
+
+| Dimension | Representative work and required evidence | Existing execution/measurement owner |
+|---|---|---|
+| Documents and developer tools | Real HTML/template inputs; SQL and source projects; complete output and diagnostics | Corpus/friend producers, scoreboard, `bench_evidence.py` |
+| Services, storage and IO | Real HTTP request mixes, transactions, file/stream processing; response and persisted-state parity; backpressure and failure paths | Existing friend/application and process-custody runners |
+| Scientific and ML programs | Unmodified source-built packages, actual arrays/models/checkpoints, numerical/accuracy oracle; separate native-library/device work from Python orchestration | NumPy/SciPy/tinygrad friend lanes; their C-ABI and device authorities |
+| Runtime and generated code | Dispatch/inlining, typed operations, layouts, allocation/RC/GC and execution-context costs; threads/processes, contention, cancellation and correctness | Existing runtime profilers and typed IR/codegen tools; kernels remain attribution controls |
+| Startup and deployment | Installed native/WASM artifacts, imports and data; startup-to-ready separately from steady work; cold/warm storage conditions | Build observations, admitted execution hosts and deployment tests |
+| Memory and footprint | Peak process-tree memory, peak live heap, allocation/RC counts, code and package size; retained memory during sustained work | Existing process guard, profile epochs and artifact observations |
+| Compilation and linking | Small and real multi-module programs; cold, unchanged and edited builds; phase time, rebuilt units, cache decisions, serialization/bytes and process count | `dx_build_timer`, CLI build diagnostics and backend/link telemetry |
+| Edit/test and gates | Real edits and affected proof cells; dependency critical path, queue time, fixture/provisioning work, CPU/memory/IO budgets and unchanged reuse | Managed proof plan, gate receipts and landing queue |
+
+For each workload, keep target OS/architecture/ABI, Python oracle, backend,
+guest/compiler/runtime profiles and concurrency mode explicit. Native, LLVM and
+WASM cells, shipped profiles and installed artifacts require their own evidence.
+Record gaps without declaring untested cells unsupported. Compare matching Molt
+baselines and applicable leading implementations only under equivalent semantics.
+
+Measure fresh-process latency, startup-to-ready, steady-state throughput/tails,
+memory, allocation, size and compiler/gate costs as distinct protocols. Retain
+raw observations and quantify uncertainty; do not call a few samples a reliable
+p95. Run profiling/instrumentation separately from latency acceptance. Select a
+small diverse application set for changes that affect it, then schedule broader
+qualification by actual obligations. Do not serialize every workload behind every
+edit or duplicate producers and proof owners. Acquire/seal inputs once outside
+sample intervals; reuse a reference only when its complete identities match.
+
+Rank work by measured application impact, frequency and confidence, balanced
+against engineering/proof cost. Fix shared causes through complete typed
+contracts, and reassess the application critical path after landing. A release
+finding closes only when its full named obligation is satisfied.
+
+The design follows [pyperformance's whole-application emphasis](https://github.com/python/pyperformance),
+[LLVM test-suite's whole programs, reference outputs and compile/size metrics](https://llvm.org/docs/TestSuiteGuide.html),
+and [ASV's parameterized inputs and setup/timing separation](https://asv.readthedocs.io/en/stable/writing_benchmarks.html).
+Use those practices through Molt's existing authorities; adding a second harness
+would not fix missing application producers or oracles.
+
+The remaining sections describe the target design, not completed qualification.
+
 > **Faster than CPython on EVERY benchmark × backend × target × arch × OS × profile ×
 > Python version; approaching or beating Codon and PyPy where their models apply.**
 > Measure a UNION of every available suite + CPython's own regression suite +

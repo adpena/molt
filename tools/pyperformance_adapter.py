@@ -25,12 +25,21 @@ scoreboard can separate "molt vs CPython's bytecode interpreter" from "molt's
 implementation vs a C accelerator" (doc 69A §A.1). The ``*_pure_python``
 pickle variants and pure-Python ``tomli_loads`` are explicitly False.
 
-In-process structural limits (reported honestly as ``skipped``, never faked):
-async/asyncio benchmarks (need a running event loop), ``bench_command``
-benchmarks (spawn a subprocess: startup/2to3), and ``multiprocessing``
-benchmarks (require an importable picklable worker). Benchmarks whose
-third-party dependency is not installed in the lane are ``skipped`` with the
-missing-module reason; the molt lane installs the dependencies it targets.
+Explicit in-process structural limits are reported as ``skipped``:
+``bench_async_func`` (needs an event loop), ``bench_command`` (spawns a
+subprocess) and ``timeit``. Missing dependencies, broken imports, unhandled
+workload exceptions, exits and pickling failures are errors; their exception
+spelling cannot establish an unsupported capability. Resolve dependencies
+before executing a selected workload.
+Only the runner's explicit capability refusals skip a requested pyperf
+operation. A RuntimeError from application code is an error, and full/group
+commands exit nonzero when any selected benchmark errors.
+
+Full-corpus fingerprints are diagnostic observations, not semantic oracles.
+In particular, a time function or a function returning None supplies no
+validated application output. This adapter replaces upstream pyperf's
+process/calibration protocol and does not establish representative Molt
+application performance or steady-state acceptance.
 """
 
 from __future__ import annotations
@@ -46,9 +55,11 @@ import re
 import sys
 import time
 import types
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import Literal, NotRequired, TypedDict
 
 
 SMOKE_BENCHMARKS = ("nbody", "fannkuch")
@@ -330,6 +341,34 @@ class _BenchmarkExecuted(Exception):
     """Signals that the captured benchmark workload has run; unwinds ``__main__``."""
 
 
+class _UnsupportedInProcessBenchmark(Exception):
+    """The runner cannot execute a requested pyperf operation in-process.
+
+    Only the runner raises this capability refusal. Exceptions from the
+    workload itself remain failures, including ordinary RuntimeError.
+    """
+
+
+class ResultSummary(TypedDict):
+    ok: int
+    skipped: int
+    error: int
+
+
+class BenchmarkResults(TypedDict):
+    results: list[dict[str, object]]
+    summary: ResultSummary
+    total_elapsed_s: float
+
+
+class CorpusRun(BenchmarkResults):
+    suite_root: str
+    lane: Literal["all", "group"]
+    rounds: int
+    benchmark_count: NotRequired[int]
+    group: NotRequired[str]
+
+
 def _result_fingerprint(
     name: str, kind: str, inner_loops: object, result: object
 ) -> str:
@@ -431,46 +470,24 @@ def _build_faithful_pyperf(
             self._execute("time", name, time_func, args, inner_loops)
 
         def bench_async_func(self, *args: object, **kwargs: object) -> None:
-            raise RuntimeError(
+            raise _UnsupportedInProcessBenchmark(
                 "async benchmark requires a running event loop; "
                 "not runnable in the molt in-process lane"
             )
 
         def bench_command(self, *args: object, **kwargs: object) -> None:
-            raise RuntimeError(
+            raise _UnsupportedInProcessBenchmark(
                 "bench_command spawns a subprocess; "
                 "not runnable in the molt in-process lane"
             )
 
         def timeit(self, *args: object, **kwargs: object) -> None:
-            raise RuntimeError("timeit is not supported in the molt in-process lane")
+            raise _UnsupportedInProcessBenchmark(
+                "timeit is not supported in the molt in-process lane"
+            )
 
     shim.Runner = _FaithfulRunner
     return shim
-
-
-def _is_pickling_error(exc: BaseException) -> bool:
-    """Return whether ``exc`` is a pickling failure (multiprocessing worker).
-
-    ``_run_full_benchmark_once`` evicts ``pickle``/``_pickle`` from
-    ``sys.modules`` before each benchmark exec (so accelerator-toggling
-    benchmarks import cleanly). A benchmark that imports ``multiprocessing``
-    then loads a *fresh* ``_pickle`` whose ``PicklingError`` is a distinct class
-    object from the one bound at adapter import time — so an identity-based
-    ``except pickle.PickleError`` would miss it. Resolve the current
-    ``pickle.PickleError`` and fall back to a qualname check (covering
-    spawn-based multiprocessing on Windows, which may surface a re-raised copy).
-    """
-    try:
-        current_pickle = importlib.import_module("pickle")
-        if isinstance(exc, current_pickle.PickleError):
-            return True
-    except ImportError:  # pragma: no cover - pickle is always importable
-        pass
-    return any(
-        cls.__qualname__ in ("PickleError", "PicklingError", "UnpicklingError")
-        for cls in type(exc).__mro__
-    )
 
 
 def _skipped(spec: BenchmarkSpec, reason: str) -> dict[str, object]:
@@ -538,28 +555,14 @@ def _run_full_benchmark_once(spec: BenchmarkSpec, rounds: int) -> dict[str, obje
             "result_fingerprint": capture["fingerprint"],
             "c_accelerated": spec.c_accelerated,
         }
-    except (ImportError, ModuleNotFoundError) as exc:
-        result = _skipped(spec, f"missing dependency: {exc}")
     except SystemExit as exc:
-        result = _skipped(
-            spec, f"benchmark exited during import (SystemExit {exc.code})"
+        result = _errored(
+            spec, f"benchmark exited before capture (SystemExit {exc.code})"
         )
-    except RuntimeError as exc:
-        # Raised by the shim for async / bench_command / timeit entry points.
+    except _UnsupportedInProcessBenchmark as exc:
         result = _skipped(spec, str(exc))
     except Exception as exc:  # noqa: BLE001 - report any other failure honestly
-        if _is_pickling_error(exc):
-            # multiprocessing benchmarks need an importable, picklable worker; a
-            # function defined in the exec'd module namespace cannot be pickled
-            # (and spawn-based workers would re-exec the module). This is a
-            # structural in-process limit, not a benchmark failure.
-            result = _skipped(
-                spec,
-                "not runnable in-process (multiprocessing): "
-                f"{type(exc).__name__}: {exc}",
-            )
-        else:
-            result = _errored(spec, f"{type(exc).__name__}: {exc}")
+        result = _errored(spec, f"{type(exc).__name__}: {exc}")
     finally:
         sys.modules.clear()
         sys.modules.update(module_snapshot)
@@ -653,15 +656,20 @@ def load_full_catalog(suite_root: Path) -> dict[str, object]:
     }
 
 
-def _summarize(results: list[dict[str, object]]) -> dict[str, int]:
-    summary = {"ok": 0, "skipped": 0, "error": 0}
+def _summarize(results: list[dict[str, object]]) -> ResultSummary:
+    summary: ResultSummary = {"ok": 0, "skipped": 0, "error": 0}
     for row in results:
-        status = str(row.get("status", "error"))
-        summary[status] = summary.get(status, 0) + 1
+        status = row.get("status")
+        if status == "ok":
+            summary["ok"] += 1
+        elif status == "skipped":
+            summary["skipped"] += 1
+        else:
+            summary["error"] += 1
     return summary
 
 
-def _run_specs(specs: tuple[BenchmarkSpec, ...], rounds: int) -> dict[str, object]:
+def _run_specs(specs: tuple[BenchmarkSpec, ...], rounds: int) -> BenchmarkResults:
     results = [_run_full_benchmark_once(spec, rounds) for spec in specs]
     total_elapsed_s = sum(
         float(row["elapsed_s"])
@@ -675,7 +683,7 @@ def _run_specs(specs: tuple[BenchmarkSpec, ...], rounds: int) -> dict[str, objec
     }
 
 
-def run_all(suite_root: Path, *, rounds: int) -> dict[str, object]:
+def run_all(suite_root: Path, *, rounds: int) -> CorpusRun:
     if rounds <= 0:
         raise ValueError("rounds must be positive")
     suite_root = suite_root.resolve()
@@ -691,7 +699,7 @@ def run_all(suite_root: Path, *, rounds: int) -> dict[str, object]:
     }
 
 
-def run_group(suite_root: Path, *, group: str, rounds: int) -> dict[str, object]:
+def run_group(suite_root: Path, *, group: str, rounds: int) -> CorpusRun:
     if rounds <= 0:
         raise ValueError("rounds must be positive")
     suite_root = suite_root.resolve()
@@ -760,7 +768,7 @@ def _cmd_catalog(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_results_table(payload: dict[str, object]) -> None:
+def _print_results_table(payload: Mapping[str, object]) -> None:
     for row in payload["results"]:
         status = str(row["status"])
         elapsed = row.get("elapsed_s")
@@ -825,7 +833,7 @@ def _cmd_run_all(args: argparse.Namespace) -> int:
         print(json.dumps(payload, sort_keys=True))
     else:
         _print_results_table(payload)
-    return 0
+    return int(payload["summary"]["error"] != 0)
 
 
 def _cmd_run_group(args: argparse.Namespace) -> int:
@@ -835,7 +843,7 @@ def _cmd_run_group(args: argparse.Namespace) -> int:
         print(json.dumps(payload, sort_keys=True))
     else:
         _print_results_table(payload)
-    return 0
+    return int(payload["summary"]["error"] != 0)
 
 
 def _build_parser() -> argparse.ArgumentParser:
