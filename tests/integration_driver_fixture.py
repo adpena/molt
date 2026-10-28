@@ -25,7 +25,9 @@ filesystem can (APFS, btrfs, XFS) and copies elsewhere, and
 ``shared_session_tree`` builds an immutable seed once per session for every
 xdist worker instead of once per worker.
 ``driver_history_seed`` also shares the committed driver history between
-integration and claim tests. Prepared repository pairs retain private mutable
+integration and claim tests. Generic integration fixtures likewise publish a
+prepared pair once. Every consumer copies that pair instead of rebuilding its
+checkout and index with another clone. Prepared repository pairs retain private mutable
 copies of source, Git objects, refs, indexes and config; only file blocks share.
 """
 
@@ -38,7 +40,9 @@ import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+from typing import assert_never
 
 import pytest
 
@@ -183,9 +187,14 @@ class GitFixture:
     work: Path
 
     @property
-    def remote_url(self) -> str:
+    def relative_remote_url(self) -> str:
         """A sibling-relative Git path that survives atomic seed publication."""
         return Path(os.path.relpath(self.origin, start=self.work)).as_posix()
+
+
+class GitFixtureRole(Enum):
+    SEED = "seed"
+    SUBJECT = "subject"
 
 
 def _fixture_git(repo: Path, *arguments: str) -> None:
@@ -201,7 +210,7 @@ def publish_git_fixture(fixture: GitFixture) -> None:
     )
     _fixture_git(fixture.origin, "config", "--remove-section", "remote.origin")
     # A relative remote survives shared_session_tree's atomic staging rename.
-    _fixture_git(fixture.work, "remote", "add", "origin", fixture.remote_url)
+    _fixture_git(fixture.work, "remote", "add", "origin", fixture.relative_remote_url)
     _fixture_git(fixture.work, "fetch", "-q", "origin")
     _fixture_git(fixture.work, "branch", "-q", "--set-upstream-to=origin/main", "main")
     _fixture_git(
@@ -212,7 +221,9 @@ def publish_git_fixture(fixture: GitFixture) -> None:
     )
 
 
-def copy_git_fixture(seed: GitFixture, destination: GitFixture) -> None:
+def copy_git_fixture(
+    seed: GitFixture, destination: GitFixture, *, role: GitFixtureRole
+) -> None:
     """Copy prepared history and files independently, then bind the private remote.
 
     Git's local clone can hardlink objects. Our CoW/copy authority instead keeps
@@ -221,10 +232,36 @@ def copy_git_fixture(seed: GitFixture, destination: GitFixture) -> None:
     subject's real fetch/rebase/push still runs in its test.
     """
     clone_tree(seed.origin, destination.origin)
-    clone_tree(seed.work, destination.work)
-    _fixture_git(
-        destination.work, "remote", "set-url", "origin", destination.remote_url
+
+    def copy_work_file(
+        source: str | os.PathLike[str], target: str | os.PathLike[str]
+    ) -> None:
+        clone_file(source, target)
+        if Path(target).relative_to(destination.work).parts[0] != ".git":
+            # Git checkout writes source files now. Preserving an old donor
+            # mtime while refreshing the index creates a same-second ctime
+            # blind spot on hosts where Git compares coarse stat fields.
+            # Fresh mtimes preserve Git's racy-file check without a sleep.
+            os.utime(target, None)
+
+    shutil.copytree(
+        seed.work, destination.work, symlinks=True, copy_function=copy_work_file
     )
+    match role:
+        case GitFixtureRole.SEED:
+            # Shared-session publication renames the complete pair atomically.
+            remote = destination.relative_remote_url
+        case GitFixtureRole.SUBJECT:
+            # Linked worktrees share config but resolve relative URLs at their
+            # own depth. A materialized subject has one fixed private origin.
+            remote = os.fspath(destination.origin.resolve())
+        case _:
+            assert_never(role)
+    _fixture_git(destination.work, "remote", "set-url", "origin", remote)
+    # A copied index describes the donor's ctimes, not this private checkout.
+    # Read-only source fences deliberately disable optional index writes, so
+    # bind its stat cache once here rather than rehashing files at every fence.
+    _fixture_git(destination.work, "update-index", "--refresh")
 
 
 def build_driver_history(root: Path, driver: Path) -> None:

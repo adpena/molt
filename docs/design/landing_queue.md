@@ -437,31 +437,46 @@ Real-controller tests share one immutable committed driver history per pytest
 session across xdist workers and the driver/claim families. The existing
 `shared_session_tree` lock publishes it once, following
 [pytest-xdist's session-fixture guidance](https://github.com/pytest-dev/pytest-xdist/blob/master/docs/how-to.rst#making-session-scoped-fixtures-execute-only-once).
-Driver tests retain real per-test Git clones, so a fresh checkout's index binds
-its own file metadata. Claim tests retain their existing CoW/copy of prepared
-repository pairs and retarget the relative remote. This keeps their source,
-Git objects, indexes, refs and config private, without alternates or cross-test
-hardlinks. Claim policy and claim records are delta commits from the same
-driver history; the producer pushes through named `origin` so the prepared
-tracking ref describes the published main. Actual fetch/rebase/push, pinned
-controller selection and retirement still execute in the subject tests.
-Like [LLVM lit's per-test output directories](https://github.com/llvm/llvm-project/blob/main/llvm/utils/lit/lit/TestRunner.py),
-mutable test outputs remain separate from shared inputs. Generic Git-clone
-tests and lane-provisioning fixtures retain their distinct setup contracts.
+Driver, generic integration and claim fixtures copy prepared repository pairs
+through `copy_git_fixture` with an explicit `GitFixtureRole`. Seed publication
+uses a sibling-relative remote so atomic staging renames preserve it. A
+materialized subject binds its canonical absolute private origin, so linked
+worktrees at another depth share a valid remote. This
+keeps source, Git objects, indexes, refs and config private, without alternates
+or cross-test hardlinks. Generic fixtures publish their tiny prepared pair once;
+driver and claim families share the committed driver history. Actual
+fetch/rebase/push, pinned-controller selection and retirement still execute in
+the subject tests. Like
+[LLVM lit's per-test output directories](https://github.com/llvm/llvm-project/blob/main/llvm/utils/lit/lit/TestRunner.py),
+mutable test outputs remain separate from shared inputs. Tests of Git clone
+itself and lane-provisioning fixtures retain their distinct setup contracts.
 
-The cold cost is one driver indexing/commit plus preparation of its tracking
-refs. Claim fixtures copy directory metadata and share blocks where supported,
-otherwise copy bytes, then run one remote rewrite. This removes per-claim
-fetch/upstream setup and duplicate driver indexing. Copied indexes still need
-their existing first-use refresh; copying prepared worktrees into the driver
-family shifted work into that refresh and was not adopted. Both families route
-Git plumbing through the existing command executor: admitted metadata queries
-retain command-state use custody without a second full memory guard; writes
-and transfers remain guarded. Direct object-byte mutation tests check isolation beyond Git's atomic
-ref replacement; a separate real-Git oracle checks each published seed's HEAD,
-tracking main and remote main before the subject can repair stale state.
-This changes test setup only; it does not establish compiler throughput or
-qualification on untested host platforms.
+Copying an index also copies its donor stat records. The canonical copy now
+refreshes that private index once through `git update-index --refresh`, before
+read-only source fences. Those fences intentionally disable optional index
+writes; an unrefreshed copy otherwise rehashes unchanged files on later reads.
+Regular worktree files receive fresh mtimes, as Git checkout would give
+them. Preserving old donor mtimes plus a refreshed index can hide an edit
+inside a coarse ctime tick; fresh checkout mtimes preserve Git's racy-file
+check. Git metadata keeps its copied times. The refresh retains Git's content
+comparison and ctime checks. A real-Git
+control changes a tracked file without changing size or mtime, then requires
+the ordinary source observation to reject it. Config/ref and direct object-byte
+mutations also prove isolation beyond Git's atomic ref replacement. Each
+published seed's HEAD, tracking main and remote main agree before a subject
+can repair stale state.
+
+The cold cost remains one driver indexing/commit and tracking-ref preparation.
+Each subject copies private metadata and shares blocks where supported,
+otherwise copies bytes, rewrites one remote and refreshes one index. On macOS
+arm64, three alternating comparisons including setup and two real source
+observations measured medians of 1.019 s for cloning and 0.894 s for the
+fresh-mtime prepared copy, including its one index refresh. Subsequent source
+observations took 78–79 ms for clones and 79–91 ms for prepared copies; the
+saving was in preparation. These three-pair fixture-cost observations do not
+establish a whole-gate or compiler-throughput improvement. Other host
+performance cells remain unmeasured. Git commands retain the existing executor,
+state-use custody and mutation/transfer guards.
 
 - A candidate that selects every family runs the whole pre-push tier. On
   this Mac the calibrated Python cells take 20 s to 601 s each (2026-10-17);
