@@ -296,6 +296,17 @@ def _verify_published_blob(reference: ArtifactRef, root: Path) -> None:
         raise ValueError("proof custody artifact blob digest changed")
 
 
+def _source_identity(path: Path) -> tuple[int, int, int, int, int]:
+    metadata = path.stat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
 def put_file(
     root: Path,
     source: Path,
@@ -303,49 +314,49 @@ def put_file(
     logical_name: str | None = None,
     executable: bool = False,
 ) -> FileRef:
-    """Publish immutable file bytes under their digest, never hard-linking source."""
+    """Publish immutable file bytes under their digest, never hard-linking source.
+
+    The source is cloned into a private stage (`file_publication.clone_file`):
+    APFS and Linux reflink volumes share its blocks copy-on-write, so repeated
+    publication of one binary costs no data writes, and other volumes copy.
+    The clone is a separate inode, so a later change to the source cannot
+    alter custody. Its digest names exactly the published bytes. A source
+    whose identity, size or timestamps change across the clone is refused,
+    the rule GNU tar applies to a file that changes while it is read.
+    """
     source = source.resolve(strict=True)
     if not source.is_file():
         raise ValueError("proof custody source is not a regular file")
     name = logical_name or source.name
     if not name or Path(name).name != name:
         raise ValueError("proof custody file logical name must be one path component")
-    digest = hashlib.sha256()
-    size = 0
-    with source.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-            size += len(chunk)
-    sha256 = digest.hexdigest()
     root = _canonical_root(root, create=True)
-    mode = "executable" if executable else "data"
-    directory = _cas_directory(root, "files", "sha256", mode, sha256[:2], sha256[2:])
-    target = _file_path(root, sha256, name, executable)
-    if not target.exists():
-        fd, temporary_raw = tempfile.mkstemp(prefix=".custody-file-", dir=directory)
-        temporary = Path(temporary_raw)
-        copied = hashlib.sha256()
-        copied_size = 0
-        try:
-            with source.open("rb") as input_stream, os.fdopen(fd, "wb") as output:
-                for chunk in iter(lambda: input_stream.read(1024 * 1024), b""):
-                    output.write(chunk)
-                    copied.update(chunk)
-                    copied_size += len(chunk)
-            if copied.hexdigest() != sha256 or copied_size != size:
-                raise ValueError("proof custody source changed while being published")
+    stage = Path(
+        tempfile.mkdtemp(prefix=".custody-file-", dir=_cas_directory(root, "files"))
+    )
+    staged = stage / name
+    try:
+        before = _source_identity(source)
+        file_publication.clone_file(source, staged)
+        with staged.open("rb") as stream:
+            sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+            size = os.fstat(stream.fileno()).st_size
+        if _source_identity(source) != before or size != before[2]:
+            raise ValueError("proof custody source changed while being published")
+        mode = "executable" if executable else "data"
+        _cas_directory(root, "files", "sha256", mode, sha256[:2], sha256[2:])
+        target = _file_path(root, sha256, name, executable)
+        if not target.exists():
             if os.name != "nt":
-                temporary.chmod(0o555 if executable else 0o444)
+                staged.chmod(0o555 if executable else 0o444)
             try:
-                file_publication.durable_publish_exclusive(temporary, target)
+                file_publication.durable_publish_exclusive(staged, target)
             except FileExistsError:
                 if not target.exists():
                     raise
-        finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
+    finally:
+        staged.unlink(missing_ok=True)
+        stage.rmdir()
     reference = FileRef(str(target), sha256, size, executable)
     verify_file_ref(reference.as_dict(), expected_root=root)
     return reference
