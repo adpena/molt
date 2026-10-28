@@ -184,8 +184,8 @@ def test_every_consumer_reads_one_project_cargo_target(
 ) -> None:
     """HF-133: the CLI default target has one rule and every reader agrees.
 
-    A project builds in ``<project>/target`` unless a development artifact
-    request moves it to the artifact root; ``MOLT_EXT_ROOT`` alone does not.
+    A project builds in ``<project>/target`` unless explicit artifact-root
+    configuration or a development artifact request moves it to the artifact root.
     Only a pinned session scopes it.
     """
     from molt.backend_daemon_custody import backend_daemon_root_from_env
@@ -215,9 +215,9 @@ def test_every_consumer_reads_one_project_cargo_target(
     base = project
     if request_env != "none":
         monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
+        base = external.resolve()
     if request_env.startswith("MOLT_"):
         monkeypatch.setenv(request_env, "1")
-        base = external.resolve()
     if session != "none":
         monkeypatch.setenv("MOLT_SESSION_ID", "lane-a")
     if session == "generated":

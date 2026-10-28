@@ -177,6 +177,9 @@ def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=Path(str(result)).parent
+                ).supervisor_artifact_root,
                 "schema": admission.EXECUTION_SCHEMA,
                 "run_id": "path-admission",
                 "execution_nonce": "a" * 64,
@@ -234,6 +237,9 @@ def test_supervisor_boundary_rejects_root_replaced_during_preflight(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=Path(str(result)).parent
+                ).supervisor_artifact_root,
                 "schema": admission.EXECUTION_SCHEMA,
                 "run_id": "root-replacement",
                 "execution_nonce": "a" * 64,
@@ -819,6 +825,9 @@ def test_root_identity_survives_immutable_queue_and_detached_request(tmp_path, i
         row = state._row_by_run_id(conn, "placement")
         envelope = json.loads(row["command_envelope_json"])
         path, _result, request_envelope, _nonce = runner._write_execution_request(
+            output_layout=layout.CargoOutputLayout.for_envelope(
+                envelope, result_root=(metadata / "unit.log").parent
+            ),
             row=row,
             command=command,
             repo_root=source,
@@ -888,7 +897,7 @@ def test_supervisor_store_rejects_overlapping_custody(
 
 
 @pytest.mark.parametrize(
-    "placement", ["durable", "scratch", "external", "inside-other-source"]
+    "placement", ["durable", "scratch", "env", "external", "inside-other-source"]
 )
 def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
     tmp_path, monkeypatch, git_checkout, placement
@@ -898,18 +907,34 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
     source = git_checkout / ".claude" / "worktrees" / "agent"
     _git(git_checkout, "worktree", "add", "-q", "--detach", str(source))
     monkeypatch.setattr(layout, "implementation_source_root", lambda: source)
+    for key in (
+        "MOLT_EXT_ROOT",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+        "MOLT_EXTERNAL_MIN_FREE_GB",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(
         dx,
         "_host_scratch_roots",
         lambda: (tmp_path if placement == "scratch" else tmp_path / "host-temp",),
     )
     declaration = None
-    if placement in {"external", "inside-other-source"}:
+    if placement in {"durable", "env", "external", "inside-other-source"}:
         root = tmp_path / "operator-output"
         root.mkdir()
         if placement == "inside-other-source":
             _git(root, "init", "-q")
-        declaration = layout.declare_root(str(root))
+        if placement == "durable":
+            monkeypatch.setattr(
+                disk_capacity, "_default_measure_free_bytes", lambda _: 64 * 1024**3
+            )
+            dx.set_artifact_root_binding(source, root, {})
+        elif placement == "env":
+            monkeypatch.setenv("MOLT_EXT_ROOT", str(root))
+        else:
+            declaration = layout.declare_root(str(root))
     selected = layout.CargoOutputLayout(tmp_path / "receipts", declaration)
 
     def run_git(root, arguments):
@@ -922,14 +947,14 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
     before = repository_source_paths(
         git_checkout, run_git=run_git, include_untracked=True
     )
-    if placement == "inside-other-source":
+    if placement in {"inside-other-source", "scratch"}:
         with pytest.raises(ValueError, match="overlaps source or receipt custody"):
             _ = selected.supervisor_store
-        assert not (root / "proof-supervisor").exists()
+        rejected_root = root if placement == "inside-other-source" else source
+        assert not (rejected_root / "proof-supervisor").exists()
         return
     store = selected.supervisor_store
-    expected = root if placement == "external" else git_checkout.parent
-    assert store.parent == expected / "proof-supervisor"
+    assert store.parent == root / "proof-supervisor"
     assert not store.is_relative_to(git_checkout)
     assert not store.is_relative_to(source)
     store.mkdir(parents=True)
@@ -938,6 +963,148 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
         repository_source_paths(git_checkout, run_git=run_git, include_untracked=True)
         == before
     )
+
+
+def test_supervisor_store_refuses_an_unbound_plain_clone(tmp_path, monkeypatch):
+    source = tmp_path / "plain-clone"
+    source.mkdir()
+    _git(source, "init", "-q", "-b", "main")
+    monkeypatch.setattr(layout, "implementation_source_root", lambda: source)
+    for key in (
+        "MOLT_EXT_ROOT",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    selected = layout.CargoOutputLayout(tmp_path / "receipts")
+    with pytest.raises(ValueError, match="artifact-root --bind"):
+        _ = selected.supervisor_store
+    with pytest.raises(ValueError, match="artifact-root --bind"):
+        selected.bind_supervisor_artifact_root({})
+    assert not (source / "proof-supervisor").exists()
+    assert not (source.parent / "proof-supervisor").exists()
+
+
+@pytest.mark.parametrize("root_source", ["env", "binding", "declared"])
+@pytest.mark.parametrize("name_rule", ["exact", "windows"])
+def test_request_carries_parent_supervisor_selection_without_child_environment(
+    tmp_path, monkeypatch, git_checkout, root_source, name_rule
+):
+    import hashlib
+    from molt import dx
+    from molt.process_environment import NameRule, ProcessEnvironment
+
+    source = git_checkout.resolve()
+    root = tmp_path / "selected-artifacts"
+    root.mkdir()
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    monkeypatch.setattr(layout, "implementation_source_root", lambda: source)
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _: 64 * 1024**3
+    )
+    if root_source == "binding":
+        dx.set_artifact_root_binding(source, root, {})
+    rule = NameRule.EXACT if name_rule == "exact" else NameRule.WINDOWS
+    key = "MOLT_EXT_ROOT" if rule == NameRule.EXACT else "molt_ext_root"
+    parent_environment = ProcessEnvironment(
+        {key: str(root)} if root_source == "env" else {}, rule=rule
+    )
+    command = [sys.executable, "-c", "pass"]
+    envelope = admission.envelope_for_command(
+        command, cargo_output_root=str(root) if root_source == "declared" else None
+    )
+    parent_layout = layout.CargoOutputLayout.for_envelope(
+        envelope, result_root=receipts, source_root=source
+    ).bind_supervisor_artifact_root(parent_environment)
+    request_path, result_path, persisted, _nonce = runner._write_execution_request(
+        row={"command_envelope_json": json.dumps(envelope)},
+        command=command,
+        repo_root=source,
+        resource_family="python-tests",
+        run_id="storage-transport",
+        env_override_names=[],
+        log_path=receipts / "run.log",
+        summary_path=receipts / "guard.json",
+        timeout_seconds=30,
+        output_layout=parent_layout,
+    )
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    assert persisted == envelope == request["envelope"]
+    assert request["env_override_names"] == []
+    assert request["supervisor_artifact_root"] == layout.declare_root(str(root))
+    # A scrubbed or differently configured child must consume the declaration,
+    # including on CI where the parent had env configuration but no binding.
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "wrong-root"))
+
+    def refuse_selection(*args, **kwargs):
+        pytest.fail("execution child reselected the parent's supervisor root")
+
+    monkeypatch.setattr(layout, "artifact_root", refuse_selection)
+    namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:24]
+    expected = root / "proof-supervisor" / namespace
+    observed = []
+
+    def receive(selected):
+        observed.append(selected.supervisor_store)
+        raise ValueError("storage declaration reached receiver")
+
+    monkeypatch.setattr(
+        layout.CargoOutputLayout, "admit_supervisor_target_path", receive
+    )
+    assert guarded_execution.execute_guarded_request(request_path) == 2
+    assert observed == [expected]
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["error"] == "ValueError: storage declaration reached receiver"
+    assert result["command_started"] is False
+    assert not expected.exists()
+    captured_root = request.pop("supervisor_artifact_root")
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    observed.clear()
+    assert guarded_execution.execute_guarded_request(request_path) == 2
+    refused = json.loads(result_path.read_text(encoding="utf-8"))
+    assert (
+        refused["error"]
+        == "ValueError: proof execution request has no supervisor artifact root"
+    )
+    assert observed == [], "missing transport authority must not select ambient storage"
+    # A new generation of the directory cannot inherit the captured authority.
+    root.rename(tmp_path / "retained-root")
+    root.mkdir()
+    with pytest.raises(ValueError, match="replaced or remounted"):
+        layout.CargoOutputLayout.for_envelope(
+            envelope,
+            result_root=receipts,
+            supervisor_artifact_root=captured_root,
+        )
+
+
+def test_supervisor_store_uses_the_durable_artifact_binding(
+    tmp_path, monkeypatch, git_checkout
+):
+    import hashlib
+    from molt import dx
+
+    source = git_checkout.resolve()
+    artifacts = tmp_path / "bound-artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(layout, "implementation_source_root", lambda: source)
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _: 64 * 1024**3
+    )
+    dx.set_artifact_root_binding(source, artifacts, {})
+    first = layout.CargoOutputLayout(tmp_path / "receipts-one")
+    second = layout.CargoOutputLayout(tmp_path / "receipts-two")
+    namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:24]
+    expected = artifacts / "proof-supervisor" / namespace
+    assert first.supervisor_store == second.supervisor_store == expected
+    assert first.supervisor_target == expected / "target"
+    assert not expected.exists(), "selection must not create output"
+    artifacts.rename(tmp_path / "offline-artifacts")
+    with pytest.raises(dx.DxConfigError, match="bound artifact root"):
+        _ = first.supervisor_store
 
 
 def test_supervisor_intermediates_are_external_but_executable_cas_stays_canonical(
@@ -1309,6 +1476,9 @@ def test_oversized_metadata_image_rejects_before_preflight_or_provision(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=Path(str(result)).parent
+                ).supervisor_artifact_root,
                 "schema": admission.EXECUTION_SCHEMA,
                 "run_id": "image-preflight",
                 "execution_nonce": "a" * 64,
@@ -1375,6 +1545,9 @@ def test_independent_guest_root_refuses_before_queue_output_side_effects(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=Path(str(result)).parent
+                ).supervisor_artifact_root,
                 "schema": admission.EXECUTION_SCHEMA,
                 "run_id": "independent-guest-output",
                 "execution_nonce": "a" * 64,

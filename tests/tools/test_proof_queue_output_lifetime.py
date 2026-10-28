@@ -11,6 +11,7 @@ import sqlite3
 import pytest
 
 from tools.proof_queue_pkg import (
+    cargo_output_layout,
     cli,
     command_admission as admission,
     commands,
@@ -118,6 +119,9 @@ def test_both_database_admission_paths_freeze_disposition(tmp_path, insert):
         admission.validate_envelope(envelope, command)
         request_path, _result, request_envelope, _nonce = (
             runner._write_execution_request(
+                output_layout=cargo_output_layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=(tmp_path / "proof.log").parent
+                ),
                 row=row,
                 command=command,
                 repo_root=tmp_path,
