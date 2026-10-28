@@ -1929,6 +1929,34 @@ the perf arc depends on FACT-D to attribute regressions to passes.
 *Design only / executable plan. Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>*
 
 
+## CPython bytecode derivation
+
+`molt.python_bytecode` owns the CPython header and source-to-code protocol.
+Its checked-hash producer compiles supplied source bytes with an explicit
+filename and optimization level; its receiver independently checks the header,
+source binding and complete marshaled code body. The closed optimization type
+admits 0, 1 and 2. Borrowed-image custody consumes this same authority while
+retaining its separate path, importability, ownership and rewrite-tool checks.
+The capture implementation inventory includes the shared owner, including when
+an isolated probe copies its compiler sources.
+
+This follows [PEP 552](https://peps.python.org/pep-0552/) and
+[CPython's `py_compile` producer](https://docs.python.org/3/library/py_compile.html).
+A valid source-hash header establishes freshness under CPython's policy; it
+cannot establish that the payload was compiled from those source bytes.
+Regression tests use `py_compile` as the independent producer and reject a
+substituted payload even with a valid source hash. Filename and optimization
+are derivation inputs, including assertions, `__debug__` and docstrings.
+
+Producing or validating one cache costs one source compilation and one marshal
+serialization, plus linear header hashing. These functions perform no path
+discovery, process launch or file write. They do not choose a cache namespace
+or change the managed source-only policy below. A separately addressed frontend
+artifact still needs publication, ordinary selection, independent proof/release
+admission and actual used-code records before executable cache reuse can be
+enabled. Dependency images remain independent of editable compiler-source
+contents; a compiler edit must not require republishing that whole image.
+
 ## Managed Python images
 
 Managed images compile source on import rather than publishing caches for every

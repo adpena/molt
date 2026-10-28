@@ -1100,6 +1100,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             returncode = _integrate_exclusive(args, progress=progress)
             return returncode
         lock_path = _integration_lock_path(repo)
+        acquisition_started = time.monotonic()
         if args.wait_for_lock:
             # The landing queue's runner waits out another integrator's
             # landing; an interactive integrate still refuses at once.
@@ -1115,6 +1116,10 @@ def cmd_integrate(args: argparse.Namespace) -> int:
                 "Retry after it finishes; do not remove the integration lock file."
             )
         try:
+            progress.emit(
+                "integration_lock_acquired",
+                acquisition_seconds=time.monotonic() - acquisition_started,
+            )
             returncode = _integrate_exclusive(args, progress=progress)
             return returncode
         finally:
