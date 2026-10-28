@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import molt.cli as cli
-from molt.cli import frontend_pipeline, module_source, typecheck
+from molt.cli import frontend_pipeline, module_resolution, module_source, typecheck
 from molt.type_facts import collect_type_facts_from_paths
 from tests.process_guard_common import install_module_view, run_custody_subject_process
 from tests.python_environment_test_support import create_test_venv
@@ -26,6 +26,7 @@ def _prepare(source: Path, *, policy="check", is_wasm=False):
     warnings: list[str] = []
     details: dict = {}
     config, failure = frontend_pipeline._prepare_frontend_lowering_config(
+        stdlib_root=module_resolution._stdlib_root_path(),
         type_facts_path=None,
         type_hint_policy=policy,
         module_graph={"entry": source},

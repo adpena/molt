@@ -729,4 +729,7 @@ __all__ = [
 
 # Complete only the exact initial interpreter-owned finder/hook generations.
 # Public customization is policy; this call never repairs or replaces it.
-_require_intrinsic("molt_importlib_ensure_default_meta_path")(globals())
+_MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH = _require_intrinsic(
+    "molt_importlib_ensure_default_meta_path"
+)
+_MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH(globals())
