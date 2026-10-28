@@ -14,6 +14,12 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v15 includes closed callable provenance and generated import-call
+argument/result contracts in workload admission and transformation analysis.
+These can change qualification and selected compiled source, so earlier boards
+retain their recorded comparison class. Historical measurements are not
+relabelled by refreshing summaries or the content lock.
+
 Methodology v12 removes the inactive frontend codec option from benchmark setup
 and cache partitions. Batch request admission, pipe writes and response waiting
 share one deadline through the existing compiler service. These can change cold
