@@ -1404,6 +1404,11 @@ def scratch_dir(
     return scratch_root(repo_root, env).joinpath(*_purpose_parts(purpose))
 
 
+def backend_ir_lease_dir(repo_root: Path, env: Mapping[str, str] | None = None) -> Path:
+    """Return the derived MessagePack IR namespace without creating it."""
+    return scratch_dir(repo_root, "backend-ir-leases", env)
+
+
 def control_state_dir(
     repo_root: Path, purpose: str, env: Mapping[str, str] | None = None
 ) -> Path:

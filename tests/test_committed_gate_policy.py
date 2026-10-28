@@ -196,9 +196,27 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
 def test_scanner_leaf_source_and_test_select_their_owner(source, owner):
     cfg = GateConfig.load(COMMITTED_GATES)
     for path in (source, owner):
+        expected = {"tests/tools/test_import_file.py", owner}
+        if path == "tools/check_subprocess_guard_coverage.py":
+            expected.update(
+                {
+                    "tests/tools/test_check_memory_guard_wiring.py",
+                    "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
+                }
+            )
+        assert _selected_pytest_targets(cfg, [path]) == expected
+
+
+def test_guard_wiring_audit_changes_select_their_direct_consumers():
+    cfg = GateConfig.load(COMMITTED_GATES)
+    for path in (
+        "tools/check_memory_guard_wiring.py",
+        "tests/tools/test_check_memory_guard_wiring.py",
+    ):
         assert _selected_pytest_targets(cfg, [path]) == {
             "tests/tools/test_import_file.py",
-            owner,
+            "tests/tools/test_check_memory_guard_wiring.py",
+            "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
         }
 
 

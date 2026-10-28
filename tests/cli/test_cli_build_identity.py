@@ -17,6 +17,7 @@ import sys
 import pytest
 
 from molt.cli import build_output_layout as layout
+from molt.cli.output import read_json_payload
 from tests.process_guard_common import run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,12 +131,12 @@ def test_concurrent_builds_of_same_named_programs_run_their_own_code(
     tmp_path: Path,
 ) -> None:
     # Guest optimization and host compiler optimization are independent. This
-    # artifact-ownership proof uses the developer compiler, without building
-    # another thin-LTO release compiler solely for these nine tiny programs.
+    # artifact-ownership proof reuses the dev-fast compiler admitted by the
+    # developer daemon proofs; a separate release-fast host costs another build.
     build_env = {
         **os.environ,
-        "MOLT_BACKEND_PROFILE": "release",
-        "MOLT_RELEASE_BACKEND_CARGO_PROFILE": "release-fast",
+        "MOLT_BACKEND_PROFILE": "dev",
+        "MOLT_DEV_BACKEND_CARGO_PROFILE": "dev-fast",
     }
 
     def build_and_run(job: tuple[int, str]) -> tuple[str, str]:
@@ -169,6 +170,11 @@ def test_concurrent_builds_of_same_named_programs_run_their_own_code(
         assert build.returncode == 0, (
             f"build {job} exited {build.returncode}\n{build.stdout}\n{build.stderr}"
         )
+        profiles = read_json_payload(build.stdout)["data"]["observed_toolchain"][
+            "selected_profiles"
+        ]
+        assert profiles["compiler_profile"] == "dev-fast"
+        assert profiles["guest_profile"] == "dev"
         # A build must transfer its shared compiler daemon to the suite. Even
         # when all programs finish first, command cleanup must not kill it.
         assert not build.orphaned_process_groups, build.termination_reports

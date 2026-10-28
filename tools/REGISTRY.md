@@ -78,7 +78,9 @@ self-commits or invents an external scheduling authority.
 - `tools/perf_causality.py` + `tools/pass_delta_dashboard.py` — attribute a CPython-RED
   to its missing IR fact (do not re-derive perf causality by hand).
 - `tools/dx_build_timer.py` — build wall-clock (prime/cold/incremental/test-lib),
-  including first-class pass-edit probes such as `inc-value_range` and `inc-gvn`.
+  including pass-edit probes such as `inc-value_range` and `inc-gvn`. Molt
+  scenarios default to ordinary CLI `--molt-measurement latency`; `attribution`
+  opts into diagnostics. `--molt-edited-source` supplies an explicit edit pair.
 
 ### Audit / repr (the evidence engine)
 - `runtime/molt-backend/src/bin/typed_repr_report.rs` — per-function scalar-repr +

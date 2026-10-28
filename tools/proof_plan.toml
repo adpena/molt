@@ -5313,6 +5313,21 @@ gates = []
 pytest = ["tests/tools/test_subprocess_guard_coverage.py"]
 
 [[rule]]
+name = "guard-wiring-source-observation"
+toolchains = ["python"]
+description = "Shared raw-source observation changes select guard-wiring consumers; leaf scanner tests stay local."
+globs = [
+  "tools/check_subprocess_guard_coverage.py",
+  "tools/check_memory_guard_wiring.py",
+  "tests/tools/test_check_memory_guard_wiring.py",
+]
+gates = []
+pytest = [
+  "tests/tools/test_check_memory_guard_wiring.py",
+  "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
+]
+
+[[rule]]
 name = "environment-registry-audit"
 toolchains = ["python"]
 description = "Environment registry audit and its semantic controls."

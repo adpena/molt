@@ -170,6 +170,28 @@ function facts of each module for the environment scan (7.2 MB for 5,449 files,
 parsed in 42 ms). The rejected whole-tree AST memo retained every tree in one
 process; records retain facts across processes and keep no tree.
 
+Repository import policies share one streaming source observation: each admitted
+file is parsed once, and bootstrap, bare-import and library-path findings retain
+their distinct inventories. One test owns the combined result so xdist cannot
+repeat the union scan on separate workers. Only compact findings survive a file;
+there is no repository-wide AST cache.
+
+Raw subprocess snippets index UTF-8 physical lines lazily for one visitor, using
+CR/LF/CRLF boundaries without splitting form feeds or Unicode separators. A
+classified call extracts and normalizes its optional snippet once for its ordered
+policy findings; missing locations retain each method's diagnostic. This replaces
+repeated source-prefix scans with `O(source bytes + extracted snippet bytes)`
+work and `O(source bytes)` extra memory for one file, and allocates no index when
+there are no findings. It adds no syscalls, process launches or persistent writes.
+CPython's `ast.get_source_segment` remains the independent extraction oracle.
+The existing mandatory repository-policy gate owns full-source acceptance;
+scanner mechanism tests use isolated Python/text inventories with actual
+cold/replayed facts and a planted violation after a source edit. These tests do
+not substitute for the full-source gate. The separation of framing from policy
+and the explicit linear cost contract also follow
+[Astral's codec architecture](https://github.com/astral-sh/astral-codec/blob/main/CONTRIBUTING.md)
+and [complexity model](https://github.com/astral-sh/astral-codec/blob/main/SECURITY.md).
+
 Only command entry points open records. Library callers and tests compute
 directly, so a monkeypatched test cannot publish a result for unpatched code.
 Each consumer reads a file's bytes once and decodes them exactly as

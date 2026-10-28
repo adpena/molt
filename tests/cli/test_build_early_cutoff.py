@@ -9,6 +9,7 @@ from __future__ import annotations
 from molt.process_environment import ProcessEnvironment
 
 import os
+import stat
 import sys
 import tempfile
 import time
@@ -17,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from molt import build_record
+from molt import build_record, input_report
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.cli import build_command
 from molt.cli.build_request import BuildRequest
@@ -151,6 +152,201 @@ def _judge_changes_during_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: written + DIGEST_RACY_WINDOW_NS,
     )
     time.sleep(0.01)
+
+
+@pytest.mark.parametrize("owner", ["project", "compiler"])
+@pytest.mark.parametrize("explicit_source", [False, True])
+def test_ir_lease_products_do_not_hide_explicit_source_inputs(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str,
+    explicit_source: bool,
+) -> None:
+    import msgspec
+
+    from molt import dx
+    from molt.cli.backend_execution import _write_backend_ir_lease
+    from molt.cli.backend_ir_transport import BackendIrProgram
+    from molt.cli.cache_keys import FunctionDigests
+    from molt.cli.module_source import PythonSourceSnapshot
+    from molt.source_root import compiler_source_root
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", f"disk:{scratch}")
+    root = project if owner == "project" else compiler_source_root()
+    product_root = dx.backend_ir_lease_dir(root, os.environ)
+    product_root.mkdir(parents=True)
+    extra = product_root / "explicit.py"
+    if explicit_source:
+        extra.write_text("a = 1\n", encoding="utf-8")
+    output = tmp_path / "app"
+    calls: list[str] = []
+    emit = _fake_build(calls)
+    _judge_changes_during_the_build(monkeypatch)
+
+    def compile_program(request: BuildRequest) -> int:
+        lease = _write_backend_ir_lease(
+            root, BackendIrProgram({"functions": []}, FunctionDigests())
+        )
+        try:
+            assert msgspec.msgpack.decode(lease.read_bytes()) == {
+                "function_bodies": [],
+                "function_digests": b"",
+            }
+        finally:
+            lease.unlink()
+        extra_text = PythonSourceSnapshot.capture(extra).text if explicit_source else ""
+        result = emit(request)
+        with output.open("a", encoding="utf-8") as handle:
+            handle.write(extra_text)
+        return result
+
+    build = build_command._in_build_scope(
+        build_command._with_early_cutoff(compile_program)
+    )
+    _run(build, project, output)
+    _run(build, project, output)
+    assert len(calls) == 1, "reading and deleting derived IR must not force a rebuild"
+    assert output.read_text(encoding="utf-8") == "binary of print(1)\n" + (
+        "a = 1\n" if explicit_source else ""
+    )
+    if explicit_source:
+        extra.write_text("a = 2\n", encoding="utf-8")
+        _run(build, project, output)
+        assert len(calls) == 2, (
+            "an explicit source remains an input inside a product root"
+        )
+        assert output.read_text(encoding="utf-8") == "binary of print(1)\na = 2\n"
+
+
+@pytest.mark.parametrize(
+    "query,reusable",
+    [
+        ("positive", True),
+        ("negative", False),
+        ("missing-parent", False),
+        ("deep-missing-parent", False),
+        ("file-parent", False),
+        ("listing", False),
+    ],
+)
+def test_import_fact_scope_controls_unrelated_parent_churn(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+    reusable: bool,
+) -> None:
+    from molt.cli.python_import_topology import PythonImportTopology
+
+    output = tmp_path / "out" / "app"
+    output.parent.mkdir()
+    (tmp_path / "blocking-file").write_text("not a directory", encoding="utf-8")
+    _judge_changes_during_the_build(monkeypatch)
+    calls: list[str] = []
+    emit = _fake_build(calls)
+    boundaries: list[Path] = []
+    report_directory = input_report.report_directory
+
+    def capture_boundary(path: Path | str) -> None:
+        boundaries.append(Path(path))
+        report_directory(path)
+
+    monkeypatch.setattr(input_report, "report_directory", capture_boundary)
+
+    def compile_with_import_fact(request: BuildRequest) -> int:
+        topology = PythonImportTopology()
+        reports_before = len(boundaries)
+        if query == "positive":
+            observed = topology.probe(project)
+            assert observed is not None and observed.path == project
+        elif query in {
+            "negative",
+            "missing-parent",
+            "deep-missing-parent",
+            "file-parent",
+        }:
+            selected = {
+                "negative": tmp_path / "absent-root",
+                "missing-parent": tmp_path / "absent-parent" / "child",
+                "deep-missing-parent": tmp_path.joinpath(
+                    *(f"missing-{i}" for i in range(32)), "child"
+                ),
+                "file-parent": tmp_path / "blocking-file" / "child",
+            }[query]
+            assert topology.probe(selected) is None
+            if query == "deep-missing-parent":
+                assert boundaries[reports_before:] == [tmp_path], (
+                    "one existing boundary, independent of missing depth"
+                )
+        else:
+            assert "project" in topology.directory_names(tmp_path)
+        # The queried root and source stay unchanged; a sibling product appears.
+        (tmp_path / f"unrelated-{len(calls)}.txt").write_text(
+            "product", encoding="utf-8"
+        )
+        topology.validate()
+        return emit(request)
+
+    build = build_command._with_early_cutoff(compile_with_import_fact)
+    _run(build, project, output)
+    _run(build, project, output)
+    assert len(calls) == (1 if reusable else 2)
+    assert output.read_text(encoding="utf-8") == "binary of print(1)\n"
+
+
+@pytest.mark.parametrize("change", ["kind", "symlink-target"])
+def test_a_changed_positive_import_fact_rebuilds(
+    project: Path,
+    tmp_path: Path,
+    change: str,
+) -> None:
+    from molt.cli.python_import_topology import PythonImportTopology
+
+    selected = tmp_path / "selected"
+    first, second = tmp_path / "first", tmp_path / "second"
+    if change == "kind":
+        selected.write_text("module", encoding="utf-8")
+    else:
+        first.mkdir()
+        second.mkdir()
+        try:
+            selected.symlink_to(first, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"host cannot create import alias: {exc}")
+    output = tmp_path / "out" / "app"
+    output.parent.mkdir()
+    calls: list[str] = []
+    emit = _fake_build(calls)
+
+    def compile_with_import_fact(request: BuildRequest) -> int:
+        topology = PythonImportTopology()
+        observed = topology.probe(selected)
+        assert observed is not None
+        topology.validate()
+        result = emit(request)
+        output.write_text(f"{observed.path}:{observed.mode}", encoding="utf-8")
+        return result
+
+    build = build_command._with_early_cutoff(compile_with_import_fact)
+    _run(build, project, output)
+    original = output.read_text(encoding="utf-8")
+    _run(build, project, output)
+    assert len(calls) == 1
+
+    selected.unlink()
+    if change == "kind":
+        selected.mkdir()
+    else:
+        selected.symlink_to(second, target_is_directory=True)
+    _run(build, project, output)
+    assert len(calls) == 2, "the consumed type or target changed"
+    assert output.read_text(encoding="utf-8") == f"{selected.resolve()}:{stat.S_IFDIR}"
+    assert output.read_text(encoding="utf-8") != original
+    _run(build, project, output)
+    assert len(calls) == 2, "the new fact is independently reusable"
 
 
 def test_temporary_files_leave_the_recorded_build_current(
