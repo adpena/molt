@@ -14701,13 +14701,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_warnings_showwarning",
-        symbol: "molt_warnings_showwarning",
-        arity: 6,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
         name: "molt_warnings_simplefilter",
         symbol: "molt_warnings_simplefilter",
         arity: 4,
@@ -14731,6 +14724,20 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_warnings_filters_get",
         symbol: "molt_warnings_filters_get",
+        arity: 0,
+        defaults: &[],
+        python_name: None,
+    },
+    IntrinsicSpec {
+        name: "molt_warnings_onceregistry_get",
+        symbol: "molt_warnings_onceregistry_get",
+        arity: 0,
+        defaults: &[],
+        python_name: None,
+    },
+    IntrinsicSpec {
+        name: "molt_warnings_filters_mutated",
+        symbol: "molt_warnings_filters_mutated",
         arity: 0,
         defaults: &[],
         python_name: None,
