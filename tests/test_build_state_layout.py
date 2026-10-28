@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 import shutil
 
 import pytest
@@ -85,7 +86,9 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
         "incident_root": str(expected_profile.parent / "incidents"),
         "guard_state_root": str(memory_guard_state_root(repo, admitted)),
         "pytest_guard_root": str(pytest_guard_summary_dir(repo, admitted)),
-        "proof_scratch_root": str(tmp_path / "canonical" / "tmp"),
+        "proof_scratch_root": str(
+            scratch_state_root(tmp_path / "canonical" / "tmp", owner=repo, create=False)
+        ),
     }
     assert not expected_profile.exists(), "profile projection must not create evidence"
     assert expected.is_relative_to(tmp_path / "canonical")
@@ -99,7 +102,9 @@ def test_ci_evidence_and_tool_outputs_share_the_admitted_proof_scratch_root(
     repo = tmp_path / "repo"
     repo.mkdir()
     env = {"MOLT_EXT_ROOT": str(tmp_path / "canonical")}
-    expected = tmp_path / "canonical" / "tmp"
+    expected = scratch_state_root(
+        tmp_path / "canonical" / "tmp", owner=repo, create=False
+    )
     if queued:
         expected = tmp_path / "queue" / "issued-scratch"
         env["MOLT_PROOF_SCRATCH_ROOT"] = str(expected)

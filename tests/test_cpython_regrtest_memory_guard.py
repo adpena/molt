@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import molt.dx as molt_dx
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 import pytest
 
 from tools import cpython_regrtest
@@ -184,7 +185,11 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
         )
     )
     assert contexts[0]["env"]["TMPDIR"] == str(
-        custody_layout.scratch_root(artifact_root, module.REPO_ROOT)
+        scratch_state_root(
+            custody_layout.scratch_root(artifact_root, module.REPO_ROOT),
+            owner=module.REPO_ROOT,
+            create=False,
+        )
     )
     assert calls[0]["cwd"] == Path("/tmp")
     assert calls[0]["env"]["X"] == "1"
@@ -271,7 +276,11 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["TMPDIR"] == str(
-        custody_layout.scratch_root(tmp_path.resolve(), tmp_path)
+        scratch_state_root(
+            custody_layout.scratch_root(tmp_path.resolve(), tmp_path),
+            owner=tmp_path,
+            create=False,
+        )
     )
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
     assert env["PYTHONHASHSEED"] == "0"

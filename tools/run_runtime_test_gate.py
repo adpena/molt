@@ -1360,7 +1360,7 @@ def finish_aggregate(run: Path, aggregate: dict) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_arguments(argv)
     if args.receipt_root is None:
-        args.receipt_root = proof_scratch_root(ROOT) / "runtime-gate-runs"
+        args.receipt_root = proof_scratch_root(ROOT, create=True) / "runtime-gate-runs"
     run_id = "runtime-" + uuid.uuid4().hex
     run = args.receipt_root / run_id
     run.mkdir(parents=True, exist_ok=False)

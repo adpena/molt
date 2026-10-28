@@ -1366,13 +1366,62 @@ Leading practice, beyond the Go, Cargo and Bazel caches of 2.6:
 The design extends `molt.checkout_state`; it adds no second authority.
 
 1. **Agent scratch** (HF-435). A tool or agent gets scratch only from one
-   constructor that writes the 2.6 owner record (its session id or lane) and
-   stamps last use. The scratch kind joins the closed state-kind set, so
-   `disk_guard`'s daily pass retires it by the 2.6 rule: idle past the limit,
-   or soon after its owner is gone. Entries that predate the constructor age
-   out like Cargo's untracked entries.
+   constructor, `checkout_state.scratch_state_root`. Its owner is the lane's
+   absolute checkout path, bound by the checkout component's existing path
+   digest to `tmp/scratch-<12 hex digits>`. Purposes live beneath that root;
+   different lanes never adopt a shared purpose directory's first owner.
+   `dx.scratch_dir` materializes, binds and stamps the root before exposing a
+   purpose. Read-only `dx.scratch_root` selects the same address without
+   writing; direct writers pass `create=True` to it or `proof_scratch_root`.
+   Materializing `RunContext` calls the constructor before exporting
+   it as the default `TMPDIR`, `TMP`, `TEMP` and differential scratch.
+   Explicit operator paths and receipt-owned proof payload/supervisor roots
+   keep their existing custody. Artifact-root selection is unchanged.
+
+   The `scratch` kind joins the closed state-kind set. It writes the 2.6
+   owner record once and renews the last-use stamp at most once an hour.
+   The daily pass retires a root after `MOLT_SCRATCH_IDLE_DAYS` (default 3)
+   without use, or after the two-hour protection window when its recorded
+   lane checkout is gone and its parent still exists. Reusable slot paths
+   remain owners while present; releasing a slot does not prove its path
+   gone, so their scratch follows the idle limit. This deliberately uses
+   the existing path-owner protocol without a second session registry.
+
+   Pre-constructor directories directly under `tmp/` have the same registered
+   three-day idle limit; GC never guesses or manufactures an owner. The
+   2026-10-21 inventory found 1,582 of 1,590 entries already idle for three
+   days, while the 2026-10-28 inventory held 245 GiB. Three idle days bound
+   regenerable scratch more tightly than Cargo's month for lasting build
+   products, while soft retirement adds seven recoverable days. This is a
+   retention choice from observed accumulation, not a measured reuse optimum.
+
+   A complete metadata walk observes every descendant's activity, bytes and
+   held lock, including writes that leave all ancestor mtimes unchanged.
+   It never follows links or reads payload bytes. Recent use, a protected
+   path, an external checkout-state use lock, a held descendant lock or an
+   unresolved guard marker keeps the root. Markers without a scratch
+   coordinate conservatively keep artifact-root scratch until their custody
+   is resolved. Unreadable, malformed-owner and incompletely inventoried
+   roots stay. Apply reobserves activity and protection under the existing
+   exclusive state lock, then calls `soft_retire`; final deletion also
+   checks recursive activity and custody. Inventories share the daily pass's
+   existing 30-second deadline; a timeout defers the root. Dry-run reports
+   estimated bytes for each selected scratch root without changing it.
+
+   Existing checkout-owned `build-control`, `pytest-cache` and `hypothesis`
+   containers, memory-guard control/evidence, guard-scratch `gs`/`pt-*`,
+   backend IR leases, daemon sockets and build admission keep their current
+   owners and retirement protocols. Hypothesis still follows selected scratch
+   storage at its existing checkout-owned address. Benchmark purpose roots
+   use the constructor through `dx.scratch_dir`; their per-case `tmp` children
+   inherit that ownership. Proof-queue payload, result and supervisor `tmp`
+   children inherit their existing receipt ownership instead.
 2. **Agent evidence** (HF-435). A task's `artifacts/` is a root owned by its
-   coordination record. The daily pass harvests a nonactive task once every
+   coordination record. `tools/coordination_records.py` owns the record schema,
+   bounded loader and harvest, shared by the coordination CLI and disk guard.
+   Its imports are standard-library and `molt.*` only, so execution custody
+   does not pull CLI reporting and release ledgers into proof authority.
+   The daily pass harvests a nonactive task once every
    file and directory, its last-use stamp and its coordination timestamps are
    older than `MOLT_AGENT_EVIDENCE_IDLE_DAYS` (default 3). It keeps coordination,
    handoffs, reports, verdicts and progress logs of at most 1 MiB each, excluding

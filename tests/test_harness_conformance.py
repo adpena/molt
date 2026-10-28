@@ -8,6 +8,7 @@ import pytest
 
 import molt.dx as molt_dx
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 
 
 def _load_module():
@@ -27,7 +28,11 @@ def test_build_env_sets_canonical_roots_and_session_id(tmp_path: Path) -> None:
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
-    scratch = custody_layout.scratch_root(artifact_root, tmp_path)
+    scratch = scratch_state_root(
+        custody_layout.scratch_root(artifact_root, tmp_path),
+        owner=tmp_path,
+        create=False,
+    )
     assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["TMPDIR"] == str(scratch)

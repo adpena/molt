@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from types import SimpleNamespace
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 
 from tools import bench_backend_incremental as mod
 
@@ -60,7 +61,10 @@ def test_resolve_output_root_defaults_under_tmp(tmp_path: Path, monkeypatch) -> 
     output_root, molt_ext_root = mod._resolve_output_root(None)
 
     assert output_root == (
-        ext_root.resolve() / "tmp" / "bench_backend_incremental_20260409T101112Z"
+        scratch_state_root(
+            ext_root.resolve() / "tmp", owner=mod.REPO_ROOT, create=False
+        )
+        / "bench_backend_incremental_20260409T101112Z"
     )
     assert molt_ext_root == ext_root.resolve()
 

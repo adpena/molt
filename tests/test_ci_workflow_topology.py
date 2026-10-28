@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
@@ -3117,7 +3118,9 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     assert outputs["incident_root"] == str(profile.parent / "incidents")
     assert outputs["guard_state_root"] == str(custody / "tmp" / "memory_guard")
     assert outputs["pytest_guard_root"] == str(pytest_dir)
-    assert outputs["proof_scratch_root"] == str(custody / "tmp")
+    assert outputs["proof_scratch_root"] == str(
+        scratch_state_root(custody / "tmp", owner=workspace, create=False)
+    )
     values = {
         "matrix.cell": cell,
         "env.CARGO_TARGET_DIR": str(custody / "target")
@@ -3205,10 +3208,11 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             ".workers/gw0_current-test.json",
         )
     ]
+    proof_scratch = scratch_state_root(custody / "tmp", owner=workspace, create=False)
     if detailed:
         if wasm:
             retained_files += [
-                custody / "tmp/differential/runtime-import" / name
+                proof_scratch / "differential/runtime-import" / name
                 for name in ("results.jsonl", "summary.json", "output.log")
             ]
             retained_files += [
@@ -3220,8 +3224,8 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             ]
     else:
         retained_files += [
-            custody / "tmp/runtime-gate-runs/run/aggregate.json",
-            custody / "tmp/runtime-gate-runs/run/child-0/raw.stderr.log",
+            proof_scratch / "runtime-gate-runs/run/aggregate.json",
+            proof_scratch / "runtime-gate-runs/run/child-0/raw.stderr.log",
             custody / "target/release-output/deps/molt-test-artifacts/run/stderr.log",
             metadata / "case/metadata-owner.json",
             metadata / "case/execution.supervisor-receipt.json",

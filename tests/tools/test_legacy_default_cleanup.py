@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 
 import pytest
 
@@ -58,7 +59,11 @@ def test_mutation_defaults_use_the_artifact_root_and_its_scratch(
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.setenv("MOLT_SESSION_ID", "mutation-proof")
 
-    assert mod._temp_root() == ext_root.resolve() / "tmp" / "mutation_tmp"
+    assert (
+        mod._temp_root()
+        == scratch_state_root(ext_root.resolve() / "tmp", owner=REPO_ROOT, create=False)
+        / "mutation_tmp"
+    )
     # A pinned session scopes this checkout's target under the root (HF-45).
     assert mod._default_cargo_target_dir() == (
         ext_root.resolve()

@@ -467,7 +467,7 @@ Complete the derived-attribution stack the STRUCTURAL_AUDIT_BOARD routes:
   `tools/translation_validator.py --pass-delta-jsonl`, which is the R3a
   proof-order gate for surviving `ValueId`s: raw-carrier proof may be added, but it may
   not silently disappear or drift across scalar families. The default artifact is
-  `tmp/molt-backend/tir/pass_delta.jsonl`; `MOLT_PASS_DELTA_PATH` may point at a
+  `<lane scratch>/molt-backend/tir/pass_delta.jsonl` (`molt.dx.scratch_root`); `MOLT_PASS_DELTA_PATH` may point at a
   specific artifact. It is diagnostic-only and never alters product output
   (Bootstrap/zero-workaround safe: it is a pure observer).
 - `tools/perf_causality.py`: the existing first rung consumes #76 cycle-profile rows

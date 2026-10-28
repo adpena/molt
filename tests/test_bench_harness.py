@@ -7,6 +7,7 @@ from pathlib import Path
 
 import molt.dx as molt_dx
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 import pytest
 from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 
@@ -88,7 +89,11 @@ def test_bench_harness_run_cmd_uses_memory_guard(
         )
     )
     assert call["env"]["TMPDIR"] == str(
-        custody_layout.scratch_root(artifact_root, bench_harness.REPO_ROOT)
+        scratch_state_root(
+            custody_layout.scratch_root(artifact_root, bench_harness.REPO_ROOT),
+            owner=bench_harness.REPO_ROOT,
+            create=False,
+        )
     )
 
 
